@@ -229,6 +229,36 @@ const de: Messages = {
       new: 'Ersatz',
     },
     otherArrays: 'Andere RAID-Verbünde (nur lesend)',
+    overview: 'Übersicht',
+    verdict: {
+      good: 'Alles in Ordnung',
+      goodDetail: 'Die Pools sind gesund und keine Platte zeigt Verschleiß.',
+      notice: 'Gut zu wissen',
+      warning: 'Braucht Aufmerksamkeit',
+      critical: 'Jetzt handeln',
+    },
+    summary: {
+      pools: 'Pools',
+      disks: 'Datenplatten',
+      used: 'Belegt',
+      available: 'Frei',
+    },
+    concerns: {
+      pool_unavailable: 'Pool {pool} ist {state}: Seine Daten sind nicht erreichbar.',
+      pool_degraded:
+        'Pool {pool} ist {state}: Er arbeitet, aber mit weniger Schutz gegen den Ausfall einer Platte.',
+      pool_data_errors:
+        'Pool {pool} hat Dateien mit Fehlern, die nicht repariert werden konnten ({files}).',
+      device_errors:
+        '{device} in Pool {pool} meldete {errors} Lese-, Schreib- oder Prüfsummenfehler.',
+      volume_filling: 'Volume {pool} ist zu {percent} % voll.',
+      disk_failing: 'Platte {disk} ({model}) fällt aus. Ersetzen Sie sie.',
+      disk_worn:
+        'Platte {disk} ({model}) zeigt Verschleiß. Halten Sie eine Sicherung bereit und behalten Sie sie im Blick.',
+      no_redundancy:
+        'Pool {pool} hat keine Redundanz: Fällt seine Platte aus, sind die Daten verloren.',
+      scrub_overdue: 'Die Daten auf Pool {pool} wurden zuletzt vor {days} Tagen geprüft.',
+    },
     volumes: 'Volumes',
     arrays: 'RAID-Verbünde',
     disks: 'Laufwerke',

@@ -809,6 +809,7 @@ fn openapi_documents_every_route() {
             "/api/v1/storage/arrays",
             "/api/v1/storage/disks",
             "/api/v1/storage/disks/{name}/smart",
+            "/api/v1/storage/overview",
             "/api/v1/storage/pools",
             "/api/v1/storage/pools/plan",
             "/api/v1/storage/pools/{name}/destroy",
@@ -869,6 +870,16 @@ async fn storage_lists_disks_arrays_and_volumes() {
     assert_eq!(pools.body[0]["mount_point"], "/volume1");
     assert_eq!(pools.body[0]["guid"], "9846106214133009000");
     assert_eq!(pools.body[0]["devices"][0]["disk"], "sdc");
+
+    // The simulated pool is a single disk: worth a notice, nothing worse.
+    let overview = read("/api/v1/storage/overview").await;
+    assert_eq!(overview.status, StatusCode::OK, "{:?}", overview.body);
+    assert_eq!(overview.body["verdict"], "notice");
+    assert_eq!(
+        overview.body["concerns"],
+        json!([{ "severity": "notice", "code": "no_redundancy", "params": { "pool": "tank" } }])
+    );
+    assert_eq!(overview.body["pools"], 1);
 }
 
 #[tokio::test]
@@ -898,6 +909,7 @@ async fn storage_needs_the_view_permission() {
     let h = Harness::new();
     let session = h.sign_in("bob", Role::User).await;
     for uri in [
+        "/api/v1/storage/overview",
         "/api/v1/storage/disks",
         "/api/v1/storage/disks/sda/smart",
         "/api/v1/storage/arrays",

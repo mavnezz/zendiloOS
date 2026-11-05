@@ -2094,6 +2094,41 @@
         ]
       }
     },
+    "/api/v1/storage/overview": {
+      "get": {
+        "tags": [
+          "storage"
+        ],
+        "summary": "Every concern about pools and disks in one place, the worst first.\nSMART verdicts are the monitor's last ones (read every six hours), so\nthis reads no disk. Needs `storage.view`.",
+        "operationId": "overview",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StorageOverview"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/storage/pools": {
       "get": {
         "tags": [
@@ -2781,6 +2816,33 @@
           }
         },
         "additionalProperties": false
+      },
+      "Concern": {
+        "type": "object",
+        "description": "Something wrong with a pool or disk, as a code with parameters for the\ninterface to word, e.g. `pool_degraded` with `pool` and `state`.",
+        "required": [
+          "severity",
+          "code",
+          "params"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "`pool_unavailable`, `pool_degraded` (`pool`, `state`);\n`pool_data_errors` (`pool`, `files`); `device_errors` (`pool`,\n`device`, `errors`); `volume_filling` (`pool`, `percent`);\n`disk_failing`, `disk_worn` (`disk`, `model`); `no_redundancy`\n(`pool`); `scrub_overdue` (`pool`, `days`)."
+          },
+          "params": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "severity": {
+            "$ref": "#/components/schemas/Severity"
+          }
+        }
       },
       "CreateAccountRequest": {
         "type": "object",
@@ -4735,6 +4797,15 @@
           }
         }
       },
+      "Severity": {
+        "type": "string",
+        "description": "How bad a concern is; the worst one is the verdict.",
+        "enum": [
+          "notice",
+          "warning",
+          "critical"
+        ]
+      },
       "Share": {
         "type": "object",
         "required": [
@@ -5057,6 +5128,57 @@
           "standby",
           "unsupported"
         ]
+      },
+      "StorageOverview": {
+        "type": "object",
+        "description": "What the storage is and what is wrong with it.",
+        "required": [
+          "concerns",
+          "pools",
+          "disks",
+          "used_bytes",
+          "available_bytes"
+        ],
+        "properties": {
+          "available_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "concerns": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Concern"
+            },
+            "description": "The worst first."
+          },
+          "disks": {
+            "type": "integer",
+            "description": "Disks other than the system's own.",
+            "minimum": 0
+          },
+          "pools": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "used_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Across all volumes, as files see it.",
+            "minimum": 0
+          },
+          "verdict": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Severity",
+                "description": "The worst concern's severity; `null` when all is well."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
       },
       "SubjectKind": {
         "type": "string",

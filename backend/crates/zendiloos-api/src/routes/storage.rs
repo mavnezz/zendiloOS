@@ -18,6 +18,7 @@ use crate::state::ApiState;
 
 pub(super) fn routes() -> OpenApiRouter<ApiState> {
     OpenApiRouter::new()
+        .routes(routes!(overview))
         .routes(routes!(disks))
         .routes(routes!(smart))
         .routes(routes!(arrays))
@@ -1238,4 +1239,137 @@ async fn scrub_pool(
     auth.require(Permission::StorageManage)?;
     state.storage.scrub_pool.execute(&name, &auth.0.actor(), &client).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// How bad a concern is; the worst one is the verdict.
+#[derive(Debug, Clone, Copy, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Severity {
+    Notice,
+    Warning,
+    Critical,
+}
+
+impl From<storage::Severity> for Severity {
+    fn from(severity: storage::Severity) -> Self {
+        match severity {
+            storage::Severity::Notice => Severity::Notice,
+            storage::Severity::Warning => Severity::Warning,
+            storage::Severity::Critical => Severity::Critical,
+        }
+    }
+}
+
+/// Something wrong with a pool or disk, as a code with parameters for the
+/// interface to word, e.g. `pool_degraded` with `pool` and `state`.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct Concern {
+    pub severity: Severity,
+    /// `pool_unavailable`, `pool_degraded` (`pool`, `state`);
+    /// `pool_data_errors` (`pool`, `files`); `device_errors` (`pool`,
+    /// `device`, `errors`); `volume_filling` (`pool`, `percent`);
+    /// `disk_failing`, `disk_worn` (`disk`, `model`); `no_redundancy`
+    /// (`pool`); `scrub_overdue` (`pool`, `days`).
+    pub code: String,
+    pub params: std::collections::BTreeMap<String, String>,
+}
+
+fn state_name(state: storage::VdevState) -> &'static str {
+    match state {
+        storage::VdevState::Online => "online",
+        storage::VdevState::Degraded => "degraded",
+        storage::VdevState::Faulted => "faulted",
+        storage::VdevState::Offline => "offline",
+        storage::VdevState::Removed => "removed",
+        storage::VdevState::Unavailable => "unavailable",
+        storage::VdevState::Suspended => "suspended",
+        storage::VdevState::Unknown => "unknown",
+    }
+}
+
+impl From<storage::Concern> for Concern {
+    fn from(concern: storage::Concern) -> Self {
+        use storage::Concern as C;
+        let severity = concern.severity().into();
+        let (code, params): (&str, Vec<(&str, String)>) = match concern {
+            C::PoolUnavailable { pool, state } => {
+                ("pool_unavailable", vec![("pool", pool), ("state", state_name(state).into())])
+            }
+            C::PoolDegraded { pool, state } => {
+                ("pool_degraded", vec![("pool", pool), ("state", state_name(state).into())])
+            }
+            C::PoolDataErrors { pool, files } => {
+                ("pool_data_errors", vec![("pool", pool), ("files", files.to_string())])
+            }
+            C::DeviceErrors { pool, device, errors } => {
+                ("device_errors", vec![("pool", pool), ("device", device), ("errors", errors.to_string())])
+            }
+            C::VolumeFilling { pool, percent } => {
+                ("volume_filling", vec![("pool", pool), ("percent", percent.to_string())])
+            }
+            C::DiskFailing { disk, model } => {
+                ("disk_failing", vec![("disk", disk), ("model", model.unwrap_or_default())])
+            }
+            C::DiskWorn { disk, model } => {
+                ("disk_worn", vec![("disk", disk), ("model", model.unwrap_or_default())])
+            }
+            C::NoRedundancy { pool } => ("no_redundancy", vec![("pool", pool)]),
+            C::ScrubOverdue { pool, days } => {
+                ("scrub_overdue", vec![("pool", pool), ("days", days.to_string())])
+            }
+        };
+        Self {
+            severity,
+            code: code.to_owned(),
+            params: params.into_iter().map(|(key, value)| (key.to_owned(), value)).collect(),
+        }
+    }
+}
+
+/// What the storage is and what is wrong with it.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct StorageOverview {
+    /// The worst concern's severity; `null` when all is well.
+    pub verdict: Option<Severity>,
+    /// The worst first.
+    pub concerns: Vec<Concern>,
+    pub pools: usize,
+    /// Disks other than the system's own.
+    pub disks: usize,
+    /// Across all volumes, as files see it.
+    pub used_bytes: u64,
+    pub available_bytes: u64,
+}
+
+/// Every concern about pools and disks in one place, the worst first.
+/// SMART verdicts are the monitor's last ones (read every six hours), so
+/// this reads no disk. Needs `storage.view`.
+#[utoipa::path(
+    get,
+    path = "/storage/overview",
+    tag = "storage",
+    security(("session" = [])),
+    responses(
+        (status = OK, body = StorageOverview),
+        (status = FORBIDDEN, body = Problem, description = "`forbidden`"),
+    )
+)]
+async fn overview(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+) -> Result<Json<StorageOverview>, ApiError> {
+    auth.require(Permission::StorageView)?;
+    let summary = state.storage.overview.execute(&client).await?;
+    let spaces = summary.pools.iter().filter_map(|pool| pool.space);
+    let (used_bytes, available_bytes) =
+        spaces.fold((0, 0), |(used, free), space| (used + space.used_bytes, free + space.available_bytes));
+    Ok(Json(StorageOverview {
+        verdict: summary.overview.verdict().map(Severity::from),
+        concerns: summary.overview.concerns.into_iter().map(Concern::from).collect(),
+        pools: summary.pools.len(),
+        disks: summary.disks.iter().filter(|disk| disk.usage != storage::DiskUsage::System).count(),
+        used_bytes,
+        available_bytes,
+    }))
 }

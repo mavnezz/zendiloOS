@@ -36,7 +36,7 @@ pub enum StorageEvent {
     },
 }
 
-fn percent_used(pool: &Pool) -> Option<u8> {
+pub(crate) fn percent_used(pool: &Pool) -> Option<u8> {
     let space = pool.space?;
     let total = space.used_bytes + space.available_bytes;
     (total > 0).then(|| (space.used_bytes.saturating_mul(100) / total).min(100) as u8)

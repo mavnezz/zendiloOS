@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Database, HardDrive, Layers, RefreshCw } from 'lucide-vue-next'
+import { Activity, Database, HardDrive, Layers, RefreshCw } from 'lucide-vue-next'
 import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
@@ -9,10 +9,11 @@ import { Button } from '@/shared/ui/button'
 import { useRefreshStorage } from '../api'
 import DiskDetail from './DiskDetail.vue'
 import DisksSection from './DisksSection.vue'
+import OverviewSection from './OverviewSection.vue'
 import PoolsSection from './PoolsSection.vue'
 import VolumesSection from './VolumesSection.vue'
 
-type Section = 'volumes' | 'pools' | 'disks'
+type Section = 'overview' | 'volumes' | 'pools' | 'disks'
 
 /** Whether the signed-in account may change pools (`storage.manage`). */
 defineProps<{ canManage: boolean }>()
@@ -21,11 +22,12 @@ const { t } = useI18n()
 const refresh = useRefreshStorage()
 
 const sections = [
+  { id: 'overview', icon: Activity },
   { id: 'volumes', icon: Database },
   { id: 'pools', icon: Layers },
   { id: 'disks', icon: HardDrive },
 ] as const
-const section = ref<Section>('volumes')
+const section = ref<Section>('overview')
 const selectedDisk = ref<string | null>(null)
 
 function open(next: Section): void {
@@ -34,7 +36,7 @@ function open(next: Section): void {
 }
 </script>
 
-<!-- What the system stores data on. Read-only for now. -->
+<!-- What the system stores data on, and what is wrong with it. -->
 <template>
   <div class="flex h-full flex-col @xl:flex-row">
     <nav class="flex shrink-0 gap-1 border-b p-2 @xl:w-48 @xl:flex-col @xl:border-r @xl:border-b-0">
@@ -67,7 +69,8 @@ function open(next: Section): void {
     </nav>
 
     <div class="min-w-0 flex-1 overflow-auto p-4 @xl:p-6">
-      <VolumesSection v-if="section === 'volumes'" />
+      <OverviewSection v-if="section === 'overview'" />
+      <VolumesSection v-else-if="section === 'volumes'" />
       <PoolsSection v-else-if="section === 'pools'" :can-manage="canManage" />
       <template v-else>
         <DiskDetail v-if="selectedDisk" :name="selectedDisk" @back="selectedDisk = null" />

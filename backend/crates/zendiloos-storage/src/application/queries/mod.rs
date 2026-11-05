@@ -2,11 +2,12 @@
 
 use std::sync::Arc;
 
-use zendiloos_kernel::{PortError, RequestContext};
+use zendiloos_kernel::{Clock, PortError, RequestContext};
 
 use crate::application::StorageError;
+use crate::application::monitor::StorageMonitor;
 use crate::application::ports::{ArraySource, BlockDeviceSource, SmartSource, ZfsSource};
-use crate::domain::{self, Array, BlockDevice, Disk, Pool, SmartReport, Volume};
+use crate::domain::{self, Array, BlockDevice, Disk, Overview, Pool, SmartReport, Volume};
 
 /// Block devices and pools with resolved disks. Without ZFS (the module
 /// failed to build, say) disks and other volumes are still shown.
@@ -49,6 +50,43 @@ impl ListDisks {
     pub async fn execute(&self, context: &RequestContext) -> Result<Vec<Disk>, PortError> {
         let (devices, pools) = inventory(self.devices.as_ref(), self.zfs.as_ref(), context).await?;
         Ok(domain::disks(&devices, &pools))
+    }
+}
+
+/// What the storage is and what is wrong with it.
+#[derive(Debug, Clone)]
+pub struct StorageSummary {
+    pub overview: Overview,
+    pub pools: Vec<Pool>,
+    pub disks: Vec<Disk>,
+}
+
+/// Query: every concern about pools and disks, the worst first. Pools are
+/// read now; SMART verdicts come from the monitor, so asking reads no disk.
+#[derive(Clone)]
+pub struct GetStorageOverview {
+    devices: Arc<dyn BlockDeviceSource>,
+    zfs: Arc<dyn ZfsSource>,
+    monitor: Arc<StorageMonitor>,
+    clock: Arc<dyn Clock>,
+}
+
+impl GetStorageOverview {
+    pub fn new(
+        devices: Arc<dyn BlockDeviceSource>,
+        zfs: Arc<dyn ZfsSource>,
+        monitor: Arc<StorageMonitor>,
+        clock: Arc<dyn Clock>,
+    ) -> Self {
+        Self { devices, zfs, monitor, clock }
+    }
+
+    pub async fn execute(&self, context: &RequestContext) -> Result<StorageSummary, PortError> {
+        let (devices, pools) = inventory(self.devices.as_ref(), self.zfs.as_ref(), context).await?;
+        let disks = domain::disks(&devices, &pools);
+        let health = self.monitor.disk_health().await;
+        let overview = domain::overview(&pools, &disks, &health, self.clock.now());
+        Ok(StorageSummary { overview, pools, disks })
     }
 }
 

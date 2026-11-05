@@ -38,6 +38,7 @@ pub struct StorageUseCases {
     pub list_arrays: queries::ListArrays,
     pub list_volumes: queries::ListVolumes,
     pub list_pools: queries::ListPools,
+    pub overview: queries::GetStorageOverview,
     pub plan_pool: commands::PlanPool,
     pub create_pool: commands::CreatePool,
     pub destroy_pool: commands::DestroyPool,
@@ -56,6 +57,12 @@ impl StorageUseCases {
             ports.notifier,
             ports.clock.clone(),
         ));
+        let overview = queries::GetStorageOverview::new(
+            ports.devices.clone(),
+            ports.zfs.clone(),
+            Arc::clone(&monitor),
+            ports.clock.clone(),
+        );
         let context = Arc::new(commands::Context::new(
             ports.devices.clone(),
             ports.zfs.clone(),
@@ -73,6 +80,7 @@ impl StorageUseCases {
             replace_disk: commands::ReplaceDisk::new(Arc::clone(&context)),
             scrub_pool: commands::ScrubPool::new(context),
             monitor,
+            overview,
             list_disks: queries::ListDisks::new(ports.devices.clone(), ports.zfs.clone()),
             get_smart_report: queries::GetSmartReport::new(ports.devices.clone(), ports.smart),
             list_arrays: queries::ListArrays::new(ports.arrays),

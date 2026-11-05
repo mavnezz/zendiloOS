@@ -619,6 +619,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/storage/overview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Every concern about pools and disks in one place, the worst first.
+         *     SMART verdicts are the monitor's last ones (read every six hours), so
+         *     this reads no disk. Needs `storage.view`.
+         */
+        get: operations["overview"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/storage/pools": {
         parameters: {
             query?: never;
@@ -857,6 +878,24 @@ export interface components {
             current_password: string;
             /** Format: password */
             new_password: string;
+        };
+        /**
+         * @description Something wrong with a pool or disk, as a code with parameters for the
+         *     interface to word, e.g. `pool_degraded` with `pool` and `state`.
+         */
+        Concern: {
+            /**
+             * @description `pool_unavailable`, `pool_degraded` (`pool`, `state`);
+             *     `pool_data_errors` (`pool`, `files`); `device_errors` (`pool`,
+             *     `device`, `errors`); `volume_filling` (`pool`, `percent`);
+             *     `disk_failing`, `disk_worn` (`disk`, `model`); `no_redundancy`
+             *     (`pool`); `scrub_overdue` (`pool`, `days`).
+             */
+            code: string;
+            params: {
+                [key: string]: string;
+            };
+            severity: components["schemas"]["Severity"];
         };
         CreateAccountRequest: {
             full_name?: string | null;
@@ -1492,6 +1531,11 @@ export interface components {
             /** @description No administrator exists yet; the interface must offer the setup. */
             required: boolean;
         };
+        /**
+         * @description How bad a concern is; the worst one is the verdict.
+         * @enum {string}
+         */
+        Severity: "notice" | "warning" | "critical";
         Share: {
             access: components["schemas"]["ShareRule"][];
             /** Format: int64 */
@@ -1575,6 +1619,22 @@ export interface components {
         };
         /** @enum {string} */
         SmartStatus: "available" | "standby" | "unsupported";
+        /** @description What the storage is and what is wrong with it. */
+        StorageOverview: {
+            /** Format: int64 */
+            available_bytes: number;
+            /** @description The worst first. */
+            concerns: components["schemas"]["Concern"][];
+            /** @description Disks other than the system's own. */
+            disks: number;
+            pools: number;
+            /**
+             * Format: int64
+             * @description Across all volumes, as files see it.
+             */
+            used_bytes: number;
+            verdict?: components["schemas"]["Severity"] | null;
+        };
         /** @enum {string} */
         SubjectKind: "account" | "group";
         /** @enum {string} */
@@ -3157,6 +3217,34 @@ export interface operations {
             };
             /** @description `not_found`: no such disk */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    overview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StorageOverview"];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

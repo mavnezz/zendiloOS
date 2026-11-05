@@ -10,6 +10,14 @@ const DEVICE_REFRESH_MS = 30_000
 /** SMART is read from the disks themselves; once in a while is enough. */
 const SMART_STALE_MS = 5 * 60_000
 
+export function useStorageOverview() {
+  return useQuery({
+    queryKey: ['storage', 'overview'],
+    queryFn: () => unwrap(api.GET('/api/v1/storage/overview')),
+    refetchInterval: DEVICE_REFRESH_MS,
+  })
+}
+
 export function useDisks() {
   return useQuery({
     queryKey: ['storage', 'disks'],

@@ -42,6 +42,12 @@ impl StorageMonitor {
         Self { devices, zfs, smart, notifier, clock, seen: tokio::sync::Mutex::new(Seen::default()) }
     }
 
+    /// The SMART verdicts of the disks holding data, as last read, by serial
+    /// number (or name for disks without one). Empty until the first look.
+    pub async fn disk_health(&self) -> HashMap<String, Health> {
+        self.seen.lock().await.health.clone()
+    }
+
     /// One look; call regularly. Failures to read are logged and the look
     /// is skipped.
     pub async fn check(&self) {
