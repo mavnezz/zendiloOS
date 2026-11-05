@@ -12,3 +12,11 @@
 
 #[tools]
 #systemctl = "/usr/bin/systemctl"
+#lsblk = "/usr/bin/lsblk"
+#smartctl = "/usr/sbin/smartctl"
+#useradd = "/usr/sbin/useradd"
+#userdel = "/usr/sbin/userdel"
+#groupadd = "/usr/sbin/groupadd"
+#groupdel = "/usr/sbin/groupdel"
+#gpasswd = "/usr/bin/gpasswd"
+#smbpasswd = "/usr/bin/smbpasswd"

@@ -32,7 +32,7 @@ pub struct SetupStatus {
     pub required: bool,
 }
 
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum AccountRole {
     Admin,

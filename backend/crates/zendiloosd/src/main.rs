@@ -15,16 +15,17 @@ use tokio::net::TcpListener;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::task::JoinHandle;
 use zendiloos_agent_proto::{AgentTransport, UnixTransport};
-use zendiloos_api::ApiState;
+use zendiloos_api::{ApiState, UseCases};
 use zendiloos_identity::application::commands::PurgeExpiredSessions;
 use zendiloos_identity::application::{IdentityConfig, IdentityPorts, IdentityUseCases};
 use zendiloos_infra::SystemClock;
-use zendiloos_infra::agent::{AgentPowerControl, agent_version};
-use zendiloos_infra::host::{HostSystemInfo, MetricsHub};
+use zendiloos_infra::agent::{AgentPowerControl, AgentStorage, AgentSystemAccounts, agent_version};
+use zendiloos_infra::host::{HostSystemInfo, JournalctlReader, MetricsHub};
 use zendiloos_infra::identity::{Argon2PasswordHasher, FileSetupCodes, RandomSessionTokens};
-use zendiloos_infra::sqlite::{Database, SqliteAccounts, SqliteAuditLog, SqliteSessions};
+use zendiloos_infra::sqlite::{Database, SqliteAccounts, SqliteAuditLog, SqliteGroups, SqliteSessions};
 use zendiloos_kernel::AuditLog;
 use zendiloos_sim::SimulatedAgent;
+use zendiloos_storage::application::{StoragePorts, StorageUseCases};
 use zendiloos_system::application::{SystemPorts, SystemUseCases};
 
 use crate::config::{AgentTransportKind, Config, Source};
@@ -74,19 +75,32 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     let database = open_database(&config).await?;
     let audit: Arc<dyn AuditLog> = Arc::new(SqliteAuditLog::new(database.clone()));
     let agent = agent_transport(&config).await;
-    let identity = identity(&config, &database, audit.clone())?;
+    let identity = identity(&config, &database, audit.clone(), agent.clone())?;
     let setup_code = announce_setup(&config, &identity).await?;
     let purge = spawn_session_purge(identity.purge_expired_sessions.clone());
     let (metrics, sampler) = MetricsHub::spawn(Duration::from_secs(2), Arc::new(SystemClock));
+    let journal = JournalctlReader::new(config.journal.journalctl.as_deref());
+    match journal.path() {
+        Some(path) => tracing::info!(path = %path.display(), "reading the journal with journalctl"),
+        None => tracing::warn!("journalctl not found: the log viewer will not work"),
+    }
     let system = SystemUseCases::new(SystemPorts {
         info: Arc::new(HostSystemInfo),
         metrics: Arc::new(metrics),
-        power: Arc::new(AgentPowerControl::new(agent)),
+        power: Arc::new(AgentPowerControl::new(agent.clone())),
+        journal: Arc::new(journal),
         audit,
+        audit_reader: Arc::new(SqliteAuditLog::new(database.clone())),
         clock: Arc::new(SystemClock),
     });
+    let agent_storage = Arc::new(AgentStorage::new(agent));
+    let storage = StorageUseCases::new(StoragePorts {
+        devices: agent_storage.clone(),
+        smart: agent_storage.clone(),
+        arrays: agent_storage,
+    });
 
-    let state = ApiState::new(system, identity, config.secure_cookies);
+    let state = ApiState::new(UseCases { system, identity, storage }, config.secure_cookies);
     let app = zendiloos_api::router(state);
 
     let issue = config.state_dir.join("console.issue");
@@ -151,10 +165,13 @@ fn identity(
     config: &Config,
     database: &Database,
     audit: Arc<dyn AuditLog>,
+    agent: Arc<dyn AgentTransport>,
 ) -> anyhow::Result<IdentityUseCases> {
     let ports = IdentityPorts {
         accounts: Arc::new(SqliteAccounts::new(database.clone())),
+        groups: Arc::new(SqliteGroups::new(database.clone())),
         sessions: Arc::new(SqliteSessions::new(database.clone())),
+        system: Arc::new(AgentSystemAccounts::new(agent)),
         hasher: Arc::new(Argon2PasswordHasher::new()?),
         tokens: Arc::new(RandomSessionTokens),
         setup_codes: Arc::new(FileSetupCodes::new(config.setup_code_path())),

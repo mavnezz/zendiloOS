@@ -27,7 +27,17 @@ pub struct Config {
     /// reached over plain HTTP.
     pub secure_cookies: bool,
     pub agent: AgentConfig,
+    pub journal: JournalConfig,
     pub log: LogConfig,
+}
+
+/// How zendiloosd reads the system journal for the log viewer.
+#[derive(Debug, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct JournalConfig {
+    /// Absolute path of `journalctl`; looked up in the usual places if
+    /// absent.
+    pub journalctl: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -61,6 +71,7 @@ impl Default for Config {
             state_dir: PathBuf::from("/var/lib/zendiloos"),
             secure_cookies: true,
             agent: AgentConfig::default(),
+            journal: JournalConfig::default(),
             log: LogConfig::default(),
         }
     }
@@ -153,6 +164,9 @@ mod tests {
             transport = "simulated"
             socket = "/tmp/agent.sock"
 
+            [journal]
+            journalctl = "/bin/journalctl"
+
             [log]
             filter = "debug"
             format = "json"
@@ -170,6 +184,7 @@ mod tests {
                 socket: PathBuf::from("/tmp/agent.sock")
             }
         );
+        assert_eq!(config.journal.journalctl.as_deref(), Some(Path::new("/bin/journalctl")));
         assert_eq!(config.log, LogConfig { filter: "debug".to_owned(), format: LogFormat::Json });
     }
 

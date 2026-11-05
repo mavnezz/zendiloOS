@@ -12,6 +12,8 @@ Type=notify
 ExecStart=/usr/sbin/zendiloosd serve
 User=zendiloos
 Group=zendiloos
+# Reads the journal for the log viewer, with journalctl.
+SupplementaryGroups=systemd-journal
 StateDirectory=zendiloos
 StateDirectoryMode=0700
 UMask=0077

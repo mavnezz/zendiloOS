@@ -8,6 +8,7 @@
 mod accounts;
 mod audit;
 mod backup;
+mod groups;
 mod sessions;
 
 #[cfg(test)]
@@ -26,6 +27,7 @@ use sqlx::sqlite::{
 
 pub use accounts::SqliteAccounts;
 pub use audit::SqliteAuditLog;
+pub use groups::SqliteGroups;
 pub use sessions::SqliteSessions;
 
 static MIGRATOR: Migrator = sqlx::migrate!();

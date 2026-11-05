@@ -13,6 +13,9 @@ publish.workspace = true
 zendiloos-kernel.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
+# Only the async mutex that serializes changes to administrators.
+tokio = { workspace = true, features = ["sync"] }
+tracing.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true

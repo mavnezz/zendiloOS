@@ -19,7 +19,9 @@ zendiloos-exec = { path = "crates/zendiloos-exec" }
 zendiloos-identity = { path = "crates/zendiloos-identity" }
 zendiloos-infra = { path = "crates/zendiloos-infra" }
 zendiloos-kernel = { path = "crates/zendiloos-kernel" }
+zendiloos-logging = { path = "crates/zendiloos-logging" }
 zendiloos-sim = { path = "crates/zendiloos-sim" }
+zendiloos-storage = { path = "crates/zendiloos-storage" }
 zendiloos-system = { path = "crates/zendiloos-system" }
 
 anyhow = "1"

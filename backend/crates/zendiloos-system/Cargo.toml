@@ -1,6 +1,6 @@
 [package]
 name = "zendiloos-system"
-description = "Bounded context System: host information; later metrics, power control and logs"
+description = "Bounded context System: host information, metrics, power control and logs"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,6 +12,7 @@ publish.workspace = true
 [dependencies]
 zendiloos-kernel.workspace = true
 async-trait.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true

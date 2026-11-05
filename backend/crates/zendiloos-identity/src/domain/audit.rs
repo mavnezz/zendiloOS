@@ -5,6 +5,13 @@ pub enum AuditAction {
     Login,
     Logout,
     PasswordChange,
+    AccountCreate,
+    AccountUpdate,
+    AccountDelete,
+    PasswordReset,
+    GroupCreate,
+    GroupUpdate,
+    GroupDelete,
 }
 
 impl AuditAction {
@@ -14,6 +21,13 @@ impl AuditAction {
             AuditAction::Login => "identity.login",
             AuditAction::Logout => "identity.logout",
             AuditAction::PasswordChange => "identity.password_change",
+            AuditAction::AccountCreate => "identity.account_create",
+            AuditAction::AccountUpdate => "identity.account_update",
+            AuditAction::AccountDelete => "identity.account_delete",
+            AuditAction::PasswordReset => "identity.password_reset",
+            AuditAction::GroupCreate => "identity.group_create",
+            AuditAction::GroupUpdate => "identity.group_update",
+            AuditAction::GroupDelete => "identity.group_delete",
         }
     }
 }

@@ -4,6 +4,65 @@
  */
 
 export interface paths {
+    "/api/v1/accounts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** All accounts, ordered by name. */
+        get: operations["list_accounts"];
+        put?: never;
+        /** Creates an account with its Linux user and SMB password. */
+        post: operations["create_account"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/accounts/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Deletes another account with its Linux user. Its files stay. */
+        delete: operations["delete_account"];
+        options?: never;
+        head?: never;
+        /**
+         * Changes another account's full name, role or whether it is enabled.
+         *     Disabling ends its sessions and SMB access.
+         */
+        patch: operations["update_account"];
+        trace?: never;
+    };
+    "/api/v1/accounts/{id}/password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Sets a new password for another account, which must change it at its
+         *     next login. Ends its sessions.
+         */
+        post: operations["reset_password"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/login": {
         parameters: {
             query?: never;
@@ -72,6 +131,42 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/groups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** All groups, ordered by name. */
+        get: operations["list_groups"];
+        put?: never;
+        /** Creates a group with its Linux group. */
+        post: operations["create_group"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/groups/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Deletes a group with its Linux group. */
+        delete: operations["delete_group"];
+        options?: never;
+        head?: never;
+        /** Changes a group's description or members. */
+        patch: operations["update_group"];
+        trace?: never;
+    };
     "/api/v1/health": {
         parameters: {
             query?: never;
@@ -93,6 +188,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/logs/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** A page of the audit log: who did what, newest first. */
+        get: operations["audit"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/logs/journal": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** A page of the system journal, newest first. */
+        get: operations["journal"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/setup": {
         parameters: {
             query?: never;
@@ -105,6 +234,77 @@ export interface paths {
         put?: never;
         /** Creates the first administrator and signs them in. */
         post: operations["complete_setup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/storage/arrays": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The software RAID arrays. Needs `storage.view`. */
+        get: operations["arrays"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/storage/disks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** All disks of the host. Needs `storage.view`. */
+        get: operations["disks"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/storage/disks/{name}/smart": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * SMART data of one disk. Sleeping disks are not woken: their report has
+         *     status `standby`. Needs `storage.view`.
+         */
+        get: operations["smart"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/storage/volumes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The data volumes. Needs `storage.view`. */
+        get: operations["volumes"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -149,13 +349,80 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        Account: {
+            /** Format: int64 */
+            created_at: number;
+            disabled: boolean;
+            full_name?: string | null;
+            /** Format: int64 */
+            id: number;
+            /** @description Login name, also the Linux and SMB user name. */
+            name: string;
+            /** @description The account must choose a new password at its next login. */
+            password_change_required: boolean;
+            role: components["schemas"]["AccountRole"];
+            /** Format: int64 */
+            updated_at: number;
+        };
         /** @enum {string} */
         AccountRole: "admin" | "user" | "readonly";
+        /** @enum {string} */
+        ArrayHealth: "healthy" | "degraded" | "rebuilding" | "inactive";
+        ArrayMember: {
+            /** @description Kernel name of the disk or partition. */
+            device: string;
+            /** Format: int32 */
+            index: number;
+            state: components["schemas"]["MemberState"];
+        };
+        AuditPage: {
+            entries: components["schemas"]["AuditRecord"][];
+            /**
+             * Format: int64
+             * @description Pass as `before` for the next, older page; absent at the end.
+             */
+            older?: number | null;
+        };
+        AuditRecord: {
+            /** @description Dotted name, e.g. `identity.login`. */
+            action: string;
+            /** @description Account name; for failed logins the name that was tried. */
+            actor?: string | null;
+            /**
+             * Format: int64
+             * @description Unix seconds.
+             */
+            at: number;
+            client_ip?: string | null;
+            /** Format: int64 */
+            id: number;
+            /** @description `success`, `failure` or `denied`. */
+            outcome: string;
+            reason?: string | null;
+            request_id?: string | null;
+            target?: string | null;
+        };
         ChangePasswordRequest: {
             /** Format: password */
             current_password: string;
             /** Format: password */
             new_password: string;
+        };
+        CreateAccountRequest: {
+            full_name?: string | null;
+            name: string;
+            /**
+             * Format: password
+             * @description Initial password; the account must change it at its first login.
+             */
+            password: string;
+            role: components["schemas"]["AccountRole"];
+        };
+        CreateGroupRequest: {
+            description?: string | null;
+            /** @description Account IDs. */
+            members?: number[];
+            name: string;
         };
         CurrentAccount: {
             full_name?: string | null;
@@ -171,12 +438,72 @@ export interface components {
             permissions: string[];
             role: components["schemas"]["AccountRole"];
         };
+        Disk: {
+            /** @description The array, if `usage` is `array_member`. */
+            array?: string | null;
+            media: components["schemas"]["Media"];
+            model?: string | null;
+            /** @description Kernel name, e.g. `sda`; identifies the disk in this API. */
+            name: string;
+            partitions: components["schemas"]["Partition"][];
+            read_only: boolean;
+            removable: boolean;
+            serial?: string | null;
+            /** Format: int64 */
+            size_bytes: number;
+            transport: components["schemas"]["Transport"];
+            usage: components["schemas"]["DiskUsage"];
+            wwn?: string | null;
+        };
+        /** @enum {string} */
+        DiskHealth: "good" | "warning" | "failing";
         DiskMetrics: {
             name: string;
             /** Format: int64 */
             read_bytes_per_second: number;
             /** Format: int64 */
             written_bytes_per_second: number;
+        };
+        /**
+         * @description What a disk is used for.
+         * @enum {string}
+         */
+        DiskUsage: "system" | "array_member" | "volume" | "foreign" | "unused";
+        /** @description A reason behind the health verdict. */
+        Finding: {
+            /**
+             * Format: int32
+             * @description The ATA attribute concerned, for `attribute_*`.
+             */
+            attribute_id?: number | null;
+            attribute_name?: string | null;
+            code: components["schemas"]["FindingCode"];
+            severity: components["schemas"]["DiskHealth"];
+            /**
+             * Format: int64
+             * @description The limit `value` is compared with, for `nvme_spare_low`.
+             */
+            threshold?: number | null;
+            /**
+             * Format: int64
+             * @description The count or percentage the finding is about.
+             */
+            value?: number | null;
+        };
+        /** @enum {string} */
+        FindingCode: "overall_failed" | "attribute_failing" | "attribute_failed_in_past" | "reallocated_sectors" | "pending_sectors" | "uncorrectable_sectors" | "error_log_entries" | "self_test_failed" | "nvme_critical_warning" | "nvme_spare_low" | "nvme_worn_out" | "nvme_media_errors";
+        Group: {
+            /** Format: int64 */
+            created_at: number;
+            description?: string | null;
+            /** Format: int64 */
+            id: number;
+            /** @description Account IDs, ascending. */
+            members: number[];
+            /** @description Also the Linux group name. */
+            name: string;
+            /** Format: int64 */
+            updated_at: number;
         };
         Health: {
             /** @description `ok` whenever the server answers. */
@@ -188,6 +515,26 @@ export interface components {
             received_bytes_per_second: number;
             /** Format: int64 */
             sent_bytes_per_second: number;
+        };
+        JournalEntry: {
+            /**
+             * Format: int64
+             * @description Microseconds since the Unix epoch.
+             */
+            at_micros: number;
+            /** @description Program name, e.g. `smbd` or `kernel`. */
+            identifier?: string | null;
+            message: string;
+            /** Format: int32 */
+            pid?: number | null;
+            priority: components["schemas"]["LogPriority"];
+            unit?: string | null;
+        };
+        /** @description Newest first. */
+        JournalPage: {
+            entries: components["schemas"]["JournalEntry"][];
+            /** @description Pass as `before` for the next, older page; absent at the end. */
+            older?: string | null;
         };
         /** @description What the server sends. */
         LiveMessage: {
@@ -211,11 +558,25 @@ export interface components {
         };
         /** @enum {string} */
         LiveTopic: "metrics";
+        /**
+         * @description syslog severity, from most to least severe.
+         * @enum {string}
+         */
+        LogPriority: "emergency" | "alert" | "critical" | "error" | "warning" | "notice" | "info" | "debug";
+        /**
+         * @description A fixed view of the journal.
+         * @enum {string}
+         */
+        LogSource: "system" | "zendiloos" | "storage" | "sharing" | "kernel";
         LoginRequest: {
             name: string;
             /** Format: password */
             password: string;
         };
+        /** @enum {string} */
+        Media: "rotational" | "solid_state";
+        /** @enum {string} */
+        MemberState: "active" | "spare" | "faulty" | "replacement" | "journal";
         MemoryMetrics: {
             /** Format: int64 */
             available_bytes: number;
@@ -244,6 +605,32 @@ export interface components {
             /** Format: int64 */
             uptime_seconds: number;
         };
+        NvmeHealth: {
+            /** Format: int32 */
+            available_spare_percent: number;
+            /** Format: int32 */
+            available_spare_threshold_percent: number;
+            /** Format: int64 */
+            bytes_read: number;
+            /** Format: int64 */
+            bytes_written: number;
+            /** Format: int32 */
+            critical_warning: number;
+            /** Format: int64 */
+            media_errors: number;
+            /** Format: int32 */
+            percentage_used: number;
+            /** Format: int64 */
+            unsafe_shutdowns: number;
+        };
+        Partition: {
+            filesystem?: string | null;
+            label?: string | null;
+            mount_points: string[];
+            name: string;
+            /** Format: int64 */
+            size_bytes: number;
+        };
         /** @enum {string} */
         PowerActionKind: "reboot" | "power_off";
         PowerRequest: {
@@ -261,6 +648,35 @@ export interface components {
             title: string;
             /** @description Always `about:blank`; `code` identifies the problem. */
             type: string;
+        };
+        /** @description A software RAID array. */
+        RaidArray: {
+            /**
+             * Format: int32
+             * @description Devices the array is made for; absent without redundancy.
+             */
+            devices_total?: number | null;
+            /** Format: int32 */
+            devices_working?: number | null;
+            health: components["schemas"]["ArrayHealth"];
+            /** @description `raid1`, `raid5`, …; unknown while inactive. */
+            level?: string | null;
+            members: components["schemas"]["ArrayMember"][];
+            name: string;
+            read_only: boolean;
+            /** Format: int64 */
+            size_bytes?: number | null;
+            sync?: components["schemas"]["SyncProgress"] | null;
+        };
+        ResetPasswordRequest: {
+            /** Format: password */
+            password: string;
+        };
+        SelfTest: {
+            description: string;
+            passed: boolean;
+            /** Format: int64 */
+            power_on_hours?: number | null;
         };
         SessionInfo: {
             account: components["schemas"]["CurrentAccount"];
@@ -290,6 +706,68 @@ export interface components {
             /** @description No administrator exists yet; the interface must offer the setup. */
             required: boolean;
         };
+        SmartAttribute: {
+            /** @description `now`, `past` or absent. */
+            failed?: string | null;
+            /** Format: int32 */
+            id: number;
+            name: string;
+            prefailure: boolean;
+            /** Format: int64 */
+            raw: number;
+            /** @description The raw value as smartctl formats it. */
+            raw_text: string;
+            /** Format: int32 */
+            threshold: number;
+            /** Format: int32 */
+            value: number;
+            /** Format: int32 */
+            worst: number;
+        };
+        /** @enum {string} */
+        SmartProtocol: "ata" | "nvme" | "scsi";
+        /** @description SMART data of one disk with zendiloOS's assessment. */
+        SmartReport: {
+            /** @description ATA only. */
+            attributes: components["schemas"]["SmartAttribute"][];
+            /** Format: int64 */
+            error_log_count?: number | null;
+            findings: components["schemas"]["Finding"][];
+            firmware?: string | null;
+            health?: components["schemas"]["DiskHealth"] | null;
+            last_self_test?: components["schemas"]["SelfTest"] | null;
+            model?: string | null;
+            nvme?: components["schemas"]["NvmeHealth"] | null;
+            /** @description The drive's own verdict. */
+            passed?: boolean | null;
+            /** Format: int64 */
+            power_cycles?: number | null;
+            /** Format: int64 */
+            power_on_hours?: number | null;
+            protocol?: components["schemas"]["SmartProtocol"] | null;
+            /** @description Why there is no data, for `unsupported`. */
+            reason?: string | null;
+            serial?: string | null;
+            status: components["schemas"]["SmartStatus"];
+            /** Format: int64 */
+            temperature_celsius?: number | null;
+        };
+        /** @enum {string} */
+        SmartStatus: "available" | "standby" | "unsupported";
+        /** @enum {string} */
+        SyncOperation: "resync" | "recovery" | "check" | "repair" | "reshape";
+        SyncProgress: {
+            operation: components["schemas"]["SyncOperation"];
+            /**
+             * Format: float
+             * @description 0 to 100; absent while waiting for another array.
+             */
+            percent?: number | null;
+            /** Format: int64 */
+            remaining_seconds?: number | null;
+            /** Format: int64 */
+            speed_bytes_per_second?: number | null;
+        };
         SystemInfo: {
             /** @description Machine architecture, e.g. `x86_64`. */
             architecture: string;
@@ -312,6 +790,46 @@ export interface components {
             celsius: number;
             label: string;
         };
+        /** @enum {string} */
+        Transport: "sata" | "sas" | "nvme" | "usb" | "virtio" | "other";
+        /** @description Absent fields stay as they are. */
+        UpdateAccountRequest: {
+            disabled?: boolean | null;
+            /** @description An empty string removes the full name. */
+            full_name?: string | null;
+            role?: components["schemas"]["AccountRole"] | null;
+        };
+        /** @description Absent fields stay as they are. */
+        UpdateGroupRequest: {
+            /** @description An empty string removes the description. */
+            description?: string | null;
+            /** @description Replaces all members. */
+            members?: number[] | null;
+        };
+        /** @description A data filesystem. */
+        Volume: {
+            /** @description The RAID array it lives on, if any. */
+            array?: string | null;
+            /** Format: int64 */
+            available_bytes?: number | null;
+            /** @description Block devices carrying it. */
+            devices: string[];
+            /** @description The disks underneath. */
+            disks: string[];
+            /** @description `btrfs`, `ext4` or `xfs`. */
+            filesystem: string;
+            /** @description Filesystem UUID, or the device name if there is none. */
+            id: string;
+            label?: string | null;
+            mount_points: string[];
+            /**
+             * Format: int64
+             * @description Only known while mounted.
+             */
+            size_bytes?: number | null;
+            /** Format: int64 */
+            used_bytes?: number | null;
+        };
     };
     responses: never;
     parameters: never;
@@ -321,6 +839,225 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    list_accounts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Account"][];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    create_account: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateAccountRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Account"];
+                };
+            };
+            /** @description `forbidden`, `csrf_rejected` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `name_taken` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_account: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `last_admin`, `own_account` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    update_account: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateAccountRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Account"];
+                };
+            };
+            /** @description `forbidden`, `csrf_rejected` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `last_admin`, `own_account` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    reset_password: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResetPasswordRequest"];
+            };
+        };
+        responses: {
+            /** @description Set. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `own_account` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     login: {
         parameters: {
             query?: never;
@@ -458,6 +1195,147 @@ export interface operations {
             };
         };
     };
+    list_groups: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Group"][];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    create_group: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateGroupRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Group"];
+                };
+            };
+            /** @description `not_found`: a member does not exist */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `name_taken` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_group: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    update_group: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateGroupRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Group"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     health: {
         parameters: {
             query?: never;
@@ -473,6 +1351,85 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Health"];
+                };
+            };
+        };
+    };
+    audit: {
+        parameters: {
+            query?: {
+                /** @description At most 500; 200 if absent. */
+                limit?: number;
+                /** @description `older` of the previous page. */
+                before?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditPage"];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    journal: {
+        parameters: {
+            query?: {
+                /** @description Which view; `system` if absent. */
+                source?: components["schemas"]["LogSource"];
+                /** @description This priority and everything more severe; `info` if absent. */
+                priority?: components["schemas"]["LogPriority"];
+                /** @description At most 500; 200 if absent. */
+                limit?: number;
+                /** @description `older` of the previous page, for the entries before it. */
+                before?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JournalPage"];
+                };
+            };
+            /** @description `bad_request` */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
                 };
             };
         };
@@ -538,6 +1495,130 @@ export interface operations {
             };
             /** @description `too_many_attempts` */
             429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    arrays: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RaidArray"][];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    disks: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Disk"][];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    smart: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Kernel name of the disk, e.g. `sda` */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SmartReport"];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found`: no such disk */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    volumes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Volume"][];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

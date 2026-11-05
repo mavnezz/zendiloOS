@@ -131,6 +131,15 @@ impl SessionRepository for SqliteSessions {
             .map_err(db_error)
     }
 
+    async fn delete_all(&self, account: AccountId) -> Result<u64, PortError> {
+        let account = account.get();
+        sqlx::query!("DELETE FROM sessions WHERE account_id = ?", account)
+            .execute(self.db.pool())
+            .await
+            .map(affected)
+            .map_err(db_error)
+    }
+
     async fn delete_inactive(&self, now: Timestamp, idle_timeout: Duration) -> Result<u64, PortError> {
         // The complement of Session::is_active.
         let idle_since = now.saturating_sub(idle_timeout).unix_seconds();

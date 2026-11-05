@@ -8,16 +8,27 @@ After=zendiloos-agent.socket
 [Service]
 ExecStart=/usr/libexec/zendiloos/zendiloos-agent
 
-# Root, but with only what the current operations need: reboot and power
-# off go through systemd and need no capabilities. Each new operation
-# widens this deliberately.
+# Root, but with only what the operations need; each new operation widens
+# this deliberately:
+# - reboot and power off go through systemd and need nothing;
+# - SMART reads disks through SG_IO (CAP_SYS_RAWIO) and NVMe admin
+#   commands (CAP_SYS_ADMIN), on block devices it may only read;
+# - the shadow tools and smbpasswd write /etc and Samba's databases and
+#   set the group of /etc/shadow (CAP_CHOWN).
 NoNewPrivileges=yes
-CapabilityBoundingSet=
+CapabilityBoundingSet=CAP_SYS_RAWIO CAP_SYS_ADMIN CAP_CHOWN
 PrivateNetwork=yes
 ProtectSystem=strict
+ReadWritePaths=/etc -/var/lib/samba -/var/cache/samba -/run/samba
 ProtectHome=yes
 PrivateTmp=yes
-PrivateDevices=yes
+# Disks, read-only: SATA/SAS/USB, NVMe namespaces and controllers, virtio.
+PrivateDevices=no
+DevicePolicy=closed
+DeviceAllow=block-sd r
+DeviceAllow=block-blkext r
+DeviceAllow=char-nvme r
+DeviceAllow=block-virtblk r
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes

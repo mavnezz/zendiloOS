@@ -1,0 +1,215 @@
+<script setup lang="ts">
+import { ArrowLeft, CircleAlert, TriangleAlert } from 'lucide-vue-next'
+import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
+
+import type { SmartFinding } from '@/shared/api/types'
+import { problemMessage } from '@/shared/i18n'
+import { formatBytes } from '@/shared/lib/format'
+import { cn } from '@/shared/lib/utils'
+import { Alert } from '@/shared/ui/alert'
+import { Button } from '@/shared/ui/button'
+import { Meter } from '@/shared/ui/meter'
+
+import { useDisks, useSmartReport } from '../api'
+import { formatCount } from '../format'
+import SmartBadge from './SmartBadge.vue'
+
+const props = defineProps<{ name: string }>()
+defineEmits<{ back: [] }>()
+
+const { t } = useI18n()
+const { data: disks } = useDisks()
+const { data: report, error, isPending } = useSmartReport(() => props.name)
+
+const disk = computed(() => disks.value?.find((d) => d.name === props.name))
+
+function finding(item: SmartFinding): string {
+  return t(`storage.finding.${item.code}`, {
+    id: item.attribute_id ?? '',
+    name: item.attribute_name ?? '',
+    value: formatCount(item.value ?? 0),
+    threshold: formatCount(item.threshold ?? 0),
+  })
+}
+</script>
+
+<template>
+  <div class="grid gap-5">
+    <div class="flex items-center gap-2">
+      <Button variant="ghost" size="icon" :aria-label="t('desktop.back')" @click="$emit('back')">
+        <ArrowLeft />
+      </Button>
+      <div class="min-w-0 flex-1">
+        <h3 class="truncate text-lg font-semibold">{{ name }}</h3>
+        <p v-if="disk" class="truncate text-sm text-muted-foreground">
+          {{ disk.model ?? t('storage.unknownModel') }} · {{ formatBytes(disk.size_bytes) }}
+        </p>
+      </div>
+      <SmartBadge :report="report" :loading="isPending" />
+    </div>
+
+    <dl v-if="disk" class="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1.5 text-sm">
+      <dt class="text-muted-foreground">{{ t('storage.serial') }}</dt>
+      <dd class="font-mono text-xs leading-5">{{ disk.serial ?? '–' }}</dd>
+      <template v-if="disk.wwn">
+        <dt class="text-muted-foreground">WWN</dt>
+        <dd class="font-mono text-xs leading-5">{{ disk.wwn }}</dd>
+      </template>
+      <dt class="text-muted-foreground">{{ t('storage.connection') }}</dt>
+      <dd>
+        {{ t(`storage.transport.${disk.transport}`) }} · {{ t(`storage.media.${disk.media}`) }}
+      </dd>
+      <dt class="text-muted-foreground">{{ t('storage.usedFor') }}</dt>
+      <dd>
+        {{
+          disk.usage === 'array_member'
+            ? t('storage.usage.array_member', { array: disk.array })
+            : t(`storage.usage.${disk.usage}`)
+        }}
+      </dd>
+      <template v-if="report?.firmware">
+        <dt class="text-muted-foreground">{{ t('storage.firmware') }}</dt>
+        <dd>{{ report.firmware }}</dd>
+      </template>
+    </dl>
+
+    <Alert v-if="error" variant="destructive">{{ problemMessage(error) }}</Alert>
+
+    <template v-if="report">
+      <p v-if="report.status === 'standby'" class="text-sm text-muted-foreground">
+        {{ t('storage.standbyHint') }}
+      </p>
+      <p v-else-if="report.status === 'unsupported'" class="text-sm text-muted-foreground">
+        {{ t('storage.unsupportedHint') }}
+        <span v-if="report.reason" class="block font-mono text-xs">{{ report.reason }}</span>
+      </p>
+
+      <template v-else>
+        <ul v-if="report.findings.length" class="grid gap-2">
+          <li v-for="(item, index) in report.findings" :key="index">
+            <Alert :variant="item.severity === 'failing' ? 'destructive' : 'default'">
+              <CircleAlert v-if="item.severity === 'failing'" />
+              <TriangleAlert v-else class="text-amber-600 dark:text-amber-400" />
+              {{ finding(item) }}
+            </Alert>
+          </li>
+        </ul>
+        <p v-else class="text-sm text-muted-foreground">{{ t('storage.noFindings') }}</p>
+
+        <dl class="grid grid-cols-2 gap-3 @xl:grid-cols-4">
+          <div class="rounded-lg border p-3">
+            <dt class="text-xs text-muted-foreground">{{ t('storage.temperature') }}</dt>
+            <dd class="text-lg font-semibold tabular-nums">
+              {{ report.temperature_celsius != null ? `${report.temperature_celsius} °C` : '–' }}
+            </dd>
+          </div>
+          <div class="rounded-lg border p-3">
+            <dt class="text-xs text-muted-foreground">{{ t('storage.powerOnHours') }}</dt>
+            <dd class="text-lg font-semibold tabular-nums">
+              {{ report.power_on_hours != null ? formatCount(report.power_on_hours) : '–' }}
+            </dd>
+          </div>
+          <div class="rounded-lg border p-3">
+            <dt class="text-xs text-muted-foreground">{{ t('storage.powerCycles') }}</dt>
+            <dd class="text-lg font-semibold tabular-nums">
+              {{ report.power_cycles != null ? formatCount(report.power_cycles) : '–' }}
+            </dd>
+          </div>
+          <div class="rounded-lg border p-3">
+            <dt class="text-xs text-muted-foreground">{{ t('storage.lastSelfTest') }}</dt>
+            <dd class="truncate text-sm font-medium" :title="report.last_self_test?.description">
+              {{ report.last_self_test?.description ?? t('storage.noSelfTest') }}
+            </dd>
+          </div>
+        </dl>
+
+        <section v-if="report.nvme" class="grid gap-3">
+          <h4 class="font-medium">{{ t('storage.nvmeHealth') }}</h4>
+          <div class="grid gap-1.5">
+            <p class="text-sm">
+              {{ t('storage.wear', { percent: report.nvme.percentage_used }) }}
+            </p>
+            <Meter :value="report.nvme.percentage_used / 100" :label="t('storage.wearLabel')" />
+          </div>
+          <dl class="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1.5 text-sm">
+            <dt class="text-muted-foreground">{{ t('storage.spare') }}</dt>
+            <dd>
+              {{ report.nvme.available_spare_percent }} %
+              <span class="text-muted-foreground">
+                ({{
+                  t('storage.spareThreshold', {
+                    percent: report.nvme.available_spare_threshold_percent,
+                  })
+                }})
+              </span>
+            </dd>
+            <dt class="text-muted-foreground">{{ t('storage.dataWritten') }}</dt>
+            <dd>{{ formatBytes(report.nvme.bytes_written) }}</dd>
+            <dt class="text-muted-foreground">{{ t('storage.dataRead') }}</dt>
+            <dd>{{ formatBytes(report.nvme.bytes_read) }}</dd>
+            <dt class="text-muted-foreground">{{ t('storage.mediaErrors') }}</dt>
+            <dd>{{ formatCount(report.nvme.media_errors) }}</dd>
+            <dt class="text-muted-foreground">{{ t('storage.unsafeShutdowns') }}</dt>
+            <dd>{{ formatCount(report.nvme.unsafe_shutdowns) }}</dd>
+          </dl>
+        </section>
+
+        <section v-if="report.attributes.length" class="grid gap-2">
+          <h4 class="font-medium">{{ t('storage.attributes') }}</h4>
+          <div class="overflow-x-auto rounded-lg border">
+            <table class="w-full text-sm">
+              <thead class="bg-muted/50 text-left text-xs text-muted-foreground">
+                <tr>
+                  <th class="px-3 py-2 font-medium">ID</th>
+                  <th class="px-3 py-2 font-medium">{{ t('storage.attribute') }}</th>
+                  <th class="px-3 py-2 text-right font-medium">{{ t('storage.value') }}</th>
+                  <th class="px-3 py-2 text-right font-medium">{{ t('storage.worst') }}</th>
+                  <th class="px-3 py-2 text-right font-medium">{{ t('storage.threshold') }}</th>
+                  <th class="px-3 py-2 text-right font-medium">{{ t('storage.raw') }}</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="attribute in report.attributes"
+                  :key="attribute.id"
+                  :class="
+                    cn(
+                      'border-t',
+                      attribute.failed === 'now' && 'bg-destructive/10 text-destructive',
+                      attribute.failed === 'past' && 'bg-amber-500/10',
+                    )
+                  "
+                >
+                  <td class="px-3 py-1.5 tabular-nums">{{ attribute.id }}</td>
+                  <td class="px-3 py-1.5">{{ attribute.name.replaceAll('_', ' ') }}</td>
+                  <td class="px-3 py-1.5 text-right tabular-nums">{{ attribute.value }}</td>
+                  <td class="px-3 py-1.5 text-right tabular-nums">{{ attribute.worst }}</td>
+                  <td class="px-3 py-1.5 text-right tabular-nums">{{ attribute.threshold }}</td>
+                  <td class="px-3 py-1.5 text-right font-mono text-xs">{{ attribute.raw_text }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </template>
+    </template>
+
+    <section v-if="disk?.partitions.length" class="grid gap-2">
+      <h4 class="font-medium">{{ t('storage.partitions') }}</h4>
+      <ul class="grid gap-1 text-sm">
+        <li v-for="partition in disk.partitions" :key="partition.name" class="flex gap-3">
+          <span class="w-28 shrink-0 font-medium">{{ partition.name }}</span>
+          <span class="w-20 shrink-0 tabular-nums">{{ formatBytes(partition.size_bytes) }}</span>
+          <span class="truncate text-muted-foreground">
+            {{
+              [partition.filesystem, partition.label, ...partition.mount_points]
+                .filter(Boolean)
+                .join(' · ') || '–'
+            }}
+          </span>
+        </li>
+      </ul>
+    </section>
+  </div>
+</template>

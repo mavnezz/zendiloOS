@@ -1,9 +1,11 @@
 use async_trait::async_trait;
-use zendiloos_kernel::{AuditEntry, AuditLog, PortError};
+use zendiloos_kernel::{AuditEntry, AuditLog, PortError, Timestamp};
+use zendiloos_system::application::ports::AuditReader;
+use zendiloos_system::domain::{AuditQuery, AuditRecord};
 
 use super::Database;
 
-/// [`AuditLog`] on the `audit_log` table.
+/// [`AuditLog`] and [`AuditReader`] on the `audit_log` table.
 #[derive(Debug, Clone)]
 pub struct SqliteAuditLog {
     db: Database,
@@ -23,13 +25,15 @@ impl AuditLog for SqliteAuditLog {
         let outcome = entry.outcome.as_str();
         let details = entry.reason.map(|reason| serde_json::json!({ "reason": reason }).to_string());
         sqlx::query!(
-            "INSERT INTO audit_log (at, account_id, actor, client_ip, action, outcome, request_id, details)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO audit_log
+                 (at, account_id, actor, client_ip, action, target, outcome, request_id, details)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             at,
             entry.account_id,
             entry.actor,
             client_ip,
             entry.action,
+            entry.target,
             outcome,
             entry.request_id,
             details
@@ -41,9 +45,42 @@ impl AuditLog for SqliteAuditLog {
     }
 }
 
+#[async_trait]
+impl AuditReader for SqliteAuditLog {
+    async fn read(&self, query: &AuditQuery) -> Result<Vec<AuditRecord>, PortError> {
+        let limit = i64::from(query.limit);
+        let rows = sqlx::query!(
+            r#"SELECT id AS "id!", at, actor, client_ip, action, target, outcome, request_id, details
+               FROM audit_log WHERE ?1 IS NULL OR id < ?1 ORDER BY id DESC LIMIT ?2"#,
+            query.before,
+            limit
+        )
+        .fetch_all(self.db.pool())
+        .await
+        .map_err(|error| PortError::new("audit log", error))?;
+        Ok(rows
+            .into_iter()
+            .map(|row| AuditRecord {
+                id: row.id,
+                at: Timestamp::from_unix_seconds(row.at),
+                actor: row.actor,
+                client_ip: row.client_ip,
+                action: row.action,
+                target: row.target,
+                outcome: row.outcome,
+                reason: row
+                    .details
+                    .and_then(|details| serde_json::from_str::<serde_json::Value>(&details).ok())
+                    .and_then(|details| details.get("reason")?.as_str().map(str::to_owned)),
+                request_id: row.request_id,
+            })
+            .collect())
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use zendiloos_kernel::{Actor, Outcome, RequestContext, Timestamp};
+    use zendiloos_kernel::{Actor, Outcome, RequestContext};
 
     use super::*;
     use crate::sqlite::tests::temporary_database;
@@ -82,6 +119,33 @@ mod tests {
                 r#"{"reason":"wrong_password"}"#.to_owned()
             )
         );
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn reads_the_newest_entries_first_in_pages() {
+        let (_dir, db) = temporary_database().await;
+        let audit = SqliteAuditLog::new(db.clone());
+        for at in 1..=5 {
+            let entry = AuditEntry::new(
+                Timestamp::from_unix_seconds(at),
+                "identity.account_create",
+                Outcome::Success,
+                &RequestContext::default(),
+            )
+            .actor("alice")
+            .target(format!("user{at}"));
+            audit.record(entry).await.unwrap();
+        }
+
+        let first = audit.read(&AuditQuery { limit: 2, before: None }).await.unwrap();
+        let targets: Vec<_> = first.iter().map(|r| r.target.clone().unwrap()).collect();
+        assert_eq!(targets, ["user5", "user4"]);
+        let next = audit.read(&AuditQuery { limit: 10, before: Some(first[1].id) }).await.unwrap();
+        let targets: Vec<_> = next.iter().map(|r| r.target.clone().unwrap()).collect();
+        assert_eq!(targets, ["user3", "user2", "user1"]);
+        assert_eq!(next[0].actor.as_deref(), Some("alice"));
+        assert_eq!(next[0].reason, None);
         db.close().await;
     }
 }

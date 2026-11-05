@@ -9,13 +9,16 @@ publish.workspace = true
 
 [dependencies]
 zendiloos-agent-proto.workspace = true
+zendiloos-exec.workspace = true
 zendiloos-identity.workspace = true
 zendiloos-kernel.workspace = true
+zendiloos-storage.workspace = true
 zendiloos-system.workspace = true
 argon2.workspace = true
 async-trait.workspace = true
 base64.workspace = true
 getrandom.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 sqlx.workspace = true

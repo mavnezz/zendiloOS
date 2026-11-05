@@ -11,8 +11,9 @@ pub struct ChangePasswordInput {
     pub new_password: Secret,
 }
 
-/// Command: the caller changes their own password. Ends all their other
-/// sessions, since one of them might belong to whoever knew the old one.
+/// Command: the caller changes their own password, for the web interface and
+/// SMB. Ends all their other sessions, since one of them might belong to
+/// whoever knew the old one.
 #[derive(Clone)]
 pub struct ChangePassword {
     context: Arc<Context>,
@@ -47,6 +48,8 @@ impl ChangePassword {
         }
 
         let password = NewPassword::parse(input.new_password, &account.name)?;
+        // SMB first: if the agent fails, the old password still works everywhere.
+        c.ports.system.set_password(&account.name, password.secret(), request).await?;
         let hash = c.ports.hasher.hash(password.secret()).await?;
         c.ports.accounts.update_password(account.id, &hash, now).await?;
         c.ports.sessions.delete_others(account.id, auth.session_id).await?;

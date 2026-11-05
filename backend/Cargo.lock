@@ -2501,12 +2501,14 @@ dependencies = [
  "listenfd",
  "serde",
  "tempfile",
+ "thiserror",
  "tokio",
  "toml",
  "tracing",
  "tracing-subscriber",
  "zendiloos-agent-proto",
  "zendiloos-exec",
+ "zendiloos-logging",
 ]
 
 [[package]]
@@ -2540,6 +2542,7 @@ dependencies = [
  "utoipa-axum",
  "zendiloos-identity",
  "zendiloos-kernel",
+ "zendiloos-storage",
  "zendiloos-system",
 ]
 
@@ -2558,6 +2561,7 @@ dependencies = [
  "async-trait",
  "thiserror",
  "tokio",
+ "tracing",
  "zendiloos-kernel",
 ]
 
@@ -2569,6 +2573,7 @@ dependencies = [
  "async-trait",
  "base64 0.23.1",
  "getrandom 0.4.3",
+ "serde",
  "serde_json",
  "sha2 0.11.1",
  "sqlx",
@@ -2578,9 +2583,11 @@ dependencies = [
  "tokio",
  "tracing",
  "zendiloos-agent-proto",
+ "zendiloos-exec",
  "zendiloos-identity",
  "zendiloos-kernel",
  "zendiloos-sim",
+ "zendiloos-storage",
  "zendiloos-system",
 ]
 
@@ -2590,6 +2597,15 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "thiserror",
+]
+
+[[package]]
+name = "zendiloos-logging"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -2603,10 +2619,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "zendiloos-storage"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "thiserror",
+ "tokio",
+ "zendiloos-kernel",
+]
+
+[[package]]
 name = "zendiloos-system"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "thiserror",
  "tokio",
  "zendiloos-kernel",
 ]
@@ -2630,7 +2657,9 @@ dependencies = [
  "zendiloos-identity",
  "zendiloos-infra",
  "zendiloos-kernel",
+ "zendiloos-logging",
  "zendiloos-sim",
+ "zendiloos-storage",
  "zendiloos-system",
 ]
 

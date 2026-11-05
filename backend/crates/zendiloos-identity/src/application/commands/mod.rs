@@ -2,6 +2,8 @@ mod change_password;
 mod complete_setup;
 mod login;
 mod logout;
+mod manage_accounts;
+mod manage_groups;
 mod prepare_setup;
 mod purge_expired_sessions;
 
@@ -9,5 +11,9 @@ pub use change_password::{ChangePassword, ChangePasswordInput};
 pub use complete_setup::{CompleteSetup, SetupInput};
 pub use login::{Login, LoginInput};
 pub use logout::Logout;
+pub use manage_accounts::{
+    AccountChanges, CreateAccount, DeleteAccount, NewAccountInput, ResetPassword, UpdateAccount,
+};
+pub use manage_groups::{CreateGroup, DeleteGroup, GroupChanges, NewGroupInput, UpdateGroup};
 pub use prepare_setup::PrepareSetup;
 pub use purge_expired_sessions::PurgeExpiredSessions;

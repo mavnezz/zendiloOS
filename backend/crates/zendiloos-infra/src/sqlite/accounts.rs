@@ -153,6 +153,100 @@ impl AccountRepository for SqliteAccounts {
         .map_err(db_error)?;
         Ok(())
     }
+
+    async fn list(&self) -> Result<Vec<Account>, PortError> {
+        sqlx::query_as!(
+            AccountRow,
+            r#"SELECT id, name, full_name, role, password_hash,
+                      password_change_required AS "password_change_required: bool",
+                      disabled AS "disabled: bool", created_at, updated_at
+               FROM accounts ORDER BY name"#
+        )
+        .fetch_all(self.db.pool())
+        .await
+        .map_err(db_error)?
+        .into_iter()
+        .map(Account::try_from)
+        .collect()
+    }
+
+    async fn create(&self, account: NewAccount) -> Result<Option<Account>, PortError> {
+        let (name, role, hash) =
+            (account.name.as_str(), account.role.as_str(), account.password_hash.as_str());
+        let created_at = account.created_at.unix_seconds();
+        let id = sqlx::query_scalar!(
+            r#"INSERT INTO accounts
+                   (name, full_name, role, password_hash, password_change_required, created_at, updated_at)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+               ON CONFLICT (name) DO NOTHING
+               RETURNING id AS "id!""#,
+            name,
+            account.full_name,
+            role,
+            hash,
+            account.password_change_required,
+            created_at
+        )
+        .fetch_optional(self.db.pool())
+        .await
+        .map_err(db_error)?;
+
+        Ok(id.map(|id| Account {
+            id: AccountId::new(id),
+            name: account.name,
+            full_name: account.full_name,
+            role: account.role,
+            password_hash: account.password_hash,
+            password_change_required: account.password_change_required,
+            disabled: false,
+            created_at: account.created_at,
+            updated_at: account.created_at,
+        }))
+    }
+
+    async fn update(&self, account: &Account) -> Result<(), PortError> {
+        let (id, role, at) = (account.id.get(), account.role.as_str(), account.updated_at.unix_seconds());
+        sqlx::query!(
+            "UPDATE accounts SET full_name = ?, role = ?, disabled = ?, updated_at = ? WHERE id = ?",
+            account.full_name,
+            role,
+            account.disabled,
+            at,
+            id
+        )
+        .execute(self.db.pool())
+        .await
+        .map_err(db_error)?;
+        Ok(())
+    }
+
+    async fn reset_password(
+        &self,
+        id: AccountId,
+        hash: &PasswordHash,
+        at: Timestamp,
+    ) -> Result<(), PortError> {
+        let (id, hash, at) = (id.get(), hash.as_str(), at.unix_seconds());
+        sqlx::query!(
+            "UPDATE accounts SET password_hash = ?, password_change_required = 1, updated_at = ? WHERE id = ?",
+            hash,
+            at,
+            id
+        )
+        .execute(self.db.pool())
+        .await
+        .map_err(db_error)?;
+        Ok(())
+    }
+
+    async fn delete(&self, id: AccountId) -> Result<(), PortError> {
+        let id = id.get();
+        sqlx::query!("DELETE FROM accounts WHERE id = ?", id)
+            .execute(self.db.pool())
+            .await
+            .map_err(db_error)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -201,6 +295,35 @@ mod tests {
         assert_eq!(stored.password_hash, new_hash);
         assert!(!stored.password_change_required);
         assert_eq!(stored.updated_at, Timestamp::from_unix_seconds(2000));
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn creates_lists_updates_and_deletes_accounts() {
+        let (_dir, db) = temporary_database().await;
+        let accounts = SqliteAccounts::new(db.clone());
+        let mut carol = accounts.create(new_account("carol", Role::User)).await.unwrap().unwrap();
+        let bob = accounts.create(new_account("bob", Role::ReadOnly)).await.unwrap().unwrap();
+        assert_eq!(accounts.create(new_account("bob", Role::Admin)).await.unwrap(), None, "name taken");
+
+        let names: Vec<_> = accounts.list().await.unwrap().into_iter().map(|a| a.name.to_string()).collect();
+        assert_eq!(names, ["bob", "carol"]);
+
+        carol.full_name = None;
+        carol.role = Role::Admin;
+        carol.disabled = true;
+        carol.updated_at = Timestamp::from_unix_seconds(3000);
+        accounts.update(&carol).await.unwrap();
+        assert_eq!(accounts.find_by_id(carol.id).await.unwrap(), Some(carol.clone()));
+
+        let hash = PasswordHash::new("$argon2id$reset");
+        accounts.reset_password(bob.id, &hash, Timestamp::from_unix_seconds(4000)).await.unwrap();
+        let stored = accounts.find_by_id(bob.id).await.unwrap().unwrap();
+        assert!(stored.password_change_required);
+        assert_eq!(stored.password_hash, hash);
+
+        accounts.delete(bob.id).await.unwrap();
+        assert_eq!(accounts.find_by_id(bob.id).await.unwrap(), None);
         db.close().await;
     }
 }

@@ -1,9 +1,9 @@
-import { Gauge, Settings } from 'lucide-vue-next'
+import { Gauge, HardDrive, ScrollText, Settings, UsersRound } from 'lucide-vue-next'
 import { type Component, defineAsyncComponent } from 'vue'
 
 import type { Size } from './windowManager'
 
-export type AppId = 'dashboard' | 'settings'
+export type AppId = 'dashboard' | 'storage' | 'users' | 'logs' | 'settings'
 
 export interface AppDefinition {
   id: AppId
@@ -26,6 +26,30 @@ export const APPS: AppDefinition[] = [
     size: { width: 920, height: 640 },
     minimum: { width: 360, height: 280 },
     component: defineAsyncComponent(() => import('@/features/system/components/DashboardApp.vue')),
+  },
+  {
+    id: 'storage',
+    icon: HardDrive,
+    permission: 'storage.view',
+    size: { width: 960, height: 660 },
+    minimum: { width: 360, height: 320 },
+    component: defineAsyncComponent(() => import('@/features/storage/components/StorageApp.vue')),
+  },
+  {
+    id: 'users',
+    icon: UsersRound,
+    permission: 'users.manage',
+    size: { width: 860, height: 600 },
+    minimum: { width: 360, height: 320 },
+    component: defineAsyncComponent(() => import('./apps/UsersApp.vue')),
+  },
+  {
+    id: 'logs',
+    icon: ScrollText,
+    permission: 'logs.view',
+    size: { width: 980, height: 640 },
+    minimum: { width: 360, height: 320 },
+    component: defineAsyncComponent(() => import('@/features/logs/components/LogsApp.vue')),
   },
   {
     id: 'settings',

@@ -16,14 +16,19 @@ use zendiloos_kernel::{Actor, AuditLog, Clock, Secret, Timestamp};
 use crate::domain::{AccountId, AccountName, Permission, Role, SessionId, SessionPolicy, ThrottlePolicy};
 use context::Context;
 pub use error::IdentityError;
-use ports::{AccountRepository, PasswordHasher, SessionRepository, SessionTokens, SetupCodes};
+use ports::{
+    AccountRepository, GroupRepository, PasswordHasher, SessionRepository, SessionTokens, SetupCodes,
+    SystemAccounts,
+};
 
 /// Adapters for every port of this context, plugged in by the composition
 /// root.
 #[derive(Clone)]
 pub struct IdentityPorts {
     pub accounts: Arc<dyn AccountRepository>,
+    pub groups: Arc<dyn GroupRepository>,
     pub sessions: Arc<dyn SessionRepository>,
+    pub system: Arc<dyn SystemAccounts>,
     pub hasher: Arc<dyn PasswordHasher>,
     pub tokens: Arc<dyn SessionTokens>,
     pub setup_codes: Arc<dyn SetupCodes>,
@@ -47,8 +52,17 @@ pub struct IdentityUseCases {
     pub logout: commands::Logout,
     pub change_password: commands::ChangePassword,
     pub purge_expired_sessions: commands::PurgeExpiredSessions,
+    pub create_account: commands::CreateAccount,
+    pub update_account: commands::UpdateAccount,
+    pub reset_password: commands::ResetPassword,
+    pub delete_account: commands::DeleteAccount,
+    pub create_group: commands::CreateGroup,
+    pub update_group: commands::UpdateGroup,
+    pub delete_group: commands::DeleteGroup,
     pub setup_status: queries::GetSetupStatus,
     pub authenticate: queries::Authenticate,
+    pub list_accounts: queries::ListAccounts,
+    pub list_groups: queries::ListGroups,
 }
 
 impl IdentityUseCases {
@@ -61,7 +75,16 @@ impl IdentityUseCases {
             logout: commands::Logout::new(Arc::clone(&context)),
             change_password: commands::ChangePassword::new(Arc::clone(&context)),
             purge_expired_sessions: commands::PurgeExpiredSessions::new(Arc::clone(&context)),
+            create_account: commands::CreateAccount::new(Arc::clone(&context)),
+            update_account: commands::UpdateAccount::new(Arc::clone(&context)),
+            reset_password: commands::ResetPassword::new(Arc::clone(&context)),
+            delete_account: commands::DeleteAccount::new(Arc::clone(&context)),
+            create_group: commands::CreateGroup::new(Arc::clone(&context)),
+            update_group: commands::UpdateGroup::new(Arc::clone(&context)),
+            delete_group: commands::DeleteGroup::new(Arc::clone(&context)),
             setup_status: queries::GetSetupStatus::new(Arc::clone(&context)),
+            list_accounts: queries::ListAccounts::new(Arc::clone(&context)),
+            list_groups: queries::ListGroups::new(Arc::clone(&context)),
             authenticate: queries::Authenticate::new(context),
         }
     }

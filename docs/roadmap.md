@@ -43,6 +43,14 @@ Background jobs and notifications already arrive in M3 rather than
 phase 4, because creating pools and resyncing RAID are not usable without
 them.
 
+### Status
+
+| # | State | Verified |
+|---|---|---|
+| M0 | done | packages installed in the VM, login through nginx, a real reboot through API and agent with matching request IDs in audit log and journal |
+| M1 | done | desktop with live metrics over WebSocket on a workstation and in the VM |
+| M2 | done, in review | in the VM: four SATA and one NVMe disk with SMART, the virtio system disk recognized as such, an mdadm RAID 1 with a Btrfs volume and its usage; an account created in the interface signs in to SMB, a wrong password does not; groups appear as Linux groups; the journal and the audit log are readable in the interface |
+
 ## 3. Test Environments
 
 | Level | Purpose | How |

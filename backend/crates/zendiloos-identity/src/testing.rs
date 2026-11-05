@@ -8,13 +8,16 @@ use std::time::Duration;
 use async_trait::async_trait;
 use zendiloos_kernel::{AuditEntry, AuditLog, Clock, PortError, Secret, Timestamp};
 
+use zendiloos_kernel::RequestContext;
+
 use crate::application::ports::{
-    AccountRepository, IssuedToken, PasswordHasher, SessionRepository, SessionTokens, SetupCodes,
+    AccountRepository, Creation, GroupRepository, IssuedToken, PasswordHasher, SessionRepository,
+    SessionTokens, SetupCodes, SystemAccounts,
 };
 use crate::application::{IdentityConfig, IdentityPorts, IdentityUseCases};
 use crate::domain::{
-    Account, AccountId, AccountName, NewAccount, NewSession, PasswordHash, Role, Session, SessionId,
-    SetupCode, TokenHash,
+    Account, AccountId, AccountName, Group, GroupId, GroupName, NewAccount, NewGroup, NewSession,
+    PasswordHash, Role, Session, SessionId, SetupCode, TokenHash,
 };
 
 /// The code [`MemorySetupCodes`] issues.
@@ -23,6 +26,10 @@ pub const SETUP_CODE: &str = "ABCD-EFGH-JKLM";
 #[derive(Default)]
 pub struct InMemoryAccounts {
     accounts: Mutex<Vec<Account>>,
+    /// IDs are never reused, as in the database.
+    last_id: AtomicI64,
+    /// Group memberships go with a deleted account, as in the database.
+    groups: Mutex<Option<Arc<InMemoryGroups>>>,
 }
 
 impl InMemoryAccounts {
@@ -33,7 +40,7 @@ impl InMemoryAccounts {
     pub fn insert(&self, new: NewAccount) -> Account {
         let mut accounts = self.accounts.lock().unwrap();
         let account = Account {
-            id: AccountId::new(i64::try_from(accounts.len()).unwrap() + 1),
+            id: AccountId::new(self.last_id.fetch_add(1, Ordering::Relaxed) + 1),
             name: new.name,
             full_name: new.full_name,
             role: new.role,
@@ -87,6 +94,201 @@ impl AccountRepository for InMemoryAccounts {
         });
         Ok(())
     }
+
+    async fn list(&self) -> Result<Vec<Account>, PortError> {
+        let mut accounts = self.all();
+        accounts.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
+        Ok(accounts)
+    }
+
+    async fn create(&self, account: NewAccount) -> Result<Option<Account>, PortError> {
+        if self.find_by_name(&account.name).await?.is_some() {
+            return Ok(None);
+        }
+        Ok(Some(self.insert(account)))
+    }
+
+    async fn update(&self, account: &Account) -> Result<(), PortError> {
+        self.update(account.id, |stored| {
+            stored.full_name.clone_from(&account.full_name);
+            stored.role = account.role;
+            stored.disabled = account.disabled;
+            stored.updated_at = account.updated_at;
+        });
+        Ok(())
+    }
+
+    async fn reset_password(
+        &self,
+        id: AccountId,
+        hash: &PasswordHash,
+        at: Timestamp,
+    ) -> Result<(), PortError> {
+        self.update(id, |account| {
+            account.password_hash = hash.clone();
+            account.password_change_required = true;
+            account.updated_at = at;
+        });
+        Ok(())
+    }
+
+    async fn delete(&self, id: AccountId) -> Result<(), PortError> {
+        self.accounts.lock().unwrap().retain(|a| a.id != id);
+        if let Some(groups) = self.groups.lock().unwrap().as_ref() {
+            groups.remove_member(id);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+pub struct InMemoryGroups {
+    groups: Mutex<Vec<Group>>,
+    last_id: AtomicI64,
+}
+
+impl InMemoryGroups {
+    pub fn all(&self) -> Vec<Group> {
+        self.groups.lock().unwrap().clone()
+    }
+
+    fn remove_member(&self, id: AccountId) {
+        for group in self.groups.lock().unwrap().iter_mut() {
+            group.members.retain(|&member| member != id);
+        }
+    }
+}
+
+#[async_trait]
+impl GroupRepository for InMemoryGroups {
+    async fn list(&self) -> Result<Vec<Group>, PortError> {
+        let mut groups = self.all();
+        groups.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
+        Ok(groups)
+    }
+
+    async fn find_by_id(&self, id: GroupId) -> Result<Option<Group>, PortError> {
+        Ok(self.groups.lock().unwrap().iter().find(|g| g.id == id).cloned())
+    }
+
+    async fn create(&self, new: NewGroup) -> Result<Option<Group>, PortError> {
+        let mut groups = self.groups.lock().unwrap();
+        if groups.iter().any(|g| g.name == new.name) {
+            return Ok(None);
+        }
+        let group = Group {
+            id: GroupId::new(self.last_id.fetch_add(1, Ordering::Relaxed) + 1),
+            name: new.name,
+            description: new.description,
+            members: new.members,
+            created_at: new.created_at,
+            updated_at: new.created_at,
+        };
+        groups.push(group.clone());
+        Ok(Some(group))
+    }
+
+    async fn update(&self, group: &Group) -> Result<(), PortError> {
+        let mut groups = self.groups.lock().unwrap();
+        let stored = groups.iter_mut().find(|g| g.id == group.id).expect("group exists");
+        stored.description.clone_from(&group.description);
+        stored.members.clone_from(&group.members);
+        stored.updated_at = group.updated_at;
+        Ok(())
+    }
+
+    async fn delete(&self, id: GroupId) -> Result<(), PortError> {
+        self.groups.lock().unwrap().retain(|g| g.id != id);
+        Ok(())
+    }
+}
+
+/// Records what would happen on the host. Names in `taken` exist there
+/// already; `fail_passwords` makes setting a password fail.
+#[derive(Default)]
+pub struct FakeSystemAccounts {
+    calls: Mutex<Vec<String>>,
+    pub taken: Mutex<Vec<String>>,
+    pub fail_passwords: std::sync::atomic::AtomicBool,
+}
+
+impl FakeSystemAccounts {
+    /// Calls so far, e.g. `create_user alice`; passwords are left out.
+    pub fn calls(&self) -> Vec<String> {
+        self.calls.lock().unwrap().clone()
+    }
+
+    fn record(&self, call: String) {
+        self.calls.lock().unwrap().push(call);
+    }
+
+    fn take(&self, name: &str) -> Creation {
+        let mut taken = self.taken.lock().unwrap();
+        if taken.iter().any(|n| n == name) {
+            return Creation::NameTaken;
+        }
+        taken.push(name.to_owned());
+        Creation::Created
+    }
+}
+
+#[async_trait]
+impl SystemAccounts for FakeSystemAccounts {
+    async fn create_user(&self, name: &AccountName, _: &RequestContext) -> Result<Creation, PortError> {
+        self.record(format!("create_user {name}"));
+        Ok(self.take(name.as_str()))
+    }
+
+    async fn delete_user(&self, name: &AccountName, _: &RequestContext) -> Result<(), PortError> {
+        self.record(format!("delete_user {name}"));
+        self.taken.lock().unwrap().retain(|n| n != name.as_str());
+        Ok(())
+    }
+
+    async fn set_password(
+        &self,
+        name: &AccountName,
+        _: &Secret,
+        _: &RequestContext,
+    ) -> Result<(), PortError> {
+        self.record(format!("set_password {name}"));
+        if self.fail_passwords.load(Ordering::Relaxed) {
+            return Err(PortError::new("privileged agent", "smbpasswd failed"));
+        }
+        Ok(())
+    }
+
+    async fn set_enabled(
+        &self,
+        name: &AccountName,
+        enabled: bool,
+        _: &RequestContext,
+    ) -> Result<(), PortError> {
+        self.record(format!("set_enabled {name} {enabled}"));
+        Ok(())
+    }
+
+    async fn create_group(&self, name: &GroupName, _: &RequestContext) -> Result<Creation, PortError> {
+        self.record(format!("create_group {name}"));
+        Ok(self.take(name.as_str()))
+    }
+
+    async fn delete_group(&self, name: &GroupName, _: &RequestContext) -> Result<(), PortError> {
+        self.record(format!("delete_group {name}"));
+        self.taken.lock().unwrap().retain(|n| n != name.as_str());
+        Ok(())
+    }
+
+    async fn set_group_members(
+        &self,
+        group: &GroupName,
+        members: &[AccountName],
+        _: &RequestContext,
+    ) -> Result<(), PortError> {
+        let members: Vec<&str> = members.iter().map(AccountName::as_str).collect();
+        self.record(format!("set_group_members {group} [{}]", members.join(",")));
+        Ok(())
+    }
 }
 
 #[derive(Default)]
@@ -137,6 +339,13 @@ impl SessionRepository for InMemorySessions {
         let mut sessions = self.sessions.lock().unwrap();
         let before = sessions.len();
         sessions.retain(|s| s.account_id != account || s.id == keep);
+        Ok(u64::try_from(before - sessions.len()).unwrap())
+    }
+
+    async fn delete_all(&self, account: AccountId) -> Result<u64, PortError> {
+        let mut sessions = self.sessions.lock().unwrap();
+        let before = sessions.len();
+        sessions.retain(|s| s.account_id != account);
         Ok(u64::try_from(before - sessions.len()).unwrap())
     }
 
@@ -270,7 +479,9 @@ impl Clock for ManualClock {
 pub struct TestIdentity {
     pub use_cases: IdentityUseCases,
     pub accounts: Arc<InMemoryAccounts>,
+    pub groups: Arc<InMemoryGroups>,
     pub sessions: Arc<InMemorySessions>,
+    pub system: Arc<FakeSystemAccounts>,
     pub setup_codes: Arc<MemorySetupCodes>,
     pub audit: Arc<MemoryAudit>,
     pub clock: Arc<ManualClock>,
@@ -283,13 +494,18 @@ impl TestIdentity {
 
     pub fn with_config(config: IdentityConfig) -> Self {
         let accounts = Arc::new(InMemoryAccounts::default());
+        let groups = Arc::new(InMemoryGroups::default());
+        *accounts.groups.lock().unwrap() = Some(groups.clone());
         let sessions = Arc::new(InMemorySessions::default());
+        let system = Arc::new(FakeSystemAccounts::default());
         let setup_codes = Arc::new(MemorySetupCodes::default());
         let audit = Arc::new(MemoryAudit::default());
         let clock = Arc::new(ManualClock::default());
         let ports = IdentityPorts {
             accounts: accounts.clone(),
+            groups: groups.clone(),
             sessions: sessions.clone(),
+            system: system.clone(),
             hasher: Arc::new(FakeHasher),
             tokens: Arc::new(FakeTokens::default()),
             setup_codes: setup_codes.clone(),
@@ -299,7 +515,9 @@ impl TestIdentity {
         Self {
             use_cases: IdentityUseCases::new(ports, config),
             accounts,
+            groups,
             sessions,
+            system,
             setup_codes,
             audit,
             clock,

@@ -1,0 +1,1 @@
+{"json_format_version": [1, 0], "smartctl": {"version": [7, 4], "argv": ["smartctl", "--json=c", "--all", "--nocheck=standby", "/dev/{{DEVICE}}"], "messages": [{"string": "Device is in STANDBY mode, exit(2)", "severity": "information"}], "exit_status": 2}, "device": {"name": "/dev/{{DEVICE}}", "info_name": "/dev/{{DEVICE}} [SAT]", "type": "sat", "protocol": "ATA"}}

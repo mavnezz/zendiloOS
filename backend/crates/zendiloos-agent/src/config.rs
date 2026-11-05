@@ -36,11 +36,29 @@ impl Default for Config {
 #[serde(default, deny_unknown_fields)]
 pub struct Tools {
     pub systemctl: PathBuf,
+    pub lsblk: PathBuf,
+    pub smartctl: PathBuf,
+    pub useradd: PathBuf,
+    pub userdel: PathBuf,
+    pub groupadd: PathBuf,
+    pub groupdel: PathBuf,
+    pub gpasswd: PathBuf,
+    pub smbpasswd: PathBuf,
 }
 
 impl Default for Tools {
     fn default() -> Self {
-        Self { systemctl: PathBuf::from("/usr/bin/systemctl") }
+        Self {
+            systemctl: PathBuf::from("/usr/bin/systemctl"),
+            lsblk: PathBuf::from("/usr/bin/lsblk"),
+            smartctl: PathBuf::from("/usr/sbin/smartctl"),
+            useradd: PathBuf::from("/usr/sbin/useradd"),
+            userdel: PathBuf::from("/usr/sbin/userdel"),
+            groupadd: PathBuf::from("/usr/sbin/groupadd"),
+            groupdel: PathBuf::from("/usr/sbin/groupdel"),
+            gpasswd: PathBuf::from("/usr/bin/gpasswd"),
+            smbpasswd: PathBuf::from("/usr/bin/smbpasswd"),
+        }
     }
 }
 
@@ -73,11 +91,14 @@ mod tests {
 
             [tools]
             systemctl = "/bin/systemctl"
+            smartctl = "/sbin/smartctl"
             "#,
         )
         .unwrap();
         assert_eq!(config.client_user, "tester");
         assert_eq!(config.tools.systemctl, Path::new("/bin/systemctl"));
+        assert_eq!(config.tools.smartctl, Path::new("/sbin/smartctl"));
+        assert_eq!(config.tools.lsblk, Path::new("/usr/bin/lsblk"));
         assert!(toml::from_str::<Config>("[tools]\nsh = \"/bin/sh\"").is_err());
     }
 }

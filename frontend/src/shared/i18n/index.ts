@@ -55,6 +55,11 @@ const KNOWN_PROBLEMS = [
   'invalid_setup_code',
   'setup_completed',
   'csrf_rejected',
+  'name_taken',
+  'last_admin',
+  'own_account',
+  'password_change_required',
+  'not_found',
   'network',
 ] as const
 

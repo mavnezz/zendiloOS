@@ -1,4 +1,3 @@
-use std::io::IsTerminal;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -7,7 +6,6 @@ use clap::Parser;
 use listenfd::ListenFd;
 use tokio::net::UnixListener;
 use tokio::signal::unix::{SignalKind, signal};
-use tracing_subscriber::EnvFilter;
 use zendiloos_agent::config::Config;
 use zendiloos_agent::{Operations, Server, passwd, serve};
 
@@ -64,18 +62,7 @@ fn listener(socket: &Path, client_gid: u32) -> anyhow::Result<UnixListener> {
 }
 
 fn init_logging(filter: &str) -> anyhow::Result<()> {
-    let filter = match std::env::var("RUST_LOG") {
-        Ok(directive) if !directive.is_empty() => EnvFilter::try_new(directive)?,
-        _ => EnvFilter::try_new(filter)?,
-    };
-    let builder = tracing_subscriber::fmt().with_env_filter(filter).with_writer(std::io::stderr);
-    // Under systemd stderr goes to the journal, which adds its own timestamps.
-    let result = if std::env::var_os("JOURNAL_STREAM").is_some() {
-        builder.without_time().with_ansi(false).try_init()
-    } else {
-        builder.with_ansi(std::io::stderr().is_terminal()).try_init()
-    };
-    result.map_err(|error| anyhow::anyhow!(error))
+    zendiloos_logging::init(filter, zendiloos_logging::Format::Text)
 }
 
 /// Resolves on SIGTERM (systemd stop) or SIGINT.

@@ -37,6 +37,9 @@ pub enum PasswordRejected {
     TooLong { max: usize },
     #[error("the password must not contain the account name")]
     ContainsAccountName,
+    /// Line breaks and NUL cannot be passed on to Samba.
+    #[error("the password must not contain line breaks or control characters")]
+    ControlCharacter,
 }
 
 /// A password someone wants to set, accepted by the password policy.
@@ -54,6 +57,9 @@ impl NewPassword {
         }
         if value.len() > MAX_PASSWORD_BYTES {
             return Err(PasswordRejected::TooLong { max: MAX_PASSWORD_BYTES });
+        }
+        if value.chars().any(char::is_control) {
+            return Err(PasswordRejected::ControlCharacter);
         }
         // Very short names would match too many ordinary passwords.
         let lowered = value.to_lowercase();
@@ -87,6 +93,12 @@ mod tests {
     fn rejects_short_and_overlong_passwords() {
         assert_eq!(check("123456789", "alice"), Err(PasswordRejected::TooShort { min: 10 }));
         assert_eq!(check(&"a".repeat(1025), "alice"), Err(PasswordRejected::TooLong { max: 1024 }));
+    }
+
+    #[test]
+    fn rejects_control_characters() {
+        assert_eq!(check("correct horse\nbattery", "alice"), Err(PasswordRejected::ControlCharacter));
+        assert_eq!(check("correct horse\0battery", "alice"), Err(PasswordRejected::ControlCharacter));
     }
 
     #[test]

@@ -48,18 +48,27 @@ impl CompleteSetup {
 
         let name = AccountName::parse(input.name.trim())?;
         let password = NewPassword::parse(input.password, &name)?;
-        let password_hash = c.ports.hasher.hash(password.secret()).await?;
-        let new_account = NewAccount {
-            name,
-            full_name: None,
-            role: Role::Admin,
-            password_hash,
-            password_change_required: false,
-            created_at: now,
-        };
-        let Some(account) = c.ports.accounts.create_first_admin(new_account).await? else {
-            // Another setup won the race.
-            return Err(IdentityError::SetupCompleted);
+        c.provision_user(&name, password.secret(), request).await?;
+        let created = async {
+            let password_hash = c.ports.hasher.hash(password.secret()).await?;
+            let new_account = NewAccount {
+                name: name.clone(),
+                full_name: None,
+                role: Role::Admin,
+                password_hash,
+                password_change_required: false,
+                created_at: now,
+            };
+            // `None`: another setup won the race.
+            c.ports.accounts.create_first_admin(new_account).await?.ok_or(IdentityError::SetupCompleted)
+        }
+        .await;
+        let account = match created {
+            Ok(account) => account,
+            Err(error) => {
+                c.unprovision_user(&name, request).await;
+                return Err(error);
+            }
         };
 
         c.ports.setup_codes.consume().await?;

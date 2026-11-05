@@ -1,2 +1,5 @@
 # The unprivileged account of zendiloosd.
 u zendiloos - "zendiloOS management service" /var/lib/zendiloos
+# Primary group of every account's Linux user; the agent changes only
+# users in this group (docs/architecture.md, 4.2).
+g zendiloos-users -

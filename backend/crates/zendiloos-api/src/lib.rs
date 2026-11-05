@@ -24,7 +24,7 @@ use utoipa_axum::router::OpenApiRouter;
 
 pub use auth::CSRF_HEADER;
 pub use error::{ApiError, Problem};
-pub use state::ApiState;
+pub use state::{ApiState, UseCases};
 
 /// Prefix of the current API version.
 pub const API_V1: &str = "/api/v1";
@@ -35,8 +35,11 @@ pub const API_V1: &str = "/api/v1";
     tags(
         (name = "system", description = "Health and information about the host"),
         (name = "identity", description = "Initial setup, login and sessions"),
+        (name = "accounts", description = "Accounts and groups, managed by administrators"),
+        (name = "storage", description = "Disks, SMART, RAID arrays and volumes"),
+        (name = "logs", description = "The system journal and the audit log"),
     ),
-    components(schemas(routes::live::LiveRequest, routes::live::LiveMessage)),
+    components(schemas(routes::live::LiveRequest, routes::live::LiveMessage, routes::logs::LogSource)),
     modifiers(&SessionSecurity)
 )]
 struct ApiDoc;

@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use zendiloos_kernel::PortError;
 
+use crate::domain::text::InvalidText;
 use crate::domain::{InvalidAccountName, PasswordRejected};
 
 #[derive(Debug, thiserror::Error)]
@@ -25,6 +26,21 @@ pub enum IdentityError {
     InvalidSetupCode,
     #[error("not signed in")]
     Unauthenticated,
+    #[error(transparent)]
+    InvalidText(#[from] InvalidText),
+    #[error("the account may not do this")]
+    Forbidden,
+    #[error("there is no such account")]
+    AccountNotFound,
+    #[error("there is no such group")]
+    GroupNotFound,
+    /// By another account or group, or by the operating system.
+    #[error("the name is already taken")]
+    NameTaken,
+    #[error("at least one enabled administrator must remain")]
+    LastAdmin,
+    #[error("use your own settings to change your own account")]
+    OwnAccount,
     #[error(transparent)]
     Port(#[from] PortError),
 }

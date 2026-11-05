@@ -1,5 +1,6 @@
-//! Looks up the client account in `/etc/passwd`. The service account is a
-//! local system account, so the file is authoritative for it.
+//! Looks up accounts in `/etc/passwd` and `/etc/group`. The accounts the
+//! agent deals with (its client, the users and groups zendiloos manages)
+//! are all local, so the files are authoritative for them.
 
 /// UID and primary GID of `user`, if `passwd` lists it.
 pub fn lookup(passwd: &str, user: &str) -> Option<(u32, u32)> {
@@ -15,9 +16,29 @@ pub fn lookup(passwd: &str, user: &str) -> Option<(u32, u32)> {
     })
 }
 
+/// GID of `group`, if `group_file` lists it.
+pub fn group_id(group_file: &str, group: &str) -> Option<u32> {
+    group_file.lines().find_map(|line| {
+        let mut fields = line.split(':');
+        if fields.next()? != group {
+            return None;
+        }
+        let _password = fields.next()?;
+        fields.next()?.parse().ok()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_groups() {
+        let group = "root:x:0:\nzendiloos-users:x:990:\nfamily:x:2001:alice,bob\n";
+        assert_eq!(group_id(group, "family"), Some(2001));
+        assert_eq!(group_id(group, "zendiloos-users"), Some(990));
+        assert_eq!(group_id(group, "zendiloos"), None);
+    }
 
     const PASSWD: &str = "root:x:0:0:root:/root:/bin/bash\n\
                           zendiloos:x:996:993:zendiloos:/var/lib/zendiloos:/usr/sbin/nologin\n\

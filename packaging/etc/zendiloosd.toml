@@ -16,6 +16,10 @@
 #transport = "unix"
 #socket = "/run/zendiloos/agent.sock"
 
+# The log viewer runs journalctl; found in /usr/bin or /bin if not set.
+#[journal]
+#journalctl = "/usr/bin/journalctl"
+
 #[log]
 #filter = "info"
 #format = "text"

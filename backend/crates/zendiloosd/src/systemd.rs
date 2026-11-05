@@ -40,10 +40,6 @@ fn notify(target: &OsStr, state: &str) -> io::Result<()> {
 }
 
 /// Whether stderr goes to the journal, which adds its own timestamps.
-pub fn logging_to_journal() -> bool {
-    std::env::var_os("JOURNAL_STREAM").is_some()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

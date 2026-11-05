@@ -3,7 +3,9 @@
 use async_trait::async_trait;
 use zendiloos_kernel::{PortError, RequestContext};
 
-use crate::domain::{MetricsSample, PowerAction, SystemInfo};
+use crate::domain::{
+    AuditQuery, AuditRecord, JournalPage, JournalQuery, MetricsSample, PowerAction, SystemInfo,
+};
 
 /// Supplies facts about the host. Implemented in `zendiloos-infra`.
 #[async_trait]
@@ -30,4 +32,16 @@ pub trait LiveMetrics: Send + Sync {
 pub trait MetricsSubscription: Send {
     /// Waits for the next sample; `None` once the sampler has stopped.
     async fn next(&mut self) -> Option<MetricsSample>;
+}
+
+/// The systemd journal.
+#[async_trait]
+pub trait JournalReader: Send + Sync {
+    async fn read(&self, query: &JournalQuery) -> Result<JournalPage, PortError>;
+}
+
+/// The audit log, newest first.
+#[async_trait]
+pub trait AuditReader: Send + Sync {
+    async fn read(&self, query: &AuditQuery) -> Result<Vec<AuditRecord>, PortError>;
 }

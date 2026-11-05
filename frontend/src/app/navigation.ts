@@ -3,11 +3,13 @@ import type { Router } from 'vue-router'
 import { fetchSetupRequired } from '@/features/auth/api'
 import type { useSessionStore } from '@/features/auth/store'
 
-export type Page = 'setup' | 'login' | 'desktop'
+export type Page = 'setup' | 'login' | 'password' | 'desktop'
 
 export interface AuthState {
   signedIn: boolean
   setupRequired: boolean
+  /** An administrator set the password; the account must choose its own. */
+  passwordChangeRequired: boolean
 }
 
 /**
@@ -15,18 +17,31 @@ export interface AuthState {
  * through. Exactly one page fits each state.
  */
 export function redirectFor(target: Page, state: AuthState): Page | null {
-  const page: Page = state.signedIn ? 'desktop' : state.setupRequired ? 'setup' : 'login'
+  const page: Page = state.signedIn
+    ? state.passwordChangeRequired
+      ? 'password'
+      : 'desktop'
+    : state.setupRequired
+      ? 'setup'
+      : 'login'
   return target === page ? null : page
 }
 
 async function authState(session: ReturnType<typeof useSessionStore>): Promise<AuthState> {
   try {
     await session.ensureLoaded()
-    if (session.signedIn) return { signedIn: true, setupRequired: false }
-    return { signedIn: false, setupRequired: await fetchSetupRequired() }
+    if (session.signedIn) {
+      const passwordChangeRequired = session.info?.account.password_change_required ?? false
+      return { signedIn: true, setupRequired: false, passwordChangeRequired }
+    }
+    return {
+      signedIn: false,
+      setupRequired: await fetchSetupRequired(),
+      passwordChangeRequired: false,
+    }
   } catch {
     // Server unreachable: the sign-in page will say so when used.
-    return { signedIn: false, setupRequired: false }
+    return { signedIn: false, setupRequired: false, passwordChangeRequired: false }
   }
 }
 

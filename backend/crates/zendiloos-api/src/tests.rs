@@ -11,13 +11,18 @@ use tower::ServiceExt;
 use zendiloos_identity::domain::{AccountName, Role};
 use zendiloos_identity::testing::{SETUP_CODE, TestIdentity};
 use zendiloos_kernel::{Outcome, PortError, RequestContext};
+use zendiloos_storage::application::StorageUseCases;
+use zendiloos_storage::testing::FakeStorage;
 use zendiloos_system::application::ports::{
-    LiveMetrics, MetricsSubscription, PowerControl, SystemInfoProvider,
+    AuditReader, JournalReader, LiveMetrics, MetricsSubscription, PowerControl, SystemInfoProvider,
 };
 use zendiloos_system::application::{SystemPorts, SystemUseCases};
-use zendiloos_system::domain::{MemoryUsage, MetricsSample, PowerAction, SystemInfo};
+use zendiloos_system::domain::{
+    AuditQuery, AuditRecord, JournalCursor, JournalEntry, JournalPage, JournalQuery, LogPriority,
+    MemoryUsage, MetricsSample, PowerAction, SystemInfo,
+};
 
-use crate::{ApiState, CSRF_HEADER, openapi, router};
+use crate::{ApiState, CSRF_HEADER, UseCases, openapi, router};
 
 const HOST: &str = "nas.local";
 const PASSWORD: &str = "correct horse battery";
@@ -74,6 +79,56 @@ fn sample(at: i64) -> MetricsSample {
     }
 }
 
+/// Records queries and answers with one entry and a cursor to older ones.
+#[derive(Default)]
+struct FakeJournal(Mutex<Vec<JournalQuery>>);
+
+#[async_trait]
+impl JournalReader for FakeJournal {
+    async fn read(&self, query: &JournalQuery) -> Result<JournalPage, PortError> {
+        self.0.lock().unwrap().push(query.clone());
+        let cursor = JournalCursor::parse("s=1;i=2").unwrap();
+        let entry = JournalEntry {
+            at_micros: 1_793_880_897_756_376,
+            priority: LogPriority::Error,
+            unit: Some("smbd.service".into()),
+            identifier: Some("smbd".into()),
+            pid: Some(42),
+            message: "smbd failed".into(),
+            cursor: cursor.clone(),
+        };
+        Ok(JournalPage { entries: vec![entry], older: Some(cursor) })
+    }
+}
+
+/// The identity fakes' audit entries, newest first.
+struct FakeAuditReader(Arc<zendiloos_identity::testing::MemoryAudit>);
+
+#[async_trait]
+impl AuditReader for FakeAuditReader {
+    async fn read(&self, query: &AuditQuery) -> Result<Vec<AuditRecord>, PortError> {
+        let entries = self.0.entries();
+        Ok(entries
+            .into_iter()
+            .enumerate()
+            .rev()
+            .map(|(index, entry)| AuditRecord {
+                id: i64::try_from(index).unwrap() + 1,
+                at: entry.at,
+                actor: entry.actor,
+                client_ip: entry.client_ip.map(|ip| ip.to_string()),
+                action: entry.action.to_owned(),
+                target: entry.target,
+                outcome: entry.outcome.as_str().to_owned(),
+                reason: entry.reason.map(str::to_owned),
+                request_id: entry.request_id,
+            })
+            .filter(|record| query.before.is_none_or(|before| record.id < before))
+            .take(usize::from(query.limit))
+            .collect())
+    }
+}
+
 /// A latest sample at 100, then one new sample at 101.
 struct FakeLive;
 
@@ -104,6 +159,7 @@ struct Harness {
     app: Router,
     identity: TestIdentity,
     power: Arc<RecordingPower>,
+    journal: Arc<FakeJournal>,
 }
 
 struct Reply {
@@ -143,15 +199,20 @@ impl Harness {
     fn with(provider: impl SystemInfoProvider + 'static, secure_cookies: bool) -> Self {
         let identity = TestIdentity::new();
         let power = Arc::new(RecordingPower::default());
+        let journal = Arc::new(FakeJournal::default());
         let system = SystemUseCases::new(SystemPorts {
             info: Arc::new(provider),
             metrics: Arc::new(FakeLive),
             power: power.clone(),
+            journal: journal.clone(),
             audit: identity.audit.clone(),
+            audit_reader: Arc::new(FakeAuditReader(identity.audit.clone())),
             clock: identity.clock.clone(),
         });
-        let state = ApiState::new(system, identity.use_cases.clone(), secure_cookies);
-        Self { app: router(state), identity, power }
+        let storage = StorageUseCases::new(FakeStorage::ports());
+        let use_cases = UseCases { system, identity: identity.use_cases.clone(), storage };
+        let state = ApiState::new(use_cases, secure_cookies);
+        Self { app: router(state), identity, power, journal }
     }
 
     async fn send(&self, request: Request<Body>) -> Reply {
@@ -183,6 +244,11 @@ fn get(uri: &str) -> request::Builder {
 
 fn post(uri: &str) -> request::Builder {
     request(Method::POST, uri).header(header::ORIGIN, format!("https://{HOST}"))
+}
+
+/// A state-changing same-origin request.
+fn changing(method: Method, uri: &str) -> request::Builder {
+    request(method, uri).header(header::ORIGIN, format!("https://{HOST}"))
 }
 
 fn json(builder: request::Builder, body: Value) -> Request<Body> {
@@ -607,14 +673,304 @@ fn openapi_documents_every_route() {
     assert_eq!(
         paths,
         [
+            "/api/v1/accounts",
+            "/api/v1/accounts/{id}",
+            "/api/v1/accounts/{id}/password",
             "/api/v1/auth/login",
             "/api/v1/auth/logout",
             "/api/v1/auth/password",
             "/api/v1/auth/session",
+            "/api/v1/groups",
+            "/api/v1/groups/{id}",
             "/api/v1/health",
+            "/api/v1/logs/audit",
+            "/api/v1/logs/journal",
             "/api/v1/setup",
+            "/api/v1/storage/arrays",
+            "/api/v1/storage/disks",
+            "/api/v1/storage/disks/{name}/smart",
+            "/api/v1/storage/volumes",
             "/api/v1/system/info",
             "/api/v1/system/power",
         ]
     );
+}
+
+#[tokio::test]
+async fn storage_lists_disks_arrays_and_volumes() {
+    let h = Harness::new();
+    let session = h.sign_in("alice", Role::ReadOnly).await;
+    let read = |uri: &'static str| h.send(empty(with_cookie(get(uri), &session)));
+
+    let disks = read("/api/v1/storage/disks").await;
+    assert_eq!(disks.status, StatusCode::OK);
+    let usage: Vec<_> =
+        disks.body.as_array().unwrap().iter().map(|d| (d["name"].clone(), d["usage"].clone())).collect();
+    assert_eq!(
+        usage,
+        [
+            (json!("sda"), json!("array_member")),
+            (json!("sdb"), json!("array_member")),
+            (json!("nvme0n1"), json!("system")),
+        ]
+    );
+    assert_eq!(disks.body[0]["array"], "md0");
+    assert_eq!(disks.body[0]["transport"], "sata");
+    assert_eq!(disks.body[2]["media"], "solid_state");
+
+    let arrays = read("/api/v1/storage/arrays").await;
+    assert_eq!(arrays.body[0]["health"], "healthy");
+    assert_eq!(arrays.body[0]["devices_working"], 2);
+    assert_eq!(arrays.body[0]["members"][1], json!({ "device": "sdb", "index": 1, "state": "active" }));
+
+    let volumes = read("/api/v1/storage/volumes").await;
+    assert_eq!(volumes.body.as_array().unwrap().len(), 1);
+    assert_eq!(volumes.body[0]["label"], "data");
+    assert_eq!(volumes.body[0]["disks"], json!(["sda", "sdb"]));
+    assert_eq!(volumes.body[0]["used_bytes"], 1_u64 << 40);
+}
+
+#[tokio::test]
+async fn smart_reports_are_assessed_and_only_for_existing_disks() {
+    let h = Harness::new();
+    let session = h.sign_in("alice", Role::ReadOnly).await;
+
+    let report = h.send(empty(with_cookie(get("/api/v1/storage/disks/sda/smart"), &session))).await;
+    assert_eq!(report.status, StatusCode::OK);
+    assert_eq!(report.body["status"], "available");
+    assert_eq!(report.body["health"], "good");
+    assert_eq!(report.body["temperature_celsius"], 33);
+
+    let sleeping = h.send(empty(with_cookie(get("/api/v1/storage/disks/sdb/smart"), &session))).await;
+    assert_eq!(sleeping.body["status"], "standby");
+    assert_eq!(sleeping.body["health"], Value::Null);
+
+    for missing in ["sdz", "nvme0n1p1", "..%2Fsda"] {
+        let uri = format!("/api/v1/storage/disks/{missing}/smart");
+        let reply = h.send(empty(with_cookie(get(&uri), &session))).await;
+        assert_problem(&reply, StatusCode::NOT_FOUND, "not_found");
+    }
+}
+
+#[tokio::test]
+async fn storage_needs_the_view_permission() {
+    let h = Harness::new();
+    let session = h.sign_in("bob", Role::User).await;
+    for uri in [
+        "/api/v1/storage/disks",
+        "/api/v1/storage/disks/sda/smart",
+        "/api/v1/storage/arrays",
+        "/api/v1/storage/volumes",
+    ] {
+        let reply = h.send(empty(with_cookie(get(uri), &session))).await;
+        assert_problem(&reply, StatusCode::FORBIDDEN, "forbidden");
+    }
+}
+
+/// utoipa names a schema after its Rust type and silently lets a later
+/// type of the same name replace an earlier one in the document.
+#[test]
+fn schema_type_names_are_unique() {
+    let routes = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = vec![routes.join("error.rs")];
+    for entry in std::fs::read_dir(routes.join("routes")).unwrap() {
+        files.push(entry.unwrap().path());
+    }
+    let mut seen = std::collections::HashMap::new();
+    for file in files {
+        let source = std::fs::read_to_string(&file).unwrap();
+        let mut schema = false;
+        for line in source.lines().map(str::trim) {
+            if line.starts_with("#[derive(") && line.contains("ToSchema") {
+                schema = true;
+            } else if schema && (line.starts_with("pub struct ") || line.starts_with("pub enum ")) {
+                let name = line.split_whitespace().nth(2).unwrap().trim_end_matches(['{', '(', ';']);
+                if let Some(other) = seen.insert(name.to_owned(), file.clone()) {
+                    panic!("schema {name} is defined in {} and {}", other.display(), file.display());
+                }
+                schema = false;
+            }
+        }
+    }
+    assert!(seen.len() > 20, "found only {} schemas", seen.len());
+}
+
+#[tokio::test]
+async fn admins_manage_accounts_that_must_change_their_password() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let body = json!({ "name": "bob", "full_name": "Bob", "role": "user", "password": "initial passphrase" });
+
+    let created = h.send(json(with_csrf(post("/api/v1/accounts"), &admin), body.clone())).await;
+    assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
+    assert_eq!(created.body["name"], "bob");
+    assert_eq!(created.body["role"], "user");
+    assert_eq!(created.body["password_change_required"], true);
+    assert_eq!(h.identity.system.calls(), ["create_user bob", "set_password bob"]);
+
+    let again = h.send(json(with_csrf(post("/api/v1/accounts"), &admin), body)).await;
+    assert_problem(&again, StatusCode::CONFLICT, "name_taken");
+
+    let listed = h.send(empty(with_cookie(get("/api/v1/accounts"), &admin))).await;
+    let names: Vec<_> = listed.body.as_array().unwrap().iter().map(|a| a["name"].clone()).collect();
+    assert_eq!(names, [json!("alice"), json!("bob")]);
+
+    // Bob may sign in, but must change the password before anything else.
+    let login = json!({ "name": "bob", "password": "initial passphrase" });
+    let bob = Session::from(&h.send(json(post("/api/v1/auth/login"), login)).await);
+    let blocked = h.send(empty(with_cookie(get("/api/v1/system/info"), &bob))).await;
+    assert_problem(&blocked, StatusCode::FORBIDDEN, "password_change_required");
+}
+
+#[tokio::test]
+async fn admins_update_reset_and_delete_other_accounts_only() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let alice = h.identity.accounts.all()[0].id.get();
+    let bob = h.identity.add_account("bob", PASSWORD, Role::User).id.get();
+    let send = |method: Method, uri: String, body: Option<Value>| {
+        let builder = with_csrf(changing(method, &uri), &admin);
+        h.send(match body {
+            Some(body) => json(builder, body),
+            None => empty(builder),
+        })
+    };
+
+    let updated =
+        send(Method::PATCH, format!("/api/v1/accounts/{bob}"), Some(json!({ "disabled": true }))).await;
+    assert_eq!(updated.status, StatusCode::OK, "{:?}", updated.body);
+    assert_eq!(updated.body["disabled"], true);
+
+    let own = send(Method::PATCH, format!("/api/v1/accounts/{alice}"), Some(json!({ "role": "user" }))).await;
+    assert_problem(&own, StatusCode::CONFLICT, "own_account");
+
+    let reset = json!({ "password": "a temporary passphrase" });
+    let reply = send(Method::POST, format!("/api/v1/accounts/{bob}/password"), Some(reset)).await;
+    assert_eq!(reply.status, StatusCode::NO_CONTENT);
+
+    let deleted = send(Method::DELETE, format!("/api/v1/accounts/{bob}"), None).await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT);
+    let gone = send(Method::DELETE, format!("/api/v1/accounts/{bob}"), None).await;
+    assert_problem(&gone, StatusCode::NOT_FOUND, "not_found");
+}
+
+#[tokio::test]
+async fn admins_manage_groups() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let bob = h.identity.add_account("bob", PASSWORD, Role::User).id.get();
+
+    let body = json!({ "name": "family", "description": "At home", "members": [bob] });
+    let created = h.send(json(with_csrf(post("/api/v1/groups"), &admin), body)).await;
+    assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
+    assert_eq!(created.body["members"], json!([bob]));
+    let id = created.body["id"].as_i64().unwrap();
+
+    let uri = format!("/api/v1/groups/{id}");
+    let changes = json!({ "members": [], "description": "" });
+    let updated = h.send(json(with_csrf(changing(Method::PATCH, &uri), &admin), changes)).await;
+    assert_eq!(updated.body["members"], json!([]));
+    assert_eq!(updated.body["description"], Value::Null);
+
+    let listed = h.send(empty(with_cookie(get("/api/v1/groups"), &admin))).await;
+    assert_eq!(listed.body.as_array().unwrap().len(), 1);
+    let deleted = h.send(empty(with_csrf(changing(Method::DELETE, &uri), &admin))).await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn only_admins_manage_accounts_and_groups() {
+    let h = Harness::new();
+    let session = h.sign_in("carol", Role::ReadOnly).await;
+    for uri in ["/api/v1/accounts", "/api/v1/groups"] {
+        let reply = h.send(empty(with_cookie(get(uri), &session))).await;
+        assert_problem(&reply, StatusCode::FORBIDDEN, "forbidden");
+    }
+    let body = json!({ "name": "eve", "role": "admin", "password": "initial passphrase" });
+    let reply = h.send(json(with_csrf(post("/api/v1/accounts"), &session), body)).await;
+    assert_problem(&reply, StatusCode::FORBIDDEN, "forbidden");
+    assert!(h.identity.system.calls().is_empty());
+}
+
+#[tokio::test]
+async fn the_journal_is_read_through_fixed_views() {
+    let h = Harness::new();
+    let session = h.sign_in("alice", Role::ReadOnly).await;
+    let read = |uri: &'static str| h.send(empty(with_cookie(get(uri), &session)));
+
+    let page = read("/api/v1/logs/journal?source=sharing&priority=warning&limit=1000&before=s%3D9").await;
+    assert_eq!(page.status, StatusCode::OK, "{:?}", page.body);
+    assert_eq!(page.body["entries"][0]["priority"], "error");
+    assert_eq!(page.body["entries"][0]["unit"], "smbd.service");
+    assert_eq!(page.body["older"], "s=1;i=2");
+    let query = h.journal.0.lock().unwrap()[0].clone();
+    assert_eq!(query.source, zendiloos_system::domain::LogSource::Sharing);
+    assert_eq!(query.priority, LogPriority::Warning);
+    assert_eq!(query.limit, 500, "capped");
+    assert_eq!(query.before.unwrap().as_str(), "s=9");
+
+    let defaults = read("/api/v1/logs/journal").await;
+    assert_eq!(defaults.status, StatusCode::OK);
+    assert_eq!(h.journal.0.lock().unwrap()[1].priority, LogPriority::Info);
+
+    for bad in [
+        "/api/v1/logs/journal?source=everything",
+        "/api/v1/logs/journal?unit=ssh.service",
+        "/api/v1/logs/journal?before=s%3D1%20--since%3Dtoday",
+    ] {
+        assert_problem(&read(bad).await, StatusCode::BAD_REQUEST, "bad_request");
+    }
+}
+
+#[tokio::test]
+async fn the_audit_log_is_paged_newest_first() {
+    let h = Harness::new();
+    let session = h.sign_in("alice", Role::ReadOnly).await;
+    let logout = h.sign_in("bob", Role::Admin).await;
+    h.send(empty(with_csrf(post("/api/v1/auth/logout"), &logout))).await;
+
+    let page = h.send(empty(with_cookie(get("/api/v1/logs/audit?limit=2"), &session))).await;
+    assert_eq!(page.status, StatusCode::OK, "{:?}", page.body);
+    let actions: Vec<_> =
+        page.body["entries"].as_array().unwrap().iter().map(|e| e["action"].clone()).collect();
+    assert_eq!(actions, [json!("identity.logout"), json!("identity.login")]);
+    assert_eq!(page.body["entries"][0]["actor"], "bob");
+    let older = page.body["older"].as_i64().unwrap();
+
+    let uri = format!("/api/v1/logs/audit?before={older}");
+    let rest = h.send(empty(with_cookie(get(&uri), &session))).await;
+    assert_eq!(rest.body["entries"][0]["actor"], "alice");
+    assert_eq!(rest.body["older"], Value::Null);
+}
+
+#[tokio::test]
+async fn logs_need_the_view_permission() {
+    let h = Harness::new();
+    let session = h.sign_in("bob", Role::User).await;
+    for uri in ["/api/v1/logs/journal", "/api/v1/logs/audit"] {
+        let reply = h.send(empty(with_cookie(get(uri), &session))).await;
+        assert_problem(&reply, StatusCode::FORBIDDEN, "forbidden");
+    }
+}
+
+/// Types used only in parameters are not collected automatically; a
+/// dangling reference breaks the TypeScript generator.
+#[test]
+fn every_schema_reference_resolves() {
+    let doc = serde_json::to_value(openapi()).unwrap();
+    let schemas = doc["components"]["schemas"].as_object().unwrap();
+    let mut pending = vec![&doc];
+    while let Some(value) = pending.pop() {
+        match value {
+            Value::Object(map) => {
+                if let Some(Value::String(reference)) = map.get("$ref") {
+                    let name = reference.strip_prefix("#/components/schemas/").unwrap();
+                    assert!(schemas.contains_key(name), "dangling reference {reference}");
+                }
+                pending.extend(map.values());
+            }
+            Value::Array(items) => pending.extend(items),
+            _ => {}
+        }
+    }
 }

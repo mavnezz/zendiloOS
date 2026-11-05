@@ -2,27 +2,47 @@
 //! sending protocol requests through an [`AgentTransport`], which is either
 //! the agent's socket or the simulation.
 
+mod accounts;
+mod storage;
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use zendiloos_agent_proto::{AgentTransport, PROTOCOL_VERSION, Request, RequestId, Response};
+use zendiloos_agent_proto::{AgentTransport, ErrorCode, PROTOCOL_VERSION, Request, RequestId, Response};
 use zendiloos_kernel::{PortError, RequestContext};
 use zendiloos_system::application::ports::PowerControl;
 use zendiloos_system::domain::PowerAction;
 
+pub use accounts::AgentSystemAccounts;
+pub use storage::AgentStorage;
+
 const WHAT: &str = "privileged agent";
 
-async fn call(
+/// The agent's answer, errors included.
+async fn call_raw(
     transport: &dyn AgentTransport,
     request: Request,
     context: &RequestContext,
 ) -> Result<Response, PortError> {
     // Request IDs come from zendiloosd itself (UUIDs); anything else is dropped.
     let request_id = context.request_id.as_deref().and_then(|id| RequestId::parse(id).ok());
-    match transport.call(request, request_id).await.map_err(|error| PortError::new(WHAT, error))? {
-        Response::Error { code, message } => Err(PortError::new(WHAT, format!("{code:?}: {message}"))),
+    transport.call(request, request_id).await.map_err(|error| PortError::new(WHAT, error))
+}
+
+/// The agent's answer; its errors become port errors.
+async fn call(
+    transport: &dyn AgentTransport,
+    request: Request,
+    context: &RequestContext,
+) -> Result<Response, PortError> {
+    match call_raw(transport, request, context).await? {
+        Response::Error { code, message } => Err(agent_error(code, &message)),
         response => Ok(response),
     }
+}
+
+fn agent_error(code: ErrorCode, message: &str) -> PortError {
+    PortError::new(WHAT, format!("{code:?}: {message}"))
 }
 
 async fn expect_done(
@@ -32,8 +52,12 @@ async fn expect_done(
 ) -> Result<(), PortError> {
     match call(transport, request, context).await? {
         Response::Done => Ok(()),
-        other => Err(PortError::new(WHAT, format!("unexpected answer: {other:?}"))),
+        other => Err(unexpected(other)),
     }
+}
+
+fn unexpected(response: Response) -> PortError {
+    PortError::new(WHAT, format!("unexpected answer: {response:?}"))
 }
 
 /// The agent's version; an error if it is unreachable or speaks another
@@ -47,7 +71,7 @@ pub async fn agent_version(transport: &dyn AgentTransport) -> Result<String, Por
             WHAT,
             format!("speaks protocol {protocol_version}, zendiloosd speaks {PROTOCOL_VERSION}"),
         )),
-        other => Err(PortError::new(WHAT, format!("unexpected answer: {other:?}"))),
+        other => Err(unexpected(other)),
     }
 }
 
@@ -75,7 +99,7 @@ impl PowerControl for AgentPowerControl {
 
 #[cfg(test)]
 mod tests {
-    use zendiloos_agent_proto::{ErrorCode, TransportError};
+    use zendiloos_agent_proto::TransportError;
     use zendiloos_sim::SimulatedAgent;
 
     use super::*;

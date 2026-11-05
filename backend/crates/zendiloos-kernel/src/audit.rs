@@ -41,6 +41,8 @@ pub struct AuditEntry {
     pub client_ip: Option<IpAddr>,
     /// Dotted, stable name of what happened, e.g. `identity.login`.
     pub action: &'static str,
+    /// What the action was about, e.g. the name of a created account.
+    pub target: Option<String>,
     pub outcome: Outcome,
     /// Short machine-readable reason, e.g. `wrong_password`.
     pub reason: Option<&'static str>,
@@ -58,6 +60,7 @@ impl AuditEntry {
             actor: None,
             client_ip: request.client_ip,
             action,
+            target: None,
             outcome,
             reason: None,
             request_id: request.request_id.clone(),
@@ -74,6 +77,11 @@ impl AuditEntry {
     /// login form.
     pub fn actor(mut self, name: &str) -> Self {
         self.actor = Some(name.chars().take(Self::MAX_ACTOR_CHARS).collect());
+        self
+    }
+
+    pub fn target(mut self, target: impl Into<String>) -> Self {
+        self.target = Some(target.into());
         self
     }
 

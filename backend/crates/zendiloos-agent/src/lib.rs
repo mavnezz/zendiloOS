@@ -5,10 +5,12 @@
 //! "The agent executes, zendiloosd interprets": tool output goes back raw;
 //! parsing happens unprivileged, so parser bugs never run as root.
 
+mod accounts;
 pub mod config;
 mod operations;
 pub mod passwd;
 mod server;
 
+pub use accounts::AccountFiles;
 pub use operations::Operations;
 pub use server::{Server, serve};

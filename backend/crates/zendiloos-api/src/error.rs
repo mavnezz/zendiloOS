@@ -54,6 +54,12 @@ pub enum ApiError {
     },
     SetupCompleted,
     InvalidSetupCode,
+    /// The name is used by another account or group, or by the system.
+    NameTaken,
+    /// The change would leave no enabled administrator.
+    LastAdmin,
+    /// Administrators change their own account in their settings.
+    OwnAccount,
     Internal(Box<dyn Error + Send + Sync>),
 }
 
@@ -81,6 +87,12 @@ impl From<IdentityError> for ApiError {
             IdentityError::SetupCompleted => ApiError::SetupCompleted,
             IdentityError::InvalidSetupCode => ApiError::InvalidSetupCode,
             IdentityError::Unauthenticated => ApiError::Unauthenticated,
+            IdentityError::InvalidText(e) => ApiError::InvalidInput(e.to_string()),
+            IdentityError::Forbidden => ApiError::Forbidden,
+            IdentityError::AccountNotFound | IdentityError::GroupNotFound => ApiError::NotFound,
+            IdentityError::NameTaken => ApiError::NameTaken,
+            IdentityError::LastAdmin => ApiError::LastAdmin,
+            IdentityError::OwnAccount => ApiError::OwnAccount,
             IdentityError::Port(e) => ApiError::internal(e),
         }
     }
@@ -110,6 +122,9 @@ impl IntoResponse for ApiError {
             }
             ApiError::SetupCompleted => (StatusCode::CONFLICT, "setup_completed", None),
             ApiError::InvalidSetupCode => (StatusCode::UNPROCESSABLE_ENTITY, "invalid_setup_code", None),
+            ApiError::NameTaken => (StatusCode::CONFLICT, "name_taken", None),
+            ApiError::LastAdmin => (StatusCode::CONFLICT, "last_admin", None),
+            ApiError::OwnAccount => (StatusCode::CONFLICT, "own_account", None),
             ApiError::Internal(error) => {
                 tracing::error!(error = %error_chain(error.as_ref()), "request failed");
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal", None)

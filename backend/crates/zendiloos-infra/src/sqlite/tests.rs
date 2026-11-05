@@ -68,7 +68,7 @@ async fn creates_a_private_database_and_applies_all_migrations() {
 
     assert_eq!(
         report,
-        OpenReport { created: true, schema_before: None, schema_after: 1, applied: vec![1], backup: None }
+        OpenReport { created: true, schema_before: None, schema_after: 2, applied: vec![1, 2], backup: None }
     );
     assert_eq!(mode(&env.db()), 0o600);
     let journal_mode: String = sqlx::query_scalar("PRAGMA journal_mode").fetch_one(&db.pool).await.unwrap();
@@ -82,7 +82,7 @@ async fn creates_a_private_database_and_applies_all_migrations() {
     .fetch_all(&db.pool)
     .await
     .unwrap();
-    assert_eq!(tables, ["accounts", "audit_log", "sessions"]);
+    assert_eq!(tables, ["accounts", "audit_log", "group_members", "groups", "sessions"]);
     db.close().await;
 }
 
@@ -95,7 +95,7 @@ async fn reopening_an_up_to_date_database_changes_nothing() {
 
     assert_eq!(
         report,
-        OpenReport { created: false, schema_before: Some(1), schema_after: 1, applied: vec![], backup: None }
+        OpenReport { created: false, schema_before: Some(2), schema_after: 2, applied: vec![], backup: None }
     );
     assert!(!env.backups().exists(), "no backup without pending migrations");
     db.close().await;

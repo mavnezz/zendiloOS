@@ -10,6 +10,301 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/api/v1/accounts": {
+      "get": {
+        "tags": [
+          "accounts"
+        ],
+        "summary": "All accounts, ordered by name.",
+        "operationId": "list_accounts",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Account"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "accounts"
+        ],
+        "summary": "Creates an account with its Linux user and SMB password.",
+        "operationId": "create_account",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateAccountRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Account"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`name_taken`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/accounts/{id}": {
+      "delete": {
+        "tags": [
+          "accounts"
+        ],
+        "summary": "Deletes another account with its Linux user. Its files stay.",
+        "operationId": "delete_account",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted."
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`last_admin`, `own_account`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "accounts"
+        ],
+        "summary": "Changes another account's full name, role or whether it is enabled.\nDisabling ends its sessions and SMB access.",
+        "operationId": "update_account",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateAccountRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Account"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`last_admin`, `own_account`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/accounts/{id}/password": {
+      "post": {
+        "tags": [
+          "accounts"
+        ],
+        "summary": "Sets a new password for another account, which must change it at its\nnext login. Ends its sessions.",
+        "operationId": "reset_password",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResetPasswordRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Set."
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`own_account`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/auth/login": {
       "post": {
         "tags": [
@@ -174,6 +469,201 @@
         ]
       }
     },
+    "/api/v1/groups": {
+      "get": {
+        "tags": [
+          "accounts"
+        ],
+        "summary": "All groups, ordered by name.",
+        "operationId": "list_groups",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Group"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "accounts"
+        ],
+        "summary": "Creates a group with its Linux group.",
+        "operationId": "create_group",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateGroupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Group"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: a member does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`name_taken`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/groups/{id}": {
+      "delete": {
+        "tags": [
+          "accounts"
+        ],
+        "summary": "Deletes a group with its Linux group.",
+        "operationId": "delete_group",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted."
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "accounts"
+        ],
+        "summary": "Changes a group's description or members.",
+        "operationId": "update_group",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateGroupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Group"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/health": {
       "get": {
         "tags": [
@@ -193,6 +683,149 @@
             }
           }
         }
+      }
+    },
+    "/api/v1/logs/audit": {
+      "get": {
+        "tags": [
+          "logs"
+        ],
+        "summary": "A page of the audit log: who did what, newest first.",
+        "operationId": "audit",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "At most 500; 200 if absent.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "`older` of the previous page.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditPage"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/logs/journal": {
+      "get": {
+        "tags": [
+          "logs"
+        ],
+        "summary": "A page of the system journal, newest first.",
+        "operationId": "journal",
+        "parameters": [
+          {
+            "name": "source",
+            "in": "query",
+            "description": "Which view; `system` if absent.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/LogSource"
+            }
+          },
+          {
+            "name": "priority",
+            "in": "query",
+            "description": "This priority and everything more severe; `info` if absent.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/LogPriority"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "At most 500; 200 if absent.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "`older` of the previous page, for the entries before it.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JournalPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_request`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
       }
     },
     "/api/v1/setup": {
@@ -272,6 +905,176 @@
             }
           }
         }
+      }
+    },
+    "/api/v1/storage/arrays": {
+      "get": {
+        "tags": [
+          "storage"
+        ],
+        "summary": "The software RAID arrays. Needs `storage.view`.",
+        "operationId": "arrays",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RaidArray"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/storage/disks": {
+      "get": {
+        "tags": [
+          "storage"
+        ],
+        "summary": "All disks of the host. Needs `storage.view`.",
+        "operationId": "disks",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Disk"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/storage/disks/{name}/smart": {
+      "get": {
+        "tags": [
+          "storage"
+        ],
+        "summary": "SMART data of one disk. Sleeping disks are not woken: their report has\nstatus `standby`. Needs `storage.view`.",
+        "operationId": "smart",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Kernel name of the disk, e.g. `sda`",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SmartReport"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no such disk",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/storage/volumes": {
+      "get": {
+        "tags": [
+          "storage"
+        ],
+        "summary": "The data volumes. Needs `storage.view`.",
+        "operationId": "volumes",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Volume"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
       }
     },
     "/api/v1/system/info": {
@@ -360,6 +1163,52 @@
   },
   "components": {
     "schemas": {
+      "Account": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "role",
+          "disabled",
+          "password_change_required",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "disabled": {
+            "type": "boolean"
+          },
+          "full_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "name": {
+            "type": "string",
+            "description": "Login name, also the Linux and SMB user name."
+          },
+          "password_change_required": {
+            "type": "boolean",
+            "description": "The account must choose a new password at its next login."
+          },
+          "role": {
+            "$ref": "#/components/schemas/AccountRole"
+          },
+          "updated_at": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "AccountRole": {
         "type": "string",
         "enum": [
@@ -367,6 +1216,118 @@
           "user",
           "readonly"
         ]
+      },
+      "ArrayHealth": {
+        "type": "string",
+        "enum": [
+          "healthy",
+          "degraded",
+          "rebuilding",
+          "inactive"
+        ]
+      },
+      "ArrayMember": {
+        "type": "object",
+        "required": [
+          "device",
+          "index",
+          "state"
+        ],
+        "properties": {
+          "device": {
+            "type": "string",
+            "description": "Kernel name of the disk or partition."
+          },
+          "index": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "state": {
+            "$ref": "#/components/schemas/MemberState"
+          }
+        }
+      },
+      "AuditPage": {
+        "type": "object",
+        "required": [
+          "entries"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditRecord"
+            }
+          },
+          "older": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Pass as `before` for the next, older page; absent at the end."
+          }
+        }
+      },
+      "AuditRecord": {
+        "type": "object",
+        "required": [
+          "id",
+          "at",
+          "action",
+          "outcome"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "Dotted name, e.g. `identity.login`."
+          },
+          "actor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Account name; for failed logins the name that was tried."
+          },
+          "at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix seconds."
+          },
+          "client_ip": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "outcome": {
+            "type": "string",
+            "description": "`success`, `failure` or `denied`."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "request_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "target": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
       },
       "ChangePasswordRequest": {
         "type": "object",
@@ -382,6 +1343,60 @@
           "new_password": {
             "type": "string",
             "format": "password"
+          }
+        },
+        "additionalProperties": false
+      },
+      "CreateAccountRequest": {
+        "type": "object",
+        "required": [
+          "name",
+          "role",
+          "password"
+        ],
+        "properties": {
+          "full_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string",
+            "format": "password",
+            "description": "Initial password; the account must change it at its first login."
+          },
+          "role": {
+            "$ref": "#/components/schemas/AccountRole"
+          }
+        },
+        "additionalProperties": false
+      },
+      "CreateGroupRequest": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "description": "Account IDs."
+          },
+          "name": {
+            "type": "string"
           }
         },
         "additionalProperties": false
@@ -425,6 +1440,84 @@
           }
         }
       },
+      "Disk": {
+        "type": "object",
+        "required": [
+          "name",
+          "size_bytes",
+          "transport",
+          "media",
+          "removable",
+          "read_only",
+          "usage",
+          "partitions"
+        ],
+        "properties": {
+          "array": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The array, if `usage` is `array_member`."
+          },
+          "media": {
+            "$ref": "#/components/schemas/Media"
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "description": "Kernel name, e.g. `sda`; identifies the disk in this API."
+          },
+          "partitions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Partition"
+            }
+          },
+          "read_only": {
+            "type": "boolean"
+          },
+          "removable": {
+            "type": "boolean"
+          },
+          "serial": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "transport": {
+            "$ref": "#/components/schemas/Transport"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/DiskUsage"
+          },
+          "wwn": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "DiskHealth": {
+        "type": "string",
+        "enum": [
+          "good",
+          "warning",
+          "failing"
+        ]
+      },
       "DiskMetrics": {
         "type": "object",
         "required": [
@@ -445,6 +1538,125 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          }
+        }
+      },
+      "DiskUsage": {
+        "type": "string",
+        "description": "What a disk is used for.",
+        "enum": [
+          "system",
+          "array_member",
+          "volume",
+          "foreign",
+          "unused"
+        ]
+      },
+      "Finding": {
+        "type": "object",
+        "description": "A reason behind the health verdict.",
+        "required": [
+          "code",
+          "severity"
+        ],
+        "properties": {
+          "attribute_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The ATA attribute concerned, for `attribute_*`.",
+            "minimum": 0
+          },
+          "attribute_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "code": {
+            "$ref": "#/components/schemas/FindingCode"
+          },
+          "severity": {
+            "$ref": "#/components/schemas/DiskHealth"
+          },
+          "threshold": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The limit `value` is compared with, for `nvme_spare_low`.",
+            "minimum": 0
+          },
+          "value": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The count or percentage the finding is about.",
+            "minimum": 0
+          }
+        }
+      },
+      "FindingCode": {
+        "type": "string",
+        "enum": [
+          "overall_failed",
+          "attribute_failing",
+          "attribute_failed_in_past",
+          "reallocated_sectors",
+          "pending_sectors",
+          "uncorrectable_sectors",
+          "error_log_entries",
+          "self_test_failed",
+          "nvme_critical_warning",
+          "nvme_spare_low",
+          "nvme_worn_out",
+          "nvme_media_errors"
+        ]
+      },
+      "Group": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "members",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "description": "Account IDs, ascending."
+          },
+          "name": {
+            "type": "string",
+            "description": "Also the Linux group name."
+          },
+          "updated_at": {
+            "type": "integer",
+            "format": "int64"
           }
         }
       },
@@ -480,6 +1692,71 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          }
+        }
+      },
+      "JournalEntry": {
+        "type": "object",
+        "required": [
+          "at_micros",
+          "priority",
+          "message"
+        ],
+        "properties": {
+          "at_micros": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Microseconds since the Unix epoch.",
+            "minimum": 0
+          },
+          "identifier": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Program name, e.g. `smbd` or `kernel`."
+          },
+          "message": {
+            "type": "string"
+          },
+          "pid": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "priority": {
+            "$ref": "#/components/schemas/LogPriority"
+          },
+          "unit": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "JournalPage": {
+        "type": "object",
+        "description": "Newest first.",
+        "required": [
+          "entries"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/JournalEntry"
+            }
+          },
+          "older": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `before` for the next, older page; absent at the end."
           }
         }
       },
@@ -572,6 +1849,31 @@
           "metrics"
         ]
       },
+      "LogPriority": {
+        "type": "string",
+        "description": "syslog severity, from most to least severe.",
+        "enum": [
+          "emergency",
+          "alert",
+          "critical",
+          "error",
+          "warning",
+          "notice",
+          "info",
+          "debug"
+        ]
+      },
+      "LogSource": {
+        "type": "string",
+        "description": "A fixed view of the journal.",
+        "enum": [
+          "system",
+          "zendiloos",
+          "storage",
+          "sharing",
+          "kernel"
+        ]
+      },
       "LoginRequest": {
         "type": "object",
         "required": [
@@ -588,6 +1890,23 @@
           }
         },
         "additionalProperties": false
+      },
+      "Media": {
+        "type": "string",
+        "enum": [
+          "rotational",
+          "solid_state"
+        ]
+      },
+      "MemberState": {
+        "type": "string",
+        "enum": [
+          "active",
+          "spare",
+          "faulty",
+          "replacement",
+          "journal"
+        ]
       },
       "MemoryMetrics": {
         "type": "object",
@@ -673,6 +1992,97 @@
           }
         }
       },
+      "NvmeHealth": {
+        "type": "object",
+        "required": [
+          "critical_warning",
+          "available_spare_percent",
+          "available_spare_threshold_percent",
+          "percentage_used",
+          "media_errors",
+          "unsafe_shutdowns",
+          "bytes_read",
+          "bytes_written"
+        ],
+        "properties": {
+          "available_spare_percent": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "available_spare_threshold_percent": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "bytes_read": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "bytes_written": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "critical_warning": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "media_errors": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "percentage_used": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "unsafe_shutdowns": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "Partition": {
+        "type": "object",
+        "required": [
+          "name",
+          "size_bytes",
+          "mount_points"
+        ],
+        "properties": {
+          "filesystem": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mount_points": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "name": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "PowerActionKind": {
         "type": "string",
         "enum": [
@@ -725,6 +2135,111 @@
           "type": {
             "type": "string",
             "description": "Always `about:blank`; `code` identifies the problem."
+          }
+        }
+      },
+      "RaidArray": {
+        "type": "object",
+        "description": "A software RAID array.",
+        "required": [
+          "name",
+          "health",
+          "read_only",
+          "members"
+        ],
+        "properties": {
+          "devices_total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Devices the array is made for; absent without redundancy.",
+            "minimum": 0
+          },
+          "devices_working": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "health": {
+            "$ref": "#/components/schemas/ArrayHealth"
+          },
+          "level": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`raid1`, `raid5`, …; unknown while inactive."
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ArrayMember"
+            }
+          },
+          "name": {
+            "type": "string"
+          },
+          "read_only": {
+            "type": "boolean"
+          },
+          "size_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "sync": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SyncProgress"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "ResetPasswordRequest": {
+        "type": "object",
+        "required": [
+          "password"
+        ],
+        "properties": {
+          "password": {
+            "type": "string",
+            "format": "password"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SelfTest": {
+        "type": "object",
+        "required": [
+          "passed",
+          "description"
+        ],
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "passed": {
+            "type": "boolean"
+          },
+          "power_on_hours": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
           }
         }
       },
@@ -783,6 +2298,256 @@
           "required": {
             "type": "boolean",
             "description": "No administrator exists yet; the interface must offer the setup."
+          }
+        }
+      },
+      "SmartAttribute": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "value",
+          "worst",
+          "threshold",
+          "raw",
+          "raw_text",
+          "prefailure"
+        ],
+        "properties": {
+          "failed": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`now`, `past` or absent."
+          },
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string"
+          },
+          "prefailure": {
+            "type": "boolean"
+          },
+          "raw": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "raw_text": {
+            "type": "string",
+            "description": "The raw value as smartctl formats it."
+          },
+          "threshold": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "value": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "worst": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "SmartProtocol": {
+        "type": "string",
+        "enum": [
+          "ata",
+          "nvme",
+          "scsi"
+        ]
+      },
+      "SmartReport": {
+        "type": "object",
+        "description": "SMART data of one disk with zendiloOS's assessment.",
+        "required": [
+          "status",
+          "findings",
+          "attributes"
+        ],
+        "properties": {
+          "attributes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SmartAttribute"
+            },
+            "description": "ATA only."
+          },
+          "error_log_count": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "findings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Finding"
+            }
+          },
+          "firmware": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "health": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DiskHealth",
+                "description": "Absent unless `status` is `available`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_self_test": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SelfTest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "nvme": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/NvmeHealth",
+                "description": "NVMe only."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "passed": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "The drive's own verdict."
+          },
+          "power_cycles": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "power_on_hours": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "protocol": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SmartProtocol"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why there is no data, for `unsupported`."
+          },
+          "serial": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/SmartStatus"
+          },
+          "temperature_celsius": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          }
+        }
+      },
+      "SmartStatus": {
+        "type": "string",
+        "enum": [
+          "available",
+          "standby",
+          "unsupported"
+        ]
+      },
+      "SyncOperation": {
+        "type": "string",
+        "enum": [
+          "resync",
+          "recovery",
+          "check",
+          "repair",
+          "reshape"
+        ]
+      },
+      "SyncProgress": {
+        "type": "object",
+        "required": [
+          "operation"
+        ],
+        "properties": {
+          "operation": {
+            "$ref": "#/components/schemas/SyncOperation"
+          },
+          "percent": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float",
+            "description": "0 to 100; absent while waiting for another array."
+          },
+          "remaining_seconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "speed_bytes_per_second": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
           }
         }
       },
@@ -857,6 +2622,151 @@
             "type": "string"
           }
         }
+      },
+      "Transport": {
+        "type": "string",
+        "enum": [
+          "sata",
+          "sas",
+          "nvme",
+          "usb",
+          "virtio",
+          "other"
+        ]
+      },
+      "UpdateAccountRequest": {
+        "type": "object",
+        "description": "Absent fields stay as they are.",
+        "properties": {
+          "disabled": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "full_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "An empty string removes the full name."
+          },
+          "role": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AccountRole"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "UpdateGroupRequest": {
+        "type": "object",
+        "description": "Absent fields stay as they are.",
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "An empty string removes the description."
+          },
+          "members": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "description": "Replaces all members."
+          }
+        },
+        "additionalProperties": false
+      },
+      "Volume": {
+        "type": "object",
+        "description": "A data filesystem.",
+        "required": [
+          "id",
+          "filesystem",
+          "devices",
+          "disks",
+          "mount_points"
+        ],
+        "properties": {
+          "array": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The RAID array it lives on, if any."
+          },
+          "available_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "devices": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Block devices carrying it."
+          },
+          "disks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The disks underneath."
+          },
+          "filesystem": {
+            "type": "string",
+            "description": "`btrfs`, `ext4` or `xfs`."
+          },
+          "id": {
+            "type": "string",
+            "description": "Filesystem UUID, or the device name if there is none."
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mount_points": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "size_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Only known while mounted.",
+            "minimum": 0
+          },
+          "used_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          }
+        }
       }
     },
     "securitySchemes": {
@@ -876,6 +2786,18 @@
     {
       "name": "identity",
       "description": "Initial setup, login and sessions"
+    },
+    {
+      "name": "accounts",
+      "description": "Accounts and groups, managed by administrators"
+    },
+    {
+      "name": "storage",
+      "description": "Disks, SMART, RAID arrays and volumes"
+    },
+    {
+      "name": "logs",
+      "description": "The system journal and the audit log"
     }
   ]
 }

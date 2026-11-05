@@ -129,9 +129,9 @@ review comment.
 | Crate | Role | May depend on (internal) |
 |---|---|---|
 | `zendiloos-kernel` | shared kernel: time, `Secret`, request context, the audit entry and its port, common port errors | – |
-| `zendiloos-identity` | accounts, roles and permissions, sessions, passwords, throttling, audit | kernel |
+| `zendiloos-identity` | accounts and groups with their Linux users and groups, roles and permissions, sessions, passwords, throttling, audit | kernel |
 | `zendiloos-system` | system information, metrics, power, logs | kernel |
-| `zendiloos-storage` | disks, SMART, pools, volumes | kernel |
+| `zendiloos-storage` | disks, SMART, arrays, volumes (read-only so far); pools from M3 | kernel |
 | `zendiloos-sharing` | SMB and NFS shares, share permissions | kernel |
 | `zendiloos-files` | file manager, recycle bin | kernel |
 | `zendiloos-containers` | containers, images, volumes, networks, apps | kernel |
@@ -143,6 +143,7 @@ review comment.
 | `zendiloos-exec` | the only way to run programs | – |
 | `zendiloos-agent` | privileged root service (binary) | agent-proto, exec |
 | `zendiloos-sim` | simulated agent behind `AgentTransport`; executes nothing | agent-proto |
+| `zendiloos-logging` | logging setup shared by `zendiloosd` and the agent | – |
 
 Crates are created in the step that needs them; there are no empty
 placeholder crates.
@@ -323,7 +324,12 @@ simple to audit.
 - **Programs** only through `zendiloos-exec`: absolute paths from a fixed
   list in the agent configuration, no shell, arguments as a list, empty
   environment, no stdin except for secrets (passwords never on the command
-  line), timeout, output limit.
+  line), timeout, output limit. Currently: `systemctl`, `lsblk`, `smartctl`,
+  `useradd`, `userdel`, `groupadd`, `groupdel`, `gpasswd`, `smbpasswd`.
+- **Reads** of fixed files where no program is needed: `/proc/mdstat`.
+  Although it is world-readable, the agent provides it, so that all storage
+  state comes from one place (later together with `mdadm --detail`, which
+  needs root) and the simulation can provide all of it consistently.
 - **Files** only at fixed locations known to the agent code, written
   atomically (temporary file, `fsync`, `rename`), for example
   `/etc/samba/zendiloos.conf`, `/etc/exports.d/zendiloos.exports`,
@@ -344,8 +350,13 @@ simple to audit.
 ### 3.4 zendiloosd ↔ Linux (without the agent)
 
 Read-only and unprivileged: `/proc` and `/sys` for metrics (`sysinfo` for
-CPU, memory, processes, sensors; own parsers for `/proc/mdstat` and
-`/proc/diskstats`), the journal for logs (group `systemd-journal`).
+CPU, memory, processes, sensors; an own parser for `/proc/diskstats`), and
+the journal for the log viewer. For the journal `zendiloosd` runs
+`journalctl --output=json`, the only program it runs, through
+`zendiloos-exec`, with the supplementary group `systemd-journal`. A request
+chooses among fixed views (everything, zendiloOS, storage, file sharing,
+kernel), a minimum priority, a page size and a cursor; nothing else reaches
+the command line.
 
 ---
 
@@ -376,7 +387,20 @@ separate account.
   stdin). The plaintext password exists only during that request.
 - The agent refuses any change to accounts outside `zendiloos-users`. On an
   existing Debian system, system accounts and the owner's own user (UID 1000)
-  stay untouched.
+  stay untouched. "Managed" means: a user with a UID from 2000 to 59999
+  whose primary group is `zendiloos-users`, or a group with a GID in that
+  range. Names the system already uses are refused (`name_taken`).
+- Groups are Linux groups as well; the agent sets their members.
+- Order of changes: the host first (where failures are most likely), then
+  the database. A failed creation removes the Linux user or group again.
+- Administrators cannot change their own role or access, delete
+  themselves or reset their own password here (they use their settings),
+  and at least one enabled administrator always remains. Changes to
+  accounts and groups are serialized in `zendiloosd`, so these checks cannot
+  be raced.
+- Accounts an administrator creates, or whose password an administrator
+  sets, must choose their own password at the next login; until then the
+  API answers everything else with `password_change_required`.
 
 Alternative: separate web accounts and share accounts. Simpler to build, but
 unexpected for users, and the file manager would still need a mapping from
@@ -471,7 +495,12 @@ convenience. Enforcement happens only in the backend (axum extractor
 - systemd hardening: `PrivateNetwork`, `ProtectSystem=strict` with explicit
   `ReadWritePaths`, `ProtectHome`, `CapabilityBoundingSet` limited to what
   is needed, `SystemCallFilter`, `NoNewPrivileges` where possible. New
-  operations extend this deliberately.
+  operations extend this deliberately. As of M2: capabilities
+  `CAP_SYS_RAWIO` and `CAP_SYS_ADMIN` (SMART through SG_IO and NVMe admin
+  commands) and `CAP_CHOWN` (the shadow tools); devices closed except
+  read-only access to SATA/SAS/USB, NVMe and virtio disks; writable only
+  `/etc` and Samba's state directories. `systemd-analyze security` rates the
+  agent 2.1 and `zendiloosd` 1.6 ("OK").
 
 ### 4.7 Storage Guard Rails
 
@@ -505,7 +534,9 @@ loop devices and virtual disks in a Debian VM.
   The request ID also appears in the agent's journal.
 - Structured logs through `tracing` (journald in production, readable during
   development). Passwords, tokens and cookies never appear in logs; the types
-  ensure this, not discipline.
+  ensure this, not discipline. When writing to the journal, each line
+  carries its syslog priority (`<4>` for warnings and so on), so the log
+  viewer can filter by priority.
 
 ### 4.9 Containers **[Phase 4]**
 
@@ -527,6 +558,7 @@ stream. Final decision in phase 4.
 | Volume | filesystem in a pool: **Btrfs** (default) or ext4; mount unit at `/srv/zendiloos/<volume>` **[Assumption]**; layer in between see below |
 | Share | Btrfs subvolume (snapshots per share, quotas via Btrfs simple quotas) or a directory on ext4 |
 | Monitoring | `/proc/mdstat`, `mdadm --detail`, Btrfs device statistics, SMART (`smartctl --json`, `nvme`), periodic scrub |
+| Reading (M2) | `lsblk --json` with filesystem usage, `/proc/mdstat`, `smartctl --json --nocheck=standby` (sleeping disks are not woken); a disk holding `/`, `/boot`, `/efi`, `/usr`, `/var`, `/home` or swap is the **system disk** and never offered for storage; Btrfs, ext4 and XFS filesystems outside it are volumes |
 | ZFS | optional module from phase 4 (`zfs-dkms` from contrib) |
 
 | Option | Pros | Cons |
@@ -561,7 +593,7 @@ volume per pool.
 | Database | SQLite (WAL) with sqlx; compile-time checked queries (`query!`), offline data in `backend/.sqlx` | after changing SQL or migrations run `just sqlx-prepare`; `just check` fails if the data is stale |
 | Migrations | forward only, embedded, transactional; before each migration a copy of the database in `/var/lib/zendiloos/backup/` | safe migrations without down scripts |
 | Configuration | static: `/etc/zendiloos/*.toml` (listen address, paths, log level, development flags); everything the admin manages lives in the database | |
-| System metrics | `sysinfo` for CPU, memory, processes, sensors; own parsers for `/proc/mdstat` and `/proc/diskstats` | sysinfo does not cover storage specifics |
+| System metrics | `sysinfo` for CPU, memory, processes, sensors; an own parser for `/proc/diskstats` | sysinfo does not cover storage specifics |
 | Network | systemd-networkd + systemd-resolved **[Phase 4]**; on an existing Debian with ifupdown/NetworkManager display only | declarative files the agent writes atomically |
 | Docker | Debian packages `docker.io` and `docker-compose`, apps as Compose projects **[Phase 4]** | security updates through Debian; Docker CE optional |
 | Packaging | `debian/` with debhelper (compat 13 plus `dh-sequence-installsysusers`), built in a `debian:trixie` container with Rust from `rustup` and Node.js 24 pinned by checksum | native maintainer scripts, `sysusers.d`, `tmpfiles.d`, `dh_installsystemd`; works on any host with Docker |

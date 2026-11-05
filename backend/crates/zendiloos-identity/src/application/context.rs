@@ -3,20 +3,67 @@
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use zendiloos_kernel::{AuditEntry, PortError, RequestContext, Timestamp};
+use zendiloos_kernel::{AuditEntry, PortError, RequestContext, Secret, Timestamp};
 
+use super::ports::Creation;
 use super::{AccountSummary, AuthContext, IdentityConfig, IdentityError, IdentityPorts, SignedIn};
-use crate::domain::{Account, AccountName, LoginThrottle, NewSession, ThrottleKey};
+use crate::domain::{
+    Account, AccountId, AccountName, LoginThrottle, NewSession, Permission, Role, ThrottleKey,
+};
 
 pub(crate) struct Context {
     pub(crate) ports: IdentityPorts,
     pub(crate) config: IdentityConfig,
     throttle: Mutex<LoginThrottle>,
+    /// Held while accounts and groups change, so that checks such as "an
+    /// administrator remains" cannot be raced by a concurrent change.
+    pub(crate) changes: tokio::sync::Mutex<()>,
 }
 
 impl Context {
     pub(crate) fn new(ports: IdentityPorts, config: IdentityConfig) -> Self {
-        Self { ports, config, throttle: Mutex::new(LoginThrottle::new(config.throttle)) }
+        Self {
+            ports,
+            config,
+            throttle: Mutex::new(LoginThrottle::new(config.throttle)),
+            changes: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    pub(crate) fn require(auth: &AuthContext, permission: Permission) -> Result<(), IdentityError> {
+        if auth.can(permission) { Ok(()) } else { Err(IdentityError::Forbidden) }
+    }
+
+    /// Creates the Linux user and its Samba password for a new account.
+    /// Undoes the user if the password cannot be set.
+    pub(crate) async fn provision_user(
+        &self,
+        name: &AccountName,
+        password: &Secret,
+        request: &RequestContext,
+    ) -> Result<(), IdentityError> {
+        if self.ports.system.create_user(name, request).await? == Creation::NameTaken {
+            return Err(IdentityError::NameTaken);
+        }
+        if let Err(error) = self.ports.system.set_password(name, password, request).await {
+            self.unprovision_user(name, request).await;
+            return Err(error.into());
+        }
+        Ok(())
+    }
+
+    /// Whether an enabled administrator other than `except` exists.
+    pub(crate) async fn another_enabled_admin(&self, except: AccountId) -> Result<bool, PortError> {
+        let accounts = self.ports.accounts.list().await?;
+        Ok(accounts.iter().any(|a| a.id != except && a.role == Role::Admin && !a.disabled))
+    }
+
+    /// Best effort, after a later step failed: the error that made it
+    /// necessary is the one to report.
+    pub(crate) async fn unprovision_user(&self, name: &AccountName, request: &RequestContext) {
+        if let Err(error) = self.ports.system.delete_user(name, request).await {
+            tracing::error!(user = name.as_str(), %error, "cannot remove the Linux user of a failed account creation");
+        }
     }
 
     pub(crate) fn now(&self) -> Timestamp {
