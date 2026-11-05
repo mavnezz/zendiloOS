@@ -607,7 +607,16 @@ rustls with ring and the system's certificate authorities
   cold backup; list the erasable disks on machines where that matters. On
   an existing Debian, any process running as `www-data` can reach the API
   socket and claim an address in `X-Real-IP`, passing by the per-address
-  throttle.
+  throttle. A writer can make the folder `.recycle/<other user>` before
+  that user deletes anything over SMB; Samba then moves that user's
+  deletions into it, readable by the writer. The file manager refuses a
+  bin that is not the user's own and private (and empties a bin without
+  removing it), but Samba does not check; planned: the files agent makes
+  each writer's bin when access is applied.
+- Folder downloads are planned before the first byte (each entry once,
+  its name and its folder's index, at most 100 000 entries), one at a
+  time per user and four in all, and given up when nobody reads for five
+  minutes; the files agent may use 512 MiB (`MemoryMax`).
 - Validated types are the only form in which values reach a command line
   (`DiskName` accepts only `sda`, `nvme0n1` and the like: no paths, no `-`
   prefix).

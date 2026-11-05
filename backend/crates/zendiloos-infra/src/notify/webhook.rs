@@ -49,6 +49,27 @@ fn header_text(text: &str) -> HeaderValue {
     HeaderValue::from_str(&value).unwrap_or_else(|_| HeaderValue::from_static("zendiloOS"))
 }
 
+/// `%XX` in the user part of an address, as bytes.
+fn percent_decoded(text: &str) -> Vec<u8> {
+    let bytes = text.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = bytes.get(i + 1..i + 3).and_then(|h| std::str::from_utf8(h).ok());
+        match (bytes[i], hex.and_then(|h| u8::from_str_radix(h, 16).ok())) {
+            (b'%', Some(byte)) => {
+                decoded.push(byte);
+                i += 3;
+            }
+            (byte, _) => {
+                decoded.push(byte);
+                i += 1;
+            }
+        }
+    }
+    decoded
+}
+
 pub(super) async fn post(
     tls: Arc<rustls::ClientConfig>,
     hook: &Webhook,
@@ -74,12 +95,22 @@ pub(super) async fn post(
         }
     };
     let path = uri.path_and_query().map_or("/", |p| p.as_str());
+    // Host is the host and port only; user and password in the address
+    // (`https://user:secret@host/`) become basic authentication.
+    let host_header = match authority.port() {
+        Some(port) => format!("{}:{port}", authority.host()),
+        None => authority.host().to_owned(),
+    };
     let mut request = Request::post(path)
-        .header(HOST, authority.as_str())
+        .header(HOST, host_header)
         .header(CONTENT_TYPE, content_type)
         .header(USER_AGENT, concat!("zendiloOS/", env!("CARGO_PKG_VERSION")));
     if hook.format == WebhookFormat::Text {
         request = request.header("Title", header_text(&message.title));
+    }
+    if let Some((user_info, _)) = authority.as_str().rsplit_once('@') {
+        let credentials = base64::engine::general_purpose::STANDARD.encode(percent_decoded(user_info));
+        request = request.header(hyper::header::AUTHORIZATION, format!("Basic {credentials}"));
     }
     let request = request.body(Full::new(Bytes::from(body))).map_err(|e| e.to_string())?;
 

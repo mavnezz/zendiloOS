@@ -551,6 +551,12 @@ impl ShareRoot {
         // missing, it inherits them from the share's root.
         let mut bin = enter(&self.directory(&SharePath::root())?, RECYCLE_DIRECTORY, 0o777)?;
         bin = enter(&bin, user, 0o700)?;
+        // Another writer could have made a folder of this name first, to
+        // read what lands in it.
+        let own = fstat(&bin)?;
+        if own.st_uid != rustix::process::geteuid().as_raw() || own.st_mode & 0o077 != 0 {
+            return Err(FileError::Invalid("the recycle bin is not yours alone; ask an administrator"));
+        }
         for folder in path.parent().unwrap_or_default().names() {
             bin = enter(&bin, folder, 0o700)?;
         }

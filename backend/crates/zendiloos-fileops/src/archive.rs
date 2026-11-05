@@ -35,10 +35,14 @@ enum Kind {
     Symlink { target: Vec<u8> },
 }
 
+/// One entry: its own name and the index of its folder, so a deep tree
+/// costs no more memory than a flat one.
 #[derive(Debug, Clone)]
 struct Entry {
-    /// From the archived folder down; empty for the folder itself.
-    names: Vec<CString>,
+    /// The folder it is in; `None` only for the archived folder itself.
+    parent: Option<usize>,
+    /// Empty for the archived folder itself.
+    name: CString,
     kind: Kind,
     mode: u32,
     modified: i64,
@@ -62,14 +66,23 @@ impl ArchivePlan {
         self.entries.len()
     }
 
-    /// The path of `entry` in the archive; folders end with `/`.
-    fn path(&self, entry: &Entry) -> Vec<u8> {
-        let mut path = self.root.clone();
-        for name in &entry.names {
-            path.push(b'/');
-            path.extend_from_slice(name.to_bytes());
+    /// The path of entry `index` in the archive; folders end with `/`.
+    fn path(&self, index: usize) -> Vec<u8> {
+        let mut names = Vec::new();
+        let mut at = Some(index);
+        while let Some(i) = at {
+            let entry = &self.entries[i];
+            if entry.parent.is_some() {
+                names.push(entry.name.to_bytes());
+            }
+            at = entry.parent;
         }
-        if entry.kind == Kind::Directory {
+        let mut path = self.root.clone();
+        for name in names.into_iter().rev() {
+            path.push(b'/');
+            path.extend_from_slice(name);
+        }
+        if self.entries[index].kind == Kind::Directory {
             path.push(b'/');
         }
         path
@@ -84,14 +97,15 @@ impl ShareRoot {
         let folder = self.resolve(path, OFlags::RDONLY | OFlags::DIRECTORY)?;
         let stat = fstat(&folder)?;
         let mut entries = vec![Entry {
-            names: Vec::new(),
+            parent: None,
+            name: CString::default(),
             kind: Kind::Directory,
             mode: stat.st_mode,
             modified: stat.st_mtime,
         }];
-        self.plan_folder(folder.as_fd(), &[], path.is_root(), &mut entries)?;
+        self.plan_folder(folder.as_fd(), 0, 0, path.is_root(), &mut entries)?;
         let mut plan = ArchivePlan { root: name.as_bytes().to_vec(), entries, length: 2 * BLOCK };
-        let length: u64 = plan.entries.iter().map(|entry| entry_length(&plan, entry)).sum();
+        let length: u64 = (0..plan.entries.len()).map(|index| entry_length(&plan, index)).sum();
         plan.length += length;
         Ok(plan)
     }
@@ -99,11 +113,11 @@ impl ShareRoot {
     fn plan_folder(
         &self,
         folder: BorrowedFd<'_>,
-        above: &[CString],
+        index: usize,
+        depth: u32,
         share_top: bool,
         entries: &mut Vec<Entry>,
     ) -> Result<(), FileError> {
-        let depth = u32::try_from(above.len()).unwrap_or(u32::MAX);
         if depth >= MAX_DEPTH {
             return Err(FileError::Invalid("folders are nested too deeply"));
         }
@@ -120,24 +134,29 @@ impl ShareRoot {
                 return Err(FileError::Invalid("too many files for one download"));
             }
             let stat = statat(folder, child.as_c_str(), AtFlags::SYMLINK_NOFOLLOW)?;
-            let mut names = above.to_vec();
-            names.push(child.clone());
-            let (mode, modified) = (stat.st_mode, stat.st_mtime);
+            let (mode, modified, parent) = (stat.st_mode, stat.st_mtime, Some(index));
             match kind(&stat) {
                 FileType::Directory if device(&stat) == self.file_system => {
                     let inner = open_beneath_flags(folder, &child, OFlags::RDONLY | OFlags::DIRECTORY)?;
-                    entries.push(Entry { names: names.clone(), kind: Kind::Directory, mode, modified });
-                    self.plan_folder(inner.as_fd(), &names, false, entries)?;
+                    entries.push(Entry { parent, name: child, kind: Kind::Directory, mode, modified });
+                    let own = entries.len() - 1;
+                    self.plan_folder(inner.as_fd(), own, depth + 1, false, entries)?;
                 }
                 FileType::RegularFile => {
                     // Opened once now: what cannot be read refuses the archive.
                     drop(open_beneath_flags(folder, &child, OFlags::RDONLY | OFlags::NONBLOCK)?);
                     let size = u64::try_from(stat.st_size).unwrap_or(0);
-                    entries.push(Entry { names, kind: Kind::File { size }, mode, modified });
+                    entries.push(Entry { parent, name: child, kind: Kind::File { size }, mode, modified });
                 }
                 FileType::Symlink => {
                     let target = readlinkat(folder, child.as_c_str(), Vec::new())?.into_bytes();
-                    entries.push(Entry { names, kind: Kind::Symlink { target }, mode, modified });
+                    entries.push(Entry {
+                        parent,
+                        name: child,
+                        kind: Kind::Symlink { target },
+                        mode,
+                        modified,
+                    });
                 }
                 // Mounted file systems, devices, pipes and sockets.
                 _ => {}
@@ -154,31 +173,35 @@ impl ShareRoot {
         plan: &ArchivePlan,
         out: &mut impl Write,
     ) -> Result<(), FileError> {
-        let folder = self.resolve(path, OFlags::PATH | OFlags::DIRECTORY)?;
-        for entry in &plan.entries {
-            out.write_all(&header(plan, entry))?;
-            if let Kind::File { size } = entry.kind {
-                let file = open_entry(folder.as_fd(), &entry.names)?;
-                copy_exactly(file, size, out)?;
-                out.write_all(&padding(size))?;
+        // The folders on the way to the current entry, opened: entries come
+        // folder by folder, each folder before what is in it.
+        let mut open: Vec<(usize, OwnedFd)> =
+            vec![(0, self.resolve(path, OFlags::PATH | OFlags::DIRECTORY)?)];
+        for (index, entry) in plan.entries.iter().enumerate() {
+            out.write_all(&header(plan, index))?;
+            let Some(parent) = entry.parent else { continue };
+            while open.last().is_some_and(|(i, _)| *i != parent) {
+                open.pop();
+            }
+            let folder =
+                open.last().map(|(_, fd)| fd.as_fd()).ok_or(FileError::Invalid("the plan is broken"))?;
+            match entry.kind {
+                Kind::Directory => {
+                    let inner = open_beneath_flags(folder, &entry.name, OFlags::PATH | OFlags::DIRECTORY)?;
+                    open.push((index, inner));
+                }
+                Kind::File { size } => {
+                    let file = open_beneath_flags(folder, &entry.name, OFlags::RDONLY | OFlags::NONBLOCK)?;
+                    copy_exactly(file, size, out)?;
+                    out.write_all(&padding(size))?;
+                }
+                Kind::Symlink { .. } => {}
             }
         }
         out.write_all(&[0; 2 * BLOCK as usize])?;
         out.flush()?;
         Ok(())
     }
-}
-
-/// Opens the file at `names` beneath `folder`, following no link.
-fn open_entry(folder: BorrowedFd<'_>, names: &[CString]) -> Result<OwnedFd, FileError> {
-    let Some((name, folders)) = names.split_last() else { return Err(FileError::Invalid("not a file")) };
-    let mut directory: Option<OwnedFd> = None;
-    for inner in folders {
-        let base = directory.as_ref().map_or(folder, AsFd::as_fd);
-        directory = Some(open_beneath_flags(base, inner, OFlags::PATH | OFlags::DIRECTORY)?);
-    }
-    let base = directory.as_ref().map_or(folder, AsFd::as_fd);
-    open_beneath_flags(base, name, OFlags::RDONLY | OFlags::NONBLOCK)
 }
 
 /// `size` bytes of `file`: cut if it grew, padded with zeros if it shrank
@@ -203,18 +226,20 @@ fn padding(size: u64) -> Vec<u8> {
     vec![0; usize::try_from((BLOCK - size % BLOCK) % BLOCK).unwrap_or(0)]
 }
 
-/// Bytes the entry takes in the archive: its header(s) and padded content.
-fn entry_length(plan: &ArchivePlan, entry: &Entry) -> u64 {
-    let content = match entry.kind {
+/// Bytes entry `index` takes in the archive: its header(s) and content.
+fn entry_length(plan: &ArchivePlan, index: usize) -> u64 {
+    let content = match plan.entries[index].kind {
         Kind::File { size } => size.div_ceil(BLOCK) * BLOCK,
         _ => 0,
     };
-    header(plan, entry).len() as u64 + content
+    header(plan, index).len() as u64 + content
 }
 
-/// The ustar header of `entry`, after a pax header if a value does not fit.
-fn header(plan: &ArchivePlan, entry: &Entry) -> Vec<u8> {
-    let path = plan.path(entry);
+/// The ustar header of entry `index`, after a pax header if a value does
+/// not fit.
+fn header(plan: &ArchivePlan, index: usize) -> Vec<u8> {
+    let entry = &plan.entries[index];
+    let path = plan.path(index);
     let (typeflag, size, link) = match &entry.kind {
         Kind::Directory => (b'5', 0, &[][..]),
         Kind::File { size } => (b'0', *size, &[][..]),

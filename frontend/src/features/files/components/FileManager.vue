@@ -271,12 +271,19 @@ async function restore(): Promise<void> {
 
 const emptying = ref(false)
 
-/** Deletes the user's whole bin in this share for good, as a job. */
+/**
+ * Deletes everything in the user's bin in this share for good, as a job.
+ * The bin itself stays: it is the user's own, and nobody else may take
+ * its name in the meantime.
+ */
 async function emptyRecycleBin(): Promise<void> {
-  if (shareId.value === null || !ownBin.value) return
+  const bin = ownBin.value
+  if (shareId.value === null || !bin) return
+  const paths = (folder.value?.entries ?? []).map((entry) => joinPath(bin, entry.name))
+  if (!paths.length) return
   try {
-    await actions.remove(shareId.value, [ownBin.value])
-    notifications.notify('info', t('files.started.delete', { count: 1 }, 1))
+    await actions.remove(shareId.value, paths.slice(0, 1000))
+    notifications.notify('info', t('files.started.delete', { count: paths.length }, paths.length))
     selected.value = new Set()
   } catch (failure) {
     fail(failure)

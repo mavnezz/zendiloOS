@@ -203,6 +203,20 @@ fn removing_goes_to_the_users_recycle_bin() {
 }
 
 #[test]
+fn a_bin_someone_else_could_read_is_refused() {
+    let v = Volumes::new();
+    v.write("photos", "a.jpg", "mine");
+    let bin = v.share_path("photos").join(".recycle/anna");
+    fs::create_dir_all(&bin).unwrap();
+    fs::set_permissions(&bin, std::os::unix::fs::PermissionsExt::from_mode(0o777)).unwrap();
+
+    let refused = v.share("photos").remove(&path("a.jpg"), Some("anna"));
+
+    assert!(matches!(refused, Err(FileError::Invalid(_))), "{refused:?}");
+    assert!(v.exists("photos", "a.jpg"), "nothing moved");
+}
+
+#[test]
 fn restoring_puts_an_entry_back_where_it_was() {
     let v = Volumes::new();
     v.write("photos", "album/2024/a.jpg", "first");
@@ -349,4 +363,24 @@ fn what_cannot_be_read_refuses_the_archive() {
 
     fs::set_permissions(&secret, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     assert!(matches!(refused, Err(FileError::Denied)), "{refused:?}");
+}
+
+#[test]
+fn deep_trees_archive_with_one_name_per_entry() {
+    let v = Volumes::new();
+    let deep: String = (0..200).map(|_| "d/").collect();
+    v.write("photos", &format!("top/{deep}bottom.txt"), "deep");
+    v.write("photos", "top/z.txt", "after the deep folder");
+    let photos = v.share("photos");
+
+    let plan = photos.plan_archive(&path("top"), "top").unwrap();
+    let mut archive = Vec::new();
+    photos.write_archive(&path("top"), &plan, &mut archive).unwrap();
+
+    assert_eq!(archive.len() as u64, plan.length());
+    let entries = unpacked(&archive);
+    assert_eq!(entries.len(), 1 + 200 + 2);
+    let bottom = entries.iter().find(|(name, _, _)| name.ends_with("bottom.txt")).unwrap();
+    assert_eq!((bottom.0.len(), bottom.2.as_str()), ("top/".len() + deep.len() + "bottom.txt".len(), "deep"));
+    assert_eq!(entries.last().unwrap(), &("top/z.txt".to_owned(), '0', "after the deep folder".to_owned()));
 }

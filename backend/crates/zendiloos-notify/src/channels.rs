@@ -132,6 +132,9 @@ pub enum InvalidChannel {
     Credentials,
     #[error("a password is only sent encrypted: choose TLS or STARTTLS")]
     PlainPassword,
+    /// The stored password goes only to the server it was given for.
+    #[error("type the password again when the server, port, encryption or user name changes")]
+    RetypePassword,
     #[error("a webhook is an http:// or https:// address without spaces")]
     Url,
     #[error("the least serious level is info, warning or error")]
@@ -356,6 +359,11 @@ impl Channels {
         if let (PasswordChange::Keep, Target::Email(new), Target::Email(old)) =
             (&password, &mut settings.target, &existing.settings.target)
         {
+            let elsewhere = (&new.server, new.port, new.security, &new.username)
+                != (&old.server, old.port, old.security, &old.username);
+            if old.password.is_some() && elsewhere {
+                return Err(InvalidChannel::RetypePassword.into());
+            }
             new.password.clone_from(&old.password);
             // Checked again: keeping a password must not send it in clear.
             settings = settings.checked()?;
@@ -588,13 +596,23 @@ mod tests {
         assert_eq!(chat.last.as_ref().and_then(|d| d.error.as_deref()), Some("connection refused"));
         assert_eq!(listed.iter().find(|c| c.id == mail.id).unwrap().last.as_ref().unwrap().error, None);
 
-        // Keeping the password while turning off encryption is refused.
+        // The stored password goes nowhere else: not unencrypted, not to
+        // another server.
         let mut plain = email("me@example.org");
         if let Target::Email(e) = &mut plain.target {
             (e.security, e.password) = (Security::None, None);
         }
         let kept = channels.update(mail.id, plain.clone(), PasswordChange::Keep, &alice(), &request).await;
-        assert!(matches!(kept, Err(ChannelError::Invalid(InvalidChannel::PlainPassword))), "{kept:?}");
+        assert!(matches!(kept, Err(ChannelError::Invalid(InvalidChannel::RetypePassword))), "{kept:?}");
+        let mut moved = email("me@example.org");
+        if let Target::Email(e) = &mut moved.target {
+            e.server = "smtp.elsewhere.example".into();
+        }
+        let redirected = channels.update(mail.id, moved, PasswordChange::Keep, &alice(), &request).await;
+        assert!(
+            matches!(redirected, Err(ChannelError::Invalid(InvalidChannel::RetypePassword))),
+            "{redirected:?}"
+        );
         channels.update(mail.id, plain, PasswordChange::Replace, &alice(), &request).await.unwrap();
         channels.delete(mail.id, &alice(), &request).await.unwrap();
         assert!(matches!(channels.delete(mail.id, &alice(), &request).await, Err(ChannelError::NotFound)));

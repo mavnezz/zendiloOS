@@ -10,7 +10,7 @@ publish.workspace = true
 # Runs as root in the files agent (with a user's credentials): keep it small.
 [dependencies]
 zendiloos-agent-proto.workspace = true
-rustix = { workspace = true, features = ["fs", "rand"] }
+rustix = { workspace = true, features = ["fs", "rand", "process"] }
 thiserror.workspace = true
 
 [dev-dependencies]

@@ -147,7 +147,8 @@ async fn webhooks_get_json_or_text() {
     assert_eq!((body["level"].as_str(), body["params"]["pool"].as_str()), (Some("warning"), Some("tank")));
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("http://{}/nas", listener.local_addr().unwrap());
+    let address = listener.local_addr().unwrap();
+    let url = format!("http://nas:p%40ss@{address}/nas");
     let server = tokio::spawn(http_server(listener, "403 Forbidden"));
     let ntfy = Target::Webhook(Webhook { url, format: WebhookFormat::Text });
 
@@ -156,6 +157,8 @@ async fn webhooks_get_json_or_text() {
     assert_eq!(refused, Err("the server answered 403 Forbidden".into()));
     let request = server.await.unwrap();
     assert!(request.contains("title: =?UTF-8?B?"), "{request}");
+    assert!(request.contains(&format!("host: {address}\r\n")), "no user in Host: {request}");
+    assert!(request.contains("authorization: Basic bmFzOnBAc3M=\r\n"), "{request}");
     assert!(request.ends_with("\r\n\r\nUnter Speicher nachsehen."), "{request}");
 }
 

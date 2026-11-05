@@ -114,6 +114,10 @@ disk=$(call GET /storage/disks | jq -r '[.[] | select((.usage == "unused" or .us
 plan=$(call POST /storage/pools/plan "{\"name\":\"$pool\",\"layout\":\"single\",\"disks\":[\"$disk\"]}")
 token=$(jq -er .token <<<"$plan") || fail "plan: $plan"
 job_succeeded "$(call POST /storage/pools "{\"token\":\"$token\",\"confirm\":\"$pool\"}" | jq -r .id)"
+# The monitor compares each look (once a minute) with the one before: it
+# must have seen the new pool once, or a scrub finished before that is
+# nothing new to it.
+sleep 65
 [[ $(status POST "/storage/pools/$pool/scrub") == 204 ]] || fail "cannot scrub: $(cat "$work/body")"
 # The monitor looks once a minute.
 wait_for "the scrub's notification at the webhook" "vm 'grep -q \"Data check of $pool\" /tmp/hooks.log'" 150

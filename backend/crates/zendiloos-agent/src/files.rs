@@ -24,10 +24,57 @@ pub(crate) struct Files {
     volumes: PathBuf,
     /// Folders being written as archives; each holds a thread.
     archives: std::sync::Arc<tokio::sync::Semaphore>,
+    /// Users with an archive being written: one each, so that one user's
+    /// slow downloads cannot take every place.
+    archiving: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<u32>>>,
 }
 
 /// The most folders written as archives at once.
 const CONCURRENT_ARCHIVES: usize = 4;
+/// An archive nobody reads for this long is given up.
+const ARCHIVE_STALL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+/// The writing end of an archive's pipe (non-blocking), giving up when
+/// the reader takes nothing for a while ([`ARCHIVE_STALL`]).
+struct PatientPipe(OwnedFd, std::time::Duration);
+
+impl io::Write for PatientPipe {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        loop {
+            match rustix::io::write(&self.0, buffer) {
+                Ok(written) => return Ok(written),
+                Err(rustix::io::Errno::INTR) => {}
+                Err(rustix::io::Errno::AGAIN) => {
+                    let mut ready = [rustix::event::PollFd::new(&self.0, rustix::event::PollFlags::OUT)];
+                    let wait = rustix::event::Timespec {
+                        tv_sec: self.1.as_secs().try_into().unwrap_or(i64::MAX),
+                        tv_nsec: self.1.subsec_nanos().into(),
+                    };
+                    if rustix::event::poll(&mut ready, Some(&wait))? == 0 {
+                        return Err(io::Error::new(io::ErrorKind::TimedOut, "nobody reads the archive"));
+                    }
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// A user's place among those writing archives; freed when dropped.
+struct ArchivingUser {
+    uid: u32,
+    users: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<u32>>>,
+}
+
+impl Drop for ArchivingUser {
+    fn drop(&mut self) {
+        self.users.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&self.uid);
+    }
+}
 
 /// Credentials of a managed user.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,6 +131,7 @@ impl Files {
             accounts,
             volumes,
             archives: std::sync::Arc::new(tokio::sync::Semaphore::new(CONCURRENT_ARCHIVES)),
+            archiving: std::sync::Arc::default(),
         }
     }
 
@@ -184,10 +232,16 @@ impl Files {
                 Ok((Response::Restored { path }, None))
             }
             Request::ArchiveFolder { user, location } => {
-                let permit = std::sync::Arc::clone(&self.archives).try_acquire_owned().map_err(|_| {
-                    OperationError::File(FileError::Invalid("too many folders are being downloaded"))
-                })?;
                 let identity = self.identity(user)?;
+                let busy = |what| OperationError::File(FileError::Invalid(what));
+                let users = std::sync::Arc::clone(&self.archiving);
+                if !users.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(identity.uid) {
+                    return Err(busy("a folder of yours is being downloaded; wait until it is done"));
+                }
+                let place = ArchivingUser { uid: identity.uid, users };
+                let permit = std::sync::Arc::clone(&self.archives)
+                    .try_acquire_owned()
+                    .map_err(|_| busy("too many folders are being downloaded"))?;
                 let share = std::sync::Arc::new(self.share(location)?);
                 let path = location.path.clone();
                 let name = path.file_name().unwrap_or(location.share.as_str()).to_owned();
@@ -195,16 +249,20 @@ impl Files {
                 let plan =
                     as_user(identity.clone(), move || planner.plan_archive(&planned_path, &name)).await?;
                 let (reader, writer) = std::io::pipe().map_err(|error| OperationError::File(error.into()))?;
+                let writer = OwnedFd::from(writer);
+                rustix::io::ioctl_fionbio(&writer, true)
+                    .map_err(|error| OperationError::File(io::Error::from(error).into()))?;
                 let size = plan.length();
                 // Written while zendiloosd reads; it ends when done or when
                 // zendiloosd stops reading (the pipe breaks).
                 tokio::spawn(async move {
                     let written = as_user(identity, move || {
-                        let mut out = std::io::BufWriter::with_capacity(256 * 1024, writer);
+                        let mut out =
+                            std::io::BufWriter::with_capacity(256 * 1024, PatientPipe(writer, ARCHIVE_STALL));
                         share.write_archive(&path, &plan, &mut out)
                     })
                     .await;
-                    drop(permit);
+                    drop((permit, place));
                     if let Err(error) = written {
                         tracing::info!(%error, "archive: ended before its end");
                     }
@@ -260,6 +318,20 @@ mod tests {
                 "{other} must be refused"
             );
         }
+    }
+
+    #[test]
+    fn an_archive_nobody_reads_is_given_up() {
+        let (reader, writer) = std::io::pipe().unwrap();
+        let writer = OwnedFd::from(writer);
+        rustix::io::ioctl_fionbio(&writer, true).unwrap();
+        let mut pipe = PatientPipe(writer, std::time::Duration::from_millis(50));
+        let chunk = [0u8; 64 * 1024];
+
+        let stalled = (0..64).try_for_each(|_| io::Write::write_all(&mut pipe, &chunk));
+
+        assert_eq!(stalled.unwrap_err().kind(), io::ErrorKind::TimedOut, "the pipe filled up");
+        drop(reader);
     }
 
     #[tokio::test]

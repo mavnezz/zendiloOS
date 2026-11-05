@@ -17,7 +17,7 @@ zendiloos-logging.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 listenfd.workspace = true
-rustix = { workspace = true, features = ["thread", "process", "fs"] }
+rustix = { workspace = true, features = ["thread", "process", "fs", "event"] }
 serde.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "sync"] }

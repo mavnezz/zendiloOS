@@ -3062,6 +3062,7 @@ name = "zendiloos-network"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "thiserror",
  "tokio",
  "zendiloos-kernel",
 ]

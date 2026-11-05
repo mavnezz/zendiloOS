@@ -28,6 +28,10 @@ ReadOnlyPaths=/var /run -/srv -/opt -/mnt -/media
 InaccessiblePaths=-/var/lib/zendiloos -/var/lib/samba -/etc/zendiloos -/etc/ssh -/etc/shadow -/etc/gshadow
 PrivateTmp=yes
 PrivateDevices=yes
+# It streams; a request that would need more memory than this is broken
+# or hostile, and must not push smbd or zendiloosd out.
+MemoryHigh=384M
+MemoryMax=512M
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
