@@ -168,6 +168,18 @@ impl SimulatedAgent {
                     let path = share(location)?.restore(&location.path, user.as_str())?;
                     (Response::Restored { path }, None)
                 }
+                Request::ArchiveFolder { location, .. } => {
+                    let (share, path) = (share(location)?, location.path.clone());
+                    let name = path.file_name().unwrap_or(location.share.as_str()).to_owned();
+                    let plan = share.plan_archive(&path, &name)?;
+                    let (reader, writer) = std::io::pipe()?;
+                    let size = plan.length();
+                    std::thread::spawn(move || {
+                        let mut out = std::io::BufWriter::new(writer);
+                        let _ = share.write_archive(&path, &plan, &mut out);
+                    });
+                    (Response::Archive { size }, Some(OwnedFd::from(reader)))
+                }
                 other => (
                     error(ErrorCode::InvalidRequest, &format!("{} is not a file operation", other.name())),
                     None,
@@ -343,7 +355,8 @@ impl AgentTransport for SimulatedAgent {
             | Request::MoveEntry { .. }
             | Request::CopyEntry { .. }
             | Request::RemoveEntry { .. }
-            | Request::RestoreEntry { .. } => self.file_operation(&request).0,
+            | Request::RestoreEntry { .. }
+            | Request::ArchiveFolder { .. } => self.file_operation(&request).0,
         };
         self.received.lock().unwrap_or_else(PoisonError::into_inner).push(request);
         Ok(response)
@@ -355,7 +368,7 @@ impl AgentTransport for SimulatedAgent {
         request_id: Option<RequestId>,
     ) -> Result<(Response, Option<OwnedFd>), TransportError> {
         match request {
-            Request::OpenFile { .. } | Request::CreateUpload { .. } => {
+            Request::OpenFile { .. } | Request::CreateUpload { .. } | Request::ArchiveFolder { .. } => {
                 let answer = self.file_operation(&request);
                 self.received.lock().unwrap_or_else(PoisonError::into_inner).push(request);
                 Ok(answer)

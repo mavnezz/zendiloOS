@@ -30,6 +30,8 @@ fn is_long(request: &Request) -> bool {
         Request::CopyEntry { .. }
         | Request::MoveEntry { .. }
         | Request::RemoveEntry { .. }
+        // Planning walks the whole folder.
+        | Request::ArchiveFolder { .. }
         | Request::CreatePool { .. }
         | Request::DestroyPool { .. }
         | Request::ReplaceDisk { .. }

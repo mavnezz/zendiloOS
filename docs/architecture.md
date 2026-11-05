@@ -520,6 +520,18 @@ topics `jobs` and `notifications` apply the same rules.
   SVG, PDF and anything else is only ever saved, because a file shown from
   our origin could run script there. Every download also carries
   `Content-Security-Policy: sandbox; default-src 'none'` and `nosniff`.
+- **Folders as archives.** A folder downloads as a tar archive (POSIX
+  pax: long names whole, links as links), which Windows, macOS and Linux
+  open without extra software. The files agent first plans it as the
+  user: every entry and its size, so the archive's exact length is the
+  `Content-Length`, and anything that cannot be read refuses the download
+  instead of leaving files out silently. It then writes the archive as
+  the user into a pipe whose reading end goes to `zendiloosd` like a
+  downloaded file, following the plan to the byte (a file that grew is
+  cut, one that shrank padded); should writing fail midway, the download
+  ends short of its length and the browser reports it as failed. At the
+  share's top the recycle bins are left out, everywhere uploads in
+  progress; at most four folders are written at once.
 - Alternative: the file manager runs with broad rights and checks ACLs
   itself. Simpler, but every gap in the checks becomes a data leak, and new
   files belong to the service account.

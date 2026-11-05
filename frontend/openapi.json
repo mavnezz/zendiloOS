@@ -497,6 +497,86 @@
         ]
       }
     },
+    "/api/v1/files/shares/{id}/archive": {
+      "get": {
+        "tags": [
+          "files"
+        ],
+        "summary": "Downloads a folder with everything in it as a tar archive, which\nWindows, macOS and Linux open without extra software. Refused if\nanything inside cannot be read; the share's recycle bins are left out.\nIts length is known ahead, so one that breaks off shows as a failed\ndownload. Needs `files.read`.",
+        "operationId": "download_folder",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "description": "Relative to the share's root, e.g. `photos/2024`; empty for the root.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/x-tar": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`permission_denied`: something inside cannot be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_operation`: not a folder, too many files",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/files/shares/{id}/delete": {
       "post": {
         "tags": [

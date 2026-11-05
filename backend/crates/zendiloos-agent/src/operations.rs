@@ -153,7 +153,8 @@ impl Operations {
             | Request::MoveEntry { .. }
             | Request::CopyEntry { .. }
             | Request::RemoveEntry { .. }
-            | Request::RestoreEntry { .. } => {
+            | Request::RestoreEntry { .. }
+            | Request::ArchiveFolder { .. } => {
                 return self.files.execute(request).await.unwrap_or_else(|error| (failure(&error), None));
             }
         };

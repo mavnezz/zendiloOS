@@ -815,6 +815,7 @@ fn openapi_documents_every_route() {
             "/api/v1/auth/password",
             "/api/v1/auth/session",
             "/api/v1/files/shares",
+            "/api/v1/files/shares/{id}/archive",
             "/api/v1/files/shares/{id}/delete",
             "/api/v1/files/shares/{id}/download",
             "/api/v1/files/shares/{id}/folder",
@@ -1897,6 +1898,15 @@ async fn downloads_resume_and_harmless_kinds_show_in_the_browser() {
     let beyond = fetch("path=a.jpg", &[(header::RANGE, "bytes=10-")]).await;
     assert_eq!(beyond.status, StatusCode::RANGE_NOT_SATISFIABLE);
     assert_eq!(beyond.header(header::CONTENT_RANGE), "bytes */10");
+
+    let folder = h.send(empty(with_cookie(get(&format!("{files}/archive?path=2024")), &carol))).await;
+    assert_eq!(folder.status, StatusCode::OK);
+    assert_eq!(folder.header(header::CONTENT_TYPE), "application/x-tar");
+    assert_eq!(
+        folder.header(header::CONTENT_DISPOSITION),
+        "attachment; filename=\"2024.tar\"; filename*=UTF-8''2024.tar"
+    );
+    assert_eq!(folder.header(header::CONTENT_LENGTH), "10");
 
     let picture = fetch("path=a.jpg&inline=true", &[]).await;
     assert_eq!(picture.header(header::CONTENT_TYPE), "image/jpeg");

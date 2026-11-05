@@ -173,6 +173,21 @@ impl FilesUseCases {
         Ok(self.ports.files.open(&actor.name, &at(&share, path), context).await?)
     }
 
+    /// The folder `path` as a tar archive being written, its exact length,
+    /// and its name: the folder's, or the share's for its top.
+    pub async fn archive(
+        &self,
+        actor: &Actor,
+        id: ShareId,
+        path: FilePath,
+        context: &RequestContext,
+    ) -> Result<(tokio::fs::File, u64, String), FilesError> {
+        let share = self.share(actor, id).await?.share;
+        let name = path.name().unwrap_or(share.name.as_str()).to_owned();
+        let (file, size) = self.ports.files.archive(&actor.name, &at(&share, path), context).await?;
+        Ok((file, size, name))
+    }
+
     /// Starts an upload of `name` into `directory`. The caller writes the
     /// file, then calls [`FilesUseCases::finish_upload`], or
     /// [`FilesUseCases::abort_upload`] if anything failed.

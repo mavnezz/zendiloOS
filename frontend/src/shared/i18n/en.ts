@@ -671,6 +671,7 @@ const en = {
     dismiss: 'Dismiss',
     dropHere: 'Drop files here to upload them',
     preview: 'Show',
+    downloadFolderHint: 'As a tar archive, with everything in it',
     restore: 'Restore',
     restored: 'Restored {count} item | Restored {count} items',
     emptyBin: 'Empty the recycle bin',

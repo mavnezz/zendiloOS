@@ -26,6 +26,10 @@ use zendiloos_agent_proto::{
     DirectoryEntry, EntryKind, MAX_DIRECTORY_ENTRIES, ShareName, SharePath, VolumeNumber, is_file_name,
 };
 
+mod archive;
+
+pub use archive::{ArchivePlan, MAX_ARCHIVE_ENTRIES};
+
 /// The recycle bin at a share's root: `.recycle/<user>` per user, as
 /// Samba's `vfs_recycle` keeps it.
 pub const RECYCLE_DIRECTORY: &str = ".recycle";
@@ -149,7 +153,7 @@ fn original_name(name: &str) -> &str {
 }
 
 /// Names in a directory opened for reading, without `.` and `..`.
-fn names(directory: &OwnedFd) -> Result<Vec<CString>, FileError> {
+fn names(directory: impl AsFd) -> Result<Vec<CString>, FileError> {
     let mut names = Vec::new();
     for entry in Dir::read_from(directory)? {
         let entry = entry?;

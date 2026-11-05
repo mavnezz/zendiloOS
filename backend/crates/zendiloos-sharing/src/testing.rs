@@ -384,6 +384,20 @@ impl FileHost for Files {
         self.record(format!("remove {user} {}{recycle}", place(at)), at)
     }
 
+    /// The ten letters every file holds, as the archive.
+    async fn archive(
+        &self,
+        user: &str,
+        at: &FileLocation,
+        context: &RequestContext,
+    ) -> Result<(tokio::fs::File, u64), FileHostError> {
+        let file = self.open(user, at, context).await?;
+        let mut calls = self.calls.lock().unwrap();
+        calls.pop();
+        calls.push(format!("archive {user} {}", place(at)));
+        Ok(file)
+    }
+
     /// Back to the path without `.recycle/<user>`.
     async fn restore(
         &self,

@@ -209,6 +209,13 @@ for escape in 'folder?path=etc-link' 'download?path=etc-link/passwd' 'download?p
 done
 vm "sudo rm $path/etc-link $path/up"
 
+# A folder as a tar archive: as long as announced, and GNU tar unpacks it.
+headers=$(curl -sk -D - -o "$work/album.tar" -b "$work/anna.jar" "$api$files/archive?path=album")
+length=$(grep -i '^content-length:' <<<"$headers" | tr -dc '0-9')
+[[ -n $length && $(stat -c %s "$work/album.tar") == "$length" ]] || fail "the archive is not as long as announced: $headers"
+mkdir -p "$work/unpacked" && tar -xf "$work/album.tar" -C "$work/unpacked" || fail "tar cannot unpack the archive"
+[[ $(cat "$work/unpacked/album/from-web.txt") == 'written in the browser' ]] || fail "the archive holds something else"
+
 job_succeeded "$(call_as anna POST "$files/transfer" '{"mode":"copy","paths":["album"],"target_share":'"$share_id"',"target_path":""}' | jq -r .id)"
 vm "sudo test -f '$path/album (2)/from-web.txt'" || fail "the copy is missing"
 [[ $(vm "sudo stat -c '%U' '$path/album (2)/inner.txt'") == anna ]] || fail "the copy does not belong to anna"

@@ -257,3 +257,96 @@ fn an_unmounted_share_is_refused() {
     assert!(matches!(opened, Err(FileError::NotFound)));
     assert!(Path::new(v.directory.path()).exists());
 }
+
+/// What `tar` reads back: path, kind, content or link.
+fn unpacked(archive: &[u8]) -> Vec<(String, char, String)> {
+    let mut reader = tar::Archive::new(archive);
+    reader
+        .entries()
+        .unwrap()
+        .map(|entry| {
+            let mut entry = entry.unwrap();
+            let path = entry.path().unwrap().to_string_lossy().into_owned();
+            let kind = char::from(entry.header().entry_type().as_byte());
+            let link = entry.link_name().unwrap().map(|l| l.to_string_lossy().into_owned());
+            let mut content = String::new();
+            entry.read_to_string(&mut content).unwrap();
+            (path, kind, link.unwrap_or(content))
+        })
+        .collect()
+}
+
+#[test]
+fn folders_become_tar_archives_of_the_planned_length() {
+    let v = Volumes::new();
+    v.write("photos", "album/b.txt", "bee");
+    v.write("photos", "album/a/inner.txt", "inner");
+    let long = format!("album/{}/{}.txt", "x".repeat(80), "y".repeat(60));
+    v.write("photos", &long, "deep");
+    v.write("photos", "album/.zendiloos-upload-1", "half");
+    symlink("b.txt", v.share_path("photos").join("album/link")).unwrap();
+    let photos = v.share("photos");
+
+    let plan = photos.plan_archive(&path("album"), "album").unwrap();
+    let mut archive = Vec::new();
+    photos.write_archive(&path("album"), &plan, &mut archive).unwrap();
+
+    assert_eq!(archive.len() as u64, plan.length(), "exactly as announced");
+    assert_eq!(
+        unpacked(&archive),
+        [
+            ("album/".to_owned(), '5', String::new()),
+            ("album/a/".to_owned(), '5', String::new()),
+            ("album/a/inner.txt".to_owned(), '0', "inner".to_owned()),
+            ("album/b.txt".to_owned(), '0', "bee".to_owned()),
+            ("album/link".to_owned(), '2', "b.txt".to_owned()),
+            (format!("album/{}/", "x".repeat(80)), '5', String::new()),
+            (long.clone(), '0', "deep".to_owned()),
+        ],
+        "sorted, links kept as links, long names whole, uploads in progress left out"
+    );
+}
+
+#[test]
+fn an_archive_follows_its_plan_to_the_byte() {
+    let v = Volumes::new();
+    v.write("photos", "grows.txt", "1234");
+    v.write("photos", "shrinks.txt", "12345678");
+    v.write("photos", ".recycle/anna/old.txt", "old");
+    let photos = v.share("photos");
+
+    let plan = photos.plan_archive(&SharePath::root(), "photos").unwrap();
+    v.write("photos", "grows.txt", "123456789");
+    v.write("photos", "shrinks.txt", "12");
+    let mut archive = Vec::new();
+    photos.write_archive(&SharePath::root(), &plan, &mut archive).unwrap();
+
+    assert_eq!(archive.len() as u64, plan.length());
+    let entries = unpacked(&archive);
+    let names: Vec<&str> = entries.iter().map(|(name, _, _)| name.as_str()).collect();
+    assert_eq!(names, ["photos/", "photos/grows.txt", "photos/shrinks.txt"], "no recycle bins");
+    assert_eq!(entries[1].2, "1234", "cut to the planned size");
+    assert_eq!(entries[2].2, "12\0\0\0\0\0\0", "padded to the planned size");
+
+    // A file gone since the plan: the archive ends short.
+    fs::remove_file(v.share_path("photos").join("grows.txt")).unwrap();
+    let mut short = Vec::new();
+    assert!(photos.write_archive(&SharePath::root(), &plan, &mut short).is_err());
+    assert!((short.len() as u64) < plan.length());
+}
+
+#[test]
+fn what_cannot_be_read_refuses_the_archive() {
+    if rustix::process::geteuid().is_root() {
+        return; // root reads everything
+    }
+    let v = Volumes::new();
+    v.write("photos", "album/secret/x.txt", "x");
+    let secret = v.share_path("photos").join("album/secret");
+    fs::set_permissions(&secret, std::os::unix::fs::PermissionsExt::from_mode(0o000)).unwrap();
+
+    let refused = v.share("photos").plan_archive(&path("album"), "album");
+
+    fs::set_permissions(&secret, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    assert!(matches!(refused, Err(FileError::Denied)), "{refused:?}");
+}

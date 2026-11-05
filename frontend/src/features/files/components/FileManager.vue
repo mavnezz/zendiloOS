@@ -33,6 +33,7 @@ import { ConfirmDialog } from '@/shared/ui/confirm-dialog'
 import { Meter } from '@/shared/ui/meter'
 
 import {
+  archiveUrl,
   downloadUrl,
   joinPath,
   previewKind,
@@ -478,6 +479,18 @@ function icon(entry: FileEntry) {
               variant="ghost"
               as="a"
               :href="downloadUrl(share.id, joinPath(path, single.name))"
+              download
+            >
+              <Download />
+              {{ t('files.download') }}
+            </Button>
+            <Button
+              v-if="single?.kind === 'directory'"
+              size="sm"
+              variant="ghost"
+              as="a"
+              :href="archiveUrl(share.id, joinPath(path, single.name))"
+              :title="t('files.downloadFolderHint')"
               download
             >
               <Download />

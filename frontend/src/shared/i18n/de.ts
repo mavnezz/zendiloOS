@@ -681,6 +681,7 @@ const de: Messages = {
     dismiss: 'Ausblenden',
     dropHere: 'Dateien hier ablegen, um sie hochzuladen',
     preview: 'Anzeigen',
+    downloadFolderHint: 'Als tar-Archiv, mit allem, was darin liegt',
     restore: 'Wiederherstellen',
     restored: '{count} Eintrag wiederhergestellt | {count} Einträge wiederhergestellt',
     emptyBin: 'Papierkorb leeren',

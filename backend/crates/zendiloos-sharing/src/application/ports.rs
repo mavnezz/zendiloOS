@@ -232,6 +232,15 @@ pub trait FileHost: Send + Sync {
         context: &RequestContext,
     ) -> Result<(), FileHostError>;
 
+    /// The folder `at` as a tar archive being written, and the archive's
+    /// exact length; it ends short only if writing fails midway.
+    async fn archive(
+        &self,
+        user: &str,
+        at: &FileLocation,
+        context: &RequestContext,
+    ) -> Result<(tokio::fs::File, u64), FileHostError>;
+
     /// Out of the user's recycle bin, back to where it was deleted from or
     /// beside it. Returns where it went.
     async fn restore(

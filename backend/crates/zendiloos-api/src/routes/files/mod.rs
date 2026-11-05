@@ -31,6 +31,7 @@ pub(super) fn routes() -> OpenApiRouter<ApiState> {
         .routes(routes!(my_shares))
         .routes(routes!(list_folder))
         .routes(routes!(download))
+        .routes(routes!(download_folder))
         .routes(routes!(upload))
         .routes(routes!(create_folder))
         .routes(routes!(rename_entry))
@@ -285,13 +286,56 @@ async fn download(
         }
     };
     headers.insert(header::CONTENT_LENGTH, HeaderValue::from(length));
-    let chunks = futures_util::stream::try_unfold(file.take(length), |mut file| async move {
+    Ok((status, headers, Body::from_stream(chunks(file.take(length)))).into_response())
+}
+
+/// Downloads a folder with everything in it as a tar archive, which
+/// Windows, macOS and Linux open without extra software. Refused if
+/// anything inside cannot be read; the share's recycle bins are left out.
+/// Its length is known ahead, so one that breaks off shows as a failed
+/// download. Needs `files.read`.
+#[utoipa::path(
+    get,
+    path = "/files/shares/{id}/archive",
+    tag = "files",
+    security(("session" = [])),
+    params(("id" = i64, Path), FolderQuery),
+    responses(
+        (status = OK, content_type = "application/x-tar", body = Vec<u8>),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`"),
+        (status = FORBIDDEN, body = Problem, description = "`permission_denied`: something inside cannot be read"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_operation`: not a folder, too many files"),
+    )
+)]
+async fn download_folder(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(id): Path<i64>,
+    ApiQuery(query): ApiQuery<FolderQuery>,
+) -> Result<Response, ApiError> {
+    auth.require(Permission::FilesRead)?;
+    let folder = path(&query.path)?;
+    let (archive, size, name) =
+        state.files.archive(&auth.0.actor(), ShareId::new(id), folder, &client).await?;
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/x-tar"));
+    headers.insert(header::CONTENT_DISPOSITION, disposition(&format!("{name}.tar"), false));
+    headers.insert(header::CONTENT_LENGTH, HeaderValue::from(size));
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok((headers, Body::from_stream(chunks(archive.take(size)))).into_response())
+}
+
+/// A file's bytes as a body, read as they are sent.
+fn chunks(
+    file: impl tokio::io::AsyncRead + Unpin + Send + 'static,
+) -> impl futures_util::Stream<Item = std::io::Result<Bytes>> + Send + 'static {
+    futures_util::stream::try_unfold(file, |mut file| async move {
         let mut buffer = vec![0; 256 * 1024];
         let read = file.read(&mut buffer).await?;
         buffer.truncate(read);
         Ok::<_, std::io::Error>((read > 0).then(|| (Bytes::from(buffer), file)))
-    });
-    Ok((status, headers, Body::from_stream(chunks)).into_response())
+    })
 }
 
 #[derive(Debug, Deserialize, IntoParams)]

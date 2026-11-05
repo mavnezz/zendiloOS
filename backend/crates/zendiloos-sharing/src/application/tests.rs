@@ -295,7 +295,20 @@ async fn users_see_the_shares_their_rules_name() {
         s.files.open(&bob(), id, file("missing.jpg"), &request).await,
         Err(FilesError::NotFound)
     ));
-    assert_eq!(s.file_host.calls(), ["list bob photos:2024", "open bob photos:missing.jpg"], "as the user");
+    let (_, size, name) = s.files.archive(&bob(), id, FilePath::root(), &request).await.unwrap();
+    assert_eq!((size, name.as_str()), (10, "photos"), "the share's top is named after it");
+    let (_, _, name) = s.files.archive(&bob(), id, file("2024"), &request).await.unwrap();
+    assert_eq!(name, "2024");
+    assert_eq!(
+        s.file_host.calls(),
+        [
+            "list bob photos:2024",
+            "open bob photos:missing.jpg",
+            "archive bob photos:",
+            "archive bob photos:2024"
+        ],
+        "as the user"
+    );
 }
 
 #[tokio::test]

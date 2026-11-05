@@ -151,6 +151,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/files/shares/{id}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Downloads a folder with everything in it as a tar archive, which
+         *     Windows, macOS and Linux open without extra software. Refused if
+         *     anything inside cannot be read; the share's recycle bins are left out.
+         *     Its length is known ahead, so one that breaks off shows as a failed
+         *     download. Needs `files.read`.
+         */
+        get: operations["download_folder"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/files/shares/{id}/delete": {
         parameters: {
             query?: never;
@@ -2578,6 +2601,57 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["FileShare"][];
+                };
+            };
+        };
+    };
+    download_folder: {
+        parameters: {
+            query?: {
+                /** @description Relative to the share's root, e.g. `photos/2024`; empty for the root. */
+                path?: string;
+            };
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/x-tar": number[];
+                };
+            };
+            /** @description `permission_denied`: something inside cannot be read */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_operation`: not a folder, too many files */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
                 };
             };
         };

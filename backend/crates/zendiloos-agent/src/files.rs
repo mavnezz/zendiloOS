@@ -22,7 +22,12 @@ use crate::passwd;
 pub(crate) struct Files {
     accounts: AccountFiles,
     volumes: PathBuf,
+    /// Folders being written as archives; each holds a thread.
+    archives: std::sync::Arc<tokio::sync::Semaphore>,
 }
+
+/// The most folders written as archives at once.
+const CONCURRENT_ARCHIVES: usize = 4;
 
 /// Credentials of a managed user.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,7 +80,11 @@ async fn as_user<T: Send + 'static>(
 
 impl Files {
     pub(crate) fn new(accounts: AccountFiles, volumes: PathBuf) -> Self {
-        Self { accounts, volumes }
+        Self {
+            accounts,
+            volumes,
+            archives: std::sync::Arc::new(tokio::sync::Semaphore::new(CONCURRENT_ARCHIVES)),
+        }
     }
 
     /// Only users zendiloos manages: never root, a system account or the
@@ -161,6 +170,34 @@ impl Files {
                 let owner = user.as_str().to_owned();
                 let path = as_user(identity, move || share.restore(&path, &owner)).await?;
                 Ok((Response::Restored { path }, None))
+            }
+            Request::ArchiveFolder { user, location } => {
+                let permit = std::sync::Arc::clone(&self.archives).try_acquire_owned().map_err(|_| {
+                    OperationError::File(FileError::Invalid("too many folders are being downloaded"))
+                })?;
+                let identity = self.identity(user)?;
+                let share = std::sync::Arc::new(self.share(location)?);
+                let path = location.path.clone();
+                let name = path.file_name().unwrap_or(location.share.as_str()).to_owned();
+                let (planner, planned_path) = (std::sync::Arc::clone(&share), path.clone());
+                let plan =
+                    as_user(identity.clone(), move || planner.plan_archive(&planned_path, &name)).await?;
+                let (reader, writer) = std::io::pipe().map_err(|error| OperationError::File(error.into()))?;
+                let size = plan.length();
+                // Written while zendiloosd reads; it ends when done or when
+                // zendiloosd stops reading (the pipe breaks).
+                tokio::spawn(async move {
+                    let written = as_user(identity, move || {
+                        let mut out = std::io::BufWriter::with_capacity(256 * 1024, writer);
+                        share.write_archive(&path, &plan, &mut out)
+                    })
+                    .await;
+                    drop(permit);
+                    if let Err(error) = written {
+                        tracing::info!(%error, "archive: ended before its end");
+                    }
+                });
+                Ok((Response::Archive { size }, Some(OwnedFd::from(reader))))
             }
             other => Err(OperationError::Refused(format!("{} is not a file operation", other.name()))),
         }

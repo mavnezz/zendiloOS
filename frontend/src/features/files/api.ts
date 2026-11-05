@@ -84,6 +84,11 @@ export async function textPreview(url: string): Promise<{ text: string; more: bo
   return { text, more: total !== null && total > TEXT_PREVIEW_BYTES }
 }
 
+/** Where the browser downloads a folder from, as a tar archive. */
+export function archiveUrl(share: number, path: string): string {
+  return `/api/v1/files/shares/${share}/archive?${new URLSearchParams({ path })}`
+}
+
 /** `parent/name`, or `name` at the root. */
 export function joinPath(parent: string, name: string): string {
   return parent ? `${parent}/${name}` : name

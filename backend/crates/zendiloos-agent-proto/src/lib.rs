@@ -273,6 +273,14 @@ pub enum Request {
         user: UserName,
         location: FileLocation,
     },
+    /// Plans a tar archive of the folder `location` as the user, then
+    /// writes it, as the user, into a pipe whose reading end comes along
+    /// with [`Response::Archive`]. Refused if anything inside cannot be
+    /// read.
+    ArchiveFolder {
+        user: UserName,
+        location: FileLocation,
+    },
 }
 
 /// The `lsblk` columns of [`Request::ListBlockDevices`]; the parser in
@@ -323,6 +331,7 @@ impl Request {
             Request::CopyEntry { .. } => "copy_entry",
             Request::RemoveEntry { .. } => "remove_entry",
             Request::RestoreEntry { .. } => "restore_entry",
+            Request::ArchiveFolder { .. } => "archive_folder",
         }
     }
 }
@@ -373,6 +382,11 @@ pub enum Response {
     /// Where a restored entry went.
     Restored {
         path: SharePath,
+    },
+    /// A tar archive being written; the pipe's reading end comes along. It
+    /// is exactly `size` bytes long, unless writing fails midway.
+    Archive {
+        size: u64,
     },
     Snapshots {
         /// `zfs list -H -p -t snapshot -o name,creation,used,referenced,`
@@ -553,7 +567,8 @@ impl Request {
             | Request::MoveEntry { .. }
             | Request::CopyEntry { .. }
             | Request::RemoveEntry { .. }
-            | Request::RestoreEntry { .. } => Role::Files,
+            | Request::RestoreEntry { .. }
+            | Request::ArchiveFolder { .. } => Role::Files,
             // The handshake works with both.
             _ => Role::System,
         }

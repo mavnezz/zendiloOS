@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { previewKind, previewUrl, TEXT_PREVIEW_BYTES, textPreview } from './api'
+import { archiveUrl, previewKind, previewUrl, TEXT_PREVIEW_BYTES, textPreview } from './api'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -15,6 +15,10 @@ describe('previews', () => {
     for (const saved of ['page.html', 'logo.svg', 'paper.pdf', 'README', '.png']) {
       expect(previewKind(saved), saved).toBeNull()
     }
+  })
+
+  it('download folders as archives', () => {
+    expect(archiveUrl(3, 'album')).toBe('/api/v1/files/shares/3/archive?path=album')
   })
 
   it('ask the server for the file inline', () => {

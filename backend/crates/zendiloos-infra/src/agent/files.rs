@@ -176,6 +176,19 @@ impl FileHost for AgentFiles {
             .await
     }
 
+    async fn archive(
+        &self,
+        user_name: &str,
+        at: &FileLocation,
+        context: &RequestContext,
+    ) -> Result<(tokio::fs::File, u64), FileHostError> {
+        let request = Request::ArchiveFolder { user: user(user_name)?, location: location(at)? };
+        match self.call(request, context).await? {
+            (Response::Archive { size }, descriptor) => Ok((file(descriptor)?, size)),
+            (other, _) => Err(unexpected(other).into()),
+        }
+    }
+
     async fn restore(
         &self,
         user_name: &str,
@@ -242,5 +255,11 @@ mod tests {
         let back = files.restore("anna", &at(".recycle/anna/report.txt"), &context).await.unwrap();
         assert_eq!(back.as_str(), "report.txt");
         assert!(root.path().join("volume1/docs/report.txt").exists());
+
+        let (mut archive, size) = files.archive("anna", &at(""), &context).await.unwrap();
+        let mut bytes = Vec::new();
+        archive.read_to_end(&mut bytes).await.unwrap();
+        assert_eq!(bytes.len() as u64, size, "the whole archive came through the pipe");
+        assert_eq!(&bytes[..5], b"docs/", "named after the share");
     }
 }
