@@ -31,6 +31,8 @@ pub struct Problem {
 pub enum ApiError {
     NotFound,
     MethodNotAllowed,
+    /// The request is malformed in a way the other variants do not cover.
+    BadRequest(String),
     /// The request body could not be read as the expected JSON.
     InvalidBody {
         status: StatusCode,
@@ -90,6 +92,7 @@ impl IntoResponse for ApiError {
         let (status, code, detail) = match self {
             ApiError::NotFound => (StatusCode::NOT_FOUND, "not_found", None),
             ApiError::MethodNotAllowed => (StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed", None),
+            ApiError::BadRequest(detail) => (StatusCode::BAD_REQUEST, "bad_request", Some(detail)),
             ApiError::InvalidBody { status, detail } => (status, "invalid_body", Some(detail)),
             ApiError::InvalidInput(detail) => {
                 (StatusCode::UNPROCESSABLE_ENTITY, "invalid_input", Some(detail))

@@ -25,7 +25,7 @@ zendiloos-system = { path = "crates/zendiloos-system" }
 anyhow = "1"
 argon2 = "0.6"
 async-trait = "0.1"
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 axum-extra = { version = "0.12", features = ["cookie"] }
 base64 = "0.23"
 clap = { version = "4", features = ["derive"] }
@@ -37,7 +37,7 @@ serde_json = "1"
 sha2 = "0.11"
 # SQLite is bundled, so every build runs against the same, known version.
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite-bundled", "migrate", "macros"] }
-sysinfo = { version = "0.40", default-features = false, features = ["system"] }
+sysinfo = { version = "0.40", default-features = false, features = ["system", "network", "component"] }
 tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net", "time", "io-util", "process"] }

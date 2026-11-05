@@ -36,6 +36,7 @@ pub const API_V1: &str = "/api/v1";
         (name = "system", description = "Health and information about the host"),
         (name = "identity", description = "Initial setup, login and sessions"),
     ),
+    components(schemas(routes::live::LiveRequest, routes::live::LiveMessage)),
     modifiers(&SessionSecurity)
 )]
 struct ApiDoc;
@@ -77,6 +78,7 @@ pub fn router(state: ApiState) -> Router {
             &format!("{API_V1}/openapi.json"),
             get(move || async move { ([(axum::http::header::CONTENT_TYPE, "application/json")], openapi_json) }),
         )
+        .merge(routes::live::router())
         .fallback(|| async { ApiError::NotFound })
         .method_not_allowed_fallback(|| async { ApiError::MethodNotAllowed })
         .with_state(state)

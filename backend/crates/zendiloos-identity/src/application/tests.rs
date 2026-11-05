@@ -240,6 +240,23 @@ async fn idle_sessions_end_and_active_ones_stay_alive() {
 }
 
 #[tokio::test]
+async fn verifying_a_session_does_not_keep_it_alive() {
+    let t = TestIdentity::new();
+    t.add_account("alice", PASSWORD, Role::User);
+    let signed_in = t.use_cases.login.execute(login_input("alice", PASSWORD), &from(1)).await.unwrap();
+
+    // Checked at 10 and 20 minutes: still valid, but not renewed.
+    for _ in 0..2 {
+        t.clock.advance(Duration::from_secs(10 * 60));
+        t.use_cases.authenticate.verify(&signed_in.token).await.unwrap();
+    }
+    t.clock.advance(Duration::from_secs(10 * 60));
+    let error = t.use_cases.authenticate.verify(&signed_in.token).await;
+
+    assert!(matches!(error, Err(IdentityError::Unauthenticated)), "30 minutes without activity: {error:?}");
+}
+
+#[tokio::test]
 async fn disabling_an_account_ends_its_sessions() {
     let t = TestIdentity::new();
     let alice = t.add_account("alice", PASSWORD, Role::User);

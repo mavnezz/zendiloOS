@@ -20,7 +20,7 @@ use zendiloos_identity::application::commands::PurgeExpiredSessions;
 use zendiloos_identity::application::{IdentityConfig, IdentityPorts, IdentityUseCases};
 use zendiloos_infra::SystemClock;
 use zendiloos_infra::agent::{AgentPowerControl, agent_version};
-use zendiloos_infra::host::HostSystemInfo;
+use zendiloos_infra::host::{HostSystemInfo, MetricsHub};
 use zendiloos_infra::identity::{Argon2PasswordHasher, FileSetupCodes, RandomSessionTokens};
 use zendiloos_infra::sqlite::{Database, SqliteAccounts, SqliteAuditLog, SqliteSessions};
 use zendiloos_kernel::AuditLog;
@@ -77,8 +77,10 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     let identity = identity(&config, &database, audit.clone())?;
     let setup_code = announce_setup(&config, &identity).await?;
     let purge = spawn_session_purge(identity.purge_expired_sessions.clone());
+    let (metrics, sampler) = MetricsHub::spawn(Duration::from_secs(2), Arc::new(SystemClock));
     let system = SystemUseCases::new(SystemPorts {
         info: Arc::new(HostSystemInfo),
+        metrics: Arc::new(metrics),
         power: Arc::new(AgentPowerControl::new(agent)),
         audit,
         clock: Arc::new(SystemClock),
@@ -107,6 +109,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         axum::serve(listener, app).with_graceful_shutdown(shutdown_requested()).await?;
     }
     purge.abort();
+    sampler.abort();
     database.close().await;
     tracing::info!("zendiloosd stopped");
     Ok(())

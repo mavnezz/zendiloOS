@@ -1,4 +1,5 @@
 mod identity;
+pub(crate) mod live;
 mod system;
 
 use utoipa_axum::router::OpenApiRouter;

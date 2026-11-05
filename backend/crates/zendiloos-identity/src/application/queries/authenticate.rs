@@ -19,7 +19,20 @@ impl Authenticate {
         Self { context }
     }
 
+    /// For a request: the caller counts as active, which keeps the session
+    /// alive.
     pub async fn execute(&self, token: &Secret) -> Result<AuthContext, IdentityError> {
+        self.resolve(token, true).await
+    }
+
+    /// For long-lived connections that only check the session is still
+    /// valid: does not count as activity, so an open page alone does not
+    /// keep a session alive.
+    pub async fn verify(&self, token: &Secret) -> Result<AuthContext, IdentityError> {
+        self.resolve(token, false).await
+    }
+
+    async fn resolve(&self, token: &Secret, touch: bool) -> Result<AuthContext, IdentityError> {
         let c = &self.context;
         let now = c.now();
         let policy = &c.config.sessions;
@@ -38,7 +51,7 @@ impl Authenticate {
                 return Err(IdentityError::Unauthenticated);
             }
         };
-        if session.needs_touch(now, policy) {
+        if touch && session.needs_touch(now, policy) {
             sessions.touch(session.id, now).await?;
         }
 

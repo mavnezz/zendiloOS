@@ -171,14 +171,78 @@ export interface components {
             permissions: string[];
             role: components["schemas"]["AccountRole"];
         };
+        DiskMetrics: {
+            name: string;
+            /** Format: int64 */
+            read_bytes_per_second: number;
+            /** Format: int64 */
+            written_bytes_per_second: number;
+        };
         Health: {
             /** @description `ok` whenever the server answers. */
             status: string;
         };
+        InterfaceMetrics: {
+            name: string;
+            /** Format: int64 */
+            received_bytes_per_second: number;
+            /** Format: int64 */
+            sent_bytes_per_second: number;
+        };
+        /** @description What the server sends. */
+        LiveMessage: {
+            data: components["schemas"]["Metrics"];
+            /** @enum {string} */
+            type: "metrics";
+        } | {
+            message: string;
+            /** @enum {string} */
+            type: "error";
+        };
+        /** @description What the browser sends. */
+        LiveRequest: {
+            topic: components["schemas"]["LiveTopic"];
+            /** @enum {string} */
+            type: "subscribe";
+        } | {
+            topic: components["schemas"]["LiveTopic"];
+            /** @enum {string} */
+            type: "unsubscribe";
+        };
+        /** @enum {string} */
+        LiveTopic: "metrics";
         LoginRequest: {
             name: string;
             /** Format: password */
             password: string;
+        };
+        MemoryMetrics: {
+            /** Format: int64 */
+            available_bytes: number;
+            /** Format: int64 */
+            total_bytes: number;
+            /** Format: int64 */
+            used_bytes: number;
+        };
+        Metrics: {
+            /**
+             * Format: int64
+             * @description Unix time in seconds.
+             */
+            at: number;
+            /**
+             * Format: float
+             * @description Busy share of all CPUs, 0 to 100.
+             */
+            cpu_percent: number;
+            disks: components["schemas"]["DiskMetrics"][];
+            /** @description 1, 5 and 15 minute load averages. */
+            load_average: number[];
+            memory: components["schemas"]["MemoryMetrics"];
+            network: components["schemas"]["InterfaceMetrics"][];
+            temperatures: components["schemas"]["TemperatureMetrics"][];
+            /** Format: int64 */
+            uptime_seconds: number;
         };
         /** @enum {string} */
         PowerActionKind: "reboot" | "power_off";
@@ -242,6 +306,11 @@ export interface components {
             uptime_seconds: number;
             /** @description Version of Zendiloos. */
             version: string;
+        };
+        TemperatureMetrics: {
+            /** Format: float */
+            celsius: number;
+            label: string;
         };
     };
     responses: never;

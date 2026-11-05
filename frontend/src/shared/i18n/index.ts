@@ -30,9 +30,27 @@ export const i18n = createI18n<[Messages], Locale, false>({
   messages: { de, en },
 })
 
+/** Languages offered in the settings, each named in itself. */
+export const LANGUAGES: { locale: Locale; name: string }[] = [
+  { locale: 'en', name: 'English' },
+  { locale: 'de', name: 'Deutsch' },
+]
+
+export function setLocale(next: Locale): void {
+  i18n.global.locale.value = next
+  document.documentElement.lang = next
+  try {
+    localStorage.setItem(STORAGE_KEY, next)
+  } catch {
+    // Storage unavailable: applies to this page only.
+  }
+}
+
 /** Problem codes with their own message. */
 const KNOWN_PROBLEMS = [
   'invalid_credentials',
+  'wrong_password',
+  'forbidden',
   'account_disabled',
   'invalid_setup_code',
   'setup_completed',

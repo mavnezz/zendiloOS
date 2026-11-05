@@ -1,51 +1,107 @@
 <script setup lang="ts">
-import { LogOut } from 'lucide-vue-next'
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 
 import { useSessionStore } from '@/features/auth/store'
-import { useSystemInfo } from '@/features/system/api'
-import { BrandMark } from '@/shared/ui/brand'
-import { Button } from '@/shared/ui/button'
+import { live } from '@/shared/api/live'
+import { useCompactLayout } from '@/shared/lib/media'
+import { useNotifications } from '@/shared/lib/notifications'
+import { cn } from '@/shared/lib/utils'
+
+import { APPS, findApp } from './apps'
+import AppWindow from './AppWindow.vue'
+import PowerOverlay from './PowerOverlay.vue'
+import DesktopTaskbar from './DesktopTaskbar.vue'
+import ToastStack from './ToastStack.vue'
+import { useWindows } from './windows'
 
 const { t } = useI18n()
 const router = useRouter()
 const session = useSessionStore()
-const { data: system } = useSystemInfo()
+const windows = useWindows()
+const notifications = useNotifications()
+const compact = useCompactLayout()
 
-const accountName = computed(() => session.info?.account.name ?? '')
+/** Only apps this account may use; the server enforces the same. */
+const apps = computed(() => APPS.filter((app) => session.can(app.permission)))
+
+const openWindows = computed(() =>
+  windows.state.windows.flatMap((window) => {
+    const app = findApp(window.appId)
+    return app && session.can(app.permission) ? [{ window, app }] : []
+  }),
+)
+
+/** Stacking positions 0, 1, 2, … instead of ever-growing z values. */
+const layers = computed(
+  () =>
+    new Map(
+      [...windows.state.windows].sort((a, b) => a.z - b.z).map((window, i) => [window.appId, i]),
+    ),
+)
+
+onMounted(() => {
+  windows.restore(session.info?.account.name ?? '')
+  window.addEventListener('resize', windows.resized)
+  live.connect()
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', windows.resized)
+  live.disconnect()
+})
 
 async function signOut(): Promise<void> {
-  await session.signOut()
-  await router.push({ name: 'login' })
+  try {
+    await session.signOut()
+  } finally {
+    windows.forget()
+    notifications.clear()
+    await router.push({ name: 'login' })
+  }
 }
 </script>
 
-<!-- Placeholder until the desktop with windows arrives (milestone M1). -->
 <template>
-  <div class="wallpaper flex h-dvh flex-col">
-    <main class="flex flex-1 items-center justify-center p-6">
-      <div
-        class="flex max-w-md flex-col items-center gap-3 rounded-xl border bg-card/80 p-8 text-center shadow-sm backdrop-blur"
+  <div class="wallpaper flex h-dvh flex-col overflow-hidden">
+    <main class="relative min-h-0 flex-1">
+      <ul
+        :class="
+          cn(
+            compact
+              ? 'grid grid-cols-4 gap-2 p-4'
+              : 'absolute top-4 left-4 flex max-h-[calc(100%-2rem)] flex-col flex-wrap gap-1',
+          )
+        "
       >
-        <BrandMark class="size-12" />
-        <h1 class="text-xl font-semibold">{{ t('desktop.welcome', { name: accountName }) }}</h1>
-        <p v-if="system" class="text-sm text-muted-foreground">
-          {{ t('desktop.system', { os: system.os_name ?? 'Linux', host: system.hostname }) }}
-        </p>
-        <p class="text-sm text-muted-foreground">{{ t('desktop.placeholder') }}</p>
-      </div>
+        <li v-for="app in apps" :key="app.id">
+          <button
+            type="button"
+            class="flex w-20 flex-col items-center gap-1.5 rounded-lg p-2 text-xs font-medium outline-none hover:bg-foreground/5 focus-visible:ring-2 focus-visible:ring-ring"
+            @click="windows.open(app)"
+          >
+            <span
+              class="grid size-12 place-items-center rounded-xl border bg-card/90 text-primary shadow-sm"
+            >
+              <component :is="app.icon" class="size-6" />
+            </span>
+            <span class="text-center">{{ t(`apps.${app.id}`) }}</span>
+          </button>
+        </li>
+      </ul>
+      <AppWindow
+        v-for="{ window, app } in openWindows"
+        :key="app.id"
+        :app="app"
+        :window="window"
+        :layer="layers.get(app.id) ?? 0"
+        :active="windows.active === app.id"
+        :compact="compact"
+      />
     </main>
-    <footer class="flex h-12 items-center gap-3 border-t bg-background/80 px-3 backdrop-blur">
-      <BrandMark class="size-6" />
-      <span class="text-sm font-medium">{{ t('app.name') }}</span>
-      <span class="flex-1" />
-      <span class="text-sm text-muted-foreground">{{ accountName }}</span>
-      <Button variant="ghost" size="sm" @click="signOut">
-        <LogOut />
-        {{ t('desktop.signOut') }}
-      </Button>
-    </footer>
+    <DesktopTaskbar :apps="apps" :compact="compact" @open="windows.open" @sign-out="signOut" />
+    <ToastStack />
+    <PowerOverlay />
   </div>
 </template>

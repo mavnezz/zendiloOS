@@ -26,3 +26,11 @@ export function login(name: string, password: string): Promise<SessionInfo> {
 export async function logout(): Promise<void> {
   await unwrap(api.POST('/api/v1/auth/logout'))
 }
+
+export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
+  await unwrap(
+    api.POST('/api/v1/auth/password', {
+      body: { current_password: currentPassword, new_password: newPassword },
+    }),
+  )
+}

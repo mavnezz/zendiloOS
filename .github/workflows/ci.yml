@@ -1,0 +1,61 @@
+# Runs exactly what `just check` and `just deb` run locally, in the same Nix
+# development shell, so a green check on a workstation means a green CI.
+# Actions are pinned to commit SHAs; tags can be moved, commits cannot.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: backend
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.npm
+          key: npm-${{ hashFiles('frontend/package-lock.json') }}
+
+      - name: Development shell
+        run: nix develop --command true
+
+      - name: Frontend dependencies
+        run: nix develop --command just web-install
+
+      - name: just check
+        run: nix develop --command just check
+
+  package:
+    name: Debian package
+    runs-on: ubuntu-24.04
+    needs: check
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
+
+      - name: just deb
+        run: nix develop --command just deb
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: zendiloos-deb
+          path: dist/*.deb
+          if-no-files-found: error

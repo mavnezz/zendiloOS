@@ -65,10 +65,14 @@ pub(crate) fn check_same_origin(headers: &HeaderMap) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// The session token from the request's cookie, if any.
+pub(crate) fn session_token(headers: &HeaderMap, secure: bool) -> Option<Secret> {
+    CookieJar::from_headers(headers).get(cookie_name(secure)).map(|cookie| Secret::new(cookie.value()))
+}
+
 async fn authenticate(parts: &Parts, state: &ApiState, allow_pending: bool) -> Result<AuthContext, ApiError> {
-    let jar = CookieJar::from_headers(&parts.headers);
-    let token = jar.get(cookie_name(state.secure_cookies)).ok_or(ApiError::Unauthenticated)?;
-    let auth = state.identity.authenticate.execute(&Secret::new(token.value())).await?;
+    let token = session_token(&parts.headers, state.secure_cookies).ok_or(ApiError::Unauthenticated)?;
+    let auth = state.identity.authenticate.execute(&token).await?;
 
     if !parts.method.is_safe() {
         check_same_origin(&parts.headers)?;

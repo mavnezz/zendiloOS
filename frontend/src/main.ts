@@ -9,6 +9,7 @@ import { installNavigationGuard } from '@/app/navigation'
 import { createAppRouter } from '@/app/router'
 import { useSessionStore } from '@/features/auth/store'
 import { ApiProblem, configureApi } from '@/shared/api/client'
+import { live } from '@/shared/api/live'
 import { i18n } from '@/shared/i18n'
 import { applyTheme, followSystemTheme } from '@/shared/lib/theme'
 
@@ -32,14 +33,14 @@ app.use(pinia).use(i18n).use(VueQueryPlugin, { queryClient })
 const router = createAppRouter()
 const session = useSessionStore(pinia)
 
-configureApi({
-  csrfToken: () => session.info?.csrf_token,
-  onUnauthenticated: () => {
-    session.clear()
-    queryClient.clear()
-    void router.push({ name: 'login' })
-  },
-})
+function sessionEnded(): void {
+  session.clear()
+  queryClient.clear()
+  void router.push({ name: 'login' })
+}
+
+configureApi({ csrfToken: () => session.info?.csrf_token, onUnauthenticated: sessionEnded })
+live.onSessionEnded = sessionEnded
 installNavigationGuard(router, session)
 
 app.use(router)

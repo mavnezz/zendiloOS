@@ -579,11 +579,11 @@ Decided on 2026-11-05: name `zendiloos`, unified accounts, Nix devShell for
 tooling only, target hardware x86-64 NAS appliances and generic x86-64.
 HTTPS by default: plain HTTP only redirects, the session cookie is
 HTTPS-only, a self-signed certificate is created on the device; installing
-an own certificate and ACME follow later.
+an own certificate and ACME follow later. CI: GitHub Actions
+(`.github/workflows/ci.yml`) runs `just check` and `just deb` in the same Nix
+shell as development, with actions pinned to commit SHAs.
 
 1. Mount path of volumes (`/srv/zendiloos/<volume>` or something shorter
    such as `/volume1`).
-2. CI service. The repository is on GitHub (https://github.com/mavnezz/zendiloOS);
-   recommendation: GitHub Actions running `just check` and `just deb`.
-3. LVM between mdadm and filesystem (section 5); at the latest at the start
+2. LVM between mdadm and filesystem (section 5); at the latest at the start
    of phase 3.

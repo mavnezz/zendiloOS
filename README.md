@@ -54,6 +54,9 @@ curl http://127.0.0.1:8780/api/v1/health
 curl http://127.0.0.1:8780/api/v1/setup
 ```
 
+Every push to `main` and every pull request runs `just check` and
+`just deb` on GitHub Actions; the package is attached to the run.
+
 ## Layout
 
 ```text

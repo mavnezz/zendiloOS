@@ -24,3 +24,13 @@ export function applyTheme(preference: ThemePreference = themePreference()): voi
 export function followSystemTheme(): void {
   prefersDark().addEventListener('change', () => applyTheme())
 }
+
+export function setThemePreference(preference: ThemePreference): void {
+  try {
+    if (preference === 'system') localStorage.removeItem(STORAGE_KEY)
+    else localStorage.setItem(STORAGE_KEY, preference)
+  } catch {
+    // Storage unavailable: applies to this page only.
+  }
+  applyTheme(preference)
+}

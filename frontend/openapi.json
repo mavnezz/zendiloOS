@@ -425,6 +425,29 @@
           }
         }
       },
+      "DiskMetrics": {
+        "type": "object",
+        "required": [
+          "name",
+          "read_bytes_per_second",
+          "written_bytes_per_second"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "read_bytes_per_second": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "written_bytes_per_second": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "Health": {
         "type": "object",
         "required": [
@@ -436,6 +459,118 @@
             "description": "`ok` whenever the server answers."
           }
         }
+      },
+      "InterfaceMetrics": {
+        "type": "object",
+        "required": [
+          "name",
+          "received_bytes_per_second",
+          "sent_bytes_per_second"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "received_bytes_per_second": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "sent_bytes_per_second": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "LiveMessage": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "type"
+            ],
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/Metrics"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "metrics"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The last request could not be understood.",
+            "required": [
+              "message",
+              "type"
+            ],
+            "properties": {
+              "message": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "error"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "What the server sends."
+      },
+      "LiveRequest": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "topic",
+              "type"
+            ],
+            "properties": {
+              "topic": {
+                "$ref": "#/components/schemas/LiveTopic"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "subscribe"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "topic",
+              "type"
+            ],
+            "properties": {
+              "topic": {
+                "$ref": "#/components/schemas/LiveTopic"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "unsubscribe"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "What the browser sends."
+      },
+      "LiveTopic": {
+        "type": "string",
+        "enum": [
+          "metrics"
+        ]
       },
       "LoginRequest": {
         "type": "object",
@@ -453,6 +588,90 @@
           }
         },
         "additionalProperties": false
+      },
+      "MemoryMetrics": {
+        "type": "object",
+        "required": [
+          "total_bytes",
+          "used_bytes",
+          "available_bytes"
+        ],
+        "properties": {
+          "available_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "total_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "used_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "Metrics": {
+        "type": "object",
+        "required": [
+          "at",
+          "cpu_percent",
+          "load_average",
+          "memory",
+          "network",
+          "disks",
+          "temperatures",
+          "uptime_seconds"
+        ],
+        "properties": {
+          "at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix time in seconds."
+          },
+          "cpu_percent": {
+            "type": "number",
+            "format": "float",
+            "description": "Busy share of all CPUs, 0 to 100."
+          },
+          "disks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DiskMetrics"
+            }
+          },
+          "load_average": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            },
+            "description": "1, 5 and 15 minute load averages."
+          },
+          "memory": {
+            "$ref": "#/components/schemas/MemoryMetrics"
+          },
+          "network": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InterfaceMetrics"
+            }
+          },
+          "temperatures": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TemperatureMetrics"
+            }
+          },
+          "uptime_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
       },
       "PowerActionKind": {
         "type": "string",
@@ -620,6 +839,22 @@
           "version": {
             "type": "string",
             "description": "Version of Zendiloos."
+          }
+        }
+      },
+      "TemperatureMetrics": {
+        "type": "object",
+        "required": [
+          "label",
+          "celsius"
+        ],
+        "properties": {
+          "celsius": {
+            "type": "number",
+            "format": "float"
+          },
+          "label": {
+            "type": "string"
           }
         }
       }

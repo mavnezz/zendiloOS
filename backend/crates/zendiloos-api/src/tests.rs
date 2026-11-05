@@ -11,9 +11,11 @@ use tower::ServiceExt;
 use zendiloos_identity::domain::{AccountName, Role};
 use zendiloos_identity::testing::{SETUP_CODE, TestIdentity};
 use zendiloos_kernel::{Outcome, PortError, RequestContext};
-use zendiloos_system::application::ports::{PowerControl, SystemInfoProvider};
+use zendiloos_system::application::ports::{
+    LiveMetrics, MetricsSubscription, PowerControl, SystemInfoProvider,
+};
 use zendiloos_system::application::{SystemPorts, SystemUseCases};
-use zendiloos_system::domain::{PowerAction, SystemInfo};
+use zendiloos_system::domain::{MemoryUsage, MetricsSample, PowerAction, SystemInfo};
 
 use crate::{ApiState, CSRF_HEADER, openapi, router};
 
@@ -56,6 +58,44 @@ impl PowerControl for RecordingPower {
     async fn request(&self, action: PowerAction, _: &RequestContext) -> Result<(), PortError> {
         self.0.lock().unwrap().push(action);
         Ok(())
+    }
+}
+
+fn sample(at: i64) -> MetricsSample {
+    MetricsSample {
+        at: zendiloos_kernel::Timestamp::from_unix_seconds(at),
+        cpu_percent: 12.5,
+        load_average: [0.5, 0.4, 0.3],
+        memory: MemoryUsage { total_bytes: 8, used_bytes: 3, available_bytes: 5 },
+        network: vec![],
+        disks: vec![],
+        temperatures: vec![],
+        uptime_seconds: 60,
+    }
+}
+
+/// A latest sample at 100, then one new sample at 101.
+struct FakeLive;
+
+impl LiveMetrics for FakeLive {
+    fn latest(&self) -> Option<MetricsSample> {
+        Some(sample(100))
+    }
+
+    fn subscribe(&self) -> Box<dyn MetricsSubscription> {
+        Box::new(FakeSubscription(Some(sample(101))))
+    }
+}
+
+struct FakeSubscription(Option<MetricsSample>);
+
+#[async_trait]
+impl MetricsSubscription for FakeSubscription {
+    async fn next(&mut self) -> Option<MetricsSample> {
+        match self.0.take() {
+            Some(sample) => Some(sample),
+            None => std::future::pending().await,
+        }
     }
 }
 
@@ -105,6 +145,7 @@ impl Harness {
         let power = Arc::new(RecordingPower::default());
         let system = SystemUseCases::new(SystemPorts {
             info: Arc::new(provider),
+            metrics: Arc::new(FakeLive),
             power: power.clone(),
             audit: identity.audit.clone(),
             clock: identity.clock.clone(),
@@ -287,6 +328,49 @@ async fn power_actions_need_the_csrf_token() {
 
     assert_problem(&reply, StatusCode::FORBIDDEN, "csrf_rejected");
     assert!(h.power.0.lock().unwrap().is_empty());
+}
+
+// Live updates
+
+#[tokio::test]
+async fn the_live_socket_needs_a_session_and_our_origin() {
+    let h = Harness::new();
+    let unauthenticated = h.send(empty(get("/api/v1/ws"))).await;
+    assert_problem(&unauthenticated, StatusCode::UNAUTHORIZED, "unauthenticated");
+
+    let session = h.sign_in("alice", Role::User).await;
+    let foreign = get("/api/v1/ws").header(header::ORIGIN, "https://evil.example");
+    let hijack = h.send(empty(with_cookie(foreign, &session))).await;
+    assert_problem(&hijack, StatusCode::FORBIDDEN, "csrf_rejected");
+}
+
+#[tokio::test]
+async fn the_live_socket_streams_metrics() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest};
+
+    let h = Harness::new();
+    let session = h.sign_in("alice", Role::User).await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(axum::serve(listener, h.app.clone()).into_future());
+
+    let mut request = format!("ws://{address}/api/v1/ws").into_client_request().unwrap();
+    request.headers_mut().insert(header::COOKIE, session.cookie.parse().unwrap());
+    request.headers_mut().insert(header::ORIGIN, format!("http://{address}").parse().unwrap());
+    let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+
+    socket.send(Message::Text(r#"{"type":"subscribe","topic":"metrics"}"#.into())).await.unwrap();
+    let mut next = async || {
+        let message = tokio::time::timeout(std::time::Duration::from_secs(5), socket.next()).await;
+        serde_json::from_str::<Value>(message.unwrap().unwrap().unwrap().to_text().unwrap()).unwrap()
+    };
+    let latest = next().await;
+    let fresh = next().await;
+
+    assert_eq!((latest["type"].as_str(), latest["data"]["at"].as_i64()), (Some("metrics"), Some(100)));
+    assert_eq!(latest["data"]["cpu_percent"], 12.5);
+    assert_eq!(fresh["data"]["at"], 101);
 }
 
 // Initial setup
