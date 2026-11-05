@@ -13,6 +13,7 @@ export type LiveRequest = Schemas['LiveRequest']
 export type LiveMessage = Schemas['LiveMessage']
 export type Disk = Schemas['Disk']
 export type SmartReport = Schemas['SmartReport']
+export type SelfTestKind = Schemas['SelfTestKind']
 export type SmartFinding = Schemas['Finding']
 export type DiskHealth = Schemas['DiskHealth']
 /** A software RAID array (not to be confused with JavaScript's `Array`). */

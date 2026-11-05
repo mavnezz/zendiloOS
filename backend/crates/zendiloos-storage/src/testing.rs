@@ -15,8 +15,8 @@ use crate::application::ports::{
 };
 use crate::domain::{
     Array, ArrayMember, BlockDevice, DeviceKind, Filesystem, MemberState, Pool, PoolDevice, PoolLayout,
-    PoolSpace, Scan, ScanKind, ScanState, Slots, SmartData, SmartProtocol, SmartReport, SpaceUsage,
-    VdevState, VolumeNumber,
+    PoolSpace, Scan, ScanKind, ScanState, SelfTestKind, Slots, SmartData, SmartProtocol, SmartReport,
+    SpaceUsage, VdevState, VolumeNumber,
 };
 
 #[derive(Default)]
@@ -229,6 +229,21 @@ impl BlockDeviceSource for FakeStorage {
 
 #[async_trait]
 impl SmartSource for FakeStorage {
+    async fn start_self_test(
+        &self,
+        disk: &str,
+        kind: SelfTestKind,
+        _: &RequestContext,
+    ) -> Result<(), PortError> {
+        self.record(format!("self-test {disk} {kind:?}"));
+        Ok(())
+    }
+
+    async fn abort_self_test(&self, disk: &str, _: &RequestContext) -> Result<(), PortError> {
+        self.record(format!("abort self-test {disk}"));
+        Ok(())
+    }
+
     async fn smart_report(&self, disk: &str, _: &RequestContext) -> Result<SmartReport, PortError> {
         if disk == "sdb" {
             return Ok(SmartReport::Standby);
@@ -246,6 +261,8 @@ impl SmartSource for FakeStorage {
             nvme: None,
             error_log_count: Some(0),
             last_self_test: None,
+            running_self_test: None,
+            self_test_minutes: None,
         })))
     }
 }

@@ -684,6 +684,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/storage/disks/{name}/self-test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Has the disk test itself; its SMART report shows the progress and then
+         *     the result. Needs `storage.manage`.
+         */
+        post: operations["start_self_test"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/storage/disks/{name}/self-test/abort": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Stops the disk's running self-test. Needs `storage.manage`. */
+        post: operations["abort_self_test"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/storage/disks/{name}/smart": {
         parameters: {
             query?: never;
@@ -1692,6 +1729,13 @@ export interface components {
             /** Format: password */
             password: string;
         };
+        RunningSelfTest: {
+            /**
+             * Format: int32
+             * @description What is left, 0 to 100, if the drive says.
+             */
+            remaining_percent?: number | null;
+        };
         /** @enum {string} */
         ScanKind: "scrub" | "resilver";
         /** @enum {string} */
@@ -1702,6 +1746,11 @@ export interface components {
             /** Format: int64 */
             power_on_hours?: number | null;
         };
+        /**
+         * @description A drive's self-test.
+         * @enum {string}
+         */
+        SelfTestKind: "short" | "long";
         SessionInfo: {
             account: components["schemas"]["CurrentAccount"];
             /**
@@ -1871,6 +1920,11 @@ export interface components {
             firmware?: string | null;
             health?: components["schemas"]["DiskHealth"] | null;
             last_self_test?: components["schemas"]["SelfTest"] | null;
+            /**
+             * Format: int32
+             * @description The same for the long test.
+             */
+            long_test_minutes?: number | null;
             model?: string | null;
             nvme?: components["schemas"]["NvmeHealth"] | null;
             /** @description The drive's own verdict. */
@@ -1882,7 +1936,13 @@ export interface components {
             protocol?: components["schemas"]["SmartProtocol"] | null;
             /** @description Why there is no data, for `unsupported`. */
             reason?: string | null;
+            running_self_test?: components["schemas"]["RunningSelfTest"] | null;
             serial?: string | null;
+            /**
+             * Format: int32
+             * @description How long the drive says its short test takes, in minutes.
+             */
+            short_test_minutes?: number | null;
             status: components["schemas"]["SmartStatus"];
             /** Format: int64 */
             temperature_celsius?: number | null;
@@ -1894,6 +1954,9 @@ export interface components {
          * @enum {string}
          */
         SnapshotFrequency: "hourly" | "daily" | "weekly" | "monthly";
+        StartSelfTestRequest: {
+            kind: components["schemas"]["SelfTestKind"];
+        };
         /** @description What the storage is and what is wrong with it. */
         StorageOverview: {
             /** Format: int64 */
@@ -3653,6 +3716,77 @@ export interface operations {
             };
             /** @description `forbidden` */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    start_self_test: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StartSelfTestRequest"];
+            };
+        };
+        responses: {
+            /** @description Started. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `refused`: no SMART, or the disk sleeps */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    abort_self_test: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Stopped. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `not_found` */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

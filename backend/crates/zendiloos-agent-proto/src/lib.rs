@@ -67,6 +67,16 @@ pub enum Request {
     SmartData {
         device: DiskName,
     },
+    /// Has the drive start a self-test (`smartctl -t short|long`); the drive
+    /// runs it alongside its work.
+    StartSelfTest {
+        device: DiskName,
+        kind: SelfTestKind,
+    },
+    /// Stops the drive's running self-test (`smartctl -X`).
+    AbortSelfTest {
+        device: DiskName,
+    },
     /// The kernel's software RAID status, `/proc/mdstat`.
     ArrayStatus {},
     /// `zpool status` and `zfs list` of the pools' root datasets, as JSON
@@ -272,6 +282,8 @@ impl Request {
             Request::PowerOff {} => "power_off",
             Request::ListBlockDevices {} => "list_block_devices",
             Request::SmartData { .. } => "smart_data",
+            Request::StartSelfTest { .. } => "start_self_test",
+            Request::AbortSelfTest { .. } => "abort_self_test",
             Request::ArrayStatus {} => "array_status",
             Request::ZfsStatus {} => "zfs_status",
             Request::CreatePool { .. } => "create_pool",
@@ -653,6 +665,14 @@ impl From<ConsoleSetupCode> for String {
     fn from(code: ConsoleSetupCode) -> Self {
         code.0
     }
+}
+
+/// A drive's self-test: a few minutes, or every sector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SelfTestKind {
+    Short,
+    Long,
 }
 
 /// Compression of a share's dataset.

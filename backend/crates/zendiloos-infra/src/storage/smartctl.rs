@@ -6,7 +6,8 @@
 
 use serde::Deserialize;
 use zendiloos_storage::domain::{
-    AtaAttribute, AttributeFailure, NvmeHealth, SelfTest, SmartData, SmartProtocol, SmartReport,
+    AtaAttribute, AttributeFailure, NvmeHealth, RunningSelfTest, SelfTest, SmartData, SmartProtocol,
+    SmartReport,
 };
 
 use super::ParseError;
@@ -31,7 +32,57 @@ struct Output {
     ata_smart_attributes: Option<Attributes>,
     ata_smart_error_log: Option<ErrorLog>,
     ata_smart_self_test_log: Option<SelfTestLog>,
+    ata_smart_data: Option<AtaSmartData>,
     nvme_smart_health_information_log: Option<NvmeLog>,
+    nvme_self_test_log: Option<NvmeSelfTestLog>,
+}
+
+#[derive(Deserialize)]
+struct AtaSmartData {
+    self_test: Option<AtaSelfTest>,
+}
+
+#[derive(Deserialize)]
+struct AtaSelfTest {
+    status: Option<AtaSelfTestStatus>,
+    polling_minutes: Option<PollingMinutes>,
+}
+
+#[derive(Deserialize)]
+struct AtaSelfTestStatus {
+    /// 241 to 249 while a test runs.
+    value: u8,
+    remaining_percent: Option<u8>,
+}
+
+#[derive(Deserialize)]
+struct PollingMinutes {
+    short: Option<u32>,
+    extended: Option<u32>,
+}
+
+/// NVMe's own self-test log (smartctl 7.3 and later).
+#[derive(Deserialize)]
+struct NvmeSelfTestLog {
+    current_self_test_operation: Option<Coded>,
+    current_self_test_completion_percent: Option<u8>,
+    /// Newest first.
+    #[serde(default)]
+    table: Vec<NvmeSelfTestEntry>,
+}
+
+#[derive(Deserialize)]
+struct Coded {
+    value: u8,
+    #[serde(default)]
+    string: String,
+}
+
+#[derive(Deserialize)]
+struct NvmeSelfTestEntry {
+    self_test_code: Option<Coded>,
+    self_test_result: Coded,
+    power_on_hours: Option<u64>,
 }
 
 #[derive(Deserialize, Default)]
@@ -218,7 +269,16 @@ pub fn parse(exit_status: i32, json: &str) -> Result<SmartReport, ParseError> {
         data_units_read: log.data_units_read,
         data_units_written: log.data_units_written,
     });
-    let last_self_test = output
+    let ata_test = output.ata_smart_data.and_then(|data| data.self_test);
+    let mut running_self_test = ata_test
+        .as_ref()
+        .and_then(|test| test.status.as_ref())
+        .filter(|status| (241..=249).contains(&status.value))
+        .map(|status| RunningSelfTest { remaining_percent: status.remaining_percent });
+    let self_test_minutes = ata_test
+        .and_then(|test| test.polling_minutes)
+        .and_then(|minutes| Some((minutes.short?, minutes.extended?)));
+    let mut last_self_test = output
         .ata_smart_self_test_log
         .and_then(|log| log.standard)
         .and_then(|log| log.table.into_iter().next())
@@ -227,6 +287,26 @@ pub fn parse(exit_status: i32, json: &str) -> Result<SmartReport, ParseError> {
             description: entry.status.string,
             power_on_hours: entry.lifetime_hours,
         });
+    if let Some(log) = output.nvme_self_test_log {
+        // 0: no test running; the completion is the share done.
+        if log.current_self_test_operation.is_some_and(|operation| operation.value != 0) {
+            running_self_test = Some(RunningSelfTest {
+                remaining_percent: log.current_self_test_completion_percent.map(|done| 100 - done.min(100)),
+            });
+        }
+        if let Some(entry) = log.table.into_iter().next() {
+            let kind = entry.self_test_code.map(|code| code.string).filter(|kind| !kind.is_empty());
+            last_self_test = Some(SelfTest {
+                // Result 0: completed without error; 15 marks an unused entry.
+                passed: entry.self_test_result.value == 0,
+                description: match kind {
+                    Some(kind) => format!("{kind}: {}", entry.self_test_result.string),
+                    None => entry.self_test_result.string,
+                },
+                power_on_hours: entry.power_on_hours,
+            });
+        }
+    }
 
     Ok(SmartReport::Available(Box::new(SmartData {
         protocol,
@@ -241,6 +321,8 @@ pub fn parse(exit_status: i32, json: &str) -> Result<SmartReport, ParseError> {
         nvme,
         error_log_count: output.ata_smart_error_log.and_then(|log| log.summary).map(|s| s.count),
         last_self_test,
+        running_self_test,
+        self_test_minutes,
     })))
 }
 
@@ -249,6 +331,42 @@ mod tests {
     use zendiloos_storage::domain::Health;
 
     use super::*;
+
+    /// `smartctl --json=c --all` in the test VM right after
+    /// `smartctl -t short`: QEMU runs the test at once and logs it.
+    #[test]
+    fn reads_the_self_test_log_and_how_long_tests_take() {
+        let SmartReport::Available(data) =
+            parse(0, include_str!("fixtures/smartctl-sata-qemu-self-tested.json")).unwrap()
+        else {
+            panic!("no SMART data")
+        };
+        let last = data.last_self_test.unwrap();
+        assert!(last.passed);
+        assert_eq!(last.description, "Completed without error");
+        assert_eq!(data.running_self_test, None);
+        assert_eq!(data.self_test_minutes, Some((2, 54)));
+    }
+
+    /// The forms smartctl documents for a test that runs (ATA status 241 to
+    /// 249) and for NVMe's log; the test VM's devices show neither.
+    #[test]
+    fn reads_a_running_test_and_nvme_results() {
+        let ata = r#"{"device":{"protocol":"ATA"},"smart_support":{"available":true,"enabled":true},"smart_status":{"passed":true},
+            "ata_smart_data":{"self_test":{"status":{"value":249,"string":"in progress, 90% remaining","remaining_percent":90}}}}"#;
+        let SmartReport::Available(data) = parse(0, ata).unwrap() else { panic!("no SMART data") };
+        assert_eq!(data.running_self_test, Some(RunningSelfTest { remaining_percent: Some(90) }));
+
+        let nvme = r#"{"device":{"protocol":"NVMe"},"smart_support":{"available":true,"enabled":true},"smart_status":{"passed":true},
+            "nvme_self_test_log":{"current_self_test_operation":{"value":1,"string":"Short self-test in progress"},
+            "current_self_test_completion_percent":30,
+            "table":[{"self_test_code":{"value":2,"string":"Extended"},"self_test_result":{"value":7,"string":"Completed: failed segments"},"power_on_hours":800}]}}"#;
+        let SmartReport::Available(data) = parse(0, nvme).unwrap() else { panic!("no SMART data") };
+        assert_eq!(data.running_self_test, Some(RunningSelfTest { remaining_percent: Some(70) }));
+        let last = data.last_self_test.unwrap();
+        assert!(!last.passed, "a failed NVMe test is not read as passed");
+        assert_eq!(last.description, "Extended: Completed: failed segments");
+    }
 
     fn available(report: SmartReport) -> SmartData {
         match report {

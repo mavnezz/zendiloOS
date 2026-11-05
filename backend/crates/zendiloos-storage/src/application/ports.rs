@@ -5,7 +5,9 @@
 use async_trait::async_trait;
 use zendiloos_kernel::{PortError, RequestContext};
 
-use crate::domain::{Array, BlockDevice, Pool, PoolLayout, PoolName, SmartReport, VolumeNumber};
+use crate::domain::{
+    Array, BlockDevice, Pool, PoolLayout, PoolName, SelfTestKind, SmartReport, VolumeNumber,
+};
 
 /// The host's block device tree.
 #[async_trait]
@@ -17,6 +19,17 @@ pub trait BlockDeviceSource: Send + Sync {
 #[async_trait]
 pub trait SmartSource: Send + Sync {
     async fn smart_report(&self, disk: &str, context: &RequestContext) -> Result<SmartReport, PortError>;
+
+    /// Has the drive start a self-test; it runs alongside its work.
+    async fn start_self_test(
+        &self,
+        disk: &str,
+        kind: SelfTestKind,
+        context: &RequestContext,
+    ) -> Result<(), PortError>;
+
+    /// Stops the drive's running self-test.
+    async fn abort_self_test(&self, disk: &str, context: &RequestContext) -> Result<(), PortError>;
 }
 
 /// The software RAID arrays the kernel knows.

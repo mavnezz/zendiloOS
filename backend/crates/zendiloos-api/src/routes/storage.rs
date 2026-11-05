@@ -21,6 +21,8 @@ pub(super) fn routes() -> OpenApiRouter<ApiState> {
         .routes(routes!(overview))
         .routes(routes!(disks))
         .routes(routes!(smart))
+        .routes(routes!(start_self_test))
+        .routes(routes!(abort_self_test))
         .routes(routes!(arrays))
         .routes(routes!(pools, create_pool))
         .routes(routes!(plan_pool))
@@ -374,6 +376,18 @@ pub struct SmartReport {
     pub nvme: Option<NvmeHealth>,
     pub error_log_count: Option<u64>,
     pub last_self_test: Option<SelfTest>,
+    /// A self-test the drive runs now.
+    pub running_self_test: Option<RunningSelfTest>,
+    /// How long the drive says its short test takes, in minutes.
+    pub short_test_minutes: Option<u32>,
+    /// The same for the long test.
+    pub long_test_minutes: Option<u32>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RunningSelfTest {
+    /// What is left, 0 to 100, if the drive says.
+    pub remaining_percent: Option<u8>,
 }
 
 impl SmartReport {
@@ -395,6 +409,9 @@ impl SmartReport {
             nvme: None,
             error_log_count: None,
             last_self_test: None,
+            running_self_test: None,
+            short_test_minutes: None,
+            long_test_minutes: None,
         }
     }
 }
@@ -464,6 +481,11 @@ impl From<storage::SmartReport> for SmartReport {
                 description: t.description,
                 power_on_hours: t.power_on_hours,
             }),
+            running_self_test: data
+                .running_self_test
+                .map(|t| RunningSelfTest { remaining_percent: t.remaining_percent }),
+            short_test_minutes: data.self_test_minutes.map(|(short, _)| short),
+            long_test_minutes: data.self_test_minutes.map(|(_, long)| long),
         }
     }
 }
@@ -1409,5 +1431,75 @@ async fn stop_scrub(
 ) -> Result<StatusCode, ApiError> {
     auth.require(Permission::StorageManage)?;
     state.storage.stop_scrub.execute(&name, &auth.0.actor(), &client).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// A drive's self-test.
+#[derive(Debug, Clone, Copy, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SelfTestKind {
+    /// A few minutes.
+    Short,
+    /// Every sector; hours. The drive works on meanwhile, a little slower.
+    Long,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StartSelfTestRequest {
+    pub kind: SelfTestKind,
+}
+
+/// Has the disk test itself; its SMART report shows the progress and then
+/// the result. Needs `storage.manage`.
+#[utoipa::path(
+    post,
+    path = "/storage/disks/{name}/self-test",
+    tag = "storage",
+    security(("session" = [])),
+    params(("name" = String, Path)),
+    request_body = StartSelfTestRequest,
+    responses(
+        (status = NO_CONTENT, description = "Started."),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`"),
+        (status = CONFLICT, body = Problem, description = "`refused`: no SMART, or the disk sleeps"),
+    )
+)]
+async fn start_self_test(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(name): Path<String>,
+    ApiJson(request): ApiJson<StartSelfTestRequest>,
+) -> Result<StatusCode, ApiError> {
+    auth.require(Permission::StorageManage)?;
+    let kind = match request.kind {
+        SelfTestKind::Short => storage::SelfTestKind::Short,
+        SelfTestKind::Long => storage::SelfTestKind::Long,
+    };
+    state.storage.self_test.execute(&name, Some(kind), &auth.0.actor(), &client).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Stops the disk's running self-test. Needs `storage.manage`.
+#[utoipa::path(
+    post,
+    path = "/storage/disks/{name}/self-test/abort",
+    tag = "storage",
+    security(("session" = [])),
+    params(("name" = String, Path)),
+    responses(
+        (status = NO_CONTENT, description = "Stopped."),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`"),
+    )
+)]
+async fn abort_self_test(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(name): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    auth.require(Permission::StorageManage)?;
+    state.storage.self_test.execute(&name, None, &auth.0.actor(), &client).await?;
     Ok(StatusCode::NO_CONTENT)
 }

@@ -2313,6 +2313,104 @@
         ]
       }
     },
+    "/api/v1/storage/disks/{name}/self-test": {
+      "post": {
+        "tags": [
+          "storage"
+        ],
+        "summary": "Has the disk test itself; its SMART report shows the progress and then\nthe result. Needs `storage.manage`.",
+        "operationId": "start_self_test",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartSelfTestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Started."
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`refused`: no SMART, or the disk sleeps",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/storage/disks/{name}/self-test/abort": {
+      "post": {
+        "tags": [
+          "storage"
+        ],
+        "summary": "Stops the disk's running self-test. Needs `storage.manage`.",
+        "operationId": "abort_self_test",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Stopped."
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/storage/disks/{name}/smart": {
       "get": {
         "tags": [
@@ -5307,6 +5405,20 @@
         },
         "additionalProperties": false
       },
+      "RunningSelfTest": {
+        "type": "object",
+        "properties": {
+          "remaining_percent": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "What is left, 0 to 100, if the drive says.",
+            "minimum": 0
+          }
+        }
+      },
       "ScanKind": {
         "type": "string",
         "enum": [
@@ -5344,6 +5456,14 @@
             "minimum": 0
           }
         }
+      },
+      "SelfTestKind": {
+        "type": "string",
+        "description": "A drive's self-test.",
+        "enum": [
+          "short",
+          "long"
+        ]
       },
       "SessionInfo": {
         "type": "object",
@@ -5801,6 +5921,15 @@
               }
             ]
           },
+          "long_test_minutes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The same for the long test.",
+            "minimum": 0
+          },
           "model": {
             "type": [
               "string",
@@ -5858,11 +5987,31 @@
             ],
             "description": "Why there is no data, for `unsupported`."
           },
+          "running_self_test": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RunningSelfTest",
+                "description": "A self-test the drive runs now."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "serial": {
             "type": [
               "string",
               "null"
             ]
+          },
+          "short_test_minutes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "How long the drive says its short test takes, in minutes.",
+            "minimum": 0
           },
           "status": {
             "$ref": "#/components/schemas/SmartStatus"
@@ -5893,6 +6042,18 @@
           "weekly",
           "monthly"
         ]
+      },
+      "StartSelfTestRequest": {
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/SelfTestKind"
+          }
+        },
+        "additionalProperties": false
       },
       "StorageOverview": {
         "type": "object",

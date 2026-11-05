@@ -11,7 +11,9 @@ use zendiloos_jobs::{Job, JobError, Jobs};
 use zendiloos_kernel::{Actor, AuditEntry, AuditLog, Clock, Outcome, RequestContext, Timestamp};
 
 use crate::application::StorageError;
-use crate::application::ports::{AdminError, BlockDeviceSource, NewPool, PlanTokens, PoolAdmin, ZfsSource};
+use crate::application::ports::{
+    AdminError, BlockDeviceSource, NewPool, PlanTokens, PoolAdmin, SmartSource, ZfsSource,
+};
 use crate::application::queries::inventory;
 use crate::domain::{self, PoolLayout, PoolName, PoolPlan, ReplacePlan};
 
@@ -39,12 +41,14 @@ pub(crate) struct Context {
     pub(crate) audit: Arc<dyn AuditLog>,
     pub(crate) clock: Arc<dyn Clock>,
     pub(crate) tokens: Arc<dyn PlanTokens>,
+    pub(crate) smart: Arc<dyn SmartSource>,
     plans: Mutex<HashMap<String, Stored>>,
     /// Storage jobs run one at a time; later ones wait.
     changes: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Context {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         devices: Arc<dyn BlockDeviceSource>,
         zfs: Arc<dyn ZfsSource>,
@@ -53,6 +57,7 @@ impl Context {
         audit: Arc<dyn AuditLog>,
         clock: Arc<dyn Clock>,
         tokens: Arc<dyn PlanTokens>,
+        smart: Arc<dyn SmartSource>,
     ) -> Self {
         Self {
             devices,
@@ -62,6 +67,7 @@ impl Context {
             audit,
             clock,
             tokens,
+            smart,
             plans: Mutex::new(HashMap::new()),
             changes: Arc::new(tokio::sync::Mutex::new(())),
         }
@@ -399,6 +405,44 @@ impl ScrubPool {
     }
 }
 
+/// Command: has a disk test itself (SMART self-test), or stops its test.
+/// Only disks that are there and report SMART.
+#[derive(Clone)]
+pub struct SelfTest {
+    context: Arc<Context>,
+}
+
+impl SelfTest {
+    pub(crate) fn new(context: Arc<Context>) -> Self {
+        Self { context }
+    }
+
+    /// `kind` `None` stops the running test.
+    pub async fn execute(
+        &self,
+        disk: &str,
+        kind: Option<domain::SelfTestKind>,
+        actor: &Actor,
+        request: &RequestContext,
+    ) -> Result<(), StorageError> {
+        let c = &self.context;
+        let devices = c.devices.block_devices(request).await?;
+        if !devices.iter().any(|device| device.kind == domain::DeviceKind::Disk && device.name == disk) {
+            return Err(StorageError::DiskNotFound);
+        }
+        if !matches!(c.smart.smart_report(disk, request).await?, domain::SmartReport::Available(_)) {
+            return Err(StorageError::Refused(format!("{disk} reports no SMART data (or sleeps)")));
+        }
+        let (action, outcome) = match kind {
+            Some(kind) => ("storage.self_test", c.smart.start_self_test(disk, kind, request).await),
+            None => ("storage.abort_self_test", c.smart.abort_self_test(disk, request).await),
+        };
+        let audit = if outcome.is_ok() { Outcome::Success } else { Outcome::Failure };
+        c.audit(action, audit, disk, actor, request).await;
+        Ok(outcome?)
+    }
+}
+
 /// Command: stops a running scrub. A resilver cannot be stopped: it
 /// restores the pool's redundancy.
 #[derive(Clone)]
@@ -558,6 +602,26 @@ mod tests {
             matches!(result, Err(StorageError::Plan(domain::PlanError::DiskUnusable { .. }))),
             "{result:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn disks_test_themselves_when_they_report_smart() {
+        let s = setup();
+        let request = RequestContext::default();
+
+        s.storage
+            .self_test
+            .execute("sda", Some(domain::SelfTestKind::Long), &alice(), &request)
+            .await
+            .unwrap();
+        s.storage.self_test.execute("sda", None, &alice(), &request).await.unwrap();
+        let sleeping =
+            s.storage.self_test.execute("sdb", Some(domain::SelfTestKind::Short), &alice(), &request).await;
+        assert!(matches!(sleeping, Err(StorageError::Refused(_))), "{sleeping:?}");
+        let missing = s.storage.self_test.execute("sdz", None, &alice(), &request).await;
+        assert!(matches!(missing, Err(StorageError::DiskNotFound)), "{missing:?}");
+
+        assert_eq!(s.fake.calls(), ["self-test sda Long", "abort self-test sda"]);
     }
 
     #[tokio::test]

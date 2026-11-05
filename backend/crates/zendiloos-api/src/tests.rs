@@ -837,6 +837,8 @@ fn openapi_documents_every_route() {
             "/api/v1/shares/{id}/snapshots/{label}/delete",
             "/api/v1/storage/arrays",
             "/api/v1/storage/disks",
+            "/api/v1/storage/disks/{name}/self-test",
+            "/api/v1/storage/disks/{name}/self-test/abort",
             "/api/v1/storage/disks/{name}/smart",
             "/api/v1/storage/overview",
             "/api/v1/storage/pools",
@@ -1767,4 +1769,24 @@ async fn shares_have_a_quota_compression_and_record_size_and_show_their_usage() 
         json!({ "settings": { "quota_bytes": null, "compression": "lz4", "record_size_bytes": 131_072 } });
     let changed = h.send(json(with_csrf(changing(Method::PATCH, &path), &admin), none.clone())).await;
     assert_eq!(changed.body["share"]["settings"], none["settings"], "{:?}", changed.body);
+}
+
+#[tokio::test]
+async fn administrators_have_disks_test_themselves() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let viewer = h.sign_in("bob", Role::ReadOnly).await;
+    let start = |session: &Session, disk: &str, kind: &str| {
+        h.send(json(
+            with_csrf(post(&format!("/api/v1/storage/disks/{disk}/self-test")), session),
+            json!({ "kind": kind }),
+        ))
+    };
+
+    assert_eq!(start(&admin, "sda", "long").await.status, StatusCode::NO_CONTENT);
+    assert_problem(&start(&viewer, "sda", "short").await, StatusCode::FORBIDDEN, "forbidden");
+    assert_problem(&start(&admin, "sdb", "short").await, StatusCode::CONFLICT, "refused");
+    assert_problem(&start(&admin, "sdz", "short").await, StatusCode::NOT_FOUND, "not_found");
+    let stop = h.send(empty(with_csrf(post("/api/v1/storage/disks/sda/self-test/abort"), &admin))).await;
+    assert_eq!(stop.status, StatusCode::NO_CONTENT);
 }

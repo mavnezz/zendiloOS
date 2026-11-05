@@ -1,21 +1,22 @@
 <script setup lang="ts">
-import { ArrowLeft, CircleAlert, TriangleAlert } from 'lucide-vue-next'
-import { computed } from 'vue'
+import { ArrowLeft, CircleAlert, CircleStop, Stethoscope, TriangleAlert } from 'lucide-vue-next'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import type { SmartFinding } from '@/shared/api/types'
+import type { SelfTestKind, SmartFinding } from '@/shared/api/types'
 import { problemMessage } from '@/shared/i18n'
-import { formatBytes } from '@/shared/lib/format'
+import { formatBytes, formatDuration } from '@/shared/lib/format'
 import { cn } from '@/shared/lib/utils'
 import { Alert } from '@/shared/ui/alert'
 import { Button } from '@/shared/ui/button'
 import { Meter } from '@/shared/ui/meter'
 
-import { useDisks, useSmartReport } from '../api'
+import { abortSelfTest, startSelfTest, useDisks, useRefreshStorage, useSmartReport } from '../api'
 import { formatCount, usageLabel } from '../format'
 import SmartBadge from './SmartBadge.vue'
 
-const props = defineProps<{ name: string }>()
+/** Whether the signed-in account may run self-tests (`storage.manage`). */
+const props = defineProps<{ name: string; canManage: boolean }>()
 defineEmits<{ back: [] }>()
 
 const { t } = useI18n()
@@ -23,6 +24,36 @@ const { data: disks } = useDisks()
 const { data: report, error, isPending } = useSmartReport(() => props.name)
 
 const disk = computed(() => disks.value?.find((d) => d.name === props.name))
+
+const refresh = useRefreshStorage()
+const testError = ref<string | null>(null)
+watch(
+  () => props.name,
+  () => (testError.value = null),
+)
+
+/** How far the running self-test is, 0 to 1; unknown if the drive does not say. */
+const testDone = computed(() => {
+  const left = report.value?.running_self_test?.remaining_percent
+  return left == null ? null : (100 - left) / 100
+})
+
+function lasts(minutes: number | null | undefined): string {
+  return minutes ? t('storage.selfTest.lasts', { duration: formatDuration(minutes * 60) }) : ''
+}
+
+async function selfTest(action: () => Promise<void>): Promise<void> {
+  testError.value = null
+  try {
+    await action()
+    await refresh()
+  } catch (failure) {
+    testError.value = problemMessage(failure)
+  }
+}
+
+const start = (kind: SelfTestKind) => selfTest(() => startSelfTest(props.name, kind))
+const abort = () => selfTest(() => abortSelfTest(props.name))
 
 function finding(item: SmartFinding): string {
   return t(`storage.finding.${item.code}`, {
@@ -119,6 +150,53 @@ function finding(item: SmartFinding): string {
             </dd>
           </div>
         </dl>
+
+        <section class="grid gap-2">
+          <h4 class="font-medium">{{ t('storage.selfTest.title') }}</h4>
+          <Alert v-if="testError" variant="destructive">{{ testError }}</Alert>
+          <template v-if="report.running_self_test">
+            <p class="text-sm">
+              {{
+                testDone == null
+                  ? t('storage.selfTest.running')
+                  : t('storage.selfTest.runningDone', { percent: Math.round(testDone * 100) })
+              }}
+            </p>
+            <Meter v-if="testDone != null" :value="testDone" :label="t('storage.selfTest.title')" />
+            <div v-if="canManage" class="flex justify-end">
+              <Button variant="outline" size="sm" @click="abort">
+                <CircleStop />
+                {{ t('storage.selfTest.abort') }}
+              </Button>
+            </div>
+          </template>
+          <template v-else>
+            <p class="text-sm text-muted-foreground">{{ t('storage.selfTest.hint') }}</p>
+            <div v-if="canManage" class="flex flex-wrap justify-end gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                :title="lasts(report.short_test_minutes)"
+                @click="start('short')"
+              >
+                <Stethoscope />
+                {{ t('storage.selfTest.short') }}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                :title="lasts(report.long_test_minutes)"
+                @click="start('long')"
+              >
+                <Stethoscope />
+                {{ t('storage.selfTest.long') }}
+                <span v-if="report.long_test_minutes" class="text-muted-foreground">
+                  ({{ formatDuration(report.long_test_minutes * 60) }})
+                </span>
+              </Button>
+            </div>
+          </template>
+        </section>
 
         <section v-if="report.nvme" class="grid gap-3">
           <h4 class="font-medium">{{ t('storage.nvmeHealth') }}</h4>

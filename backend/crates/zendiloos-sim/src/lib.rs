@@ -229,6 +229,8 @@ impl AgentTransport for SimulatedAgent {
             }
             Request::ListBlockDevices {} => Response::BlockDevices { lsblk_json: self.host().lsblk() },
             Request::SmartData { device } => smart(device),
+            // The simulated drives pass every test at once.
+            Request::StartSelfTest { .. } | Request::AbortSelfTest { .. } => Response::Done,
             Request::ArrayStatus {} => Response::ArrayStatus { mdstat: MDSTAT.to_owned() },
             Request::ZfsStatus {} => {
                 let now = (self.clock)();

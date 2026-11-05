@@ -6,7 +6,9 @@ use zendiloos_kernel::{PortError, RequestContext};
 use zendiloos_storage::application::ports::{
     AdminError, ArraySource, BlockDeviceSource, NewPool, PlanTokens, PoolAdmin, SmartSource, ZfsSource,
 };
-use zendiloos_storage::domain::{Array, BlockDevice, Pool, PoolLayout, PoolName, SmartReport, VolumeNumber};
+use zendiloos_storage::domain::{
+    Array, BlockDevice, Pool, PoolLayout, PoolName, SelfTestKind, SmartReport, VolumeNumber,
+};
 
 use super::{WHAT, call, call_raw, unexpected};
 use crate::storage::{lsblk, mdstat, smartctl, zfs};
@@ -43,6 +45,31 @@ impl SmartSource for AgentStorage {
             Response::Smart { exit_status, smartctl_json } => {
                 smartctl::parse(exit_status, &smartctl_json).map_err(|e| PortError::new("SMART data", e))
             }
+            other => Err(unexpected(other)),
+        }
+    }
+
+    async fn start_self_test(
+        &self,
+        disk: &str,
+        kind: SelfTestKind,
+        context: &RequestContext,
+    ) -> Result<(), PortError> {
+        let device = DiskName::parse(disk).map_err(|e| PortError::new("self-test", e))?;
+        let kind = match kind {
+            SelfTestKind::Short => proto::SelfTestKind::Short,
+            SelfTestKind::Long => proto::SelfTestKind::Long,
+        };
+        match call(self.transport.as_ref(), Request::StartSelfTest { device, kind }, context).await? {
+            Response::Done => Ok(()),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    async fn abort_self_test(&self, disk: &str, context: &RequestContext) -> Result<(), PortError> {
+        let device = DiskName::parse(disk).map_err(|e| PortError::new("self-test", e))?;
+        match call(self.transport.as_ref(), Request::AbortSelfTest { device }, context).await? {
+            Response::Done => Ok(()),
             other => Err(unexpected(other)),
         }
     }

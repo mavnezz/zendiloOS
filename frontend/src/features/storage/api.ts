@@ -2,13 +2,14 @@ import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import { type MaybeRefOrGetter, toValue } from 'vue'
 
 import { api, unwrap } from '@/shared/api/client'
-import type { Job, NewPoolLayout, PoolPlan, ReplacePlan } from '@/shared/api/types'
+import type { Job, NewPoolLayout, PoolPlan, ReplacePlan, SelfTestKind } from '@/shared/api/types'
 
 /** Arrays change while they rebuild, so they are polled more often. */
 const ARRAY_REFRESH_MS = 5_000
 const DEVICE_REFRESH_MS = 30_000
 /** SMART is read from the disks themselves; once in a while is enough. */
 const SMART_STALE_MS = 5 * 60_000
+const SELF_TEST_REFRESH_MS = 30_000
 
 export function useStorageOverview() {
   return useQuery({
@@ -36,7 +37,27 @@ export function useSmartReport(disk: MaybeRefOrGetter<string>) {
         }),
       ),
     staleTime: SMART_STALE_MS,
+    // While the disk tests itself, follow its progress.
+    refetchInterval: (query) =>
+      query.state.data?.running_self_test ? SELF_TEST_REFRESH_MS : false,
   })
+}
+
+/** Has the disk test itself; its SMART report then shows the progress. */
+export async function startSelfTest(disk: string, kind: SelfTestKind): Promise<void> {
+  await unwrap(
+    api.POST('/api/v1/storage/disks/{name}/self-test', {
+      params: { path: { name: disk } },
+      body: { kind },
+    }),
+  )
+}
+
+/** Stops the disk's running self-test. */
+export async function abortSelfTest(disk: string): Promise<void> {
+  await unwrap(
+    api.POST('/api/v1/storage/disks/{name}/self-test/abort', { params: { path: { name: disk } } }),
+  )
 }
 
 export function useArrays() {

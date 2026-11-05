@@ -37,6 +37,25 @@ pub struct SmartData {
     pub error_log_count: Option<u64>,
     /// The most recent self-test.
     pub last_self_test: Option<SelfTest>,
+    /// A self-test the drive is running now.
+    pub running_self_test: Option<RunningSelfTest>,
+    /// How long the drive says its tests take, in minutes: short, long.
+    pub self_test_minutes: Option<(u32, u32)>,
+}
+
+/// The tests a drive runs on itself, without stopping its work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelfTestKind {
+    /// A few minutes: electronics and a sample of the surface.
+    Short,
+    /// Hours: every sector. Run it when the disk is little used.
+    Long,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunningSelfTest {
+    /// What is left, 0 to 100, if the drive says.
+    pub remaining_percent: Option<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -224,6 +243,8 @@ mod tests {
             nvme: None,
             error_log_count: Some(0),
             last_self_test: None,
+            running_self_test: None,
+            self_test_minutes: None,
         }
     }
 
@@ -305,6 +326,8 @@ mod tests {
                 description: "Completed: read failure".into(),
                 power_on_hours: Some(100),
             }),
+            running_self_test: None,
+            self_test_minutes: None,
             ..ata(vec![])
         };
         assert_eq!(data.assess().findings, [Finding::SelfTestFailed]);

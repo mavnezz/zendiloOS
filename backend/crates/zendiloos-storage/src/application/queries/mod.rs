@@ -206,6 +206,19 @@ mod tests {
             self.asked.lock().unwrap().push(disk.to_owned());
             Ok(SmartReport::Standby)
         }
+
+        async fn start_self_test(
+            &self,
+            _: &str,
+            _: crate::domain::SelfTestKind,
+            _: &RequestContext,
+        ) -> Result<(), PortError> {
+            Ok(())
+        }
+
+        async fn abort_self_test(&self, _: &str, _: &RequestContext) -> Result<(), PortError> {
+            Ok(())
+        }
     }
 
     fn disk() -> BlockDevice {

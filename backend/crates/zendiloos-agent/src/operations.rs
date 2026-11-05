@@ -5,7 +5,8 @@ use std::time::Duration;
 use tokio::io::AsyncReadExt;
 
 use zendiloos_agent_proto::{
-    DiskName, ErrorCode, LSBLK_COLUMNS, PROTOCOL_VERSION, Request, Response, Role, ZFS_DATASET_COLUMNS,
+    DiskName, ErrorCode, LSBLK_COLUMNS, PROTOCOL_VERSION, Request, Response, Role, SelfTestKind,
+    ZFS_DATASET_COLUMNS,
 };
 use zendiloos_exec::{ExecError, Limits, Output, Program};
 use zendiloos_fileops::FileError;
@@ -94,6 +95,14 @@ impl Operations {
             Request::ListBlockDevices {} => self.list_block_devices().await,
             Request::SmartData { device } => self.smart_data(device).await,
             Request::ArrayStatus {} => array_status().await,
+            Request::StartSelfTest { device, kind } => {
+                let argument = match kind {
+                    SelfTestKind::Short => "--test=short",
+                    SelfTestKind::Long => "--test=long",
+                };
+                self.self_test(device, argument).await
+            }
+            Request::AbortSelfTest { device } => self.self_test(device, "--abort").await,
             Request::ZfsStatus {} => self.zfs_status().await,
             Request::CreatePool { name, layout, disks, volume } => {
                 self.pools.create(name, *layout, disks, *volume).await
@@ -166,6 +175,20 @@ impl Operations {
         .await?
         .success(&self.lsblk)?;
         Ok(Response::BlockDevices { lsblk_json: utf8(output)? })
+    }
+
+    /// Only whole disks the kernel has; smartctl returns at once while the
+    /// drive tests itself.
+    async fn self_test(&self, device: &DiskName, argument: &str) -> Result<Response, OperationError> {
+        let path = format!("/dev/{}", device.as_str());
+        if !std::path::Path::new(&path).exists() {
+            return Err(OperationError::Refused(format!("there is no disk {}", device.as_str())));
+        }
+        let limits = Limits { timeout: Duration::from_secs(60), ..Limits::default() };
+        zendiloos_exec::run(&self.smartctl, [argument, path.as_str()], limits)
+            .await?
+            .success(&self.smartctl)?;
+        Ok(Response::Done)
     }
 
     /// smartctl's exit status is a bit mask that also reports findings

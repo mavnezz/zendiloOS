@@ -73,7 +73,12 @@ function open(next: Section): void {
       <VolumesSection v-else-if="section === 'volumes'" />
       <PoolsSection v-else-if="section === 'pools'" :can-manage="canManage" />
       <template v-else>
-        <DiskDetail v-if="selectedDisk" :name="selectedDisk" @back="selectedDisk = null" />
+        <DiskDetail
+          v-if="selectedDisk"
+          :name="selectedDisk"
+          :can-manage="canManage"
+          @back="selectedDisk = null"
+        />
         <DisksSection v-else @select="selectedDisk = $event" />
       </template>
     </div>

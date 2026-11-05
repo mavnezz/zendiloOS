@@ -22,7 +22,7 @@ pub use pool::{
     VdevState, VolumeNumber, resolve_pool_disks,
 };
 pub use smart::{
-    Assessment, AtaAttribute, AttributeFailure, Finding, Health, NvmeHealth, SelfTest, SmartData,
-    SmartProtocol, SmartReport,
+    Assessment, AtaAttribute, AttributeFailure, Finding, Health, NvmeHealth, RunningSelfTest, SelfTest,
+    SelfTestKind, SmartData, SmartProtocol, SmartReport,
 };
 pub use volume::{DATA_FILESYSTEMS, Volume, volumes};
