@@ -179,7 +179,12 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Downloads a file, always as an attachment. Needs `files.read`. */
+        /**
+         * Downloads a file, as an attachment unless a harmless kind is asked for
+         *     `inline`. One byte range (`Range`) can be asked for, to resume a
+         *     download (`If-Range` with the `Last-Modified` given) or seek in a video.
+         *     Needs `files.read`.
+         */
         get: operations["download"];
         put?: never;
         post?: never;
@@ -2596,6 +2601,11 @@ export interface operations {
             query: {
                 /** @description Relative to the share's root, e.g. `photos/2024/beach.jpg`. */
                 path: string;
+                /**
+                 * @description Let the browser show the file, if it is a picture, sound, video or
+                 *     plain text; anything else is saved regardless.
+                 */
+                inline?: boolean;
             };
             header?: never;
             path: {
@@ -2606,6 +2616,14 @@ export interface operations {
         requestBody?: never;
         responses: {
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": number[];
+                };
+            };
+            206: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2630,6 +2648,13 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["Problem"];
                 };
+            };
+            /** @description The range starts beyond the end. */
+            416: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description `invalid_operation`: not a file */
             422: {

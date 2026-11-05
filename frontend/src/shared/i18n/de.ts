@@ -680,6 +680,9 @@ const de: Messages = {
     cancelUpload: 'Hochladen abbrechen',
     dismiss: 'Ausblenden',
     dropHere: 'Dateien hier ablegen, um sie hochzuladen',
+    preview: 'Anzeigen',
+    previewTitle: '{name}',
+    textTruncated: 'Nur der Anfang wird gezeigt. Laden Sie die Datei herunter, um alles zu sehen.',
   },
   shares: {
     storage: {

@@ -21,6 +21,7 @@ zendiloos-system.workspace = true
 axum.workspace = true
 axum-extra.workspace = true
 futures-util = "0.3"
+httpdate.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tower-http.workspace = true

@@ -31,7 +31,16 @@ import { Button } from '@/shared/ui/button'
 import { ConfirmDialog } from '@/shared/ui/confirm-dialog'
 import { Meter } from '@/shared/ui/meter'
 
-import { downloadUrl, joinPath, uploadFile, useFileActions, useFolder, useMyShares } from '../api'
+import {
+  downloadUrl,
+  joinPath,
+  previewKind,
+  uploadFile,
+  useFileActions,
+  useFolder,
+  useMyShares,
+} from '../api'
+import FilePreview from './FilePreview.vue'
 import NameDialog from './NameDialog.vue'
 
 /** The signed-in user's name: their recycle bin is `.recycle/<name>`. */
@@ -104,6 +113,15 @@ const single = computed(() =>
 function open(target: string): void {
   path.value = target
 }
+
+/** The file shown in the preview, by its path in the share. */
+const previewing = ref<string | null>(null)
+const previewOpen = computed({
+  get: () => previewing.value !== null,
+  set: (isOpen) => {
+    if (!isOpen) previewing.value = null
+  },
+})
 
 function up(): void {
   path.value = path.value.split('/').slice(0, -1).join('/')
@@ -520,6 +538,16 @@ function icon(entry: FileEntry) {
                       <component :is="icon(entry)" class="size-4 shrink-0 text-primary" />
                       <span class="truncate">{{ entry.name }}</span>
                     </button>
+                    <button
+                      v-else-if="entry.kind === 'file' && previewKind(entry.name)"
+                      type="button"
+                      class="flex w-full min-w-0 items-center gap-2 text-left hover:underline"
+                      :title="t('files.preview')"
+                      @click="previewing = joinPath(path, entry.name)"
+                    >
+                      <component :is="icon(entry)" class="size-4 shrink-0 text-muted-foreground" />
+                      <span class="truncate">{{ entry.name }}</span>
+                    </button>
                     <a
                       v-else
                       class="flex min-w-0 items-center gap-2 hover:underline"
@@ -582,6 +610,7 @@ function icon(entry: FileEntry) {
       </template>
     </div>
 
+    <FilePreview v-if="share" v-model:open="previewOpen" :share="share.id" :path="previewing" />
     <NameDialog
       :open="naming !== null"
       :title="

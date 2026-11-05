@@ -28,9 +28,60 @@ export function useFolder(share: Ref<number | null>, path: Ref<string>) {
   })
 }
 
-/** Where the browser downloads a file from; the answer is always an attachment. */
+/** Where the browser downloads a file from, as an attachment. */
 export function downloadUrl(share: number, path: string): string {
   return `/api/v1/files/shares/${share}/download?${new URLSearchParams({ path })}`
+}
+
+export type PreviewKind = 'image' | 'video' | 'audio' | 'text'
+
+/** The kinds the server shows inline (see its download route); others are only saved. */
+const PREVIEWS: Record<string, PreviewKind> = {
+  jpg: 'image',
+  jpeg: 'image',
+  png: 'image',
+  gif: 'image',
+  webp: 'image',
+  avif: 'image',
+  mp4: 'video',
+  m4v: 'video',
+  webm: 'video',
+  mp3: 'audio',
+  m4a: 'audio',
+  ogg: 'audio',
+  oga: 'audio',
+  opus: 'audio',
+  flac: 'audio',
+  wav: 'audio',
+  txt: 'text',
+  log: 'text',
+  md: 'text',
+  csv: 'text',
+}
+
+/** How a file can be shown in the browser, if at all. */
+export function previewKind(name: string): PreviewKind | null {
+  const dot = name.lastIndexOf('.')
+  if (dot <= 0) return null
+  return PREVIEWS[name.slice(dot + 1).toLowerCase()] ?? null
+}
+
+/** Where the browser shows a file from. */
+export function previewUrl(share: number, path: string): string {
+  return `/api/v1/files/shares/${share}/download?${new URLSearchParams({ path, inline: 'true' })}`
+}
+
+/** At most this much of a text file is shown. */
+export const TEXT_PREVIEW_BYTES = 256 * 1024
+
+/** The beginning of a text file, and whether there is more. */
+export async function textPreview(url: string): Promise<{ text: string; more: boolean }> {
+  const response = await fetch(url, { headers: { Range: `bytes=0-${TEXT_PREVIEW_BYTES - 1}` } })
+  if (!response.ok) throw new ApiProblem(response.status, 'unknown')
+  const range = response.headers.get('Content-Range')
+  const total = range ? Number(range.split('/')[1]) : null
+  const text = new TextDecoder().decode(await response.arrayBuffer())
+  return { text, more: total !== null && total > TEXT_PREVIEW_BYTES }
 }
 
 /** `parent/name`, or `name` at the root. */

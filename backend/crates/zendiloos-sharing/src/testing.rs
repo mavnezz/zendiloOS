@@ -28,6 +28,9 @@ impl ports::Volumes for Volumes {
     }
 }
 
+/// What every file of the fake host holds.
+pub const FILE_CONTENT: &str = "abcdefghij";
+
 #[derive(Default)]
 pub struct Shares(Mutex<Vec<Share>>, Mutex<std::collections::HashMap<ShareId, Vec<SnapshotSchedule>>>);
 
@@ -308,8 +311,15 @@ impl FileHost for Files {
         _: &RequestContext,
     ) -> Result<(tokio::fs::File, u64), FileHostError> {
         self.record(format!("open {user} {}", place(at)), at)?;
-        let file = tokio::fs::File::open("/dev/null").await.map_err(|e| PortError::new("files", e))?;
-        Ok((file, 0))
+        // Every file holds the same ten letters.
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let number = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("zendiloos-download-{}-{number}", std::process::id()));
+        let error = |e| PortError::new("files", e);
+        tokio::fs::write(&path, FILE_CONTENT).await.map_err(error)?;
+        let file = tokio::fs::File::open(&path).await.map_err(error)?;
+        let _ = tokio::fs::remove_file(&path).await;
+        Ok((file, FILE_CONTENT.len() as u64))
     }
 
     async fn create_upload(

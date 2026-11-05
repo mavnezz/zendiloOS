@@ -10,7 +10,8 @@ import {
   DialogTitle,
 } from 'reka-ui'
 
-defineProps<{ title: string; description?: string; closeLabel: string }>()
+/** `wide` for content such as pictures. */
+defineProps<{ title: string; description?: string; closeLabel: string; wide?: boolean }>()
 const open = defineModel<boolean>('open', { default: false })
 </script>
 
@@ -20,7 +21,8 @@ const open = defineModel<boolean>('open', { default: false })
     <DialogPortal>
       <DialogOverlay class="fixed inset-0 z-[1000] bg-black/40 backdrop-blur-[2px]" />
       <DialogContent
-        class="fixed top-1/2 left-1/2 z-[1001] grid max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 gap-4 overflow-y-auto rounded-xl border bg-card p-6 shadow-lg"
+        class="fixed top-1/2 left-1/2 z-[1001] grid max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 overflow-y-auto rounded-xl border bg-card p-6 shadow-lg"
+        :class="wide ? 'max-w-4xl' : 'max-w-md'"
         v-bind="description ? {} : { 'aria-describedby': undefined }"
       >
         <div class="flex items-start gap-2">

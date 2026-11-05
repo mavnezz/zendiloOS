@@ -38,6 +38,8 @@ base64 = "0.23"
 clap = { version = "4", features = ["derive"] }
 getrandom = "0.4"
 http-body-util = "0.1"
+# HTTP dates (Last-Modified) for resumable downloads.
+httpdate = "1"
 # The host's time zone (/etc/localtime) for schedules in local time.
 jiff = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo"] }
 listenfd = "1"

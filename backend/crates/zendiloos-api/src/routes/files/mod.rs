@@ -2,14 +2,16 @@
 //! `files.write`). The host acts with the user's own credentials, so the
 //! same permissions apply as over SMB and NFS.
 
+mod download;
+
 use axum::Json;
 use axum::body::{Body, Bytes};
 use axum::extract::{Path, State};
-use axum::http::{HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use utoipa::{IntoParams, ToSchema};
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
@@ -184,8 +186,8 @@ async fn list_folder(
 }
 
 /// `Content-Disposition` for `name`: an ASCII fallback and the exact name
-/// (RFC 6266, RFC 8187).
-fn attachment(name: &str) -> HeaderValue {
+/// (RFC 6266, RFC 8187); `inline` lets the browser show it.
+fn disposition(name: &str, inline: bool) -> HeaderValue {
     let fallback: String = name
         .chars()
         .map(|c| if (c.is_ascii_graphic() && c != '"' && c != '\\') || c == ' ' { c } else { '_' })
@@ -198,7 +200,8 @@ fn attachment(name: &str) -> HeaderValue {
             encoded.push_str(&format!("%{byte:02X}"));
         }
     }
-    HeaderValue::from_str(&format!("attachment; filename=\"{fallback}\"; filename*=UTF-8''{encoded}"))
+    let kind = if inline { "inline" } else { "attachment" };
+    HeaderValue::from_str(&format!("{kind}; filename=\"{fallback}\"; filename*=UTF-8''{encoded}"))
         .unwrap_or_else(|_| HeaderValue::from_static("attachment"))
 }
 
@@ -207,9 +210,16 @@ fn attachment(name: &str) -> HeaderValue {
 pub struct FileQuery {
     /// Relative to the share's root, e.g. `photos/2024/beach.jpg`.
     pub path: String,
+    /// Let the browser show the file, if it is a picture, sound, video or
+    /// plain text; anything else is saved regardless.
+    #[serde(default)]
+    pub inline: bool,
 }
 
-/// Downloads a file, always as an attachment. Needs `files.read`.
+/// Downloads a file, as an attachment unless a harmless kind is asked for
+/// `inline`. One byte range (`Range`) can be asked for, to resume a
+/// download (`If-Range` with the `Last-Modified` given) or seek in a video.
+/// Needs `files.read`.
 #[utoipa::path(
     get,
     path = "/files/shares/{id}/download",
@@ -218,6 +228,8 @@ pub struct FileQuery {
     params(("id" = i64, Path), FileQuery),
     responses(
         (status = OK, content_type = "application/octet-stream", body = Vec<u8>),
+        (status = PARTIAL_CONTENT, content_type = "application/octet-stream", body = Vec<u8>),
+        (status = RANGE_NOT_SATISFIABLE, description = "The range starts beyond the end."),
         (status = NOT_FOUND, body = Problem, description = "`not_found`"),
         (status = FORBIDDEN, body = Problem, description = "`permission_denied`"),
         (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_operation`: not a file"),
@@ -229,24 +241,56 @@ async fn download(
     Client(client): Client,
     Path(id): Path<i64>,
     ApiQuery(query): ApiQuery<FileQuery>,
+    request_headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     auth.require(Permission::FilesRead)?;
     let file_path = path(&query.path)?;
     let name = file_path.name().ok_or_else(|| ApiError::InvalidInput("not a file".into()))?.to_owned();
-    let (file, size) = state.files.open(&auth.0.actor(), ShareId::new(id), file_path, &client).await?;
-    let chunks = futures_util::stream::try_unfold(file, |mut file| async move {
+    let (mut file, size) = state.files.open(&auth.0.actor(), ShareId::new(id), file_path, &client).await?;
+
+    let modified = file.metadata().await.ok().and_then(|m| m.modified().ok()).map(httpdate::fmt_http_date);
+    let preview = query.inline.then(|| download::preview_type(&name)).flatten();
+    let mut headers = HeaderMap::new();
+    let content_type = preview.unwrap_or("application/octet-stream");
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+    headers.insert(header::CONTENT_DISPOSITION, disposition(&name, preview.is_some()));
+    headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    // Shown in the browser, it still may not run anything.
+    headers.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static("sandbox; default-src 'none'"));
+    if let Some(modified) = modified.as_deref().and_then(|m| HeaderValue::from_str(m).ok()) {
+        headers.insert(header::LAST_MODIFIED, modified);
+    }
+
+    // A range applies to the file as it was when the browser got its date;
+    // without one, or if it changed since, the whole file comes again.
+    let range = request_headers.get(header::RANGE).and_then(|v| v.to_str().ok());
+    let unchanged = match request_headers.get(header::IF_RANGE).and_then(|v| v.to_str().ok()) {
+        None => true,
+        Some(date) => modified.as_deref() == Some(date),
+    };
+    let part = if unchanged { download::part(range, size) } else { download::Part::Whole };
+    let (status, length) = match part {
+        download::Part::Whole => (StatusCode::OK, size),
+        download::Part::Bytes { start, end } => {
+            file.seek(std::io::SeekFrom::Start(start)).await.map_err(ApiError::internal)?;
+            let range = format!("bytes {start}-{end}/{size}");
+            headers.insert(header::CONTENT_RANGE, HeaderValue::from_str(&range).map_err(ApiError::internal)?);
+            (StatusCode::PARTIAL_CONTENT, end - start + 1)
+        }
+        download::Part::Unsatisfiable => {
+            let range = HeaderValue::from_str(&format!("bytes */{size}")).map_err(ApiError::internal)?;
+            return Ok((StatusCode::RANGE_NOT_SATISFIABLE, [(header::CONTENT_RANGE, range)]).into_response());
+        }
+    };
+    headers.insert(header::CONTENT_LENGTH, HeaderValue::from(length));
+    let chunks = futures_util::stream::try_unfold(file.take(length), |mut file| async move {
         let mut buffer = vec![0; 256 * 1024];
         let read = file.read(&mut buffer).await?;
         buffer.truncate(read);
         Ok::<_, std::io::Error>((read > 0).then(|| (Bytes::from(buffer), file)))
     });
-    let headers = [
-        (header::CONTENT_TYPE, HeaderValue::from_static("application/octet-stream")),
-        (header::CONTENT_DISPOSITION, attachment(&name)),
-        (header::CONTENT_LENGTH, HeaderValue::from(size)),
-        (header::CACHE_CONTROL, HeaderValue::from_static("no-store")),
-    ];
-    Ok((headers, Body::from_stream(chunks)).into_response())
+    Ok((status, headers, Body::from_stream(chunks)).into_response())
 }
 
 #[derive(Debug, Deserialize, IntoParams)]
@@ -498,7 +542,7 @@ mod tests {
     #[test]
     fn attachments_keep_the_exact_name() {
         assert_eq!(
-            attachment("Urlaub 2024 ü \"x\".jpg"),
+            disposition("Urlaub 2024 ü \"x\".jpg", false),
             "attachment; filename=\"Urlaub 2024 _ _x_.jpg\"; filename*=UTF-8''Urlaub%202024%20%C3%BC%20%22x%22.jpg"
         );
     }

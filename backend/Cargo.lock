@@ -2627,6 +2627,7 @@ dependencies = [
  "axum-extra",
  "futures-util",
  "http-body-util",
+ "httpdate",
  "serde",
  "serde_json",
  "tokio",

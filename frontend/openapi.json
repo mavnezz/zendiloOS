@@ -568,7 +568,7 @@
         "tags": [
           "files"
         ],
-        "summary": "Downloads a file, always as an attachment. Needs `files.read`.",
+        "summary": "Downloads a file, as an attachment unless a harmless kind is asked for\n`inline`. One byte range (`Range`) can be asked for, to resume a\ndownload (`If-Range` with the `Last-Modified` given) or seek in a video.\nNeeds `files.read`.",
         "operationId": "download",
         "parameters": [
           {
@@ -588,10 +588,33 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "inline",
+            "in": "query",
+            "description": "Let the browser show the file, if it is a picture, sound, video or\nplain text; anything else is saved regardless.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
           "200": {
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          },
+          "206": {
             "content": {
               "application/octet-stream": {
                 "schema": {
@@ -624,6 +647,9 @@
                 }
               }
             }
+          },
+          "416": {
+            "description": "The range starts beyond the end."
           },
           "422": {
             "description": "`invalid_operation`: not a file",

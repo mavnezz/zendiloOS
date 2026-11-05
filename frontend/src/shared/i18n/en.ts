@@ -670,6 +670,9 @@ const en = {
     cancelUpload: 'Cancel the upload',
     dismiss: 'Dismiss',
     dropHere: 'Drop files here to upload them',
+    preview: 'Show',
+    previewTitle: '{name}',
+    textTruncated: 'Only the beginning is shown. Download the file to see all of it.',
   },
   shares: {
     storage: {

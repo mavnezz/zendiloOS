@@ -304,7 +304,13 @@ impl Harness {
         let status = response.status();
         let headers = response.headers().clone();
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
-        let body = if bytes.is_empty() { Value::Null } else { serde_json::from_slice(&bytes).unwrap() };
+        // Problems and data are JSON; a downloaded file is kept as text.
+        let body = if bytes.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&bytes)
+                .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()))
+        };
         Reply { status, headers, body }
     }
 
@@ -961,8 +967,12 @@ async fn storage_needs_the_view_permission() {
 fn schema_type_names_are_unique() {
     let routes = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files = vec![routes.join("error.rs")];
-    for entry in std::fs::read_dir(routes.join("routes")).unwrap() {
-        files.push(entry.unwrap().path());
+    let mut folders = vec![routes.join("routes")];
+    while let Some(folder) = folders.pop() {
+        for entry in std::fs::read_dir(folder).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() { folders.push(path) } else { files.push(path) }
+        }
     }
     let mut seen = std::collections::HashMap::new();
     for file in files {
@@ -1462,6 +1472,9 @@ async fn users_work_with_files_in_their_shares() {
         download.header(header::CONTENT_DISPOSITION),
         "attachment; filename=\"a.jpg\"; filename*=UTF-8''a.jpg"
     );
+    assert_eq!(download.header(header::CONTENT_TYPE), "application/octet-stream");
+    assert_eq!(download.header(header::ACCEPT_RANGES), "bytes");
+    assert_eq!(download.body, "abcdefghij");
 
     let created =
         h.send(json(with_csrf(post(&format!("{files}/folders")), &bob), json!({ "path": "2025" }))).await;
@@ -1819,4 +1832,58 @@ async fn administrators_plan_self_tests_everyone_with_storage_view_sees_them() {
     assert_problem(&put(&viewer, plans).await, StatusCode::FORBIDDEN, "forbidden");
     let nightly_long = json!({ "plans": [{ "kind": "long", "frequency": "daily", "hour": 2 }] });
     assert_problem(&put(&admin, nightly_long).await, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
+}
+
+#[tokio::test]
+async fn downloads_resume_and_harmless_kinds_show_in_the_browser() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let carol = h.sign_in("carol", Role::User).await;
+    let carol_id =
+        h.identity.accounts.all().into_iter().find(|a| a.name.as_str() == "carol").unwrap().id.get();
+    let created = h
+        .send(json(
+            with_csrf(post("/api/v1/shares"), &admin),
+            json!({ "name": "photos", "pool": "tank", "access": [{ "kind": "account", "id": carol_id, "access": "read" }] }),
+        ))
+        .await;
+    let files = format!("/api/v1/files/shares/{}", created.body["id"]);
+    let fetch = |query: &str, headers: &[(header::HeaderName, &str)]| {
+        let mut request = with_cookie(get(&format!("{files}/download?{query}")), &carol);
+        for (name, value) in headers {
+            request = request.header(name, *value);
+        }
+        h.send(empty(request))
+    };
+
+    let whole = fetch("path=a.jpg", &[]).await;
+    let modified = whole.header(header::LAST_MODIFIED).to_owned();
+    let part = fetch("path=a.jpg", &[(header::RANGE, "bytes=4-")]).await;
+    assert_eq!(part.status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(part.header(header::CONTENT_RANGE), "bytes 4-9/10");
+    assert_eq!(part.header(header::CONTENT_LENGTH), "6");
+    assert_eq!(part.body, "efghij");
+    let resumed = fetch("path=a.jpg", &[(header::RANGE, "bytes=-3"), (header::IF_RANGE, &modified)]).await;
+    assert_eq!((resumed.status, resumed.body.clone()), (StatusCode::PARTIAL_CONTENT, json!("hij")));
+    let changed = fetch(
+        "path=a.jpg",
+        &[(header::RANGE, "bytes=4-"), (header::IF_RANGE, "Thu, 01 Jan 1970 00:00:00 GMT")],
+    )
+    .await;
+    assert_eq!(
+        (changed.status, changed.body.clone()),
+        (StatusCode::OK, json!("abcdefghij")),
+        "changed since"
+    );
+    let beyond = fetch("path=a.jpg", &[(header::RANGE, "bytes=10-")]).await;
+    assert_eq!(beyond.status, StatusCode::RANGE_NOT_SATISFIABLE);
+    assert_eq!(beyond.header(header::CONTENT_RANGE), "bytes */10");
+
+    let picture = fetch("path=a.jpg&inline=true", &[]).await;
+    assert_eq!(picture.header(header::CONTENT_TYPE), "image/jpeg");
+    assert!(picture.header(header::CONTENT_DISPOSITION).starts_with("inline;"));
+    assert!(picture.header(header::CONTENT_SECURITY_POLICY).starts_with("sandbox"));
+    let page = fetch("path=page.html&inline=true", &[]).await;
+    assert_eq!(page.header(header::CONTENT_TYPE), "application/octet-stream");
+    assert!(page.header(header::CONTENT_DISPOSITION).starts_with("attachment;"), "never shown");
 }

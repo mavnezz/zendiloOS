@@ -507,6 +507,15 @@ topics `jobs` and `notifications` apply the same rules.
   never replaces a file. New files belong to the user and inherit the
   share's ACLs, exactly as over SMB. Copies, moves and deletions run as
   jobs. Verified end to end in the test VM (`just vm-sharing-test`).
+- **Downloads and previews.** A download answers one byte range
+  (`Range`, 206 or 416), so browsers resume a broken download (`If-Range`
+  with the `Last-Modified` it was given; a file changed since comes again
+  whole) and videos can be wound. A download is an attachment, except
+  that pictures, sound, video and plain text may be shown in the browser
+  (`inline=true`), by a fixed list of extensions and with that type; HTML,
+  SVG, PDF and anything else is only ever saved, because a file shown from
+  our origin could run script there. Every download also carries
+  `Content-Security-Policy: sandbox; default-src 'none'` and `nosniff`.
 - Alternative: the file manager runs with broad rights and checks ACLs
   itself. Simpler, but every gap in the checks becomes a data leak, and new
   files belong to the service account.
