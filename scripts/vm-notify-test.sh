@@ -53,12 +53,17 @@ job_succeeded() {
     [[ $state == succeeded* ]] || fail "job $id: $state"
 }
 
+# Destroys the test pool if it is there (left from an earlier run, too).
+remove_pool() {
+    if call GET /storage/pools | jq -e --arg pool "$pool" '.[] | select(.name == $pool)' >/dev/null; then
+        job_succeeded "$(call POST "/storage/pools/$pool/destroy" "{\"confirm\":\"$pool\"}" | jq -r .id)"
+    fi
+}
+
 channels=()
 cleanup() {
     for id in "${channels[@]}"; do call DELETE "/notification-channels/$id" >/dev/null || true; done
-    if call GET /storage/pools | jq -e --arg pool "$pool" '.pools[] | select(.name == $pool)' >/dev/null 2>&1; then
-        call POST "/storage/pools/$pool/destroy" "{\"confirm\":\"$pool\"}" >/dev/null || true
-    fi
+    remove_pool || true
     vm 'pkill -f zendiloos-hook-receiver || true' >/dev/null 2>&1 || true
     rm -rf "$work"
 }
@@ -102,6 +107,7 @@ call GET /notification-channels | jq -e --argjson id "$mail_id" '.[] | select(.i
     || fail "the failure is not kept"
 
 say "3. A real notification reaches the webhook"
+remove_pool
 disk=$(call GET /storage/disks | jq -r '[.[] | select((.usage == "unused" or .usage == "foreign")
     and (.name | startswith("sd")) and .id_link != null and (.read_only | not)) | .name][0] // empty')
 [[ -n $disk ]] || fail "a free SATA disk is needed"
@@ -113,6 +119,6 @@ job_succeeded "$(call POST /storage/pools "{\"token\":\"$token\",\"confirm\":\"$
 wait_for "the scrub's notification at the webhook" "vm 'grep -q \"Data check of $pool\" /tmp/hooks.log'" 150
 vm "grep \"Data check of $pool\" /tmp/hooks.log | tail -n1" | jq -e '.code == "scrub_finished" and .level == "info"' >/dev/null \
     || fail "the notification: $(vm 'tail -n1 /tmp/hooks.log')"
-job_succeeded "$(call POST "/storage/pools/$pool/destroy" "{\"confirm\":\"$pool\"}" | jq -r .id)"
+remove_pool
 
 say "Passed: webhook, email failure reported, a scrub's notification delivered"
