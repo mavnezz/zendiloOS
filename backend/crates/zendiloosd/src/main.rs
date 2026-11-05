@@ -1,5 +1,4 @@
 mod config;
-mod console;
 mod logging;
 mod systemd;
 
@@ -14,7 +13,7 @@ use clap::{Parser, Subcommand};
 use tokio::net::TcpListener;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::task::JoinHandle;
-use zendiloos_agent_proto::{AgentTransport, UnixTransport};
+use zendiloos_agent_proto::{AgentTransport, ConsoleSetupCode, Request, Response, UnixTransport};
 use zendiloos_api::{ApiState, UseCases};
 use zendiloos_identity::application::commands::PurgeExpiredSessions;
 use zendiloos_identity::application::{IdentityConfig, IdentityPorts, IdentityUseCases};
@@ -111,6 +110,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     }
     let notifier = Notifier::new(Arc::new(SqliteNotifications::new(database.clone())), Arc::new(SystemClock));
     let agent_for_sharing = agent.clone();
+    let console_agent = agent.clone();
     let agent_storage = Arc::new(AgentStorage::new(agent));
     let agent_storage_for_sharing = agent_storage.clone();
     let storage = StorageUseCases::new(StoragePorts {
@@ -157,9 +157,13 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     let state = ApiState::new(use_cases, config.secure_cookies);
     let app = zendiloos_api::router(state);
 
-    let issue = config.state_dir.join("console.issue");
-    console::write_issue(&issue, &console::issue_text(setup_code.as_deref()))
-        .with_context(|| format!("cannot write {}", issue.display()))?;
+    // The console shows where the interface is and, until the setup is done,
+    // the setup code; the agent writes it, zendiloosd only names the code.
+    let code = setup_code.as_deref().and_then(|code| ConsoleSetupCode::parse(code).ok());
+    match console_agent.call(Request::ShowOnConsole { setup_code: code }, None).await {
+        Ok(Response::Done) => {}
+        other => tracing::warn!(answer = ?other, "cannot show the address on the console"),
+    }
 
     // Under systemd the socket comes from zendiloosd.socket and only nginx
     // can reach it; run by hand, zendiloosd listens on TCP.

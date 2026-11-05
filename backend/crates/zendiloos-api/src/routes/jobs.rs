@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
+use zendiloos_identity::application::AuthContext;
 use zendiloos_identity::domain::Permission;
 use zendiloos_jobs::{self as jobs, JobId};
 use zendiloos_notify as notify;
@@ -114,7 +115,19 @@ async fn list_jobs(
 ) -> Result<Json<Vec<Job>>, ApiError> {
     auth.require(Permission::SystemView)?;
     let jobs = state.jobs.recent(params.limit.unwrap_or(50)).await?;
-    Ok(Json(jobs.into_iter().map(Job::from).collect()))
+    Ok(Json(jobs.into_iter().filter(|job| sees_job(&auth.0, job)).map(Job::from).collect()))
+}
+
+/// Everybody sees their own jobs; those who may look at the storage see
+/// all of them, with what tools reported.
+pub(crate) fn sees_job(viewer: &AuthContext, job: &jobs::Job) -> bool {
+    viewer.can(Permission::StorageView) || job.actor.as_deref() == Some(viewer.account.name.as_str())
+}
+
+/// Notifications are about pools, disks and shares: for those who may look
+/// at the storage.
+pub(crate) fn sees_notifications(viewer: &AuthContext) -> bool {
+    viewer.can(Permission::StorageView)
 }
 
 /// One job.
@@ -131,7 +144,12 @@ async fn list_jobs(
 )]
 async fn job(auth: Auth, State(state): State<ApiState>, Path(id): Path<i64>) -> Result<Json<Job>, ApiError> {
     auth.require(Permission::SystemView)?;
-    let job = state.jobs.find(JobId::new(id)).await?.ok_or(ApiError::NotFound)?;
+    let job = state
+        .jobs
+        .find(JobId::new(id))
+        .await?
+        .filter(|job| sees_job(&auth.0, job))
+        .ok_or(ApiError::NotFound)?;
     Ok(Json(job.into()))
 }
 
@@ -201,7 +219,7 @@ async fn notifications(
     State(state): State<ApiState>,
     ApiQuery(params): ApiQuery<JobsParams>,
 ) -> Result<Json<NotificationList>, ApiError> {
-    auth.require(Permission::SystemView)?;
+    auth.require(Permission::StorageView)?;
     let account = auth.0.account.id.get();
     let (recent, marks) = state.notifier.for_account(account, params.limit.unwrap_or(50)).await?;
     Ok(Json(NotificationList {
@@ -234,7 +252,7 @@ async fn mark_notifications_read(
     State(state): State<ApiState>,
     ApiJson(mark): ApiJson<NotificationMark>,
 ) -> Result<StatusCode, ApiError> {
-    auth.require(Permission::SystemView)?;
+    auth.require(Permission::StorageView)?;
     state.notifier.mark_read(auth.0.account.id.get(), mark.up_to).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -257,7 +275,7 @@ async fn clear_notifications(
     State(state): State<ApiState>,
     ApiJson(mark): ApiJson<NotificationMark>,
 ) -> Result<StatusCode, ApiError> {
-    auth.require(Permission::SystemView)?;
+    auth.require(Permission::StorageView)?;
     state.notifier.clear(auth.0.account.id.get(), mark.up_to).await?;
     Ok(StatusCode::NO_CONTENT)
 }

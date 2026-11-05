@@ -125,6 +125,13 @@ pub enum Request {
     },
     /// All snapshots with their properties (`zfs list -t snapshot`).
     ListSnapshots {},
+    /// What the console login prompt shows: where the web interface is and,
+    /// while the initial setup is pending, the setup code. The agent writes
+    /// the text itself; only the code comes from zendiloosd.
+    ShowOnConsole {
+        #[serde(default)]
+        setup_code: Option<ConsoleSetupCode>,
+    },
     /// Creates dataset `<pool>/<name>` of a pool zendiloos created and
     /// mounts it at `/volume<volume>/<name>` through a systemd mount unit.
     CreateShare {
@@ -261,6 +268,7 @@ impl Request {
             Request::CreateSnapshot { .. } => "create_snapshot",
             Request::DestroySnapshot { .. } => "destroy_snapshot",
             Request::ListSnapshots {} => "list_snapshots",
+            Request::ShowOnConsole { .. } => "show_on_console",
             Request::CreateShare { .. } => "create_share",
             Request::DestroyShare { .. } => "destroy_share",
             Request::ApplySharing { .. } => "apply_sharing",
@@ -576,6 +584,55 @@ pub struct SmbShare {
     /// Shown by clients beside the share's name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comment: Option<ShareComment>,
+}
+
+/// A setup code as the console shows it: `ABCD-EFGH-JKLM`, from the setup
+/// code alphabet (no `I`, `O`, `0` or `1`).
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct ConsoleSetupCode(String);
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("not a valid setup code")]
+pub struct InvalidConsoleSetupCode;
+
+impl ConsoleSetupCode {
+    const ALPHABET: &'static [u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+    pub fn parse(code: &str) -> Result<Self, InvalidConsoleSetupCode> {
+        let bytes = code.as_bytes();
+        let valid = bytes.len() == 14
+            && bytes
+                .iter()
+                .enumerate()
+                .all(|(i, b)| if i == 4 || i == 9 { *b == b'-' } else { Self::ALPHABET.contains(b) });
+        if valid { Ok(Self(code.to_owned())) } else { Err(InvalidConsoleSetupCode) }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// It is a secret: never in logs.
+impl std::fmt::Debug for ConsoleSetupCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ConsoleSetupCode(…)")
+    }
+}
+
+impl TryFrom<String> for ConsoleSetupCode {
+    type Error = InvalidConsoleSetupCode;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(&value)
+    }
+}
+
+impl From<ConsoleSetupCode> for String {
+    fn from(code: ConsoleSetupCode) -> Self {
+        code.0
+    }
 }
 
 /// [`SnapshotLabel`]s as a `strftime` format, for Samba's `shadow:format`.
@@ -1120,6 +1177,20 @@ mod tests {
         let create = json!({ "version": 1, "request": { "op": "create_pool", "name": "tank", "layout": "raidz2",
             "disks": ["ata-A", "ata-B"], "volume": 1 } });
         assert!(serde_json::from_value::<Envelope>(create).is_ok());
+    }
+
+    #[test]
+    fn console_setup_codes_are_codes_and_nothing_else() {
+        assert!(ConsoleSetupCode::parse("ABCD-EFGH-JK23").is_ok());
+        for bad in
+            ["", "abcd-efgh-jklm", "ABCD-EFGH-JKL0", "ABCDEFGHJKLM", "ABCD-EFGH-JKLM\n\\4", "ABCD EFGH JKLM"]
+        {
+            assert_eq!(ConsoleSetupCode::parse(bad), Err(InvalidConsoleSetupCode), "{bad:?}");
+        }
+        assert_eq!(
+            format!("{:?}", ConsoleSetupCode::parse("ABCD-EFGH-JKLM").unwrap()),
+            "ConsoleSetupCode(…)"
+        );
     }
 
     #[test]

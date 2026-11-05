@@ -7,6 +7,7 @@
 
 mod accounts;
 pub mod config;
+mod console;
 mod files;
 mod operations;
 pub mod passwd;

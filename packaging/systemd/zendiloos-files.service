@@ -23,7 +23,8 @@ PrivateNetwork=yes
 # /usr, /boot and /etc read-only; volumes live directly below /.
 ProtectSystem=full
 ProtectHome=yes
-ReadOnlyPaths=/var -/srv -/opt -/mnt -/media
+# /run too: its socket comes as a descriptor, and nothing there is its business.
+ReadOnlyPaths=/var /run -/srv -/opt -/mnt -/media
 InaccessiblePaths=-/var/lib/zendiloos -/var/lib/samba -/etc/zendiloos -/etc/ssh -/etc/shadow -/etc/gshadow
 PrivateTmp=yes
 PrivateDevices=yes

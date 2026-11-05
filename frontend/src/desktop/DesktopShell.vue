@@ -52,7 +52,8 @@ onMounted(() => {
   window.addEventListener('resize', windows.resized)
   live.connect()
   void jobs.start()
-  void notices.start()
+  // Notifications are about pools, disks and shares (`storage.view`).
+  if (session.can('storage.view')) void notices.start()
   void preferences.load()
 })
 

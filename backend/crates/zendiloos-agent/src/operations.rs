@@ -42,6 +42,7 @@ pub struct Operations {
     pools: Pools,
     sharing: Sharing,
     files: Files,
+    console_issue: std::path::PathBuf,
     role: Role,
 }
 
@@ -64,6 +65,7 @@ impl Operations {
             zpool: Program::new(&tools.zpool)?,
             zfs: Program::new(&tools.zfs)?,
             files: Files::new(paths.accounts.clone(), paths.host.volumes.clone()),
+            console_issue: paths.host.console_issue.clone(),
             accounts: Accounts::new(tools, paths.accounts)?,
             sharing: Sharing::new(tools, paths.host.clone())?,
             pools: Pools::new(tools, erasable, paths.host)?,
@@ -107,6 +109,9 @@ impl Operations {
                 self.pools.destroy_snapshot(pool, *volume, share, label).await
             }
             Request::ListSnapshots {} => self.pools.list_snapshots().await,
+            Request::ShowOnConsole { setup_code } => {
+                crate::console::show(&self.console_issue, setup_code.as_ref())
+            }
             Request::CreateShare { pool, volume, name } => self.pools.create_share(pool, *volume, name).await,
             Request::DestroyShare { pool, volume, name } => {
                 self.pools.destroy_share(pool, *volume, name).await

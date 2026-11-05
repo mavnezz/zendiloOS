@@ -8,15 +8,22 @@ use std::fmt::Write as _;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
+use rustix::fs::{CWD, Mode, OFlags, openat};
 use zendiloos_agent_proto::{
     NfsExport, Principal, Response, SNAPSHOT_LABEL_FORMAT, ShareAccess, ShareName, SmbShare, VolumeNumber,
 };
-use zendiloos_exec::Program;
+use zendiloos_exec::{Limits, Program};
 
 use crate::config::Tools;
 use crate::operations::OperationError;
 use crate::pools::{HostPaths, run};
+
+const LIMITS: Limits = Limits { timeout: Duration::from_secs(120), max_stdout: 1024 * 1024 };
+/// Permissions of a whole tree: large shares take a while, and a change of
+/// access must not die halfway.
+const TREE_LIMITS: Limits = Limits { timeout: Duration::from_secs(6 * 3600), max_stdout: 1024 * 1024 };
 
 pub use zendiloos_fileops::RECYCLE_DIRECTORY;
 const HEADER: &str = "# Written by zendiloOS. Changes here are overwritten; use the web interface.\n";
@@ -223,7 +230,10 @@ impl Sharing {
         run(&self.setfacl, &["--set", &set.join(","), "--", &path_text]).await?;
 
         // The recycle bin's top directory, with the share's permissions, so
-        // every writer can create their own bin in it.
+        // every writer can create their own bin in it. Writers can rename
+        // what is in the share's root, so it is opened without following a
+        // link and changed through that descriptor: a link swapped in
+        // meanwhile changes nothing.
         let bin = path.join(RECYCLE_DIRECTORY);
         match fs::create_dir(&bin) {
             Err(error) if error.kind() != std::io::ErrorKind::AlreadyExists => {
@@ -231,43 +241,67 @@ impl Sharing {
             }
             _ => {}
         }
-        if !fs::symlink_metadata(&bin).map_err(|e| OperationError::Read(bin.clone(), e))?.is_dir() {
-            return Err(OperationError::Refused(format!(
-                "{RECYCLE_DIRECTORY} in {} is not a folder",
-                name.as_str()
-            )));
-        }
-        std::os::unix::fs::lchown(&bin, Some(0), Some(0))
+        let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        let directory = openat(CWD, &bin, flags, Mode::empty()).map_err(|_| {
+            OperationError::Refused(format!("{RECYCLE_DIRECTORY} in {} is not a folder", name.as_str()))
+        })?;
+        let directory = fs::File::from(directory);
+        std::os::unix::fs::fchown(&directory, Some(0), Some(0))
             .map_err(|e| OperationError::Write(bin.clone(), e))?;
-        run(&self.setfacl, &["--set", &set.join(","), "--", &bin.to_string_lossy()]).await?;
+        zendiloos_exec::run_on(
+            &self.setfacl,
+            ["--set", &set.join(","), "--", "/proc/self/fd/0"],
+            directory,
+            LIMITS,
+        )
+        .await?
+        .success(&self.setfacl)?;
 
         if recursive {
-            let contents: Vec<String> = fs::read_dir(&path)
-                .map_err(|e| OperationError::Read(path.clone(), e))?
-                .filter_map(Result::ok)
-                .filter(|entry| entry.file_name() != RECYCLE_DIRECTORY)
-                .map(|entry| entry.path().to_string_lossy().into_owned())
-                .collect();
+            let contents = tree_entries(&path)?;
             let mut modify = entries(false, true);
             modify.extend(entries(true, false));
             let removals: Vec<String> =
                 removed.iter().flat_map(|p| [acl_entry(p), format!("d:{}", acl_entry(p))]).collect();
-            for chunk in contents.chunks(256) {
-                if !modify.is_empty() {
-                    let mut args = vec!["-R".to_owned(), "-m".to_owned(), modify.join(","), "--".to_owned()];
-                    args.extend(chunk.iter().cloned());
-                    run(&self.setfacl, &args).await?;
-                }
-                if !removals.is_empty() {
-                    let mut args =
-                        vec!["-R".to_owned(), "-x".to_owned(), removals.join(","), "--".to_owned()];
-                    args.extend(chunk.iter().cloned());
-                    run(&self.setfacl, &args).await?;
-                }
+            for args in tree_commands(&contents, &removals, &modify) {
+                zendiloos_exec::run(&self.setfacl, &args, TREE_LIMITS).await?.success(&self.setfacl)?;
             }
         }
         Ok(Response::Done)
     }
+}
+
+/// What the recursive change of a share's permissions works on: the
+/// entries of its root, without the recycle bins and without links. As an
+/// argument, setfacl would follow a link anywhere (another share, the
+/// system).
+fn tree_entries(root: &Path) -> Result<Vec<String>, OperationError> {
+    Ok(fs::read_dir(root)
+        .map_err(|e| OperationError::Read(root.to_owned(), e))?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name() != RECYCLE_DIRECTORY)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| !kind.is_symlink()))
+        .map(|entry| entry.path().to_string_lossy().into_owned())
+        .collect())
+}
+
+/// The setfacl calls for `entries`: removing first, so access taken away is
+/// gone even if adding fails; `-P` skips links met inside folders; at most
+/// 256 paths per call.
+fn tree_commands(entries: &[String], removals: &[String], modify: &[String]) -> Vec<Vec<String>> {
+    let mut commands = Vec::new();
+    for (option, list) in [("-x", removals), ("-m", modify)] {
+        if list.is_empty() {
+            continue;
+        }
+        for chunk in entries.chunks(256) {
+            let mut args =
+                vec!["-R".to_owned(), "-P".to_owned(), option.to_owned(), list.join(","), "--".to_owned()];
+            args.extend(chunk.iter().cloned());
+            commands.push(args);
+        }
+    }
+    commands
 }
 
 #[cfg(test)]
@@ -278,6 +312,43 @@ mod tests {
 
     fn access(principal: Principal, write: bool) -> ShareAccess {
         ShareAccess { principal, write }
+    }
+
+    #[test]
+    fn permission_changes_leave_links_and_the_recycle_bins_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir(root.join("album")).unwrap();
+        fs::write(root.join("notes.txt"), "x").unwrap();
+        fs::create_dir(root.join(RECYCLE_DIRECTORY)).unwrap();
+        std::os::unix::fs::symlink("/", root.join("everything")).unwrap();
+        std::os::unix::fs::symlink(root.join("album"), root.join("shortcut")).unwrap();
+
+        let mut found = tree_entries(root).unwrap();
+        found.sort();
+
+        let path = |name: &str| root.join(name).to_string_lossy().into_owned();
+        assert_eq!(found, [path("album"), path("notes.txt")]);
+    }
+
+    #[test]
+    fn access_is_taken_away_before_it_is_given() {
+        let entries = vec!["/volume1/photos/a".to_owned(), "/volume1/photos/b".to_owned()];
+        let removals = vec!["u:bob".to_owned(), "d:u:bob".to_owned()];
+        let modify = vec!["u:anna:rwX".to_owned()];
+
+        let commands = tree_commands(&entries, &removals, &modify);
+
+        let shown: Vec<String> = commands.iter().map(|c| c.join(" ")).collect();
+        assert_eq!(
+            shown,
+            [
+                "-R -P -x u:bob,d:u:bob -- /volume1/photos/a /volume1/photos/b",
+                "-R -P -m u:anna:rwX -- /volume1/photos/a /volume1/photos/b",
+            ]
+        );
+        let many: Vec<String> = (0..300).map(|i| format!("/v/{i}")).collect();
+        assert_eq!(tree_commands(&many, &[], &modify).len(), 2, "256 paths per call");
     }
 
     #[test]

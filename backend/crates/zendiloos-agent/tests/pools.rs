@@ -152,6 +152,7 @@ fn host(erasable: Erasable) -> Host {
             volumes: root.clone(),
             samba_config: root.join("samba/zendiloos.conf"),
             nfs_exports: root.join("exports.d/zendiloos.exports"),
+            console_issue: root.join("zendiloos.issue"),
         },
     };
     let operations = Operations::with_paths(Role::System, &tools, erasable, paths).unwrap();
@@ -453,4 +454,17 @@ async fn snapshots_are_of_one_share_and_destroy_nothing_else() {
         host.calls().last().unwrap(),
         "zfs list -H -p -t snapshot -o name,creation,used,referenced,zendiloos:schedule,zendiloos:note"
     );
+}
+
+#[tokio::test]
+async fn scrubs_only_its_own_pools() {
+    let host = host(Erasable::Policy(ErasePolicy::Unused));
+    let pool = |name: &str| PoolName::parse(name).unwrap();
+
+    assert_eq!(host.run(Request::ScrubPool { pool: pool("tank") }).await, Response::Done);
+    assert_eq!(host.run(Request::StopScrub { pool: pool("tank") }).await, Response::Done);
+    assert_eq!(host.calls().last().unwrap(), "zpool scrub -s tank");
+    for request in [Request::ScrubPool { pool: pool("rpool") }, Request::StopScrub { pool: pool("rpool") }] {
+        assert_refused(host.run(request).await, ErrorCode::Forbidden, "not managed");
+    }
 }

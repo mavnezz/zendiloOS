@@ -101,6 +101,8 @@ pub struct HostPaths {
     pub volumes: PathBuf,
     pub samba_config: PathBuf,
     pub nfs_exports: PathBuf,
+    /// The console login prompt's text (agetty's issue.d).
+    pub console_issue: PathBuf,
 }
 
 impl Default for HostPaths {
@@ -115,6 +117,7 @@ impl Default for HostPaths {
             volumes: PathBuf::from("/"),
             samba_config: PathBuf::from("/etc/samba/zendiloos.conf"),
             nfs_exports: PathBuf::from("/etc/exports.d/zendiloos.exports"),
+            console_issue: PathBuf::from("/run/issue.d/zendiloos.issue"),
         }
     }
 }
@@ -437,12 +440,15 @@ impl Pools {
         Ok(())
     }
 
+    /// Only pools zendiloos created, like every change to a pool.
     pub(crate) async fn scrub(&self, pool: &PoolName) -> Result<Response, OperationError> {
+        self.require_managed(pool, None).await?;
         run(&self.zpool, &["scrub", pool.as_str()]).await?;
         Ok(Response::Done)
     }
 
     pub(crate) async fn stop_scrub(&self, pool: &PoolName) -> Result<Response, OperationError> {
+        self.require_managed(pool, None).await?;
         run(&self.zpool, &["scrub", "-s", pool.as_str()]).await?;
         Ok(Response::Done)
     }

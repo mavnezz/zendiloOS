@@ -108,7 +108,7 @@ where
     I: IntoIterator<Item = A>,
     A: AsRef<OsStr>,
 {
-    run_inner(program, args, None, limits).await
+    run_inner(program, args, Stdin::Null, limits).await
 }
 
 /// Like [`run`], but writes `input` to the program's stdin and closes it.
@@ -122,7 +122,29 @@ where
     I: IntoIterator<Item = A>,
     A: AsRef<OsStr>,
 {
-    run_inner(program, args, Some(input), limits).await
+    run_inner(program, args, Stdin::Bytes(input), limits).await
+}
+
+/// Like [`run`], with an opened file as the program's stdin. The program
+/// names it `/proc/self/fd/0`: exactly the file opened, whatever its path
+/// leads to by now.
+pub async fn run_on<I, A>(
+    program: &Program,
+    args: I,
+    file: std::fs::File,
+    limits: Limits,
+) -> Result<Output, ExecError>
+where
+    I: IntoIterator<Item = A>,
+    A: AsRef<OsStr>,
+{
+    run_inner(program, args, Stdin::File(file), limits).await
+}
+
+enum Stdin<'a> {
+    Null,
+    Bytes(&'a [u8]),
+    File(std::fs::File),
 }
 
 /// Starts `command`. A program file that was just written can be busy for a
@@ -145,7 +167,7 @@ async fn spawn(command: &mut Command) -> io::Result<tokio::process::Child> {
 async fn run_inner<I, A>(
     program: &Program,
     args: I,
-    input: Option<&[u8]>,
+    input: Stdin<'_>,
     limits: Limits,
 ) -> Result<Output, ExecError>
 where
@@ -160,7 +182,11 @@ where
         .args(args)
         .env_clear()
         .current_dir("/")
-        .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
+        .stdin(match &input {
+            Stdin::Null => Stdio::null(),
+            Stdin::Bytes(_) => Stdio::piped(),
+            Stdin::File(file) => Stdio::from(file.try_clone().map_err(io_error)?),
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         // Dropping the child (on timeout or error) kills the program.
@@ -174,7 +200,7 @@ where
 
     let finished = async {
         let feed = async {
-            if let (Some(stdin), Some(input)) = (stdin.as_mut(), input) {
+            if let (Some(stdin), Stdin::Bytes(input)) = (stdin.as_mut(), &input) {
                 stdin.write_all(input).await?;
                 stdin.shutdown().await?;
             }
@@ -216,6 +242,21 @@ mod tests {
     /// Only tests use a shell, to script the behaviour under test.
     fn sh() -> Program {
         Program::new("/bin/sh").unwrap()
+    }
+
+    #[tokio::test]
+    async fn an_opened_file_is_the_programs_stdin() {
+        let path = std::env::temp_dir().join(format!("zendiloos-exec-{}", std::process::id()));
+        std::fs::write(&path, "opened").unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        // Whatever the path holds now, the program reads what was opened.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, "replaced").unwrap();
+
+        let output = run_on(&sh(), ["-c", "cat /proc/self/fd/0"], file, Limits::default()).await.unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        assert_eq!(output.stdout, b"opened");
     }
 
     #[tokio::test]

@@ -82,7 +82,7 @@ The Debian package `zendiloos` (built with `just deb`) installs:
 | `/run/zendiloos/files.sock` | `zendiloos-files.socket`, `root:zendiloos 0660`: the files agent, the same program with `--role files` |
 | `/etc/samba/smb.conf` | installed from `/usr/share/zendiloos/smb.conf` only if it is Debian's unchanged default (kept as `smb.conf.debian`); it includes `/etc/samba/zendiloos.conf`, which the agent writes |
 | `/var/lib/zendiloos/` | database, backups, setup code, console text (`0700`) |
-| `/run/issue.d/zendiloos.issue` | link to the console text: the login prompt shows the address and, until setup is done, the setup code |
+| `/run/issue.d/zendiloos.issue` | the console text, written by the agent from its own template (0600): the login prompt shows the address and, until setup is done, the setup code. zendiloosd only names the code; nothing it controls is read by agetty |
 
 `zendiloosd` uses `Type=notify` and is ordered before `getty.target`, so the
 console prompt appears only once the setup code is written. All services
@@ -453,6 +453,11 @@ The frontend hides apps the user lacks the permission for; that is a
 convenience. Enforcement happens only in the backend (axum extractor
 `RequirePermission<P>`).
 
+Everybody sees their own jobs (file transfers, deletions); those with
+`storage.view` see all jobs, with what tools reported, and the
+notifications, which are about pools, disks and shares. The WebSocket
+topics `jobs` and `notifications` apply the same rules.
+
 ### 4.4 Share and File Permissions
 
 - Share permissions (per account or group: no access, read, read and
@@ -464,7 +469,14 @@ convenience. Enforcement happens only in the backend (axum extractor
   all: Samba would read an empty `valid users` as "everybody".
   Administrators need a rule like everyone else.
 - Changed rules apply to the share's directory at once and to existing
-  files in a job (`setfacl -R`), except the users' recycle bins.
+  files in a job (`setfacl -R -P`), except the users' recycle bins. Access
+  is taken away before any is given, so a revocation holds even if adding
+  fails; the job may run for hours. Links are never followed: links at the
+  share's top are left out (as arguments setfacl would follow them into
+  other shares or the system), `-P` skips those inside, and `.recycle` is
+  opened with `O_NOFOLLOW` and changed through its descriptor
+  (`setfacl … /proc/self/fd/0`), so a link swapped in meanwhile changes
+  nothing. **[Later]** the whole walk through descriptors instead of paths.
 - **Recycle bin:** Samba's `vfs_recycle` moves files deleted over SMB to
   `.recycle/<user>/<folders>/<name>` in the share (`Copy #N of <name>` if
   taken), hidden but not vetoed, so users can restore from it. Each user's
@@ -523,7 +535,10 @@ convenience. Enforcement happens only in the backend (axum extractor
   will get the same checks.
 - Throttling in the backend, in memory: 5 failures per account and 20 per
   address within 15 minutes, for passwords and setup codes alike. Plus
-  `limit_req` in nginx **[Step 7]**.
+  `limit_req` in nginx for login, setup and password changes. At most two
+  Argon2 runs at once (19 MiB each); the rest wait, so a flood of requests
+  costs time, not all memory. A new password is checked before the
+  current one is verified.
 - **Initial setup:** as long as no admin exists, the interface shows a setup
   wizard. It requires a one-time **setup code**, stored in
   `/var/lib/zendiloos/setup-code` (0600) and logged to the journal as a
@@ -537,6 +552,18 @@ convenience. Enforcement happens only in the backend (axum extractor
 
 - A closed set of operations; no "run this command", no paths from the API
   that the agent does not check again against fixed roots.
+- Operations that walk whole trees or disks (copying, moving and deleting
+  trees, permissions of a whole share, preparing and destroying pools) have
+  two places of their own; quick ones have four. One user's large copies
+  never keep others from listing, downloading or uploading.
+- Every change to a pool, scrubs included, requires its `zendiloos:volume`
+  property: pools the owner made stay untouched.
+- Known limits: with `erasable = "unused"`, a compromised `zendiloosd` could
+  have any disk erased that nothing uses, including an exported pool or a
+  cold backup; list the erasable disks on machines where that matters. On
+  an existing Debian, any process running as `www-data` can reach the API
+  socket and claim an address in `X-Real-IP`, passing by the per-address
+  throttle.
 - Validated types are the only form in which values reach a command line
   (`DiskName` accepts only `sda`, `nvme0n1` and the like: no paths, no `-`
   prefix).

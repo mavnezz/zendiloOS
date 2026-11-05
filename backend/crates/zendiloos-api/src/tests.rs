@@ -536,7 +536,8 @@ async fn the_live_socket_streams_job_changes() {
     use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest};
 
     let h = Harness::new();
-    let session = h.sign_in("alice", Role::User).await;
+    // Users see only their own jobs; this one is the system's.
+    let session = h.sign_in("alice", Role::ReadOnly).await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     tokio::spawn(axum::serve(listener, h.app.clone()).into_future());
@@ -1690,4 +1691,47 @@ async fn administrators_take_schedule_and_delete_snapshots_of_a_share() {
     let deleted = h.send(empty(with_csrf(post(&format!("{base}/{label}/delete")), &admin))).await;
     assert_eq!(deleted.status, StatusCode::NO_CONTENT);
     assert_eq!(h.send(empty(with_cookie(get(&base), &admin))).await.body["snapshots"], json!([]));
+}
+
+#[tokio::test]
+async fn users_see_their_own_jobs_and_no_storage_notifications() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let bob = h.sign_in("bob", Role::User).await;
+    let carol = h.sign_in("carol", Role::User).await;
+    h.notifier.notify(NewNotification::new(Level::Warning, "pool_trouble").with("pool", "tank")).await;
+    let id_of = |name: &str| {
+        h.identity.accounts.all().into_iter().find(|a| a.name.as_str() == name).unwrap().id.get()
+    };
+    let rules = json!([
+        { "kind": "account", "id": id_of("bob"), "access": "read_write" },
+        { "kind": "account", "id": id_of("carol"), "access": "read_write" },
+    ]);
+    let created = h
+        .send(json(
+            with_csrf(post("/api/v1/shares"), &admin),
+            json!({ "name": "photos", "pool": "tank", "access": rules }),
+        ))
+        .await;
+    let files = format!("/api/v1/files/shares/{}", created.body["id"]);
+    let deleted =
+        h.send(json(with_csrf(post(&format!("{files}/delete")), &bob), json!({ "paths": ["2024"] }))).await;
+    let job = deleted.body["id"].as_i64().unwrap();
+    job_done(&h, job).await;
+
+    let mine = h.send(empty(with_cookie(get("/api/v1/jobs"), &bob))).await;
+    assert_eq!(
+        mine.body.as_array().unwrap().iter().map(|j| j["id"].as_i64().unwrap()).collect::<Vec<_>>(),
+        [job]
+    );
+    assert_eq!(h.send(empty(with_cookie(get("/api/v1/jobs"), &carol))).await.body, json!([]));
+    let foreign = h.send(empty(with_cookie(get(&format!("/api/v1/jobs/{job}")), &carol))).await;
+    assert_problem(&foreign, StatusCode::NOT_FOUND, "not_found");
+    assert!(
+        !h.send(empty(with_cookie(get("/api/v1/jobs"), &admin))).await.body.as_array().unwrap().is_empty()
+    );
+
+    let notices = h.send(empty(with_cookie(get("/api/v1/notifications"), &bob))).await;
+    assert_problem(&notices, StatusCode::FORBIDDEN, "forbidden");
+    assert_eq!(h.send(empty(with_cookie(get("/api/v1/notifications"), &admin))).await.status, StatusCode::OK);
 }

@@ -26,8 +26,11 @@ use zendiloos_kernel::Secret;
 use zendiloos_system::application::ports::MetricsSubscription;
 use zendiloos_system::domain::MetricsSample;
 
+use zendiloos_identity::application::AuthContext;
+
 use crate::auth::{Auth, check_same_origin, session_token};
 use crate::error::ApiError;
+use crate::routes::jobs::{sees_job, sees_notifications};
 use crate::state::ApiState;
 
 /// How often an open connection checks that its session is still valid.
@@ -160,7 +163,7 @@ impl From<MetricsSample> for Metrics {
 }
 
 async fn upgrade(
-    _auth: Auth,
+    auth: Auth,
     State(state): State<ApiState>,
     headers: HeaderMap,
     upgrade: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
@@ -170,7 +173,9 @@ async fn upgrade(
     check_same_origin(&headers)?;
     let upgrade = upgrade.map_err(|rejection| ApiError::BadRequest(rejection.body_text()))?;
     let token = session_token(&headers, state.secure_cookies).ok_or(ApiError::Unauthenticated)?;
-    Ok(upgrade.max_message_size(MAX_CLIENT_MESSAGE).on_upgrade(move |socket| serve(socket, state, token)))
+    Ok(upgrade
+        .max_message_size(MAX_CLIENT_MESSAGE)
+        .on_upgrade(move |socket| serve(socket, state, token, auth.0)))
 }
 
 enum Event {
@@ -211,7 +216,7 @@ async fn send(socket: &mut WebSocket, message: &LiveMessage) -> bool {
     socket.send(Message::Text(text.into())).await.is_ok()
 }
 
-async fn serve(mut socket: WebSocket, state: ApiState, token: Secret) {
+async fn serve(mut socket: WebSocket, state: ApiState, token: Secret, viewer: AuthContext) {
     let mut metrics: Option<Box<dyn MetricsSubscription>> = None;
     let mut jobs: Option<broadcast::Receiver<zendiloos_jobs::Job>> = None;
     let mut notifications: Option<broadcast::Receiver<zendiloos_notify::Notification>> = None;
@@ -250,7 +255,10 @@ async fn serve(mut socket: WebSocket, state: ApiState, token: Secret) {
                     true
                 }
                 Ok(LiveRequest::Subscribe { topic: LiveTopic::Notifications }) => {
-                    notifications = Some(state.notifier.subscribe());
+                    // Accepted either way; only those who may see them get any.
+                    if sees_notifications(&viewer) {
+                        notifications = Some(state.notifier.subscribe());
+                    }
                     true
                 }
                 Ok(LiveRequest::Unsubscribe { topic: LiveTopic::Notifications }) => {
@@ -273,7 +281,10 @@ async fn serve(mut socket: WebSocket, state: ApiState, token: Secret) {
                 metrics = None;
                 true
             }
-            Event::Job(Ok(job)) => send(&mut socket, &LiveMessage::Job { data: job.into() }).await,
+            Event::Job(Ok(job)) if sees_job(&viewer, &job) => {
+                send(&mut socket, &LiveMessage::Job { data: job.into() }).await
+            }
+            Event::Job(Ok(_)) => true,
             // Missed changes: the client reloads the list when it sees a gap.
             Event::Job(Err(broadcast::error::RecvError::Lagged(_))) => true,
             Event::Job(Err(broadcast::error::RecvError::Closed)) => {

@@ -40,6 +40,9 @@ load_zfs() {
 case "$1" in
     configure)
         load_zfs
+        # Earlier packages linked the console text to a file zendiloosd wrote.
+        if [ -L /run/issue.d/zendiloos.issue ]; then rm -f /run/issue.d/zendiloos.issue; fi
+        rm -f /var/lib/zendiloos/console.issue /var/lib/zendiloos/console.tmp
         configure_samba
         /usr/libexec/zendiloos/make-certificate
         retire_default_site

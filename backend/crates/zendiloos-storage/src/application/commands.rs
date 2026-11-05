@@ -385,8 +385,10 @@ impl ScrubPool {
     ) -> Result<(), StorageError> {
         let c = &self.context;
         let pools = c.zfs.pools(request).await?;
-        if !pools.iter().any(|p| p.name == pool) {
-            return Err(StorageError::PoolNotFound);
+        let found = pools.iter().find(|p| p.name == pool).ok_or(StorageError::PoolNotFound)?;
+        // Like every change: only pools zendiloOS created (their volume).
+        if found.volume.is_none() {
+            return Err(StorageError::Plan(domain::PlanError::PoolNotManaged));
         }
         let name =
             PoolName::parse(pool).map_err(|_| StorageError::Plan(domain::PlanError::PoolNotManaged))?;
@@ -418,6 +420,9 @@ impl StopScrub {
         let c = &self.context;
         let pools = c.zfs.pools(request).await?;
         let found = pools.iter().find(|p| p.name == pool).ok_or(StorageError::PoolNotFound)?;
+        if found.volume.is_none() {
+            return Err(StorageError::Plan(domain::PlanError::PoolNotManaged));
+        }
         if !found.scan.as_ref().is_some_and(domain::Scan::may_stop) {
             return Err(StorageError::NotScrubbing);
         }

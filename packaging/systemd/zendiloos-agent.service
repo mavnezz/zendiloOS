@@ -25,7 +25,7 @@ NoNewPrivileges=yes
 CapabilityBoundingSet=CAP_SYS_RAWIO CAP_SYS_ADMIN CAP_CHOWN
 PrivateNetwork=yes
 ProtectSystem=strict
-ReadWritePaths=/etc -/var/lib/samba -/var/cache/samba -/run/samba -/var/lib/nfs
+ReadWritePaths=/etc -/var/lib/samba -/var/cache/samba -/run/samba -/var/lib/nfs -/run/issue.d
 ProtectHome=yes
 PrivateTmp=yes
 # Disks (SATA/SAS/USB, NVMe namespaces, virtio) and ZFS; nothing else.

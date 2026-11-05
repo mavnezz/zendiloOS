@@ -41,13 +41,15 @@ impl ChangePassword {
             AuditEntry::new(now, AuditAction::PasswordChange.as_str(), outcome, request).by(&account.actor())
         };
 
+        // Checked first: refusing a new password costs nothing, verifying
+        // the current one costs an Argon2 run.
+        let password = NewPassword::parse(input.new_password, &account.name)?;
         if !c.ports.hasher.verify(&input.current_password, Some(&account.password_hash)).await? {
             c.record_failure(keys, now);
             c.audit(audit(Outcome::Failure).reason("wrong_password")).await?;
             return Err(IdentityError::WrongPassword);
         }
 
-        let password = NewPassword::parse(input.new_password, &account.name)?;
         // SMB first: if the agent fails, the old password still works everywhere.
         c.ports.system.set_password(&account.name, password.secret(), request).await?;
         let hash = c.ports.hasher.hash(password.secret()).await?;
