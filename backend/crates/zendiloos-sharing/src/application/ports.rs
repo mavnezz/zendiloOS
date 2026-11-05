@@ -231,4 +231,13 @@ pub trait FileHost: Send + Sync {
         recycle: bool,
         context: &RequestContext,
     ) -> Result<(), FileHostError>;
+
+    /// Out of the user's recycle bin, back to where it was deleted from or
+    /// beside it. Returns where it went.
+    async fn restore(
+        &self,
+        user: &str,
+        at: &FileLocation,
+        context: &RequestContext,
+    ) -> Result<FilePath, FileHostError>;
 }

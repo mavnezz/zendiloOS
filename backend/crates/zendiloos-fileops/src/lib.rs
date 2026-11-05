@@ -138,6 +138,16 @@ fn numbered(name: &str, number: u32) -> String {
     }
 }
 
+/// A name in the recycle bin without the `Copy #N of ` it got there.
+fn original_name(name: &str) -> &str {
+    name.strip_prefix("Copy #")
+        .and_then(|rest| rest.split_once(" of "))
+        .filter(|(number, original)| {
+            !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()) && !original.is_empty()
+        })
+        .map_or(name, |(_, original)| original)
+}
+
 /// Names in a directory opened for reading, without `.` and `..`.
 fn names(directory: &OwnedFd) -> Result<Vec<CString>, FileError> {
     let mut names = Vec::new();
@@ -455,6 +465,49 @@ impl ShareRoot {
                 remove_tree(parent.as_fd(), &c_name(name)?, self.file_system, 0)
             }
         }
+    }
+
+    /// Moves an entry out of `user`'s recycle bin back to where it was
+    /// deleted from: `.recycle/<user>/<folders>/<name>` to `<folders>/<name>`,
+    /// without the `Copy #N of ` a second deletion of a name got there.
+    /// Folders on the way that are gone are made again; if the name is
+    /// taken, the first free `name (N).ext`. Returns where it went.
+    pub fn restore(&self, path: &SharePath, user: &str) -> Result<SharePath, FileError> {
+        let mut names = path.names();
+        if names.next() != Some(RECYCLE_DIRECTORY) || names.next() != Some(user) {
+            return Err(FileError::Invalid("only what is in your own recycle bin can be restored"));
+        }
+        let rest: Vec<&str> = names.collect();
+        let Some((name, folders)) = rest.split_last() else {
+            return Err(FileError::Invalid("the recycle bin itself cannot be restored"));
+        };
+        let too_long = |_| FileError::Invalid("the path is too long");
+        let (from_parent, from_name) = self.parent(path)?;
+        let mut directory = self.directory(&SharePath::root())?;
+        let mut target = SharePath::root();
+        for folder in folders {
+            directory = enter(&directory, folder, 0o777)?;
+            target = target.join(folder).map_err(too_long)?;
+        }
+        let original = original_name(name);
+        for number in 1..=MAX_NUMBERED {
+            let candidate = if number == 1 { original.to_owned() } else { numbered(original, number) };
+            if !is_file_name(&candidate) {
+                return Err(FileError::Invalid("the name is too long"));
+            }
+            match renameat_with(
+                &from_parent,
+                from_name,
+                &directory,
+                candidate.as_str(),
+                RenameFlags::NOREPLACE,
+            ) {
+                Err(Errno::EXIST) => continue,
+                Err(error) => return Err(error.into()),
+                Ok(()) => return target.join(&candidate).map_err(too_long),
+            }
+        }
+        Err(FileError::Exists)
     }
 
     /// As Samba's `vfs_recycle` does with `keeptree` and `versions`:

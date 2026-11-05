@@ -245,6 +245,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/files/shares/{id}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Moves entries out of the user's recycle bin back to where they were
+         *     deleted from; folders on the way are made again, and a taken name gets
+         *     a free one beside it. Stops at the first that fails. Needs `files.write`.
+         */
+        post: operations["restore_entries"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/files/shares/{id}/transfer": {
         parameters: {
             query?: never;
@@ -1755,6 +1776,14 @@ export interface components {
             /** Format: password */
             password: string;
         };
+        RestoreEntriesRequest: {
+            /** @description Entries of the user's recycle bin: `.recycle/<user>/…`. */
+            paths: string[];
+        };
+        RestoredEntries: {
+            /** @description Where each went, in the order asked. */
+            paths: string[];
+        };
         RunningSelfTest: {
             /**
              * Format: int32
@@ -2793,6 +2822,58 @@ export interface operations {
             };
             /** @description `name_taken` */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    restore_entries: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RestoreEntriesRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RestoredEntries"];
+                };
+            };
+            /** @description `permission_denied` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_operation`: not in your bin */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -820,6 +820,7 @@ fn openapi_documents_every_route() {
             "/api/v1/files/shares/{id}/folder",
             "/api/v1/files/shares/{id}/folders",
             "/api/v1/files/shares/{id}/rename",
+            "/api/v1/files/shares/{id}/restore",
             "/api/v1/files/shares/{id}/transfer",
             "/api/v1/files/shares/{id}/upload",
             "/api/v1/groups",
@@ -1486,6 +1487,23 @@ async fn users_work_with_files_in_their_shares() {
         ))
         .await;
     assert_eq!(renamed.body["path"], "2024/c.jpg");
+    let restored = h
+        .send(json(
+            with_csrf(post(&format!("{files}/restore")), &bob),
+            json!({ "paths": [".recycle/bob/2024/old.jpg"] }),
+        ))
+        .await;
+    assert_eq!(
+        (restored.status, restored.body.clone()),
+        (StatusCode::OK, json!({ "paths": ["2024/old.jpg"] }))
+    );
+    let not_yours = h
+        .send(json(
+            with_csrf(post(&format!("{files}/restore")), &carol),
+            json!({ "paths": [".recycle/carol/x"] }),
+        ))
+        .await;
+    assert_problem(&not_yours, StatusCode::FORBIDDEN, "permission_denied");
     let copy =
         json!({ "mode": "copy", "paths": ["2024/c.jpg"], "target_share": share, "target_path": "2025" });
     let copied = h.send(json(with_csrf(post(&format!("{files}/transfer")), &bob), copy)).await;
@@ -1509,6 +1527,7 @@ async fn users_work_with_files_in_their_shares() {
             "open carol photos:2024/a.jpg",
             "mkdir bob photos:2025",
             "move bob photos:2024/b.jpg -> photos:2024/c.jpg",
+            "restore bob photos:.recycle/bob/2024/old.jpg",
             "copy bob photos:2024/c.jpg -> photos:2025/c.jpg",
             "remove bob photos:2024/c.jpg recycle",
         ]

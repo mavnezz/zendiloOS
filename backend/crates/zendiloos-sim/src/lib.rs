@@ -164,6 +164,10 @@ impl SimulatedAgent {
                     share(location)?.remove(&location.path, recycle.then_some(user.as_str()))?;
                     (Response::Done, None)
                 }
+                Request::RestoreEntry { user, location } => {
+                    let path = share(location)?.restore(&location.path, user.as_str())?;
+                    (Response::Restored { path }, None)
+                }
                 other => (
                     error(ErrorCode::InvalidRequest, &format!("{} is not a file operation", other.name())),
                     None,
@@ -338,7 +342,8 @@ impl AgentTransport for SimulatedAgent {
             | Request::MakeDirectory { .. }
             | Request::MoveEntry { .. }
             | Request::CopyEntry { .. }
-            | Request::RemoveEntry { .. } => self.file_operation(&request).0,
+            | Request::RemoveEntry { .. }
+            | Request::RestoreEntry { .. } => self.file_operation(&request).0,
         };
         self.received.lock().unwrap_or_else(PoisonError::into_inner).push(request);
         Ok(response)

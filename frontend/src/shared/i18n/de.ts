@@ -681,6 +681,12 @@ const de: Messages = {
     dismiss: 'Ausblenden',
     dropHere: 'Dateien hier ablegen, um sie hochzuladen',
     preview: 'Anzeigen',
+    restore: 'Wiederherstellen',
+    restored: '{count} Eintrag wiederhergestellt | {count} Einträge wiederhergestellt',
+    emptyBin: 'Papierkorb leeren',
+    emptyBinTitle: 'Papierkorb leeren?',
+    emptyBinDescription:
+      'Alles in Ihrem Papierkorb dieser Freigabe wird endgültig gelöscht. Das lässt sich nicht rückgängig machen.',
     previewTitle: '{name}',
     textTruncated: 'Nur der Anfang wird gezeigt. Laden Sie die Datei herunter, um alles zu sehen.',
   },

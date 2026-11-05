@@ -152,7 +152,8 @@ impl Operations {
             | Request::MakeDirectory { .. }
             | Request::MoveEntry { .. }
             | Request::CopyEntry { .. }
-            | Request::RemoveEntry { .. } => {
+            | Request::RemoveEntry { .. }
+            | Request::RestoreEntry { .. } => {
                 return self.files.execute(request).await.unwrap_or_else(|error| (failure(&error), None));
             }
         };

@@ -11,6 +11,7 @@ import {
   FolderPlus,
   Link,
   Pencil,
+  RotateCcw,
   Scissors,
   Trash2,
   Upload,
@@ -184,6 +185,38 @@ watch(
 // Deleting.
 const deleting = ref(false)
 const forGood = computed(() => !share.value?.recycle_bin || inRecycleBin.value)
+
+/** In the signed-in user's own bin, where entries can be restored. */
+const inOwnBin = computed(
+  () =>
+    ownBin.value !== null &&
+    (path.value === ownBin.value || path.value.startsWith(`${ownBin.value}/`)),
+)
+
+async function restore(): Promise<void> {
+  if (shareId.value === null) return
+  try {
+    const restored = await actions.restore(shareId.value, selectedPaths.value)
+    notifications.notify('info', t('files.restored', { count: restored.length }, restored.length))
+    selected.value = new Set()
+  } catch (failure) {
+    fail(failure)
+  }
+}
+
+const emptying = ref(false)
+
+/** Deletes the user's whole bin in this share for good, as a job. */
+async function emptyRecycleBin(): Promise<void> {
+  if (shareId.value === null || !ownBin.value) return
+  try {
+    await actions.remove(shareId.value, [ownBin.value])
+    notifications.notify('info', t('files.started.delete', { count: 1 }, 1))
+    selected.value = new Set()
+  } catch (failure) {
+    fail(failure)
+  }
+}
 
 async function remove(): Promise<void> {
   if (shareId.value === null) return
@@ -417,6 +450,16 @@ function icon(entry: FileEntry) {
           </Button>
           <input ref="picker" type="file" multiple class="hidden" @change="picked" />
           <Button
+            v-if="path === ownBin && entries.length"
+            size="sm"
+            variant="outline"
+            :disabled="!writable"
+            @click="emptying = true"
+          >
+            <Trash2 />
+            {{ t('files.emptyBin') }}
+          </Button>
+          <Button
             size="sm"
             variant="outline"
             :disabled="!writable"
@@ -439,6 +482,16 @@ function icon(entry: FileEntry) {
             >
               <Download />
               {{ t('files.download') }}
+            </Button>
+            <Button
+              v-if="inOwnBin"
+              size="sm"
+              variant="ghost"
+              :disabled="!writable"
+              @click="restore"
+            >
+              <RotateCcw />
+              {{ t('files.restore') }}
             </Button>
             <Button
               v-if="single"
@@ -634,6 +687,15 @@ function icon(entry: FileEntry) {
       :cancel-label="t('desktop.cancel')"
       destructive
       @confirm="remove"
+    />
+    <ConfirmDialog
+      v-model:open="emptying"
+      :title="t('files.emptyBinTitle')"
+      :description="t('files.emptyBinDescription')"
+      :confirm-label="t('files.emptyBin')"
+      :cancel-label="t('desktop.cancel')"
+      destructive
+      @confirm="emptyRecycleBin"
     />
     <ConfirmDialog
       v-model:open="asking"

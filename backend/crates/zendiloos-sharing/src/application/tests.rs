@@ -312,6 +312,8 @@ async fn readers_cannot_change_anything() {
         Err(FilesError::Denied)
     ));
     assert!(matches!(s.files.delete(&bob, id, vec![file("a.jpg")], &request).await, Err(FilesError::Denied)));
+    let restore = s.files.restore(&bob, id, vec![file(".recycle/bob/a.jpg")], &request).await;
+    assert!(matches!(restore, Err(FilesError::Denied)));
     let copy = s.files.transfer(&bob, Transfer::Copy, id, vec![file("a.jpg")], id, file("x"), &request).await;
     assert!(matches!(copy, Err(FilesError::Denied)), "the target is not writable");
     assert_eq!(s.file_host.calls(), Vec::<String>::new());
@@ -389,6 +391,31 @@ async fn copies_moves_and_deletes_run_as_jobs() {
             "copy alice photos:b.jpg -> photos:backup/b.jpg",
             "remove alice photos:b.jpg recycle",
             "remove alice photos:missing recycle",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn restoring_takes_entries_out_of_the_bin_one_by_one() {
+    let s = setup();
+    let id = with_photos(&s).await;
+    let (request, alice) = (RequestContext::default(), alice());
+
+    let restored = s
+        .files
+        .restore(&alice, id, vec![file(".recycle/alice/album/a.jpg"), file(".recycle/alice/b.jpg")], &request)
+        .await
+        .unwrap();
+    assert_eq!(restored, [file("album/a.jpg"), file("b.jpg")]);
+    let gone = s.files.restore(&alice, id, vec![file(".recycle/alice/missing")], &request).await;
+    assert!(matches!(gone, Err(FilesError::NotFound)), "{gone:?}");
+    assert!(matches!(s.files.restore(&alice, id, vec![], &request).await, Err(FilesError::Invalid(_))));
+    assert_eq!(
+        s.file_host.calls(),
+        [
+            "restore alice photos:.recycle/alice/album/a.jpg",
+            "restore alice photos:.recycle/alice/b.jpg",
+            "restore alice photos:.recycle/alice/missing",
         ]
     );
 }

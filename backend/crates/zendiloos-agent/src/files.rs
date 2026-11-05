@@ -155,6 +155,13 @@ impl Files {
                 as_user(identity, move || share.remove(&path, bin_owner.as_deref())).await?;
                 Ok((Response::Done, None))
             }
+            Request::RestoreEntry { user, location } => {
+                let (identity, share, path) =
+                    (self.identity(user)?, self.share(location)?, location.path.clone());
+                let owner = user.as_str().to_owned();
+                let path = as_user(identity, move || share.restore(&path, &owner)).await?;
+                Ok((Response::Restored { path }, None))
+            }
             other => Err(OperationError::Refused(format!("{} is not a file operation", other.name()))),
         }
     }

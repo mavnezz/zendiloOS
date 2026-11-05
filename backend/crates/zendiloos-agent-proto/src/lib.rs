@@ -266,6 +266,13 @@ pub enum Request {
         location: FileLocation,
         recycle: bool,
     },
+    /// Moves an entry of the user's recycle bin back to where it was
+    /// deleted from, or beside it if the name is taken. Answers
+    /// [`Response::Restored`].
+    RestoreEntry {
+        user: UserName,
+        location: FileLocation,
+    },
 }
 
 /// The `lsblk` columns of [`Request::ListBlockDevices`]; the parser in
@@ -315,6 +322,7 @@ impl Request {
             Request::MoveEntry { .. } => "move_entry",
             Request::CopyEntry { .. } => "copy_entry",
             Request::RemoveEntry { .. } => "remove_entry",
+            Request::RestoreEntry { .. } => "restore_entry",
         }
     }
 }
@@ -360,6 +368,10 @@ pub enum Response {
         name: String,
     },
     Copied {
+        path: SharePath,
+    },
+    /// Where a restored entry went.
+    Restored {
         path: SharePath,
     },
     Snapshots {
@@ -540,7 +552,8 @@ impl Request {
             | Request::MakeDirectory { .. }
             | Request::MoveEntry { .. }
             | Request::CopyEntry { .. }
-            | Request::RemoveEntry { .. } => Role::Files,
+            | Request::RemoveEntry { .. }
+            | Request::RestoreEntry { .. } => Role::Files,
             // The handshake works with both.
             _ => Role::System,
         }

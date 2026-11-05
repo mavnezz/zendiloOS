@@ -157,5 +157,10 @@ export function useFileActions() {
       unwrap(api.POST('/api/v1/files/shares/{id}/transfer', { ...at(share), body })),
     remove: (share: number, paths: string[]): Promise<Job> =>
       unwrap(api.POST('/api/v1/files/shares/{id}/delete', { ...at(share), body: { paths } })),
+    /** Out of the user's recycle bin; answers where each went. */
+    restore: (share: number, paths: string[]): Promise<string[]> =>
+      refreshing(
+        unwrap(api.POST('/api/v1/files/shares/{id}/restore', { ...at(share), body: { paths } })),
+      ).then((restored) => restored.paths),
   }
 }

@@ -175,6 +175,19 @@ impl FileHost for AgentFiles {
         self.done(Request::RemoveEntry { user: user(user_name)?, location: location(at)?, recycle }, context)
             .await
     }
+
+    async fn restore(
+        &self,
+        user_name: &str,
+        at: &FileLocation,
+        context: &RequestContext,
+    ) -> Result<FilePath, FileHostError> {
+        let request = Request::RestoreEntry { user: user(user_name)?, location: location(at)? };
+        match self.call(request, context).await? {
+            (Response::Restored { path }, _) => FilePath::parse(path.as_str()).map_err(|_| invalid("path")),
+            (other, _) => Err(unexpected(other).into()),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -226,5 +239,8 @@ mod tests {
         ));
         files.remove("anna", &at("report.txt"), true, &context).await.unwrap();
         assert!(root.path().join("volume1/docs/.recycle/anna/report.txt").exists());
+        let back = files.restore("anna", &at(".recycle/anna/report.txt"), &context).await.unwrap();
+        assert_eq!(back.as_str(), "report.txt");
+        assert!(root.path().join("volume1/docs/report.txt").exists());
     }
 }

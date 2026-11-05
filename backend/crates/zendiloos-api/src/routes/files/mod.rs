@@ -36,6 +36,7 @@ pub(super) fn routes() -> OpenApiRouter<ApiState> {
         .routes(routes!(rename_entry))
         .routes(routes!(transfer_entries))
         .routes(routes!(delete_entries))
+        .routes(routes!(restore_entries))
 }
 
 impl From<FilesError> for ApiError {
@@ -533,6 +534,49 @@ async fn delete_entries(
     auth.require(Permission::FilesWrite)?;
     let job = state.files.delete(&auth.0.actor(), ShareId::new(id), paths(&request.paths)?, &client).await?;
     Ok((StatusCode::ACCEPTED, Json(job.into())))
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RestoreEntriesRequest {
+    /// Entries of the user's recycle bin: `.recycle/<user>/…`.
+    pub paths: Vec<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RestoredEntries {
+    /// Where each went, in the order asked.
+    pub paths: Vec<String>,
+}
+
+/// Moves entries out of the user's recycle bin back to where they were
+/// deleted from; folders on the way are made again, and a taken name gets
+/// a free one beside it. Stops at the first that fails. Needs `files.write`.
+#[utoipa::path(
+    post,
+    path = "/files/shares/{id}/restore",
+    tag = "files",
+    security(("session" = [])),
+    params(("id" = i64, Path)),
+    request_body = RestoreEntriesRequest,
+    responses(
+        (status = OK, body = RestoredEntries),
+        (status = FORBIDDEN, body = Problem, description = "`permission_denied`"),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_operation`: not in your bin"),
+    )
+)]
+async fn restore_entries(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(id): Path<i64>,
+    ApiJson(request): ApiJson<RestoreEntriesRequest>,
+) -> Result<Json<RestoredEntries>, ApiError> {
+    auth.require(Permission::FilesWrite)?;
+    let restored =
+        state.files.restore(&auth.0.actor(), ShareId::new(id), paths(&request.paths)?, &client).await?;
+    Ok(Json(RestoredEntries { paths: restored.iter().map(|p| p.as_str().to_owned()).collect() }))
 }
 
 #[cfg(test)]

@@ -203,6 +203,50 @@ fn removing_goes_to_the_users_recycle_bin() {
 }
 
 #[test]
+fn restoring_puts_an_entry_back_where_it_was() {
+    let v = Volumes::new();
+    v.write("photos", "album/2024/a.jpg", "first");
+    let photos = v.share("photos");
+    photos.remove(&path("album/2024/a.jpg"), Some("anna")).unwrap();
+    v.write("photos", "album/2024/a.jpg", "second");
+    photos.remove(&path("album/2024/a.jpg"), Some("anna")).unwrap();
+    photos.remove(&path("album"), Some("anna")).unwrap();
+    assert!(!v.exists("photos", "album"));
+
+    // The folders on the way are made again.
+    let back = photos.restore(&path(".recycle/anna/album/2024/a.jpg"), "anna").unwrap();
+    assert_eq!(back, path("album/2024/a.jpg"));
+    assert_eq!(v.read("photos", "album/2024/a.jpg"), "first");
+    // The second one gets its own name back, or a free one beside it.
+    let second = photos.restore(&path(".recycle/anna/album/2024/Copy #1 of a.jpg"), "anna").unwrap();
+    assert_eq!(second, path("album/2024/a (2).jpg"));
+    assert_eq!(v.read("photos", "album/2024/a (2).jpg"), "second");
+    // A whole folder from the bin's root.
+    let folder = photos.restore(&path(".recycle/anna/Copy #1 of album"), "anna").unwrap();
+    assert_eq!(folder, path("album (2)"));
+
+    for (bin_path, user) in [
+        (".recycle/ben/x.jpg", "anna"),
+        ("album/2024/a.jpg", "anna"),
+        (".recycle/anna", "anna"),
+        (".recycle", "anna"),
+    ] {
+        let refused = photos.restore(&path(bin_path), user);
+        assert!(matches!(refused, Err(FileError::Invalid(_))), "{bin_path}: {refused:?}");
+    }
+    let gone = photos.restore(&path(".recycle/anna/nothing.jpg"), "anna");
+    assert!(matches!(gone, Err(FileError::NotFound)), "{gone:?}");
+}
+
+#[test]
+fn bin_names_lose_only_a_real_copy_prefix() {
+    assert_eq!(original_name("Copy #12 of a.jpg"), "a.jpg");
+    for kept in ["a.jpg", "Copy # of a.jpg", "Copy #x of a.jpg", "Copy #1 of ", "Copy #1a.jpg"] {
+        assert_eq!(original_name(kept), kept);
+    }
+}
+
+#[test]
 fn an_unmounted_share_is_refused() {
     let v = Volumes::new();
     let name = ShareName::parse("photos").unwrap();

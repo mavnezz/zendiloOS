@@ -671,6 +671,12 @@ const en = {
     dismiss: 'Dismiss',
     dropHere: 'Drop files here to upload them',
     preview: 'Show',
+    restore: 'Restore',
+    restored: 'Restored {count} item | Restored {count} items',
+    emptyBin: 'Empty the recycle bin',
+    emptyBinTitle: 'Empty the recycle bin?',
+    emptyBinDescription:
+      'Everything in your recycle bin in this share is deleted for good. This cannot be undone.',
     previewTitle: '{name}',
     textTruncated: 'Only the beginning is shown. Download the file to see all of it.',
   },

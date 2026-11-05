@@ -868,6 +868,82 @@
         ]
       }
     },
+    "/api/v1/files/shares/{id}/restore": {
+      "post": {
+        "tags": [
+          "files"
+        ],
+        "summary": "Moves entries out of the user's recycle bin back to where they were\ndeleted from; folders on the way are made again, and a taken name gets\na free one beside it. Stops at the first that fails. Needs `files.write`.",
+        "operationId": "restore_entries",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RestoreEntriesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RestoredEntries"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`permission_denied`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_operation`: not in your bin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/files/shares/{id}/transfer": {
       "post": {
         "tags": [
@@ -5498,6 +5574,37 @@
           }
         },
         "additionalProperties": false
+      },
+      "RestoreEntriesRequest": {
+        "type": "object",
+        "required": [
+          "paths"
+        ],
+        "properties": {
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Entries of the user's recycle bin: `.recycle/<user>/…`."
+          }
+        },
+        "additionalProperties": false
+      },
+      "RestoredEntries": {
+        "type": "object",
+        "required": [
+          "paths"
+        ],
+        "properties": {
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Where each went, in the order asked."
+          }
+        }
       },
       "RunningSelfTest": {
         "type": "object",

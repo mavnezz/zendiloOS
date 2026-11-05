@@ -484,7 +484,11 @@ topics `jobs` and `notifications` apply the same rules.
   share's ACL: created by Samba, it would get the private mode, every other
   user's bin could not be created, and Samba deletes files for good when it
   cannot move them. The file manager deletes into the same bins; inside a
-  bin, deleting is for good.
+  bin, deleting is for good. It also restores from the user's own bin:
+  back to where an entry was deleted from (`keeptree` keeps the folders),
+  without the `Copy #N of ` of a second deletion, folders that are gone
+  made again, and a taken name gets a free one beside it; emptying the
+  bin deletes `.recycle/<user>` for good.
 - **File manager: the kernel checks, not our code.** `zendiloosd` cannot
   read shares itself. Every operation goes to the files agent, which runs
   it on a new thread that first takes on the signed-in user's credentials

@@ -314,6 +314,28 @@ impl FilesUseCases {
         Ok(job)
     }
 
+    /// Moves `paths` out of the user's recycle bin in share `id` back to
+    /// where they were deleted from, or beside it if the name is taken.
+    /// Returns where each went; stops at the first that fails.
+    pub async fn restore(
+        &self,
+        actor: &Actor,
+        id: ShareId,
+        paths: Vec<FilePath>,
+        context: &RequestContext,
+    ) -> Result<Vec<FilePath>, FilesError> {
+        if paths.is_empty() || paths.len() > MAX_TRANSFER_ENTRIES {
+            return Err(FilesError::Invalid(format!("between 1 and {MAX_TRANSFER_ENTRIES} entries")));
+        }
+        let share = self.writable_share(actor, id).await?;
+        let mut restored = Vec::with_capacity(paths.len());
+        for path in paths {
+            restored.push(self.ports.files.restore(&actor.name, &at(&share, path), context).await?);
+        }
+        tracing::info!(user = actor.name, entries = restored.len(), "files: restored");
+        Ok(restored)
+    }
+
     /// Moves `paths` into the user's recycle bin if the share has one,
     /// otherwise deletes them for good; as a job.
     pub async fn delete(

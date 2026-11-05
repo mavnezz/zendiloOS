@@ -383,4 +383,16 @@ impl FileHost for Files {
         let recycle = if recycle { " recycle" } else { "" };
         self.record(format!("remove {user} {}{recycle}", place(at)), at)
     }
+
+    /// Back to the path without `.recycle/<user>`.
+    async fn restore(
+        &self,
+        user: &str,
+        at: &FileLocation,
+        _: &RequestContext,
+    ) -> Result<FilePath, FileHostError> {
+        self.record(format!("restore {user} {}", place(at)), at)?;
+        let original = at.path.as_str().splitn(3, '/').nth(2).unwrap_or_default();
+        FilePath::parse(original).map_err(|_| FileHostError::Invalid("not in a recycle bin".into()))
+    }
 }
