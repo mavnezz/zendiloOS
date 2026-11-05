@@ -1,0 +1,18 @@
+[package]
+name = "zendiloos-exec"
+description = "The only way zendiloos runs external programs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+tokio = { workspace = true, features = ["process", "io-util", "time"] }
+
+[dev-dependencies]
+tokio.workspace = true
+
+[lints]
+workspace = true

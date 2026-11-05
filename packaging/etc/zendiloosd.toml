@@ -1,0 +1,21 @@
+# Configuration of zendiloosd, the zendiloOS management service.
+# Everything administrators change in the web interface lives in its
+# database instead. The defaults are shown commented out.
+
+# Only used when zendiloosd runs by hand; under systemd it gets the socket
+# /run/zendiloos/api.sock from zendiloosd.socket.
+#listen = "127.0.0.1:8080"
+
+#state_dir = "/var/lib/zendiloos"
+
+# Session cookies are HTTPS-only. Turn off only if the interface is reached
+# over plain HTTP.
+#secure_cookies = true
+
+#[agent]
+#transport = "unix"
+#socket = "/run/zendiloos/agent.sock"
+
+#[log]
+#filter = "info"
+#format = "text"

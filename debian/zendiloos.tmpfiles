@@ -1,0 +1,4 @@
+# The console login prompt shows what zendiloosd writes here: the address of
+# the web interface and, until the initial setup is done, the setup code.
+d /run/issue.d 0755 root root -
+L+ /run/issue.d/zendiloos.issue - - - - /var/lib/zendiloos/console.issue

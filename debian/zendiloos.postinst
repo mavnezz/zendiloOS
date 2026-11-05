@@ -1,0 +1,27 @@
+#!/bin/sh
+set -e
+
+# The appliance owns nginx: retire the stock default site, which would
+# claim the same ports. Only the untouched stock link is removed.
+retire_default_site() {
+    link=/etc/nginx/sites-enabled/default
+    if [ -L "$link" ] && [ "$(readlink "$link")" = /etc/nginx/sites-available/default ]; then
+        rm "$link"
+    fi
+}
+
+case "$1" in
+    configure)
+        /usr/libexec/zendiloos/make-certificate
+        retire_default_site
+        if nginx -t >/dev/null 2>&1; then
+            deb-systemd-invoke reload nginx.service || true
+        else
+            echo "zendiloos: the nginx configuration does not pass 'nginx -t'" >&2
+        fi
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

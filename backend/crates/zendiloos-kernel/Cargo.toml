@@ -1,0 +1,16 @@
+[package]
+name = "zendiloos-kernel"
+description = "Shared kernel: types every Zendiloos context and adapter agrees on"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Everything depends on this crate. Keep it small and free of I/O.
+[dependencies]
+async-trait.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

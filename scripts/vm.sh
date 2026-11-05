@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+# A Debian 13 test VM for zendiloOS, with spare disks for storage work.
+#
+#   scripts/vm.sh create    download and verify the cloud image, create the disks
+#   scripts/vm.sh start     boot in the background (console in dev/vm/console.log)
+#   scripts/vm.sh install   install the newest dist/zendiloos_*.deb (see `just deb`)
+#   scripts/vm.sh ssh [cmd] log in as the image's user `debian`
+#   scripts/vm.sh stop      power off
+#   scripts/vm.sh destroy   delete the VM's disks (keeps the downloaded image)
+#
+# Only 127.0.0.1 is forwarded: SSH on 2222, the web interface on
+# https://127.0.0.1:8443.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+dir=$root/dev/vm
+base_url=https://cloud.debian.org/images/cloud/trixie/latest
+image=debian-13-genericcloud-amd64.qcow2
+ssh_port=2222
+https_port=8443
+sata_disks=4
+# A throwaway VM: its host key changes with every 'create'.
+common_opts=(-i "$dir/id_ed25519" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+             -o LogLevel=ERROR -o ConnectTimeout=5)
+ssh_opts=("${common_opts[@]}" -p "$ssh_port")
+scp_opts=("${common_opts[@]}" -P "$ssh_port")
+
+say() { printf '\033[1m%s\033[0m\n' "$*"; }
+
+running() { [[ -f $dir/qemu.pid ]] && kill -0 "$(cat "$dir/qemu.pid")" 2>/dev/null; }
+
+download() {
+    say "Downloading $image"
+    curl -fL --progress-bar -o "$dir/$image.part" "$base_url/$image"
+    curl -fsSL -o "$dir/SHA512SUMS" "$base_url/SHA512SUMS"
+    local expected
+    expected=$(awk -v name="$image" '$2 == name { print $1 }' "$dir/SHA512SUMS")
+    [[ -n $expected ]] || { echo "no checksum for $image" >&2; exit 1; }
+    echo "$expected  $dir/$image.part" | sha512sum -c --quiet -
+    mv "$dir/$image.part" "$dir/$image"
+}
+
+cloud_init_seed() {
+    local seed=$dir/seed
+    mkdir -p "$seed"
+    printf 'instance-id: zendiloos-vm-1\nlocal-hostname: zendiloos-vm\n' > "$seed/meta-data"
+    cat > "$seed/user-data" <<USERDATA
+#cloud-config
+ssh_pwauth: false
+ssh_authorized_keys:
+  - $(cat "$dir/id_ed25519.pub")
+# QEMU forwards DNS to the host's first resolver, which it cannot always
+# reach; public resolvers next to it keep the test VM working.
+write_files:
+  - path: /etc/systemd/resolved.conf.d/zendiloos-vm.conf
+    content: |
+      [Resolve]
+      DNS=1.1.1.1 9.9.9.9
+runcmd:
+  - systemctl restart systemd-resolved
+USERDATA
+    xorriso -as mkisofs -quiet -output "$dir/seed.iso" -volid cidata -joliet -rock \
+        "$seed/user-data" "$seed/meta-data"
+}
+
+create() {
+    mkdir -p "$dir"
+    [[ -f $dir/$image ]] || download
+    [[ -f $dir/id_ed25519 ]] || ssh-keygen -q -t ed25519 -N '' -C zendiloos-vm -f "$dir/id_ed25519"
+    [[ -f $dir/system.qcow2 ]] && { echo "VM exists; run 'destroy' first" >&2; exit 1; }
+    say "Creating disks"
+    qemu-img create -q -f qcow2 -F qcow2 -b "$dir/$image" "$dir/system.qcow2" 20G
+    for i in $(seq 1 "$sata_disks"); do qemu-img create -q -f qcow2 "$dir/sata-$i.qcow2" 8G; done
+    qemu-img create -q -f qcow2 "$dir/nvme-1.qcow2" 8G
+    cloud_init_seed
+    say "Created. Next: start"
+}
+
+start() {
+    running && { echo "already running"; return; }
+    local disks=()
+    for i in $(seq 1 "$sata_disks"); do
+        # q35's built-in AHCI controller; QEMU emulates SMART for these.
+        disks+=(-drive "file=$dir/sata-$i.qcow2,if=none,id=sata$i,format=qcow2"
+                -device "ide-hd,drive=sata$i,bus=ide.$((i - 1)),serial=ZDL-SATA-$i")
+    done
+    say "Starting (console: dev/vm/console.log)"
+    qemu-system-x86_64 \
+        -machine q35,accel=kvm -cpu host -smp 2 -m 2048 \
+        -drive "file=$dir/system.qcow2,if=none,id=system,format=qcow2" \
+        -device virtio-blk-pci,drive=system,bootindex=0 \
+        -drive "file=$dir/seed.iso,if=virtio,format=raw,readonly=on" \
+        "${disks[@]}" \
+        -drive "file=$dir/nvme-1.qcow2,if=none,id=nvme1,format=qcow2" \
+        -device "nvme,drive=nvme1,serial=ZDL-NVME-1" \
+        -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:$ssh_port-:22,hostfwd=tcp:127.0.0.1:$https_port-:443" \
+        -device virtio-net-pci,netdev=net0 \
+        -display none -serial "file:$dir/console.log" \
+        -daemonize -pidfile "$dir/qemu.pid"
+    wait_for_ssh
+}
+
+wait_for_ssh() {
+    for _ in $(seq 1 60); do
+        ssh "${ssh_opts[@]}" debian@127.0.0.1 true 2>/dev/null && { say "SSH is up"; return; }
+        sleep 2
+    done
+    echo "SSH did not come up; see dev/vm/console.log" >&2
+    exit 1
+}
+
+install_package() {
+    local deb
+    deb=$(ls -t "$root"/dist/zendiloos_*_amd64.deb 2>/dev/null | head -1)
+    [[ -n $deb ]] || { echo "no package in dist/; run 'just deb'" >&2; exit 1; }
+    say "Installing $(basename "$deb")"
+    scp -q "${scp_opts[@]}" "$deb" debian@127.0.0.1:/tmp/
+    ssh "${ssh_opts[@]}" debian@127.0.0.1 \
+        "sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq /tmp/$(basename "$deb")"
+    say "Installed: https://127.0.0.1:$https_port/"
+}
+
+stop() {
+    running || { echo "not running"; return; }
+    ssh "${ssh_opts[@]}" debian@127.0.0.1 'sudo systemctl poweroff' 2>/dev/null || true
+    for _ in $(seq 1 30); do running || { say "Stopped"; return; }; sleep 1; done
+    kill "$(cat "$dir/qemu.pid")"
+}
+
+destroy() {
+    running && stop
+    rm -f "${dir:?}"/system.qcow2 "${dir:?}"/sata-*.qcow2 "${dir:?}"/nvme-*.qcow2 \
+          "${dir:?}"/seed.iso "${dir:?}"/console.log "${dir:?}"/qemu.pid
+    say "Destroyed (the downloaded image is kept)"
+}
+
+case ${1:-} in
+    create) create ;;
+    start) start ;;
+    install) install_package ;;
+    ssh) shift; exec ssh "${ssh_opts[@]}" debian@127.0.0.1 "$@" ;;
+    stop) stop ;;
+    destroy) destroy ;;
+    *) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+esac

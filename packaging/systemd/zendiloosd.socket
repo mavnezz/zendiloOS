@@ -1,0 +1,12 @@
+[Unit]
+Description=zendiloOS management service socket
+
+[Socket]
+ListenStream=/run/zendiloos/api.sock
+# nginx (www-data) is the only client.
+SocketUser=zendiloos
+SocketGroup=www-data
+SocketMode=0660
+
+[Install]
+WantedBy=sockets.target

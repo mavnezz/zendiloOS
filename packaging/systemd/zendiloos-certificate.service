@@ -1,0 +1,12 @@
+[Unit]
+Description=zendiloOS self-signed TLS certificate
+Documentation=https://github.com/mavnezz/zendiloOS
+ConditionPathExists=!/etc/zendiloos/tls/zendiloos.key
+Before=nginx.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/zendiloos/make-certificate
+
+[Install]
+WantedBy=multi-user.target

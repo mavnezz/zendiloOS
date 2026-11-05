@@ -1,0 +1,34 @@
+[Unit]
+Description=zendiloOS privileged agent
+Documentation=https://github.com/mavnezz/zendiloOS
+Requires=zendiloos-agent.socket
+After=zendiloos-agent.socket
+
+# Started on demand through zendiloos-agent.socket; no [Install] section.
+[Service]
+ExecStart=/usr/libexec/zendiloos/zendiloos-agent
+
+# Root, but with only what the current operations need: reboot and power
+# off go through systemd and need no capabilities. Each new operation
+# widens this deliberately.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+PrivateNetwork=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service

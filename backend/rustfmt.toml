@@ -1,0 +1,4 @@
+# Compact layout: short struct literals and calls stay on one line.
+edition = "2024"
+max_width = 110
+use_small_heuristics = "Max"

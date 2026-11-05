@@ -1,0 +1,14 @@
+# Configuration of zendiloos-agent, which carries out root operations for
+# zendiloosd. The defaults are shown commented out.
+
+# Only used when the agent runs by hand; under systemd it gets the socket
+# from zendiloos-agent.socket.
+#socket = "/run/zendiloos/agent.sock"
+
+# The only account allowed to connect.
+#client_user = "zendiloos"
+
+#log_filter = "info"
+
+#[tools]
+#systemctl = "/usr/bin/systemctl"

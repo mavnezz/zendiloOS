@@ -1,0 +1,26 @@
+[package]
+name = "zendiloos-identity"
+description = "Bounded context Identity: accounts, roles, sessions, initial setup, audit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Core crate of a bounded context: no I/O, no frameworks. Adapters live in
+# zendiloos-infra and zendiloos-api. See docs/architecture.md, 2.1.
+[dependencies]
+zendiloos-kernel.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+
+[features]
+# In-memory implementations of all ports, for tests of this crate and of
+# the API.
+testing = []
+
+[lints]
+workspace = true

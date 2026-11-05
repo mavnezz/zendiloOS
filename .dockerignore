@@ -1,0 +1,3 @@
+# The build image needs only the toolchain pin; the sources are mounted.
+*
+!rust-toolchain.toml

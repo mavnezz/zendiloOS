@@ -1,0 +1,14 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    purge)
+        # Generated at installation; the database in /var/lib/zendiloos is
+        # kept, since it holds the administrators' work.
+        rm -rf /etc/zendiloos/tls
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

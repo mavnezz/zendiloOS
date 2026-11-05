@@ -1,0 +1,33 @@
+[package]
+name = "zendiloos-api"
+description = "HTTP and WebSocket API of Zendiloos"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Primary adapter: calls the contexts' use cases, never secondary adapters
+# (no dependency on zendiloos-infra). See docs/architecture.md, 2.1.
+[dependencies]
+zendiloos-identity.workspace = true
+zendiloos-kernel.workspace = true
+zendiloos-system.workspace = true
+axum.workspace = true
+axum-extra.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+utoipa.workspace = true
+utoipa-axum.workspace = true
+
+[dev-dependencies]
+zendiloos-identity = { workspace = true, features = ["testing"] }
+async-trait.workspace = true
+http-body-util.workspace = true
+tokio.workspace = true
+tower.workspace = true
+
+[lints]
+workspace = true

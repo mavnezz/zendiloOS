@@ -1,0 +1,6 @@
+# Read by rustup (Debian build container) and by rust-overlay (Nix devShell),
+# so both build with the same compiler.
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+components = ["rustfmt", "clippy", "rust-src", "rust-analyzer"]

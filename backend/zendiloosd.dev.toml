@@ -1,0 +1,15 @@
+# Configuration for `just dev`. Relative paths are resolved against the
+# working directory, which is backend/.
+
+# Not 8080, which other development servers like to take.
+listen = "127.0.0.1:8780"
+state_dir = "../dev/state"
+# The development server is plain HTTP.
+secure_cookies = false
+
+# No root on the development machine: nothing privileged is carried out.
+[agent]
+transport = "simulated"
+
+[log]
+filter = "info,zendiloosd=debug,zendiloos_api=debug,zendiloos_infra=debug"

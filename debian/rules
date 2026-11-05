@@ -1,0 +1,33 @@
+#!/usr/bin/make -f
+# Built inside the container of packaging/build.Dockerfile, which provides
+# Rust as pinned in rust-toolchain.toml and Node.js 24; Debian 13's own
+# toolchains are too old. Hence no Build-Depends on cargo or nodejs.
+
+export DH_VERBOSE = 1
+# The SQL macros check queries against backend/.sqlx; no database needed.
+export SQLX_OFFLINE = true
+
+%:
+	dh $@
+
+override_dh_auto_configure:
+
+override_dh_auto_build:
+	cd backend && cargo build --release --locked -p zendiloosd -p zendiloos-agent
+	cd frontend && npm ci --no-audit --no-fund && npm run build
+
+# The test suites run with `just check`, not in the package build.
+override_dh_auto_test:
+
+override_dh_auto_install:
+	install -D -m 0755 backend/target/release/zendiloosd debian/zendiloos/usr/sbin/zendiloosd
+	install -D -m 0755 backend/target/release/zendiloos-agent \
+		debian/zendiloos/usr/libexec/zendiloos/zendiloos-agent
+	install -d debian/zendiloos/usr/share/zendiloos/webui
+	cp -r frontend/dist/. debian/zendiloos/usr/share/zendiloos/webui/
+
+override_dh_auto_clean:
+	rm -rf frontend/dist
+
+# Cargo strips the release binaries already.
+override_dh_dwz:

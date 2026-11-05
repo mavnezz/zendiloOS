@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO sessions\n                   (token_hash, account_id, csrf_token, client_ip, user_agent, created_at, last_seen_at, expires_at)\n               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7)\n               RETURNING id AS \"id!\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "0b4f92288fd29dd384dd3e3209c169bf5c981f30ea671e9b553ec418d2c50342"
+}

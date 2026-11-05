@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM sessions WHERE account_id = ? AND id <> ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "382a178473d7d7ff82dac2ba4e383504adb4c70d8c7f6d61d0d8bc15e18e9a02"
+}

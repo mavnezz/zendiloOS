@@ -1,0 +1,28 @@
+[package]
+name = "zendiloos-agent"
+description = "The privileged zendiloos agent: a closed set of root operations over a Unix socket"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Everything here runs as root: keep this list short. The agent must never
+# depend on the bounded contexts, the database or HTTP crates.
+[dependencies]
+zendiloos-agent-proto.workspace = true
+zendiloos-exec.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+listenfd.workspace = true
+serde.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,12 @@
+[Unit]
+Description=zendiloOS privileged agent socket
+
+[Socket]
+ListenStream=/run/zendiloos/agent.sock
+# Only zendiloosd may connect; the agent checks SO_PEERCRED as well.
+SocketUser=root
+SocketGroup=zendiloos
+SocketMode=0660
+
+[Install]
+WantedBy=sockets.target

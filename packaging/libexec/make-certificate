@@ -1,0 +1,18 @@
+#!/bin/sh
+# Creates the self-signed certificate nginx serves until an administrator
+# installs another one. Runs at installation and, for images built
+# elsewhere, on the first boot (zendiloos-certificate.service), so the
+# certificate names this machine.
+set -e
+
+dir=/etc/zendiloos/tls
+[ -e "$dir/zendiloos.key" ] && exit 0
+
+host=$(hostname)
+install -d -m 0755 "$dir"
+umask 077
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 3650 \
+    -subj "/CN=$host" \
+    -addext "subjectAltName=DNS:$host,DNS:$host.local,DNS:localhost,IP:127.0.0.1" \
+    -keyout "$dir/zendiloos.key" -out "$dir/zendiloos.crt" 2>/dev/null
+chmod 0644 "$dir/zendiloos.crt"
