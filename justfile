@@ -141,6 +141,10 @@ vm-sharing-test:
 vm-notify-test:
     scripts/vm-notify-test.sh
 
+# Network changes with confirmation, in the second VM (ZENDILOOS_VM=2)
+vm-network-test:
+    scripts/vm-network-test.sh
+
 # An older package set up and in use, then the newest over it (see the script)
 [positional-arguments]
 vm-upgrade-test *args:

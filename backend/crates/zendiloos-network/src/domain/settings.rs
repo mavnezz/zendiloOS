@@ -1,6 +1,6 @@
-//! How an interface should be configured, and the systemd-networkd file
-//! that says so. Only where systemd-networkd manages the network; on a
-//! Debian with ifupdown or NetworkManager the network is only shown.
+//! How an interface should be configured, checked before the agent writes
+//! it as a systemd-networkd file. Only where systemd-networkd manages the
+//! network; on a Debian with ifupdown or NetworkManager it is only shown.
 
 use std::net::{IpAddr, Ipv4Addr};
 
@@ -96,40 +96,6 @@ impl InterfaceSettings {
         }
         Ok(self)
     }
-
-    /// The `.network` file for systemd-networkd.
-    pub fn networkd_file(&self) -> String {
-        let mut file = format!(
-            "# Written by zendiloOS; changes here are replaced. Change the network in its interface.\n\
-             [Match]\nName={}\n\n[Network]\n",
-            self.interface
-        );
-        let dhcp = self.ipv4 == Ipv4Setting::Dhcp;
-        file.push_str(if dhcp { "DHCP=ipv4\n" } else { "DHCP=no\n" });
-        match self.ipv6 {
-            Ipv6Setting::Automatic => file.push_str("IPv6AcceptRA=yes\n"),
-            Ipv6Setting::Off => file.push_str("IPv6AcceptRA=no\nLinkLocalAddressing=no\n"),
-        }
-        if let Ipv4Setting::Static { address, prefix, gateway } = &self.ipv4 {
-            file.push_str(&format!("Address={address}/{prefix}\n"));
-            if let Some(gateway) = gateway {
-                file.push_str(&format!("Gateway={gateway}\n"));
-            }
-        }
-        for server in &self.dns {
-            file.push_str(&format!("DNS={server}\n"));
-        }
-        // Name servers given here replace those DHCP or the router offers.
-        if !self.dns.is_empty() {
-            if dhcp {
-                file.push_str("\n[DHCPv4]\nUseDNS=no\n");
-            }
-            if self.ipv6 == Ipv6Setting::Automatic {
-                file.push_str("\n[IPv6AcceptRA]\nUseDNS=no\n");
-            }
-        }
-        file
-    }
 }
 
 #[cfg(test)]
@@ -173,25 +139,5 @@ mod tests {
         let mut name = fixed("192.168.1.10", 24, None);
         name.interface = "eth0\n[Network]".into();
         assert_eq!(refused(name), InvalidSettings::Interface);
-    }
-
-    #[test]
-    fn the_networkd_file_says_exactly_that() {
-        let file = fixed("192.168.1.10", 24, Some("192.168.1.1")).networkd_file();
-        assert!(file.contains("[Match]\nName=enp1s0\n"));
-        assert!(file.contains(
-            "DHCP=no\nIPv6AcceptRA=yes\nAddress=192.168.1.10/24\nGateway=192.168.1.1\nDNS=192.168.1.1\n"
-        ));
-        assert!(file.ends_with("\n[IPv6AcceptRA]\nUseDNS=no\n"), "{file}");
-
-        let dhcp = InterfaceSettings {
-            interface: "enp1s0".into(),
-            ipv4: Ipv4Setting::Dhcp,
-            ipv6: Ipv6Setting::Off,
-            dns: vec![],
-        };
-        let file = dhcp.networkd_file();
-        assert!(file.contains("DHCP=ipv4\nIPv6AcceptRA=no\nLinkLocalAddressing=no\n"), "{file}");
-        assert!(!file.contains("DNS") && !file.contains("Address="), "{file}");
     }
 }

@@ -13,6 +13,7 @@ mod client;
 mod descriptor;
 mod files;
 mod framing;
+mod network;
 
 use std::fmt;
 
@@ -24,6 +25,10 @@ pub use files::{
     DirectoryEntry, EntryKind, FileLocation, InvalidSharePath, MAX_DIRECTORY_ENTRIES, SharePath, is_file_name,
 };
 pub use framing::{FrameError, read_message, write_message};
+pub use network::{
+    ConfirmWithin, InterfaceName, InvalidConfirmWithin, InvalidInterfaceName, InvalidNameServers,
+    InvalidPrefix, Ipv4Config, Ipv6Config, NameServers, NetworkConfig, PendingNetwork, Prefix,
+};
 
 /// Agent and API come from the same release; any difference is refused.
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -133,6 +138,18 @@ pub enum Request {
         share: ShareName,
         label: SnapshotLabel,
     },
+    /// Whether systemd-networkd manages the network, and a change that
+    /// waits to be confirmed. Answers [`Response::NetworkState`].
+    NetworkState {},
+    /// Writes `config` as the interface's systemd-networkd file and applies
+    /// it; unless [`Request::ConfirmNetwork`] comes within `confirm_within`,
+    /// the old file returns (also after a restart). One change at a time.
+    ApplyNetwork {
+        config: NetworkConfig,
+        confirm_within: ConfirmWithin,
+    },
+    /// Keeps the change that waits to be confirmed.
+    ConfirmNetwork {},
     /// Returns a share to one of its snapshots (`zfs rollback -r`): what
     /// changed since is gone, and so are the snapshots taken after it.
     RollbackSnapshot {
@@ -317,6 +334,9 @@ impl Request {
             Request::CreateSnapshot { .. } => "create_snapshot",
             Request::DestroySnapshot { .. } => "destroy_snapshot",
             Request::RollbackSnapshot { .. } => "rollback_snapshot",
+            Request::NetworkState {} => "network_state",
+            Request::ApplyNetwork { .. } => "apply_network",
+            Request::ConfirmNetwork {} => "confirm_network",
             Request::ListSnapshots {} => "list_snapshots",
             Request::ShowOnConsole { .. } => "show_on_console",
             Request::SetShareProperties { .. } => "set_share_properties",
@@ -387,6 +407,11 @@ pub enum Response {
     },
     Copied {
         path: SharePath,
+    },
+    NetworkState {
+        /// systemd-networkd manages the network: it can be changed here.
+        managed: bool,
+        pending: Option<PendingNetwork>,
     },
     /// Where a restored entry went.
     Restored {

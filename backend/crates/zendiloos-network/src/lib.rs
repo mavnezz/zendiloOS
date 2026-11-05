@@ -1,6 +1,6 @@
-//! Bounded context *Network*: how the machine is connected. For now it only
-//! shows interfaces, addresses, default routes and name servers; changing
-//! them follows in milestone M6 (docs/roadmap.md).
+//! Bounded context *Network*: how the machine is connected (interfaces,
+//! addresses, default routes, name servers) and, where systemd-networkd
+//! manages it, changing an interface's settings with confirmation.
 
 pub mod application;
 pub mod domain;

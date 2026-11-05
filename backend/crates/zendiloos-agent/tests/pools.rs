@@ -138,9 +138,11 @@ fn host(erasable: Erasable) -> Host {
         testparm: script("testparm", ""),
         exportfs: script("exportfs", ""),
         setfacl: script("setfacl", ""),
+        busctl: script("busctl", ""),
         ..Tools::default()
     };
     let paths = Paths {
+        network: Default::default(),
         accounts: AccountFiles::default(),
         host: HostPaths {
             dev: root.join("dev"),

@@ -55,6 +55,8 @@ pub struct SimulatedAgent {
     clock: SimClock,
     /// Where `/volume<N>/<share>` directories are kept, if anywhere.
     files: Option<PathBuf>,
+    /// A network change waiting to be confirmed; nothing is changed.
+    network: Mutex<Option<zendiloos_agent_proto::PendingNetwork>>,
 }
 
 impl std::fmt::Debug for SimulatedAgent {
@@ -108,6 +110,7 @@ impl SimulatedAgent {
             host: Mutex::new(host::Host::nas()),
             clock,
             files: None,
+            network: Mutex::default(),
         }
     }
 
@@ -249,6 +252,36 @@ impl AgentTransport for SimulatedAgent {
             }
             Request::ListBlockDevices {} => Response::BlockDevices { lsblk_json: self.host().lsblk() },
             Request::SmartData { device } => smart(device),
+            // The simulated host is managed by systemd-networkd; a change
+            // waits for confirmation and lapses at its time.
+            Request::NetworkState {} => {
+                let now = i64::try_from((self.clock)()).unwrap_or(i64::MAX);
+                let mut pending = self.network.lock().unwrap_or_else(PoisonError::into_inner);
+                if pending.as_ref().is_some_and(|p| p.revert_at <= now) {
+                    *pending = None;
+                }
+                Response::NetworkState { managed: true, pending: pending.clone() }
+            }
+            Request::ApplyNetwork { config, confirm_within } => {
+                let mut pending = self.network.lock().unwrap_or_else(PoisonError::into_inner);
+                if pending.is_some() {
+                    error(ErrorCode::Conflict, "a change waits for confirmation")
+                } else {
+                    let now = i64::try_from((self.clock)()).unwrap_or(i64::MAX);
+                    let revert_at = now + i64::from(confirm_within.get());
+                    *pending = Some(zendiloos_agent_proto::PendingNetwork {
+                        interface: config.interface.clone(),
+                        revert_at,
+                    });
+                    Response::Done
+                }
+            }
+            Request::ConfirmNetwork {} => {
+                match self.network.lock().unwrap_or_else(PoisonError::into_inner).take() {
+                    Some(_) => Response::Done,
+                    None => error(ErrorCode::Forbidden, "no change waits for confirmation"),
+                }
+            }
             // The simulated drives pass every test at once.
             Request::StartSelfTest { .. } | Request::AbortSelfTest { .. } => Response::Done,
             Request::ArrayStatus {} => Response::ArrayStatus { mdstat: MDSTAT.to_owned() },

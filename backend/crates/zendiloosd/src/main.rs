@@ -19,8 +19,8 @@ use zendiloos_identity::application::commands::PurgeExpiredSessions;
 use zendiloos_identity::application::{IdentityConfig, IdentityPorts, IdentityUseCases};
 use zendiloos_infra::SystemClock;
 use zendiloos_infra::agent::{
-    AgentFiles, AgentPowerControl, AgentSharing, AgentStorage, AgentSystemAccounts, RandomPlanTokens,
-    agent_version,
+    AgentFiles, AgentNetwork, AgentPowerControl, AgentSharing, AgentStorage, AgentSystemAccounts,
+    RandomPlanTokens, agent_version,
 };
 use zendiloos_infra::host::{HostSystemInfo, IpNetworkReader, JournalctlReader, MetricsHub};
 use zendiloos_infra::identity::{Argon2PasswordHasher, FileSetupCodes, RandomSessionTokens};
@@ -126,6 +126,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     let channel_delivery = channels.clone().spawn(&notifier);
     let agent_for_sharing = agent.clone();
     let console_agent = agent.clone();
+    let network_agent = agent.clone();
     let agent_storage = Arc::new(AgentStorage::new(agent));
     let agent_storage_for_sharing = agent_storage.clone();
     let storage = StorageUseCases::new(StoragePorts {
@@ -166,7 +167,12 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         Some(path) => tracing::info!(path = %path.display(), "reading the network with ip"),
         None => tracing::warn!("ip not found: the network will not be shown"),
     }
-    let network = NetworkUseCases::new(Arc::new(ip));
+    let network = NetworkUseCases::new(
+        Arc::new(ip),
+        Arc::new(AgentNetwork::new(network_agent)),
+        audit.clone(),
+        Arc::new(SystemClock),
+    );
 
     let snapshots = spawn_snapshot_schedules(sharing.clone());
     let self_tests = spawn_self_test_schedule(storage.self_test_schedule.clone());

@@ -64,6 +64,7 @@ pub struct Tools {
     pub groupdel: PathBuf,
     pub gpasswd: PathBuf,
     pub smbpasswd: PathBuf,
+    pub busctl: PathBuf,
 }
 
 impl Default for Tools {
@@ -86,6 +87,7 @@ impl Default for Tools {
             groupdel: PathBuf::from("/usr/sbin/groupdel"),
             gpasswd: PathBuf::from("/usr/bin/gpasswd"),
             smbpasswd: PathBuf::from("/usr/bin/smbpasswd"),
+            busctl: PathBuf::from("/usr/bin/busctl"),
         }
     }
 }

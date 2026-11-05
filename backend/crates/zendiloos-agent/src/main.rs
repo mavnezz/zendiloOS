@@ -42,6 +42,7 @@ async fn main() -> anyhow::Result<()> {
         RoleArg::Files => Role::Files,
     };
     let operations = Operations::new(role, &config.tools, config.storage.erasable.clone())?;
+    operations.recover().await;
     let listener = listener(&config.socket, client_gid)?;
 
     tracing::info!(

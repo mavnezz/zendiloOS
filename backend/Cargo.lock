@@ -3064,6 +3064,7 @@ dependencies = [
  "async-trait",
  "thiserror",
  "tokio",
+ "tracing",
  "zendiloos-kernel",
 ]
 

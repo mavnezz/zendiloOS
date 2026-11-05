@@ -73,6 +73,7 @@ const KNOWN_PROBLEMS = [
   'self_test_running',
   'not_testing',
   'delivery_failed',
+  'change_pending',
   'snapshot_taken',
   'volume_not_found',
   'unknown_subject',

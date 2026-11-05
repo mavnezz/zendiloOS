@@ -4,6 +4,7 @@
 
 mod accounts;
 mod files;
+mod network;
 mod sharing;
 mod storage;
 
@@ -17,6 +18,7 @@ use zendiloos_system::domain::PowerAction;
 
 pub use accounts::AgentSystemAccounts;
 pub use files::AgentFiles;
+pub use network::AgentNetwork;
 pub use sharing::AgentSharing;
 pub use storage::{AgentStorage, RandomPlanTokens};
 

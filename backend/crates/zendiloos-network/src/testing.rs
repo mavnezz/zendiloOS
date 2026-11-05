@@ -31,3 +31,50 @@ impl NetworkSource for FixedNetwork {
         Ok(Network::new(vec![card], vec![route], vec![[192, 168, 1, 1].into()]))
     }
 }
+
+/// A host that takes changes and keeps one waiting, without a clock.
+#[derive(Default)]
+pub struct FakeConfigurator {
+    pub pending: std::sync::Mutex<Option<crate::application::PendingChange>>,
+    pub applied: std::sync::Mutex<Vec<crate::domain::InterfaceSettings>>,
+}
+
+#[async_trait]
+impl crate::application::NetworkConfigurator for FakeConfigurator {
+    async fn setup(
+        &self,
+        _: &zendiloos_kernel::RequestContext,
+    ) -> Result<crate::application::NetworkSetup, PortError> {
+        Ok(crate::application::NetworkSetup { managed: true, pending: self.pending.lock().unwrap().clone() })
+    }
+
+    async fn apply(
+        &self,
+        settings: &crate::domain::InterfaceSettings,
+        confirm_within_seconds: u16,
+        _: &zendiloos_kernel::RequestContext,
+    ) -> Result<(), crate::application::ConfigureError> {
+        let mut pending = self.pending.lock().unwrap();
+        if pending.is_some() {
+            return Err(crate::application::ConfigureError::Pending);
+        }
+        *pending = Some(crate::application::PendingChange {
+            interface: settings.interface.clone(),
+            revert_at: zendiloos_kernel::Timestamp::from_unix_seconds(i64::from(confirm_within_seconds)),
+        });
+        self.applied.lock().unwrap().push(settings.clone());
+        Ok(())
+    }
+
+    async fn confirm(
+        &self,
+        _: &zendiloos_kernel::RequestContext,
+    ) -> Result<(), crate::application::ConfigureError> {
+        match self.pending.lock().unwrap().take() {
+            Some(_) => Ok(()),
+            None => {
+                Err(crate::application::ConfigureError::Refused("no change waits for confirmation".into()))
+            }
+        }
+    }
+}

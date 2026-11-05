@@ -541,6 +541,65 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/network/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Keeps the change that waits for confirmation. Needs `system.manage`. */
+        post: operations["confirm_network"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/network/interfaces/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Applies new settings to an interface at once. Unless they are confirmed
+         *     within two minutes (`POST /network/confirm`, from the new address if
+         *     it changed), the old settings return by themselves. Needs
+         *     `system.manage`.
+         */
+        put: operations["configure_interface"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/network/setup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Whether the network can be changed here, and a change waiting to be
+         *     confirmed. Needs `system.view`.
+         */
+        get: operations["network_setup"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/notification-channels": {
         parameters: {
             query?: never;
@@ -1543,6 +1602,12 @@ export interface components {
             language?: components["schemas"]["InterfaceLanguage"] | null;
             theme?: components["schemas"]["InterfaceTheme"] | null;
         };
+        InterfaceSettingsInput: {
+            /** @description Up to three; empty: those DHCP and the router give. */
+            dns?: string[];
+            ipv4: components["schemas"]["Ipv4Input"];
+            ipv6: components["schemas"]["Ipv6Input"];
+        };
         /** @enum {string} */
         InterfaceState: "up" | "no_carrier" | "down" | "unknown";
         /**
@@ -1550,6 +1615,24 @@ export interface components {
          * @enum {string}
          */
         InterfaceTheme: "light" | "dark" | "system";
+        Ipv4Input: {
+            /** @enum {string} */
+            mode: "dhcp";
+        } | {
+            /** Format: ipv4 */
+            address: string;
+            /** Format: ipv4 */
+            gateway?: string | null;
+            /** @enum {string} */
+            mode: "static";
+            /**
+             * Format: int32
+             * @description 1 to 32.
+             */
+            prefix: number;
+        };
+        /** @enum {string} */
+        Ipv6Input: "automatic" | "off";
         Job: {
             /** @description Who started it. */
             actor?: string | null;
@@ -1720,6 +1803,12 @@ export interface components {
             name: string;
             state: components["schemas"]["InterfaceState"];
         };
+        /** @description Whether the network can be changed here, and a change that waits. */
+        NetworkSetup: {
+            /** @description systemd-networkd manages the network; otherwise it is only shown. */
+            managed: boolean;
+            pending?: components["schemas"]["PendingNetworkChange"] | null;
+        };
         /** @enum {string} */
         NewPoolLayout: "single" | "mirror" | "raidz1" | "raidz2" | "raidz3";
         /** @description A host or network that may mount the share over NFS. */
@@ -1807,6 +1896,14 @@ export interface components {
             name: string;
             /** Format: int64 */
             size_bytes: number;
+        };
+        PendingNetworkChange: {
+            interface: string;
+            /**
+             * Format: int64
+             * @description When the old settings return unless confirmed, in Unix seconds.
+             */
+            revert_at: number;
         };
         PlanWarning: {
             code: components["schemas"]["PlanWarningCode"];
@@ -3773,6 +3870,96 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    confirm_network: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Kept. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `refused`: nothing waits */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    configure_interface: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InterfaceSettingsInput"];
+            };
+        };
+        responses: {
+            /** @description Applied; waits for confirmation. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NetworkSetup"];
+                };
+            };
+            /** @description `change_pending`, or `refused`: not managed by systemd-networkd, no such interface */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    network_setup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NetworkSetup"];
                 };
             };
         };

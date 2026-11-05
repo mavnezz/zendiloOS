@@ -14,6 +14,7 @@ use zendiloos_fileops::FileError;
 use crate::accounts::{AccountFiles, Accounts};
 use crate::config::Tools;
 use crate::files::Files;
+use crate::network::{Network, NetworkPaths};
 use crate::pools::{Erasable, HostPaths, Pools};
 use crate::sharing::Sharing;
 
@@ -23,6 +24,7 @@ use crate::sharing::Sharing;
 pub struct Paths {
     pub accounts: AccountFiles,
     pub host: HostPaths,
+    pub network: NetworkPaths,
 }
 
 const MDSTAT: &str = "/proc/mdstat";
@@ -43,6 +45,7 @@ pub struct Operations {
     pools: Pools,
     sharing: Sharing,
     files: Files,
+    network: std::sync::Arc<Network>,
     console_issue: std::path::PathBuf,
     role: Role,
 }
@@ -66,12 +69,21 @@ impl Operations {
             zpool: Program::new(&tools.zpool)?,
             zfs: Program::new(&tools.zfs)?,
             files: Files::new(paths.accounts.clone(), paths.host.volumes.clone()),
+            network: std::sync::Arc::new(Network::new(tools, paths.network)?),
             console_issue: paths.host.console_issue.clone(),
             accounts: Accounts::new(tools, paths.accounts)?,
             sharing: Sharing::new(tools, paths.host.clone())?,
             pools: Pools::new(tools, erasable, paths.host)?,
             role,
         })
+    }
+
+    /// Work left from before a restart: network changes nobody confirmed
+    /// go back. Call once, before serving.
+    pub async fn recover(&self) {
+        if self.role == Role::System {
+            self.network.restore_unconfirmed().await;
+        }
     }
 
     pub async fn execute(&self, request: &Request) -> Response {
@@ -117,6 +129,11 @@ impl Operations {
             Request::DestroySnapshot { pool, volume, share, label } => {
                 self.pools.destroy_snapshot(pool, *volume, share, label).await
             }
+            Request::NetworkState {} => self.network.state().await,
+            Request::ApplyNetwork { config, confirm_within } => {
+                self.network.apply(config, *confirm_within).await
+            }
+            Request::ConfirmNetwork {} => self.network.confirm().await,
             Request::RollbackSnapshot { pool, volume, share, label } => {
                 self.pools.rollback_snapshot(pool, *volume, share, label).await
             }

@@ -139,6 +139,26 @@ const de: Messages = {
     removeHint: 'Über diesen Kanal gehen dann keine Meldungen mehr.',
   },
   network: {
+    change: {
+      button: 'Ändern',
+      title: '{name} ändern',
+      hint: 'Die neuen Einstellungen gelten sofort. Bestätigen Sie sie binnen zwei Minuten, bei neuer Adresse von dort aus, sonst kehren die alten zurück.',
+      dhcp: 'Automatisch (DHCP)',
+      static: 'Feste Adresse',
+      address: 'Adresse',
+      prefix: 'Präfix',
+      dnsFromDhcp: 'Per DHCP',
+      dnsHint: 'Bis zu drei, durch Kommas getrennt; leer: die per DHCP.',
+      ipv6Automatic: 'Automatisch',
+      ipv6Off: 'Aus',
+      apply: 'Anwenden',
+    },
+    pending: {
+      title: 'Neue Einstellungen für {name} sind aktiv',
+      hint: 'Bestätigen Sie sie, sonst kehren in {seconds} Sekunden die alten zurück.',
+      elsewhere: 'Das NAS hat eine neue Adresse. Bestätigen Sie dort:',
+      confirm: 'Neue Einstellungen behalten',
+    },
     kinds: {
       ethernet: 'Ethernet',
       wireless: 'WLAN',
@@ -160,7 +180,8 @@ const de: Messages = {
     gateway: 'Standard-Gateway',
     nameServers: 'Nameserver',
     none: 'keine',
-    readOnly: 'So wie das System eingerichtet ist. Ändern lässt es sich hier später.',
+    readOnly:
+      'So, wie das System eingerichtet ist. systemd-networkd verwaltet das Netz hier nicht, daher wird es anderswo geändert.',
   },
   settings: {
     account: 'Konto',
@@ -871,6 +892,7 @@ const de: Messages = {
     self_test_running: 'Die Platte testet sich bereits.',
     not_testing: 'Die Platte testet sich gerade nicht.',
     delivery_failed: 'Die Nachricht ging nicht hinaus',
+    change_pending: 'Eine andere Änderung wartet auf Bestätigung.',
     snapshot_taken:
       'In dieser Sekunde wurde schon ein Snapshot aufgenommen. Bitte noch einmal versuchen.',
     refused: 'Das System hat aus Sicherheitsgründen abgelehnt.',

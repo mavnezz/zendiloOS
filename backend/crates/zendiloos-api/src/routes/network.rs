@@ -1,20 +1,183 @@
-//! How the machine is connected (`system.view`). Read-only for now.
+//! How the machine is connected (`system.view`), and changing an
+//! interface's settings with confirmation (`system.manage`).
 
 use axum::Json;
-use axum::extract::State;
-use serde::Serialize;
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 use zendiloos_identity::domain::Permission;
 use zendiloos_network::domain as net;
 
+use zendiloos_network::application::ConfigureError;
+
 use crate::auth::Auth;
 use crate::error::{ApiError, Problem};
+use crate::extract::{ApiJson, Client};
 use crate::state::ApiState;
 
 pub(super) fn routes() -> OpenApiRouter<ApiState> {
-    OpenApiRouter::new().routes(routes!(network))
+    OpenApiRouter::new()
+        .routes(routes!(network))
+        .routes(routes!(network_setup))
+        .routes(routes!(configure_interface))
+        .routes(routes!(confirm_network))
+}
+
+impl From<ConfigureError> for ApiError {
+    fn from(error: ConfigureError) -> Self {
+        match error {
+            ConfigureError::Refused(detail) => {
+                ApiError::Rejected { status: StatusCode::CONFLICT, code: "refused", detail: Some(detail) }
+            }
+            ConfigureError::Pending => {
+                ApiError::Rejected { status: StatusCode::CONFLICT, code: "change_pending", detail: None }
+            }
+            ConfigureError::Invalid(e) => ApiError::InvalidInput(e.to_string()),
+            ConfigureError::Port(e) => ApiError::internal(e),
+        }
+    }
+}
+
+/// Whether the network can be changed here, and a change that waits.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct NetworkSetup {
+    /// systemd-networkd manages the network; otherwise it is only shown.
+    pub managed: bool,
+    pub pending: Option<PendingNetworkChange>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PendingNetworkChange {
+    pub interface: String,
+    /// When the old settings return unless confirmed, in Unix seconds.
+    pub revert_at: i64,
+}
+
+fn setup_dto(setup: zendiloos_network::application::NetworkSetup) -> NetworkSetup {
+    NetworkSetup {
+        managed: setup.managed,
+        pending: setup
+            .pending
+            .map(|p| PendingNetworkChange { interface: p.interface, revert_at: p.revert_at.unix_seconds() }),
+    }
+}
+
+/// Whether the network can be changed here, and a change waiting to be
+/// confirmed. Needs `system.view`.
+#[utoipa::path(
+    get,
+    path = "/network/setup",
+    tag = "network",
+    security(("session" = [])),
+    responses((status = OK, body = NetworkSetup))
+)]
+async fn network_setup(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+) -> Result<Json<NetworkSetup>, ApiError> {
+    auth.require(Permission::SystemView)?;
+    Ok(Json(setup_dto(state.network.configure.setup(&client).await?)))
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Ipv4Input {
+    Dhcp,
+    Static {
+        #[schema(value_type = String, format = Ipv4)]
+        address: std::net::Ipv4Addr,
+        /// 1 to 32.
+        prefix: u8,
+        #[schema(value_type = Option<String>, format = Ipv4)]
+        gateway: Option<std::net::Ipv4Addr>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Ipv6Input {
+    /// From router advertisements, and DHCPv6 where they say so.
+    Automatic,
+    Off,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct InterfaceSettingsInput {
+    pub ipv4: Ipv4Input,
+    pub ipv6: Ipv6Input,
+    /// Up to three; empty: those DHCP and the router give.
+    #[serde(default)]
+    #[schema(value_type = Vec<String>)]
+    pub dns: Vec<std::net::IpAddr>,
+}
+
+/// Applies new settings to an interface at once. Unless they are confirmed
+/// within two minutes (`POST /network/confirm`, from the new address if
+/// it changed), the old settings return by themselves. Needs
+/// `system.manage`.
+#[utoipa::path(
+    put,
+    path = "/network/interfaces/{name}",
+    tag = "network",
+    security(("session" = [])),
+    params(("name" = String, Path)),
+    request_body = InterfaceSettingsInput,
+    responses(
+        (status = ACCEPTED, body = NetworkSetup, description = "Applied; waits for confirmation."),
+        (status = CONFLICT, body = Problem, description = "`change_pending`, or `refused`: not managed by systemd-networkd, no such interface"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_input`"),
+    )
+)]
+async fn configure_interface(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(name): Path<String>,
+    ApiJson(input): ApiJson<InterfaceSettingsInput>,
+) -> Result<(StatusCode, Json<NetworkSetup>), ApiError> {
+    auth.require(Permission::SystemManage)?;
+    let settings = net::InterfaceSettings {
+        interface: name,
+        ipv4: match input.ipv4 {
+            Ipv4Input::Dhcp => net::Ipv4Setting::Dhcp,
+            Ipv4Input::Static { address, prefix, gateway } => {
+                net::Ipv4Setting::Static { address, prefix, gateway }
+            }
+        },
+        ipv6: match input.ipv6 {
+            Ipv6Input::Automatic => net::Ipv6Setting::Automatic,
+            Ipv6Input::Off => net::Ipv6Setting::Off,
+        },
+        dns: input.dns,
+    };
+    let setup = state.network.configure.apply(settings, &auth.0.actor(), &client).await?;
+    Ok((StatusCode::ACCEPTED, Json(setup_dto(setup))))
+}
+
+/// Keeps the change that waits for confirmation. Needs `system.manage`.
+#[utoipa::path(
+    post,
+    path = "/network/confirm",
+    tag = "network",
+    security(("session" = [])),
+    responses(
+        (status = NO_CONTENT, description = "Kept."),
+        (status = CONFLICT, body = Problem, description = "`refused`: nothing waits"),
+    )
+)]
+async fn confirm_network(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+) -> Result<StatusCode, ApiError> {
+    auth.require(Permission::SystemManage)?;
+    state.network.configure.confirm(&auth.0.actor(), &client).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Debug, Clone, Copy, Serialize, ToSchema)]

@@ -9,6 +9,7 @@ mod accounts;
 pub mod config;
 mod console;
 mod files;
+mod network;
 mod operations;
 pub mod passwd;
 mod pools;
@@ -16,6 +17,7 @@ mod server;
 mod sharing;
 
 pub use accounts::AccountFiles;
+pub use network::NetworkPaths;
 pub use operations::{Operations, Paths};
 pub use pools::{Erasable, ErasePolicy, HostPaths};
 pub use server::{Server, serve};

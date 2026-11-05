@@ -116,7 +116,7 @@ const choice = (selected: boolean) =>
       </section>
 
       <section v-else-if="section === 'network'">
-        <NetworkSection />
+        <NetworkSection :can-manage="session.can('system.manage')" />
       </section>
       <section v-else-if="section === 'notifications'">
         <ChannelsSection />

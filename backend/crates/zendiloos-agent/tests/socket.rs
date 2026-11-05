@@ -58,6 +58,7 @@ impl Agent {
             zpool: script("zpool", "echo '{\"pools\": {}}'"),
             zfs: script("zfs", "echo '{\"datasets\": {}}'"),
             sgdisk: script("sgdisk", ""),
+            busctl: script("busctl", ""),
             wipefs: script("wipefs", ""),
             udevadm: script("udevadm", ""),
             testparm: script("testparm", ""),
@@ -87,7 +88,7 @@ impl Agent {
 
         // Files we create belong to us: the test runs as the client.
         let our_uid = fs::metadata(dir.path()).unwrap().uid();
-        let paths = Paths { accounts: files, host: HostPaths::default() };
+        let paths = Paths { accounts: files, host: HostPaths::default(), network: Default::default() };
         let operations =
             Operations::with_paths(Role::System, &tools, Erasable::Policy(ErasePolicy::None), paths).unwrap();
         let listener = UnixListener::bind(dir.path().join("agent.sock")).unwrap();

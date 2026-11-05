@@ -281,7 +281,12 @@ impl Harness {
             storage,
             sharing,
             files,
-            network: NetworkUseCases::new(Arc::new(FixedNetwork)),
+            network: NetworkUseCases::new(
+                Arc::new(FixedNetwork),
+                Arc::new(zendiloos_network::testing::FakeConfigurator::default()),
+                identity.audit.clone(),
+                identity.clock.clone(),
+            ),
             jobs: jobs.clone(),
             notifier: notifier.clone(),
             channels: zendiloos_notify::channels::Channels::new(
@@ -842,6 +847,9 @@ fn openapi_documents_every_route() {
             "/api/v1/logs/audit",
             "/api/v1/logs/journal",
             "/api/v1/network",
+            "/api/v1/network/confirm",
+            "/api/v1/network/interfaces/{name}",
+            "/api/v1/network/setup",
             "/api/v1/notification-channels",
             "/api/v1/notification-channels/{id}",
             "/api/v1/notification-channels/{id}/test",
@@ -2010,4 +2018,39 @@ async fn administrators_set_up_channels_and_never_see_a_password_again() {
     assert_problem(&forbidden, StatusCode::FORBIDDEN, "forbidden");
     assert_eq!(send(Method::DELETE, &channel, &admin, None).await.status, StatusCode::NO_CONTENT);
     assert_problem(&send(Method::DELETE, &channel, &admin, None).await, StatusCode::NOT_FOUND, "not_found");
+}
+
+#[tokio::test]
+async fn administrators_change_an_interface_and_confirm_it() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let viewer = h.sign_in("bob", Role::ReadOnly).await;
+    let fixed = json!({
+        "ipv4": { "mode": "static", "address": "192.168.1.10", "prefix": 24, "gateway": "192.168.1.1" },
+        "ipv6": "automatic",
+        "dns": ["192.168.1.1"],
+    });
+    let put = |session: &Session, body: Value| {
+        h.send(json(with_csrf(changing(Method::PUT, "/api/v1/network/interfaces/enp1s0"), session), body))
+    };
+
+    assert_problem(&put(&viewer, fixed.clone()).await, StatusCode::FORBIDDEN, "forbidden");
+    let mut wrong = fixed.clone();
+    wrong["ipv4"]["gateway"] = json!("10.0.0.1");
+    assert_problem(&put(&admin, wrong).await, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
+
+    let applied = put(&admin, fixed.clone()).await;
+    assert_eq!(applied.status, StatusCode::ACCEPTED, "{:?}", applied.body);
+    assert_eq!(applied.body["pending"]["interface"], "enp1s0");
+    let seen = h.send(empty(with_cookie(get("/api/v1/network/setup"), &viewer))).await;
+    assert_eq!(
+        (seen.body["managed"].clone(), seen.body["pending"]["interface"].clone()),
+        (json!(true), json!("enp1s0"))
+    );
+    assert_problem(&put(&admin, fixed).await, StatusCode::CONFLICT, "change_pending");
+
+    let confirm = |session: &Session| h.send(empty(with_csrf(post("/api/v1/network/confirm"), session)));
+    assert_problem(&confirm(&viewer).await, StatusCode::FORBIDDEN, "forbidden");
+    assert_eq!(confirm(&admin).await.status, StatusCode::NO_CONTENT);
+    assert_problem(&confirm(&admin).await, StatusCode::CONFLICT, "refused");
 }

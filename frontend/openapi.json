@@ -1933,6 +1933,126 @@
         ]
       }
     },
+    "/api/v1/network/confirm": {
+      "post": {
+        "tags": [
+          "network"
+        ],
+        "summary": "Keeps the change that waits for confirmation. Needs `system.manage`.",
+        "operationId": "confirm_network",
+        "responses": {
+          "204": {
+            "description": "Kept."
+          },
+          "409": {
+            "description": "`refused`: nothing waits",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/network/interfaces/{name}": {
+      "put": {
+        "tags": [
+          "network"
+        ],
+        "summary": "Applies new settings to an interface at once. Unless they are confirmed\nwithin two minutes (`POST /network/confirm`, from the new address if\nit changed), the old settings return by themselves. Needs\n`system.manage`.",
+        "operationId": "configure_interface",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InterfaceSettingsInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Applied; waits for confirmation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NetworkSetup"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`change_pending`, or `refused`: not managed by systemd-networkd, no such interface",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/network/setup": {
+      "get": {
+        "tags": [
+          "network"
+        ],
+        "summary": "Whether the network can be changed here, and a change waiting to be\nconfirmed. Needs `system.view`.",
+        "operationId": "network_setup",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NetworkSetup"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/notification-channels": {
       "get": {
         "tags": [
@@ -4966,6 +5086,29 @@
         },
         "additionalProperties": false
       },
+      "InterfaceSettingsInput": {
+        "type": "object",
+        "required": [
+          "ipv4",
+          "ipv6"
+        ],
+        "properties": {
+          "dns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Up to three; empty: those DHCP and the router give."
+          },
+          "ipv4": {
+            "$ref": "#/components/schemas/Ipv4Input"
+          },
+          "ipv6": {
+            "$ref": "#/components/schemas/Ipv6Input"
+          }
+        },
+        "additionalProperties": false
+      },
       "InterfaceState": {
         "type": "string",
         "enum": [
@@ -4982,6 +5125,64 @@
           "light",
           "dark",
           "system"
+        ]
+      },
+      "Ipv4Input": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "mode"
+            ],
+            "properties": {
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "dhcp"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "address",
+              "prefix",
+              "mode"
+            ],
+            "properties": {
+              "address": {
+                "type": "string",
+                "format": "ipv4"
+              },
+              "gateway": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "ipv4"
+              },
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "static"
+                ]
+              },
+              "prefix": {
+                "type": "integer",
+                "format": "int32",
+                "description": "1 to 32.",
+                "minimum": 0
+              }
+            }
+          }
+        ]
+      },
+      "Ipv6Input": {
+        "type": "string",
+        "enum": [
+          "automatic",
+          "off"
         ]
       },
       "Job": {
@@ -5564,6 +5765,29 @@
           }
         }
       },
+      "NetworkSetup": {
+        "type": "object",
+        "description": "Whether the network can be changed here, and a change that waits.",
+        "required": [
+          "managed"
+        ],
+        "properties": {
+          "managed": {
+            "type": "boolean",
+            "description": "systemd-networkd manages the network; otherwise it is only shown."
+          },
+          "pending": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PendingNetworkChange"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
       "NewPoolLayout": {
         "type": "string",
         "enum": [
@@ -5810,6 +6034,23 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          }
+        }
+      },
+      "PendingNetworkChange": {
+        "type": "object",
+        "required": [
+          "interface",
+          "revert_at"
+        ],
+        "properties": {
+          "interface": {
+            "type": "string"
+          },
+          "revert_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When the old settings return unless confirmed, in Unix seconds."
           }
         }
       },
