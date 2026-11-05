@@ -607,12 +607,14 @@ rustls with ring and the system's certificate authorities
   cold backup; list the erasable disks on machines where that matters. On
   an existing Debian, any process running as `www-data` can reach the API
   socket and claim an address in `X-Real-IP`, passing by the per-address
-  throttle. A writer can make the folder `.recycle/<other user>` before
-  that user deletes anything over SMB; Samba then moves that user's
-  deletions into it, readable by the writer. The file manager refuses a
-  bin that is not the user's own and private (and empties a bin without
-  removing it), but Samba does not check; planned: the files agent makes
-  each writer's bin when access is applied.
+  throttle.
+- Recycle bins: when a share's permissions are applied, the files agent
+  makes each writer's `.recycle/<user>` (directly or through a group):
+  the user's own, mode 0700, without ACL entries. Something of that name
+  another writer made first is moved aside (`.<user>.not-theirs-…`), so
+  it never receives the user's deletions; Samba itself does not check who
+  owns a bin. The file manager also refuses a bin that is not the user's
+  own and private, and empties a bin without removing it.
 - Folder downloads are planned before the first byte (each entry once,
   its name and its folder's index, at most 100 000 entries), one at a
   time per user and four in all, and given up when nobody reads for five

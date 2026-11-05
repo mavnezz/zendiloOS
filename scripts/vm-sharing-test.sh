@@ -133,6 +133,10 @@ dataset="$pool/photos"
 props=$(vm "sudo zfs get -H -p -o value refquota,compression,recordsize $dataset" | tr '\n' ' ')
 [[ $props == "2147483648 zstd 1048576 " ]] || fail "the dataset has $props"
 call GET /shares | jq -e '.[] | select(.name == "photos") | .used_bytes >= 0' >/dev/null || fail "no usage"
+# Each writer's recycle bin is made with the share, private, before anybody
+# else could take its name.
+[[ $(vm "sudo stat -c '%U %a' $path/.recycle/anna") == "anna 700" ]] || fail "anna's bin: $(vm "sudo ls -la $path/.recycle")"
+vm "sudo test ! -e $path/.recycle/ben" || fail "a reader got a bin"
 
 say "2. SMB with the share's permissions"
 vm "echo 'hello from anna' > /tmp/hello.txt"

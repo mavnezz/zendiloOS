@@ -31,6 +31,7 @@ const HEADER: &str = "# Written by zendiloOS. Changes here are overwritten; use 
 #[derive(Debug)]
 pub(crate) struct Sharing {
     paths: HostPaths,
+    accounts: crate::accounts::AccountFiles,
     testparm: Program,
     exportfs: Program,
     systemctl: Program,
@@ -129,9 +130,14 @@ fn write_atomically(path: &Path, content: &str) -> Result<(), OperationError> {
 }
 
 impl Sharing {
-    pub(crate) fn new(tools: &Tools, paths: HostPaths) -> Result<Self, zendiloos_exec::ExecError> {
+    pub(crate) fn new(
+        tools: &Tools,
+        paths: HostPaths,
+        accounts: crate::accounts::AccountFiles,
+    ) -> Result<Self, zendiloos_exec::ExecError> {
         Ok(Self {
             paths,
+            accounts,
             testparm: Program::new(&tools.testparm)?,
             exportfs: Program::new(&tools.exportfs)?,
             systemctl: Program::new(&tools.systemctl)?,
@@ -248,14 +254,24 @@ impl Sharing {
         let directory = fs::File::from(directory);
         std::os::unix::fs::fchown(&directory, Some(0), Some(0))
             .map_err(|e| OperationError::Write(bin.clone(), e))?;
+        let for_acl = directory.try_clone().map_err(|e| OperationError::Write(bin.clone(), e))?;
         zendiloos_exec::run_on(
             &self.setfacl,
             ["--set", &set.join(","), "--", "/proc/self/fd/0"],
-            directory,
+            for_acl,
             LIMITS,
         )
         .await?
         .success(&self.setfacl)?;
+
+        // Each writer's own bin, made here: otherwise one writer could make
+        // another's first and read what lands in it, which Samba does not
+        // check.
+        for (user, uid, gid) in self.writers(access)? {
+            if let Err(error) = prepare_bin(&directory, &user, uid, gid) {
+                tracing::warn!(%error, share = name.as_str(), user, "cannot prepare a recycle bin");
+            }
+        }
 
         if recursive {
             let contents = tree_entries(&path)?;
@@ -269,6 +285,74 @@ impl Sharing {
         }
         Ok(Response::Done)
     }
+}
+
+impl Sharing {
+    /// The managed users who may write, directly or through a group, with
+    /// their UID and primary GID.
+    fn writers(&self, access: &[ShareAccess]) -> Result<Vec<(String, u32, u32)>, OperationError> {
+        let read = |path: &std::path::Path| {
+            fs::read_to_string(path).map_err(|e| OperationError::Read(path.to_owned(), e))
+        };
+        let (passwd, group) = (read(&self.accounts.passwd)?, read(&self.accounts.group)?);
+        let mut names: Vec<String> = Vec::new();
+        for entry in access.iter().filter(|a| a.write) {
+            match &entry.principal {
+                Principal::User(user) => names.push(user.as_str().to_owned()),
+                Principal::Group(name) => {
+                    names
+                        .extend(crate::passwd::members(&group, name.as_str()).into_iter().map(str::to_owned));
+                }
+            }
+        }
+        names.sort();
+        names.dedup();
+        let users_group = crate::passwd::group_id(&group, crate::accounts::USERS_GROUP);
+        Ok(names
+            .into_iter()
+            .filter(|name| zendiloos_agent_proto::is_file_name(name))
+            .filter_map(|name| {
+                let (uid, gid) = crate::passwd::lookup(&passwd, &name)?;
+                let managed = (crate::accounts::ID_MIN..=crate::accounts::ID_MAX).contains(&uid)
+                    && users_group == Some(gid);
+                managed.then_some((name, uid, gid))
+            })
+            .collect())
+    }
+}
+
+/// Makes `user`'s bin in the share's `.recycle` (opened as `bin`): theirs,
+/// mode 0700, without ACL entries. One somebody else made first is moved
+/// aside, so it never receives the user's deletions.
+fn prepare_bin(bin: &fs::File, user: &str, uid: u32, gid: u32) -> Result<(), OperationError> {
+    use rustix::fs::{AtFlags, Mode, OFlags, RenameFlags, mkdirat, openat, renameat_with, statat};
+    let failed = |e: rustix::io::Errno| OperationError::Write(PathBuf::from(user), e.into());
+    match statat(bin, user, AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(stat) if stat.st_uid == uid && rustix::fs::FileType::from_raw_mode(stat.st_mode).is_dir() => {
+            return Ok(());
+        }
+        Ok(_) => {
+            let aside = format!(".{user}.not-theirs-{}", std::process::id());
+            renameat_with(bin, user, bin, aside.as_str(), RenameFlags::NOREPLACE).map_err(failed)?;
+            tracing::warn!(user, aside, "a recycle bin somebody else made was moved aside");
+        }
+        Err(rustix::io::Errno::NOENT) => {}
+        Err(error) => return Err(failed(error)),
+    }
+    mkdirat(bin, user, Mode::from_raw_mode(0o700)).map_err(failed)?;
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let own = fs::File::from(openat(bin, user, flags, Mode::empty()).map_err(failed)?);
+    std::os::unix::fs::fchown(&own, Some(uid), Some(gid))
+        .map_err(|e| OperationError::Write(PathBuf::from(user), e))?;
+    // The share's default ACL was inherited; the bin is private.
+    for name in ["system.posix_acl_access", "system.posix_acl_default"] {
+        match rustix::fs::fremovexattr(&own, name) {
+            Ok(()) | Err(rustix::io::Errno::NODATA) | Err(rustix::io::Errno::OPNOTSUPP) => {}
+            Err(error) => return Err(failed(error)),
+        }
+    }
+    rustix::fs::fchmod(&own, Mode::from_raw_mode(0o700)).map_err(failed)?;
+    Ok(())
 }
 
 /// What the recursive change of a share's permissions works on: the
@@ -309,6 +393,29 @@ mod tests {
     use zendiloos_agent_proto::{GroupName, Network, NfsClient, ShareComment, UserName};
 
     use super::*;
+
+    #[test]
+    fn each_writer_gets_a_private_bin_and_nothing_else_takes_its_name() {
+        use std::os::unix::fs::PermissionsExt;
+        let recycle = tempfile::tempdir().unwrap();
+        let (uid, gid) = (rustix::process::getuid().as_raw(), rustix::process::getgid().as_raw());
+        let bin = fs::File::open(recycle.path()).unwrap();
+        // Something of that name made first, not a folder of the user's.
+        fs::write(recycle.path().join("anna"), "planted").unwrap();
+
+        prepare_bin(&bin, "anna", uid, gid).unwrap();
+        prepare_bin(&bin, "anna", uid, gid).unwrap();
+
+        let made = fs::metadata(recycle.path().join("anna")).unwrap();
+        assert!(made.is_dir());
+        assert_eq!((made.uid(), made.permissions().mode() & 0o777), (uid, 0o700));
+        let names: Vec<String> = fs::read_dir(recycle.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(names.len(), 2, "the planted one moved aside: {names:?}");
+        assert!(names.iter().any(|n| n.starts_with(".anna.not-theirs-")), "{names:?}");
+    }
 
     fn access(principal: Principal, write: bool) -> ShareAccess {
         ShareAccess { principal, write }

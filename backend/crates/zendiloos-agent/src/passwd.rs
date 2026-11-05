@@ -40,9 +40,29 @@ pub fn memberships(group_file: &str, user: &str) -> Vec<u32> {
         .collect()
 }
 
+/// Names `group_file` lists as members of `group`.
+pub fn members<'a>(group_file: &'a str, group: &str) -> Vec<&'a str> {
+    group_file
+        .lines()
+        .find_map(|line| {
+            let fields: Vec<&str> = line.split(':').collect();
+            let [name, _, _, members] = fields[..] else { return None };
+            (name == group).then(|| members.split(',').filter(|m| !m.is_empty()).collect())
+        })
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_members() {
+        let group = "root:x:0:\nfamily:x:2001:alice,bob\nempty:x:2002:\n";
+        assert_eq!(members(group, "family"), ["alice", "bob"]);
+        assert!(members(group, "empty").is_empty());
+        assert!(members(group, "fami").is_empty());
+    }
 
     #[test]
     fn finds_memberships() {

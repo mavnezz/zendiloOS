@@ -71,8 +71,8 @@ impl Operations {
             files: Files::new(paths.accounts.clone(), paths.host.volumes.clone()),
             network: std::sync::Arc::new(Network::new(tools, paths.network)?),
             console_issue: paths.host.console_issue.clone(),
+            sharing: Sharing::new(tools, paths.host.clone(), paths.accounts.clone())?,
             accounts: Accounts::new(tools, paths.accounts)?,
-            sharing: Sharing::new(tools, paths.host.clone())?,
             pools: Pools::new(tools, erasable, paths.host)?,
             role,
         })
