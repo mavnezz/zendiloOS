@@ -251,6 +251,7 @@ mod tests {
             started_at: Timestamp::from_unix_seconds(NOW - days_ago * DAY - 3600),
             finished_at: Some(Timestamp::from_unix_seconds(NOW - days_ago * DAY)),
             errors: 0,
+            pass: None,
         })
     }
 

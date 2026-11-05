@@ -158,6 +158,8 @@ pub(crate) enum ScanKind {
 pub(crate) struct ScanRun {
     pub kind: ScanKind,
     pub started_at: u64,
+    /// When it was stopped, for a stopped scrub.
+    pub stopped_at: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -223,15 +225,23 @@ impl Pool {
     fn scan_stats(&self, now: u64) -> Option<Value> {
         let scan = self.scan.as_ref()?;
         let total = self.used.max(1);
-        let elapsed = now.saturating_sub(scan.started_at);
-        let finished = elapsed >= SCAN_SECONDS;
-        let issued = if finished { total } else { total / SCAN_SECONDS * elapsed };
+        let until = scan.stopped_at.unwrap_or(now);
+        let elapsed = until.saturating_sub(scan.started_at);
+        let finished = scan.stopped_at.is_none() && elapsed >= SCAN_SECONDS;
+        let issued = if finished { total } else { total / SCAN_SECONDS * elapsed.min(SCAN_SECONDS) };
+        let (state, end_time) = match (scan.stopped_at, finished) {
+            (Some(stopped), _) => ("CANCELED", stopped),
+            (None, true) => ("FINISHED", scan.started_at + SCAN_SECONDS),
+            (None, false) => ("SCANNING", 0),
+        };
         Some(json!({
             "function": match scan.kind { ScanKind::Scrub => "SCRUB", ScanKind::Resilver => "RESILVER" },
-            "state": if finished { "FINISHED" } else { "SCANNING" },
+            "state": state,
             "start_time": scan.started_at,
-            "end_time": if finished { scan.started_at + SCAN_SECONDS } else { 0 },
+            "end_time": end_time,
             "to_examine": total, "examined": issued, "issued": issued, "errors": 0,
+            "pass_start": scan.started_at, "issued_bytes_per_scan": issued,
+            "scrub_pause": 0, "scrub_spent_paused": 0,
         }))
     }
 
@@ -538,7 +548,7 @@ impl Host {
         let pool = &mut self.pools[pool_index];
         let member = pool.members.iter_mut().find(|m| m.guid == device).expect("checked above");
         member.replacement = Some(Box::new(Member::new(path, device.wrapping_mul(31).wrapping_add(17))));
-        pool.scan = Some(ScanRun { kind: ScanKind::Resilver, started_at: now });
+        pool.scan = Some(ScanRun { kind: ScanKind::Resilver, started_at: now, stopped_at: None });
         Ok(())
     }
 
@@ -576,7 +586,24 @@ impl Host {
             .iter_mut()
             .find(|p| p.name == pool)
             .ok_or_else(|| Refusal::Refused(format!("there is no pool {pool}")))?;
-        pool.scan = Some(ScanRun { kind: ScanKind::Scrub, started_at: now });
+        pool.scan = Some(ScanRun { kind: ScanKind::Scrub, started_at: now, stopped_at: None });
+        Ok(())
+    }
+
+    /// Like `zpool scrub -s`: only a running scrub.
+    pub fn stop_scrub(&mut self, pool: &str, now: u64) -> Result<(), Refusal> {
+        let pool = self
+            .pools
+            .iter_mut()
+            .find(|p| p.name == pool)
+            .ok_or_else(|| Refusal::Refused(format!("there is no pool {pool}")))?;
+        let running = pool.scan.as_mut().filter(|scan| {
+            scan.kind == ScanKind::Scrub && scan.stopped_at.is_none() && now < scan.started_at + SCAN_SECONDS
+        });
+        let Some(scan) = running else {
+            return Err(Refusal::Refused(format!("there is no scrub in progress on {}", pool.name)));
+        };
+        scan.stopped_at = Some(now);
         Ok(())
     }
 }

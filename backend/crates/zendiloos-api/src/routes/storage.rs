@@ -28,6 +28,7 @@ pub(super) fn routes() -> OpenApiRouter<ApiState> {
         .routes(routes!(plan_replace))
         .routes(routes!(replace_disk))
         .routes(routes!(scrub_pool))
+        .routes(routes!(stop_scrub))
         .routes(routes!(volumes))
 }
 
@@ -75,6 +76,7 @@ impl From<StorageError> for ApiError {
             StorageError::ConfirmationMismatch => rejected(unprocessable, "confirmation_mismatch", None),
             StorageError::PlanChanged => rejected(StatusCode::CONFLICT, "plan_changed", None),
             StorageError::Refused(reason) => rejected(StatusCode::CONFLICT, "refused", Some(reason)),
+            StorageError::NotScrubbing => rejected(StatusCode::CONFLICT, "not_scrubbing", None),
             StorageError::Port(e) => ApiError::internal(e),
         }
     }
@@ -779,6 +781,13 @@ pub struct PoolScan {
     pub started_at: i64,
     pub finished_at: Option<i64>,
     pub errors: u64,
+    /// While it runs: how fast the current pass goes, as `zpool status`
+    /// estimates it.
+    pub bytes_per_second: Option<u64>,
+    /// While it runs: the estimated time until it is done.
+    pub seconds_left: Option<u64>,
+    /// A scrub that was paused.
+    pub paused: bool,
 }
 
 /// A ZFS pool; for pools zendiloOS created, also a volume.
@@ -810,8 +819,9 @@ pub struct Pool {
     pub data_errors: u64,
 }
 
-impl From<storage::Pool> for Pool {
-    fn from(pool: storage::Pool) -> Self {
+impl Pool {
+    /// `pool` as read at `read_at`, which running scans are estimated from.
+    fn new(pool: storage::Pool, read_at: zendiloos_kernel::Timestamp) -> Self {
         let disks = pool.devices.iter().filter(|d| d.replacing != Some(storage::Replacing::New)).count();
         let redundancy = pool.layout.redundancy(disks);
         let (layout, parity, layout_name) = match pool.layout {
@@ -853,6 +863,9 @@ impl From<storage::Pool> for Pool {
                 })
                 .collect(),
             scan: pool.scan.map(|scan| PoolScan {
+                bytes_per_second: scan.estimate(read_at).map(|e| e.bytes_per_second),
+                seconds_left: scan.estimate(read_at).map(|e| e.seconds_left),
+                paused: scan.pass.is_some_and(|pass| pass.paused),
                 percent: scan.percent(),
                 kind: match scan.kind {
                     storage::ScanKind::Scrub => ScanKind::Scrub,
@@ -891,7 +904,7 @@ async fn pools(
 ) -> Result<Json<Vec<Pool>>, ApiError> {
     auth.require(Permission::StorageView)?;
     let pools = state.storage.list_pools.execute(&client).await?;
-    Ok(Json(pools.into_iter().map(Pool::from).collect()))
+    Ok(Json(pools.pools.into_iter().map(|pool| Pool::new(pool, pools.read_at)).collect()))
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, ToSchema)]
@@ -1372,4 +1385,29 @@ async fn overview(
         used_bytes,
         available_bytes,
     }))
+}
+
+/// Stops the pool's scrub; what it checked so far stays checked. A resilver
+/// cannot be stopped. Needs `storage.manage`.
+#[utoipa::path(
+    post,
+    path = "/storage/pools/{name}/scrub/stop",
+    tag = "storage",
+    security(("session" = [])),
+    params(("name" = String, Path)),
+    responses(
+        (status = NO_CONTENT, description = "Stopped."),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`"),
+        (status = CONFLICT, body = Problem, description = "`not_scrubbing`"),
+    )
+)]
+async fn stop_scrub(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(name): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    auth.require(Permission::StorageManage)?;
+    state.storage.stop_scrub.execute(&name, &auth.0.actor(), &client).await?;
+    Ok(StatusCode::NO_CONTENT)
 }

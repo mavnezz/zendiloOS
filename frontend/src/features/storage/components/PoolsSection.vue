@@ -1,18 +1,32 @@
 <script setup lang="ts">
-import { Database, Plus, RefreshCw, Replace, ShieldCheck, Trash2 } from 'lucide-vue-next'
+import {
+  CircleStop,
+  Database,
+  Plus,
+  RefreshCw,
+  Replace,
+  ShieldCheck,
+  Trash2,
+} from 'lucide-vue-next'
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import type { Pool, PoolDevice, VdevState } from '@/shared/api/types'
 import { useJobsStore } from '@/shared/jobs/store'
 import { problemMessage } from '@/shared/i18n'
-import { formatBytes, formatDateTime, formatPercent } from '@/shared/lib/format'
+import {
+  formatBytes,
+  formatDateTime,
+  formatDuration,
+  formatPercent,
+  formatRate,
+} from '@/shared/lib/format'
 import { Alert } from '@/shared/ui/alert'
 import { Badge, type BadgeVariants } from '@/shared/ui/badge'
 import { Button } from '@/shared/ui/button'
 import { Meter } from '@/shared/ui/meter'
 
-import { scrubPool, useArrays, useDisks, usePools, useRefreshStorage } from '../api'
+import { scrubPool, stopScrub, useArrays, useDisks, usePools, useRefreshStorage } from '../api'
 import { formatPoolLayout } from '../format'
 import ArraysSection from './ArraysSection.vue'
 import CreatePoolDialog from './CreatePoolDialog.vue'
@@ -43,15 +57,18 @@ watch(
   () => void refresh(),
 )
 
-async function scrub(pool: Pool): Promise<void> {
+async function scrub(pool: Pool, action: (name: string) => Promise<void>): Promise<void> {
   actionError.value = null
   try {
-    await scrubPool(pool.name)
+    await action(pool.name)
     await refresh()
   } catch (failure) {
     actionError.value = problemMessage(failure)
   }
 }
+
+/** Only a running scrub can be stopped; a rebuild must finish. */
+const stoppable = (pool: Pool) => pool.scan?.kind === 'scrub' && pool.scan.state === 'running'
 
 const models = computed(
   () => new Map(disks.value?.map((disk) => [disk.name, disk.model ?? disk.name]) ?? []),
@@ -78,7 +95,14 @@ function scanLine(pool: Pool): string | null {
   const scan = pool.scan
   if (!scan) return null
   if (scan.state === 'running') {
-    return t(`storage.scan.running.${scan.kind}`, { percent: formatPercent(scan.percent) })
+    const line = t(`storage.scan.running.${scan.kind}`, { percent: formatPercent(scan.percent) })
+    if (scan.paused) return `${line} · ${t('storage.scan.paused')}`
+    if (scan.bytes_per_second == null || scan.seconds_left == null) return line
+    const pace = t('storage.scan.pace', {
+      rate: formatRate(scan.bytes_per_second),
+      left: formatDuration(scan.seconds_left),
+    })
+    return `${line} · ${pace}`
   }
   const at = scan.finished_at ? formatDateTime(scan.finished_at * 1000) : '–'
   if (scan.state === 'canceled') return t(`storage.scan.canceled.${scan.kind}`, { at })
@@ -192,11 +216,16 @@ function scanLine(pool: Pool): string | null {
       </ul>
 
       <div v-if="managed(pool)" class="flex flex-wrap justify-end gap-2">
+        <Button v-if="stoppable(pool)" variant="outline" size="sm" @click="scrub(pool, stopScrub)">
+          <CircleStop />
+          {{ t('storage.stopScrub') }}
+        </Button>
         <Button
+          v-else
           variant="outline"
           size="sm"
           :disabled="pool.scan?.state === 'running'"
-          @click="scrub(pool)"
+          @click="scrub(pool, scrubPool)"
         >
           <ShieldCheck />
           {{ t('storage.scrubNow') }}

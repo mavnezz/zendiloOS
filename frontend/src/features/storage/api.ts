@@ -107,3 +107,10 @@ export function replaceDisk(pool: string, token: string): Promise<Job> {
 export async function scrubPool(pool: string): Promise<void> {
   await unwrap(api.POST('/api/v1/storage/pools/{name}/scrub', { params: { path: { name: pool } } }))
 }
+
+/** Stops a running scrub; what it checked so far stays checked. */
+export async function stopScrub(pool: string): Promise<void> {
+  await unwrap(
+    api.POST('/api/v1/storage/pools/{name}/scrub/stop', { params: { path: { name: pool } } }),
+  )
+}

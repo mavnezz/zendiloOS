@@ -377,6 +377,11 @@ impl Pools {
         Ok(Response::Done)
     }
 
+    pub(crate) async fn stop_scrub(&self, pool: &PoolName) -> Result<Response, OperationError> {
+        run(&self.zpool, &["scrub", "-s", pool.as_str()]).await?;
+        Ok(Response::Done)
+    }
+
     /// The checks of the module documentation.
     fn check(&self, id: &DiskId) -> Result<Checked, OperationError> {
         match &self.erasable {

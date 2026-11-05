@@ -820,6 +820,7 @@ fn openapi_documents_every_route() {
             "/api/v1/storage/pools/{name}/replace",
             "/api/v1/storage/pools/{name}/replace/plan",
             "/api/v1/storage/pools/{name}/scrub",
+            "/api/v1/storage/pools/{name}/scrub/stop",
             "/api/v1/storage/volumes",
             "/api/v1/system/info",
             "/api/v1/system/power",
@@ -1577,4 +1578,28 @@ async fn no_path_leads_out_of_a_share_and_new_names_are_safe() {
     assert_problem(&h.send(upload).await, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
     // Nothing of it reached the files agent.
     assert_eq!(h.file_host.calls(), Vec::<String>::new());
+}
+
+#[tokio::test]
+async fn administrators_stop_a_running_scrub() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let viewer = h.sign_in("bob", Role::ReadOnly).await;
+    let stop =
+        |session: &Session| h.send(empty(with_csrf(post("/api/v1/storage/pools/tank/scrub/stop"), session)));
+
+    assert_problem(&stop(&admin).await, StatusCode::CONFLICT, "not_scrubbing");
+    let started = h.send(empty(with_csrf(post("/api/v1/storage/pools/tank/scrub"), &admin))).await;
+    assert_eq!(started.status, StatusCode::NO_CONTENT);
+    let pools = h.send(empty(with_cookie(get("/api/v1/storage/pools"), &viewer))).await;
+    assert_eq!(
+        (pools.body[0]["scan"]["kind"].clone(), pools.body[0]["scan"]["state"].clone()),
+        (json!("scrub"), json!("running"))
+    );
+    assert_eq!(pools.body[0]["scan"]["paused"], false);
+
+    assert_problem(&stop(&viewer).await, StatusCode::FORBIDDEN, "forbidden");
+    assert_eq!(stop(&admin).await.status, StatusCode::NO_CONTENT);
+    let pools = h.send(empty(with_cookie(get("/api/v1/storage/pools"), &viewer))).await;
+    assert_eq!(pools.body[0]["scan"]["state"], "canceled");
 }

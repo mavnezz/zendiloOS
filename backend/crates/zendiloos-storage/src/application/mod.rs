@@ -45,6 +45,7 @@ pub struct StorageUseCases {
     pub plan_replace: commands::PlanReplace,
     pub replace_disk: commands::ReplaceDisk,
     pub scrub_pool: commands::ScrubPool,
+    pub stop_scrub: commands::StopScrub,
     pub monitor: Arc<monitor::StorageMonitor>,
 }
 
@@ -69,7 +70,7 @@ impl StorageUseCases {
             ports.admin,
             ports.jobs,
             ports.audit,
-            ports.clock,
+            ports.clock.clone(),
             ports.tokens,
         ));
         Self {
@@ -78,14 +79,15 @@ impl StorageUseCases {
             destroy_pool: commands::DestroyPool::new(Arc::clone(&context)),
             plan_replace: commands::PlanReplace::new(Arc::clone(&context)),
             replace_disk: commands::ReplaceDisk::new(Arc::clone(&context)),
-            scrub_pool: commands::ScrubPool::new(context),
+            scrub_pool: commands::ScrubPool::new(Arc::clone(&context)),
+            stop_scrub: commands::StopScrub::new(context),
             monitor,
             overview,
             list_disks: queries::ListDisks::new(ports.devices.clone(), ports.zfs.clone()),
             get_smart_report: queries::GetSmartReport::new(ports.devices.clone(), ports.smart),
             list_arrays: queries::ListArrays::new(ports.arrays),
             list_volumes: queries::ListVolumes::new(ports.devices.clone(), ports.zfs.clone()),
-            list_pools: queries::ListPools::new(ports.devices, ports.zfs),
+            list_pools: queries::ListPools::new(ports.devices, ports.zfs, ports.clock.clone()),
         }
     }
 }

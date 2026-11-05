@@ -99,6 +99,10 @@ pub enum Request {
     ScrubPool {
         pool: PoolName,
     },
+    /// Stops the pool's scrub (`zpool scrub -s`).
+    StopScrub {
+        pool: PoolName,
+    },
     /// Creates dataset `<pool>/<name>` of a pool zendiloos created and
     /// mounts it at `/volume<volume>/<name>` through a systemd mount unit.
     CreateShare {
@@ -231,6 +235,7 @@ impl Request {
             Request::DestroyPool { .. } => "destroy_pool",
             Request::ReplaceDisk { .. } => "replace_disk",
             Request::ScrubPool { .. } => "scrub_pool",
+            Request::StopScrub { .. } => "stop_scrub",
             Request::CreateShare { .. } => "create_share",
             Request::DestroyShare { .. } => "destroy_share",
             Request::ApplySharing { .. } => "apply_sharing",

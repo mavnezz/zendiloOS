@@ -785,6 +785,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/storage/pools/{name}/scrub/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Stops the pool's scrub; what it checked so far stays checked. A resilver
+         *     cannot be stopped. Needs `storage.manage`.
+         */
+        post: operations["stop_scrub"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/storage/volumes": {
         parameters: {
             query?: never;
@@ -1473,16 +1493,29 @@ export interface components {
             name: string;
         };
         PoolScan: {
+            /**
+             * Format: int64
+             * @description While it runs: how fast the current pass goes, as `zpool status`
+             *     estimates it.
+             */
+            bytes_per_second?: number | null;
             /** Format: int64 */
             errors: number;
             /** Format: int64 */
             finished_at?: number | null;
             kind: components["schemas"]["ScanKind"];
+            /** @description A scrub that was paused. */
+            paused: boolean;
             /**
              * Format: float
              * @description 0 to 100.
              */
             percent: number;
+            /**
+             * Format: int64
+             * @description While it runs: the estimated time until it is done.
+             */
+            seconds_left?: number | null;
             /**
              * Format: int64
              * @description Unix seconds.
@@ -3606,6 +3639,44 @@ export interface operations {
             };
             /** @description `not_found` */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    stop_scrub: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Stopped. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_scrubbing` */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

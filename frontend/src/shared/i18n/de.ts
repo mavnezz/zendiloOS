@@ -142,6 +142,7 @@ const de: Messages = {
   },
   storage: {
     scrubNow: 'Daten jetzt prüfen',
+    stopScrub: 'Prüfung anhalten',
     plan: {
       willErase: 'Diese Platten werden gelöscht:',
       contains: 'Enthält {what}',
@@ -226,6 +227,8 @@ const de: Messages = {
       unknown: 'Unbekannt',
     },
     scan: {
+      pace: '{rate}, noch etwa {left}',
+      paused: 'pausiert',
       kind: {
         scrub: 'Datenprüfung',
         resilver: 'Wiederherstellung',

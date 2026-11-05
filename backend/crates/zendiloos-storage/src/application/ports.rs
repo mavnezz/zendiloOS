@@ -78,6 +78,9 @@ pub trait PoolAdmin: Send + Sync {
     ) -> Result<(), AdminError>;
 
     async fn scrub(&self, pool: &PoolName, context: &RequestContext) -> Result<(), AdminError>;
+
+    /// Stops the pool's scrub; what it checked so far stays checked.
+    async fn stop_scrub(&self, pool: &PoolName, context: &RequestContext) -> Result<(), AdminError>;
 }
 
 /// Unguessable tokens for confirming plans.

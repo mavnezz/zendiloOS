@@ -99,6 +99,7 @@ impl Operations {
             Request::DestroyPool { name, volume } => self.pools.destroy(name, *volume).await,
             Request::ReplaceDisk { pool, device, disk } => self.pools.replace(pool, *device, disk).await,
             Request::ScrubPool { pool } => self.pools.scrub(pool).await,
+            Request::StopScrub { pool } => self.pools.stop_scrub(pool).await,
             Request::CreateShare { pool, volume, name } => self.pools.create_share(pool, *volume, name).await,
             Request::DestroyShare { pool, volume, name } => {
                 self.pools.destroy_share(pool, *volume, name).await

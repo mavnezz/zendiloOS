@@ -143,6 +143,10 @@ impl PoolAdmin for AgentStorage {
     async fn scrub(&self, pool: &PoolName, context: &RequestContext) -> Result<(), AdminError> {
         self.change(Request::ScrubPool { pool: pool_name(pool)? }, context).await
     }
+
+    async fn stop_scrub(&self, pool: &PoolName, context: &RequestContext) -> Result<(), AdminError> {
+        self.change(Request::StopScrub { pool: pool_name(pool)? }, context).await
+    }
 }
 
 /// Random plan tokens: 128 bits, URL-safe.

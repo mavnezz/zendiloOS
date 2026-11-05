@@ -397,6 +397,39 @@ impl ScrubPool {
     }
 }
 
+/// Command: stops a running scrub. A resilver cannot be stopped: it
+/// restores the pool's redundancy.
+#[derive(Clone)]
+pub struct StopScrub {
+    context: Arc<Context>,
+}
+
+impl StopScrub {
+    pub(crate) fn new(context: Arc<Context>) -> Self {
+        Self { context }
+    }
+
+    pub async fn execute(
+        &self,
+        pool: &str,
+        actor: &Actor,
+        request: &RequestContext,
+    ) -> Result<(), StorageError> {
+        let c = &self.context;
+        let pools = c.zfs.pools(request).await?;
+        let found = pools.iter().find(|p| p.name == pool).ok_or(StorageError::PoolNotFound)?;
+        if !found.scan.as_ref().is_some_and(domain::Scan::may_stop) {
+            return Err(StorageError::NotScrubbing);
+        }
+        let name =
+            PoolName::parse(pool).map_err(|_| StorageError::Plan(domain::PlanError::PoolNotManaged))?;
+        let outcome = c.admin.stop_scrub(&name, request).await;
+        let audit = if outcome.is_ok() { Outcome::Success } else { Outcome::Failure };
+        c.audit("storage.stop_scrub", audit, pool, actor, request).await;
+        outcome.map_err(StorageError::from)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex as StdMutex;
@@ -520,6 +553,25 @@ mod tests {
             matches!(result, Err(StorageError::Plan(domain::PlanError::DiskUnusable { .. }))),
             "{result:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn stops_a_running_scrub_but_nothing_else() {
+        let s = setup();
+        let request = RequestContext::default();
+
+        let idle = s.storage.stop_scrub.execute("tank", &alice(), &request).await;
+        assert!(matches!(idle, Err(StorageError::NotScrubbing)), "{idle:?}");
+        s.storage.scrub_pool.execute("tank", &alice(), &request).await.unwrap();
+        s.storage.stop_scrub.execute("tank", &alice(), &request).await.unwrap();
+        let again = s.storage.stop_scrub.execute("tank", &alice(), &request).await;
+        assert!(matches!(again, Err(StorageError::NotScrubbing)), "{again:?}");
+        s.fake.scan.lock().unwrap().as_mut().unwrap().kind = domain::ScanKind::Resilver;
+        s.fake.scan.lock().unwrap().as_mut().unwrap().state = domain::ScanState::Running;
+        let resilver = s.storage.stop_scrub.execute("tank", &alice(), &request).await;
+        assert!(matches!(resilver, Err(StorageError::NotScrubbing)), "a resilver must finish");
+
+        assert_eq!(s.fake.calls(), ["scrub tank", "stop scrub tank"]);
     }
 
     #[tokio::test]

@@ -15,7 +15,8 @@ use crate::application::ports::{
 };
 use crate::domain::{
     Array, ArrayMember, BlockDevice, DeviceKind, Filesystem, MemberState, Pool, PoolDevice, PoolLayout,
-    PoolSpace, Slots, SmartData, SmartProtocol, SmartReport, SpaceUsage, VdevState, VolumeNumber,
+    PoolSpace, Scan, ScanKind, ScanState, Slots, SmartData, SmartProtocol, SmartReport, SpaceUsage,
+    VdevState, VolumeNumber,
 };
 
 #[derive(Default)]
@@ -24,6 +25,8 @@ pub struct FakeStorage {
     pub calls: Mutex<Vec<String>>,
     /// Serial number reported for `sdd`; change it to swap the disk.
     pub sdd_serial: Mutex<String>,
+    /// Pool `tank`'s scan: a scrub runs once one was started, until stopped.
+    pub scan: Mutex<Option<Scan>>,
     tokens: AtomicU64,
 }
 
@@ -109,6 +112,24 @@ impl PoolAdmin for FakeStorage {
 
     async fn scrub(&self, pool: &crate::domain::PoolName, _: &RequestContext) -> Result<(), AdminError> {
         self.record(format!("scrub {pool}"));
+        *self.scan.lock().unwrap() = Some(Scan {
+            kind: ScanKind::Scrub,
+            state: ScanState::Running,
+            done_bytes: 0,
+            total_bytes: 1 << 30,
+            started_at: zendiloos_kernel::Timestamp::from_unix_seconds(0),
+            finished_at: None,
+            errors: 0,
+            pass: None,
+        });
+        Ok(())
+    }
+
+    async fn stop_scrub(&self, pool: &crate::domain::PoolName, _: &RequestContext) -> Result<(), AdminError> {
+        self.record(format!("stop scrub {pool}"));
+        if let Some(scan) = self.scan.lock().unwrap().as_mut() {
+            scan.state = ScanState::Canceled;
+        }
         Ok(())
     }
 }
@@ -272,7 +293,7 @@ impl ZfsSource for FakeStorage {
             devices: vec![device],
             size_bytes: 4 << 40,
             allocated_bytes: 1 << 40,
-            scan: None,
+            scan: self.scan.lock().unwrap().clone(),
             data_errors: 0,
             volume: VolumeNumber::new(1),
             space: Some(PoolSpace { used_bytes: 1 << 40, available_bytes: 3 << 40, mounted: true }),

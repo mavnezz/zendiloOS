@@ -257,6 +257,10 @@ impl AgentTransport for SimulatedAgent {
                 let now = (self.clock)();
                 changed(self.host().scrub(pool.as_str(), now))
             }
+            Request::StopScrub { pool } => {
+                let now = (self.clock)();
+                changed(self.host().stop_scrub(pool.as_str(), now))
+            }
             Request::CreateShare { pool, volume, name } => {
                 let created = self.host().create_share(pool.as_str(), volume.get(), name.as_str());
                 if let (Ok(()), Some(directory)) =
@@ -471,5 +475,26 @@ mod tests {
         let done = zfs(&agent).await;
         assert_eq!(done["pools"]["backup"]["state"], "ONLINE");
         assert_eq!(done["pools"]["backup"]["scan_stats"]["state"], "FINISHED");
+    }
+
+    #[tokio::test]
+    async fn a_scrub_can_be_stopped_while_it_runs() {
+        use zendiloos_agent_proto::PoolName;
+        let start = Arc::new(std::sync::atomic::AtomicU64::new(1_000));
+        let clock = start.clone();
+        let agent =
+            SimulatedAgent::with_clock(Arc::new(move || clock.load(std::sync::atomic::Ordering::Relaxed)));
+        let tank = || PoolName::parse("tank").unwrap();
+
+        let idle = agent.call(Request::StopScrub { pool: tank() }, None).await.unwrap();
+        assert!(matches!(idle, Response::Error { .. }), "{idle:?}");
+        assert_eq!(agent.call(Request::ScrubPool { pool: tank() }, None).await.unwrap(), Response::Done);
+        start.store(1_002, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(agent.call(Request::StopScrub { pool: tank() }, None).await.unwrap(), Response::Done);
+
+        start.store(1_000 + host::SCAN_SECONDS, std::sync::atomic::Ordering::Relaxed);
+        let stats = &zfs(&agent).await["pools"]["tank"]["scan_stats"];
+        assert_eq!((stats["state"].as_str(), stats["end_time"].as_u64()), (Some("CANCELED"), Some(1_002)));
+        assert_eq!(stats["pass_start"], 1_000);
     }
 }

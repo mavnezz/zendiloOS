@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use zendiloos_kernel::{Clock, PortError, RequestContext};
+use zendiloos_kernel::{Clock, PortError, RequestContext, Timestamp};
 
 use crate::application::StorageError;
 use crate::application::monitor::StorageMonitor;
@@ -90,26 +90,34 @@ impl GetStorageOverview {
     }
 }
 
+/// The pools and when they were read, for estimates of running scans.
+#[derive(Debug, Clone)]
+pub struct PoolReport {
+    pub pools: Vec<Pool>,
+    pub read_at: Timestamp,
+}
+
 /// Query: the ZFS pools with their devices' disks.
 #[derive(Clone)]
 pub struct ListPools {
     devices: Arc<dyn BlockDeviceSource>,
     zfs: Arc<dyn ZfsSource>,
+    clock: Arc<dyn Clock>,
 }
 
 impl ListPools {
-    pub fn new(devices: Arc<dyn BlockDeviceSource>, zfs: Arc<dyn ZfsSource>) -> Self {
-        Self { devices, zfs }
+    pub fn new(devices: Arc<dyn BlockDeviceSource>, zfs: Arc<dyn ZfsSource>, clock: Arc<dyn Clock>) -> Self {
+        Self { devices, zfs, clock }
     }
 
     /// Unlike the other queries, fails if ZFS is unavailable: that is the
     /// answer to "what about my pools".
-    pub async fn execute(&self, context: &RequestContext) -> Result<Vec<Pool>, PortError> {
+    pub async fn execute(&self, context: &RequestContext) -> Result<PoolReport, PortError> {
         let mut pools = self.zfs.pools(context).await?;
         let devices = self.devices.block_devices(context).await?;
         domain::resolve_pool_disks(&mut pools, &devices);
         pools.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(pools)
+        Ok(PoolReport { pools, read_at: self.clock.now() })
     }
 }
 

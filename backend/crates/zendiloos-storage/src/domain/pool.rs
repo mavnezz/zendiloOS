@@ -155,9 +155,52 @@ pub struct Scan {
     pub finished_at: Option<Timestamp>,
     /// Errors the scan found (repaired or not).
     pub errors: u64,
+    /// The current pass: a scan starts a new one when it resumes, e.g.
+    /// after the machine restarted.
+    pub pass: Option<ScanPass>,
+}
+
+/// What the current pass of a scan has done so far.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScanPass {
+    pub started_at: Timestamp,
+    pub issued_bytes: u64,
+    /// Time the pass spent paused.
+    pub paused_seconds: u64,
+    pub paused: bool,
+}
+
+/// How fast a running scan goes and when it will be done, as `zpool status`
+/// estimates it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScanEstimate {
+    pub bytes_per_second: u64,
+    pub seconds_left: u64,
 }
 
 impl Scan {
+    /// Speed of the current pass and the time left, at `now`. None unless
+    /// it runs, is not paused, and has been running for a moment.
+    pub fn estimate(&self, now: Timestamp) -> Option<ScanEstimate> {
+        let pass = self.pass?;
+        if self.state != ScanState::Running || pass.paused {
+            return None;
+        }
+        let elapsed = now.duration_since(pass.started_at).as_secs().saturating_sub(pass.paused_seconds);
+        if elapsed == 0 || pass.issued_bytes == 0 {
+            return None;
+        }
+        let bytes_per_second = (pass.issued_bytes / elapsed).max(1);
+        let seconds_left = self.total_bytes.saturating_sub(self.done_bytes) / bytes_per_second;
+        Some(ScanEstimate { bytes_per_second, seconds_left })
+    }
+
+    /// Only a running scrub can be stopped; a resilver restores redundancy
+    /// and must finish.
+    pub fn may_stop(&self) -> bool {
+        self.kind == ScanKind::Scrub && self.state == ScanState::Running
+    }
+
     /// 0 to 100.
     pub fn percent(&self) -> f32 {
         if self.state == ScanState::Finished {
@@ -225,6 +268,30 @@ mod tests {
     use crate::domain::block_device::testing::{disk, partition};
 
     #[test]
+    fn a_running_scrub_estimates_its_end_like_zpool_does() {
+        let at = |seconds: i64| Timestamp::from_unix_seconds(1_000 + seconds);
+        let mut scan = Scan {
+            kind: ScanKind::Scrub,
+            state: ScanState::Running,
+            done_bytes: 600,
+            total_bytes: 1_000,
+            started_at: at(0),
+            finished_at: None,
+            errors: 0,
+            pass: Some(ScanPass { started_at: at(0), issued_bytes: 600, paused_seconds: 20, paused: false }),
+        };
+
+        // 600 bytes in 60 seconds of work (80 minus 20 paused): 10 per second.
+        assert_eq!(scan.estimate(at(80)), Some(ScanEstimate { bytes_per_second: 10, seconds_left: 40 }));
+        assert!(scan.may_stop());
+        assert_eq!(scan.estimate(at(20)), None, "no time worked yet");
+        scan.pass = scan.pass.map(|pass| ScanPass { paused: true, ..pass });
+        assert_eq!(scan.estimate(at(80)), None, "paused");
+        scan.kind = ScanKind::Resilver;
+        assert!(!scan.may_stop(), "a resilver must finish");
+    }
+
+    #[test]
     fn volume_numbers_fill_gaps() {
         let n = |v| VolumeNumber::new(v).unwrap();
         assert_eq!(VolumeNumber::first_free([]), Some(n(1)));
@@ -255,6 +322,7 @@ mod tests {
             started_at: Timestamp::from_unix_seconds(0),
             finished_at: None,
             errors: 0,
+            pass: None,
         };
         assert_eq!(scan(ScanState::Running, 50).percent(), 25.0);
         assert_eq!(scan(ScanState::Finished, 190).percent(), 100.0);

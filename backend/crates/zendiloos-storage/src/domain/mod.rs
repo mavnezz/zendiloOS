@@ -18,8 +18,8 @@ pub use plan::{
     PoolPlan, ReplacePlan, Unusable, is_usable, plan_pool, plan_replace,
 };
 pub use pool::{
-    Pool, PoolDevice, PoolLayout, PoolSpace, Replacing, Scan, ScanKind, ScanState, VdevState, VolumeNumber,
-    resolve_pool_disks,
+    Pool, PoolDevice, PoolLayout, PoolSpace, Replacing, Scan, ScanEstimate, ScanKind, ScanPass, ScanState,
+    VdevState, VolumeNumber, resolve_pool_disks,
 };
 pub use smart::{
     Assessment, AtaAttribute, AttributeFailure, Finding, Health, NvmeHealth, SelfTest, SmartData,

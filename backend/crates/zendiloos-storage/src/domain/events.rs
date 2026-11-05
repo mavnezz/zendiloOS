@@ -123,6 +123,7 @@ mod tests {
                 started_at: Timestamp::from_unix_seconds(0),
                 finished_at: None,
                 errors: 0,
+                pass: None,
             }),
             data_errors: 0,
             volume: None,

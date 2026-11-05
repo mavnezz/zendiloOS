@@ -23,6 +23,9 @@ pub enum StorageError {
     Refused(String),
     #[error("the name or volume number is taken")]
     Conflict,
+    /// Only a running scrub can be stopped; a resilver must finish.
+    #[error("the pool is not being scrubbed")]
+    NotScrubbing,
     #[error(transparent)]
     Port(#[from] PortError),
 }

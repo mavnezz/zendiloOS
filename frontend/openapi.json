@@ -2544,6 +2544,55 @@
         ]
       }
     },
+    "/api/v1/storage/pools/{name}/scrub/stop": {
+      "post": {
+        "tags": [
+          "storage"
+        ],
+        "summary": "Stops the pool's scrub; what it checked so far stays checked. A resilver\ncannot be stopped. Needs `storage.manage`.",
+        "operationId": "stop_scrub",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Stopped."
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_scrubbing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/storage/volumes": {
       "get": {
         "tags": [
@@ -4615,9 +4664,19 @@
           "state",
           "percent",
           "started_at",
-          "errors"
+          "errors",
+          "paused"
         ],
         "properties": {
+          "bytes_per_second": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "While it runs: how fast the current pass goes, as `zpool status`\nestimates it.",
+            "minimum": 0
+          },
           "errors": {
             "type": "integer",
             "format": "int64",
@@ -4633,10 +4692,23 @@
           "kind": {
             "$ref": "#/components/schemas/ScanKind"
           },
+          "paused": {
+            "type": "boolean",
+            "description": "A scrub that was paused."
+          },
           "percent": {
             "type": "number",
             "format": "float",
             "description": "0 to 100."
+          },
+          "seconds_left": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "While it runs: the estimated time until it is done.",
+            "minimum": 0
           },
           "started_at": {
             "type": "integer",

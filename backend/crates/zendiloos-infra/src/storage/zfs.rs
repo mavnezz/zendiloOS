@@ -7,7 +7,8 @@ use serde::Deserialize;
 use serde_json::{Number, Value};
 use zendiloos_kernel::Timestamp;
 use zendiloos_storage::domain::{
-    Pool, PoolDevice, PoolLayout, PoolSpace, Replacing, Scan, ScanKind, ScanState, VdevState, VolumeNumber,
+    Pool, PoolDevice, PoolLayout, PoolSpace, Replacing, Scan, ScanKind, ScanPass, ScanState, VdevState,
+    VolumeNumber,
 };
 
 use super::ParseError;
@@ -70,6 +71,16 @@ struct ScanStats {
     issued: u64,
     #[serde(default)]
     errors: u64,
+    /// Start of the current pass; absent from older OpenZFS.
+    #[serde(default)]
+    pass_start: Option<i64>,
+    #[serde(default)]
+    issued_bytes_per_scan: u64,
+    /// When the scrub was paused, if it is.
+    #[serde(default)]
+    scrub_pause: i64,
+    #[serde(default)]
+    scrub_spent_paused: u64,
 }
 
 #[derive(Deserialize)]
@@ -225,6 +236,12 @@ fn scan(stats: ScanStats) -> Option<Scan> {
         started_at: Timestamp::from_unix_seconds(stats.start_time),
         finished_at: (stats.end_time > 0).then(|| Timestamp::from_unix_seconds(stats.end_time)),
         errors: stats.errors,
+        pass: stats.pass_start.filter(|&start| start > 0).map(|start| ScanPass {
+            started_at: Timestamp::from_unix_seconds(start),
+            issued_bytes: stats.issued_bytes_per_scan,
+            paused_seconds: stats.scrub_spent_paused,
+            paused: stats.scrub_pause > 0,
+        }),
     })
 }
 
@@ -312,6 +329,14 @@ mod tests {
 
         let scrubbing = only(include_str!("fixtures/zpool-status-mirror-scrubbing.json")).scan.unwrap();
         assert_eq!((scrubbing.kind, scrubbing.state), (ScanKind::Scrub, ScanState::Running));
+        // The fields as OpenZFS 2.3 names them: issued in this pass, since
+        // pass_start, minus the time spent paused.
+        let pass = scrubbing.pass.unwrap();
+        assert_eq!(pass.started_at, Timestamp::from_unix_seconds(1_793_883_205));
+        assert_eq!((pass.issued_bytes, pass.paused_seconds, pass.paused), (1_784_168_448, 0, false));
+        let estimate = scrubbing.estimate(Timestamp::from_unix_seconds(1_793_883_205 + 16)).unwrap();
+        assert_eq!(estimate.bytes_per_second, 1_784_168_448 / 16);
+        assert_eq!(estimate.seconds_left, 0);
         assert!(scrubbing.finished_at.is_none());
 
         let scrubbed = only(include_str!("fixtures/zpool-status-mirror-scrubbed.json")).scan.unwrap();

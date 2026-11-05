@@ -141,6 +141,7 @@ const en = {
   },
   storage: {
     scrubNow: 'Check data now',
+    stopScrub: 'Stop the check',
     plan: {
       willErase: 'These disks will be erased:',
       contains: 'Contains {what}',
@@ -223,6 +224,8 @@ const en = {
       unknown: 'Unknown',
     },
     scan: {
+      pace: '{rate}, about {left} left',
+      paused: 'paused',
       kind: {
         scrub: 'Data check',
         resilver: 'Rebuild',
