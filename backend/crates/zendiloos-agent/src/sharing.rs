@@ -78,8 +78,10 @@ pub fn samba_config(shares: &[SmbShare]) -> String {
                  recycle:directory_mode = 0700\n",
             );
             // Temporary files and the lock files of office programs come and
-            // go all the time; they would only fill the bins.
-            text.push_str("   recycle:exclude = *.tmp|*.temp|~$*|.~lock.*#|*.swp\n");
+            // go all the time; they would only fill the bins. Samba splits
+            // the list at commas and spaces; the `|` of older examples
+            // makes it one pattern that matches nothing.
+            text.push_str("   recycle:exclude = *.tmp, *.temp, ~$*, .~lock.*#, *.swp\n");
         } else {
             text.push_str("   vfs objects = catia fruit streams_xattr\n");
         }
@@ -301,7 +303,7 @@ mod tests {
         );
         assert!(text.contains("   read only = yes\n   write list = @family\n"), "{text}");
         assert!(text.contains("recycle:repository = .recycle/%U"), "{text}");
-        assert!(text.contains("recycle:exclude = *.tmp|*.temp|~$*|.~lock.*#|*.swp\n"), "{text}");
+        assert!(text.contains("recycle:exclude = *.tmp, *.temp, ~$*, .~lock.*#, *.swp\n"), "{text}");
         assert!(!text.contains("[nobody]"), "a share without access is not offered: {text}");
     }
 
