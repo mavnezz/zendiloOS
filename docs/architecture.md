@@ -36,7 +36,7 @@ zendiloosd          user "zendiloos", no capabilities, never root
 zendiloos-agent     root, socket-activated, no network, closed set of operations
    │  execve of fixed paths │ atomic files at fixed locations │ systemd via D-Bus │ Docker socket
    v
-mdadm · sgdisk · wipefs · mkfs.btrfs/ext4 · btrfs · smartctl · nvme · useradd · smbpasswd · …
+zpool · zfs · sgdisk · wipefs · smartctl · nvme · useradd · smbpasswd · …
 ```
 
 | Process | Runs as | Responsibility | Network |
@@ -131,7 +131,7 @@ review comment.
 | `zendiloos-kernel` | shared kernel: time, `Secret`, request context, the audit entry and its port, common port errors | – |
 | `zendiloos-identity` | accounts and groups with their Linux users and groups, roles and permissions, sessions, passwords, throttling, audit | kernel |
 | `zendiloos-system` | system information, metrics, power, logs | kernel |
-| `zendiloos-storage` | disks, SMART, arrays, volumes (read-only so far); pools from M3 | kernel |
+| `zendiloos-storage` | disks, SMART, ZFS pools and volumes, plans for erasing disks, monitoring; mdadm arrays read-only | kernel, jobs, notify |
 | `zendiloos-sharing` | SMB and NFS shares, share permissions | kernel |
 | `zendiloos-files` | file manager, recycle bin | kernel |
 | `zendiloos-containers` | containers, images, volumes, networks, apps | kernel |
@@ -142,7 +142,9 @@ review comment.
 | `zendiloos-agent-proto` | wire protocol to the agent, `AgentTransport` trait, Unix client | – |
 | `zendiloos-exec` | the only way to run programs | – |
 | `zendiloos-agent` | privileged root service (binary) | agent-proto, exec |
-| `zendiloos-sim` | simulated agent behind `AgentTransport`; executes nothing | agent-proto |
+| `zendiloos-sim` | simulated agent behind `AgentTransport`; a model of a small NAS (disks, ZFS pools, resilver and scrub over time); executes nothing | agent-proto |
+| `zendiloos-jobs` | long-running operations: recorded, published to subscribers, marked as interrupted after a restart | kernel |
+| `zendiloos-notify` | notifications for administrators: a code with parameters, stored and published | kernel |
 | `zendiloos-logging` | logging setup shared by `zendiloosd` and the agent | – |
 
 Crates are created in the step that needs them; there are no empty
@@ -325,11 +327,12 @@ simple to audit.
   list in the agent configuration, no shell, arguments as a list, empty
   environment, no stdin except for secrets (passwords never on the command
   line), timeout, output limit. Currently: `systemctl`, `lsblk`, `smartctl`,
-  `useradd`, `userdel`, `groupadd`, `groupdel`, `gpasswd`, `smbpasswd`.
+  `zpool`, `zfs`, `sgdisk`, `wipefs`, `udevadm`, `useradd`, `userdel`,
+  `groupadd`, `groupdel`, `gpasswd`, `smbpasswd`.
 - **Reads** of fixed files where no program is needed: `/proc/mdstat`.
   Although it is world-readable, the agent provides it, so that all storage
-  state comes from one place (later together with `mdadm --detail`, which
-  needs root) and the simulation can provide all of it consistently.
+  state comes from one place and the simulation can provide all of it
+  consistently.
 - **Files** only at fixed locations known to the agent code, written
   atomically (temporary file, `fsync`, `rename`), for example
   `/etc/samba/zendiloos.conf`, `/etc/exports.d/zendiloos.exports`,
@@ -495,34 +498,45 @@ convenience. Enforcement happens only in the backend (axum extractor
 - systemd hardening: `PrivateNetwork`, `ProtectSystem=strict` with explicit
   `ReadWritePaths`, `ProtectHome`, `CapabilityBoundingSet` limited to what
   is needed, `SystemCallFilter`, `NoNewPrivileges` where possible. New
-  operations extend this deliberately. As of M2: capabilities
+  operations extend this deliberately. As of M3: capabilities
   `CAP_SYS_RAWIO` and `CAP_SYS_ADMIN` (SMART through SG_IO and NVMe admin
-  commands) and `CAP_CHOWN` (the shadow tools); devices closed except
-  read-only access to SATA/SAS/USB, NVMe and virtio disks; writable only
-  `/etc` and Samba's state directories. `systemd-analyze security` rates the
-  agent 2.1 and `zendiloosd` 1.6 ("OK").
+  commands, partition tables, ZFS ioctls) and `CAP_CHOWN` (the shadow
+  tools); devices closed except SATA/SAS/USB, NVMe and virtio disks and
+  `/dev/zfs`; writable only `/etc` and Samba's state directories.
+  `systemd-analyze security` rates the agent 2.1 and `zendiloosd` 1.6
+  ("OK").
 
 ### 4.7 Storage Guard Rails
 
-Destructive operations (wiping disks, creating/destroying pools, reshaping
-RAID) go through:
+Destructive operations (erasing disks, creating and destroying pools,
+replacing disks) go through:
 
-1. **Plan:** the API produces a plan ("these disks will be wiped: model,
-   serial number, size") and a confirmation token bound to exactly these
-   serial numbers and `/dev/disk/by-id` paths.
-2. **Confirm:** the user confirms (for destruction also by typing the pool
-   name). If a different disk has been inserted in the meantime, the token
-   no longer matches.
-3. **The agent checks again, independently of the API:** no device of the
-   system disk (root, `/boot`, EFI, swap), not mounted, not a member of an
-   active array; opening exclusively (`O_EXCL`) must succeed.
-4. **Development mode:** the agent configuration defaults to
-   `destructive_operations = "deny"`. For testing, individual devices are
-   allowed (`allowed_devices = ["/dev/disk/by-id/virtio-zdl-test-1", …]`).
-   On a real machine with data, the agent stays harmless.
+1. **Plan:** the API produces a plan ("these disks will be erased: model,
+   serial number, size, what is on them") and a single-use confirmation
+   token, valid for ten minutes and only for the account that made it.
+2. **Confirm:** the user confirms; creating and destroying a pool also need
+   its name typed again. Right before carrying it out, `zendiloosd` makes
+   the plan again from the disks as they are now and compares disks by
+   `/dev/disk/by-id` link, serial number, size and contents: if anything
+   differs, for example because another disk now has the same kernel name,
+   nothing happens (`plan_changed`).
+3. **The agent checks again, independently of `zendiloosd`,** before it
+   erases a disk: the by-id link leads to a whole disk that is not
+   read-only; neither the disk nor a partition is held by another device
+   (md, LVM, dm-crypt), mounted (`/proc/self/mountinfo`) or used as swap;
+   the disk and its partitions can be opened exclusively (`O_EXCL`), which
+   fails while ZFS, md or a filesystem uses them. Pools are destroyed or
+   changed only if their `zendiloos:volume` property shows that zendiloos
+   created them. Disks travel as by-id names, never as kernel names.
+4. **Configuration:** `[storage] erasable` in the agent configuration is
+   `"unused"` (every disk that passes the checks; the default), `"none"`,
+   or a list of by-id names, which restricts a machine to the listed disks.
+5. **One at a time:** storage jobs run one after another, and the agent
+   serializes changes to disks as well.
 
 Destructive features are developed and tested only against `zendiloos-sim`,
-loop devices and virtual disks in a Debian VM.
+fake hosts in tests (devices, sysfs and mountinfo in a temporary
+directory) and virtual disks in the Debian VM (`just vm-storage-test`).
 
 ### 4.8 Audit and Log Hygiene
 
@@ -551,35 +565,28 @@ stream. Final decision in phase 4.
 
 ## 5. Storage Concept
 
+**Decided: ZFS is the default** (2026-11-05). One mechanism provides
+redundancy, checksums with self-healing, snapshots, datasets and scrub, so
+the interface and the agent deal with a single tool chain (`zpool`, `zfs`).
+
 | Term | Implementation |
 |---|---|
 | Disk | detected with `lsblk --json`, identified by serial number and `/dev/disk/by-id`, never by `sdX` |
-| Pool | redundancy: mdadm array (RAID 1, 5, 6, 10) or a single disk ("basic") |
-| Volume | filesystem in a pool: **Btrfs** (default) or ext4; mount unit at `/srv/zendiloos/<volume>` **[Assumption]**; layer in between see below |
-| Share | Btrfs subvolume (snapshots per share, quotas via Btrfs simple quotas) or a directory on ext4 |
-| Monitoring | `/proc/mdstat`, `mdadm --detail`, Btrfs device statistics, SMART (`smartctl --json`, `nvme`), periodic scrub |
-| Reading (M2) | `lsblk --json` with filesystem usage, `/proc/mdstat`, `smartctl --json --nocheck=standby` (sleeping disks are not woken); a disk holding `/`, `/boot`, `/efi`, `/usr`, `/var`, `/home` or swap is the **system disk** and never offered for storage; Btrfs, ext4 and XFS filesystems outside it are volumes |
-| ZFS | optional module from phase 4 (`zfs-dkms` from contrib) |
+| Disk preparation | GPT with one partition of the type OpenZFS uses, from 1 MiB to 128 MiB before the end; the reserve lets a slightly smaller disk of the same nominal size replace a member |
+| Pool | one zpool with one vdev: single disk, mirror (2 or more disks), RAIDZ1 (3+), RAIDZ2 (4+), RAIDZ3 (5+); `ashift=12`; members referenced by `/dev/disk/by-partuuid` |
+| Volume | the pool's root dataset, mounted at **`/volume<N>`** (the lowest free number). One pool is one volume |
+| Mounting | `mountpoint=legacy` and a systemd mount unit per volume (`volume1.mount`, after `zfs-import.target`): mounts happen in the host's namespace rather than the hardened agent's, and the boot order is explicit |
+| Dataset defaults | `compression=lz4`, `atime=off`, `xattr=sa`, `acltype=posixacl` (for Samba ACLs), `dnodesize=auto`; `normalization=formD`, `utf8only=on` (fixed at creation) **[Assumption]** |
+| Share | (M4) a child dataset of the volume |
+| Monitoring | `zpool status` (health, resilver and scrub progress, errors per device) every minute, SMART of disks holding data every six hours; changes become notifications (degraded or recovered pool, finished resilver or scrub, volume 80 or 90 % full, a disk's SMART getting worse); scrub monthly by the timer of `zfsutils-linux`, and on demand |
+| Existing storage | mdadm arrays and Btrfs, ext4 or XFS filesystems found on the system are shown read-only (M2); zendiloos does not create or change them |
+| Kernel module | `zfs-dkms` and `zfsutils-linux` from Debian contrib, built for the installed kernel with its headers |
 
 | Option | Pros | Cons |
 |---|---|---|
-| **mdadm + Btrfs** (default) | in-kernel, extremely well tested, all RAID levels, growth by reshape; Btrfs adds checksums, snapshots, subvolumes | Btrfs detects bit rot but cannot repair it on top of mdadm |
-| Btrfs native RAID | self-healing | RAID 5/6 has known problems (write hole); two mechanisms in the interface |
-| ZFS | self-healing, mature | out-of-tree module (DKMS) that can break on kernel updates; licensing questions for prebuilt modules in the ISO |
-
-**[Open] Layer between RAID and filesystem.** Must be decided before the
-first real pool (phase 3), because the on-disk layout cannot be changed
-later.
-
-| Variant | Pros | Cons |
-|---|---|---|
-| mdadm → filesystem (one volume per pool) | simplest chain, few failure modes | one pool = one volume; mixed disk sizes only with wasted space |
-| **mdadm → LVM (thick) → filesystem** (recommended) | several volumes per pool, growing volumes; later several arrays in one volume group to use mixed disk sizes | one more layer for the agent to manage and monitor |
-| mdadm → LVM thin → filesystem | overcommit, block-level snapshots | thin metadata is a failure source of its own; full thin pools are dangerous; Btrfs already has snapshots |
-
-From phase 3 the domain model distinguishes between **pool** (redundancy)
-and **volume** (filesystem), even if the first version creates only one
-volume per pool.
+| **ZFS** (chosen) | self-healing with checksums and redundancy in one layer, snapshots, datasets, send/receive, mature | out-of-tree module (DKMS) that must be rebuilt for every kernel and may lag behind a new kernel; licensing questions for prebuilt modules in an ISO (see section 7) |
+| mdadm + Btrfs | in-kernel, extremely well tested, all RAID levels | Btrfs detects bit rot on top of mdadm but cannot repair it; two layers to manage |
+| Btrfs native RAID | self-healing, in-kernel | RAID 5/6 has known problems (write hole) |
 
 ---
 
@@ -615,7 +622,12 @@ an own certificate and ACME follow later. CI: GitHub Actions
 (`.github/workflows/ci.yml`) runs `just check` and `just deb` in the same Nix
 shell as development, with actions pinned to commit SHAs.
 
-1. Mount path of volumes (`/srv/zendiloos/<volume>` or something shorter
-   such as `/volume1`).
-2. LVM between mdadm and filesystem (section 5); at the latest at the start
-   of phase 3.
+Decided on 2026-11-05 for storage (section 5): ZFS as the default, one
+pool is one volume, mounted at `/volume<N>`, disks prepared with GPT and one
+partition with a reserve.
+
+1. ISO and ZFS (M7): ship the DKMS sources and build on the device, as
+   Debian does, or ship prebuilt modules, which needs a licensing review
+   (CDDL and GPL).
+2. Whether mdadm with Btrfs or ext4 comes back as an alternative to ZFS,
+   e.g. for systems with little memory.

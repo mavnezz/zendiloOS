@@ -10,18 +10,24 @@ Vcs-Git: https://github.com/mavnezz/zendiloOS.git
 
 Package: zendiloos
 Architecture: amd64 arm64
-Depends: nginx,
+Depends: gdisk,
+         nginx,
          openssl,
          passwd,
          samba,
          smartmontools,
          systemd,
          util-linux,
+         zfs-dkms,
+         zfsutils-linux,
          ${misc:Depends},
          ${shlibs:Depends}
 Description: web-managed NAS operating system
  zendiloOS turns a Debian system into a NAS that is managed through a
  desktop in the web browser.
+ .
+ ZFS comes from Debian's contrib section and is built for the installed
+ kernel (DKMS), which needs the kernel's header package.
  .
  This package contains the management service (zendiloosd), the
  privileged agent that carries out root operations on its behalf, the web

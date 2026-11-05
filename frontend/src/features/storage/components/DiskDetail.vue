@@ -12,7 +12,7 @@ import { Button } from '@/shared/ui/button'
 import { Meter } from '@/shared/ui/meter'
 
 import { useDisks, useSmartReport } from '../api'
-import { formatCount } from '../format'
+import { formatCount, usageLabel } from '../format'
 import SmartBadge from './SmartBadge.vue'
 
 const props = defineProps<{ name: string }>()
@@ -62,11 +62,7 @@ function finding(item: SmartFinding): string {
       </dd>
       <dt class="text-muted-foreground">{{ t('storage.usedFor') }}</dt>
       <dd>
-        {{
-          disk.usage === 'array_member'
-            ? t('storage.usage.array_member', { array: disk.array })
-            : t(`storage.usage.${disk.usage}`)
-        }}
+        {{ usageLabel(disk) }}
       </dd>
       <template v-if="report?.firmware">
         <dt class="text-muted-foreground">{{ t('storage.firmware') }}</dt>

@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use serde::Deserialize;
 
+use crate::pools::Erasable;
+
 pub const DEFAULT_PATH: &str = "/etc/zendiloos/agent.toml";
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -18,6 +20,15 @@ pub struct Config {
     /// `tracing` filter directive; `RUST_LOG` takes precedence.
     pub log_filter: String,
     pub tools: Tools,
+    pub storage: StorageConfig,
+}
+
+#[derive(Debug, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct StorageConfig {
+    /// Which disks may be erased for pools: `"unused"` (any disk that passes
+    /// the checks), `"none"`, or a list of `/dev/disk/by-id` names.
+    pub erasable: Erasable,
 }
 
 impl Default for Config {
@@ -27,6 +38,7 @@ impl Default for Config {
             client_user: "zendiloos".to_owned(),
             log_filter: "info".to_owned(),
             tools: Tools::default(),
+            storage: StorageConfig::default(),
         }
     }
 }
@@ -38,6 +50,11 @@ pub struct Tools {
     pub systemctl: PathBuf,
     pub lsblk: PathBuf,
     pub smartctl: PathBuf,
+    pub zpool: PathBuf,
+    pub zfs: PathBuf,
+    pub sgdisk: PathBuf,
+    pub wipefs: PathBuf,
+    pub udevadm: PathBuf,
     pub useradd: PathBuf,
     pub userdel: PathBuf,
     pub groupadd: PathBuf,
@@ -52,6 +69,11 @@ impl Default for Tools {
             systemctl: PathBuf::from("/usr/bin/systemctl"),
             lsblk: PathBuf::from("/usr/bin/lsblk"),
             smartctl: PathBuf::from("/usr/sbin/smartctl"),
+            zpool: PathBuf::from("/usr/sbin/zpool"),
+            zfs: PathBuf::from("/usr/sbin/zfs"),
+            sgdisk: PathBuf::from("/usr/sbin/sgdisk"),
+            wipefs: PathBuf::from("/usr/sbin/wipefs"),
+            udevadm: PathBuf::from("/usr/bin/udevadm"),
             useradd: PathBuf::from("/usr/sbin/useradd"),
             userdel: PathBuf::from("/usr/sbin/userdel"),
             groupadd: PathBuf::from("/usr/sbin/groupadd"),
@@ -92,6 +114,9 @@ mod tests {
             [tools]
             systemctl = "/bin/systemctl"
             smartctl = "/sbin/smartctl"
+
+            [storage]
+            erasable = ["ata-TEST_DISK_1", "ata-TEST_DISK_2"]
             "#,
         )
         .unwrap();
@@ -99,6 +124,13 @@ mod tests {
         assert_eq!(config.tools.systemctl, Path::new("/bin/systemctl"));
         assert_eq!(config.tools.smartctl, Path::new("/sbin/smartctl"));
         assert_eq!(config.tools.lsblk, Path::new("/usr/bin/lsblk"));
+        assert_eq!(
+            config.storage.erasable,
+            Erasable::Only(vec!["ata-TEST_DISK_1".to_owned(), "ata-TEST_DISK_2".to_owned()])
+        );
+        let none: Config = toml::from_str("[storage]\nerasable = \"none\"").unwrap();
+        assert_eq!(none.storage.erasable, Erasable::Policy(crate::pools::ErasePolicy::None));
+        assert!(toml::from_str::<Config>("[storage]\nerasable = \"all\"").is_err());
         assert!(toml::from_str::<Config>("[tools]\nsh = \"/bin/sh\"").is_err());
     }
 }

@@ -188,6 +188,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The most recent jobs, newest first. Changes arrive on the WebSocket
+         *     topic `jobs`.
+         */
+        get: operations["list"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/jobs/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One job. */
+        get: operations["job"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/logs/audit": {
         parameters: {
             query?: never;
@@ -214,6 +251,26 @@ export interface paths {
         };
         /** A page of the system journal, newest first. */
         get: operations["journal"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/notifications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The most recent notifications, newest first. New ones arrive on the
+         *     WebSocket topic `notifications`.
+         */
+        get: operations["notifications"];
         put?: never;
         post?: never;
         delete?: never;
@@ -288,6 +345,131 @@ export interface paths {
         get: operations["smart"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/storage/pools": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The ZFS pools. Fails if ZFS is unavailable, e.g. when its kernel module
+         *     could not be built for a new kernel. Needs `storage.view`.
+         */
+        get: operations["pools"];
+        put?: never;
+        /**
+         * Creates the pool of a plan, erasing its disks. The disks are checked
+         *     again first: if anything changed since the plan, nothing happens.
+         *     Answers with the job. Needs `storage.manage`.
+         */
+        post: operations["create_pool"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/storage/pools/plan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Plans a new pool: which disks would be erased and what the pool would
+         *     offer. Erases nothing. Needs `storage.manage`.
+         */
+        post: operations["plan_pool"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/storage/pools/{name}/destroy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Destroys a pool zendiloOS created and erases its disks. All its data is
+         *     lost. Answers with the job. Needs `storage.manage`.
+         */
+        post: operations["destroy_pool"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/storage/pools/{name}/replace": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Carries out a planned replacement; ZFS then resilvers onto the new disk.
+         *     Answers with the job. Needs `storage.manage`.
+         */
+        post: operations["replace_disk"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/storage/pools/{name}/replace/plan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Plans replacing a device of a pool with another disk. Erases nothing.
+         *     Needs `storage.manage`.
+         */
+        post: operations["plan_replace"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/storage/pools/{name}/scrub": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Starts checking all data of the pool; progress shows in the pool.
+         *     Needs `storage.manage`.
+         */
+        post: operations["scrub_pool"];
         delete?: never;
         options?: never;
         head?: never;
@@ -424,6 +606,12 @@ export interface components {
             members?: number[];
             name: string;
         };
+        CreatePoolRequest: {
+            /** @description The pool's name, typed again. */
+            confirm: string;
+            /** @description From the plan. */
+            token: string;
+        };
         CurrentAccount: {
             full_name?: string | null;
             /** Format: int64 */
@@ -438,14 +626,25 @@ export interface components {
             permissions: string[];
             role: components["schemas"]["AccountRole"];
         };
+        DestroyPoolRequest: {
+            /** @description The pool's name, typed again. */
+            confirm: string;
+        };
         Disk: {
             /** @description The array, if `usage` is `array_member`. */
             array?: string | null;
+            /**
+             * @description Name of the disk's `/dev/disk/by-id` link; disks without one cannot
+             *     be used for pools.
+             */
+            id_link?: string | null;
             media: components["schemas"]["Media"];
             model?: string | null;
             /** @description Kernel name, e.g. `sda`; identifies the disk in this API. */
             name: string;
             partitions: components["schemas"]["Partition"][];
+            /** @description The pool, if `usage` is `pool_member`. */
+            pool?: string | null;
             read_only: boolean;
             removable: boolean;
             serial?: string | null;
@@ -468,7 +667,7 @@ export interface components {
          * @description What a disk is used for.
          * @enum {string}
          */
-        DiskUsage: "system" | "array_member" | "volume" | "foreign" | "unused";
+        DiskUsage: "system" | "array_member" | "pool_member" | "volume" | "foreign" | "unused";
         /** @description A reason behind the health verdict. */
         Finding: {
             /**
@@ -516,6 +715,36 @@ export interface components {
             /** Format: int64 */
             sent_bytes_per_second: number;
         };
+        Job: {
+            /** @description Who started it. */
+            actor?: string | null;
+            /** Format: int64 */
+            created_at: number;
+            /** @description Stable code of the failure, e.g. `disk_changed`. */
+            error_code?: string | null;
+            /** @description Details for administrators, e.g. a tool's message. */
+            error_detail?: string | null;
+            /** Format: int64 */
+            finished_at?: number | null;
+            /** Format: int64 */
+            id: number;
+            /** @description Dotted name, e.g. `storage.create_pool`. */
+            kind: string;
+            /**
+             * Format: float
+             * @description 0 to 1, if known.
+             */
+            progress?: number | null;
+            state: components["schemas"]["JobState"];
+            /** @description Current step as a stable code, e.g. `partitioning`. */
+            step?: string | null;
+            /** @description What it works on, e.g. a pool name. */
+            target?: string | null;
+            /** Format: int64 */
+            updated_at: number;
+        };
+        /** @enum {string} */
+        JobState: "running" | "succeeded" | "failed" | "interrupted";
         JournalEntry: {
             /**
              * Format: int64
@@ -542,6 +771,14 @@ export interface components {
             /** @enum {string} */
             type: "metrics";
         } | {
+            data: components["schemas"]["Job"];
+            /** @enum {string} */
+            type: "job";
+        } | {
+            data: components["schemas"]["Notification"];
+            /** @enum {string} */
+            type: "notification";
+        } | {
             message: string;
             /** @enum {string} */
             type: "error";
@@ -557,7 +794,7 @@ export interface components {
             type: "unsubscribe";
         };
         /** @enum {string} */
-        LiveTopic: "metrics";
+        LiveTopic: "metrics" | "jobs" | "notifications";
         /**
          * @description syslog severity, from most to least severe.
          * @enum {string}
@@ -605,6 +842,28 @@ export interface components {
             /** Format: int64 */
             uptime_seconds: number;
         };
+        /** @enum {string} */
+        NewPoolLayout: "single" | "mirror" | "raidz1" | "raidz2" | "raidz3";
+        /**
+         * @description Something an administrator should know, as a code with parameters for
+         *     the interface to word, e.g. `pool_trouble` with `pool` and `state`.
+         */
+        Notification: {
+            /**
+             * Format: int64
+             * @description Unix seconds.
+             */
+            at: number;
+            code: string;
+            /** Format: int64 */
+            id: number;
+            level: components["schemas"]["NotificationLevel"];
+            params: {
+                [key: string]: string;
+            };
+        };
+        /** @enum {string} */
+        NotificationLevel: "info" | "success" | "warning" | "error";
         NvmeHealth: {
             /** Format: int32 */
             available_spare_percent: number;
@@ -630,6 +889,141 @@ export interface components {
             name: string;
             /** Format: int64 */
             size_bytes: number;
+        };
+        PlanWarning: {
+            code: components["schemas"]["PlanWarningCode"];
+            /**
+             * Format: int64
+             * @description For `mixed_sizes`.
+             */
+            unused_bytes?: number | null;
+        };
+        /** @enum {string} */
+        PlanWarningCode: "mixed_sizes" | "no_redundancy" | "erases_data";
+        /** @description A disk a plan will erase. */
+        PlannedDisk: {
+            /** @description What is on it now and will be lost, e.g. `ntfs "Backup"`. */
+            erases: string[];
+            id_link: string;
+            model?: string | null;
+            name: string;
+            serial?: string | null;
+            /** Format: int64 */
+            size_bytes: number;
+        };
+        /** @description A ZFS pool; for pools zendiloOS created, also a volume. */
+        Pool: {
+            /** Format: int64 */
+            allocated_bytes: number;
+            /** Format: int64 */
+            available_bytes?: number | null;
+            /**
+             * Format: int64
+             * @description Files with permanent errors.
+             */
+            data_errors: number;
+            devices: components["schemas"]["PoolDevice"][];
+            guid: string;
+            layout: components["schemas"]["PoolLayout"];
+            /** @description For `other`, e.g. `stripe`. */
+            layout_name?: string | null;
+            /** @description Where it is mounted, if it is. */
+            mount_point?: string | null;
+            name: string;
+            /**
+             * Format: int32
+             * @description For `raidz`.
+             */
+            parity?: number | null;
+            /** @description Disks that may fail without losing data. */
+            redundancy: number;
+            scan?: components["schemas"]["PoolScan"] | null;
+            /**
+             * Format: int64
+             * @description Raw capacity and allocation, including redundancy.
+             */
+            size_bytes: number;
+            state: components["schemas"]["VdevState"];
+            /**
+             * Format: int64
+             * @description Space as files see it.
+             */
+            used_bytes?: number | null;
+            /**
+             * Format: int32
+             * @description The `N` of `/volume<N>`; only for pools zendiloOS created.
+             */
+            volume?: number | null;
+        };
+        PoolDevice: {
+            /** Format: int64 */
+            checksum_errors: number;
+            /** @description Kernel name of its disk, if present. */
+            disk?: string | null;
+            /** @description Identifies the device even after it disappeared. */
+            guid: string;
+            /** @description As ZFS shows it, e.g. `ata-WDC_WD40EFRX_WD-1234-part1`. */
+            name: string;
+            /** Format: int64 */
+            read_errors: number;
+            replacing?: components["schemas"]["ReplacingRole"] | null;
+            state: components["schemas"]["VdevState"];
+            /** Format: int64 */
+            write_errors: number;
+        };
+        /** @enum {string} */
+        PoolLayout: "single" | "mirror" | "raidz" | "other";
+        /**
+         * @description What creating the pool would do. Confirm it with `token` within the
+         *     time given.
+         */
+        PoolPlan: {
+            /**
+             * Format: int64
+             * @description Usable bytes before ZFS overhead.
+             */
+            capacity_bytes: number;
+            /** @description All of them will be erased. */
+            disks: components["schemas"]["PlannedDisk"][];
+            /**
+             * Format: int64
+             * @description Unix seconds.
+             */
+            expires_at: number;
+            layout: components["schemas"]["PoolLayout"];
+            mount_point: string;
+            name: string;
+            /** Format: int32 */
+            parity?: number | null;
+            redundancy: number;
+            token: string;
+            /** Format: int32 */
+            volume: number;
+            warnings: components["schemas"]["PlanWarning"][];
+        };
+        PoolPlanRequest: {
+            /** @description Kernel names, e.g. `sdb`. */
+            disks: string[];
+            layout: components["schemas"]["NewPoolLayout"];
+            name: string;
+        };
+        PoolScan: {
+            /** Format: int64 */
+            errors: number;
+            /** Format: int64 */
+            finished_at?: number | null;
+            kind: components["schemas"]["ScanKind"];
+            /**
+             * Format: float
+             * @description 0 to 100.
+             */
+            percent: number;
+            /**
+             * Format: int64
+             * @description Unix seconds.
+             */
+            started_at: number;
+            state: components["schemas"]["ScanState"];
         };
         /** @enum {string} */
         PowerActionKind: "reboot" | "power_off";
@@ -668,10 +1062,36 @@ export interface components {
             size_bytes?: number | null;
             sync?: components["schemas"]["SyncProgress"] | null;
         };
+        ReplaceDiskRequest: {
+            token: string;
+        };
+        ReplacePlan: {
+            device: string;
+            device_name: string;
+            /** @description Will be erased. */
+            disk: components["schemas"]["PlannedDisk"];
+            /** Format: int64 */
+            expires_at: number;
+            pool: string;
+            token: string;
+            warnings: components["schemas"]["PlanWarning"][];
+        };
+        ReplacePlanRequest: {
+            /** @description GUID of the device to replace. */
+            device: string;
+            /** @description Kernel name of the new disk. */
+            disk: string;
+        };
+        /** @enum {string} */
+        ReplacingRole: "old" | "new";
         ResetPasswordRequest: {
             /** Format: password */
             password: string;
         };
+        /** @enum {string} */
+        ScanKind: "scrub" | "resilver";
+        /** @enum {string} */
+        ScanState: "running" | "finished" | "canceled";
         SelfTest: {
             description: string;
             passed: boolean;
@@ -806,6 +1226,11 @@ export interface components {
             /** @description Replaces all members. */
             members?: number[] | null;
         };
+        /**
+         * @description State of a pool or one of its devices.
+         * @enum {string}
+         */
+        VdevState: "online" | "degraded" | "faulted" | "offline" | "removed" | "unavailable" | "suspended" | "unknown";
         /** @description A data filesystem. */
         Volume: {
             /** @description The RAID array it lives on, if any. */
@@ -816,12 +1241,14 @@ export interface components {
             devices: string[];
             /** @description The disks underneath. */
             disks: string[];
-            /** @description `btrfs`, `ext4` or `xfs`. */
+            /** @description `zfs`, `btrfs`, `ext4` or `xfs`. */
             filesystem: string;
             /** @description Filesystem UUID, or the device name if there is none. */
             id: string;
             label?: string | null;
             mount_points: string[];
+            /** @description The ZFS pool it is, if any. */
+            pool?: string | null;
             /**
              * Format: int64
              * @description Only known while mounted.
@@ -1355,6 +1782,67 @@ export interface operations {
             };
         };
     };
+    list: {
+        parameters: {
+            query?: {
+                /** @description At most 200; 50 if absent. */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"][];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    job: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     audit: {
         parameters: {
             query?: {
@@ -1421,6 +1909,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    notifications: {
+        parameters: {
+            query?: {
+                /** @description At most 200; 50 if absent. */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Notification"][];
                 };
             };
             /** @description `forbidden` */
@@ -1590,6 +2109,274 @@ export interface operations {
                 };
             };
             /** @description `not_found`: no such disk */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    pools: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Pool"][];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    create_pool: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreatePoolRequest"];
+            };
+        };
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description `plan_expired`, `plan_changed` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `confirmation_mismatch` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    plan_pool: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PoolPlanRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PoolPlan"];
+                };
+            };
+            /** @description `name_taken`, `no_volume_number` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input`, `disk_count`, `disk_not_found`, `disk_unusable`, `duplicate_disk`, `unsupported_layout` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    destroy_pool: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DestroyPoolRequest"];
+            };
+        };
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `pool_not_managed` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `confirmation_mismatch` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    replace_disk: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReplaceDiskRequest"];
+            };
+        };
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description `plan_expired`, `plan_changed` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    plan_replace: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReplacePlanRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReplacePlan"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `device_not_found`, `disk_unusable`, `disk_too_small` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    scrub_pool: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Started. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `not_found` */
             404: {
                 headers: {
                     [name: string]: unknown;

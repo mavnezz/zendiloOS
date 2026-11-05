@@ -38,3 +38,11 @@ export function formatDuration(totalSeconds: number): string {
     return `${t('duration.hours', { n: hours })} ${t('duration.minutes', { n: minutes })}`
   return t('duration.minutes', { n: minutes })
 }
+
+/** Date and time to the second, in the interface language. */
+export function formatDateTime(milliseconds: number): string {
+  return new Intl.DateTimeFormat(i18n.global.locale.value, {
+    dateStyle: 'short',
+    timeStyle: 'medium',
+  }).format(milliseconds)
+}

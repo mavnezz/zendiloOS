@@ -26,7 +26,7 @@ async fn main() -> anyhow::Result<()> {
     let passwd = std::fs::read_to_string("/etc/passwd").context("cannot read /etc/passwd")?;
     let (client_uid, client_gid) = passwd::lookup(&passwd, &config.client_user)
         .with_context(|| format!("unknown client account {:?}", config.client_user))?;
-    let operations = Operations::new(&config.tools)?;
+    let operations = Operations::new(&config.tools, config.storage.erasable.clone())?;
     let listener = listener(&config.socket, client_gid)?;
 
     tracing::info!(

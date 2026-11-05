@@ -20,6 +20,7 @@ use axum::response::Response;
 use axum::routing::get;
 use futures_util::SinkExt;
 use serde::{Deserialize, Serialize};
+use tokio::sync::broadcast;
 use utoipa::ToSchema;
 use zendiloos_kernel::Secret;
 use zendiloos_system::application::ports::MetricsSubscription;
@@ -44,6 +45,10 @@ pub(crate) fn router() -> Router<ApiState> {
 #[serde(rename_all = "snake_case")]
 pub enum LiveTopic {
     Metrics,
+    /// Every change to a job.
+    Jobs,
+    /// New notifications.
+    Notifications,
 }
 
 /// What the browser sends.
@@ -60,6 +65,12 @@ pub enum LiveRequest {
 pub enum LiveMessage {
     Metrics {
         data: Metrics,
+    },
+    Job {
+        data: super::jobs::Job,
+    },
+    Notification {
+        data: super::jobs::Notification,
     },
     /// The last request could not be understood.
     Error {
@@ -165,7 +176,27 @@ async fn upgrade(
 enum Event {
     Incoming(Option<Result<Message, axum::Error>>),
     Sample(Option<MetricsSample>),
+    Job(Result<zendiloos_jobs::Job, broadcast::error::RecvError>),
+    Notification(Result<zendiloos_notify::Notification, broadcast::error::RecvError>),
     CheckSession,
+}
+
+async fn next_notification(
+    notifications: &mut Option<broadcast::Receiver<zendiloos_notify::Notification>>,
+) -> Result<zendiloos_notify::Notification, broadcast::error::RecvError> {
+    match notifications {
+        Some(notifications) => notifications.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+async fn next_job(
+    jobs: &mut Option<broadcast::Receiver<zendiloos_jobs::Job>>,
+) -> Result<zendiloos_jobs::Job, broadcast::error::RecvError> {
+    match jobs {
+        Some(jobs) => jobs.recv().await,
+        None => std::future::pending().await,
+    }
 }
 
 async fn next_sample(subscription: &mut Option<Box<dyn MetricsSubscription>>) -> Option<MetricsSample> {
@@ -182,6 +213,8 @@ async fn send(socket: &mut WebSocket, message: &LiveMessage) -> bool {
 
 async fn serve(mut socket: WebSocket, state: ApiState, token: Secret) {
     let mut metrics: Option<Box<dyn MetricsSubscription>> = None;
+    let mut jobs: Option<broadcast::Receiver<zendiloos_jobs::Job>> = None;
+    let mut notifications: Option<broadcast::Receiver<zendiloos_notify::Notification>> = None;
     let mut session_check = tokio::time::interval(SESSION_CHECK);
     session_check.tick().await;
 
@@ -189,6 +222,8 @@ async fn serve(mut socket: WebSocket, state: ApiState, token: Secret) {
         let event = tokio::select! {
             incoming = socket.recv() => Event::Incoming(incoming),
             sample = next_sample(&mut metrics) => Event::Sample(sample),
+            job = next_job(&mut jobs) => Event::Job(job),
+            notification = next_notification(&mut notifications) => Event::Notification(notification),
             _ = session_check.tick() => Event::CheckSession,
         };
         let delivered = match event {
@@ -206,6 +241,22 @@ async fn serve(mut socket: WebSocket, state: ApiState, token: Secret) {
                     metrics = None;
                     true
                 }
+                Ok(LiveRequest::Subscribe { topic: LiveTopic::Jobs }) => {
+                    jobs = Some(state.jobs.subscribe());
+                    true
+                }
+                Ok(LiveRequest::Unsubscribe { topic: LiveTopic::Jobs }) => {
+                    jobs = None;
+                    true
+                }
+                Ok(LiveRequest::Subscribe { topic: LiveTopic::Notifications }) => {
+                    notifications = Some(state.notifier.subscribe());
+                    true
+                }
+                Ok(LiveRequest::Unsubscribe { topic: LiveTopic::Notifications }) => {
+                    notifications = None;
+                    true
+                }
                 Err(error) => send(&mut socket, &LiveMessage::Error { message: error.to_string() }).await,
             },
             Event::Incoming(Some(Ok(Message::Close(_)))) => {
@@ -220,6 +271,21 @@ async fn serve(mut socket: WebSocket, state: ApiState, token: Secret) {
             }
             Event::Sample(None) => {
                 metrics = None;
+                true
+            }
+            Event::Job(Ok(job)) => send(&mut socket, &LiveMessage::Job { data: job.into() }).await,
+            // Missed changes: the client reloads the list when it sees a gap.
+            Event::Job(Err(broadcast::error::RecvError::Lagged(_))) => true,
+            Event::Job(Err(broadcast::error::RecvError::Closed)) => {
+                jobs = None;
+                true
+            }
+            Event::Notification(Ok(notification)) => {
+                send(&mut socket, &LiveMessage::Notification { data: notification.into() }).await
+            }
+            Event::Notification(Err(broadcast::error::RecvError::Lagged(_))) => true,
+            Event::Notification(Err(broadcast::error::RecvError::Closed)) => {
+                notifications = None;
                 true
             }
             Event::CheckSession => {

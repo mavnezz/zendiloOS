@@ -60,6 +60,12 @@ pub enum ApiError {
     LastAdmin,
     /// Administrators change their own account in their settings.
     OwnAccount,
+    /// A rule of a context refused the request; `code` names which.
+    Rejected {
+        status: StatusCode,
+        code: &'static str,
+        detail: Option<String>,
+    },
     Internal(Box<dyn Error + Send + Sync>),
 }
 
@@ -125,6 +131,7 @@ impl IntoResponse for ApiError {
             ApiError::NameTaken => (StatusCode::CONFLICT, "name_taken", None),
             ApiError::LastAdmin => (StatusCode::CONFLICT, "last_admin", None),
             ApiError::OwnAccount => (StatusCode::CONFLICT, "own_account", None),
+            ApiError::Rejected { status, code, detail } => (status, code, detail),
             ApiError::Internal(error) => {
                 tracing::error!(error = %error_chain(error.as_ref()), "request failed");
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal", None)

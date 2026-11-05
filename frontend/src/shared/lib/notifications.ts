@@ -27,12 +27,20 @@ export const useNotifications = defineStore('notifications', () => {
     toastIds.value.flatMap((id) => items.value.filter((item) => item.id === id)),
   )
 
-  function notify(kind: NotificationKind, title: string, body?: string): void {
+  /**
+   * Adds a message. `at` defaults to now; `toast: false` only adds it to
+   * the center, e.g. for what happened while nobody looked.
+   */
+  function notify(
+    kind: NotificationKind,
+    title: string,
+    body?: string,
+    options: { at?: number; toast?: boolean } = {},
+  ): void {
     const id = nextId++
-    items.value = [{ id, kind, title, body, at: Date.now(), read: false }, ...items.value].slice(
-      0,
-      KEEP,
-    )
+    const item = { id, kind, title, body, at: options.at ?? Date.now(), read: false }
+    items.value = [item, ...items.value].sort((a, b) => b.at - a.at).slice(0, KEEP)
+    if (options.toast === false) return
     toastIds.value.push(id)
     setTimeout(() => dismissToast(id), TOAST_MS)
   }

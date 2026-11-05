@@ -5,6 +5,7 @@
 pub(crate) mod lsblk;
 pub(crate) mod mdstat;
 pub(crate) mod smartctl;
+pub(crate) mod zfs;
 
 /// Tool output in an unexpected form, e.g. from an unsupported version.
 #[derive(Debug, thiserror::Error)]

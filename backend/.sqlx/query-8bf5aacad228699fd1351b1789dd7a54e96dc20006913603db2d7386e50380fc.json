@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE jobs SET state = 'interrupted', updated_at = ?1, finished_at = ?1 WHERE state = 'running'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "8bf5aacad228699fd1351b1789dd7a54e96dc20006913603db2d7386e50380fc"
+}

@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", at, level, code, params FROM notifications ORDER BY id DESC LIMIT ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "notifications",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "at",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "notifications",
+            "name": "at"
+          }
+        }
+      },
+      {
+        "name": "level",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "notifications",
+            "name": "level"
+          }
+        }
+      },
+      {
+        "name": "code",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "notifications",
+            "name": "code"
+          }
+        }
+      },
+      {
+        "name": "params",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "notifications",
+            "name": "params"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "7d15b80e853e3f025cbafbaed09c1c8e2e9b1cff5b4c1570cbf03a3e8587d883"
+}

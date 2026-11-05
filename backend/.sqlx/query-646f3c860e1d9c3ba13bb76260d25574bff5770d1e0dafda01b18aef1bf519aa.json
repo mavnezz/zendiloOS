@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO jobs (kind, target, state, account_id, actor, created_at, updated_at)\n               VALUES (?1, ?2, 'running', ?3, ?4, ?5, ?5)\n               RETURNING id AS \"id!\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "jobs",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "646f3c860e1d9c3ba13bb76260d25574bff5770d1e0dafda01b18aef1bf519aa"
+}

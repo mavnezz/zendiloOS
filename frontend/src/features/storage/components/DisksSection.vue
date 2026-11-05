@@ -8,6 +8,7 @@ import { formatBytes } from '@/shared/lib/format'
 import { Alert } from '@/shared/ui/alert'
 
 import { useDisks } from '../api'
+import { usageLabel } from '../format'
 import DiskSmartBadge from './DiskSmartBadge.vue'
 
 defineEmits<{ select: [name: string] }>()
@@ -16,9 +17,7 @@ const { t } = useI18n()
 const { data: disks, error, isPending } = useDisks()
 
 function usage(disk: Disk): string {
-  return disk.usage === 'array_member'
-    ? t('storage.usage.array_member', { array: disk.array })
-    : t(`storage.usage.${disk.usage}`)
+  return usageLabel(disk)
 }
 </script>
 

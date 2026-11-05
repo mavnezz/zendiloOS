@@ -58,9 +58,11 @@
               sqlx-cli
               sqlite
               cargo-deny
-              # Test VM (scripts/vm.sh)
+              # Test VM (scripts/vm.sh, scripts/vm-storage-test.sh)
               qemu_kvm
               xorriso
+              curl
+              jq
             ];
           };
         }

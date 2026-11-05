@@ -1,0 +1,25 @@
+[package]
+name = "zendiloos-notify"
+description = "Notifications for administrators: stored, and published to open browsers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# A generic subdomain used by other contexts; persistence is a port.
+[dependencies]
+zendiloos-kernel.workspace = true
+async-trait.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+tracing.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+
+[features]
+# An in-memory repository, for tests.
+testing = []
+
+[lints]
+workspace = true

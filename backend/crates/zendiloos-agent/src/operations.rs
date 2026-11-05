@@ -3,11 +3,22 @@ use std::time::Duration;
 
 use tokio::io::AsyncReadExt;
 
-use zendiloos_agent_proto::{DiskName, ErrorCode, LSBLK_COLUMNS, PROTOCOL_VERSION, Request, Response};
+use zendiloos_agent_proto::{
+    DiskName, ErrorCode, LSBLK_COLUMNS, PROTOCOL_VERSION, Request, Response, ZFS_DATASET_COLUMNS,
+};
 use zendiloos_exec::{ExecError, Limits, Output, Program};
 
 use crate::accounts::{AccountFiles, Accounts};
 use crate::config::Tools;
+use crate::pools::{Erasable, HostPaths, Pools};
+
+/// Where the agent finds the host's account databases, devices and units;
+/// other than the real places only in tests.
+#[derive(Debug, Clone, Default)]
+pub struct Paths {
+    pub accounts: AccountFiles,
+    pub host: HostPaths,
+}
 
 const MDSTAT: &str = "/proc/mdstat";
 /// Far more than any real number of arrays needs.
@@ -21,22 +32,27 @@ pub struct Operations {
     systemctl: Program,
     lsblk: Program,
     smartctl: Program,
+    zpool: Program,
+    zfs: Program,
     accounts: Accounts,
+    pools: Pools,
 }
 
 impl Operations {
-    pub fn new(tools: &Tools) -> Result<Self, ExecError> {
-        Self::with_account_files(tools, AccountFiles::default())
+    pub fn new(tools: &Tools, erasable: Erasable) -> Result<Self, ExecError> {
+        Self::with_paths(tools, erasable, Paths::default())
     }
 
-    /// Like [`Operations::new`], with the account databases elsewhere than
-    /// in `/etc`. For tests.
-    pub fn with_account_files(tools: &Tools, files: AccountFiles) -> Result<Self, ExecError> {
+    /// Like [`Operations::new`], looking at the host elsewhere. For tests.
+    pub fn with_paths(tools: &Tools, erasable: Erasable, paths: Paths) -> Result<Self, ExecError> {
         Ok(Self {
             systemctl: Program::new(&tools.systemctl)?,
             lsblk: Program::new(&tools.lsblk)?,
             smartctl: Program::new(&tools.smartctl)?,
-            accounts: Accounts::new(tools, files)?,
+            zpool: Program::new(&tools.zpool)?,
+            zfs: Program::new(&tools.zfs)?,
+            accounts: Accounts::new(tools, paths.accounts)?,
+            pools: Pools::new(tools, erasable, paths.host)?,
         })
     }
 
@@ -52,6 +68,13 @@ impl Operations {
             Request::ListBlockDevices {} => self.list_block_devices().await,
             Request::SmartData { device } => self.smart_data(device).await,
             Request::ArrayStatus {} => array_status().await,
+            Request::ZfsStatus {} => self.zfs_status().await,
+            Request::CreatePool { name, layout, disks, volume } => {
+                self.pools.create(name, *layout, disks, *volume).await
+            }
+            Request::DestroyPool { name, volume } => self.pools.destroy(name, *volume).await,
+            Request::ReplaceDisk { pool, device, disk } => self.pools.replace(pool, *device, disk).await,
+            Request::ScrubPool { pool } => self.pools.scrub(pool).await,
             Request::CreateUser { name } => self.accounts.create_user(name).await,
             Request::DeleteUser { name } => self.accounts.delete_user(name).await,
             Request::SetSmbPassword { name, password } => {
@@ -114,6 +137,23 @@ async fn array_status() -> Result<Response, OperationError> {
     Ok(Response::ArrayStatus { mdstat })
 }
 
+impl Operations {
+    async fn zfs_status(&self) -> Result<Response, OperationError> {
+        let limits = Limits { timeout: Duration::from_secs(30), max_stdout: 8 * 1024 * 1024 };
+        let status = zendiloos_exec::run(&self.zpool, ["status", "-j", "--json-int"], limits)
+            .await?
+            .success(&self.zpool)?;
+        let list = zendiloos_exec::run(
+            &self.zfs,
+            ["list", "-j", "--json-int", "-d", "0", "-o", ZFS_DATASET_COLUMNS],
+            limits,
+        )
+        .await?
+        .success(&self.zfs)?;
+        Ok(Response::Zfs { zpool_status: utf8(status)?, zfs_list: utf8(list)? })
+    }
+}
+
 fn utf8(output: Output) -> Result<String, OperationError> {
     String::from_utf8(output.stdout).map_err(|_| OperationError::NotUtf8)
 }
@@ -136,13 +176,18 @@ pub(crate) enum OperationError {
     NotManaged(String),
     #[error("the system is not set up for this: {0}")]
     Setup(String),
+    /// A safety check refused the operation.
+    #[error("refused: {0}")]
+    Refused(String),
+    #[error("cannot write {}", .0.display())]
+    Write(std::path::PathBuf, #[source] io::Error),
 }
 
 impl OperationError {
     fn code(&self) -> ErrorCode {
         match self {
             OperationError::Conflict => ErrorCode::Conflict,
-            OperationError::NotManaged(_) => ErrorCode::Forbidden,
+            OperationError::NotManaged(_) | OperationError::Refused(_) => ErrorCode::Forbidden,
             _ => ErrorCode::Failed,
         }
     }

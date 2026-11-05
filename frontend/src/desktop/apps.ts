@@ -33,7 +33,7 @@ export const APPS: AppDefinition[] = [
     permission: 'storage.view',
     size: { width: 960, height: 660 },
     minimum: { width: 360, height: 320 },
-    component: defineAsyncComponent(() => import('@/features/storage/components/StorageApp.vue')),
+    component: defineAsyncComponent(() => import('./apps/StorageApp.vue')),
   },
   {
     id: 'users',

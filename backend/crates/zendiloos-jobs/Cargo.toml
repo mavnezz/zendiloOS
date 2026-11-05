@@ -1,0 +1,26 @@
+[package]
+name = "zendiloos-jobs"
+description = "Long-running operations of zendiloos: recorded, observable, interruptible by restarts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# A generic subdomain used by other contexts. Runs work on the tokio
+# runtime; persistence is a port. See docs/architecture.md, 2.1.
+[dependencies]
+zendiloos-kernel.workspace = true
+async-trait.workspace = true
+tokio = { workspace = true, features = ["sync", "rt"] }
+tracing.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+
+[features]
+# An in-memory repository, for tests of crates that start jobs.
+testing = []
+
+[lints]
+workspace = true

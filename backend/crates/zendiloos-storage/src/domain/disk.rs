@@ -1,4 +1,5 @@
 use super::block_device::{BlockDevice, DeviceKind};
+use super::pool::Pool;
 use super::volume::DATA_FILESYSTEMS;
 
 /// A physical (or virtual) disk with what it is used for.
@@ -8,6 +9,9 @@ pub struct Disk {
     pub model: Option<String>,
     pub serial: Option<String>,
     pub wwn: Option<String>,
+    /// Name of its `/dev/disk/by-id` link; disks without one cannot be
+    /// used for pools, since they could not be recognized again.
+    pub id_link: Option<String>,
     pub size_bytes: u64,
     pub transport: Transport,
     pub media: Media,
@@ -55,6 +59,8 @@ pub enum DiskUsage {
     System,
     /// The disk, or a partition on it, belongs to a software RAID array.
     ArrayMember { array: String },
+    /// The disk holds a device of a ZFS pool.
+    PoolMember { pool: String },
     /// Carries a data volume directly (no array).
     Volume,
     /// Has partitions or a signature zendiloos does not manage.
@@ -79,9 +85,10 @@ pub fn is_system_mount(mount_point: &str) -> bool {
     EXACT.contains(&mount_point) || BELOW.iter().any(|prefix| mount_point.starts_with(prefix))
 }
 
-/// The disks among the host's block devices, each classified by usage.
+/// The disks among the host's block devices, each classified by usage;
+/// `pools` must have their disks resolved ([`super::resolve_pool_disks`]).
 /// Loop devices, optical drives and empty card readers are not disks.
-pub fn disks(devices: &[BlockDevice]) -> Vec<Disk> {
+pub fn disks(devices: &[BlockDevice], pools: &[Pool]) -> Vec<Disk> {
     devices
         .iter()
         .filter(|device| device.kind == DeviceKind::Disk && device.size_bytes > 0)
@@ -90,12 +97,13 @@ pub fn disks(devices: &[BlockDevice]) -> Vec<Disk> {
             model: device.model.clone(),
             serial: device.serial.clone(),
             wwn: device.wwn.clone(),
+            id_link: device.id_link.clone(),
             size_bytes: device.size_bytes,
             transport: Transport::from_kernel(device.transport.as_deref()),
             media: if device.rotational { Media::Rotational } else { Media::SolidState },
             removable: device.removable,
             read_only: device.read_only,
-            usage: usage(device),
+            usage: usage(device, pools),
             partitions: device
                 .children
                 .iter()
@@ -112,13 +120,18 @@ pub fn disks(devices: &[BlockDevice]) -> Vec<Disk> {
         .collect()
 }
 
-fn usage(disk: &BlockDevice) -> DiskUsage {
+fn usage(disk: &BlockDevice, pools: &[Pool]) -> DiskUsage {
     let below = disk.descendants();
     if below.iter().any(|device| device.mount_points.iter().any(|m| is_system_mount(m))) {
         return DiskUsage::System;
     }
     if let Some(array) = below.iter().find(|device| matches!(device.kind, DeviceKind::Raid { .. })) {
         return DiskUsage::ArrayMember { array: array.name.clone() };
+    }
+    // By the pool's own device list: a partition may still carry the label
+    // of a pool it was removed from.
+    if let Some(pool) = pools.iter().find(|pool| pool.uses_disk(&disk.name)) {
+        return DiskUsage::PoolMember { pool: pool.name.clone() };
     }
     let data = |device: &&BlockDevice| {
         device.filesystem.as_ref().is_some_and(|f| DATA_FILESYSTEMS.contains(&f.kind.as_str()))
@@ -138,7 +151,7 @@ mod tests {
     use super::*;
 
     fn usage_of(device: BlockDevice) -> DiskUsage {
-        disks(&[device]).remove(0).usage
+        disks(&[device], &[]).remove(0).usage
     }
 
     #[test]
@@ -167,6 +180,40 @@ mod tests {
     }
 
     #[test]
+    fn pool_membership_comes_from_the_pool_not_from_labels() {
+        use crate::domain::{Pool, PoolDevice, PoolLayout, VdevState};
+        let member = disk("sda", vec![partition("sda1", Some("zfs_member"), &[])]);
+        // Removed from the pool, but its partition still carries the label.
+        let stale = disk("sdd", vec![partition("sdd1", Some("zfs_member"), &[])]);
+        let device = PoolDevice {
+            name: "ata-A-part1".into(),
+            guid: "7".into(),
+            path: None,
+            disk: Some("sda".into()),
+            state: VdevState::Online,
+            read_errors: 0,
+            write_errors: 0,
+            checksum_errors: 0,
+            replacing: None,
+        };
+        let pool = Pool {
+            name: "tank".into(),
+            guid: "1".into(),
+            state: VdevState::Online,
+            layout: PoolLayout::Single,
+            devices: vec![device],
+            size_bytes: 0,
+            allocated_bytes: 0,
+            scan: None,
+            data_errors: 0,
+            volume: None,
+            space: None,
+        };
+        let usage: Vec<_> = disks(&[member, stale], &[pool]).into_iter().map(|d| d.usage).collect();
+        assert_eq!(usage, [DiskUsage::PoolMember { pool: "tank".into() }, DiskUsage::Foreign]);
+    }
+
+    #[test]
     fn the_operating_system_wins_over_other_uses() {
         // Root on a RAID 1 across two disks.
         let disk =
@@ -184,7 +231,7 @@ mod tests {
             BlockDevice { size_bytes: 0, ..disk("sdg", vec![]) },
             disk("sdh", vec![]),
         ];
-        let names: Vec<_> = disks(&devices).into_iter().map(|d| d.name).collect();
+        let names: Vec<_> = disks(&devices, &[]).into_iter().map(|d| d.name).collect();
         assert_eq!(names, ["sdh"]);
     }
 

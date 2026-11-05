@@ -5,12 +5,12 @@ import { useI18n } from 'vue-i18n'
 
 import type { AuditRecord } from '@/shared/api/types'
 import { problemMessage } from '@/shared/i18n'
+import { formatDateTime } from '@/shared/lib/format'
 import { Alert } from '@/shared/ui/alert'
 import { Badge, type BadgeVariants } from '@/shared/ui/badge'
 import { Button } from '@/shared/ui/button'
 
 import { useAuditLog } from '../api'
-import { formatTimestamp } from '../format'
 
 const i18n = useI18n()
 const { t } = i18n
@@ -65,7 +65,7 @@ function outcome(record: AuditRecord): string {
         <tbody>
           <tr v-for="record in records" :key="record.id" class="border-t align-top">
             <td class="px-3 py-1.5 whitespace-nowrap text-muted-foreground tabular-nums">
-              {{ formatTimestamp(record.at * 1000) }}
+              {{ formatDateTime(record.at * 1000) }}
             </td>
             <td class="px-3 py-1.5">{{ record.actor ?? '–' }}</td>
             <td class="px-3 py-1.5">

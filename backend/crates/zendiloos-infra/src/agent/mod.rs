@@ -14,7 +14,7 @@ use zendiloos_system::application::ports::PowerControl;
 use zendiloos_system::domain::PowerAction;
 
 pub use accounts::AgentSystemAccounts;
-pub use storage::AgentStorage;
+pub use storage::{AgentStorage, RandomPlanTokens};
 
 const WHAT: &str = "privileged agent";
 

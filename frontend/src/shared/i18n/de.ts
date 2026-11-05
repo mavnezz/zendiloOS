@@ -114,6 +114,119 @@ const de: Messages = {
     version: 'zendiloOS-Version',
   },
   storage: {
+    scrubNow: 'Daten jetzt prüfen',
+    plan: {
+      willErase: 'Diese Platten werden gelöscht:',
+      contains: 'Enthält {what}',
+      warning: {
+        mixed_sizes: 'Die Platten sind unterschiedlich groß; {unused} bleiben ungenutzt.',
+        no_redundancy: 'Keine Redundanz: Fällt die Platte aus, sind alle Daten verloren.',
+        erases_data: 'Einige Platten enthalten Daten. Sie gehen verloren.',
+      },
+    },
+    create: {
+      button: 'Neuer Pool',
+      title: 'Neuer Pool',
+      description: 'Ein Pool fasst Platten zu einem Volume zusammen. Die Platten werden gelöscht.',
+      name: 'Name',
+      nameHint: 'Kleinbuchstaben, Ziffern, - und _; beginnt mit einem Buchstaben.',
+      disks: 'Platten',
+      noDisks: 'Keine freien Platten.',
+      layout: 'Aufbau',
+      layouts: {
+        single: {
+          name: 'Einzelne Platte',
+          description: 'Ganzer Platz, kein Schutz vor Plattenausfall.',
+        },
+        mirror: {
+          name: 'Spiegel',
+          description: 'Jede Platte enthält alle Daten; übersteht den Ausfall aller bis auf eine.',
+        },
+        raidz1: {
+          name: 'RAIDZ1',
+          description: 'Platz aller Platten bis auf eine; übersteht den Ausfall einer Platte.',
+        },
+        raidz2: {
+          name: 'RAIDZ2',
+          description: 'Platz aller Platten bis auf zwei; übersteht den Ausfall von zwei Platten.',
+        },
+        raidz3: {
+          name: 'RAIDZ3',
+          description: 'Platz aller Platten bis auf drei; übersteht den Ausfall von drei Platten.',
+        },
+      },
+      review: 'Prüfen',
+      capacity: 'Nutzbarer Platz',
+      safety: 'Schutz',
+      path: 'Eingehängt unter',
+      confirm: 'Zur Bestätigung {name} eingeben',
+      submit: 'Platten löschen und Pool anlegen',
+    },
+    destroy: {
+      button: 'Pool löschen',
+      title: 'Pool {name} löschen?',
+      description:
+        'Alle Daten unter {path} gehen verloren und die Platten werden gelöscht. Das lässt sich nicht rückgängig machen.',
+      submit: 'Pool und alle Daten löschen',
+    },
+    replaceDisk: {
+      button: 'Platte ersetzen',
+      title: '{device} ersetzen',
+      description:
+        'Wählen Sie die Platte, die ihren Platz einnimmt. Ihr Inhalt wird gelöscht; der Pool baut sich danach auf ihr wieder auf.',
+      understood: '{disk} löschen und als Ersatz verwenden.',
+      submit: 'Löschen und ersetzen',
+    },
+    pools: 'Pools',
+    noPools: 'Noch keine Pools.',
+    poolsUnavailable: 'ZFS ist nicht verfügbar, daher können keine Pools angezeigt werden.',
+    notManaged: 'Nicht von zendiloOS verwaltet',
+    redundancy:
+      'keine Redundanz | übersteht den Ausfall einer Platte | übersteht den Ausfall von {count} Platten',
+    layouts: {
+      single: 'Einzelne Platte',
+      mirror: 'Spiegel',
+      other: 'Anderes Layout',
+    },
+    vdevState: {
+      online: 'Intakt',
+      degraded: 'Beeinträchtigt',
+      faulted: 'Ausgefallen',
+      offline: 'Offline',
+      removed: 'Entfernt',
+      unavailable: 'Nicht verfügbar',
+      suspended: 'Angehalten',
+      unknown: 'Unbekannt',
+    },
+    scan: {
+      kind: {
+        scrub: 'Datenprüfung',
+        resilver: 'Wiederherstellung',
+      },
+      running: {
+        scrub: 'Alle Daten werden geprüft · {percent}',
+        resilver: 'Redundanz wird wiederhergestellt · {percent}',
+      },
+      finished: {
+        scrub:
+          'Letzte Datenprüfung {at}: keine Fehler | Letzte Datenprüfung {at}: ein Fehler behoben | Letzte Datenprüfung {at}: {count} Fehler behoben',
+        resilver: 'Wiederhergestellt {at}',
+      },
+      canceled: {
+        scrub: 'Datenprüfung abgebrochen {at}',
+        resilver: 'Wiederherstellung abgebrochen {at}',
+      },
+    },
+    dataErrors:
+      'Eine Datei ist beschädigt und konnte nicht repariert werden. | {count} Dateien sind beschädigt und konnten nicht repariert werden.',
+    devices: 'Platten',
+    missingDisk: 'fehlt',
+    deviceErrors: 'Fehler: {read} Lesen · {write} Schreiben · {checksum} Prüfsumme',
+    replacing: {
+      old: 'Wird ersetzt',
+      new: 'Ersatz',
+    },
+    otherArrays: 'Andere RAID-Verbünde (nur lesend)',
     volumes: 'Volumes',
     arrays: 'RAID-Verbünde',
     disks: 'Laufwerke',
@@ -155,6 +268,7 @@ const de: Messages = {
     unknownModel: 'Unbekanntes Modell',
     usage: {
       system: 'Systemlaufwerk',
+      pool_member: 'In Pool {pool}',
       array_member: 'In {array}',
       volume: 'Volume',
       foreign: 'Belegt (nicht verwaltet)',
@@ -350,6 +464,56 @@ const de: Messages = {
       system_power_off: 'Herunterfahren',
     },
   },
+  jobs: {
+    succeeded: 'Erledigt.',
+    failedBecause: '({code})',
+    state: {
+      running: 'Läuft',
+      succeeded: 'Erledigt',
+      failed: 'Fehlgeschlagen.',
+      interrupted: 'Durch einen Neustart unterbrochen; bitte das Ergebnis prüfen.',
+    },
+    kinds: {
+      storage_create_pool: 'Pool anlegen',
+      storage_destroy_pool: 'Pool löschen',
+      storage_replace_disk: 'Platte ersetzen',
+      storage_scrub: 'Daten prüfen',
+    },
+  },
+  notices: {
+    states: {
+      degraded: 'beeinträchtigt',
+      faulted: 'ausgefallen',
+      unavailable: 'nicht verfügbar',
+      suspended: 'angehalten',
+      offline: 'offline',
+      removed: 'entfernt',
+      unknown: 'in einem unbekannten Zustand',
+    },
+    pool_trouble: {
+      title: 'Pool {pool} ist {state}',
+      body: 'Unter Speicher sehen Sie, welche Platte betroffen ist.',
+    },
+    pool_recovered: {
+      title: 'Pool {pool} ist wieder intakt',
+    },
+    resilver_finished: {
+      title: 'Pool {pool} ist wiederhergestellt',
+      body: 'Keine Fehler. | Ein Fehler wurde gefunden. | {errors} Fehler wurden gefunden.',
+    },
+    scrub_finished: {
+      title: 'Datenprüfung von {pool} abgeschlossen',
+      body: 'Keine Fehler. | Ein Fehler wurde gefunden und behoben. | {errors} Fehler wurden gefunden und behoben.',
+    },
+    volume_filling: {
+      title: 'Pool {pool} ist zu {percent} % voll',
+      body: 'Geben Sie Platz frei oder erweitern Sie, bevor er voll ist.',
+    },
+    disk_health: {
+      title: 'Platte {disk} meldet Probleme',
+      body: '{model}: SMART-Zustand ist {health}. Planen Sie den Austausch.',
+    },
+  },
   duration: {
     days: '{n} Tg.',
     hours: '{n} Std.',
@@ -370,6 +534,14 @@ const de: Messages = {
     own_account: 'Ihr eigenes Konto ändern Sie in Ihren Einstellungen.',
     password_change_required: 'Wählen Sie zuerst ein neues Passwort.',
     not_found: 'Das gibt es nicht mehr. Laden Sie neu und versuchen Sie es erneut.',
+    plan_expired: 'Der Plan ist abgelaufen. Bitte erneut prüfen.',
+    plan_changed: 'Die Platten haben sich seit dem Plan geändert. Bitte erneut prüfen.',
+    confirmation_mismatch: 'Der eingegebene Name stimmt nicht überein.',
+    disk_count: 'Dieser Aufbau braucht eine andere Anzahl Platten.',
+    disk_unusable: 'Eine gewählte Platte kann nicht verwendet werden.',
+    disk_too_small: 'Die Platte ist kleiner als die, die sie ersetzen soll.',
+    pool_not_managed: 'zendiloOS hat diesen Pool nicht angelegt und ändert ihn nicht.',
+    refused: 'Das System hat aus Sicherheitsgründen abgelehnt.',
     network: 'Der Server ist nicht erreichbar.',
     unknown: 'Etwas ist schiefgegangen ({code}).',
   },

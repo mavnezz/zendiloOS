@@ -9,8 +9,10 @@ mod accounts;
 pub mod config;
 mod operations;
 pub mod passwd;
+mod pools;
 mod server;
 
 pub use accounts::AccountFiles;
-pub use operations::Operations;
+pub use operations::{Operations, Paths};
+pub use pools::{Erasable, ErasePolicy, HostPaths};
 pub use server::{Server, serve};

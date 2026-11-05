@@ -38,6 +38,7 @@ pub const API_V1: &str = "/api/v1";
         (name = "accounts", description = "Accounts and groups, managed by administrators"),
         (name = "storage", description = "Disks, SMART, RAID arrays and volumes"),
         (name = "logs", description = "The system journal and the audit log"),
+        (name = "jobs", description = "Long-running operations and their progress"),
     ),
     components(schemas(routes::live::LiveRequest, routes::live::LiveMessage, routes::logs::LogSource)),
     modifiers(&SessionSecurity)

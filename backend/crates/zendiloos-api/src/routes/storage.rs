@@ -1,6 +1,7 @@
 use axum::Json;
 use axum::extract::{Path, State};
-use serde::Serialize;
+use axum::http::StatusCode;
+use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
@@ -11,7 +12,8 @@ use zendiloos_storage::domain as storage;
 
 use crate::auth::Auth;
 use crate::error::{ApiError, Problem};
-use crate::extract::Client;
+use crate::extract::{ApiJson, Client};
+use crate::routes::jobs::Job;
 use crate::state::ApiState;
 
 pub(super) fn routes() -> OpenApiRouter<ApiState> {
@@ -19,13 +21,59 @@ pub(super) fn routes() -> OpenApiRouter<ApiState> {
         .routes(routes!(disks))
         .routes(routes!(smart))
         .routes(routes!(arrays))
+        .routes(routes!(pools, create_pool))
+        .routes(routes!(plan_pool))
+        .routes(routes!(destroy_pool))
+        .routes(routes!(plan_replace))
+        .routes(routes!(replace_disk))
+        .routes(routes!(scrub_pool))
         .routes(routes!(volumes))
+}
+
+fn rejected(status: StatusCode, code: &'static str, detail: Option<String>) -> ApiError {
+    ApiError::Rejected { status, code, detail }
 }
 
 impl From<StorageError> for ApiError {
     fn from(error: StorageError) -> Self {
+        use storage::PlanError as P;
+        let unprocessable = StatusCode::UNPROCESSABLE_ENTITY;
         match error {
-            StorageError::DiskNotFound => ApiError::NotFound,
+            StorageError::DiskNotFound | StorageError::PoolNotFound | StorageError::Plan(P::PoolNotFound) => {
+                ApiError::NotFound
+            }
+            StorageError::Plan(P::InvalidName(e)) => ApiError::InvalidInput(e.to_string()),
+            StorageError::Plan(P::NameTaken) | StorageError::Conflict => {
+                rejected(StatusCode::CONFLICT, "name_taken", None)
+            }
+            StorageError::Plan(e @ P::DiskCount { .. }) => {
+                rejected(unprocessable, "disk_count", Some(e.to_string()))
+            }
+            StorageError::Plan(P::DiskNotFound(disk)) => {
+                rejected(unprocessable, "disk_not_found", Some(disk))
+            }
+            StorageError::Plan(P::DiskUnusable { disk, reason }) => {
+                let reason = match reason {
+                    storage::Unusable::System => "system",
+                    storage::Unusable::ArrayMember => "array_member",
+                    storage::Unusable::PoolMember => "pool_member",
+                    storage::Unusable::NoStableId => "no_stable_id",
+                    storage::Unusable::ReadOnly => "read_only",
+                };
+                rejected(unprocessable, "disk_unusable", Some(format!("{disk}: {reason}")))
+            }
+            StorageError::Plan(P::DuplicateDisk(disk)) => {
+                rejected(unprocessable, "duplicate_disk", Some(disk))
+            }
+            StorageError::Plan(P::NoVolumeNumber) => rejected(StatusCode::CONFLICT, "no_volume_number", None),
+            StorageError::Plan(P::UnsupportedLayout) => rejected(unprocessable, "unsupported_layout", None),
+            StorageError::Plan(P::PoolNotManaged) => rejected(StatusCode::CONFLICT, "pool_not_managed", None),
+            StorageError::Plan(P::DeviceNotFound) => rejected(unprocessable, "device_not_found", None),
+            StorageError::Plan(P::DiskTooSmall) => rejected(unprocessable, "disk_too_small", None),
+            StorageError::PlanExpired => rejected(StatusCode::CONFLICT, "plan_expired", None),
+            StorageError::ConfirmationMismatch => rejected(unprocessable, "confirmation_mismatch", None),
+            StorageError::PlanChanged => rejected(StatusCode::CONFLICT, "plan_changed", None),
+            StorageError::Refused(reason) => rejected(StatusCode::CONFLICT, "refused", Some(reason)),
             StorageError::Port(e) => ApiError::internal(e),
         }
     }
@@ -57,6 +105,8 @@ pub enum DiskUsage {
     System,
     /// Belongs to the RAID array named in `array`.
     ArrayMember,
+    /// Holds a device of the ZFS pool named in `pool`.
+    PoolMember,
     /// Carries a data volume directly.
     Volume,
     /// Has partitions or data zendiloOS does not manage.
@@ -79,6 +129,11 @@ pub struct Disk {
     pub usage: DiskUsage,
     /// The array, if `usage` is `array_member`.
     pub array: Option<String>,
+    /// The pool, if `usage` is `pool_member`.
+    pub pool: Option<String>,
+    /// Name of the disk's `/dev/disk/by-id` link; disks without one cannot
+    /// be used for pools.
+    pub id_link: Option<String>,
     pub partitions: Vec<Partition>,
 }
 
@@ -93,12 +148,13 @@ pub struct Partition {
 
 impl From<storage::Disk> for Disk {
     fn from(disk: storage::Disk) -> Self {
-        let (usage, array) = match disk.usage {
-            storage::DiskUsage::System => (DiskUsage::System, None),
-            storage::DiskUsage::ArrayMember { array } => (DiskUsage::ArrayMember, Some(array)),
-            storage::DiskUsage::Volume => (DiskUsage::Volume, None),
-            storage::DiskUsage::Foreign => (DiskUsage::Foreign, None),
-            storage::DiskUsage::Unused => (DiskUsage::Unused, None),
+        let (usage, array, pool) = match disk.usage {
+            storage::DiskUsage::System => (DiskUsage::System, None, None),
+            storage::DiskUsage::ArrayMember { array } => (DiskUsage::ArrayMember, Some(array), None),
+            storage::DiskUsage::PoolMember { pool } => (DiskUsage::PoolMember, None, Some(pool)),
+            storage::DiskUsage::Volume => (DiskUsage::Volume, None, None),
+            storage::DiskUsage::Foreign => (DiskUsage::Foreign, None, None),
+            storage::DiskUsage::Unused => (DiskUsage::Unused, None, None),
         };
         Self {
             name: disk.name,
@@ -122,6 +178,8 @@ impl From<storage::Disk> for Disk {
             read_only: disk.read_only,
             usage,
             array,
+            pool,
+            id_link: disk.id_link,
             partitions: disk
                 .partitions
                 .into_iter()
@@ -571,12 +629,14 @@ pub struct Volume {
     /// Filesystem UUID, or the device name if there is none.
     pub id: String,
     pub label: Option<String>,
-    /// `btrfs`, `ext4` or `xfs`.
+    /// `zfs`, `btrfs`, `ext4` or `xfs`.
     pub filesystem: String,
     /// Block devices carrying it.
     pub devices: Vec<String>,
     /// The RAID array it lives on, if any.
     pub array: Option<String>,
+    /// The ZFS pool it is, if any.
+    pub pool: Option<String>,
     /// The disks underneath.
     pub disks: Vec<String>,
     pub mount_points: Vec<String>,
@@ -594,6 +654,7 @@ impl From<storage::Volume> for Volume {
             filesystem: volume.filesystem,
             devices: volume.devices,
             array: volume.array,
+            pool: volume.pool,
             disks: volume.disks,
             mount_points: volume.mount_points,
             size_bytes: volume.space.map(|s| s.size_bytes),
@@ -622,4 +683,559 @@ async fn volumes(
     auth.require(Permission::StorageView)?;
     let volumes = state.storage.list_volumes.execute(&client).await?;
     Ok(Json(volumes.into_iter().map(Volume::from).collect()))
+}
+
+/// State of a pool or one of its devices.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum VdevState {
+    Online,
+    /// Working with less redundancy than intended.
+    Degraded,
+    Faulted,
+    Offline,
+    /// Gone from the system.
+    Removed,
+    Unavailable,
+    /// All I/O stopped after failures.
+    Suspended,
+    Unknown,
+}
+
+impl From<storage::VdevState> for VdevState {
+    fn from(state: storage::VdevState) -> Self {
+        match state {
+            storage::VdevState::Online => VdevState::Online,
+            storage::VdevState::Degraded => VdevState::Degraded,
+            storage::VdevState::Faulted => VdevState::Faulted,
+            storage::VdevState::Offline => VdevState::Offline,
+            storage::VdevState::Removed => VdevState::Removed,
+            storage::VdevState::Unavailable => VdevState::Unavailable,
+            storage::VdevState::Suspended => VdevState::Suspended,
+            storage::VdevState::Unknown => VdevState::Unknown,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PoolLayout {
+    Single,
+    Mirror,
+    Raidz,
+    /// Not a layout zendiloOS creates; see `layout_name`.
+    Other,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplacingRole {
+    /// Being replaced.
+    Old,
+    /// Resilvering in as the replacement.
+    New,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PoolDevice {
+    /// As ZFS shows it, e.g. `ata-WDC_WD40EFRX_WD-1234-part1`.
+    pub name: String,
+    /// Identifies the device even after it disappeared.
+    pub guid: String,
+    /// Kernel name of its disk, if present.
+    pub disk: Option<String>,
+    pub state: VdevState,
+    pub read_errors: u64,
+    pub write_errors: u64,
+    pub checksum_errors: u64,
+    pub replacing: Option<ReplacingRole>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ScanKind {
+    /// Verifies all data, repairing from redundancy.
+    Scrub,
+    /// Rebuilds redundancy onto a new device.
+    Resilver,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ScanState {
+    Running,
+    Finished,
+    Canceled,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PoolScan {
+    pub kind: ScanKind,
+    pub state: ScanState,
+    /// 0 to 100.
+    pub percent: f32,
+    /// Unix seconds.
+    pub started_at: i64,
+    pub finished_at: Option<i64>,
+    pub errors: u64,
+}
+
+/// A ZFS pool; for pools zendiloOS created, also a volume.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct Pool {
+    pub name: String,
+    pub guid: String,
+    pub state: VdevState,
+    pub layout: PoolLayout,
+    /// For `raidz`.
+    pub parity: Option<u8>,
+    /// For `other`, e.g. `stripe`.
+    pub layout_name: Option<String>,
+    /// Disks that may fail without losing data.
+    pub redundancy: usize,
+    /// Raw capacity and allocation, including redundancy.
+    pub size_bytes: u64,
+    pub allocated_bytes: u64,
+    /// Space as files see it.
+    pub used_bytes: Option<u64>,
+    pub available_bytes: Option<u64>,
+    /// The `N` of `/volume<N>`; only for pools zendiloOS created.
+    pub volume: Option<u16>,
+    /// Where it is mounted, if it is.
+    pub mount_point: Option<String>,
+    pub devices: Vec<PoolDevice>,
+    pub scan: Option<PoolScan>,
+    /// Files with permanent errors.
+    pub data_errors: u64,
+}
+
+impl From<storage::Pool> for Pool {
+    fn from(pool: storage::Pool) -> Self {
+        let disks = pool.devices.iter().filter(|d| d.replacing != Some(storage::Replacing::New)).count();
+        let redundancy = pool.layout.redundancy(disks);
+        let (layout, parity, layout_name) = match pool.layout {
+            storage::PoolLayout::Single => (PoolLayout::Single, None, None),
+            storage::PoolLayout::Mirror => (PoolLayout::Mirror, None, None),
+            storage::PoolLayout::Raidz { parity } => (PoolLayout::Raidz, Some(parity), None),
+            storage::PoolLayout::Other(name) => (PoolLayout::Other, None, Some(name)),
+        };
+        let mounted = pool.space.is_some_and(|space| space.mounted);
+        Self {
+            name: pool.name,
+            guid: pool.guid,
+            state: pool.state.into(),
+            layout,
+            parity,
+            layout_name,
+            redundancy,
+            size_bytes: pool.size_bytes,
+            allocated_bytes: pool.allocated_bytes,
+            used_bytes: pool.space.map(|s| s.used_bytes),
+            available_bytes: pool.space.map(|s| s.available_bytes),
+            volume: pool.volume.map(storage::VolumeNumber::get),
+            mount_point: pool.volume.filter(|_| mounted).map(storage::VolumeNumber::mount_point),
+            devices: pool
+                .devices
+                .into_iter()
+                .map(|d| PoolDevice {
+                    name: d.name,
+                    guid: d.guid,
+                    disk: d.disk,
+                    state: d.state.into(),
+                    read_errors: d.read_errors,
+                    write_errors: d.write_errors,
+                    checksum_errors: d.checksum_errors,
+                    replacing: d.replacing.map(|role| match role {
+                        storage::Replacing::Old => ReplacingRole::Old,
+                        storage::Replacing::New => ReplacingRole::New,
+                    }),
+                })
+                .collect(),
+            scan: pool.scan.map(|scan| PoolScan {
+                percent: scan.percent(),
+                kind: match scan.kind {
+                    storage::ScanKind::Scrub => ScanKind::Scrub,
+                    storage::ScanKind::Resilver => ScanKind::Resilver,
+                },
+                state: match scan.state {
+                    storage::ScanState::Running => ScanState::Running,
+                    storage::ScanState::Finished => ScanState::Finished,
+                    storage::ScanState::Canceled => ScanState::Canceled,
+                },
+                started_at: scan.started_at.unix_seconds(),
+                finished_at: scan.finished_at.map(|t| t.unix_seconds()),
+                errors: scan.errors,
+            }),
+            data_errors: pool.data_errors,
+        }
+    }
+}
+
+/// The ZFS pools. Fails if ZFS is unavailable, e.g. when its kernel module
+/// could not be built for a new kernel. Needs `storage.view`.
+#[utoipa::path(
+    get,
+    path = "/storage/pools",
+    tag = "storage",
+    security(("session" = [])),
+    responses(
+        (status = OK, body = Vec<Pool>),
+        (status = FORBIDDEN, body = Problem, description = "`forbidden`"),
+    )
+)]
+async fn pools(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+) -> Result<Json<Vec<Pool>>, ApiError> {
+    auth.require(Permission::StorageView)?;
+    let pools = state.storage.list_pools.execute(&client).await?;
+    Ok(Json(pools.into_iter().map(Pool::from).collect()))
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum NewPoolLayout {
+    Single,
+    Mirror,
+    Raidz1,
+    Raidz2,
+    Raidz3,
+}
+
+impl From<NewPoolLayout> for storage::PoolLayout {
+    fn from(layout: NewPoolLayout) -> Self {
+        match layout {
+            NewPoolLayout::Single => storage::PoolLayout::Single,
+            NewPoolLayout::Mirror => storage::PoolLayout::Mirror,
+            NewPoolLayout::Raidz1 => storage::PoolLayout::Raidz { parity: 1 },
+            NewPoolLayout::Raidz2 => storage::PoolLayout::Raidz { parity: 2 },
+            NewPoolLayout::Raidz3 => storage::PoolLayout::Raidz { parity: 3 },
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PoolPlanRequest {
+    pub name: String,
+    pub layout: NewPoolLayout,
+    /// Kernel names, e.g. `sdb`.
+    pub disks: Vec<String>,
+}
+
+/// A disk a plan will erase.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PlannedDisk {
+    pub name: String,
+    pub id_link: String,
+    pub model: Option<String>,
+    pub serial: Option<String>,
+    pub size_bytes: u64,
+    /// What is on it now and will be lost, e.g. `ntfs "Backup"`.
+    pub erases: Vec<String>,
+}
+
+impl From<storage::PlannedDisk> for PlannedDisk {
+    fn from(disk: storage::PlannedDisk) -> Self {
+        Self {
+            name: disk.name,
+            id_link: disk.id_link,
+            model: disk.model,
+            serial: disk.serial,
+            size_bytes: disk.size_bytes,
+            erases: disk.erases,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanWarningCode {
+    /// Disks of different sizes: each is used only up to the smallest.
+    MixedSizes,
+    /// One disk failure loses all data.
+    NoRedundancy,
+    /// At least one disk has data on it.
+    ErasesData,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PlanWarning {
+    pub code: PlanWarningCode,
+    /// For `mixed_sizes`.
+    pub unused_bytes: Option<u64>,
+}
+
+fn warnings(warnings: Vec<storage::PlanWarning>) -> Vec<PlanWarning> {
+    warnings
+        .into_iter()
+        .map(|warning| match warning {
+            storage::PlanWarning::MixedSizes { unused_bytes } => {
+                PlanWarning { code: PlanWarningCode::MixedSizes, unused_bytes: Some(unused_bytes) }
+            }
+            storage::PlanWarning::NoRedundancy => {
+                PlanWarning { code: PlanWarningCode::NoRedundancy, unused_bytes: None }
+            }
+            storage::PlanWarning::ErasesData => {
+                PlanWarning { code: PlanWarningCode::ErasesData, unused_bytes: None }
+            }
+        })
+        .collect()
+}
+
+/// What creating the pool would do. Confirm it with `token` within the
+/// time given.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PoolPlan {
+    pub token: String,
+    /// Unix seconds.
+    pub expires_at: i64,
+    pub name: String,
+    pub layout: PoolLayout,
+    pub parity: Option<u8>,
+    pub volume: u16,
+    pub mount_point: String,
+    /// Usable bytes before ZFS overhead.
+    pub capacity_bytes: u64,
+    pub redundancy: usize,
+    /// All of them will be erased.
+    pub disks: Vec<PlannedDisk>,
+    pub warnings: Vec<PlanWarning>,
+}
+
+/// Plans a new pool: which disks would be erased and what the pool would
+/// offer. Erases nothing. Needs `storage.manage`.
+#[utoipa::path(
+    post,
+    path = "/storage/pools/plan",
+    tag = "storage",
+    security(("session" = [])),
+    request_body = PoolPlanRequest,
+    responses(
+        (status = OK, body = PoolPlan),
+        (status = CONFLICT, body = Problem, description = "`name_taken`, `no_volume_number`"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_input`, `disk_count`, `disk_not_found`, `disk_unusable`, `duplicate_disk`, `unsupported_layout`"),
+    )
+)]
+async fn plan_pool(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    ApiJson(request): ApiJson<PoolPlanRequest>,
+) -> Result<Json<PoolPlan>, ApiError> {
+    auth.require(Permission::StorageManage)?;
+    let actor = auth.0.actor();
+    let planned = state
+        .storage
+        .plan_pool
+        .execute(&request.name, request.layout.into(), request.disks, &actor, &client)
+        .await?;
+    let plan = planned.plan;
+    let (layout, parity) = match plan.layout {
+        storage::PoolLayout::Raidz { parity } => (PoolLayout::Raidz, Some(parity)),
+        storage::PoolLayout::Mirror => (PoolLayout::Mirror, None),
+        _ => (PoolLayout::Single, None),
+    };
+    Ok(Json(PoolPlan {
+        token: planned.token,
+        expires_at: planned.expires_at.unix_seconds(),
+        name: plan.name.to_string(),
+        layout,
+        parity,
+        volume: plan.volume.get(),
+        mount_point: plan.volume.mount_point(),
+        capacity_bytes: plan.capacity_bytes,
+        redundancy: plan.redundancy,
+        disks: plan.disks.into_iter().map(PlannedDisk::from).collect(),
+        warnings: warnings(plan.warnings),
+    }))
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreatePoolRequest {
+    /// From the plan.
+    pub token: String,
+    /// The pool's name, typed again.
+    pub confirm: String,
+}
+
+/// Creates the pool of a plan, erasing its disks. The disks are checked
+/// again first: if anything changed since the plan, nothing happens.
+/// Answers with the job. Needs `storage.manage`.
+#[utoipa::path(
+    post,
+    path = "/storage/pools",
+    tag = "storage",
+    security(("session" = [])),
+    request_body = CreatePoolRequest,
+    responses(
+        (status = ACCEPTED, body = Job),
+        (status = CONFLICT, body = Problem, description = "`plan_expired`, `plan_changed`"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`confirmation_mismatch`"),
+    )
+)]
+async fn create_pool(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    ApiJson(request): ApiJson<CreatePoolRequest>,
+) -> Result<(StatusCode, Json<Job>), ApiError> {
+    auth.require(Permission::StorageManage)?;
+    let job =
+        state.storage.create_pool.execute(&request.token, &request.confirm, &auth.0.actor(), &client).await?;
+    Ok((StatusCode::ACCEPTED, Json(job.into())))
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DestroyPoolRequest {
+    /// The pool's name, typed again.
+    pub confirm: String,
+}
+
+/// Destroys a pool zendiloOS created and erases its disks. All its data is
+/// lost. Answers with the job. Needs `storage.manage`.
+#[utoipa::path(
+    post,
+    path = "/storage/pools/{name}/destroy",
+    tag = "storage",
+    security(("session" = [])),
+    params(("name" = String, Path)),
+    request_body = DestroyPoolRequest,
+    responses(
+        (status = ACCEPTED, body = Job),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`"),
+        (status = CONFLICT, body = Problem, description = "`pool_not_managed`"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`confirmation_mismatch`"),
+    )
+)]
+async fn destroy_pool(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(name): Path<String>,
+    ApiJson(request): ApiJson<DestroyPoolRequest>,
+) -> Result<(StatusCode, Json<Job>), ApiError> {
+    auth.require(Permission::StorageManage)?;
+    let job = state.storage.destroy_pool.execute(&name, &request.confirm, &auth.0.actor(), &client).await?;
+    Ok((StatusCode::ACCEPTED, Json(job.into())))
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReplacePlanRequest {
+    /// GUID of the device to replace.
+    pub device: String,
+    /// Kernel name of the new disk.
+    pub disk: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ReplacePlan {
+    pub token: String,
+    pub expires_at: i64,
+    pub pool: String,
+    pub device: String,
+    pub device_name: String,
+    /// Will be erased.
+    pub disk: PlannedDisk,
+    pub warnings: Vec<PlanWarning>,
+}
+
+/// Plans replacing a device of a pool with another disk. Erases nothing.
+/// Needs `storage.manage`.
+#[utoipa::path(
+    post,
+    path = "/storage/pools/{name}/replace/plan",
+    tag = "storage",
+    security(("session" = [])),
+    params(("name" = String, Path)),
+    request_body = ReplacePlanRequest,
+    responses(
+        (status = OK, body = ReplacePlan),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`device_not_found`, `disk_unusable`, `disk_too_small`"),
+    )
+)]
+async fn plan_replace(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(name): Path<String>,
+    ApiJson(request): ApiJson<ReplacePlanRequest>,
+) -> Result<Json<ReplacePlan>, ApiError> {
+    auth.require(Permission::StorageManage)?;
+    let planned = state
+        .storage
+        .plan_replace
+        .execute(&name, &request.device, &request.disk, &auth.0.actor(), &client)
+        .await?;
+    let plan = planned.plan;
+    Ok(Json(ReplacePlan {
+        token: planned.token,
+        expires_at: planned.expires_at.unix_seconds(),
+        pool: plan.pool.to_string(),
+        device: plan.device,
+        device_name: plan.device_name,
+        disk: plan.disk.into(),
+        warnings: warnings(plan.warnings),
+    }))
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReplaceDiskRequest {
+    pub token: String,
+}
+
+/// Carries out a planned replacement; ZFS then resilvers onto the new disk.
+/// Answers with the job. Needs `storage.manage`.
+#[utoipa::path(
+    post,
+    path = "/storage/pools/{name}/replace",
+    tag = "storage",
+    security(("session" = [])),
+    params(("name" = String, Path)),
+    request_body = ReplaceDiskRequest,
+    responses(
+        (status = ACCEPTED, body = Job),
+        (status = CONFLICT, body = Problem, description = "`plan_expired`, `plan_changed`"),
+    )
+)]
+async fn replace_disk(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(_name): Path<String>,
+    ApiJson(request): ApiJson<ReplaceDiskRequest>,
+) -> Result<(StatusCode, Json<Job>), ApiError> {
+    auth.require(Permission::StorageManage)?;
+    let job = state.storage.replace_disk.execute(&request.token, &auth.0.actor(), &client).await?;
+    Ok((StatusCode::ACCEPTED, Json(job.into())))
+}
+
+/// Starts checking all data of the pool; progress shows in the pool.
+/// Needs `storage.manage`.
+#[utoipa::path(
+    post,
+    path = "/storage/pools/{name}/scrub",
+    tag = "storage",
+    security(("session" = [])),
+    params(("name" = String, Path)),
+    responses(
+        (status = NO_CONTENT, description = "Started."),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`"),
+    )
+)]
+async fn scrub_pool(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(name): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    auth.require(Permission::StorageManage)?;
+    state.storage.scrub_pool.execute(&name, &auth.0.actor(), &client).await?;
+    Ok(StatusCode::NO_CONTENT)
 }

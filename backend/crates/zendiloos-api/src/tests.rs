@@ -10,7 +10,11 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 use zendiloos_identity::domain::{AccountName, Role};
 use zendiloos_identity::testing::{SETUP_CODE, TestIdentity};
+use zendiloos_jobs::Jobs;
+use zendiloos_jobs::testing::MemoryJobs;
 use zendiloos_kernel::{Outcome, PortError, RequestContext};
+use zendiloos_notify::testing::MemoryNotifications;
+use zendiloos_notify::{Level, NewNotification, Notifier};
 use zendiloos_storage::application::StorageUseCases;
 use zendiloos_storage::testing::FakeStorage;
 use zendiloos_system::application::ports::{
@@ -160,6 +164,9 @@ struct Harness {
     identity: TestIdentity,
     power: Arc<RecordingPower>,
     journal: Arc<FakeJournal>,
+    jobs: Jobs,
+    storage: Arc<FakeStorage>,
+    notifier: Notifier,
 }
 
 struct Reply {
@@ -209,10 +216,20 @@ impl Harness {
             audit_reader: Arc::new(FakeAuditReader(identity.audit.clone())),
             clock: identity.clock.clone(),
         });
-        let storage = StorageUseCases::new(FakeStorage::ports());
-        let use_cases = UseCases { system, identity: identity.use_cases.clone(), storage };
+        let jobs = Jobs::new(Arc::new(MemoryJobs::default()), identity.clock.clone());
+        let (ports, storage_fake) =
+            FakeStorage::ports(jobs.clone(), identity.audit.clone(), identity.clock.clone());
+        let storage = StorageUseCases::new(ports);
+        let notifier = Notifier::new(Arc::new(MemoryNotifications::default()), identity.clock.clone());
+        let use_cases = UseCases {
+            system,
+            identity: identity.use_cases.clone(),
+            storage,
+            jobs: jobs.clone(),
+            notifier: notifier.clone(),
+        };
         let state = ApiState::new(use_cases, secure_cookies);
-        Self { app: router(state), identity, power, journal }
+        Self { app: router(state), identity, power, journal, jobs, storage: storage_fake, notifier }
     }
 
     async fn send(&self, request: Request<Body>) -> Reply {
@@ -437,6 +454,42 @@ async fn the_live_socket_streams_metrics() {
     assert_eq!((latest["type"].as_str(), latest["data"]["at"].as_i64()), (Some("metrics"), Some(100)));
     assert_eq!(latest["data"]["cpu_percent"], 12.5);
     assert_eq!(fresh["data"]["at"], 101);
+}
+
+#[tokio::test]
+async fn the_live_socket_streams_job_changes() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest};
+
+    let h = Harness::new();
+    let session = h.sign_in("alice", Role::User).await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(axum::serve(listener, h.app.clone()).into_future());
+    let mut request = format!("ws://{address}/api/v1/ws").into_client_request().unwrap();
+    request.headers_mut().insert(header::COOKIE, session.cookie.parse().unwrap());
+    request.headers_mut().insert(header::ORIGIN, format!("http://{address}").parse().unwrap());
+    let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+
+    socket.send(Message::Text(r#"{"type":"subscribe","topic":"jobs"}"#.into())).await.unwrap();
+    // Requests are handled in order: once metrics arrive, jobs are subscribed.
+    socket.send(Message::Text(r#"{"type":"subscribe","topic":"metrics"}"#.into())).await.unwrap();
+    let mut next = async || {
+        let message = tokio::time::timeout(std::time::Duration::from_secs(5), socket.next()).await;
+        serde_json::from_str::<Value>(message.unwrap().unwrap().unwrap().to_text().unwrap()).unwrap()
+    };
+    assert_eq!(next().await["type"], "metrics");
+
+    h.jobs.start("storage.scrub", Some("tank".into()), None, |_| async { Ok(()) }).await.unwrap();
+    let mut states = Vec::new();
+    while states.len() < 2 {
+        let message = next().await;
+        if message["type"] == "job" {
+            assert_eq!(message["data"]["target"], "tank");
+            states.push(message["data"]["state"].as_str().unwrap().to_owned());
+        }
+    }
+    assert_eq!(states, ["running", "succeeded"]);
 }
 
 // Initial setup
@@ -683,12 +736,21 @@ fn openapi_documents_every_route() {
             "/api/v1/groups",
             "/api/v1/groups/{id}",
             "/api/v1/health",
+            "/api/v1/jobs",
+            "/api/v1/jobs/{id}",
             "/api/v1/logs/audit",
             "/api/v1/logs/journal",
+            "/api/v1/notifications",
             "/api/v1/setup",
             "/api/v1/storage/arrays",
             "/api/v1/storage/disks",
             "/api/v1/storage/disks/{name}/smart",
+            "/api/v1/storage/pools",
+            "/api/v1/storage/pools/plan",
+            "/api/v1/storage/pools/{name}/destroy",
+            "/api/v1/storage/pools/{name}/replace",
+            "/api/v1/storage/pools/{name}/replace/plan",
+            "/api/v1/storage/pools/{name}/scrub",
             "/api/v1/storage/volumes",
             "/api/v1/system/info",
             "/api/v1/system/power",
@@ -711,12 +773,17 @@ async fn storage_lists_disks_arrays_and_volumes() {
         [
             (json!("sda"), json!("array_member")),
             (json!("sdb"), json!("array_member")),
+            (json!("sdc"), json!("pool_member")),
+            (json!("sdd"), json!("unused")),
+            (json!("sde"), json!("unused")),
             (json!("nvme0n1"), json!("system")),
         ]
     );
     assert_eq!(disks.body[0]["array"], "md0");
     assert_eq!(disks.body[0]["transport"], "sata");
-    assert_eq!(disks.body[2]["media"], "solid_state");
+    assert_eq!(disks.body[2]["pool"], "tank");
+    assert_eq!(disks.body[2]["id_link"], "ata-TEST_HDD_T3");
+    assert_eq!(disks.body[5]["media"], "solid_state");
 
     let arrays = read("/api/v1/storage/arrays").await;
     assert_eq!(arrays.body[0]["health"], "healthy");
@@ -724,10 +791,20 @@ async fn storage_lists_disks_arrays_and_volumes() {
     assert_eq!(arrays.body[0]["members"][1], json!({ "device": "sdb", "index": 1, "state": "active" }));
 
     let volumes = read("/api/v1/storage/volumes").await;
-    assert_eq!(volumes.body.as_array().unwrap().len(), 1);
-    assert_eq!(volumes.body[0]["label"], "data");
-    assert_eq!(volumes.body[0]["disks"], json!(["sda", "sdb"]));
-    assert_eq!(volumes.body[0]["used_bytes"], 1_u64 << 40);
+    let labels: Vec<_> = volumes.body.as_array().unwrap().iter().map(|v| v["label"].clone()).collect();
+    assert_eq!(labels, [json!("tank"), json!("data")]);
+    assert_eq!(volumes.body[0]["mount_points"], json!(["/volume1"]));
+    assert_eq!(volumes.body[0]["disks"], json!(["sdc"]));
+    assert_eq!(volumes.body[1]["disks"], json!(["sda", "sdb"]));
+    assert_eq!(volumes.body[1]["used_bytes"], 1_u64 << 40);
+
+    let pools = read("/api/v1/storage/pools").await;
+    assert_eq!(pools.status, StatusCode::OK, "{:?}", pools.body);
+    assert_eq!(pools.body[0]["name"], "tank");
+    assert_eq!(pools.body[0]["layout"], "single");
+    assert_eq!(pools.body[0]["mount_point"], "/volume1");
+    assert_eq!(pools.body[0]["guid"], "9846106214133009000");
+    assert_eq!(pools.body[0]["devices"][0]["disk"], "sdc");
 }
 
 #[tokio::test]
@@ -760,6 +837,7 @@ async fn storage_needs_the_view_permission() {
         "/api/v1/storage/disks",
         "/api/v1/storage/disks/sda/smart",
         "/api/v1/storage/arrays",
+        "/api/v1/storage/pools",
         "/api/v1/storage/volumes",
     ] {
         let reply = h.send(empty(with_cookie(get(uri), &session))).await;
@@ -973,4 +1051,132 @@ fn every_schema_reference_resolves() {
             _ => {}
         }
     }
+}
+
+#[tokio::test]
+async fn jobs_are_listed_newest_first() {
+    let h = Harness::new();
+    let session = h.sign_in("alice", Role::ReadOnly).await;
+    for target in ["tank", "backup"] {
+        h.jobs.start("storage.scrub", Some(target.into()), None, |_| async { Ok(()) }).await.unwrap();
+    }
+
+    let list = h.send(empty(with_cookie(get("/api/v1/jobs"), &session))).await;
+    assert_eq!(list.status, StatusCode::OK);
+    let targets: Vec<_> = list.body.as_array().unwrap().iter().map(|j| j["target"].clone()).collect();
+    assert_eq!(targets, [json!("backup"), json!("tank")]);
+    assert_eq!(list.body[0]["kind"], "storage.scrub");
+
+    let id = list.body[1]["id"].as_i64().unwrap();
+    let one = h.send(empty(with_cookie(get(&format!("/api/v1/jobs/{id}")), &session))).await;
+    assert_eq!(one.body["target"], "tank");
+    let missing = h.send(empty(with_cookie(get("/api/v1/jobs/999"), &session))).await;
+    assert_problem(&missing, StatusCode::NOT_FOUND, "not_found");
+}
+
+async fn job_done(h: &Harness, id: i64) -> zendiloos_jobs::Job {
+    for _ in 0..100 {
+        let job = h.jobs.find(zendiloos_jobs::JobId::new(id)).await.unwrap().unwrap();
+        if job.state != zendiloos_jobs::JobState::Running {
+            return job;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("job {id} did not finish");
+}
+
+#[tokio::test]
+async fn pools_are_created_from_a_confirmed_plan() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let request = json!({ "name": "media", "layout": "mirror", "disks": ["sdd", "sde"] });
+
+    let plan = h.send(json(with_csrf(post("/api/v1/storage/pools/plan"), &admin), request)).await;
+    assert_eq!(plan.status, StatusCode::OK, "{:?}", plan.body);
+    assert_eq!(plan.body["mount_point"], "/volume2");
+    assert_eq!(plan.body["redundancy"], 1);
+    assert_eq!(plan.body["disks"][0]["id_link"], "ata-TEST_HDD_T4");
+    let token = plan.body["token"].as_str().unwrap().to_owned();
+
+    let wrong = json!({ "token": token, "confirm": "Media" });
+    let reply = h.send(json(with_csrf(post("/api/v1/storage/pools"), &admin), wrong)).await;
+    assert_problem(&reply, StatusCode::UNPROCESSABLE_ENTITY, "confirmation_mismatch");
+
+    let confirm = json!({ "token": token, "confirm": "media" });
+    let started = h.send(json(with_csrf(post("/api/v1/storage/pools"), &admin), confirm.clone())).await;
+    assert_eq!(started.status, StatusCode::ACCEPTED, "{:?}", started.body);
+    assert_eq!(started.body["kind"], "storage.create_pool");
+    let job = job_done(&h, started.body["id"].as_i64().unwrap()).await;
+    assert_eq!(job.state, zendiloos_jobs::JobState::Succeeded);
+    assert_eq!(h.storage.calls(), ["create media Mirror ata-TEST_HDD_T4,ata-TEST_HDD_T5 2"]);
+
+    let reused = h.send(json(with_csrf(post("/api/v1/storage/pools"), &admin), confirm)).await;
+    assert_problem(&reused, StatusCode::CONFLICT, "plan_expired");
+}
+
+#[tokio::test]
+async fn plans_explain_why_a_disk_cannot_be_used() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let plan = |body| h.send(json(with_csrf(post("/api/v1/storage/pools/plan"), &admin), body));
+
+    let system = plan(json!({ "name": "media", "layout": "mirror", "disks": ["nvme0n1", "sdd"] })).await;
+    assert_problem(&system, StatusCode::UNPROCESSABLE_ENTITY, "disk_unusable");
+    assert_eq!(system.body["detail"], "nvme0n1: system");
+    let count = plan(json!({ "name": "media", "layout": "raidz1", "disks": ["sdd", "sde"] })).await;
+    assert_problem(&count, StatusCode::UNPROCESSABLE_ENTITY, "disk_count");
+    let taken = plan(json!({ "name": "tank", "layout": "single", "disks": ["sdd"] })).await;
+    assert_problem(&taken, StatusCode::CONFLICT, "name_taken");
+    let name = plan(json!({ "name": "Mirror", "layout": "single", "disks": ["sdd"] })).await;
+    assert_problem(&name, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
+}
+
+#[tokio::test]
+async fn pools_are_destroyed_replaced_and_scrubbed_by_admins_only() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let send = |uri: &str, body: Value| h.send(json(with_csrf(post(uri), &admin), body));
+
+    let wrong = send("/api/v1/storage/pools/tank/destroy", json!({ "confirm": "tnak" })).await;
+    assert_problem(&wrong, StatusCode::UNPROCESSABLE_ENTITY, "confirmation_mismatch");
+
+    let plan = send(
+        "/api/v1/storage/pools/tank/replace/plan",
+        json!({ "device": "4933705814018298948", "disk": "sde" }),
+    )
+    .await;
+    assert_eq!(plan.status, StatusCode::OK, "{:?}", plan.body);
+    assert_eq!(plan.body["disk"]["id_link"], "ata-TEST_HDD_T5");
+    let started = send("/api/v1/storage/pools/tank/replace", json!({ "token": plan.body["token"] })).await;
+    assert_eq!(started.status, StatusCode::ACCEPTED);
+    job_done(&h, started.body["id"].as_i64().unwrap()).await;
+
+    let scrub = h.send(empty(with_csrf(post("/api/v1/storage/pools/tank/scrub"), &admin))).await;
+    assert_eq!(scrub.status, StatusCode::NO_CONTENT);
+
+    let destroyed = send("/api/v1/storage/pools/tank/destroy", json!({ "confirm": "tank" })).await;
+    assert_eq!(destroyed.status, StatusCode::ACCEPTED);
+    job_done(&h, destroyed.body["id"].as_i64().unwrap()).await;
+    assert_eq!(
+        h.storage.calls(),
+        ["replace tank 4933705814018298948 ata-TEST_HDD_T5", "scrub tank", "destroy tank 1"]
+    );
+
+    let viewer = h.sign_in("bob", Role::ReadOnly).await;
+    let denied = h.send(empty(with_csrf(post("/api/v1/storage/pools/tank/scrub"), &viewer))).await;
+    assert_problem(&denied, StatusCode::FORBIDDEN, "forbidden");
+}
+
+#[tokio::test]
+async fn notifications_are_listed_newest_first() {
+    let h = Harness::new();
+    let session = h.sign_in("alice", Role::ReadOnly).await;
+    h.notifier.notify(NewNotification::new(Level::Warning, "pool_trouble").with("pool", "tank")).await;
+    h.notifier.notify(NewNotification::new(Level::Success, "pool_recovered").with("pool", "tank")).await;
+
+    let list = h.send(empty(with_cookie(get("/api/v1/notifications"), &session))).await;
+    assert_eq!(list.status, StatusCode::OK);
+    assert_eq!(list.body[0]["code"], "pool_recovered");
+    assert_eq!(list.body[1]["level"], "warning");
+    assert_eq!(list.body[1]["params"], json!({ "pool": "tank" }));
 }

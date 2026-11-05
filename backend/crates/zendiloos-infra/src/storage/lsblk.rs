@@ -22,6 +22,8 @@ struct Node {
     model: Option<String>,
     serial: Option<String>,
     wwn: Option<String>,
+    #[serde(rename = "id-link")]
+    id_link: Option<String>,
     tran: Option<String>,
     rota: Option<Flag>,
     rm: Option<Flag>,
@@ -109,6 +111,7 @@ fn convert(node: Node) -> BlockDevice {
         model: non_empty(node.model),
         serial: non_empty(node.serial),
         wwn: non_empty(node.wwn),
+        id_link: non_empty(node.id_link),
         transport: non_empty(node.tran),
         rotational: Flag::get(node.rota.as_ref()),
         removable: Flag::get(node.rm.as_ref()),
@@ -139,6 +142,7 @@ mod tests {
 
         let sdb = &devices[1];
         assert_eq!(sdb.serial.as_deref(), Some("ZDL-SATA-3"));
+        assert_eq!(sdb.id_link.as_deref(), Some("ata-QEMU_HARDDISK_ZDL-SATA-3"));
         assert_eq!(sdb.model.as_deref(), Some("QEMU HARDDISK"));
         assert_eq!(sdb.size_bytes, 8_589_934_592);
         assert!(sdb.rotational);
@@ -154,7 +158,8 @@ mod tests {
     #[test]
     fn the_test_vm_has_the_expected_disks_and_one_volume() {
         let devices = parse(VM).unwrap();
-        let usage: Vec<_> = disks(&devices).into_iter().map(|d| (d.name, d.transport, d.usage)).collect();
+        let usage: Vec<_> =
+            disks(&devices, &[]).into_iter().map(|d| (d.name, d.transport, d.usage)).collect();
         assert_eq!(
             usage,
             [
@@ -168,7 +173,7 @@ mod tests {
             ]
         );
 
-        let volumes = volumes(&devices);
+        let volumes = volumes(&devices, &[]);
         assert_eq!(volumes.len(), 1);
         assert_eq!(volumes[0].label.as_deref(), Some("testvolume"));
         assert_eq!(volumes[0].filesystem, "btrfs");

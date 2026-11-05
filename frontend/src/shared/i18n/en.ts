@@ -113,6 +113,117 @@ const en = {
     version: 'zendiloOS version',
   },
   storage: {
+    scrubNow: 'Check data now',
+    plan: {
+      willErase: 'These disks will be erased:',
+      contains: 'Contains {what}',
+      warning: {
+        mixed_sizes: 'The disks differ in size; {unused} stay unused.',
+        no_redundancy: 'No redundancy: if the disk fails, all data is lost.',
+        erases_data: 'Some disks contain data. It will be lost.',
+      },
+    },
+    create: {
+      button: 'New pool',
+      title: 'New pool',
+      description: 'A pool combines disks into one volume. The disks are erased.',
+      name: 'Name',
+      nameHint: 'Lowercase letters, digits, - and _; starting with a letter.',
+      disks: 'Disks',
+      noDisks: 'No free disks.',
+      layout: 'Layout',
+      layouts: {
+        single: {
+          name: 'Single disk',
+          description: 'All space, no protection against a disk failure.',
+        },
+        mirror: {
+          name: 'Mirror',
+          description: 'Every disk holds all data; survives all but one disk failing.',
+        },
+        raidz1: {
+          name: 'RAIDZ1',
+          description: 'Space of all disks but one; survives one disk failing.',
+        },
+        raidz2: {
+          name: 'RAIDZ2',
+          description: 'Space of all disks but two; survives two disks failing.',
+        },
+        raidz3: {
+          name: 'RAIDZ3',
+          description: 'Space of all disks but three; survives three disks failing.',
+        },
+      },
+      review: 'Review',
+      capacity: 'Usable space',
+      safety: 'Protection',
+      path: 'Mounted at',
+      confirm: 'Type {name} to confirm',
+      submit: 'Erase disks and create pool',
+    },
+    destroy: {
+      button: 'Delete pool',
+      title: 'Delete pool {name}?',
+      description: 'All data on {path} is lost and the disks are erased. This cannot be undone.',
+      submit: 'Delete pool and all data',
+    },
+    replaceDisk: {
+      button: 'Replace disk',
+      title: 'Replace {device}',
+      description:
+        'Choose the disk that takes its place. Its contents are erased; the pool then rebuilds onto it.',
+      understood: 'Erase {disk} and use it as replacement.',
+      submit: 'Erase and replace',
+    },
+    pools: 'Pools',
+    noPools: 'No pools yet.',
+    poolsUnavailable: 'ZFS is not available, so pools cannot be shown.',
+    notManaged: 'Not managed by zendiloOS',
+    redundancy: 'no redundancy | survives one disk failure | survives {count} disk failures',
+    layouts: {
+      single: 'Single disk',
+      mirror: 'Mirror',
+      other: 'Other layout',
+    },
+    vdevState: {
+      online: 'Healthy',
+      degraded: 'Degraded',
+      faulted: 'Failed',
+      offline: 'Offline',
+      removed: 'Removed',
+      unavailable: 'Unavailable',
+      suspended: 'Suspended',
+      unknown: 'Unknown',
+    },
+    scan: {
+      kind: {
+        scrub: 'Data check',
+        resilver: 'Rebuild',
+      },
+      running: {
+        scrub: 'Checking all data · {percent}',
+        resilver: 'Rebuilding redundancy · {percent}',
+      },
+      finished: {
+        scrub:
+          'Last data check {at}: no errors | Last data check {at}: one error repaired | Last data check {at}: {count} errors repaired',
+        resilver: 'Rebuilt {at}',
+      },
+      canceled: {
+        scrub: 'Data check canceled {at}',
+        resilver: 'Rebuild canceled {at}',
+      },
+    },
+    dataErrors:
+      'One file is damaged and could not be repaired. | {count} files are damaged and could not be repaired.',
+    devices: 'Disks',
+    missingDisk: 'missing',
+    deviceErrors: 'errors: {read} read · {write} write · {checksum} checksum',
+    replacing: {
+      old: 'Being replaced',
+      new: 'Replacement',
+    },
+    otherArrays: 'Other RAID arrays (read only)',
     volumes: 'Volumes',
     arrays: 'RAID arrays',
     disks: 'Disks',
@@ -154,6 +265,7 @@ const en = {
     unknownModel: 'Unknown model',
     usage: {
       system: 'System disk',
+      pool_member: 'In pool {pool}',
       array_member: 'In {array}',
       volume: 'Volume',
       foreign: 'In use (not managed)',
@@ -347,6 +459,56 @@ const en = {
       system_power_off: 'Shut down',
     },
   },
+  jobs: {
+    succeeded: 'Done.',
+    failedBecause: '({code})',
+    state: {
+      running: 'Running',
+      succeeded: 'Done',
+      failed: 'Failed.',
+      interrupted: 'Interrupted by a restart; check the result.',
+    },
+    kinds: {
+      storage_create_pool: 'Create pool',
+      storage_destroy_pool: 'Delete pool',
+      storage_replace_disk: 'Replace disk',
+      storage_scrub: 'Check data',
+    },
+  },
+  notices: {
+    states: {
+      degraded: 'degraded',
+      faulted: 'failed',
+      unavailable: 'unavailable',
+      suspended: 'suspended',
+      offline: 'offline',
+      removed: 'removed',
+      unknown: 'in an unknown state',
+    },
+    pool_trouble: {
+      title: 'Pool {pool} is {state}',
+      body: 'Open Storage to see which disk is affected.',
+    },
+    pool_recovered: {
+      title: 'Pool {pool} is healthy again',
+    },
+    resilver_finished: {
+      title: 'Pool {pool} is rebuilt',
+      body: 'No errors. | One error was found. | {errors} errors were found.',
+    },
+    scrub_finished: {
+      title: 'Data check of {pool} finished',
+      body: 'No errors. | One error was found and repaired. | {errors} errors were found and repaired.',
+    },
+    volume_filling: {
+      title: 'Pool {pool} is {percent} % full',
+      body: 'Free up space or add disks before it is full.',
+    },
+    disk_health: {
+      title: 'Disk {disk} reports problems',
+      body: '{model}: SMART health is {health}. Plan to replace it.',
+    },
+  },
   duration: {
     days: '{n} d',
     hours: '{n} h',
@@ -366,6 +528,14 @@ const en = {
     own_account: 'Change your own account in your settings.',
     password_change_required: 'Choose a new password first.',
     not_found: 'It no longer exists. Reload and try again.',
+    plan_expired: 'The plan has expired. Review it again.',
+    plan_changed: 'The disks changed since the plan was made. Review it again.',
+    confirmation_mismatch: 'The name you typed does not match.',
+    disk_count: 'This layout needs a different number of disks.',
+    disk_unusable: 'A chosen disk cannot be used.',
+    disk_too_small: 'The disk is smaller than the one it would replace.',
+    pool_not_managed: 'zendiloOS did not create this pool and does not change it.',
+    refused: 'The system refused for safety reasons.',
     network: 'The server cannot be reached.',
     unknown: 'Something went wrong ({code}).',
   },

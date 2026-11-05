@@ -19,12 +19,19 @@ use zendiloos_api::{ApiState, UseCases};
 use zendiloos_identity::application::commands::PurgeExpiredSessions;
 use zendiloos_identity::application::{IdentityConfig, IdentityPorts, IdentityUseCases};
 use zendiloos_infra::SystemClock;
-use zendiloos_infra::agent::{AgentPowerControl, AgentStorage, AgentSystemAccounts, agent_version};
+use zendiloos_infra::agent::{
+    AgentPowerControl, AgentStorage, AgentSystemAccounts, RandomPlanTokens, agent_version,
+};
 use zendiloos_infra::host::{HostSystemInfo, JournalctlReader, MetricsHub};
 use zendiloos_infra::identity::{Argon2PasswordHasher, FileSetupCodes, RandomSessionTokens};
-use zendiloos_infra::sqlite::{Database, SqliteAccounts, SqliteAuditLog, SqliteGroups, SqliteSessions};
+use zendiloos_infra::sqlite::{
+    Database, SqliteAccounts, SqliteAuditLog, SqliteGroups, SqliteJobs, SqliteNotifications, SqliteSessions,
+};
+use zendiloos_jobs::Jobs;
 use zendiloos_kernel::AuditLog;
+use zendiloos_notify::Notifier;
 use zendiloos_sim::SimulatedAgent;
+use zendiloos_storage::application::monitor::StorageMonitor;
 use zendiloos_storage::application::{StoragePorts, StorageUseCases};
 use zendiloos_system::application::{SystemPorts, SystemUseCases};
 
@@ -89,18 +96,32 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         metrics: Arc::new(metrics),
         power: Arc::new(AgentPowerControl::new(agent.clone())),
         journal: Arc::new(journal),
-        audit,
+        audit: audit.clone(),
         audit_reader: Arc::new(SqliteAuditLog::new(database.clone())),
         clock: Arc::new(SystemClock),
     });
+    let jobs = Jobs::new(Arc::new(SqliteJobs::new(database.clone())), Arc::new(SystemClock));
+    let interrupted = jobs.recover().await.context("cannot read the jobs")?;
+    if interrupted > 0 {
+        tracing::warn!(interrupted, "jobs of the previous run were interrupted");
+    }
+    let notifier = Notifier::new(Arc::new(SqliteNotifications::new(database.clone())), Arc::new(SystemClock));
     let agent_storage = Arc::new(AgentStorage::new(agent));
     let storage = StorageUseCases::new(StoragePorts {
         devices: agent_storage.clone(),
         smart: agent_storage.clone(),
-        arrays: agent_storage,
+        arrays: agent_storage.clone(),
+        zfs: agent_storage.clone(),
+        admin: agent_storage,
+        jobs: jobs.clone(),
+        audit,
+        clock: Arc::new(SystemClock),
+        tokens: Arc::new(RandomPlanTokens),
+        notifier: notifier.clone(),
     });
+    let monitor = spawn_storage_monitor(Arc::clone(&storage.monitor));
 
-    let state = ApiState::new(UseCases { system, identity, storage }, config.secure_cookies);
+    let state = ApiState::new(UseCases { system, identity, storage, jobs, notifier }, config.secure_cookies);
     let app = zendiloos_api::router(state);
 
     let issue = config.state_dir.join("console.issue");
@@ -124,6 +145,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     }
     purge.abort();
     sampler.abort();
+    monitor.abort();
     database.close().await;
     tracing::info!("zendiloosd stopped");
     Ok(())
@@ -193,6 +215,17 @@ async fn announce_setup(config: &Config, identity: &IdentityUseCases) -> anyhow:
         "initial setup required: open the web interface and enter the setup code"
     );
     Ok(Some(code))
+}
+
+/// Looks at pools and disks every minute and notifies about changes.
+fn spawn_storage_monitor(monitor: Arc<StorageMonitor>) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut every_minute = tokio::time::interval(Duration::from_secs(60));
+        loop {
+            every_minute.tick().await;
+            monitor.check().await;
+        }
+    })
 }
 
 fn spawn_session_purge(purge: PurgeExpiredSessions) -> JoinHandle<()> {

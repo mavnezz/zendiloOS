@@ -63,6 +63,36 @@ pub enum Request {
     },
     /// The kernel's software RAID status, `/proc/mdstat`.
     ArrayStatus {},
+    /// `zpool status` and `zfs list` of the pools' root datasets, as JSON
+    /// (OpenZFS 2.3); the columns are [`ZFS_DATASET_COLUMNS`].
+    ZfsStatus {},
+    /// Erases `disks`, gives each one GPT partition of the same size and
+    /// creates pool `name` on them, its root dataset mounted at
+    /// `/volume<volume>`. Every disk is checked first, independently of
+    /// zendiloosd: erasable by configuration, not mounted, not in use.
+    CreatePool {
+        name: PoolName,
+        layout: Layout,
+        disks: Vec<DiskId>,
+        volume: VolumeNumber,
+    },
+    /// Unmounts and destroys a pool zendiloos created (its `zendiloos:volume`
+    /// must be `volume`), then erases its disks.
+    DestroyPool {
+        name: PoolName,
+        volume: VolumeNumber,
+    },
+    /// Erases `disk`, gives it a partition of the pool's member size and
+    /// replaces the device with GUID `device` with it.
+    ReplaceDisk {
+        pool: PoolName,
+        device: u64,
+        disk: DiskId,
+    },
+    /// Starts a scrub of the pool.
+    ScrubPool {
+        pool: PoolName,
+    },
     /// Creates a Linux user in group `zendiloos-users`: UID from 2000, no
     /// login shell, no home directory, locked Linux password. `conflict` if
     /// the name is taken.
@@ -114,6 +144,11 @@ impl Request {
             Request::ListBlockDevices {} => "list_block_devices",
             Request::SmartData { .. } => "smart_data",
             Request::ArrayStatus {} => "array_status",
+            Request::ZfsStatus {} => "zfs_status",
+            Request::CreatePool { .. } => "create_pool",
+            Request::DestroyPool { .. } => "destroy_pool",
+            Request::ReplaceDisk { .. } => "replace_disk",
+            Request::ScrubPool { .. } => "scrub_pool",
             Request::CreateUser { .. } => "create_user",
             Request::DeleteUser { .. } => "delete_user",
             Request::SetSmbPassword { .. } => "set_smb_password",
@@ -145,6 +180,10 @@ pub enum Response {
     ArrayStatus {
         /// Empty if the kernel has no software RAID support loaded.
         mdstat: String,
+    },
+    Zfs {
+        zpool_status: String,
+        zfs_list: String,
     },
     Error {
         code: ErrorCode,
@@ -213,6 +252,160 @@ impl From<DiskName> for String {
         name.0
     }
 }
+
+/// How a new pool spreads data over its disks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Layout {
+    Single,
+    Mirror,
+    Raidz1,
+    Raidz2,
+    Raidz3,
+}
+
+impl Layout {
+    /// The `zpool create` vdev keyword, if any.
+    pub fn keyword(self) -> Option<&'static str> {
+        match self {
+            Layout::Single => None,
+            Layout::Mirror => Some("mirror"),
+            Layout::Raidz1 => Some("raidz1"),
+            Layout::Raidz2 => Some("raidz2"),
+            Layout::Raidz3 => Some("raidz3"),
+        }
+    }
+
+    /// Disks the layout accepts.
+    pub fn disks(self) -> std::ops::RangeInclusive<usize> {
+        match self {
+            Layout::Single => 1..=1,
+            Layout::Mirror => 2..=MAX_POOL_DISKS,
+            Layout::Raidz1 => 3..=MAX_POOL_DISKS,
+            Layout::Raidz2 => 4..=MAX_POOL_DISKS,
+            Layout::Raidz3 => 5..=MAX_POOL_DISKS,
+        }
+    }
+}
+
+/// Most disks in one pool.
+pub const MAX_POOL_DISKS: usize = 12;
+
+/// Name of a `/dev/disk/by-id` link, e.g. `ata-WDC_WD40EFRX_WD-1234`: the
+/// form in which disks to erase travel, so that a disk is recognized even
+/// if its kernel name changed. Letters, digits, `_ . : + -`, not starting
+/// with `-` or `.`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct DiskId(String);
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("not the name of a /dev/disk/by-id link")]
+pub struct InvalidDiskId;
+
+impl DiskId {
+    pub fn parse(value: &str) -> Result<Self, InvalidDiskId> {
+        let valid = (1..=128).contains(&value.len())
+            && !value.starts_with(['-', '.'])
+            && value.bytes().all(|b| b.is_ascii_alphanumeric() || b"_.:+-".contains(&b));
+        if valid { Ok(Self(value.to_owned())) } else { Err(InvalidDiskId) }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for DiskId {
+    type Error = InvalidDiskId;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(&value)
+    }
+}
+
+impl From<DiskId> for String {
+    fn from(id: DiskId) -> Self {
+        id.0
+    }
+}
+
+/// Name of a pool zendiloos creates: a lowercase letter, then up to 31
+/// lowercase letters, digits, `_` or `-`; none of the names ZFS reserves.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct PoolName(String);
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("not a valid pool name")]
+pub struct InvalidPoolName;
+
+impl PoolName {
+    const RESERVED_PREFIXES: [&str; 8] =
+        ["mirror", "raidz", "draid", "spare", "log", "cache", "special", "dedup"];
+
+    pub fn parse(name: &str) -> Result<Self, InvalidPoolName> {
+        let disk_like = name.len() > 1 && name.starts_with('c') && name.as_bytes()[1].is_ascii_digit();
+        let valid = is_linux_name(name)
+            && !disk_like
+            && !Self::RESERVED_PREFIXES.iter().any(|prefix| name.starts_with(prefix));
+        if valid { Ok(Self(name.to_owned())) } else { Err(InvalidPoolName) }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for PoolName {
+    type Error = InvalidPoolName;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(&value)
+    }
+}
+
+impl From<PoolName> for String {
+    fn from(name: PoolName) -> Self {
+        name.0
+    }
+}
+
+/// The `N` of `/volume<N>`, 1 to 999.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "u16", into = "u16")]
+pub struct VolumeNumber(u16);
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("volume numbers are 1 to 999")]
+pub struct InvalidVolumeNumber;
+
+impl VolumeNumber {
+    pub fn new(number: u16) -> Result<Self, InvalidVolumeNumber> {
+        if (1..=999).contains(&number) { Ok(Self(number)) } else { Err(InvalidVolumeNumber) }
+    }
+
+    pub fn get(self) -> u16 {
+        self.0
+    }
+}
+
+impl TryFrom<u16> for VolumeNumber {
+    type Error = InvalidVolumeNumber;
+
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl From<VolumeNumber> for u16 {
+    fn from(number: VolumeNumber) -> Self {
+        number.0
+    }
+}
+
+/// The `zfs list` columns of [`Request::ZfsStatus`].
+pub const ZFS_DATASET_COLUMNS: &str = "name,used,available,mounted,zendiloos:volume";
 
 /// Name of a Linux user or group zendiloos manages: a lowercase letter, then
 /// up to 31 lowercase letters, digits, `_` or `-`. Valid unchanged for the
@@ -431,6 +624,26 @@ mod tests {
         for bad in ["", "two\nlines", "carriage\rreturn", "nul\0", &"x".repeat(1025)] {
             assert_eq!(Password::new(bad), Err(InvalidPassword), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn storage_arguments_cannot_become_options_or_paths() {
+        for good in ["ata-QEMU_HARDDISK_ZDL-SATA-1", "nvme-eui.0025385b71b0a001", "wwn-0x5000c500a1b2c3d4"] {
+            assert!(DiskId::parse(good).is_ok(), "{good}");
+        }
+        for bad in ["", "-f", ".hidden", "../sda", "ata-X/../../sda", "a b", &"x".repeat(129)] {
+            assert_eq!(DiskId::parse(bad), Err(InvalidDiskId), "{bad:?}");
+        }
+        for bad in ["mirror", "raidz", "spare2", "c0t0d0", "-f", "Tank", "a/b"] {
+            assert_eq!(PoolName::parse(bad), Err(InvalidPoolName), "{bad:?}");
+        }
+        assert!(PoolName::parse("tank").is_ok());
+        let too_big =
+            json!({ "version": 1, "request": { "op": "destroy_pool", "name": "tank", "volume": 1000 } });
+        assert!(serde_json::from_value::<Envelope>(too_big).is_err());
+        let create = json!({ "version": 1, "request": { "op": "create_pool", "name": "tank", "layout": "raidz2",
+            "disks": ["ata-A", "ata-B"], "volume": 1 } });
+        assert!(serde_json::from_value::<Envelope>(create).is_ok());
     }
 
     #[test]

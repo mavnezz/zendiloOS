@@ -7,19 +7,22 @@ import { cn } from '@/shared/lib/utils'
 import { Button } from '@/shared/ui/button'
 
 import { useRefreshStorage } from '../api'
-import ArraysSection from './ArraysSection.vue'
 import DiskDetail from './DiskDetail.vue'
 import DisksSection from './DisksSection.vue'
+import PoolsSection from './PoolsSection.vue'
 import VolumesSection from './VolumesSection.vue'
 
-type Section = 'volumes' | 'arrays' | 'disks'
+type Section = 'volumes' | 'pools' | 'disks'
+
+/** Whether the signed-in account may change pools (`storage.manage`). */
+defineProps<{ canManage: boolean }>()
 
 const { t } = useI18n()
 const refresh = useRefreshStorage()
 
 const sections = [
   { id: 'volumes', icon: Database },
-  { id: 'arrays', icon: Layers },
+  { id: 'pools', icon: Layers },
   { id: 'disks', icon: HardDrive },
 ] as const
 const section = ref<Section>('volumes')
@@ -65,7 +68,7 @@ function open(next: Section): void {
 
     <div class="min-w-0 flex-1 overflow-auto p-4 @xl:p-6">
       <VolumesSection v-if="section === 'volumes'" />
-      <ArraysSection v-else-if="section === 'arrays'" />
+      <PoolsSection v-else-if="section === 'pools'" :can-manage="canManage" />
       <template v-else>
         <DiskDetail v-if="selectedDisk" :name="selectedDisk" @back="selectedDisk = null" />
         <DisksSection v-else @select="selectedDisk = $event" />

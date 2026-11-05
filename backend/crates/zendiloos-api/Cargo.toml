@@ -11,6 +11,8 @@ publish.workspace = true
 # (no dependency on zendiloos-infra). See docs/architecture.md, 2.1.
 [dependencies]
 zendiloos-identity.workspace = true
+zendiloos-jobs.workspace = true
+zendiloos-notify.workspace = true
 zendiloos-kernel.workspace = true
 zendiloos-storage.workspace = true
 zendiloos-system.workspace = true
@@ -29,6 +31,8 @@ tokio = { workspace = true, features = ["time"] }
 tokio-tungstenite = "0.29"
 zendiloos-identity = { workspace = true, features = ["testing"] }
 zendiloos-storage = { workspace = true, features = ["testing"] }
+zendiloos-jobs = { workspace = true, features = ["testing"] }
+zendiloos-notify = { workspace = true, features = ["testing"] }
 async-trait.workspace = true
 http-body-util.workspace = true
 tokio.workspace = true

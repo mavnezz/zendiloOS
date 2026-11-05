@@ -11,10 +11,10 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::oneshot;
 use zendiloos_agent::config::Tools;
-use zendiloos_agent::{AccountFiles, Operations, Server, serve};
+use zendiloos_agent::{AccountFiles, Erasable, ErasePolicy, HostPaths, Operations, Paths, Server, serve};
 use zendiloos_agent_proto::{
     AgentTransport, DiskName, ErrorCode, GroupName, LSBLK_COLUMNS, PROTOCOL_VERSION, Password, Request,
-    RequestId, Response, UnixTransport, UserName,
+    RequestId, Response, UnixTransport, UserName, ZFS_DATASET_COLUMNS,
 };
 
 /// A Debian system with the owner's user, one managed user and one managed
@@ -55,6 +55,11 @@ impl Agent {
             systemctl: script("systemctl", &format!("exit {exit_code}")),
             lsblk: script("lsblk", "echo '{\"blockdevices\": []}'"),
             smartctl: script("smartctl", "echo '{\"smart_status\": {\"passed\": true}}'; exit 4"),
+            zpool: script("zpool", "echo '{\"pools\": {}}'"),
+            zfs: script("zfs", "echo '{\"datasets\": {}}'"),
+            sgdisk: script("sgdisk", ""),
+            wipefs: script("wipefs", ""),
+            udevadm: script("udevadm", ""),
             useradd: script("useradd", ""),
             userdel: script("userdel", ""),
             groupadd: script("groupadd", ""),
@@ -75,7 +80,8 @@ impl Agent {
 
         // Files we create belong to us: the test runs as the client.
         let our_uid = fs::metadata(dir.path()).unwrap().uid();
-        let operations = Operations::with_account_files(&tools, files).unwrap();
+        let paths = Paths { accounts: files, host: HostPaths::default() };
+        let operations = Operations::with_paths(&tools, Erasable::Policy(ErasePolicy::None), paths).unwrap();
         let listener = UnixListener::bind(dir.path().join("agent.sock")).unwrap();
         let (stop, stopped) = oneshot::channel();
         let server = Server::new(operations, client_uid.unwrap_or(our_uid));
@@ -164,6 +170,20 @@ async fn reads_the_raid_status_without_running_anything() {
     let response = agent.client().call(Request::ArrayStatus {}, None).await.unwrap();
     assert!(matches!(response, Response::ArrayStatus { .. }), "{response:?}");
     assert_eq!(agent.calls(), "");
+}
+
+#[tokio::test]
+async fn reads_zfs_status_as_json() {
+    let agent = Agent::start(None, 0).await;
+    let response = agent.client().call(Request::ZfsStatus {}, None).await.unwrap();
+    assert_eq!(
+        response,
+        Response::Zfs { zpool_status: "{\"pools\": {}}\n".into(), zfs_list: "{\"datasets\": {}}\n".into() }
+    );
+    assert_eq!(
+        agent.calls(),
+        format!("zpool status -j --json-int\nzfs list -j --json-int -d 0 -o {ZFS_DATASET_COLUMNS}\n")
+    );
 }
 
 #[tokio::test]

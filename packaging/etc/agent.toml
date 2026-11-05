@@ -14,9 +14,21 @@
 #systemctl = "/usr/bin/systemctl"
 #lsblk = "/usr/bin/lsblk"
 #smartctl = "/usr/sbin/smartctl"
+#zpool = "/usr/sbin/zpool"
+#zfs = "/usr/sbin/zfs"
+#sgdisk = "/usr/sbin/sgdisk"
+#wipefs = "/usr/sbin/wipefs"
+#udevadm = "/usr/bin/udevadm"
 #useradd = "/usr/sbin/useradd"
 #userdel = "/usr/sbin/userdel"
 #groupadd = "/usr/sbin/groupadd"
 #groupdel = "/usr/sbin/groupdel"
 #gpasswd = "/usr/bin/gpasswd"
 #smbpasswd = "/usr/bin/smbpasswd"
+
+#[storage]
+# Which disks may be erased to create a pool or replace a disk: "unused"
+# (every disk that passes the agent's checks: not the system disk, not
+# mounted, not in use), "none", or a list of /dev/disk/by-id names, e.g.
+# ["ata-WDC_WD40EFRX-68N32N0_WD-WCC7K1234567"].
+#erasable = "unused"

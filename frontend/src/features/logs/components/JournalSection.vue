@@ -5,12 +5,12 @@ import { useI18n } from 'vue-i18n'
 
 import type { LogPriority, LogSource } from '@/shared/api/types'
 import { problemMessage } from '@/shared/i18n'
+import { formatDateTime } from '@/shared/lib/format'
 import { cn } from '@/shared/lib/utils'
 import { Alert } from '@/shared/ui/alert'
 import { Button } from '@/shared/ui/button'
 
 import { useJournal } from '../api'
-import { formatTimestamp } from '../format'
 
 const SOURCES: LogSource[] = ['system', 'zendiloos', 'storage', 'sharing', 'kernel']
 const PRIORITIES: LogPriority[] = ['error', 'warning', 'notice', 'info', 'debug']
@@ -91,7 +91,7 @@ function tone(level: LogPriority): string {
         class="grid gap-x-3 border-b px-3 py-1.5 last:border-b-0 @3xl:grid-cols-[10rem_9rem_1fr]"
       >
         <time class="text-muted-foreground tabular-nums">
-          {{ formatTimestamp(entry.at_micros / 1000) }}
+          {{ formatDateTime(entry.at_micros / 1000) }}
         </time>
         <span class="truncate text-muted-foreground" :title="entry.unit ?? undefined">
           {{ entry.identifier ?? entry.unit ?? '–'

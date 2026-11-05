@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import { type MaybeRefOrGetter, toValue } from 'vue'
 
 import { api, unwrap } from '@/shared/api/client'
+import type { Job, NewPoolLayout, PoolPlan, ReplacePlan } from '@/shared/api/types'
 
 /** Arrays change while they rebuild, so they are polled more often. */
 const ARRAY_REFRESH_MS = 5_000
@@ -38,6 +39,14 @@ export function useArrays() {
   })
 }
 
+export function usePools() {
+  return useQuery({
+    queryKey: ['storage', 'pools'],
+    queryFn: () => unwrap(api.GET('/api/v1/storage/pools')),
+    refetchInterval: ARRAY_REFRESH_MS,
+  })
+}
+
 export function useVolumes() {
   return useQuery({
     queryKey: ['storage', 'volumes'],
@@ -50,4 +59,43 @@ export function useVolumes() {
 export function useRefreshStorage() {
   const client = useQueryClient()
   return () => client.invalidateQueries({ queryKey: ['storage'] })
+}
+
+export function planPool(name: string, layout: NewPoolLayout, disks: string[]): Promise<PoolPlan> {
+  return unwrap(api.POST('/api/v1/storage/pools/plan', { body: { name, layout, disks } }))
+}
+
+export function createPool(token: string, confirm: string): Promise<Job> {
+  return unwrap(api.POST('/api/v1/storage/pools', { body: { token, confirm } }))
+}
+
+export function destroyPool(name: string, confirm: string): Promise<Job> {
+  return unwrap(
+    api.POST('/api/v1/storage/pools/{name}/destroy', {
+      params: { path: { name } },
+      body: { confirm },
+    }),
+  )
+}
+
+export function planReplace(pool: string, device: string, disk: string): Promise<ReplacePlan> {
+  return unwrap(
+    api.POST('/api/v1/storage/pools/{name}/replace/plan', {
+      params: { path: { name: pool } },
+      body: { device, disk },
+    }),
+  )
+}
+
+export function replaceDisk(pool: string, token: string): Promise<Job> {
+  return unwrap(
+    api.POST('/api/v1/storage/pools/{name}/replace', {
+      params: { path: { name: pool } },
+      body: { token },
+    }),
+  )
+}
+
+export async function scrubPool(pool: string): Promise<void> {
+  await unwrap(api.POST('/api/v1/storage/pools/{name}/scrub', { params: { path: { name: pool } } }))
 }

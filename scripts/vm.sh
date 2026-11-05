@@ -115,8 +115,13 @@ install_package() {
     [[ -n $deb ]] || { echo "no package in dist/; run 'just deb'" >&2; exit 1; }
     say "Installing $(basename "$deb")"
     scp -q "${scp_opts[@]}" "$deb" debian@127.0.0.1:/tmp/
-    ssh "${ssh_opts[@]}" debian@127.0.0.1 \
-        "sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq /tmp/$(basename "$deb")"
+    # ZFS comes from contrib and is built for the running kernel.
+    ssh "${ssh_opts[@]}" debian@127.0.0.1 "set -e
+        sudo sed -i 's/^Components: main\$/Components: main contrib/' /etc/apt/sources.list.d/debian.sources
+        echo 'zfs-dkms zfs-dkms/note-incompatible-licenses note' | sudo debconf-set-selections
+        sudo apt-get update -qq
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq linux-headers-\$(uname -r)
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq /tmp/$(basename "$deb")"
     say "Installed: https://127.0.0.1:$https_port/"
 }
 

@@ -1412,6 +1412,8 @@ version = "1.0.154"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7e9cc8b1b85264074fbcc02a88680c4096b1e47df8f739dceb03bf482f04bd6"
 dependencies = [
+ "foldhash",
+ "indexmap",
  "itoa",
  "memchr",
  "serde",
@@ -2541,7 +2543,9 @@ dependencies = [
  "utoipa",
  "utoipa-axum",
  "zendiloos-identity",
+ "zendiloos-jobs",
  "zendiloos-kernel",
+ "zendiloos-notify",
  "zendiloos-storage",
  "zendiloos-system",
 ]
@@ -2585,10 +2589,22 @@ dependencies = [
  "zendiloos-agent-proto",
  "zendiloos-exec",
  "zendiloos-identity",
+ "zendiloos-jobs",
  "zendiloos-kernel",
+ "zendiloos-notify",
  "zendiloos-sim",
  "zendiloos-storage",
  "zendiloos-system",
+]
+
+[[package]]
+name = "zendiloos-jobs"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "tokio",
+ "tracing",
+ "zendiloos-kernel",
 ]
 
 [[package]]
@@ -2609,10 +2625,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "zendiloos-notify"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "tokio",
+ "tracing",
+ "zendiloos-kernel",
+]
+
+[[package]]
 name = "zendiloos-sim"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "serde_json",
  "tokio",
  "tracing",
  "zendiloos-agent-proto",
@@ -2625,7 +2652,10 @@ dependencies = [
  "async-trait",
  "thiserror",
  "tokio",
+ "tracing",
+ "zendiloos-jobs",
  "zendiloos-kernel",
+ "zendiloos-notify",
 ]
 
 [[package]]
@@ -2656,8 +2686,10 @@ dependencies = [
  "zendiloos-api",
  "zendiloos-identity",
  "zendiloos-infra",
+ "zendiloos-jobs",
  "zendiloos-kernel",
  "zendiloos-logging",
+ "zendiloos-notify",
  "zendiloos-sim",
  "zendiloos-storage",
  "zendiloos-system",

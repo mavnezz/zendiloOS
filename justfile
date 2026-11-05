@@ -20,7 +20,7 @@ test:
     cargo test --workspace --locked
 
 # Everything CI checks
-check: lint test sqlx-check api-check web-check
+check: lint deny test sqlx-check api-check web-check
 
 # The SQL macros check queries against this schema-only database.
 sqlx_db := "sqlite://" + justfile_directory() + "/dev/sqlx.db"
@@ -102,7 +102,16 @@ deb:
         -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
         zendiloos-build /src/packaging/build-deb.sh
 
+# Licenses, security advisories and sources of the Rust dependencies
+deny:
+    cd backend && cargo deny check
+
 # Debian 13 test VM: create, start, install, ssh, stop, destroy (see scripts/vm.sh)
 [positional-arguments]
 vm *args:
     scripts/vm.sh "$@"
+
+# Creates, degrades, repairs and destroys a ZFS pool in the test VM through
+# the API (the package must be installed and set up; see the script)
+vm-storage-test:
+    scripts/vm-storage-test.sh

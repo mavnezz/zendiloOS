@@ -685,6 +685,103 @@
         }
       }
     },
+    "/api/v1/jobs": {
+      "get": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "The most recent jobs, newest first. Changes arrive on the WebSocket\ntopic `jobs`.",
+        "operationId": "list",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "At most 200; 50 if absent.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Job"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/jobs/{id}": {
+      "get": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "One job.",
+        "operationId": "job",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/logs/audit": {
       "get": {
         "tags": [
@@ -806,6 +903,57 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/notifications": {
+      "get": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "The most recent notifications, newest first. New ones arrive on the\nWebSocket topic `notifications`.",
+        "operationId": "notifications",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "At most 200; 50 if absent.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Notification"
+                  }
                 }
               }
             }
@@ -1023,6 +1171,386 @@
           },
           "404": {
             "description": "`not_found`: no such disk",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/storage/pools": {
+      "get": {
+        "tags": [
+          "storage"
+        ],
+        "summary": "The ZFS pools. Fails if ZFS is unavailable, e.g. when its kernel module\ncould not be built for a new kernel. Needs `storage.view`.",
+        "operationId": "pools",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Pool"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "storage"
+        ],
+        "summary": "Creates the pool of a plan, erasing its disks. The disks are checked\nagain first: if anything changed since the plan, nothing happens.\nAnswers with the job. Needs `storage.manage`.",
+        "operationId": "create_pool",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePoolRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`plan_expired`, `plan_changed`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`confirmation_mismatch`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/storage/pools/plan": {
+      "post": {
+        "tags": [
+          "storage"
+        ],
+        "summary": "Plans a new pool: which disks would be erased and what the pool would\noffer. Erases nothing. Needs `storage.manage`.",
+        "operationId": "plan_pool",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PoolPlanRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PoolPlan"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`name_taken`, `no_volume_number`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`, `disk_count`, `disk_not_found`, `disk_unusable`, `duplicate_disk`, `unsupported_layout`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/storage/pools/{name}/destroy": {
+      "post": {
+        "tags": [
+          "storage"
+        ],
+        "summary": "Destroys a pool zendiloOS created and erases its disks. All its data is\nlost. Answers with the job. Needs `storage.manage`.",
+        "operationId": "destroy_pool",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DestroyPoolRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`pool_not_managed`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`confirmation_mismatch`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/storage/pools/{name}/replace": {
+      "post": {
+        "tags": [
+          "storage"
+        ],
+        "summary": "Carries out a planned replacement; ZFS then resilvers onto the new disk.\nAnswers with the job. Needs `storage.manage`.",
+        "operationId": "replace_disk",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReplaceDiskRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`plan_expired`, `plan_changed`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/storage/pools/{name}/replace/plan": {
+      "post": {
+        "tags": [
+          "storage"
+        ],
+        "summary": "Plans replacing a device of a pool with another disk. Erases nothing.\nNeeds `storage.manage`.",
+        "operationId": "plan_replace",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReplacePlanRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReplacePlan"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`device_not_found`, `disk_unusable`, `disk_too_small`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/storage/pools/{name}/scrub": {
+      "post": {
+        "tags": [
+          "storage"
+        ],
+        "summary": "Starts checking all data of the pool; progress shows in the pool.\nNeeds `storage.manage`.",
+        "operationId": "scrub_pool",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Started."
+          },
+          "404": {
+            "description": "`not_found`",
             "content": {
               "application/json": {
                 "schema": {
@@ -1401,6 +1929,24 @@
         },
         "additionalProperties": false
       },
+      "CreatePoolRequest": {
+        "type": "object",
+        "required": [
+          "token",
+          "confirm"
+        ],
+        "properties": {
+          "confirm": {
+            "type": "string",
+            "description": "The pool's name, typed again."
+          },
+          "token": {
+            "type": "string",
+            "description": "From the plan."
+          }
+        },
+        "additionalProperties": false
+      },
       "CurrentAccount": {
         "type": "object",
         "required": [
@@ -1440,6 +1986,19 @@
           }
         }
       },
+      "DestroyPoolRequest": {
+        "type": "object",
+        "required": [
+          "confirm"
+        ],
+        "properties": {
+          "confirm": {
+            "type": "string",
+            "description": "The pool's name, typed again."
+          }
+        },
+        "additionalProperties": false
+      },
       "Disk": {
         "type": "object",
         "required": [
@@ -1460,6 +2019,13 @@
             ],
             "description": "The array, if `usage` is `array_member`."
           },
+          "id_link": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Name of the disk's `/dev/disk/by-id` link; disks without one cannot\nbe used for pools."
+          },
           "media": {
             "$ref": "#/components/schemas/Media"
           },
@@ -1478,6 +2044,13 @@
             "items": {
               "$ref": "#/components/schemas/Partition"
             }
+          },
+          "pool": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The pool, if `usage` is `pool_member`."
           },
           "read_only": {
             "type": "boolean"
@@ -1547,6 +2120,7 @@
         "enum": [
           "system",
           "array_member",
+          "pool_member",
           "volume",
           "foreign",
           "unused"
@@ -1695,6 +2269,96 @@
           }
         }
       },
+      "Job": {
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "state",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "actor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who started it."
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Stable code of the failure, e.g. `disk_changed`."
+          },
+          "error_detail": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Details for administrators, e.g. a tool's message."
+          },
+          "finished_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "kind": {
+            "type": "string",
+            "description": "Dotted name, e.g. `storage.create_pool`."
+          },
+          "progress": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float",
+            "description": "0 to 1, if known."
+          },
+          "state": {
+            "$ref": "#/components/schemas/JobState"
+          },
+          "step": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Current step as a stable code, e.g. `partitioning`."
+          },
+          "target": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What it works on, e.g. a pool name."
+          },
+          "updated_at": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "JobState": {
+        "type": "string",
+        "enum": [
+          "running",
+          "succeeded",
+          "failed",
+          "interrupted"
+        ]
+      },
       "JournalEntry": {
         "type": "object",
         "required": [
@@ -1782,6 +2446,42 @@
           },
           {
             "type": "object",
+            "required": [
+              "data",
+              "type"
+            ],
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/Job"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "job"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "type"
+            ],
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/Notification"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "notification"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
             "description": "The last request could not be understood.",
             "required": [
               "message",
@@ -1846,7 +2546,9 @@
       "LiveTopic": {
         "type": "string",
         "enum": [
-          "metrics"
+          "metrics",
+          "jobs",
+          "notifications"
         ]
       },
       "LogPriority": {
@@ -1992,6 +2694,62 @@
           }
         }
       },
+      "NewPoolLayout": {
+        "type": "string",
+        "enum": [
+          "single",
+          "mirror",
+          "raidz1",
+          "raidz2",
+          "raidz3"
+        ]
+      },
+      "Notification": {
+        "type": "object",
+        "description": "Something an administrator should know, as a code with parameters for\nthe interface to word, e.g. `pool_trouble` with `pool` and `state`.",
+        "required": [
+          "id",
+          "at",
+          "level",
+          "code",
+          "params"
+        ],
+        "properties": {
+          "at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix seconds."
+          },
+          "code": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "level": {
+            "$ref": "#/components/schemas/NotificationLevel"
+          },
+          "params": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "NotificationLevel": {
+        "type": "string",
+        "enum": [
+          "info",
+          "success",
+          "warning",
+          "error"
+        ]
+      },
       "NvmeHealth": {
         "type": "object",
         "required": [
@@ -2080,6 +2838,392 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          }
+        }
+      },
+      "PlanWarning": {
+        "type": "object",
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/PlanWarningCode"
+          },
+          "unused_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "For `mixed_sizes`.",
+            "minimum": 0
+          }
+        }
+      },
+      "PlanWarningCode": {
+        "type": "string",
+        "enum": [
+          "mixed_sizes",
+          "no_redundancy",
+          "erases_data"
+        ]
+      },
+      "PlannedDisk": {
+        "type": "object",
+        "description": "A disk a plan will erase.",
+        "required": [
+          "name",
+          "id_link",
+          "size_bytes",
+          "erases"
+        ],
+        "properties": {
+          "erases": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What is on it now and will be lost, e.g. `ntfs \"Backup\"`."
+          },
+          "id_link": {
+            "type": "string"
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "serial": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "Pool": {
+        "type": "object",
+        "description": "A ZFS pool; for pools zendiloOS created, also a volume.",
+        "required": [
+          "name",
+          "guid",
+          "state",
+          "layout",
+          "redundancy",
+          "size_bytes",
+          "allocated_bytes",
+          "devices",
+          "data_errors"
+        ],
+        "properties": {
+          "allocated_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "available_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "data_errors": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Files with permanent errors.",
+            "minimum": 0
+          },
+          "devices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PoolDevice"
+            }
+          },
+          "guid": {
+            "type": "string"
+          },
+          "layout": {
+            "$ref": "#/components/schemas/PoolLayout"
+          },
+          "layout_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For `other`, e.g. `stripe`."
+          },
+          "mount_point": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where it is mounted, if it is."
+          },
+          "name": {
+            "type": "string"
+          },
+          "parity": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "For `raidz`.",
+            "minimum": 0
+          },
+          "redundancy": {
+            "type": "integer",
+            "description": "Disks that may fail without losing data.",
+            "minimum": 0
+          },
+          "scan": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PoolScan"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Raw capacity and allocation, including redundancy.",
+            "minimum": 0
+          },
+          "state": {
+            "$ref": "#/components/schemas/VdevState"
+          },
+          "used_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Space as files see it.",
+            "minimum": 0
+          },
+          "volume": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The `N` of `/volume<N>`; only for pools zendiloOS created.",
+            "minimum": 0
+          }
+        }
+      },
+      "PoolDevice": {
+        "type": "object",
+        "required": [
+          "name",
+          "guid",
+          "state",
+          "read_errors",
+          "write_errors",
+          "checksum_errors"
+        ],
+        "properties": {
+          "checksum_errors": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "disk": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Kernel name of its disk, if present."
+          },
+          "guid": {
+            "type": "string",
+            "description": "Identifies the device even after it disappeared."
+          },
+          "name": {
+            "type": "string",
+            "description": "As ZFS shows it, e.g. `ata-WDC_WD40EFRX_WD-1234-part1`."
+          },
+          "read_errors": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "replacing": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ReplacingRole"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "$ref": "#/components/schemas/VdevState"
+          },
+          "write_errors": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "PoolLayout": {
+        "type": "string",
+        "enum": [
+          "single",
+          "mirror",
+          "raidz",
+          "other"
+        ]
+      },
+      "PoolPlan": {
+        "type": "object",
+        "description": "What creating the pool would do. Confirm it with `token` within the\ntime given.",
+        "required": [
+          "token",
+          "expires_at",
+          "name",
+          "layout",
+          "volume",
+          "mount_point",
+          "capacity_bytes",
+          "redundancy",
+          "disks",
+          "warnings"
+        ],
+        "properties": {
+          "capacity_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Usable bytes before ZFS overhead.",
+            "minimum": 0
+          },
+          "disks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlannedDisk"
+            },
+            "description": "All of them will be erased."
+          },
+          "expires_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix seconds."
+          },
+          "layout": {
+            "$ref": "#/components/schemas/PoolLayout"
+          },
+          "mount_point": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "parity": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "redundancy": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "token": {
+            "type": "string"
+          },
+          "volume": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlanWarning"
+            }
+          }
+        }
+      },
+      "PoolPlanRequest": {
+        "type": "object",
+        "required": [
+          "name",
+          "layout",
+          "disks"
+        ],
+        "properties": {
+          "disks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Kernel names, e.g. `sdb`."
+          },
+          "layout": {
+            "$ref": "#/components/schemas/NewPoolLayout"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "PoolScan": {
+        "type": "object",
+        "required": [
+          "kind",
+          "state",
+          "percent",
+          "started_at",
+          "errors"
+        ],
+        "properties": {
+          "errors": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "finished_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ScanKind"
+          },
+          "percent": {
+            "type": "number",
+            "format": "float",
+            "description": "0 to 100."
+          },
+          "started_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix seconds."
+          },
+          "state": {
+            "$ref": "#/components/schemas/ScanState"
           }
         }
       },
@@ -2207,6 +3351,83 @@
           }
         }
       },
+      "ReplaceDiskRequest": {
+        "type": "object",
+        "required": [
+          "token"
+        ],
+        "properties": {
+          "token": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ReplacePlan": {
+        "type": "object",
+        "required": [
+          "token",
+          "expires_at",
+          "pool",
+          "device",
+          "device_name",
+          "disk",
+          "warnings"
+        ],
+        "properties": {
+          "device": {
+            "type": "string"
+          },
+          "device_name": {
+            "type": "string"
+          },
+          "disk": {
+            "$ref": "#/components/schemas/PlannedDisk",
+            "description": "Will be erased."
+          },
+          "expires_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "pool": {
+            "type": "string"
+          },
+          "token": {
+            "type": "string"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlanWarning"
+            }
+          }
+        }
+      },
+      "ReplacePlanRequest": {
+        "type": "object",
+        "required": [
+          "device",
+          "disk"
+        ],
+        "properties": {
+          "device": {
+            "type": "string",
+            "description": "GUID of the device to replace."
+          },
+          "disk": {
+            "type": "string",
+            "description": "Kernel name of the new disk."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ReplacingRole": {
+        "type": "string",
+        "enum": [
+          "old",
+          "new"
+        ]
+      },
       "ResetPasswordRequest": {
         "type": "object",
         "required": [
@@ -2219,6 +3440,21 @@
           }
         },
         "additionalProperties": false
+      },
+      "ScanKind": {
+        "type": "string",
+        "enum": [
+          "scrub",
+          "resilver"
+        ]
+      },
+      "ScanState": {
+        "type": "string",
+        "enum": [
+          "running",
+          "finished",
+          "canceled"
+        ]
       },
       "SelfTest": {
         "type": "object",
@@ -2689,6 +3925,20 @@
         },
         "additionalProperties": false
       },
+      "VdevState": {
+        "type": "string",
+        "description": "State of a pool or one of its devices.",
+        "enum": [
+          "online",
+          "degraded",
+          "faulted",
+          "offline",
+          "removed",
+          "unavailable",
+          "suspended",
+          "unknown"
+        ]
+      },
       "Volume": {
         "type": "object",
         "description": "A data filesystem.",
@@ -2731,7 +3981,7 @@
           },
           "filesystem": {
             "type": "string",
-            "description": "`btrfs`, `ext4` or `xfs`."
+            "description": "`zfs`, `btrfs`, `ext4` or `xfs`."
           },
           "id": {
             "type": "string",
@@ -2748,6 +3998,13 @@
             "items": {
               "type": "string"
             }
+          },
+          "pool": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The ZFS pool it is, if any."
           },
           "size_bytes": {
             "type": [
@@ -2798,6 +4055,10 @@
     {
       "name": "logs",
       "description": "The system journal and the audit log"
+    },
+    {
+      "name": "jobs",
+      "description": "Long-running operations and their progress"
     }
   ]
 }

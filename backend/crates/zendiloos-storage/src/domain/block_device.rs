@@ -14,6 +14,8 @@ pub struct BlockDevice {
     pub model: Option<String>,
     pub serial: Option<String>,
     pub wwn: Option<String>,
+    /// Name of a stable `/dev/disk/by-id` link, e.g. `ata-WDC_WD40EFRX_WD-1234`.
+    pub id_link: Option<String>,
     /// Transport as the kernel names it: `sata`, `nvme`, `usb`, `virtio`, …
     pub transport: Option<String>,
     pub rotational: bool,
@@ -80,6 +82,7 @@ pub(crate) mod testing {
             model: None,
             serial: None,
             wwn: None,
+            id_link: None,
             transport: None,
             rotational: false,
             removable: false,

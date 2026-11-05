@@ -6,7 +6,9 @@ import { useRouter } from 'vue-router'
 import { useSessionStore } from '@/features/auth/store'
 import { live } from '@/shared/api/live'
 import { useCompactLayout } from '@/shared/lib/media'
+import { useJobsStore } from '@/shared/jobs/store'
 import { useNotifications } from '@/shared/lib/notifications'
+import { useServerNotices } from '@/shared/notices/store'
 import { cn } from '@/shared/lib/utils'
 
 import { APPS, findApp } from './apps'
@@ -21,6 +23,8 @@ const router = useRouter()
 const session = useSessionStore()
 const windows = useWindows()
 const notifications = useNotifications()
+const jobs = useJobsStore()
+const notices = useServerNotices()
 const compact = useCompactLayout()
 
 /** Only apps this account may use; the server enforces the same. */
@@ -45,10 +49,14 @@ onMounted(() => {
   windows.restore(session.info?.account.name ?? '')
   window.addEventListener('resize', windows.resized)
   live.connect()
+  void jobs.start()
+  void notices.start(session.info?.account.name ?? '')
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', windows.resized)
+  jobs.stop()
+  notices.stop()
   live.disconnect()
 })
 

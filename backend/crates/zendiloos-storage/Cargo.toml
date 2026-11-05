@@ -11,15 +11,21 @@ publish.workspace = true
 # zendiloos-infra and zendiloos-api. See docs/architecture.md, 2.1.
 [dependencies]
 zendiloos-kernel.workspace = true
+zendiloos-jobs.workspace = true
+zendiloos-notify.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
+tokio = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
 tokio.workspace = true
+zendiloos-jobs = { workspace = true, features = ["testing"] }
+zendiloos-notify = { workspace = true, features = ["testing"] }
 
 [features]
 # Fakes for the ports, for tests of crates that use this context.
-testing = []
+testing = ["zendiloos-jobs/testing", "zendiloos-notify/testing"]
 
 [lints]
 workspace = true

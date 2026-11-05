@@ -60,6 +60,14 @@ const KNOWN_PROBLEMS = [
   'own_account',
   'password_change_required',
   'not_found',
+  'plan_expired',
+  'plan_changed',
+  'confirmation_mismatch',
+  'disk_count',
+  'disk_unusable',
+  'disk_too_small',
+  'pool_not_managed',
+  'refused',
   'network',
 ] as const
 
@@ -78,6 +86,13 @@ export function problemMessage(error: unknown): string {
   }
   // The server explains rule violations itself (currently in English).
   if (error.code === 'invalid_input' && error.detail) return error.detail
-  if (isKnown(error.code)) return t(`errors.${error.code}`)
+  // For these, the server's detail names the disk and what it found.
+  const withDetail = ['refused', 'disk_unusable', 'disk_count']
+  if (isKnown(error.code)) {
+    const message = t(`errors.${error.code}`)
+    return withDetail.includes(error.code) && error.detail
+      ? `${message} (${error.detail})`
+      : message
+  }
   return t('errors.unknown', { code: error.code })
 }
