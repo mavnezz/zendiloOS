@@ -27,8 +27,19 @@ configure_samba() {
     fi
 }
 
+# ZFS: on a first installation zfs-dkms builds the module only after
+# zfsutils-linux tried to load it, so it is not loaded until the next boot,
+# and the agent may not load modules. Load it now, so pools can be created
+# right away.
+load_zfs() {
+    if [ ! -d /sys/module/zfs ] && ! modprobe zfs 2>/dev/null; then
+        echo "zendiloos: the ZFS module could not be loaded; pools need a reboot or 'modprobe zfs'" >&2
+    fi
+}
+
 case "$1" in
     configure)
+        load_zfs
         configure_samba
         /usr/libexec/zendiloos/make-certificate
         retire_default_site
