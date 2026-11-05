@@ -102,6 +102,23 @@ deb:
         -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
         zendiloos-build /src/packaging/build-deb.sh
 
+# Package of an earlier commit or tag into dist/<ref>/, e.g. for the upgrade test
+deb-at ref:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    tree=$(mktemp -d)
+    trap 'git worktree remove --force "$tree"' EXIT
+    git worktree add --detach "$tree" "{{ ref }}"
+    mkdir -p "dist/{{ ref }}"
+    docker build -t zendiloos-build -f packaging/build.Dockerfile .
+    docker run --rm \
+        -v "$tree":/src:ro -v "$PWD/dist/{{ ref }}":/out \
+        -v zendiloos-build-cargo:/opt/cargo/registry \
+        -v zendiloos-build-target:/build/zendiloos/backend/target \
+        -v zendiloos-build-npm:/root/.npm \
+        -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+        zendiloos-build /src/packaging/build-deb.sh
+
 # Licenses, security advisories and sources of the Rust dependencies
 deny:
     cd backend && cargo deny check
@@ -119,3 +136,8 @@ vm-storage-test:
 # Shares over SMB and NFS with their permissions, in the test VM
 vm-sharing-test:
     scripts/vm-sharing-test.sh
+
+# An older package set up and in use, then the newest over it (see the script)
+[positional-arguments]
+vm-upgrade-test *args:
+    scripts/vm-upgrade-test.sh "$@"

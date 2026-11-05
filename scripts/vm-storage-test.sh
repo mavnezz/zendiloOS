@@ -19,7 +19,7 @@
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
-base="https://127.0.0.1:${ZENDILOOS_HTTPS_PORT:-8443}"
+base="https://127.0.0.1:${ZENDILOOS_HTTPS_PORT:-$((8442 + ${ZENDILOOS_VM:-1}))}"
 api="$base/api/v1"
 user=${ZENDILOOS_USER:-admin}
 password=${ZENDILOOS_PASSWORD:-correct horse battery}

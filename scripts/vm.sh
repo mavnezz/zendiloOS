@@ -3,7 +3,7 @@
 #
 #   scripts/vm.sh create    download and verify the cloud image, create the disks
 #   scripts/vm.sh start     boot in the background (console in dev/vm/console.log)
-#   scripts/vm.sh install   install the newest dist/zendiloos_*.deb (see `just deb`)
+#   scripts/vm.sh install [deb]  install a package; the newest dist/zendiloos_*.deb by default
 #   scripts/vm.sh ssh [cmd] log in as the image's user `debian`
 #   scripts/vm.sh stop      power off
 #   scripts/vm.sh destroy   delete the VM's disks (keeps the downloaded image)
@@ -12,6 +12,9 @@
 # https://127.0.0.1:8443. With ZENDILOOS_VM_LISTEN=0.0.0.0 at 'start', the
 # web interface is reachable from the network too (SSH stays local).
 #
+# ZENDILOOS_VM=2 (3, …) works with another VM beside the first: its own
+# directory dev/vm2, SSH on 2223 and the web interface on 8444, and so on.
+#
 # With ZENDILOOS_VM_BRIDGE=br0 at 'start', the VM also joins the LAN through
 # that bridge with an address of its own, as a real NAS would: Windows and
 # macOS clients find it and use SMB and NFS. Needs the bridge on the host and
@@ -19,15 +22,20 @@
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
-dir=$root/dev/vm
+instance=${ZENDILOOS_VM:-1}
+[[ $instance =~ ^[1-9]$ ]] || { echo "ZENDILOOS_VM must be 1 to 9" >&2; exit 1; }
+# The first VM keeps the directory it always had; all share the image.
+image_dir=$root/dev/vm
+dir=$image_dir
+[[ $instance == 1 ]] || dir=$root/dev/vm$instance
 base_url=https://cloud.debian.org/images/cloud/trixie/latest
 image=debian-13-genericcloud-amd64.qcow2
-ssh_port=2222
-https_port=8443
+ssh_port=$((2221 + instance))
+https_port=$((8442 + instance))
 https_listen=${ZENDILOOS_VM_LISTEN:-127.0.0.1}
 lan_bridge=${ZENDILOOS_VM_BRIDGE:-}
 # Fixed, so the LAN's DHCP server hands the VM the same address each time.
-lan_mac=52:54:00:5a:d1:05
+lan_mac=52:54:00:5a:d1:0$((4 + instance))
 sata_disks=4
 # A throwaway VM: its host key changes with every 'create'.
 common_opts=(-i "$dir/id_ed25519" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
@@ -41,19 +49,21 @@ running() { [[ -f $dir/qemu.pid ]] && kill -0 "$(cat "$dir/qemu.pid")" 2>/dev/nu
 
 download() {
     say "Downloading $image"
-    curl -fL --progress-bar -o "$dir/$image.part" "$base_url/$image"
-    curl -fsSL -o "$dir/SHA512SUMS" "$base_url/SHA512SUMS"
+    curl -fL --progress-bar -o "$image_dir/$image.part" "$base_url/$image"
+    curl -fsSL -o "$image_dir/SHA512SUMS" "$base_url/SHA512SUMS"
     local expected
-    expected=$(awk -v name="$image" '$2 == name { print $1 }' "$dir/SHA512SUMS")
+    expected=$(awk -v name="$image" '$2 == name { print $1 }' "$image_dir/SHA512SUMS")
     [[ -n $expected ]] || { echo "no checksum for $image" >&2; exit 1; }
-    echo "$expected  $dir/$image.part" | sha512sum -c --quiet -
-    mv "$dir/$image.part" "$dir/$image"
+    echo "$expected  $image_dir/$image.part" | sha512sum -c --quiet -
+    mv "$image_dir/$image.part" "$image_dir/$image"
 }
 
 cloud_init_seed() {
     local seed=$dir/seed
     mkdir -p "$seed"
-    printf 'instance-id: zendiloos-vm-1\nlocal-hostname: zendiloos-vm\n' > "$seed/meta-data"
+    local hostname=zendiloos-vm
+    [[ $instance == 1 ]] || hostname=zendiloos-vm$instance
+    printf 'instance-id: zendiloos-vm-%s\nlocal-hostname: %s\n' "$instance" "$hostname" > "$seed/meta-data"
     cat > "$seed/user-data" <<USERDATA
 #cloud-config
 ssh_pwauth: false
@@ -74,12 +84,12 @@ USERDATA
 }
 
 create() {
-    mkdir -p "$dir"
-    [[ -f $dir/$image ]] || download
+    mkdir -p "$dir" "$image_dir"
+    [[ -f $image_dir/$image ]] || download
     [[ -f $dir/id_ed25519 ]] || ssh-keygen -q -t ed25519 -N '' -C zendiloos-vm -f "$dir/id_ed25519"
     [[ -f $dir/system.qcow2 ]] && { echo "VM exists; run 'destroy' first" >&2; exit 1; }
     say "Creating disks"
-    qemu-img create -q -f qcow2 -F qcow2 -b "$dir/$image" "$dir/system.qcow2" 20G
+    qemu-img create -q -f qcow2 -F qcow2 -b "$image_dir/$image" "$dir/system.qcow2" 20G
     for i in $(seq 1 "$sata_disks"); do qemu-img create -q -f qcow2 "$dir/sata-$i.qcow2" 8G; done
     qemu-img create -q -f qcow2 "$dir/nvme-1.qcow2" 8G
     cloud_init_seed
@@ -96,7 +106,7 @@ start() {
     done
     local lan=()
     [[ -n $lan_bridge ]] && lan=(-netdev "bridge,id=lan,br=$lan_bridge" -device "virtio-net-pci,netdev=lan,mac=$lan_mac")
-    say "Starting (console: dev/vm/console.log)"
+    say "Starting (console: ${dir#"$root"/}/console.log)"
     qemu-system-x86_64 \
         -machine q35,accel=kvm -cpu host -smp 2 -m 2048 \
         -drive "file=$dir/system.qcow2,if=none,id=system,format=qcow2" \
@@ -141,9 +151,9 @@ wait_for_ssh() {
 }
 
 install_package() {
-    local deb
-    deb=$(ls -t "$root"/dist/zendiloos_*_amd64.deb 2>/dev/null | head -1)
-    [[ -n $deb ]] || { echo "no package in dist/; run 'just deb'" >&2; exit 1; }
+    local deb=${1:-}
+    [[ -n $deb ]] || deb=$(ls -t "$root"/dist/zendiloos_*_amd64.deb 2>/dev/null | head -1)
+    [[ -n $deb && -f $deb ]] || { echo "no package; run 'just deb'" >&2; exit 1; }
     say "Installing $(basename "$deb")"
     scp -q "${scp_opts[@]}" "$deb" debian@127.0.0.1:/tmp/
     # ZFS comes from contrib and is built for the running kernel.
@@ -152,7 +162,8 @@ install_package() {
         echo 'zfs-dkms zfs-dkms/note-incompatible-licenses note' | sudo debconf-set-selections
         sudo apt-get update -qq
         sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq linux-headers-\$(uname -r)
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq /tmp/$(basename "$deb")"
+        # --reinstall: a build of the same version replaces the installed one.
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --reinstall /tmp/$(basename "$deb")"
     say "Installed: https://127.0.0.1:$https_port/"
 }
 
@@ -173,9 +184,9 @@ destroy() {
 case ${1:-} in
     create) create ;;
     start) start ;;
-    install) install_package ;;
+    install) install_package "${2:-}" ;;
     ssh) shift; exec ssh "${ssh_opts[@]}" debian@127.0.0.1 "$@" ;;
     stop) stop ;;
     destroy) destroy ;;
-    *) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+    *) sed -n '2,/^set /{/^set /d;p}' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

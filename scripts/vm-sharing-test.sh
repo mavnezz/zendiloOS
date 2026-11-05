@@ -16,6 +16,9 @@
 #   7. the share and the pool are deleted again
 #   8. Windows (WS-Discovery) and macOS (Bonjour) can find the NAS
 #
+# Before 7, a snapshot of the share shows up as a "Previous Version" over
+# SMB and is deleted again.
+#
 # Needs the VM running with the package installed and set up; account and
 # password as for vm-storage-test.sh. Installs the clients it uses
 # (smbclient, avahi-browse) in the VM if they are missing. Uses two free disks of the VM and
@@ -23,7 +26,7 @@
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
-base="https://127.0.0.1:${ZENDILOOS_HTTPS_PORT:-8443}"
+base="https://127.0.0.1:${ZENDILOOS_HTTPS_PORT:-$((8442 + ${ZENDILOOS_VM:-1}))}"
 api="$base/api/v1"
 user=${ZENDILOOS_USER:-admin}
 password=${ZENDILOOS_PASSWORD:-correct horse battery}
@@ -122,6 +125,15 @@ echo "   $path"
 options=$(vm "findmnt -n -o OPTIONS $path")
 [[ ,$options, == *,nosuid,* && ,$options, == *,nodev,* ]] || fail "$path is mounted with $options"
 
+# Settings reach the dataset: quota (refquota), compression, record size.
+settings='{"settings":{"quota_bytes":2147483648,"compression":"zstd","record_size_bytes":1048576}}'
+[[ $(status_as admin PATCH "/shares/$share_id" -H 'Content-Type: application/json' -d "$settings") == 200 ]] \
+    || fail "cannot change the share's settings: $(cat "$work/body")"
+dataset="$pool/photos"
+props=$(vm "sudo zfs get -H -p -o value refquota,compression,recordsize $dataset" | tr '\n' ' ')
+[[ $props == "2147483648 zstd 1048576 " ]] || fail "the dataset has $props"
+call GET /shares | jq -e '.[] | select(.name == "photos") | .used_bytes >= 0' >/dev/null || fail "no usage"
+
 say "2. SMB with the share's permissions"
 vm "echo 'hello from anna' > /tmp/hello.txt"
 smb_ok anna 'first secret phrase' 'put hello.txt; mkdir album; put hello.txt album/inner.txt'
@@ -155,7 +167,10 @@ files="/files/shares/$share_id"
     || fail "anna does not see the share"
 [[ $(call_as ben GET /files/shares | jq -r '.[] | select(.name == "photos") | .access') == read ]] \
     || fail "ben does not see the share"
-[[ $(call GET /files/shares | jq length) == 0 ]] || fail "the administrator sees shares without a rule"
+# Shares of other tests or of the person using the VM may give the
+# administrator access; this one does not.
+! call GET /files/shares | jq -e '.[] | select(.name == "photos")' >/dev/null \
+    || fail "the administrator sees a share without a rule"
 [[ $(status_as admin GET "$files/folder") == 404 ]] || fail "the administrator can list the share"
 
 echo 'written in the browser' >"$work/web.txt"
@@ -194,12 +209,21 @@ vm "sudo test -f $path/.recycle/anna/copy/from-web.txt" || fail "the deleted fol
 smb_ok anna "$anna_pw" 'ls album/from-web.txt'
 
 say "5. ben loses access"
+# A link at the share's top that leads out of it: changing access must not
+# follow it (setfacl follows links given as arguments).
+# The probe is beside the share on its volume, where the files agent may
+# write; elsewhere a followed link would only make the job fail.
+probe="$(dirname "$path")/acl-probe"
+vm "sudo mkdir -p $probe && sudo ln -sfn $probe $path/outside"
 update=$(call PATCH "/shares/$share_id" "{\"access\":[{\"kind\":\"account\",\"id\":$anna,\"access\":\"read_write\"}]}")
 job_succeeded "$(jq -er .job.id <<<"$update")"
 # Recycle bins keep their own permissions; each is private anyway.
 [[ $(vm "sudo find $path -path $path/.recycle/'*' -prune -o -print0 | sudo xargs -0 getfacl -p 2>/dev/null | grep -c 'user:ben' || true") == 0 ]] \
     || fail "ben's ACL entries remain"
 smb_refused ben "$ben_pw" 'ls'
+[[ $(vm "sudo getfacl -p $probe | grep -c 'user:anna' || true") == 0 ]] \
+    || fail "changing access followed a link out of the share"
+vm "sudo rm $path/outside && sudo rmdir $probe"
 [[ $(status_as ben GET "$files/folder") == 404 ]] || fail "ben can still list the share"
 
 say "6. Each writer's own recycle bin"
@@ -217,6 +241,16 @@ vm "sudo test ! -e '$path/.recycle/ben/~\$report.docx'" || fail "a lock file wen
 vm "sudo test -f $path/.recycle/ben/ben.txt" || fail "ben's file is not in his recycle bin"
 smb_denied ben "$ben_pw" 'ls .recycle/anna/*'
 
+say "Snapshots are Previous Versions"
+snapshot=$(call POST "/shares/$share_id/snapshots" '{"note":"from the test"}' | jq -er .label) || fail "no snapshot"
+# zdl-2026-11-05_19.40.01 is offered as @GMT-2026.11.05-19.40.01.
+gmt=$(sed -E 's/^zdl-([0-9]{4})-([0-9]{2})-([0-9]{2})_([0-9]{2})\.([0-9]{2})\.([0-9]{2})$/@GMT-\1.\2.\3-\4.\5.\6/' <<<"$snapshot")
+out=$(smb anna "$anna_pw" 'allinfo album/from-web.txt')
+grep -qF -- "$gmt" <<<"$out" || fail "the snapshot is no previous version ($gmt): $out"
+[[ $(call GET "/shares/$share_id/snapshots" | jq -r '.snapshots[0].note') == "from the test" ]] || fail "the snapshot's note"
+[[ $(status_as admin POST "/shares/$share_id/snapshots/$snapshot/delete") == 204 ]] || fail "cannot delete the snapshot"
+vm "! sudo zfs list -H -t snapshot -o name | grep -qF '@$snapshot'" || fail "the snapshot is still there"
+
 say "7. Deleting the share and the pool"
 job_succeeded "$(call POST "/shares/$share_id/delete" '{"confirm":"photos"}' | jq -r .id)"
 vm "! findmnt -n $path" || fail "$path is still mounted"
@@ -226,6 +260,8 @@ say "8. Windows and macOS find the NAS"
 vm "systemctl is-active --quiet wsdd2" || fail "wsdd2 (WS-Discovery for Windows) does not run"
 vm "ss -Hlun | grep -q ':3702 '" || fail "nothing answers WS-Discovery on port 3702"
 vm "systemctl is-active --quiet avahi-daemon" || fail "avahi-daemon (Bonjour for macOS) does not run"
-wait_for "Samba's Bonjour announcement" "vm 'avahi-browse -tpr _smb._tcp' | grep -q '^=.*;445;'" 30
+# grep -c reads to the end: with -q, avahi-browse could get SIGPIPE after
+# the match, and pipefail would count that as failure.
+wait_for "Samba's Bonjour announcement" "vm 'avahi-browse -tpr _smb._tcp' | grep -c '^=.*;445;'" 30
 
 say "Passed: SMB, NFS, file manager, ACLs, permission changes, recycle bins, discovery"
