@@ -2675,6 +2675,41 @@
         ]
       }
     },
+    "/api/v1/system/metrics/history": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "What the dashboard's charts show before live samples arrive over the\nWebSocket (topic `metrics`).",
+        "operationId": "metrics_history",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricsHistory"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/system/power": {
       "post": {
         "tags": [
@@ -4030,6 +4065,76 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          }
+        }
+      },
+      "MetricsHistory": {
+        "type": "object",
+        "description": "The last minutes of the host's load as series for charts, oldest first;\none sample every two seconds, at most six minutes. Rates are summed over\nall network interfaces and all disks.",
+        "required": [
+          "at",
+          "cpu_percent",
+          "memory_used_bytes",
+          "received_bytes_per_second",
+          "sent_bytes_per_second",
+          "read_bytes_per_second",
+          "written_bytes_per_second"
+        ],
+        "properties": {
+          "at": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "description": "Unix time in seconds of each sample."
+          },
+          "cpu_percent": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "float"
+            }
+          },
+          "memory_used_bytes": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          "read_bytes_per_second": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          "received_bytes_per_second": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          "sent_bytes_per_second": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          "written_bytes_per_second": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
           }
         }
       },
@@ -5490,13 +5595,30 @@
           "architecture",
           "cpu_threads",
           "memory_total_bytes",
+          "swap_total_bytes",
           "uptime_seconds",
-          "version"
+          "version",
+          "uefi"
         ],
         "properties": {
           "architecture": {
             "type": "string",
             "description": "Machine architecture, e.g. `x86_64`."
+          },
+          "board": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Mainboard maker and name."
+          },
+          "cpu_cores": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Physical cores, if known.",
+            "minimum": 0
           },
           "cpu_model": {
             "type": [
@@ -5508,6 +5630,13 @@
             "type": "integer",
             "description": "Logical CPUs (hardware threads).",
             "minimum": 0
+          },
+          "firmware": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Firmware maker, version and date."
           },
           "hostname": {
             "type": "string"
@@ -5527,10 +5656,32 @@
             ],
             "description": "Operating system, e.g. `Debian GNU/Linux 13 (trixie)`."
           },
+          "product": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "swap_total_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "uefi": {
+            "type": "boolean",
+            "description": "Booted through UEFI rather than a legacy BIOS."
+          },
           "uptime_seconds": {
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          },
+          "vendor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Maker of the machine, from its firmware."
           },
           "version": {
             "type": "string",

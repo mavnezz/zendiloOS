@@ -1,4 +1,5 @@
-use std::sync::Arc;
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -6,7 +7,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use zendiloos_kernel::Clock;
 use zendiloos_system::application::ports::{LiveMetrics, MetricsSubscription};
-use zendiloos_system::domain::MetricsSample;
+use zendiloos_system::domain::{HISTORY_SAMPLES, MetricsSample};
 
 use super::metrics::HostMetrics;
 
@@ -14,12 +15,16 @@ use super::metrics::HostMetrics;
 #[derive(Clone)]
 pub struct MetricsHub {
     receiver: watch::Receiver<Option<MetricsSample>>,
+    /// The last [`HISTORY_SAMPLES`], oldest first.
+    recent: Arc<Mutex<VecDeque<MetricsSample>>>,
 }
 
 impl MetricsHub {
     /// Samples the host every `interval` until the returned task is aborted.
     pub fn spawn(interval: Duration, clock: Arc<dyn Clock>) -> (Self, JoinHandle<()>) {
         let (sender, receiver) = watch::channel(None);
+        let recent = Arc::new(Mutex::new(VecDeque::with_capacity(HISTORY_SAMPLES)));
+        let kept = Arc::clone(&recent);
         let task = tokio::spawn(async move {
             let mut metrics = match HostMetrics::new() {
                 Ok(metrics) => Some(metrics),
@@ -46,21 +51,32 @@ impl MetricsHub {
                     return;
                 };
                 metrics = Some(back);
+                {
+                    let mut kept = kept.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if kept.len() == HISTORY_SAMPLES {
+                        kept.pop_front();
+                    }
+                    kept.push_back(sample.clone());
+                }
                 sender.send_replace(Some(sample));
             }
         });
-        (Self { receiver }, task)
+        (Self { receiver, recent }, task)
     }
 
     /// A hub that never produces a sample, for tests.
     pub fn idle() -> Self {
-        Self { receiver: watch::channel(None).1 }
+        Self { receiver: watch::channel(None).1, recent: Arc::default() }
     }
 }
 
 impl LiveMetrics for MetricsHub {
     fn latest(&self) -> Option<MetricsSample> {
         self.receiver.borrow().clone()
+    }
+
+    fn recent(&self) -> Vec<MetricsSample> {
+        self.recent.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().cloned().collect()
     }
 
     fn subscribe(&self) -> Box<dyn MetricsSubscription> {

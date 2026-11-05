@@ -15,7 +15,11 @@ use crate::extract::{ApiJson, Client};
 use crate::state::ApiState;
 
 pub(super) fn routes() -> OpenApiRouter<ApiState> {
-    OpenApiRouter::new().routes(routes!(health)).routes(routes!(info)).routes(routes!(power))
+    OpenApiRouter::new()
+        .routes(routes!(health))
+        .routes(routes!(info))
+        .routes(routes!(power))
+        .routes(routes!(metrics_history))
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -44,10 +48,22 @@ pub struct SystemInfo {
     pub cpu_model: Option<String>,
     /// Logical CPUs (hardware threads).
     pub cpu_threads: usize,
+    /// Physical cores, if known.
+    pub cpu_cores: Option<usize>,
     pub memory_total_bytes: u64,
+    pub swap_total_bytes: u64,
     pub uptime_seconds: u64,
     /// Version of Zendiloos.
     pub version: String,
+    /// Maker of the machine, from its firmware.
+    pub vendor: Option<String>,
+    pub product: Option<String>,
+    /// Mainboard maker and name.
+    pub board: Option<String>,
+    /// Firmware maker, version and date.
+    pub firmware: Option<String>,
+    /// Booted through UEFI rather than a legacy BIOS.
+    pub uefi: bool,
 }
 
 impl From<zendiloos_system::domain::SystemInfo> for SystemInfo {
@@ -59,9 +75,16 @@ impl From<zendiloos_system::domain::SystemInfo> for SystemInfo {
             architecture: info.architecture,
             cpu_model: info.cpu_model,
             cpu_threads: info.cpu_threads,
+            cpu_cores: info.cpu_cores,
             memory_total_bytes: info.memory_total_bytes,
+            swap_total_bytes: info.swap_total_bytes,
             uptime_seconds: info.uptime_seconds,
             version: env!("CARGO_PKG_VERSION").to_owned(),
+            vendor: info.hardware.vendor,
+            product: info.hardware.product,
+            board: info.hardware.board,
+            firmware: info.hardware.firmware,
+            uefi: info.hardware.uefi,
         }
     }
 }
@@ -121,4 +144,48 @@ async fn power(
     };
     state.system.request_power_action.execute(action, &auth.0.actor(), &client).await?;
     Ok(StatusCode::ACCEPTED)
+}
+
+/// The last minutes of the host's load as series for charts, oldest first;
+/// one sample every two seconds, at most six minutes. Rates are summed over
+/// all network interfaces and all disks.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MetricsHistory {
+    /// Unix time in seconds of each sample.
+    pub at: Vec<i64>,
+    pub cpu_percent: Vec<f32>,
+    pub memory_used_bytes: Vec<u64>,
+    pub received_bytes_per_second: Vec<u64>,
+    pub sent_bytes_per_second: Vec<u64>,
+    pub read_bytes_per_second: Vec<u64>,
+    pub written_bytes_per_second: Vec<u64>,
+}
+
+/// What the dashboard's charts show before live samples arrive over the
+/// WebSocket (topic `metrics`).
+#[utoipa::path(
+    get,
+    path = "/system/metrics/history",
+    tag = "system",
+    security(("session" = [])),
+    responses(
+        (status = OK, body = MetricsHistory),
+        (status = FORBIDDEN, body = Problem, description = "`forbidden`"),
+    )
+)]
+async fn metrics_history(
+    auth: Auth,
+    State(state): State<ApiState>,
+) -> Result<Json<MetricsHistory>, ApiError> {
+    auth.require(Permission::SystemView)?;
+    let history = state.system.watch_metrics.history();
+    Ok(Json(MetricsHistory {
+        at: history.at.iter().map(|at| at.unix_seconds()).collect(),
+        cpu_percent: history.cpu_percent,
+        memory_used_bytes: history.memory_used_bytes,
+        received_bytes_per_second: history.received_bytes_per_second,
+        sent_bytes_per_second: history.sent_bytes_per_second,
+        read_bytes_per_second: history.read_bytes_per_second,
+        written_bytes_per_second: history.written_bytes_per_second,
+    }))
 }

@@ -26,6 +26,13 @@ pub trait PowerControl: Send + Sync {
 pub trait LiveMetrics: Send + Sync {
     fn latest(&self) -> Option<MetricsSample>;
     fn subscribe(&self) -> Box<dyn MetricsSubscription>;
+
+    /// The samples kept, oldest first; at most [`HISTORY_SAMPLES`].
+    ///
+    /// [`HISTORY_SAMPLES`]: crate::domain::HISTORY_SAMPLES
+    fn recent(&self) -> Vec<MetricsSample> {
+        self.latest().into_iter().collect()
+    }
 }
 
 #[async_trait]

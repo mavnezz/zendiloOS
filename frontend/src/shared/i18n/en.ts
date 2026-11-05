@@ -62,6 +62,14 @@ const en = {
     poweredOffHint: 'You can close this page.',
     powerFailed: 'The system could not be restarted or shut down.',
   },
+  about: {
+    machine: 'Machine',
+    board: 'Mainboard',
+    firmware: 'Firmware',
+    legacyBios: 'legacy BIOS',
+    cores: '{count} cores',
+    swap: '{size} swap',
+  },
   dashboard: {
     waiting: 'Waiting for the first measurement…',
     system: 'System',

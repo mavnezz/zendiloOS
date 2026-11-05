@@ -25,7 +25,7 @@ use zendiloos_system::application::ports::{
 };
 use zendiloos_system::application::{SystemPorts, SystemUseCases};
 use zendiloos_system::domain::{
-    AuditQuery, AuditRecord, JournalCursor, JournalEntry, JournalPage, JournalQuery, LogPriority,
+    AuditQuery, AuditRecord, Hardware, JournalCursor, JournalEntry, JournalPage, JournalQuery, LogPriority,
     MemoryUsage, MetricsSample, PowerAction, SystemInfo,
 };
 
@@ -46,8 +46,17 @@ impl SystemInfoProvider for FakeProvider {
             architecture: "x86_64".to_owned(),
             cpu_model: Some("Intel(R) N100".to_owned()),
             cpu_threads: 4,
+            cpu_cores: Some(4),
             memory_total_bytes: 8 * 1024 * 1024 * 1024,
+            swap_total_bytes: 1024 * 1024 * 1024,
             uptime_seconds: 3600,
+            hardware: Hardware {
+                vendor: Some("ASUSTeK COMPUTER INC.".to_owned()),
+                product: Some("PN42".to_owned()),
+                board: None,
+                firmware: Some("American Megatrends 0304 (05/12/2024)".to_owned()),
+                uefi: true,
+            },
         })
     }
 }
@@ -146,6 +155,10 @@ impl LiveMetrics for FakeLive {
 
     fn subscribe(&self) -> Box<dyn MetricsSubscription> {
         Box::new(FakeSubscription(Some(sample(101))))
+    }
+
+    fn recent(&self) -> Vec<MetricsSample> {
+        vec![sample(98), sample(100)]
     }
 }
 
@@ -404,9 +417,16 @@ async fn system_info_returns_the_host_facts() {
             "architecture": "x86_64",
             "cpu_model": "Intel(R) N100",
             "cpu_threads": 4,
+            "cpu_cores": 4,
             "memory_total_bytes": 8_u64 * 1024 * 1024 * 1024,
+            "swap_total_bytes": 1024 * 1024 * 1024,
             "uptime_seconds": 3600,
             "version": env!("CARGO_PKG_VERSION"),
+            "vendor": "ASUSTeK COMPUTER INC.",
+            "product": "PN42",
+            "board": null,
+            "firmware": "American Megatrends 0304 (05/12/2024)",
+            "uefi": true,
         })
     );
 }
@@ -823,6 +843,7 @@ fn openapi_documents_every_route() {
             "/api/v1/storage/pools/{name}/scrub/stop",
             "/api/v1/storage/volumes",
             "/api/v1/system/info",
+            "/api/v1/system/metrics/history",
             "/api/v1/system/power",
         ]
     );
@@ -1602,4 +1623,16 @@ async fn administrators_stop_a_running_scrub() {
     assert_eq!(stop(&admin).await.status, StatusCode::NO_CONTENT);
     let pools = h.send(empty(with_cookie(get("/api/v1/storage/pools"), &viewer))).await;
     assert_eq!(pools.body[0]["scan"]["state"], "canceled");
+}
+
+#[tokio::test]
+async fn charts_start_with_the_last_minutes() {
+    let h = Harness::new();
+    let session = h.sign_in("bob", Role::ReadOnly).await;
+
+    let reply = h.send(empty(with_cookie(get("/api/v1/system/metrics/history"), &session))).await;
+
+    assert_eq!(reply.status, StatusCode::OK, "{:?}", reply.body);
+    assert_eq!(reply.body["at"], json!([98, 100]));
+    assert_eq!(reply.body["cpu_percent"].as_array().unwrap().len(), 2);
 }

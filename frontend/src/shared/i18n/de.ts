@@ -63,6 +63,14 @@ const de: Messages = {
     poweredOffHint: 'Du kannst diese Seite schließen.',
     powerFailed: 'Das System konnte nicht neu gestartet oder heruntergefahren werden.',
   },
+  about: {
+    machine: 'Gerät',
+    board: 'Mainboard',
+    firmware: 'Firmware',
+    legacyBios: 'klassisches BIOS',
+    cores: '{count} Kerne',
+    swap: '{size} Auslagerung',
+  },
   dashboard: {
     waiting: 'Warte auf die erste Messung…',
     system: 'System',

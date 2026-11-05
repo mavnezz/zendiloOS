@@ -839,6 +839,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/system/metrics/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What the dashboard's charts show before live samples arrive over the
+         *     WebSocket (topic `metrics`).
+         */
+        get: operations["metrics_history"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/system/power": {
         parameters: {
             query?: never;
@@ -1277,6 +1297,21 @@ export interface components {
             temperatures: components["schemas"]["TemperatureMetrics"][];
             /** Format: int64 */
             uptime_seconds: number;
+        };
+        /**
+         * @description The last minutes of the host's load as series for charts, oldest first;
+         *     one sample every two seconds, at most six minutes. Rates are summed over
+         *     all network interfaces and all disks.
+         */
+        MetricsHistory: {
+            /** @description Unix time in seconds of each sample. */
+            at: number[];
+            cpu_percent: number[];
+            memory_used_bytes: number[];
+            read_bytes_per_second: number[];
+            received_bytes_per_second: number[];
+            sent_bytes_per_second: number[];
+            written_bytes_per_second: number[];
         };
         /**
          * @description How the machine is connected: its interfaces (without the loopback and
@@ -1752,17 +1787,30 @@ export interface components {
         SystemInfo: {
             /** @description Machine architecture, e.g. `x86_64`. */
             architecture: string;
+            /** @description Mainboard maker and name. */
+            board?: string | null;
+            /** @description Physical cores, if known. */
+            cpu_cores?: number | null;
             cpu_model?: string | null;
             /** @description Logical CPUs (hardware threads). */
             cpu_threads: number;
+            /** @description Firmware maker, version and date. */
+            firmware?: string | null;
             hostname: string;
             kernel_release: string;
             /** Format: int64 */
             memory_total_bytes: number;
             /** @description Operating system, e.g. `Debian GNU/Linux 13 (trixie)`. */
             os_name?: string | null;
+            product?: string | null;
+            /** Format: int64 */
+            swap_total_bytes: number;
+            /** @description Booted through UEFI rather than a legacy BIOS. */
+            uefi: boolean;
             /** Format: int64 */
             uptime_seconds: number;
+            /** @description Maker of the machine, from its firmware. */
+            vendor?: string | null;
             /** @description Version of Zendiloos. */
             version: string;
         };
@@ -3746,6 +3794,34 @@ export interface operations {
                 };
                 content: {
                     "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    metrics_history: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetricsHistory"];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
                 };
             };
         };

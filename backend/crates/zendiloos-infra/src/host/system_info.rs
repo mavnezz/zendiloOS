@@ -1,10 +1,11 @@
 use std::fs;
+use std::path::Path;
 
 use async_trait::async_trait;
 use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
 use zendiloos_kernel::PortError;
 use zendiloos_system::application::ports::SystemInfoProvider;
-use zendiloos_system::domain::SystemInfo;
+use zendiloos_system::domain::{Hardware, SystemInfo, joined, meaningful};
 
 use super::os_release;
 
@@ -36,7 +37,7 @@ fn read_system_info() -> Result<SystemInfo, PortError> {
         System::new_with_specifics(
             RefreshKind::nothing()
                 .with_cpu(CpuRefreshKind::nothing())
-                .with_memory(MemoryRefreshKind::nothing().with_ram()),
+                .with_memory(MemoryRefreshKind::nothing().with_ram().with_swap()),
         ),
     )?;
 
@@ -54,9 +55,28 @@ fn read_system_info() -> Result<SystemInfo, PortError> {
             .map(|cpu| cpu.brand().trim().to_owned())
             .filter(|brand| !brand.is_empty()),
         cpu_threads: system.cpus().len(),
+        cpu_cores: System::physical_core_count().ok(),
         memory_total_bytes: system.total_memory(),
+        swap_total_bytes: system.total_swap(),
         uptime_seconds: read("uptime", System::uptime())?,
+        hardware: hardware(Path::new(DMI)),
     })
+}
+
+/// The firmware's description of the machine; its files are world-readable
+/// except the serial numbers, which are not read.
+const DMI: &str = "/sys/class/dmi/id";
+
+fn hardware(dmi: &Path) -> Hardware {
+    let field = |name: &str| fs::read_to_string(dmi.join(name)).ok().as_deref().and_then(meaningful);
+    let date = field("bios_date").map(|date| format!("({date})"));
+    Hardware {
+        vendor: field("sys_vendor"),
+        product: field("product_name"),
+        board: joined(&[field("board_vendor"), field("board_name")]),
+        firmware: joined(&[field("bios_vendor"), field("bios_version"), date]),
+        uefi: Path::new("/sys/firmware/efi").exists(),
+    }
 }
 
 #[cfg(test)]
@@ -72,5 +92,27 @@ mod tests {
         assert!(!info.architecture.is_empty());
         assert!(info.cpu_threads > 0);
         assert!(info.memory_total_bytes > 0);
+    }
+
+    #[test]
+    fn reads_the_firmware_without_placeholders() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, value) in [
+            ("sys_vendor", "QEMU\n"),
+            ("product_name", "Standard PC (i440FX + PIIX, 1996)\n"),
+            ("board_vendor", "To Be Filled By O.E.M.\n"),
+            ("bios_vendor", "SeaBIOS\n"),
+            ("bios_version", "1.16.2-debian-1.16.2-1\n"),
+            ("bios_date", "04/01/2014\n"),
+        ] {
+            fs::write(dir.path().join(name), value).unwrap();
+        }
+
+        let found = hardware(dir.path());
+
+        assert_eq!(found.vendor.as_deref(), Some("QEMU"));
+        assert_eq!(found.product.as_deref(), Some("Standard PC (i440FX + PIIX, 1996)"));
+        assert_eq!(found.board, None);
+        assert_eq!(found.firmware.as_deref(), Some("SeaBIOS 1.16.2-debian-1.16.2-1 (04/01/2014)"));
     }
 }
