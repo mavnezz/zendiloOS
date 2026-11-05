@@ -13,7 +13,7 @@ use zendiloos_kernel::{Actor, PortError, RequestContext};
 use super::SharingPorts;
 use super::ports::FileHostError;
 use crate::domain::{
-    Access, FileLocation, FilePath, InvalidFilePath, Listing, Share, ShareId, Subject, is_file_name,
+    Access, FileLocation, FilePath, InvalidFilePath, Listing, Share, ShareId, Subject, is_new_file_name,
 };
 
 /// Most entries one copy, move or delete takes.
@@ -32,7 +32,7 @@ pub enum FilesError {
     Denied,
     #[error("the name is taken")]
     Exists,
-    #[error("not a valid name")]
+    #[error("not a valid name: no control characters, no spaces at either end, no dot at the end")]
     InvalidName,
     #[error(transparent)]
     InvalidPath(#[from] InvalidFilePath),
@@ -185,7 +185,7 @@ impl FilesUseCases {
         replace: bool,
         context: &RequestContext,
     ) -> Result<Upload, FilesError> {
-        if !is_file_name(name) || name.starts_with(UPLOAD_PREFIX) {
+        if !is_new_file_name(name) || name.starts_with(UPLOAD_PREFIX) {
             return Err(FilesError::InvalidName);
         }
         let share = self.writable_share(actor, id).await?;
@@ -230,7 +230,7 @@ impl FilesUseCases {
         path: FilePath,
         context: &RequestContext,
     ) -> Result<(), FilesError> {
-        if path.is_root() {
+        if !path.name().is_some_and(is_new_file_name) {
             return Err(FilesError::InvalidName);
         }
         let share = self.writable_share(actor, id).await?;
@@ -247,6 +247,9 @@ impl FilesUseCases {
         context: &RequestContext,
     ) -> Result<FilePath, FilesError> {
         let parent = path.parent().ok_or(FilesError::Invalid("the share itself cannot be renamed".into()))?;
+        if !is_new_file_name(name) {
+            return Err(FilesError::InvalidName);
+        }
         let target = parent.join(name).map_err(|_| FilesError::InvalidName)?;
         let share = self.writable_share(actor, id).await?;
         let (from, to) = (at(&share, path), at(&share, target.clone()));

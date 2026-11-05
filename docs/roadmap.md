@@ -60,7 +60,7 @@ Compared on 2026-11-05.
 |---|---|---|---|
 | M5 ✓ | storage health: one verdict, concerns ordered by severity | `storage/domain/overview.rs`, `Pool::is_redundant` | on the monitor's last state, not a SMART run per request; fill thresholds as in the monitor (80/90 %) |
 | M5 ✓ | network display: interfaces and addresses | `infra/src/network` with `fixtures/ip-address.json` | read-only |
-| M5 | stricter names for new files, path-escape test cases | `files/domain/path.rs`, API tests | new names only, so odd names written over SMB/NFS stay reachable |
+| M5 ✓ | stricter names for new files, path-escape test cases | `files/domain/path.rs`, API tests | new names only, so odd names written over SMB/NFS stay reachable |
 | M5 | stop a scrub; rate and time left from the real `zpool status -j` fields; `recycle:exclude` for temporary and lock files; six minutes of metrics history on the server; more on the About page | various | storix's scan parser reads fields that real output lacks; computed from `issued` and `pass_start` instead |
 | M6 | snapshots on demand and on a schedule, with retention | `storage/domain/snapshot.rs`, `TakeDueSnapshots` | recognised by a user property, not a name prefix; the agent checks ownership; readable labels for Samba's `vfs_shadow_copy2` ("Previous Versions"); failures become notifications; rollback per share |
 | M6 | Docker and Compose | `privd-proto` operations, `privd/src/docker.rs`, `infra/src/containers` with fixtures | the agent checks what a compose file may do (no privileged containers, host namespaces, extra capabilities, devices, Docker socket, bind mounts outside `/volume*`); image pulls as jobs |

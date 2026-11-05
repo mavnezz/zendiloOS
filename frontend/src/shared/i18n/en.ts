@@ -603,6 +603,7 @@ const en = {
     size: 'Size',
     modified: 'Modified',
     noSlash: 'A name cannot contain "/".',
+    noTrailingDot: 'A name cannot end with a dot: Windows could not open it.',
     empty: 'This folder is empty.',
     binEmpty: 'Your recycle bin in this share is empty.',
     truncated: 'Only the first {count} entries are shown.',

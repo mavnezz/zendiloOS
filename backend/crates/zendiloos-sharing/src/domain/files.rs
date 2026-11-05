@@ -13,6 +13,15 @@ pub fn is_file_name(name: &str) -> bool {
     !name.is_empty() && name.len() <= 255 && name != "." && name != ".." && !name.contains(['/', '\0'])
 }
 
+/// Whether `name` may be given to a new file or folder: a [file name]
+/// (is_file_name) without control characters, without spaces at either end
+/// and not ending in a dot. Windows cannot reach names like those, and
+/// they are easy to get wrong. Existing files keep their names, whatever
+/// wrote them, and stay reachable.
+pub fn is_new_file_name(name: &str) -> bool {
+    is_file_name(name) && !name.chars().any(char::is_control) && name.trim() == name && !name.ends_with('.')
+}
+
 /// A path inside a share, relative to its root: names separated by `/`, at
 /// most 4096 bytes. Empty means the root.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
@@ -107,6 +116,20 @@ pub struct Listing {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_names_are_stricter_than_existing_ones() {
+        for good in ["photo.jpg", ".hidden", "Notes: 2024", "Ünïcödé 📷", "a.b.c"] {
+            assert!(is_new_file_name(good), "{good:?}");
+        }
+        for bad in
+            ["", ".", "..", "a/b", "line\nbreak", "tab\t", "del\u{7f}", " lead", "trail ", "dot.", "x\0"]
+        {
+            assert!(!is_new_file_name(bad), "{bad:?}");
+        }
+        // What SMB or NFS wrote can still be opened.
+        assert!(FilePath::parse("odd\tname/trail ").is_ok());
+    }
 
     #[test]
     fn paths_are_relative_and_plain() {

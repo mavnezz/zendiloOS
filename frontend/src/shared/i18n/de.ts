@@ -613,6 +613,7 @@ const de: Messages = {
     size: 'Größe',
     modified: 'Geändert',
     noSlash: 'Ein Name darf kein „/“ enthalten.',
+    noTrailingDot: 'Ein Name darf nicht auf einen Punkt enden: Windows könnte ihn nicht öffnen.',
     empty: 'Dieser Ordner ist leer.',
     binEmpty: 'Ihr Papierkorb in dieser Freigabe ist leer.',
     truncated: 'Nur die ersten {count} Einträge werden gezeigt.',

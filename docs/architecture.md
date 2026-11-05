@@ -485,7 +485,10 @@ convenience. Enforcement happens only in the backend (axum extractor
   `openat2(RESOLVE_BENEATH | RESOLVE_NO_XDEV | RESOLVE_NO_MAGICLINKS)`, so
   neither `..` nor a symbolic link leads out of the share; copying and
   removing trees goes name by name from directory descriptors and never
-  follows a link. For downloads and uploads the agent passes the opened
+  follows a link. New names (uploads, new folders, renames) must not
+  contain control characters, begin or end with a space or end with a
+  dot, which Windows could not reach; files written over SMB or NFS keep
+  their names and stay reachable. For downloads and uploads the agent passes the opened
   file back via `SCM_RIGHTS` and `zendiloosd` streams the data; the root
   process never handles file contents. An upload is written to a hidden
   file in the target folder and renamed when complete, so a broken upload

@@ -1518,3 +1518,63 @@ async fn every_account_sees_how_the_machine_is_connected() {
     );
     assert_eq!(reply.body["name_servers"], json!(["192.168.1.1"]));
 }
+
+#[tokio::test]
+async fn no_path_leads_out_of_a_share_and_new_names_are_safe() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let bob = h.sign_in("bob", Role::User).await;
+    let bob_id = h.identity.accounts.all().into_iter().find(|a| a.name.as_str() == "bob").unwrap().id.get();
+    let rules = json!([{ "kind": "account", "id": bob_id, "access": "read_write" }]);
+    let created = h
+        .send(json(
+            with_csrf(post("/api/v1/shares"), &admin),
+            json!({ "name": "photos", "pool": "tank", "access": rules }),
+        ))
+        .await;
+    let files = format!("/api/v1/files/shares/{}", created.body["id"]);
+
+    // Cases from storix's tests, percent-encoded ones included: the query
+    // is decoded first, so they are refused as the plain ones are.
+    for path in [
+        "..",
+        "../outside",
+        "../../etc",
+        "2024/../../outside",
+        "%2e%2e%2foutside",
+        "%2E%2E/outside",
+        "..%2Foutside",
+        "2024/%2e%2e/%2e%2e",
+        "a%00b",
+    ] {
+        for operation in ["folder", "download"] {
+            let reply =
+                h.send(empty(with_cookie(get(&format!("{files}/{operation}?path={path}")), &bob))).await;
+            assert_problem(&reply, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
+        }
+    }
+    for body in [json!({ "path": ".." }), json!({ "path": "../outside" }), json!({ "path": "" })] {
+        let reply = h.send(json(with_csrf(post(&format!("{files}/folders")), &bob), body.clone())).await;
+        assert_problem(&reply, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
+    }
+
+    // New names: nothing Windows could not reach, nothing invisible. A
+    // folder path may have several names; a new name is one.
+    for name in ["trail ", " lead", "dot.", "line\nbreak", "../x", "a/b"] {
+        let folder =
+            h.send(json(with_csrf(post(&format!("{files}/folders")), &bob), json!({ "path": name })));
+        if name != "a/b" {
+            assert_problem(&folder.await, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
+        }
+        let body = json!({ "path": "2024/a.jpg", "name": name });
+        let rename = h.send(json(with_csrf(post(&format!("{files}/rename")), &bob), body)).await;
+        assert_problem(&rename, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
+    }
+    let upload = with_csrf(post(&format!("{files}/upload?path=2024&name=dot.")), &bob)
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .body(Body::from("bytes"))
+        .unwrap();
+    assert_problem(&h.send(upload).await, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
+    // Nothing of it reached the files agent.
+    assert_eq!(h.file_host.calls(), Vec::<String>::new());
+}

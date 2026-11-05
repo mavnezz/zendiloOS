@@ -24,9 +24,15 @@ watch(open, (isOpen) => {
   if (isOpen) name.value = props.initial
 })
 
-/** What file systems and the server refuse anyway. */
+const CONTROL = /[\u0000-\u001f\u007f]/
+
+/**
+ * What the server refuses for new names anyway: also no dot at the end and
+ * no control characters, which Windows could not reach. Spaces at either
+ * end are trimmed.
+ */
 function valid(value: string): boolean {
-  return value !== '' && value !== '.' && value !== '..' && !value.includes('/')
+  return value !== '' && !value.includes('/') && !value.endsWith('.') && !CONTROL.test(value)
 }
 </script>
 
@@ -45,6 +51,9 @@ function valid(value: string): boolean {
           maxlength="255"
         />
         <p v-if="name.includes('/')" class="text-xs text-destructive">{{ t('files.noSlash') }}</p>
+        <p v-else-if="name.trim().endsWith('.')" class="text-xs text-destructive">
+          {{ t('files.noTrailingDot') }}
+        </p>
       </div>
       <div class="flex justify-end gap-2">
         <Button type="button" variant="outline" @click="open = false">{{
