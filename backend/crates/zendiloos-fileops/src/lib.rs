@@ -23,7 +23,8 @@ use rustix::fs::{
 use rustix::io::Errno;
 use rustix::rand::{GetRandomFlags, getrandom};
 use zendiloos_agent_proto::{
-    DirectoryEntry, EntryKind, MAX_DIRECTORY_ENTRIES, ShareName, SharePath, VolumeNumber, is_file_name,
+    DirectoryEntry, EntryKind, MAX_DIRECTORY_ENTRIES, ShareName, SharePath, SnapshotLabel, VolumeNumber,
+    is_file_name,
 };
 
 mod archive;
@@ -298,6 +299,30 @@ impl ShareRoot {
         let stat = fstat(&directory)?;
         if require_mount && device(&stat) == device(&fstat(&volume_directory)?) {
             return Err(FileError::Invalid("the share is not mounted"));
+        }
+        Ok(Self { directory, file_system: device(&stat), inode: inode(&stat) })
+    }
+
+    /// The snapshot `label` of a mounted share, as a root of its own: ZFS
+    /// mounts it when `.zfs/snapshot/<label>` is entered (behind
+    /// `RESOLVE_NO_XDEV` from the share), and it is read only.
+    pub fn open_snapshot(
+        volumes: &Path,
+        volume: VolumeNumber,
+        share: &ShareName,
+        label: &SnapshotLabel,
+    ) -> Result<Self, FileError> {
+        let live = Self::open(volumes, volume, share, true)?;
+        let path = OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        let zfs = openat(&live.directory, ".zfs", path, Mode::empty())?;
+        let snapshots = openat(&zfs, "snapshot", path, Mode::empty())?;
+        // Opened for reading, which mounts the snapshot; a path-only open
+        // would stay on the empty directory beneath.
+        let reading = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        let directory = openat(&snapshots, label.as_str(), reading, Mode::empty())?;
+        let stat = fstat(&directory)?;
+        if device(&stat) == live.file_system {
+            return Err(FileError::Invalid("the snapshot is not mounted"));
         }
         Ok(Self { directory, file_system: device(&stat), inode: inode(&stat) })
     }

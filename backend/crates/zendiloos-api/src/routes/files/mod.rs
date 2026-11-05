@@ -39,6 +39,8 @@ pub(super) fn routes() -> OpenApiRouter<ApiState> {
         .routes(routes!(transfer_entries))
         .routes(routes!(delete_entries))
         .routes(routes!(restore_entries))
+        .routes(routes!(file_snapshots))
+        .routes(routes!(restore_from_snapshot))
 }
 
 impl From<FilesError> for ApiError {
@@ -141,6 +143,9 @@ pub struct FolderQuery {
     /// Relative to the share's root, e.g. `photos/2024`; empty for the root.
     #[serde(default)]
     pub path: String,
+    /// In this snapshot of the share, read only (its label).
+    #[serde(default)]
+    pub snapshot: Option<String>,
 }
 
 /// A folder's contents. Needs `files.read`.
@@ -165,7 +170,9 @@ async fn list_folder(
 ) -> Result<Json<Folder>, ApiError> {
     auth.require(Permission::FilesRead)?;
     let folder = path(&query.path)?;
-    let listing = state.files.list(&auth.0.actor(), ShareId::new(id), folder.clone(), &client).await?;
+    let snapshot = query.snapshot.as_deref();
+    let listing =
+        state.files.list(&auth.0.actor(), ShareId::new(id), folder.clone(), snapshot, &client).await?;
     Ok(Json(Folder {
         path: folder.as_str().to_owned(),
         entries: listing
@@ -217,6 +224,9 @@ pub struct FileQuery {
     /// plain text; anything else is saved regardless.
     #[serde(default)]
     pub inline: bool,
+    /// From this snapshot of the share (its label).
+    #[serde(default)]
+    pub snapshot: Option<String>,
 }
 
 /// Downloads a file, as an attachment unless a harmless kind is asked for
@@ -249,7 +259,9 @@ async fn download(
     auth.require(Permission::FilesRead)?;
     let file_path = path(&query.path)?;
     let name = file_path.name().ok_or_else(|| ApiError::InvalidInput("not a file".into()))?.to_owned();
-    let (mut file, size) = state.files.open(&auth.0.actor(), ShareId::new(id), file_path, &client).await?;
+    let snapshot = query.snapshot.as_deref();
+    let (mut file, size) =
+        state.files.open(&auth.0.actor(), ShareId::new(id), file_path, snapshot, &client).await?;
 
     let modified = file.metadata().await.ok().and_then(|m| m.modified().ok()).map(httpdate::fmt_http_date);
     let preview = query.inline.then(|| download::preview_type(&name)).flatten();
@@ -317,8 +329,10 @@ async fn download_folder(
 ) -> Result<Response, ApiError> {
     auth.require(Permission::FilesRead)?;
     let folder = path(&query.path)?;
-    let (archive, size, name) =
-        state.files.archive(&auth.0.actor(), ShareId::new(id), folder, &client).await?;
+    let (archive, size, name) = state
+        .files
+        .archive(&auth.0.actor(), ShareId::new(id), folder, query.snapshot.as_deref(), &client)
+        .await?;
     let mut headers = HeaderMap::new();
     headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/x-tar"));
     headers.insert(header::CONTENT_DISPOSITION, disposition(&format!("{name}.tar"), false));
@@ -622,6 +636,81 @@ async fn restore_entries(
     let restored =
         state.files.restore(&auth.0.actor(), ShareId::new(id), paths(&request.paths)?, &client).await?;
     Ok(Json(RestoredEntries { paths: restored.iter().map(|p| p.as_str().to_owned()).collect() }))
+}
+
+/// A snapshot of a share, as the file manager shows it.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct FileSnapshot {
+    /// Pass as `snapshot` to look into it.
+    pub label: String,
+    /// Unix seconds.
+    pub taken_at: i64,
+    pub note: Option<String>,
+}
+
+/// The share's snapshots, newest first: what it looked like then. Needs
+/// `files.read`.
+#[utoipa::path(
+    get,
+    path = "/files/shares/{id}/snapshots",
+    tag = "files",
+    security(("session" = [])),
+    params(("id" = i64, Path)),
+    responses(
+        (status = OK, body = Vec<FileSnapshot>),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`"),
+    )
+)]
+async fn file_snapshots(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(id): Path<i64>,
+) -> Result<Json<Vec<FileSnapshot>>, ApiError> {
+    auth.require(Permission::FilesRead)?;
+    let list = state.files.snapshots(&auth.0.actor(), ShareId::new(id), &client).await?;
+    Ok(Json(
+        list.into_iter()
+            .map(|s| FileSnapshot { label: s.label, taken_at: s.taken_at.unix_seconds(), note: s.note })
+            .collect(),
+    ))
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RestoreFromSnapshotRequest {
+    /// Entries of the snapshot, relative to the share's root.
+    pub paths: Vec<String>,
+}
+
+/// Copies entries out of a snapshot back into the share, each into the
+/// folder it was in; a name that is taken gets `name (2).ext`, so nothing
+/// is replaced. As a job. Needs `files.write`.
+#[utoipa::path(
+    post,
+    path = "/files/shares/{id}/snapshots/{label}/restore",
+    tag = "files",
+    security(("session" = [])),
+    params(("id" = i64, Path), ("label" = String, Path)),
+    request_body = RestoreFromSnapshotRequest,
+    responses(
+        (status = ACCEPTED, body = Job),
+        (status = FORBIDDEN, body = Problem, description = "`permission_denied`"),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`"),
+    )
+)]
+async fn restore_from_snapshot(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path((id, label)): Path<(i64, String)>,
+    ApiJson(request): ApiJson<RestoreFromSnapshotRequest>,
+) -> Result<(StatusCode, Json<Job>), ApiError> {
+    auth.require(Permission::FilesWrite)?;
+    let paths = paths(&request.paths)?;
+    let job =
+        state.files.restore_from_snapshot(&auth.0.actor(), ShareId::new(id), &label, paths, &client).await?;
+    Ok((StatusCode::ACCEPTED, Json(job.into())))
 }
 
 /// A folder kept at hand.

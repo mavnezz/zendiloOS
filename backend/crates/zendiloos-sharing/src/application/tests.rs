@@ -281,23 +281,23 @@ async fn users_see_the_shares_their_rules_name() {
     assert_eq!(s.files.shares(&bob()).await.unwrap()[0].access, Access::Read);
     assert!(s.files.shares(&carol()).await.unwrap().is_empty());
 
-    let listing = s.files.list(&bob(), id, file("2024"), &request).await.unwrap();
+    let listing = s.files.list(&bob(), id, file("2024"), None, &request).await.unwrap();
     assert_eq!(listing.entries.len(), 1);
     assert!(matches!(
-        s.files.list(&carol(), id, FilePath::root(), &request).await,
+        s.files.list(&carol(), id, FilePath::root(), None, &request).await,
         Err(FilesError::ShareNotFound)
     ));
     assert!(matches!(
-        s.files.list(&bob(), ShareId::new(99), FilePath::root(), &request).await,
+        s.files.list(&bob(), ShareId::new(99), FilePath::root(), None, &request).await,
         Err(FilesError::ShareNotFound)
     ));
     assert!(matches!(
-        s.files.open(&bob(), id, file("missing.jpg"), &request).await,
+        s.files.open(&bob(), id, file("missing.jpg"), None, &request).await,
         Err(FilesError::NotFound)
     ));
-    let (_, size, name) = s.files.archive(&bob(), id, FilePath::root(), &request).await.unwrap();
+    let (_, size, name) = s.files.archive(&bob(), id, FilePath::root(), None, &request).await.unwrap();
     assert_eq!((size, name.as_str()), (10, "photos"), "the share's top is named after it");
-    let (_, _, name) = s.files.archive(&bob(), id, file("2024"), &request).await.unwrap();
+    let (_, _, name) = s.files.archive(&bob(), id, file("2024"), None, &request).await.unwrap();
     assert_eq!(name, "2024");
     assert_eq!(
         s.file_host.calls(),
@@ -422,6 +422,47 @@ async fn favourites_are_per_account_and_only_in_usable_shares() {
     assert!(matches!(elsewhere, Err(FilesError::ShareNotFound)), "carol may not use the share");
     let twice = s.files.set_favourites(&bob(), vec![favourite("2024"), favourite("2024")]).await;
     assert!(matches!(twice, Err(FilesError::Invalid(_))));
+}
+
+#[tokio::test]
+async fn snapshots_are_looked_into_and_restored_from_without_replacing() {
+    let s = setup();
+    let id = with_photos(&s).await;
+    let (request, label) = (RequestContext::default(), "zdl-2026-11-05_19.40.01");
+    s.host.snapshots.lock().unwrap().push(crate::domain::Snapshot {
+        pool: "tank".into(),
+        share: crate::domain::ShareName::parse("photos").unwrap(),
+        label: label.into(),
+        taken_at: zendiloos_kernel::Timestamp::from_unix_seconds(1_793_907_601),
+        schedules: vec![],
+        note: Some("before the move".into()),
+        used_bytes: 0,
+        referenced_bytes: 0,
+    });
+
+    let seen = s.files.snapshots(&bob(), id, &request).await.unwrap();
+    assert_eq!(seen.iter().map(|s| s.label.as_str()).collect::<Vec<_>>(), [label]);
+    assert!(matches!(s.files.snapshots(&carol(), id, &request).await, Err(FilesError::ShareNotFound)));
+    s.files.list(&bob(), id, file("2024"), Some(label), &request).await.unwrap();
+    let odd = s.files.list(&bob(), id, FilePath::root(), Some("../.."), &request).await;
+    assert!(matches!(odd, Err(FilesError::Invalid(_))), "{odd:?}");
+
+    let reader = s.files.restore_from_snapshot(&bob(), id, label, vec![file("a.jpg")], &request).await;
+    assert!(matches!(reader, Err(FilesError::Denied)), "readers cannot write back");
+    let job = s
+        .files
+        .restore_from_snapshot(&alice(), id, label, vec![file("album/a.jpg")], &request)
+        .await
+        .unwrap();
+    assert_eq!(job.kind.as_str(), "files.restore_snapshot");
+    assert_eq!(finished(&s.jobs, job).await.state, JobState::Succeeded);
+    assert_eq!(
+        s.file_host.calls(),
+        [
+            format!("list bob photos@{label}:2024"),
+            format!("copy alice photos@{label}:album/a.jpg -> photos:album/a.jpg"),
+        ]
+    );
 }
 
 #[tokio::test]

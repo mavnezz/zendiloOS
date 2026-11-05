@@ -10,15 +10,17 @@ import { ModalDialog } from '@/shared/ui/dialog'
 
 import { downloadUrl, previewKind, previewUrl, textPreview } from '../api'
 
-/** The file to show: its share and path; null shows nothing. */
-const props = defineProps<{ share: number; path: string | null }>()
+/** The file to show: its share and path, in a snapshot if given; null shows nothing. */
+const props = defineProps<{ share: number; path: string | null; snapshot?: string | null }>()
 const open = defineModel<boolean>('open', { default: false })
 
 const { t } = useI18n()
 
 const name = computed(() => props.path?.split('/').pop() ?? '')
 const kind = computed(() => (props.path ? previewKind(name.value) : null))
-const source = computed(() => (props.path ? previewUrl(props.share, props.path) : ''))
+const source = computed(() =>
+  props.path ? previewUrl(props.share, props.path, props.snapshot) : '',
+)
 
 const text = ref<{ text: string; more: boolean } | null>(null)
 const failure = ref<string | null>(null)
@@ -71,7 +73,13 @@ watch(
       <p v-if="text.more" class="text-xs text-muted-foreground">{{ t('files.textTruncated') }}</p>
     </template>
     <div v-if="path" class="flex justify-end">
-      <Button as="a" variant="outline" size="sm" :href="downloadUrl(share, path)" download>
+      <Button
+        as="a"
+        variant="outline"
+        size="sm"
+        :href="downloadUrl(share, path, snapshot)"
+        download
+      >
         <Download />
         {{ t('files.download') }}
       </Button>

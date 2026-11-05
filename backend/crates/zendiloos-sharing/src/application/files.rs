@@ -87,7 +87,17 @@ fn access_of(share: &Share, account: i64, groups: &[i64]) -> Option<Access> {
 }
 
 fn at(share: &Share, path: FilePath) -> FileLocation {
-    FileLocation { volume: share.volume, share: share.name.clone(), path }
+    FileLocation { volume: share.volume, share: share.name.clone(), path, snapshot: None }
+}
+
+/// `path` in the share, or in its snapshot `label`.
+fn at_snapshot(share: &Share, path: FilePath, label: Option<&str>) -> Result<FileLocation, FilesError> {
+    let snapshot = match label {
+        Some(label) if domain::is_label(label) => Some(label.to_owned()),
+        Some(_) => return Err(FilesError::Invalid("not a snapshot of this share".into())),
+        None => None,
+    };
+    Ok(FileLocation { snapshot, ..at(share, path) })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,27 +161,97 @@ impl FilesUseCases {
         Ok(usable.share)
     }
 
+    /// A folder of the share, or of its snapshot `snapshot`.
     pub async fn list(
         &self,
         actor: &Actor,
         id: ShareId,
         path: FilePath,
+        snapshot: Option<&str>,
         context: &RequestContext,
     ) -> Result<Listing, FilesError> {
         let share = self.share(actor, id).await?.share;
-        Ok(self.ports.files.list(&actor.name, &at(&share, path), context).await?)
+        Ok(self.ports.files.list(&actor.name, &at_snapshot(&share, path, snapshot)?, context).await?)
     }
 
-    /// A file for download, and its size.
+    /// A file for download, and its size; from a snapshot if given.
     pub async fn open(
         &self,
         actor: &Actor,
         id: ShareId,
         path: FilePath,
+        snapshot: Option<&str>,
         context: &RequestContext,
     ) -> Result<(tokio::fs::File, u64), FilesError> {
         let share = self.share(actor, id).await?.share;
-        Ok(self.ports.files.open(&actor.name, &at(&share, path), context).await?)
+        Ok(self.ports.files.open(&actor.name, &at_snapshot(&share, path, snapshot)?, context).await?)
+    }
+
+    /// The share's snapshots the user can look into, newest first.
+    pub async fn snapshots(
+        &self,
+        actor: &Actor,
+        id: ShareId,
+        context: &RequestContext,
+    ) -> Result<Vec<domain::Snapshot>, FilesError> {
+        let share = self.share(actor, id).await?.share;
+        let mut mine: Vec<domain::Snapshot> = self
+            .ports
+            .host
+            .snapshots(context)
+            .await
+            .map_err(|error| match error {
+                super::ports::HostError::Port(error) => FilesError::Port(error),
+                other => FilesError::Invalid(other.to_string()),
+            })?
+            .into_iter()
+            .filter(|s| s.pool == share.pool && s.share == share.name)
+            .collect();
+        mine.sort_by_key(|s| std::cmp::Reverse(s.taken_at));
+        Ok(mine)
+    }
+
+    /// Copies `paths` out of the snapshot `label` back into the share, each
+    /// into the folder it was in; beside a name that is taken, as
+    /// `name (2).ext`. Nothing in the share is replaced. As a job.
+    pub async fn restore_from_snapshot(
+        &self,
+        actor: &Actor,
+        id: ShareId,
+        label: &str,
+        paths: Vec<FilePath>,
+        context: &RequestContext,
+    ) -> Result<Job, FilesError> {
+        if paths.is_empty() || paths.len() > MAX_TRANSFER_ENTRIES || paths.iter().any(FilePath::is_root) {
+            return Err(FilesError::Invalid(format!("between 1 and {MAX_TRANSFER_ENTRIES} entries")));
+        }
+        let share = self.writable_share(actor, id).await?;
+        let copies = paths
+            .into_iter()
+            .map(|path| Ok((at_snapshot(&share, path.clone(), Some(label))?, at(&share, path))))
+            .collect::<Result<Vec<_>, FilesError>>()?;
+        let files = Arc::clone(&self.ports.files);
+        let (user, context) = (actor.name.clone(), context.clone());
+        let job = self
+            .ports
+            .jobs
+            .start(
+                "files.restore_snapshot",
+                Some(share.name.to_string()),
+                Some(actor),
+                move |progress| async move {
+                    let total = copies.len();
+                    for (done, (from, to)) in copies.iter().enumerate() {
+                        #[allow(clippy::cast_precision_loss)]
+                        progress.step("restoring", Some(done as f32 / total as f32)).await;
+                        files.copy_entry(&user, from, to, &context).await.map_err(job_error)?;
+                    }
+                    tracing::info!(user, entries = total, "files: restored from a snapshot");
+                    Ok(())
+                },
+            )
+            .await?;
+        Ok(job)
     }
 
     /// The account's favourite folders in shares it may still use, with
@@ -223,11 +303,13 @@ impl FilesUseCases {
         actor: &Actor,
         id: ShareId,
         path: FilePath,
+        snapshot: Option<&str>,
         context: &RequestContext,
     ) -> Result<(tokio::fs::File, u64, String), FilesError> {
         let share = self.share(actor, id).await?.share;
         let name = path.name().unwrap_or(share.name.as_str()).to_owned();
-        let (file, size) = self.ports.files.archive(&actor.name, &at(&share, path), context).await?;
+        let location = at_snapshot(&share, path, snapshot)?;
+        let (file, size) = self.ports.files.archive(&actor.name, &location, context).await?;
         Ok((file, size, name))
     }
 

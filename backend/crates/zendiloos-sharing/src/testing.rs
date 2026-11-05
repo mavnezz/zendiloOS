@@ -299,8 +299,10 @@ impl Files {
     }
 }
 
+/// `share:path`, or `share@label:path` in a snapshot.
 fn place(at: &FileLocation) -> String {
-    format!("{}:{}", at.share.as_str(), at.path.as_str())
+    let snapshot = at.snapshot.as_ref().map(|label| format!("@{label}")).unwrap_or_default();
+    format!("{}{snapshot}:{}", at.share.as_str(), at.path.as_str())
 }
 
 #[async_trait]

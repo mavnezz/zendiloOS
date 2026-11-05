@@ -830,6 +830,8 @@ fn openapi_documents_every_route() {
             "/api/v1/files/shares/{id}/folders",
             "/api/v1/files/shares/{id}/rename",
             "/api/v1/files/shares/{id}/restore",
+            "/api/v1/files/shares/{id}/snapshots",
+            "/api/v1/files/shares/{id}/snapshots/{label}/restore",
             "/api/v1/files/shares/{id}/transfer",
             "/api/v1/files/shares/{id}/upload",
             "/api/v1/groups",

@@ -126,6 +126,10 @@ impl SimulatedAgent {
             return (error(ErrorCode::Failed, "the simulated agent keeps no files"), None);
         };
         let share = |location: &FileLocation| {
+            // The simulation keeps no snapshots.
+            if location.snapshot.is_some() {
+                return Err(FileError::NotFound);
+            }
             // Shares from an earlier run have no directory yet.
             if let Some(directory) = self.share_directory(location.volume.get(), location.share.as_str()) {
                 std::fs::create_dir_all(directory)?;
@@ -436,8 +440,12 @@ mod tests {
         let created =
             agent.call(Request::CreateShare { pool, volume, name: name.clone() }, None).await.unwrap();
         assert_eq!(created, Response::Done);
-        let at =
-            |path: &str| FileLocation { volume, share: name.clone(), path: SharePath::parse(path).unwrap() };
+        let at = |path: &str| FileLocation {
+            volume,
+            share: name.clone(),
+            path: SharePath::parse(path).unwrap(),
+            snapshot: None,
+        };
         let user = UserName::parse("anna").unwrap();
 
         let (answer, file) = agent

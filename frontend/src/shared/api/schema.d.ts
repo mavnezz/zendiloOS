@@ -310,6 +310,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/files/shares/{id}/snapshots": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The share's snapshots, newest first: what it looked like then. Needs
+         *     `files.read`.
+         */
+        get: operations["file_snapshots"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/files/shares/{id}/snapshots/{label}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Copies entries out of a snapshot back into the share, each into the
+         *     folder it was in; a name that is taken gets `name (2).ext`, so nothing
+         *     is replaced. As a job. Needs `files.write`.
+         */
+        post: operations["restore_from_snapshot"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/files/shares/{id}/transfer": {
         parameters: {
             query?: never;
@@ -1390,6 +1431,17 @@ export interface components {
             /** @description Deleted entries go to `.recycle/<user>` in the share. */
             recycle_bin: boolean;
         };
+        /** @description A snapshot of a share, as the file manager shows it. */
+        FileSnapshot: {
+            /** @description Pass as `snapshot` to look into it. */
+            label: string;
+            note?: string | null;
+            /**
+             * Format: int64
+             * @description Unix seconds.
+             */
+            taken_at: number;
+        };
         /** @description A reason behind the health verdict. */
         Finding: {
             /**
@@ -1953,6 +2005,10 @@ export interface components {
         };
         RestoreEntriesRequest: {
             /** @description Entries of the user's recycle bin: `.recycle/<user>/…`. */
+            paths: string[];
+        };
+        RestoreFromSnapshotRequest: {
+            /** @description Entries of the snapshot, relative to the share's root. */
             paths: string[];
         };
         RestoredEntries: {
@@ -2826,6 +2882,8 @@ export interface operations {
             query?: {
                 /** @description Relative to the share's root, e.g. `photos/2024`; empty for the root. */
                 path?: string;
+                /** @description In this snapshot of the share, read only (its label). */
+                snapshot?: string;
             };
             header?: never;
             path: {
@@ -2925,6 +2983,8 @@ export interface operations {
                  *     plain text; anything else is saved regardless.
                  */
                 inline?: boolean;
+                /** @description From this snapshot of the share (its label). */
+                snapshot?: string;
             };
             header?: never;
             path: {
@@ -2991,6 +3051,8 @@ export interface operations {
             query?: {
                 /** @description Relative to the share's root, e.g. `photos/2024`; empty for the root. */
                 path?: string;
+                /** @description In this snapshot of the share, read only (its label). */
+                snapshot?: string;
             };
             header?: never;
             path: {
@@ -3164,6 +3226,80 @@ export interface operations {
             };
             /** @description `invalid_operation`: not in your bin */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    file_snapshots: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FileSnapshot"][];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    restore_from_snapshot: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+                label: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RestoreFromSnapshotRequest"];
+            };
+        };
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description `permission_denied` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

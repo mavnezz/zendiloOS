@@ -106,7 +106,19 @@ impl Files {
     /// Opened as root, before the switch: refused unless the share's own
     /// dataset is mounted.
     fn share(&self, location: &FileLocation) -> Result<ShareRoot, OperationError> {
-        ShareRoot::open(&self.volumes, location.volume, &location.share, true).map_err(OperationError::File)
+        match &location.snapshot {
+            None => ShareRoot::open(&self.volumes, location.volume, &location.share, true),
+            Some(label) => ShareRoot::open_snapshot(&self.volumes, location.volume, &location.share, label),
+        }
+        .map_err(OperationError::File)
+    }
+
+    /// The live share at `location`: snapshots cannot be changed.
+    fn writable(&self, location: &FileLocation) -> Result<ShareRoot, OperationError> {
+        if location.snapshot.is_some() {
+            return Err(OperationError::File(FileError::Invalid("a snapshot cannot be changed")));
+        }
+        self.share(location)
     }
 
     pub(crate) async fn execute(
@@ -133,40 +145,40 @@ impl Files {
             }
             Request::CreateUpload { user, location } => {
                 let (identity, share, path) =
-                    (self.identity(user)?, self.share(location)?, location.path.clone());
+                    (self.identity(user)?, self.writable(location)?, location.path.clone());
                 let (file, name) = as_user(identity, move || share.create_upload(&path)).await?;
                 Ok((Response::Upload { name }, Some(file)))
             }
             Request::MakeDirectory { user, location } => {
                 let (identity, share, path) =
-                    (self.identity(user)?, self.share(location)?, location.path.clone());
+                    (self.identity(user)?, self.writable(location)?, location.path.clone());
                 as_user(identity, move || share.make_directory(&path)).await?;
                 Ok((Response::Done, None))
             }
             Request::MoveEntry { user, from, to, replace } => {
                 let identity = self.identity(user)?;
-                let (source, target) = (self.share(from)?, self.share(to)?);
+                let (source, target) = (self.writable(from)?, self.writable(to)?);
                 let (from, to, replace) = (from.path.clone(), to.path.clone(), *replace);
                 as_user(identity, move || source.move_entry(&from, &target, &to, replace)).await?;
                 Ok((Response::Done, None))
             }
             Request::CopyEntry { user, from, to } => {
                 let identity = self.identity(user)?;
-                let (source, target) = (self.share(from)?, self.share(to)?);
+                let (source, target) = (self.share(from)?, self.writable(to)?);
                 let (from, to) = (from.path.clone(), to.path.clone());
                 let path = as_user(identity, move || source.copy_entry(&from, &target, &to)).await?;
                 Ok((Response::Copied { path }, None))
             }
             Request::RemoveEntry { user, location, recycle } => {
                 let (identity, share, path) =
-                    (self.identity(user)?, self.share(location)?, location.path.clone());
+                    (self.identity(user)?, self.writable(location)?, location.path.clone());
                 let bin_owner = recycle.then(|| user.as_str().to_owned());
                 as_user(identity, move || share.remove(&path, bin_owner.as_deref())).await?;
                 Ok((Response::Done, None))
             }
             Request::RestoreEntry { user, location } => {
                 let (identity, share, path) =
-                    (self.identity(user)?, self.share(location)?, location.path.clone());
+                    (self.identity(user)?, self.writable(location)?, location.path.clone());
                 let owner = user.as_str().to_owned();
                 let path = as_user(identity, move || share.restore(&path, &owner)).await?;
                 Ok((Response::Restored { path }, None))
@@ -258,11 +270,23 @@ mod tests {
             volume: VolumeNumber::new(1).unwrap(),
             share: ShareName::parse("photos").unwrap(),
             path: SharePath::root(),
+            snapshot: None,
         };
         let request = Request::ListDirectory { user: user("root"), location: location.clone() };
         assert!(matches!(files.execute(&request).await, Err(OperationError::NotManaged(_))));
         // The share is missing: refused as root, before switching.
-        let request = Request::ListDirectory { user: user("anna"), location };
+        let request = Request::ListDirectory { user: user("anna"), location: location.clone() };
         assert!(matches!(files.execute(&request).await, Err(OperationError::File(FileError::NotFound))));
+        // Nothing is written into a snapshot.
+        let snapshot = zendiloos_agent_proto::SnapshotLabel::parse("zdl-2026-11-05_19.40.01").unwrap();
+        let frozen = FileLocation { snapshot: Some(snapshot), ..location };
+        for request in [
+            Request::MakeDirectory { user: user("anna"), location: frozen.clone() },
+            Request::RemoveEntry { user: user("anna"), location: frozen.clone(), recycle: false },
+            Request::CreateUpload { user: user("anna"), location: frozen.clone() },
+        ] {
+            let refused = files.execute(&request).await;
+            assert!(matches!(refused, Err(OperationError::File(FileError::Invalid(_)))), "{refused:?}");
+        }
     }
 }

@@ -606,6 +606,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "snapshot",
+            "in": "query",
+            "description": "In this snapshot of the share, read only (its label).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -761,6 +770,15 @@
             "schema": {
               "type": "boolean"
             }
+          },
+          {
+            "name": "snapshot",
+            "in": "query",
+            "description": "From this snapshot of the share (its label).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -854,6 +872,15 @@
             "name": "path",
             "in": "query",
             "description": "Relative to the share's root, e.g. `photos/2024`; empty for the root.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "snapshot",
+            "in": "query",
+            "description": "In this snapshot of the share, read only (its label).",
             "required": false,
             "schema": {
               "type": "string"
@@ -1092,6 +1119,129 @@
           },
           "422": {
             "description": "`invalid_operation`: not in your bin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/files/shares/{id}/snapshots": {
+      "get": {
+        "tags": [
+          "files"
+        ],
+        "summary": "The share's snapshots, newest first: what it looked like then. Needs\n`files.read`.",
+        "operationId": "file_snapshots",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/FileSnapshot"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/files/shares/{id}/snapshots/{label}/restore": {
+      "post": {
+        "tags": [
+          "files"
+        ],
+        "summary": "Copies entries out of a snapshot back into the share, each into the\nfolder it was in; a name that is taken gets `name (2).ext`, so nothing\nis replaced. As a job. Needs `files.write`.",
+        "operationId": "restore_from_snapshot",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "label",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RestoreFromSnapshotRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`permission_denied`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
             "content": {
               "application/json": {
                 "schema": {
@@ -4476,6 +4626,31 @@
           }
         }
       },
+      "FileSnapshot": {
+        "type": "object",
+        "description": "A snapshot of a share, as the file manager shows it.",
+        "required": [
+          "label",
+          "taken_at"
+        ],
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "Pass as `snapshot` to look into it."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "taken_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix seconds."
+          }
+        }
+      },
       "Finding": {
         "type": "object",
         "description": "A reason behind the health verdict.",
@@ -6216,6 +6391,22 @@
               "type": "string"
             },
             "description": "Entries of the user's recycle bin: `.recycle/<user>/…`."
+          }
+        },
+        "additionalProperties": false
+      },
+      "RestoreFromSnapshotRequest": {
+        "type": "object",
+        "required": [
+          "paths"
+        ],
+        "properties": {
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Entries of the snapshot, relative to the share's root."
           }
         },
         "additionalProperties": false

@@ -63,6 +63,10 @@ fn location(at: &FileLocation) -> Result<proto::FileLocation, FileHostError> {
         volume: proto::VolumeNumber::new(at.volume).map_err(|_| invalid("volume number"))?,
         share: proto::ShareName::parse(at.share.as_str()).map_err(|_| invalid("share name"))?,
         path: proto::SharePath::parse(at.path.as_str()).map_err(|_| invalid("path"))?,
+        snapshot: match &at.snapshot {
+            Some(label) => Some(proto::SnapshotLabel::parse(label).map_err(|_| invalid("snapshot"))?),
+            None => None,
+        },
     })
 }
 
@@ -228,6 +232,7 @@ mod tests {
             volume: 1,
             share: ShareName::parse("docs").unwrap(),
             path: FilePath::parse(path).unwrap(),
+            snapshot: None,
         };
 
         let (mut upload, name) = files.create_upload("anna", &at(""), &context).await.unwrap();

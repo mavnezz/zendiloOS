@@ -1,5 +1,5 @@
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/vue-query'
-import { computed, type Ref } from 'vue'
+import { computed, type Ref, ref } from 'vue'
 
 import { ApiProblem, api, csrfToken, unwrap } from '@/shared/api/client'
 import type { Favourite, Job, TransferRequest } from '@/shared/api/types'
@@ -30,14 +30,21 @@ export function useSetFavourites() {
   }
 }
 
-/** One folder of a share; `share` null shows nothing. */
-export function useFolder(share: Ref<number | null>, path: Ref<string>) {
+/** One folder of a share, or of one of its snapshots; `share` null shows nothing. */
+export function useFolder(
+  share: Ref<number | null>,
+  path: Ref<string>,
+  snapshot: Ref<string | null> = ref(null),
+) {
   return useQuery({
-    queryKey: ['files', 'folder', share, path],
+    queryKey: ['files', 'folder', share, path, snapshot],
     queryFn: () =>
       unwrap(
         api.GET('/api/v1/files/shares/{id}/folder', {
-          params: { path: { id: share.value ?? 0 }, query: { path: path.value } },
+          params: {
+            path: { id: share.value ?? 0 },
+            query: { path: path.value, ...(snapshot.value ? { snapshot: snapshot.value } : {}) },
+          },
         }),
       ),
     enabled: computed(() => share.value !== null),
@@ -46,9 +53,38 @@ export function useFolder(share: Ref<number | null>, path: Ref<string>) {
   })
 }
 
+/** `path`, and the snapshot if one is looked into. */
+function query(path: string, snapshot?: string | null, extra: Record<string, string> = {}): string {
+  return new URLSearchParams({ path, ...(snapshot ? { snapshot } : {}), ...extra }).toString()
+}
+
 /** Where the browser downloads a file from, as an attachment. */
-export function downloadUrl(share: number, path: string): string {
-  return `/api/v1/files/shares/${share}/download?${new URLSearchParams({ path })}`
+export function downloadUrl(share: number, path: string, snapshot?: string | null): string {
+  return `/api/v1/files/shares/${share}/download?${query(path, snapshot)}`
+}
+
+/** The share's snapshots, newest first; `share` null asks for none. */
+export function useShareSnapshots(share: Ref<number | null>) {
+  return useQuery({
+    queryKey: ['files', 'snapshots', share],
+    queryFn: () =>
+      unwrap(
+        api.GET('/api/v1/files/shares/{id}/snapshots', {
+          params: { path: { id: share.value ?? 0 } },
+        }),
+      ),
+    enabled: computed(() => share.value !== null),
+  })
+}
+
+/** Copies entries out of a snapshot back into the share, as a job. */
+export function restoreFromSnapshot(share: number, label: string, paths: string[]): Promise<Job> {
+  return unwrap(
+    api.POST('/api/v1/files/shares/{id}/snapshots/{label}/restore', {
+      params: { path: { id: share, label } },
+      body: { paths },
+    }),
+  )
 }
 
 export type PreviewKind = 'image' | 'video' | 'audio' | 'text'
@@ -85,8 +121,8 @@ export function previewKind(name: string): PreviewKind | null {
 }
 
 /** Where the browser shows a file from. */
-export function previewUrl(share: number, path: string): string {
-  return `/api/v1/files/shares/${share}/download?${new URLSearchParams({ path, inline: 'true' })}`
+export function previewUrl(share: number, path: string, snapshot?: string | null): string {
+  return `/api/v1/files/shares/${share}/download?${query(path, snapshot, { inline: 'true' })}`
 }
 
 /** At most this much of a text file is shown. */
@@ -103,8 +139,8 @@ export async function textPreview(url: string): Promise<{ text: string; more: bo
 }
 
 /** Where the browser downloads a folder from, as a tar archive. */
-export function archiveUrl(share: number, path: string): string {
-  return `/api/v1/files/shares/${share}/archive?${new URLSearchParams({ path })}`
+export function archiveUrl(share: number, path: string, snapshot?: string | null): string {
+  return `/api/v1/files/shares/${share}/archive?${query(path, snapshot)}`
 }
 
 /** `parent/name`, or `name` at the root. */

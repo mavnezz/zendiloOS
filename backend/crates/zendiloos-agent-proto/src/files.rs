@@ -103,19 +103,22 @@ impl From<SharePath> for String {
     }
 }
 
-/// A file or directory: `/volume<volume>/<share>/<path>`.
+/// A file or directory: `/volume<volume>/<share>/<path>`, or the same in
+/// one of the share's snapshots, read only.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FileLocation {
     pub volume: VolumeNumber,
     pub share: ShareName,
     pub path: SharePath,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<crate::SnapshotLabel>,
 }
 
 impl FileLocation {
-    /// Whether both lie in the same share.
+    /// Whether both lie in the same share, or the same snapshot of it.
     pub fn same_share(&self, other: &FileLocation) -> bool {
-        self.volume == other.volume && self.share == other.share
+        self.volume == other.volume && self.share == other.share && self.snapshot == other.snapshot
     }
 }
 

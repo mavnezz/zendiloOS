@@ -168,8 +168,12 @@ mod tests {
         let user = || UserName::parse("anna").unwrap();
         let volume = VolumeNumber::new(1).unwrap();
         let share = ShareName::parse("photos").unwrap();
-        let location =
-            FileLocation { volume, share: share.clone(), path: SharePath::parse("album").unwrap() };
+        let location = FileLocation {
+            volume,
+            share: share.clone(),
+            path: SharePath::parse("album").unwrap(),
+            snapshot: None,
+        };
         assert!(!is_long(&Request::ListDirectory { user: user(), location: location.clone() }));
         assert!(!is_long(&Request::ScrubPool { pool: PoolName::parse("tank").unwrap() }));
         assert!(is_long(&Request::RemoveEntry { user: user(), location, recycle: true }));

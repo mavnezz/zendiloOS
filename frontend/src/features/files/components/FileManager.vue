@@ -9,6 +9,7 @@ import {
   File,
   Folder,
   FolderPlus,
+  History,
   Link,
   Pencil,
   RotateCcw,
@@ -38,12 +39,14 @@ import {
   downloadUrl,
   joinPath,
   previewKind,
+  restoreFromSnapshot,
   uploadFile,
   useFavourites,
   useFileActions,
   useFolder,
   useMyShares,
   useSetFavourites,
+  useShareSnapshots,
 } from '../api'
 import FilePreview from './FilePreview.vue'
 import NameDialog from './NameDialog.vue'
@@ -63,7 +66,15 @@ const shareId = ref<number | null>(null)
 const path = ref('')
 const showHidden = ref(false)
 const selected = ref(new Set<string>())
-const { data: folder, error: folderError, isFetching } = useFolder(shareId, path)
+/** The snapshot looked into, by its label; null: the share as it is now. */
+const snapshot = ref<string | null>(null)
+const { data: folder, error: folderError, isFetching } = useFolder(shareId, path, snapshot)
+const { data: snapshots } = useShareSnapshots(shareId)
+const snapshotTaken = computed(() => {
+  const found = snapshots.value?.find((s) => s.label === snapshot.value)
+  return found ? formatDateTime(found.taken_at * 1000) : ''
+})
+watch(shareId, () => (snapshot.value = null))
 
 watch(
   shares,
@@ -81,8 +92,27 @@ const share = computed(() => shares.value?.find((s) => s.id === shareId.value))
 const inRecycleBin = computed(() => path.value.split('/')[0] === RECYCLE_BIN)
 const ownBin = computed(() => (props.userName ? `${RECYCLE_BIN}/${props.userName}` : null))
 const writable = computed(
-  () => share.value?.access === 'read_write' && (folder.value?.writable ?? false),
+  () =>
+    snapshot.value === null &&
+    share.value?.access === 'read_write' &&
+    (folder.value?.writable ?? false),
 )
+
+/** Copies the selection out of the snapshot into the share, as a job. */
+async function restoreSnapshot(): Promise<void> {
+  if (shareId.value === null || snapshot.value === null) return
+  const paths = selectedPaths.value
+  try {
+    await restoreFromSnapshot(shareId.value, snapshot.value, paths)
+    notifications.notify(
+      'info',
+      t('files.restoringFromSnapshot', { count: paths.length }, paths.length),
+    )
+    selected.value = new Set()
+  } catch (failure) {
+    fail(failure)
+  }
+}
 /** The bin does not exist before the first deletion. */
 const emptyBin = computed(
   () =>
@@ -471,8 +501,20 @@ function icon(entry: FileEntry) {
           <Badge v-if="share.access === 'read'" variant="secondary">{{
             t('files.readOnly')
           }}</Badge>
+          <select
+            v-if="snapshots?.length"
+            v-model="snapshot"
+            class="h-8 max-w-48 rounded-md border bg-background px-2 text-sm"
+            :aria-label="t('files.snapshots')"
+            :title="t('files.snapshotsHint')"
+          >
+            <option :value="null">{{ t('files.now') }}</option>
+            <option v-for="item in snapshots" :key="item.label" :value="item.label">
+              {{ formatDateTime(item.taken_at * 1000) }}{{ item.note ? ` · ${item.note}` : '' }}
+            </option>
+          </select>
           <Button
-            v-if="!inRecycleBin"
+            v-if="!inRecycleBin && snapshot === null"
             variant="ghost"
             size="icon"
             :title="isFavourite ? t('files.unfavourite') : t('files.favourite')"
@@ -505,6 +547,17 @@ function icon(entry: FileEntry) {
           </Button>
         </div>
 
+        <div
+          v-if="snapshot !== null"
+          class="flex items-center gap-2 border-b bg-amber-500/10 px-3 py-2 text-sm"
+          role="status"
+        >
+          <History class="size-4 shrink-0" />
+          <span class="flex-1">{{ t('files.inSnapshot', { time: snapshotTaken }) }}</span>
+          <Button size="sm" variant="outline" @click="snapshot = null">{{
+            t('files.backToNow')
+          }}</Button>
+        </div>
         <div class="flex flex-wrap items-center gap-1.5 border-b px-2 py-1.5">
           <Button size="sm" variant="outline" :disabled="!writable" @click="picker?.click()">
             <Upload />
@@ -539,7 +592,7 @@ function icon(entry: FileEntry) {
               size="sm"
               variant="ghost"
               as="a"
-              :href="downloadUrl(share.id, joinPath(path, single.name))"
+              :href="downloadUrl(share.id, joinPath(path, single.name), snapshot)"
               download
             >
               <Download />
@@ -550,7 +603,7 @@ function icon(entry: FileEntry) {
               size="sm"
               variant="ghost"
               as="a"
-              :href="archiveUrl(share.id, joinPath(path, single.name))"
+              :href="archiveUrl(share.id, joinPath(path, single.name), snapshot)"
               :title="t('files.downloadFolderHint')"
               download
             >
@@ -577,11 +630,27 @@ function icon(entry: FileEntry) {
               <Pencil />
               {{ t('files.rename') }}
             </Button>
-            <Button size="sm" variant="ghost" @click="take('copy')">
+            <Button
+              v-if="snapshot !== null"
+              size="sm"
+              variant="ghost"
+              :disabled="share.access !== 'read_write'"
+              @click="restoreSnapshot"
+            >
+              <History />
+              {{ t('files.restoreFromSnapshot') }}
+            </Button>
+            <Button v-if="snapshot === null" size="sm" variant="ghost" @click="take('copy')">
               <Copy />
               {{ t('files.copy') }}
             </Button>
-            <Button size="sm" variant="ghost" :disabled="!writable" @click="take('move')">
+            <Button
+              v-if="snapshot === null"
+              size="sm"
+              variant="ghost"
+              :disabled="!writable"
+              @click="take('move')"
+            >
               <Scissors />
               {{ t('files.cut') }}
             </Button>
@@ -678,7 +747,7 @@ function icon(entry: FileEntry) {
                     <a
                       v-else
                       class="flex min-w-0 items-center gap-2 hover:underline"
-                      :href="downloadUrl(share.id, joinPath(path, entry.name))"
+                      :href="downloadUrl(share.id, joinPath(path, entry.name), snapshot)"
                       download
                     >
                       <component :is="icon(entry)" class="size-4 shrink-0 text-muted-foreground" />
@@ -737,7 +806,13 @@ function icon(entry: FileEntry) {
       </template>
     </div>
 
-    <FilePreview v-if="share" v-model:open="previewOpen" :share="share.id" :path="previewing" />
+    <FilePreview
+      v-if="share"
+      v-model:open="previewOpen"
+      :share="share.id"
+      :path="previewing"
+      :snapshot="snapshot"
+    />
     <NameDialog
       :open="naming !== null"
       :title="

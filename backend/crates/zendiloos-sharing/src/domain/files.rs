@@ -79,12 +79,14 @@ impl FilePath {
     }
 }
 
-/// A file or folder: `/volume<volume>/<share>/<path>`.
+/// A file or folder: `/volume<volume>/<share>/<path>`, or the same in one
+/// of the share's snapshots (read only), by its label.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileLocation {
     pub volume: u16,
     pub share: ShareName,
     pub path: FilePath,
+    pub snapshot: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

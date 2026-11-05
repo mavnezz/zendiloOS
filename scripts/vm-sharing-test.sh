@@ -269,6 +269,18 @@ gmt=$(sed -E 's/^zdl-([0-9]{4})-([0-9]{2})-([0-9]{2})_([0-9]{2})\.([0-9]{2})\.([
 out=$(smb anna "$anna_pw" 'allinfo album/from-web.txt')
 grep -qF -- "$gmt" <<<"$out" || fail "the snapshot is no previous version ($gmt): $out"
 [[ $(call GET "/shares/$share_id/snapshots" | jq -r '.snapshots[0].note') == "from the test" ]] || fail "the snapshot's note"
+# The file manager looks into the snapshot as it was and copies back from it.
+files="/files/shares/$share_id"
+call_as anna GET "$files/snapshots" | jq -e --arg s "$snapshot" '.[] | select(.label == $s)' >/dev/null \
+    || fail "anna does not see the snapshot"
+job_succeeded "$(call_as anna POST "$files/delete" '{"paths":["album/from-web.txt"]}' | jq -r .id)"
+call_as anna GET "$files/folder?path=album&snapshot=$snapshot" | jq -e '.entries | map(.name) | index("from-web.txt")' >/dev/null \
+    || fail "the snapshot does not show the deleted file"
+[[ $(call_as anna GET "$files/download?path=album/from-web.txt&snapshot=$snapshot") == 'written in the browser' ]] \
+    || fail "download from the snapshot"
+job_succeeded "$(call_as anna POST "$files/snapshots/$snapshot/restore" '{"paths":["album/from-web.txt"]}' | jq -r .id)"
+[[ $(vm "sudo cat $path/album/from-web.txt") == 'written in the browser' ]] || fail "the file is not back"
+[[ $(vm "sudo stat -c '%U' $path/album/from-web.txt") == anna ]] || fail "the copied-back file does not belong to anna"
 [[ $(status_as admin POST "/shares/$share_id/snapshots/$snapshot/delete") == 204 ]] || fail "cannot delete the snapshot"
 vm "! sudo zfs list -H -t snapshot -o name | grep -qF '@$snapshot'" || fail "the snapshot is still there"
 
