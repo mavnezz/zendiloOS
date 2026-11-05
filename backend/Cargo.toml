@@ -38,6 +38,14 @@ base64 = "0.23"
 clap = { version = "4", features = ["derive"] }
 getrandom = "0.4"
 http-body-util = "0.1"
+# Notification channels: webhooks over hyper's own client, mail with
+# lettre; TLS by rustls with ring and the system's certificates.
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1-rustls", "ring", "rustls-native-certs"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = "0.8"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 # HTTP dates (Last-Modified) for resumable downloads.
 httpdate = "1"
 # The host's time zone (/etc/localtime) for schedules in local time.

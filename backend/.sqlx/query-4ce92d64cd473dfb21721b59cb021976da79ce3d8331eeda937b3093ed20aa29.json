@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE notification_channels SET name = ?, kind = ?, settings = ?, min_level = ?, language = ?,\n             updated_at = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": []
+  },
+  "hash": "4ce92d64cd473dfb21721b59cb021976da79ce3d8331eeda937b3093ed20aa29"
+}

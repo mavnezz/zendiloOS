@@ -11,6 +11,7 @@ Vcs-Git: https://github.com/mavnezz/zendiloOS.git
 Package: zendiloos
 Architecture: amd64 arm64
 Depends: acl,
+         ca-certificates,
          cron | cron-daemon,
          gdisk,
          nginx,

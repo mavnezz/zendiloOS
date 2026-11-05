@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO notification_channels (name, kind, settings, min_level, language, created_at, updated_at)\n             VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (name) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": []
+  },
+  "hash": "b176c2a7ee22b186372a2d0e8986670d82bf855208967fb856c947000b725d88"
+}

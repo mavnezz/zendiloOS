@@ -12,6 +12,7 @@ mod blocking;
 mod clock;
 pub mod host;
 pub mod identity;
+pub mod notify;
 pub mod sqlite;
 mod storage;
 

@@ -8,6 +8,7 @@
 mod accounts;
 mod audit;
 mod backup;
+mod channels;
 mod groups;
 mod jobs;
 mod notifications;
@@ -32,6 +33,7 @@ use sqlx::sqlite::{
 
 pub use accounts::SqliteAccounts;
 pub use audit::SqliteAuditLog;
+pub use channels::SqliteChannels;
 pub use groups::SqliteGroups;
 pub use jobs::SqliteJobs;
 pub use notifications::SqliteNotifications;

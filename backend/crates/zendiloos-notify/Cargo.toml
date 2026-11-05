@@ -11,7 +11,8 @@ publish.workspace = true
 [dependencies]
 zendiloos-kernel.workspace = true
 async-trait.workspace = true
-tokio = { workspace = true, features = ["sync"] }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "rt"] }
 tracing.workspace = true
 
 [dev-dependencies]

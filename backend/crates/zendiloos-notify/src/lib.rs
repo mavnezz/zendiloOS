@@ -13,6 +13,9 @@ use async_trait::async_trait;
 use tokio::sync::broadcast;
 use zendiloos_kernel::{Clock, PortError, Timestamp};
 
+pub mod channels;
+pub mod message;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Level {
     Info,
@@ -223,6 +226,95 @@ pub mod testing {
             let current = marks.entry(account_id).or_default();
             current.read_up_to = current.read_up_to.max(to.read_up_to);
             current.cleared_up_to = current.cleared_up_to.max(to.cleared_up_to);
+            Ok(())
+        }
+    }
+
+    /// [`ChannelRepository`](crate::channels::ChannelRepository) in memory.
+    #[derive(Default)]
+    pub struct MemoryChannels {
+        channels: Mutex<Vec<crate::channels::Channel>>,
+    }
+
+    #[async_trait]
+    impl crate::channels::ChannelRepository for MemoryChannels {
+        async fn list(&self) -> Result<Vec<crate::channels::Channel>, PortError> {
+            let mut all = self.channels.lock().unwrap().clone();
+            all.sort_by(|a, b| a.settings.name.cmp(&b.settings.name));
+            Ok(all)
+        }
+
+        async fn create(
+            &self,
+            settings: &crate::channels::ChannelSettings,
+            _: Timestamp,
+        ) -> Result<Option<crate::channels::Channel>, PortError> {
+            let mut all = self.channels.lock().unwrap();
+            if all.iter().any(|c| c.settings.name == settings.name) {
+                return Ok(None);
+            }
+            let id = all.iter().map(|c| c.id).max().unwrap_or(0) + 1;
+            let channel = crate::channels::Channel { id, settings: settings.clone(), last: None };
+            all.push(channel.clone());
+            Ok(Some(channel))
+        }
+
+        async fn update(
+            &self,
+            id: i64,
+            settings: &crate::channels::ChannelSettings,
+            _: Timestamp,
+        ) -> Result<crate::channels::Saved, PortError> {
+            let mut all = self.channels.lock().unwrap();
+            if all.iter().any(|c| c.id != id && c.settings.name == settings.name) {
+                return Ok(crate::channels::Saved::NameTaken);
+            }
+            let Some(channel) = all.iter_mut().find(|c| c.id == id) else {
+                return Ok(crate::channels::Saved::NotFound);
+            };
+            channel.settings = settings.clone();
+            Ok(crate::channels::Saved::Done)
+        }
+
+        async fn delete(&self, id: i64) -> Result<bool, PortError> {
+            let mut all = self.channels.lock().unwrap();
+            let before = all.len();
+            all.retain(|c| c.id != id);
+            Ok(all.len() < before)
+        }
+
+        async fn delivered(&self, id: i64, delivery: &crate::channels::Delivery) -> Result<(), PortError> {
+            if let Some(channel) = self.channels.lock().unwrap().iter_mut().find(|c| c.id == id) {
+                channel.last = Some(delivery.clone());
+            }
+            Ok(())
+        }
+    }
+
+    /// [`ChannelSender`](crate::channels::ChannelSender) that keeps what it
+    /// is given; a channel whose name starts with `broken` fails.
+    #[derive(Default)]
+    pub struct RecordingSender {
+        pub sent: Mutex<Vec<(String, crate::message::Message)>>,
+    }
+
+    #[async_trait]
+    impl crate::channels::ChannelSender for RecordingSender {
+        async fn send(
+            &self,
+            target: &crate::channels::Target,
+            message: &crate::message::Message,
+            _: &Notification,
+            _: &str,
+        ) -> Result<(), String> {
+            let to = match target {
+                crate::channels::Target::Email(email) => email.to.join(","),
+                crate::channels::Target::Webhook(webhook) => webhook.url.clone(),
+            };
+            if to.contains("broken") {
+                return Err("connection refused".into());
+            }
+            self.sent.lock().unwrap().push((to, message.clone()));
             Ok(())
         }
     }

@@ -12,11 +12,16 @@ yanked = "deny"
 # Permissive licenses compatible with zendiloos's Apache-2.0. Anything else
 # needs a deliberate decision here.
 allow = [
+    # quoted_printable (mail bodies in lettre): no conditions at all.
+    "0BSD",
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
     "BSD-3-Clause",
     "BSL-1.0",
+    # ring and rustls-webpki (TLS for notification channels): permissive,
+    # equivalent to MIT.
+    "ISC",
     "MIT",
     "Unicode-3.0",
     "Unlicense",

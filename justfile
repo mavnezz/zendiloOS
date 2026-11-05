@@ -137,6 +137,10 @@ vm-storage-test:
 vm-sharing-test:
     scripts/vm-sharing-test.sh
 
+# Notification channels (a webhook in the VM, an email channel without server)
+vm-notify-test:
+    scripts/vm-notify-test.sh
+
 # An older package set up and in use, then the newest over it (see the script)
 [positional-arguments]
 vm-upgrade-test *args:

@@ -72,6 +72,7 @@ const KNOWN_PROBLEMS = [
   'self_test_unsupported',
   'self_test_running',
   'not_testing',
+  'delivery_failed',
   'snapshot_taken',
   'volume_not_found',
   'unknown_subject',
@@ -97,7 +98,13 @@ export function problemMessage(error: unknown): string {
   // The server explains rule violations itself (currently in English).
   if (error.code === 'invalid_input' && error.detail) return error.detail
   // For these, the server's detail names the disk and what it found.
-  const withDetail = ['refused', 'disk_unusable', 'disk_count', 'invalid_operation']
+  const withDetail = [
+    'refused',
+    'disk_unusable',
+    'disk_count',
+    'invalid_operation',
+    'delivery_failed',
+  ]
   if (isKnown(error.code)) {
     const message = t(`errors.${error.code}`)
     return withDetail.includes(error.code) && error.detail

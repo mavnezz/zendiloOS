@@ -145,7 +145,7 @@ review comment.
 | `zendiloos-fileops` | file operations beneath a share's root (`openat2`), with the credentials of the calling thread | agent-proto |
 | `zendiloos-sim` | simulated agent behind `AgentTransport`; a model of a small NAS (disks, ZFS pools, resilver and scrub over time); executes nothing, but keeps share contents as real files in a scratch directory | agent-proto, fileops |
 | `zendiloos-jobs` | long-running operations: recorded, published to subscribers, marked as interrupted after a restart | kernel |
-| `zendiloos-notify` | notifications for administrators: a code with parameters, stored (the 500 most recent) and published; how far each account has read and cleared them | kernel |
+| `zendiloos-notify` | notifications for administrators: a code with parameters, stored (the 500 most recent) and published; how far each account has read and cleared them; channels that carry them by email and to webhooks | kernel |
 | `zendiloos-logging` | logging setup shared by `zendiloosd` and the agent | – |
 
 Crates are created in the step that needs them; there are no empty
@@ -457,6 +457,21 @@ Everybody sees their own jobs (file transfers, deletions); those with
 `storage.view` see all jobs, with what tools reported, and the
 notifications, which are about pools, disks and shares. The WebSocket
 topics `jobs` and `notifications` apply the same rules.
+
+Notifications also go out on channels administrators (`system.manage`)
+set up, so that a failing disk is noticed without the interface open:
+email over SMTP (TLS, STARTTLS, or unencrypted to a relay in the own
+network, never with a password) and webhooks (one HTTP POST, as JSON with
+the fields chat services, Gotify and home automation read, or as text
+with a `Title` header for ntfy). Each channel carries everything, warnings
+and errors (with the good news that ends them), or errors only, worded on
+the server in English or German as the interface words them, the NAS's
+name in the subject. Each notification is delivered on a task of its
+own, with 30 seconds per channel; the last outcome is kept and shown, and
+a test message answers with the server's reason when it fails. TLS is
+rustls with ring and the system's certificate authorities
+(`ca-certificates`); the mail password lives in the database, which only
+`zendiloosd` reads, and the API never returns it.
 
 ### 4.4 Share and File Permissions
 

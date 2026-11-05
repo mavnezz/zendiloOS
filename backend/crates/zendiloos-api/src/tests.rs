@@ -284,6 +284,13 @@ impl Harness {
             network: NetworkUseCases::new(Arc::new(FixedNetwork)),
             jobs: jobs.clone(),
             notifier: notifier.clone(),
+            channels: zendiloos_notify::channels::Channels::new(
+                Arc::new(zendiloos_notify::testing::MemoryChannels::default()),
+                Arc::new(zendiloos_notify::testing::RecordingSender::default()),
+                identity.audit.clone(),
+                identity.clock.clone(),
+                "nas".into(),
+            ),
         };
         let state = ApiState::new(use_cases, secure_cookies);
         Self {
@@ -833,6 +840,9 @@ fn openapi_documents_every_route() {
             "/api/v1/logs/audit",
             "/api/v1/logs/journal",
             "/api/v1/network",
+            "/api/v1/notification-channels",
+            "/api/v1/notification-channels/{id}",
+            "/api/v1/notification-channels/{id}/test",
             "/api/v1/notifications",
             "/api/v1/notifications/clear",
             "/api/v1/notifications/read",
@@ -1927,4 +1937,74 @@ async fn downloads_resume_and_harmless_kinds_show_in_the_browser() {
     let page = fetch("path=page.html&inline=true", &[]).await;
     assert_eq!(page.header(header::CONTENT_TYPE), "application/octet-stream");
     assert!(page.header(header::CONTENT_DISPOSITION).starts_with("attachment;"), "never shown");
+}
+
+#[tokio::test]
+async fn administrators_set_up_channels_and_never_see_a_password_again() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let viewer = h.sign_in("bob", Role::ReadOnly).await;
+    let mail = json!({
+        "name": "Admins",
+        "target": { "kind": "email", "server": "mail.example.org", "port": 587, "security": "starttls",
+                    "username": "nas", "from": "nas@example.org", "to": ["me@example.org"] },
+        "password": "secret",
+        "min_level": "warning",
+        "language": "de",
+    });
+    let send = |method: Method, uri: &str, session: &Session, body: Option<Value>| {
+        let request = with_csrf(changing(method, uri), session);
+        h.send(match body {
+            Some(body) => json(request, body),
+            None => empty(request),
+        })
+    };
+
+    let created = send(Method::POST, "/api/v1/notification-channels", &admin, Some(mail.clone())).await;
+    assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
+    assert_eq!(created.body["password_set"], true);
+    assert!(created.body.get("password").is_none() && created.body["target"].get("password").is_none());
+    let id = created.body["id"].as_i64().unwrap();
+    let channel = format!("/api/v1/notification-channels/{id}");
+
+    let mut renamed = mail.clone();
+    renamed["name"] = json!("Family");
+    renamed.as_object_mut().unwrap().remove("password");
+    let updated = send(Method::PUT, &channel, &admin, Some(renamed)).await;
+    assert_eq!(
+        (updated.body["name"].clone(), updated.body["password_set"].clone()),
+        (json!("Family"), json!(true))
+    );
+
+    let tested = send(Method::POST, &format!("{channel}/test"), &admin, None).await;
+    assert_eq!(tested.status, StatusCode::NO_CONTENT);
+    let broken = json!({
+        "name": "Chat", "target": { "kind": "webhook", "url": "https://broken.example/hook", "format": "json" },
+        "min_level": "error", "language": "en",
+    });
+    let chat = send(Method::POST, "/api/v1/notification-channels", &admin, Some(broken)).await;
+    let failed =
+        send(Method::POST, &format!("/api/v1/notification-channels/{}/test", chat.body["id"]), &admin, None)
+            .await;
+    assert_problem(&failed, StatusCode::BAD_GATEWAY, "delivery_failed");
+    assert_eq!(failed.body["detail"], "connection refused");
+
+    let listed = h.send(empty(with_cookie(get("/api/v1/notification-channels"), &admin))).await;
+    let names: Vec<&str> =
+        listed.body.as_array().unwrap().iter().map(|c| c["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["Chat", "Family"]);
+    assert_eq!(listed.body[0]["last_error"], "connection refused");
+
+    let plain = json!({
+        "name": "Relay",
+        "target": { "kind": "email", "server": "relay", "port": 25, "security": "none",
+                    "from": "nas@example.org", "to": ["me@example.org"] },
+        "password": "secret", "min_level": "info", "language": "en",
+    });
+    let refused = send(Method::POST, "/api/v1/notification-channels", &admin, Some(plain)).await;
+    assert_problem(&refused, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
+    let forbidden = h.send(empty(with_cookie(get("/api/v1/notification-channels"), &viewer))).await;
+    assert_problem(&forbidden, StatusCode::FORBIDDEN, "forbidden");
+    assert_eq!(send(Method::DELETE, &channel, &admin, None).await.status, StatusCode::NO_CONTENT);
+    assert_problem(&send(Method::DELETE, &channel, &admin, None).await, StatusCode::NOT_FOUND, "not_found");
 }

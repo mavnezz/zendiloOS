@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { Info, Network, Palette, UserRound } from 'lucide-vue-next'
-import { ref } from 'vue'
+import { BellRing, Info, Network, Palette, UserRound } from 'lucide-vue-next'
+import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import ChangePasswordForm from '@/features/auth/components/ChangePasswordForm.vue'
 import { useSessionStore } from '@/features/auth/store'
+import ChannelsSection from '@/features/channels/components/ChannelsSection.vue'
 import NetworkSection from '@/features/network/components/NetworkSection.vue'
 import AboutSection from '@/features/system/components/AboutSection.vue'
 import { LANGUAGES } from '@/shared/i18n'
@@ -12,18 +13,23 @@ import type { ThemePreference } from '@/shared/lib/theme'
 import { cn } from '@/shared/lib/utils'
 import { usePreferences } from '@/shared/preferences/store'
 
-type Section = 'account' | 'appearance' | 'network' | 'about'
+type Section = 'account' | 'appearance' | 'network' | 'notifications' | 'about'
 
 const { t, locale } = useI18n()
 const session = useSessionStore()
 const preferences = usePreferences()
 
-const sections = [
+const ALL_SECTIONS = [
   { id: 'account', icon: UserRound },
   { id: 'appearance', icon: Palette },
   { id: 'network', icon: Network },
+  { id: 'notifications', icon: BellRing },
   { id: 'about', icon: Info },
 ] as const
+/** Notification channels are for administrators (`system.manage`). */
+const sections = computed(() =>
+  ALL_SECTIONS.filter((item) => item.id !== 'notifications' || session.can('system.manage')),
+)
 const section = ref<Section>('account')
 
 const themes: ThemePreference[] = ['light', 'dark', 'system']
@@ -111,6 +117,9 @@ const choice = (selected: boolean) =>
 
       <section v-else-if="section === 'network'">
         <NetworkSection />
+      </section>
+      <section v-else-if="section === 'notifications'">
+        <ChannelsSection />
       </section>
       <section v-else-if="section === 'about'">
         <AboutSection />

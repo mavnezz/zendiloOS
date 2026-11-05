@@ -1783,6 +1783,251 @@
         ]
       }
     },
+    "/api/v1/notification-channels": {
+      "get": {
+        "tags": [
+          "notifications"
+        ],
+        "summary": "The channels notifications go out on, besides the interface. Needs\n`system.manage`.",
+        "operationId": "list_channels",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/NotificationChannel"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "notifications"
+        ],
+        "summary": "Adds a channel: email over SMTP, or a webhook. Needs `system.manage`.",
+        "operationId": "create_channel",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChannelInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationChannel"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`name_taken`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/notification-channels/{id}": {
+      "put": {
+        "tags": [
+          "notifications"
+        ],
+        "summary": "Changes a channel; without `password`, a stored mail password stays.\nNeeds `system.manage`.",
+        "operationId": "update_channel",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChannelInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationChannel"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`name_taken`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "notifications"
+        ],
+        "summary": "Removes a channel. Needs `system.manage`.",
+        "operationId": "delete_channel",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed."
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/notification-channels/{id}/test": {
+      "post": {
+        "tags": [
+          "notifications"
+        ],
+        "summary": "Sends a test message now and waits for the outcome. Needs\n`system.manage`.",
+        "operationId": "test_channel",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "It went out."
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`delivery_failed`, the reason in `detail`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/notifications": {
       "get": {
         "tags": [
@@ -3617,6 +3862,125 @@
         },
         "additionalProperties": false
       },
+      "ChannelInput": {
+        "type": "object",
+        "required": [
+          "name",
+          "target",
+          "min_level",
+          "language"
+        ],
+        "properties": {
+          "language": {
+            "$ref": "#/components/schemas/ChannelLanguage"
+          },
+          "min_level": {
+            "$ref": "#/components/schemas/ChannelLevel"
+          },
+          "name": {
+            "type": "string"
+          },
+          "password": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The mail password. Left out when changing a channel: the stored one\nstays; empty: none."
+          },
+          "target": {
+            "$ref": "#/components/schemas/ChannelTarget"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ChannelLanguage": {
+        "type": "string",
+        "enum": [
+          "en",
+          "de"
+        ]
+      },
+      "ChannelLevel": {
+        "type": "string",
+        "description": "The least serious notifications a channel carries.",
+        "enum": [
+          "info",
+          "warning",
+          "error"
+        ]
+      },
+      "ChannelTarget": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "server",
+              "port",
+              "security",
+              "from",
+              "to",
+              "kind"
+            ],
+            "properties": {
+              "from": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "email"
+                ]
+              },
+              "port": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              },
+              "security": {
+                "$ref": "#/components/schemas/MailSecurity"
+              },
+              "server": {
+                "type": "string"
+              },
+              "to": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "username": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "url",
+              "format",
+              "kind"
+            ],
+            "properties": {
+              "format": {
+                "$ref": "#/components/schemas/HookFormat"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "webhook"
+                ]
+              },
+              "url": {
+                "type": "string"
+              }
+            }
+          }
+        ],
+        "description": "Where a channel delivers."
+      },
       "Concern": {
         "type": "object",
         "description": "Something wrong with a pool or disk, as a code with parameters for the\ninterface to word, e.g. `pool_degraded` with `pool` and `state`.",
@@ -4261,6 +4625,13 @@
           }
         }
       },
+      "HookFormat": {
+        "type": "string",
+        "enum": [
+          "json",
+          "text"
+        ]
+      },
       "InterfaceAddress": {
         "type": "object",
         "required": [
@@ -4688,6 +5059,14 @@
         },
         "additionalProperties": false
       },
+      "MailSecurity": {
+        "type": "string",
+        "enum": [
+          "tls",
+          "starttls",
+          "none"
+        ]
+      },
       "Media": {
         "type": "string",
         "enum": [
@@ -4998,6 +5377,54 @@
             "propertyNames": {
               "type": "string"
             }
+          }
+        }
+      },
+      "NotificationChannel": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "target",
+          "password_set",
+          "min_level",
+          "language"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "language": {
+            "$ref": "#/components/schemas/ChannelLanguage"
+          },
+          "last_delivery_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The last delivery, in Unix seconds."
+          },
+          "last_error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What went wrong then; none if it went out."
+          },
+          "min_level": {
+            "$ref": "#/components/schemas/ChannelLevel"
+          },
+          "name": {
+            "type": "string"
+          },
+          "password_set": {
+            "type": "boolean",
+            "description": "A mail password is stored; it is never shown."
+          },
+          "target": {
+            "$ref": "#/components/schemas/ChannelTarget"
           }
         }
       },

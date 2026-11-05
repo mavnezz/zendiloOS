@@ -500,6 +500,68 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/notification-channels": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The channels notifications go out on, besides the interface. Needs
+         *     `system.manage`.
+         */
+        get: operations["list_channels"];
+        put?: never;
+        /** Adds a channel: email over SMTP, or a webhook. Needs `system.manage`. */
+        post: operations["create_channel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/notification-channels/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Changes a channel; without `password`, a stored mail password stays.
+         *     Needs `system.manage`.
+         */
+        put: operations["update_channel"];
+        post?: never;
+        /** Removes a channel. Needs `system.manage`. */
+        delete: operations["delete_channel"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/notification-channels/{id}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Sends a test message now and waits for the outcome. Needs
+         *     `system.manage`.
+         */
+        post: operations["test_channel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/notifications": {
         parameters: {
             query?: never;
@@ -1134,6 +1196,41 @@ export interface components {
             /** Format: password */
             new_password: string;
         };
+        ChannelInput: {
+            language: components["schemas"]["ChannelLanguage"];
+            min_level: components["schemas"]["ChannelLevel"];
+            name: string;
+            /**
+             * @description The mail password. Left out when changing a channel: the stored one
+             *     stays; empty: none.
+             */
+            password?: string | null;
+            target: components["schemas"]["ChannelTarget"];
+        };
+        /** @enum {string} */
+        ChannelLanguage: "en" | "de";
+        /**
+         * @description The least serious notifications a channel carries.
+         * @enum {string}
+         */
+        ChannelLevel: "info" | "warning" | "error";
+        /** @description Where a channel delivers. */
+        ChannelTarget: {
+            from: string;
+            /** @enum {string} */
+            kind: "email";
+            /** Format: int32 */
+            port: number;
+            security: components["schemas"]["MailSecurity"];
+            server: string;
+            to: string[];
+            username?: string | null;
+        } | {
+            format: components["schemas"]["HookFormat"];
+            /** @enum {string} */
+            kind: "webhook";
+            url: string;
+        };
         /**
          * @description Something wrong with a pool or disk, as a code with parameters for the
          *     interface to word, e.g. `pool_degraded` with `pool` and `state`.
@@ -1342,6 +1439,8 @@ export interface components {
             /** @description `ok` whenever the server answers. */
             status: string;
         };
+        /** @enum {string} */
+        HookFormat: "json" | "text";
         InterfaceAddress: {
             /** @description E.g. `192.168.1.20` or `2001:db8::20`. */
             address: string;
@@ -1474,6 +1573,8 @@ export interface components {
             password: string;
         };
         /** @enum {string} */
+        MailSecurity: "tls" | "starttls" | "none";
+        /** @enum {string} */
         Media: "rotational" | "solid_state";
         /** @enum {string} */
         MemberState: "active" | "spare" | "faulty" | "replacement" | "journal";
@@ -1571,6 +1672,23 @@ export interface components {
             params: {
                 [key: string]: string;
             };
+        };
+        NotificationChannel: {
+            /** Format: int64 */
+            id: number;
+            language: components["schemas"]["ChannelLanguage"];
+            /**
+             * Format: int64
+             * @description The last delivery, in Unix seconds.
+             */
+            last_delivery_at?: number | null;
+            /** @description What went wrong then; none if it went out. */
+            last_error?: string | null;
+            min_level: components["schemas"]["ChannelLevel"];
+            name: string;
+            /** @description A mail password is stored; it is never shown. */
+            password_set: boolean;
+            target: components["schemas"]["ChannelTarget"];
         };
         /** @enum {string} */
         NotificationLevel: "info" | "success" | "warning" | "error";
@@ -3485,6 +3603,185 @@ export interface operations {
             };
             /** @description `forbidden` */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    list_channels: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationChannel"][];
+                };
+            };
+        };
+    };
+    create_channel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChannelInput"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationChannel"];
+                };
+            };
+            /** @description `name_taken` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    update_channel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChannelInput"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationChannel"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `name_taken` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_channel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    test_channel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description It went out. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `delivery_failed`, the reason in `detail` */
+            502: {
                 headers: {
                     [name: string]: unknown;
                 };

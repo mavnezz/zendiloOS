@@ -1,0 +1,212 @@
+//! Notifications in words, for channels that leave the interface (email,
+//! webhooks). The interface words them itself; these texts follow it.
+
+use crate::Notification;
+
+/// The language a channel's messages are written in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Language {
+    #[default]
+    English,
+    German,
+}
+
+impl Language {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::English => "en",
+            Self::German => "de",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "en" => Some(Self::English),
+            "de" => Some(Self::German),
+            _ => None,
+        }
+    }
+}
+
+/// A notification as a subject line and a body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Message {
+    pub title: String,
+    pub body: String,
+}
+
+/// Words `notification` from the NAS `host` in `language`.
+pub fn message(notification: &Notification, host: &str, language: Language) -> Message {
+    let param = |key: &str| notification.params.get(key).map_or("", String::as_str);
+    let errors: u64 = param("errors").parse().unwrap_or(0);
+    let german = language == Language::German;
+    let (title, body) = match notification.code.as_str() {
+        "pool_trouble" => {
+            let state = pool_state(param("state"), german);
+            if german {
+                (
+                    format!("Pool {} ist {state}", param("pool")),
+                    "Unter Speicher sehen Sie, welche Platte betroffen ist.".to_owned(),
+                )
+            } else {
+                (
+                    format!("Pool {} is {state}", param("pool")),
+                    "Open Storage to see which disk is affected.".to_owned(),
+                )
+            }
+        }
+        "pool_recovered" if german => (format!("Pool {} ist wieder intakt", param("pool")), String::new()),
+        "pool_recovered" => (format!("Pool {} is healthy again", param("pool")), String::new()),
+        "resilver_finished" if german => (
+            format!("Pool {} ist wiederhergestellt", param("pool")),
+            count(errors, "Keine Fehler.", "Ein Fehler wurde gefunden.", "Fehler wurden gefunden."),
+        ),
+        "resilver_finished" => (
+            format!("Pool {} is rebuilt", param("pool")),
+            count(errors, "No errors.", "One error was found.", "errors were found."),
+        ),
+        "scrub_finished" if german => (
+            format!("Datenprüfung von {} abgeschlossen", param("pool")),
+            count(
+                errors,
+                "Keine Fehler.",
+                "Ein Fehler wurde gefunden und behoben.",
+                "Fehler wurden gefunden und behoben.",
+            ),
+        ),
+        "scrub_finished" => (
+            format!("Data check of {} finished", param("pool")),
+            count(
+                errors,
+                "No errors.",
+                "One error was found and repaired.",
+                "errors were found and repaired.",
+            ),
+        ),
+        "volume_filling" if german => (
+            format!("Pool {} ist zu {} % voll", param("pool"), param("percent")),
+            "Geben Sie Platz frei oder erweitern Sie, bevor er voll ist.".to_owned(),
+        ),
+        "volume_filling" => (
+            format!("Pool {} is {} % full", param("pool"), param("percent")),
+            "Free up space or add disks before it is full.".to_owned(),
+        ),
+        "disk_health" => {
+            let failing = param("health") == "failing";
+            let model = match param("model") {
+                "" => param("disk"),
+                model => model,
+            };
+            if german {
+                let health = if failing { "kritisch" } else { "auffällig" };
+                (
+                    format!("Platte {} meldet Probleme", param("disk")),
+                    format!("{model}: SMART-Zustand ist {health}. Planen Sie den Austausch."),
+                )
+            } else {
+                let health = if failing { "failing" } else { "worrying" };
+                (
+                    format!("Disk {} reports problems", param("disk")),
+                    format!("{model}: SMART health is {health}. Plan to replace it."),
+                )
+            }
+        }
+        "snapshot_failed" if german => (
+            format!("Kein Snapshot von {}", param("share")),
+            "Ein geplanter Snapshot konnte nicht aufgenommen werden. Ist das Volume der Freigabe da?"
+                .to_owned(),
+        ),
+        "snapshot_failed" => (
+            format!("No snapshot of {}", param("share")),
+            "A scheduled snapshot could not be taken. Is the share's volume there?".to_owned(),
+        ),
+        "channel_test" if german => (
+            "Testnachricht".to_owned(),
+            "Dieser Kanal erreicht Sie. So kommen Meldungen des NAS an.".to_owned(),
+        ),
+        "channel_test" => (
+            "Test message".to_owned(),
+            "This channel reaches you. This is how the NAS will tell you.".to_owned(),
+        ),
+        // A code this version does not word yet: its parameters.
+        code => {
+            let params: Vec<String> = notification.params.iter().map(|(k, v)| format!("{k}: {v}")).collect();
+            (code.replace('_', " "), params.join("\n"))
+        }
+    };
+    Message { title: format!("[{host}] {title}"), body }
+}
+
+fn count(errors: u64, none: &str, one: &str, many: &str) -> String {
+    match errors {
+        0 => none.to_owned(),
+        1 => one.to_owned(),
+        n => format!("{n} {many}"),
+    }
+}
+
+fn pool_state(state: &str, german: bool) -> &str {
+    match (state, german) {
+        ("degraded", false) => "degraded",
+        ("degraded", true) => "beeinträchtigt",
+        ("faulted", false) => "failed",
+        ("faulted", true) => "ausgefallen",
+        ("unavailable", false) => "unavailable",
+        ("unavailable", true) => "nicht verfügbar",
+        ("suspended", false) => "suspended",
+        ("suspended", true) => "angehalten",
+        ("offline", _) => "offline",
+        ("removed", false) => "removed",
+        ("removed", true) => "entfernt",
+        (_, false) => "in an unknown state",
+        (_, true) => "in einem unbekannten Zustand",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use zendiloos_kernel::Timestamp;
+
+    use super::*;
+    use crate::Level;
+
+    fn notification(code: &str, params: &[(&str, &str)]) -> Notification {
+        Notification {
+            id: 1,
+            at: Timestamp::from_unix_seconds(0),
+            level: Level::Warning,
+            code: code.to_owned(),
+            params: params.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect(),
+        }
+    }
+
+    #[test]
+    fn notifications_are_worded_as_in_the_interface() {
+        let degraded = notification("pool_trouble", &[("pool", "tank"), ("state", "degraded")]);
+        assert_eq!(
+            message(&degraded, "nas", Language::English),
+            Message {
+                title: "[nas] Pool tank is degraded".into(),
+                body: "Open Storage to see which disk is affected.".into()
+            }
+        );
+        assert_eq!(message(&degraded, "nas", Language::German).title, "[nas] Pool tank ist beeinträchtigt");
+        let scrub = notification("scrub_finished", &[("pool", "tank"), ("errors", "3")]);
+        assert_eq!(message(&scrub, "nas", Language::English).body, "3 errors were found and repaired.");
+        let disk =
+            notification("disk_health", &[("disk", "sda"), ("model", "WD RED"), ("health", "failing")]);
+        assert_eq!(
+            message(&disk, "nas", Language::German).body,
+            "WD RED: SMART-Zustand ist kritisch. Planen Sie den Austausch."
+        );
+    }
+
+    #[test]
+    fn unknown_codes_still_say_what_happened() {
+        let odd = notification("pool_on_fire", &[("pool", "tank")]);
+        assert_eq!(
+            message(&odd, "nas", Language::English),
+            Message { title: "[nas] pool on fire".into(), body: "pool: tank".into() }
+        );
+    }
+}

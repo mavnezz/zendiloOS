@@ -24,14 +24,16 @@ use zendiloos_infra::agent::{
 };
 use zendiloos_infra::host::{HostSystemInfo, IpNetworkReader, JournalctlReader, MetricsHub};
 use zendiloos_infra::identity::{Argon2PasswordHasher, FileSetupCodes, RandomSessionTokens};
+use zendiloos_infra::notify::NetworkChannels;
 use zendiloos_infra::sqlite::{
-    Database, SqliteAccounts, SqliteAuditLog, SqliteGroups, SqliteJobs, SqliteNotifications,
+    Database, SqliteAccounts, SqliteAuditLog, SqliteChannels, SqliteGroups, SqliteJobs, SqliteNotifications,
     SqlitePreferences, SqliteSelfTestPlans, SqliteSessions, SqliteShares,
 };
 use zendiloos_jobs::Jobs;
 use zendiloos_kernel::{AuditLog, RequestContext};
 use zendiloos_network::application::NetworkUseCases;
 use zendiloos_notify::Notifier;
+use zendiloos_notify::channels::Channels;
 use zendiloos_sharing::application::{FilesUseCases, SharingPorts, SharingUseCases};
 use zendiloos_sim::SimulatedAgent;
 use zendiloos_storage::application::monitor::StorageMonitor;
@@ -110,6 +112,18 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         tracing::warn!(interrupted, "jobs of the previous run were interrupted");
     }
     let notifier = Notifier::new(Arc::new(SqliteNotifications::new(database.clone())), Arc::new(SystemClock));
+    // Notifications also go out by email and to webhooks, named after the host.
+    let host_name = std::fs::read_to_string("/proc/sys/kernel/hostname")
+        .map(|name| name.trim().to_owned())
+        .unwrap_or_else(|_| "zendiloOS".to_owned());
+    let channels = Channels::new(
+        Arc::new(SqliteChannels::new(database.clone())),
+        Arc::new(NetworkChannels::new()),
+        audit.clone(),
+        Arc::new(SystemClock),
+        host_name,
+    );
+    let channel_delivery = channels.clone().spawn(&notifier);
     let agent_for_sharing = agent.clone();
     let console_agent = agent.clone();
     let agent_storage = Arc::new(AgentStorage::new(agent));
@@ -156,7 +170,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
 
     let snapshots = spawn_snapshot_schedules(sharing.clone());
     let self_tests = spawn_self_test_schedule(storage.self_test_schedule.clone());
-    let use_cases = UseCases { system, identity, storage, sharing, files, network, jobs, notifier };
+    let use_cases = UseCases { system, identity, storage, sharing, files, network, jobs, notifier, channels };
     let state = ApiState::new(use_cases, config.secure_cookies);
     let app = zendiloos_api::router(state);
 
@@ -188,6 +202,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     monitor.abort();
     snapshots.abort();
     self_tests.abort();
+    channel_delivery.abort();
     database.close().await;
     tracing::info!("zendiloosd stopped");
     Ok(())
