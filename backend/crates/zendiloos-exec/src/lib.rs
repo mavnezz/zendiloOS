@@ -125,6 +125,23 @@ where
     run_inner(program, args, Some(input), limits).await
 }
 
+/// Starts `command`. A program file that was just written can be busy for a
+/// moment: a child forked meanwhile by another thread holds it open for
+/// writing until it calls `exec` (Linux reports `ETXTBSY`). That happens
+/// in tests that write fake programs; starting again shortly after works.
+async fn spawn(command: &mut Command) -> io::Result<tokio::process::Child> {
+    let mut attempts = 0;
+    loop {
+        match command.spawn() {
+            Err(error) if error.kind() == io::ErrorKind::ExecutableFileBusy && attempts < 5 => {
+                attempts += 1;
+                tokio::time::sleep(Duration::from_millis(10 * attempts)).await;
+            }
+            result => return result,
+        }
+    }
+}
+
 async fn run_inner<I, A>(
     program: &Program,
     args: I,
@@ -138,7 +155,8 @@ where
     let name = program.name();
     let io_error = |source| ExecError::Io { program: name.clone(), source };
 
-    let mut child = Command::new(program.path())
+    let mut command = Command::new(program.path());
+    command
         .args(args)
         .env_clear()
         .current_dir("/")
@@ -146,9 +164,9 @@ where
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         // Dropping the child (on timeout or error) kills the program.
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|source| ExecError::Spawn { program: name.clone(), source })?;
+        .kill_on_drop(true);
+    let mut child =
+        spawn(&mut command).await.map_err(|source| ExecError::Spawn { program: name.clone(), source })?;
 
     let mut stdin = child.stdin.take();
     let stdout = child.stdout.take().expect("stdout is piped");
