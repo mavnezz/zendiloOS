@@ -46,6 +46,9 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged
+# `ip` drops its capabilities with capset when it starts, though it has
+# none; without this, seccomp kills it.
+SystemCallFilter=capset
 
 [Install]
 WantedBy=multi-user.target
