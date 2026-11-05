@@ -63,10 +63,14 @@ pub fn pool_events(before: Option<&[Pool]>, after: &[Pool]) -> Vec<StorageEvent>
                 events.push(StorageEvent::PoolTrouble { pool: pool.name.clone(), state: pool.state });
             }
         }
-        if let (Some(scan), Some(earlier)) = (&pool.scan, earlier) {
-            let was_running =
-                earlier.scan.as_ref().is_some_and(|s| s.state == ScanState::Running && s.kind == scan.kind);
-            if was_running && scan.state == ScanState::Finished {
+        if let (Some(scan), Some(earlier)) = (&pool.scan, earlier)
+            && scan.state == ScanState::Finished
+        {
+            let seen = earlier.scan.as_ref();
+            let was_running = seen.is_some_and(|s| s.state == ScanState::Running && s.kind == scan.kind);
+            // A small pool's scrub starts and ends between two looks.
+            let whole_since = seen.is_none_or(|s| s.started_at < scan.started_at);
+            if was_running || whole_since {
                 events.push(StorageEvent::ScanFinished {
                     pool: pool.name.clone(),
                     kind: scan.kind,
@@ -151,6 +155,28 @@ mod tests {
             pool_events(Some(std::slice::from_ref(&degraded)), std::slice::from_ref(&degraded)),
             [],
             "nothing new"
+        );
+    }
+
+    #[test]
+    fn a_scan_that_ran_between_two_looks_is_reported_once() {
+        let started = |seconds, state| {
+            let mut pool = pool(VdevState::Online, Some(state), 10);
+            if let Some(scan) = &mut pool.scan {
+                (scan.kind, scan.started_at) = (ScanKind::Scrub, Timestamp::from_unix_seconds(seconds));
+            }
+            pool
+        };
+        let finished = StorageEvent::ScanFinished { pool: "tank".into(), kind: ScanKind::Scrub, errors: 0 };
+        let never = pool(VdevState::Online, None, 10);
+        let done = started(100, ScanState::Finished);
+        assert_eq!(pool_events(Some(&[never]), std::slice::from_ref(&done)), std::slice::from_ref(&finished));
+        let earlier = started(0, ScanState::Finished);
+        assert_eq!(pool_events(Some(&[earlier]), std::slice::from_ref(&done)), [finished]);
+        assert_eq!(
+            pool_events(Some(std::slice::from_ref(&done)), std::slice::from_ref(&done)),
+            [],
+            "seen already"
         );
     }
 
