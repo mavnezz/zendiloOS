@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT read_up_to, cleared_up_to FROM notification_marks WHERE account_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "read_up_to",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "notification_marks",
+            "name": "read_up_to"
+          }
+        }
+      },
+      {
+        "name": "cleared_up_to",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "notification_marks",
+            "name": "cleared_up_to"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "a986e810f85af832824512cfdc8425345778fa14b8a0bde318c0e80ce0827c24"
+}

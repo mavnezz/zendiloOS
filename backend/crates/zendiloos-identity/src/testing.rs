@@ -11,13 +11,13 @@ use zendiloos_kernel::{AuditEntry, AuditLog, Clock, PortError, Secret, Timestamp
 use zendiloos_kernel::RequestContext;
 
 use crate::application::ports::{
-    AccountRepository, Creation, GroupRepository, IssuedToken, PasswordHasher, SessionRepository,
-    SessionTokens, SetupCodes, SystemAccounts,
+    AccountRepository, Creation, GroupRepository, IssuedToken, PasswordHasher, PreferenceRepository,
+    SessionRepository, SessionTokens, SetupCodes, SystemAccounts,
 };
 use crate::application::{IdentityConfig, IdentityPorts, IdentityUseCases};
 use crate::domain::{
     Account, AccountId, AccountName, Group, GroupId, GroupName, NewAccount, NewGroup, NewSession,
-    PasswordHash, Role, Session, SessionId, SetupCode, TokenHash,
+    PasswordHash, Preferences, Role, Session, SessionId, SetupCode, TokenHash,
 };
 
 /// The code [`MemorySetupCodes`] issues.
@@ -452,6 +452,21 @@ impl AuditLog for MemoryAudit {
     }
 }
 
+#[derive(Default)]
+pub struct InMemoryPreferences(Mutex<std::collections::HashMap<AccountId, Preferences>>);
+
+#[async_trait]
+impl PreferenceRepository for InMemoryPreferences {
+    async fn load(&self, account: AccountId) -> Result<Preferences, PortError> {
+        Ok(self.0.lock().unwrap().get(&account).copied().unwrap_or_default())
+    }
+
+    async fn save(&self, account: AccountId, preferences: Preferences) -> Result<(), PortError> {
+        self.0.lock().unwrap().insert(account, preferences);
+        Ok(())
+    }
+}
+
 /// A clock that only moves when told to.
 pub struct ManualClock(AtomicI64);
 
@@ -505,6 +520,7 @@ impl TestIdentity {
             accounts: accounts.clone(),
             groups: groups.clone(),
             sessions: sessions.clone(),
+            preferences: Arc::new(InMemoryPreferences::default()),
             system: system.clone(),
             hasher: Arc::new(FakeHasher),
             tokens: Arc::new(FakeTokens::default()),

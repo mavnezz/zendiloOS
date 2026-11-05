@@ -4,9 +4,11 @@ import { PopoverContent, PopoverPortal, PopoverRoot, PopoverTrigger } from 'reka
 import { useI18n } from 'vue-i18n'
 
 import { type NotificationKind, useNotifications } from '@/shared/lib/notifications'
+import { useServerNotices } from '@/shared/notices/store'
 
 const { t, locale } = useI18n()
 const notifications = useNotifications()
+const notices = useServerNotices()
 
 const icons: Record<NotificationKind, unknown> = {
   info: Info,
@@ -26,7 +28,14 @@ function time(at: number): string {
 }
 
 function opened(open: boolean): void {
-  if (!open) notifications.markAllRead()
+  if (open) return
+  notifications.markAllRead()
+  void notices.markRead()
+}
+
+function clear(): void {
+  notifications.clear()
+  void notices.clear()
 }
 </script>
 
@@ -57,7 +66,7 @@ function opened(open: boolean): void {
             v-if="notifications.items.length"
             type="button"
             class="text-xs text-muted-foreground hover:text-foreground"
-            @click="notifications.clear()"
+            @click="clear"
           >
             {{ t('desktop.clearNotifications') }}
           </button>

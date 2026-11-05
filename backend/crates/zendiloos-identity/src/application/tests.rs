@@ -582,3 +582,21 @@ async fn groups_need_free_names_and_existing_members() {
     assert!(matches!(missing, Err(IdentityError::AccountNotFound)), "{missing:?}");
     assert_eq!(t.system.calls(), ["create_group sudo"]);
 }
+
+// Preferences
+
+#[tokio::test]
+async fn each_account_keeps_its_own_preferences() {
+    use crate::domain::{Language, Preferences, Theme};
+
+    let t = TestIdentity::new();
+    let alice = signed_in(&t, "alice", Role::ReadOnly).await;
+    let bob = signed_in(&t, "bob", Role::User).await;
+    assert_eq!(t.use_cases.preferences.execute(&alice).await.unwrap(), Preferences::default());
+
+    let chosen = Preferences { language: Some(Language::German), theme: Some(Theme::Dark) };
+    t.use_cases.save_preferences.execute(&alice, chosen).await.unwrap();
+
+    assert_eq!(t.use_cases.preferences.execute(&alice).await.unwrap(), chosen);
+    assert_eq!(t.use_cases.preferences.execute(&bob).await.unwrap(), Preferences::default());
+}

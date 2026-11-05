@@ -71,8 +71,8 @@ async fn creates_a_private_database_and_applies_all_migrations() {
         OpenReport {
             created: true,
             schema_before: None,
-            schema_after: 5,
-            applied: vec![1, 2, 3, 4, 5],
+            schema_after: 7,
+            applied: vec![1, 2, 3, 4, 5, 6, 7],
             backup: None
         }
     );
@@ -91,11 +91,13 @@ async fn creates_a_private_database_and_applies_all_migrations() {
     assert_eq!(
         tables,
         [
+            "account_preferences",
             "accounts",
             "audit_log",
             "group_members",
             "groups",
             "jobs",
+            "notification_marks",
             "notifications",
             "sessions",
             "share_access",
@@ -115,7 +117,7 @@ async fn reopening_an_up_to_date_database_changes_nothing() {
 
     assert_eq!(
         report,
-        OpenReport { created: false, schema_before: Some(5), schema_after: 5, applied: vec![], backup: None }
+        OpenReport { created: false, schema_before: Some(7), schema_after: 7, applied: vec![], backup: None }
     );
     assert!(!env.backups().exists(), "no backup without pending migrations");
     db.close().await;
@@ -172,7 +174,7 @@ async fn refuses_a_foreign_database() {
     assert!(matches!(error, DatabaseError::Foreign { .. }), "{error:?}");
 }
 
-async fn insert_account(pool: &SqlitePool, name: &str, role: &str) -> Result<i64, sqlx::Error> {
+pub(crate) async fn insert_account(pool: &SqlitePool, name: &str, role: &str) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar(
         "INSERT INTO accounts (name, role, password_hash, created_at, updated_at) \
          VALUES (?, ?, 'hash', 0, 0) RETURNING id",

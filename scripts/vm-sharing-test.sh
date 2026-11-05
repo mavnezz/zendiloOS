@@ -14,9 +14,11 @@
 #      SMB refuses him
 #   6. deleting over SMB moves files to each writer's own recycle bin
 #   7. the share and the pool are deleted again
+#   8. Windows (WS-Discovery) and macOS (Bonjour) can find the NAS
 #
 # Needs the VM running with the package installed and set up; account and
-# password as for vm-storage-test.sh. Uses two free disks of the VM and
+# password as for vm-storage-test.sh. Installs the clients it uses
+# (smbclient, avahi-browse) in the VM if they are missing. Uses two free disks of the VM and
 # leaves pools in use alone.
 set -euo pipefail
 
@@ -81,6 +83,12 @@ smb() { # account password command…
 smb_ok() { local out; out=$(smb "$@"); ! grep -q NT_STATUS <<<"$out" || fail "SMB as $1: $out"; }
 smb_denied() { local out; out=$(smb "$@"); grep -q NT_STATUS_ACCESS_DENIED <<<"$out" || fail "SMB as $1 was allowed: $out"; }
 smb_refused() { local out; out=$(smb "$@"); grep -q NT_STATUS <<<"$out" || fail "SMB as $1 connected: $out"; }
+
+say "Clients in the VM"
+vm "command -v smbclient >/dev/null && command -v avahi-browse >/dev/null \
+    || sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq smbclient avahi-utils >/dev/null"
+# Without the client, every SMB check would see no NT_STATUS and pass.
+vm "command -v smbclient" >/dev/null || fail "smbclient is missing in the VM"
 
 say "Signing in as $user"
 sign_in admin "$user" "$password"
@@ -208,4 +216,10 @@ job_succeeded "$(call POST "/shares/$share_id/delete" '{"confirm":"photos"}' | j
 vm "! findmnt -n $path" || fail "$path is still mounted"
 job_succeeded "$(call POST "/storage/pools/$pool/destroy" "{\"confirm\":\"$pool\"}" | jq -r .id)"
 for id in $anna $ben; do call DELETE "/accounts/$id" >/dev/null; done
-say "Passed: SMB, NFS, file manager, ACLs, permission changes, recycle bins"
+say "8. Windows and macOS find the NAS"
+vm "systemctl is-active --quiet wsdd2" || fail "wsdd2 (WS-Discovery for Windows) does not run"
+vm "ss -Hlun | grep -q ':3702 '" || fail "nothing answers WS-Discovery on port 3702"
+vm "systemctl is-active --quiet avahi-daemon" || fail "avahi-daemon (Bonjour for macOS) does not run"
+wait_for "Samba's Bonjour announcement" "vm 'avahi-browse -tpr _smb._tcp' | grep -q '^=.*;445;'" 30
+
+say "Passed: SMB, NFS, file manager, ACLs, permission changes, recycle bins, discovery"

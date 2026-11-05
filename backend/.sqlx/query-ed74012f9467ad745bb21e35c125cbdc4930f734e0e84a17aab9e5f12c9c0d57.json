@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id AS \"id!\", at, level, code, params FROM notifications ORDER BY id DESC LIMIT ?",
+  "query": "SELECT id AS \"id!\", at, level, code, params FROM notifications\n               WHERE id > ? ORDER BY id DESC LIMIT ?",
   "describe": {
     "columns": [
       {
@@ -60,7 +60,7 @@
       }
     ],
     "parameters": {
-      "Right": 1
+      "Right": 2
     },
     "nullable": [
       false,
@@ -70,5 +70,5 @@
       false
     ]
   },
-  "hash": "7d15b80e853e3f025cbafbaed09c1c8e2e9b1cff5b4c1570cbf03a3e8587d883"
+  "hash": "ed74012f9467ad745bb21e35c125cbdc4930f734e0e84a17aab9e5f12c9c0d57"
 }

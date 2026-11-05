@@ -26,8 +26,8 @@ use zendiloos_infra::agent::{
 use zendiloos_infra::host::{HostSystemInfo, JournalctlReader, MetricsHub};
 use zendiloos_infra::identity::{Argon2PasswordHasher, FileSetupCodes, RandomSessionTokens};
 use zendiloos_infra::sqlite::{
-    Database, SqliteAccounts, SqliteAuditLog, SqliteGroups, SqliteJobs, SqliteNotifications, SqliteSessions,
-    SqliteShares,
+    Database, SqliteAccounts, SqliteAuditLog, SqliteGroups, SqliteJobs, SqliteNotifications,
+    SqlitePreferences, SqliteSessions, SqliteShares,
 };
 use zendiloos_jobs::Jobs;
 use zendiloos_kernel::{AuditLog, RequestContext};
@@ -224,6 +224,7 @@ fn identity(
         accounts: Arc::new(SqliteAccounts::new(database.clone())),
         groups: Arc::new(SqliteGroups::new(database.clone())),
         sessions: Arc::new(SqliteSessions::new(database.clone())),
+        preferences: Arc::new(SqlitePreferences::new(database.clone())),
         system: Arc::new(AgentSystemAccounts::new(agent)),
         hasher: Arc::new(Argon2PasswordHasher::new()?),
         tokens: Arc::new(RandomSessionTokens),

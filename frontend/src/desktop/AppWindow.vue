@@ -6,7 +6,7 @@ import { useI18n } from 'vue-i18n'
 import { cn } from '@/shared/lib/utils'
 
 import type { AppDefinition } from './apps'
-import type { Geometry, WindowState } from './windowManager'
+import { type Geometry, shownGeometry, type WindowState } from './windowManager'
 import { useWindows } from './windows'
 
 const props = defineProps<{
@@ -23,11 +23,12 @@ const { t } = useI18n()
 const windows = useWindows()
 const title = computed(() => t(`apps.${props.app.id}`))
 const fills = computed(() => props.compact || props.window.maximized)
+const geometry = computed(() => shownGeometry(props.window.geometry, windows.viewport))
 
 const style = computed(() => {
   const z = { zIndex: 10 + props.layer }
   if (fills.value) return z
-  const { x, y, width, height } = props.window.geometry
+  const { x, y, width, height } = geometry.value
   return { ...z, left: `${x}px`, top: `${y}px`, width: `${width}px`, height: `${height}px` }
 })
 
@@ -37,7 +38,7 @@ let drag: { mode: 'move' | 'resize'; pointerX: number; pointerY: number; origin:
 function startDrag(event: PointerEvent, mode: 'move' | 'resize'): void {
   if (event.button !== 0 || fills.value) return
   ;(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId)
-  drag = { mode, pointerX: event.clientX, pointerY: event.clientY, origin: props.window.geometry }
+  drag = { mode, pointerX: event.clientX, pointerY: event.clientY, origin: geometry.value }
 }
 
 function dragTo(event: PointerEvent): void {

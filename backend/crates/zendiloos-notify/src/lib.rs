@@ -71,12 +71,35 @@ pub struct Notification {
     pub params: BTreeMap<String, String>,
 }
 
+/// How many notifications are kept; the oldest go when new ones arrive.
+pub const KEPT: u32 = 500;
+
+/// How far one account has dealt with the notifications: everything up to
+/// `read_up_to` counts as read, everything up to `cleared_up_to` is no
+/// longer listed for it. IDs only grow, so a mark stays valid while old
+/// notifications are deleted.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Marks {
+    pub read_up_to: i64,
+    pub cleared_up_to: i64,
+}
+
 #[async_trait]
 pub trait NotificationRepository: Send + Sync {
     async fn create(&self, at: Timestamp, notification: NewNotification) -> Result<Notification, PortError>;
 
-    /// The most recent ones, newest first.
-    async fn recent(&self, limit: u32) -> Result<Vec<Notification>, PortError>;
+    /// The most recent ones with an ID above `after`, newest first.
+    async fn recent(&self, after: i64, limit: u32) -> Result<Vec<Notification>, PortError>;
+
+    /// Deletes all but the `keep` most recent ones.
+    async fn prune(&self, keep: u32) -> Result<(), PortError>;
+
+    /// The account's marks; zero for an account that never set any.
+    async fn marks(&self, account_id: i64) -> Result<Marks, PortError>;
+
+    /// Raises the account's marks to at least `to`. A mark never goes back,
+    /// so two browsers cannot undo each other.
+    async fn advance_marks(&self, account_id: i64, to: Marks) -> Result<(), PortError>;
 }
 
 /// Stores and publishes notifications. Cheap to clone.
@@ -93,15 +116,22 @@ impl Notifier {
         Self { repository, clock, events }
     }
 
-    /// Stores and publishes; a storage failure is logged, since whoever
-    /// notifies cannot do anything about it.
+    /// Stores and publishes, and keeps only the [`KEPT`] most recent ones. A
+    /// storage failure is logged, since whoever notifies cannot do anything
+    /// about it.
     pub async fn notify(&self, notification: NewNotification) {
         tracing::info!(code = notification.code, params = ?notification.params, "notification");
         match self.repository.create(self.clock.now(), notification).await {
             Ok(stored) => {
                 let _ = self.events.send(stored);
             }
-            Err(error) => tracing::error!(%error, "cannot store a notification"),
+            Err(error) => {
+                tracing::error!(%error, "cannot store a notification");
+                return;
+            }
+        }
+        if let Err(error) = self.repository.prune(KEPT).await {
+            tracing::warn!(%error, "cannot delete old notifications");
         }
     }
 
@@ -109,43 +139,91 @@ impl Notifier {
         self.events.subscribe()
     }
 
-    pub async fn recent(&self, limit: u32) -> Result<Vec<Notification>, PortError> {
-        self.repository.recent(limit.clamp(1, 200)).await
+    /// The most recent notifications the account has not cleared away,
+    /// newest first, and how far it has read.
+    pub async fn for_account(
+        &self,
+        account_id: i64,
+        limit: u32,
+    ) -> Result<(Vec<Notification>, Marks), PortError> {
+        let marks = self.repository.marks(account_id).await?;
+        let recent = self.repository.recent(marks.cleared_up_to, limit.clamp(1, 200)).await?;
+        Ok((recent, marks))
+    }
+
+    /// Everything up to `up_to` counts as read for the account.
+    pub async fn mark_read(&self, account_id: i64, up_to: i64) -> Result<(), PortError> {
+        let up_to = self.existing(up_to).await?;
+        self.repository.advance_marks(account_id, Marks { read_up_to: up_to, cleared_up_to: 0 }).await
+    }
+
+    /// Everything up to `up_to` is read and no longer listed for the account.
+    pub async fn clear(&self, account_id: i64, up_to: i64) -> Result<(), PortError> {
+        let up_to = self.existing(up_to).await?;
+        self.repository.advance_marks(account_id, Marks { read_up_to: up_to, cleared_up_to: up_to }).await
+    }
+
+    /// `up_to`, but no further than the newest notification: a mark ahead of
+    /// it would hide notifications that have not happened yet.
+    async fn existing(&self, up_to: i64) -> Result<i64, PortError> {
+        let newest = self.repository.recent(0, 1).await?.first().map_or(0, |n| n.id);
+        Ok(up_to.clamp(0, newest))
     }
 }
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testing {
+    use std::collections::HashMap;
     use std::sync::Mutex;
 
     use super::*;
 
     #[derive(Default)]
-    pub struct MemoryNotifications(Mutex<Vec<Notification>>);
+    pub struct MemoryNotifications {
+        all: Mutex<Vec<Notification>>,
+        last_id: Mutex<i64>,
+        marks: Mutex<HashMap<i64, Marks>>,
+    }
 
     impl MemoryNotifications {
         pub fn all(&self) -> Vec<Notification> {
-            self.0.lock().unwrap().clone()
+            self.all.lock().unwrap().clone()
         }
     }
 
     #[async_trait]
     impl NotificationRepository for MemoryNotifications {
         async fn create(&self, at: Timestamp, new: NewNotification) -> Result<Notification, PortError> {
-            let mut all = self.0.lock().unwrap();
-            let stored = Notification {
-                id: i64::try_from(all.len()).unwrap() + 1,
-                at,
-                level: new.level,
-                code: new.code,
-                params: new.params,
-            };
-            all.push(stored.clone());
+            let mut last_id = self.last_id.lock().unwrap();
+            *last_id += 1;
+            let stored =
+                Notification { id: *last_id, at, level: new.level, code: new.code, params: new.params };
+            self.all.lock().unwrap().push(stored.clone());
             Ok(stored)
         }
 
-        async fn recent(&self, limit: u32) -> Result<Vec<Notification>, PortError> {
-            Ok(self.0.lock().unwrap().iter().rev().take(limit as usize).cloned().collect())
+        async fn recent(&self, after: i64, limit: u32) -> Result<Vec<Notification>, PortError> {
+            let all = self.all.lock().unwrap();
+            Ok(all.iter().rev().filter(|n| n.id > after).take(limit as usize).cloned().collect())
+        }
+
+        async fn prune(&self, keep: u32) -> Result<(), PortError> {
+            let mut all = self.all.lock().unwrap();
+            let excess = all.len().saturating_sub(keep as usize);
+            all.drain(..excess);
+            Ok(())
+        }
+
+        async fn marks(&self, account_id: i64) -> Result<Marks, PortError> {
+            Ok(self.marks.lock().unwrap().get(&account_id).copied().unwrap_or_default())
+        }
+
+        async fn advance_marks(&self, account_id: i64, to: Marks) -> Result<(), PortError> {
+            let mut marks = self.marks.lock().unwrap();
+            let current = marks.entry(account_id).or_default();
+            current.read_up_to = current.read_up_to.max(to.read_up_to);
+            current.cleared_up_to = current.cleared_up_to.max(to.cleared_up_to);
+            Ok(())
         }
     }
 }
@@ -174,6 +252,57 @@ mod tests {
         let published = events.recv().await.unwrap();
         assert_eq!((published.code.as_str(), published.params["pool"].as_str()), ("pool_degraded", "tank"));
         assert_eq!(repository.all(), std::slice::from_ref(&published));
-        assert_eq!(notifier.recent(10).await.unwrap(), [published]);
+        assert_eq!(notifier.for_account(1, 10).await.unwrap(), (vec![published], Marks::default()));
+    }
+
+    #[tokio::test]
+    async fn keeps_only_the_most_recent() {
+        let repository = Arc::new(MemoryNotifications::default());
+        let notifier = Notifier::new(repository.clone(), Arc::new(Fixed));
+
+        for _ in 0..KEPT + 3 {
+            notifier.notify(NewNotification::new(Level::Info, "scrub_finished")).await;
+        }
+
+        let kept = repository.all();
+        assert_eq!(kept.len(), KEPT as usize);
+        assert_eq!(kept.first().unwrap().id, 4);
+    }
+
+    #[tokio::test]
+    async fn each_account_reads_and_clears_on_its_own() {
+        let notifier = Notifier::new(Arc::new(MemoryNotifications::default()), Arc::new(Fixed));
+        for code in ["pool_trouble", "pool_recovered", "scrub_finished"] {
+            notifier.notify(NewNotification::new(Level::Info, code)).await;
+        }
+        let (alice, bob) = (1, 2);
+
+        notifier.mark_read(alice, 2).await.unwrap();
+        notifier.clear(bob, 1).await.unwrap();
+
+        let (listed, marks) = notifier.for_account(alice, 10).await.unwrap();
+        assert_eq!(listed.iter().map(|n| n.id).collect::<Vec<_>>(), [3, 2, 1]);
+        assert_eq!(marks, Marks { read_up_to: 2, cleared_up_to: 0 });
+        let (listed, marks) = notifier.for_account(bob, 10).await.unwrap();
+        assert_eq!(listed.iter().map(|n| n.id).collect::<Vec<_>>(), [3, 2]);
+        assert_eq!(marks, Marks { read_up_to: 1, cleared_up_to: 1 });
+    }
+
+    #[tokio::test]
+    async fn marks_never_go_back_or_ahead_of_the_newest() {
+        let notifier = Notifier::new(Arc::new(MemoryNotifications::default()), Arc::new(Fixed));
+        notifier.notify(NewNotification::new(Level::Info, "scrub_finished")).await;
+        notifier.notify(NewNotification::new(Level::Info, "scrub_finished")).await;
+
+        notifier.mark_read(1, 2).await.unwrap();
+        notifier.mark_read(1, 1).await.unwrap();
+        assert_eq!(notifier.for_account(1, 10).await.unwrap().1.read_up_to, 2);
+
+        // A mark far ahead would hide what comes next.
+        notifier.clear(1, i64::MAX).await.unwrap();
+        notifier.notify(NewNotification::new(Level::Warning, "pool_trouble")).await;
+        let (listed, marks) = notifier.for_account(1, 10).await.unwrap();
+        assert_eq!(listed.iter().map(|n| n.code.as_str()).collect::<Vec<_>>(), ["pool_trouble"]);
+        assert_eq!(marks, Marks { read_up_to: 2, cleared_up_to: 2 });
     }
 }

@@ -9,6 +9,7 @@ import { useCompactLayout } from '@/shared/lib/media'
 import { useJobsStore } from '@/shared/jobs/store'
 import { useNotifications } from '@/shared/lib/notifications'
 import { useServerNotices } from '@/shared/notices/store'
+import { usePreferences } from '@/shared/preferences/store'
 import { cn } from '@/shared/lib/utils'
 
 import { APPS, findApp } from './apps'
@@ -25,6 +26,7 @@ const windows = useWindows()
 const notifications = useNotifications()
 const jobs = useJobsStore()
 const notices = useServerNotices()
+const preferences = usePreferences()
 const compact = useCompactLayout()
 
 /** Only apps this account may use; the server enforces the same. */
@@ -50,7 +52,8 @@ onMounted(() => {
   window.addEventListener('resize', windows.resized)
   live.connect()
   void jobs.start()
-  void notices.start(session.info?.account.name ?? '')
+  void notices.start()
+  void preferences.load()
 })
 
 onBeforeUnmount(() => {

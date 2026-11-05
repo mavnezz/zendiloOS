@@ -1487,7 +1487,7 @@
         "tags": [
           "jobs"
         ],
-        "summary": "The most recent notifications, newest first. New ones arrive on the\nWebSocket topic `notifications`.",
+        "summary": "The most recent notifications, newest first, as the signed-in account\nleft them: what it cleared away is gone, what it read is marked. New ones\narrive on the WebSocket topic `notifications`.",
         "operationId": "notifications",
         "parameters": [
           {
@@ -1507,10 +1507,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/Notification"
-                  }
+                  "$ref": "#/components/schemas/NotificationList"
                 }
               }
             }
@@ -1524,6 +1521,136 @@
                 }
               }
             }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/notifications/clear": {
+      "post": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Clears the caller's notifications up to `up_to` away; other accounts\nstill see them.",
+        "operationId": "clear_notifications",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NotificationMark"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Cleared."
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/notifications/read": {
+      "post": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Marks the caller's notifications up to `up_to` as read, in every browser.",
+        "operationId": "mark_notifications_read",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NotificationMark"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Marked."
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/preferences": {
+      "get": {
+        "tags": [
+          "identity"
+        ],
+        "summary": "The signed-in account's interface preferences, the same in every browser.",
+        "operationId": "preferences",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InterfacePreferences"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "identity"
+        ],
+        "summary": "Replaces the signed-in account's interface preferences.",
+        "operationId": "save_preferences",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InterfacePreferences"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved."
           }
         },
         "security": [
@@ -3202,6 +3329,14 @@
           }
         }
       },
+      "InterfaceLanguage": {
+        "type": "string",
+        "description": "A language of the interface.",
+        "enum": [
+          "en",
+          "de"
+        ]
+      },
       "InterfaceMetrics": {
         "type": "object",
         "required": [
@@ -3224,6 +3359,42 @@
             "minimum": 0
           }
         }
+      },
+      "InterfacePreferences": {
+        "type": "object",
+        "description": "How the signed-in account wants the interface. `null` means not chosen:\neach browser keeps what it shows.",
+        "properties": {
+          "language": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/InterfaceLanguage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "theme": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/InterfaceTheme"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "InterfaceTheme": {
+        "type": "string",
+        "description": "Light or dark, or as the viewer's operating system.",
+        "enum": [
+          "light",
+          "dark",
+          "system"
+        ]
       },
       "Job": {
         "type": "object",
@@ -3723,6 +3894,42 @@
           "warning",
           "error"
         ]
+      },
+      "NotificationList": {
+        "type": "object",
+        "description": "The caller's notifications and how far they have read them.",
+        "required": [
+          "notifications",
+          "read_up_to"
+        ],
+        "properties": {
+          "notifications": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Notification"
+            },
+            "description": "Newest first, without those the caller cleared away."
+          },
+          "read_up_to": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Notifications up to this ID count as read by the caller."
+          }
+        }
+      },
+      "NotificationMark": {
+        "type": "object",
+        "required": [
+          "up_to"
+        ],
+        "properties": {
+          "up_to": {
+            "type": "integer",
+            "format": "int64",
+            "description": "ID of the newest notification the mark covers."
+          }
+        },
+        "additionalProperties": false
       },
       "NvmeHealth": {
         "type": "object",

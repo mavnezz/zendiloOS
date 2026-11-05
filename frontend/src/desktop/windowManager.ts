@@ -108,17 +108,21 @@ export function toggleMaximized(state: DesktopState, appId: string): DesktopStat
   )
 }
 
+/**
+ * Moves a window; only its position changes. The size it was given stays,
+ * even while a smaller screen shows less of it.
+ */
 export function moveWindow(
   state: DesktopState,
   appId: string,
   position: { x: number; y: number },
   viewport: Size,
 ): DesktopState {
-  return update(state, appId, (window) =>
-    window.maximized
-      ? window
-      : { ...window, geometry: clampGeometry({ ...window.geometry, ...position }, viewport) },
-  )
+  return update(state, appId, (window) => {
+    if (window.maximized) return window
+    const { x, y } = clampGeometry({ ...window.geometry, ...position }, viewport)
+    return { ...window, geometry: { ...window.geometry, x, y } }
+  })
 }
 
 export function resizeWindow(
@@ -130,24 +134,21 @@ export function resizeWindow(
 ): DesktopState {
   return update(state, appId, (window) => {
     if (window.maximized) return window
-    const width = Math.min(Math.max(size.width, minimum.width), viewport.width - window.geometry.x)
-    const height = Math.min(
-      Math.max(size.height, minimum.height),
-      viewport.height - window.geometry.y,
-    )
-    return { ...window, geometry: { ...window.geometry, width, height } }
+    // Resized where it is shown: the user drags the corner they see.
+    const shown = shownGeometry(window.geometry, viewport)
+    const width = Math.min(Math.max(size.width, minimum.width), viewport.width - shown.x)
+    const height = Math.min(Math.max(size.height, minimum.height), viewport.height - shown.y)
+    return { ...window, geometry: { ...shown, width, height } }
   })
 }
 
-/** After the screen changed size: every title bar reachable again. */
-export function fitToViewport(state: DesktopState, viewport: Size): DesktopState {
-  return {
-    ...state,
-    windows: state.windows.map((window) => ({
-      ...window,
-      geometry: clampGeometry(window.geometry, viewport),
-    })),
-  }
+/**
+ * Where a window appears on a screen of `viewport`'s size. The stored
+ * geometry is what the user chose and is never cut down to the screen: a
+ * browser that is narrow for a moment must not shrink the windows for good.
+ */
+export function shownGeometry(geometry: Geometry, viewport: Size): Geometry {
+  return clampGeometry(geometry, viewport)
 }
 
 /** The window in front, if any is visible. */

@@ -26,63 +26,75 @@ export function wording(notification: ServerNotification): { title: string; body
   }
 }
 
-const SEEN_KEY = 'zendiloos.notices.seen.'
-
 /**
  * Notifications from the server (degraded pools, failing disks, …) in the
- * notification center. Live ones also appear as toasts; those that came
- * while this account was away are added quietly when it signs in.
+ * notification center. Live ones also appear as toasts. What the account
+ * has read or cleared away is kept on the server, so every browser of the
+ * account shows the same.
  */
 export const useServerNotices = defineStore('server-notices', () => {
   let unsubscribe: (() => void) | null = null
-  let account = ''
+  const shown = new Set<number>()
+  let newest = 0
 
-  function seen(): number {
-    try {
-      return Number(localStorage.getItem(SEEN_KEY + account) ?? 0)
-    } catch {
-      return 0
-    }
-  }
-
-  function markSeen(id: number): void {
-    try {
-      if (id > seen()) localStorage.setItem(SEEN_KEY + account, String(id))
-    } catch {
-      // Storage unavailable: older notices may show again next time.
-    }
-  }
-
-  function show(notification: ServerNotification, toast: boolean): void {
+  function show(
+    notification: ServerNotification,
+    options: { toast: boolean; read: boolean },
+  ): void {
+    // A live one may also be in the list fetched at the same time.
+    if (shown.has(notification.id)) return
+    shown.add(notification.id)
+    newest = Math.max(newest, notification.id)
     const { title, body } = wording(notification)
     useNotifications().notify(notification.level, title, body, {
       at: notification.at * 1000,
-      toast,
+      ...options,
     })
-    markSeen(notification.id)
   }
 
-  async function start(name: string): Promise<void> {
+  async function start(): Promise<void> {
     if (unsubscribe) return
-    account = name
-    unsubscribe = live.subscribe('notifications', (notification) => show(notification, true))
+    unsubscribe = live.subscribe('notifications', (notification) =>
+      show(notification, { toast: true, read: false }),
+    )
     try {
-      const recent = await unwrap(
-        api.GET('/api/v1/notifications', { params: { query: { limit: 20 } } }),
+      const list = await unwrap(
+        api.GET('/api/v1/notifications', { params: { query: { limit: 50 } } }),
       )
-      const since = seen()
-      for (const notification of recent.reverse()) {
-        if (notification.id > since) show(notification, false)
+      for (const notification of list.notifications.reverse()) {
+        show(notification, { toast: false, read: notification.id <= list.read_up_to })
       }
     } catch {
       // Live notices still arrive.
     }
   }
 
+  /** Everything shown so far counts as read, in every browser. */
+  async function markRead(): Promise<void> {
+    if (newest === 0) return
+    try {
+      await unwrap(api.POST('/api/v1/notifications/read', { body: { up_to: newest } }))
+    } catch {
+      // They show as unread again next time.
+    }
+  }
+
+  /** Everything shown so far is cleared away, in every browser. */
+  async function clear(): Promise<void> {
+    if (newest === 0) return
+    try {
+      await unwrap(api.POST('/api/v1/notifications/clear', { body: { up_to: newest } }))
+    } catch {
+      // They come back next time.
+    }
+  }
+
   function stop(): void {
     unsubscribe?.()
     unsubscribe = null
+    shown.clear()
+    newest = 0
   }
 
-  return { start, stop }
+  return { start, markRead, clear, stop }
 })

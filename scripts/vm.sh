@@ -8,8 +8,14 @@
 #   scripts/vm.sh stop      power off
 #   scripts/vm.sh destroy   delete the VM's disks (keeps the downloaded image)
 #
-# Only 127.0.0.1 is forwarded: SSH on 2222, the web interface on
-# https://127.0.0.1:8443.
+# SSH is forwarded to 127.0.0.1:2222, the web interface to
+# https://127.0.0.1:8443. With ZENDILOOS_VM_LISTEN=0.0.0.0 at 'start', the
+# web interface is reachable from the network too (SSH stays local).
+#
+# With ZENDILOOS_VM_BRIDGE=br0 at 'start', the VM also joins the LAN through
+# that bridge with an address of its own, as a real NAS would: Windows and
+# macOS clients find it and use SMB and NFS. Needs the bridge on the host and
+# QEMU's bridge helper allowed to use it (/etc/qemu/bridge.conf).
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -18,6 +24,10 @@ base_url=https://cloud.debian.org/images/cloud/trixie/latest
 image=debian-13-genericcloud-amd64.qcow2
 ssh_port=2222
 https_port=8443
+https_listen=${ZENDILOOS_VM_LISTEN:-127.0.0.1}
+lan_bridge=${ZENDILOOS_VM_BRIDGE:-}
+# Fixed, so the LAN's DHCP server hands the VM the same address each time.
+lan_mac=52:54:00:5a:d1:05
 sata_disks=4
 # A throwaway VM: its host key changes with every 'create'.
 common_opts=(-i "$dir/id_ed25519" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
@@ -84,6 +94,8 @@ start() {
         disks+=(-drive "file=$dir/sata-$i.qcow2,if=none,id=sata$i,format=qcow2"
                 -device "ide-hd,drive=sata$i,bus=ide.$((i - 1)),serial=ZDL-SATA-$i")
     done
+    local lan=()
+    [[ -n $lan_bridge ]] && lan=(-netdev "bridge,id=lan,br=$lan_bridge" -device "virtio-net-pci,netdev=lan,mac=$lan_mac")
     say "Starting (console: dev/vm/console.log)"
     qemu-system-x86_64 \
         -machine q35,accel=kvm -cpu host -smp 2 -m 2048 \
@@ -93,11 +105,30 @@ start() {
         "${disks[@]}" \
         -drive "file=$dir/nvme-1.qcow2,if=none,id=nvme1,format=qcow2" \
         -device "nvme,drive=nvme1,serial=ZDL-NVME-1" \
-        -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:$ssh_port-:22,hostfwd=tcp:127.0.0.1:$https_port-:443" \
+        -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:$ssh_port-:22,hostfwd=tcp:$https_listen:$https_port-:443" \
         -device virtio-net-pci,netdev=net0 \
+        "${lan[@]}" \
         -display none -serial "file:$dir/console.log" \
         -daemonize -pidfile "$dir/qemu.pid"
     wait_for_ssh
+    [[ -z $lan_bridge ]] || join_lan
+}
+
+# DHCP on the LAN card. The NAT card stays the default route, so the VM
+# reaches the internet as before.
+join_lan() {
+    printf '%s\n' 'network:' '  version: 2' '  ethernets:' '    lan:' '      match:' \
+        "        macaddress: \"$lan_mac\"" '      dhcp4: true' '      dhcp4-overrides:' '        route-metric: 200' \
+        | ssh "${ssh_opts[@]}" debian@127.0.0.1 'sudo tee /etc/netplan/60-zendiloos-lan.yaml >/dev/null
+            sudo chmod 600 /etc/netplan/60-zendiloos-lan.yaml && sudo netplan apply'
+    local address=''
+    for _ in $(seq 1 30); do
+        address=$(ssh "${ssh_opts[@]}" debian@127.0.0.1 \
+            "ip -o link | grep -i '$lan_mac' | cut -d: -f2 | xargs -r ip -4 -br addr show dev | awk '{print \$3}'")
+        [[ -n $address ]] && { say "In the LAN as ${address%/*}: https://${address%/*}/"; return; }
+        sleep 2
+    done
+    echo "the VM got no address in the LAN; see 'ip addr' in the VM" >&2
 }
 
 wait_for_ssh() {

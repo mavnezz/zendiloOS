@@ -2,6 +2,7 @@
 
 use axum::Json;
 use axum::extract::{Path, State};
+use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 use utoipa_axum::router::OpenApiRouter;
@@ -12,11 +13,16 @@ use zendiloos_notify as notify;
 
 use crate::auth::Auth;
 use crate::error::{ApiError, Problem};
-use crate::extract::ApiQuery;
+use crate::extract::{ApiJson, ApiQuery};
 use crate::state::ApiState;
 
 pub(super) fn routes() -> OpenApiRouter<ApiState> {
-    OpenApiRouter::new().routes(routes!(list_jobs)).routes(routes!(job)).routes(routes!(notifications))
+    OpenApiRouter::new()
+        .routes(routes!(list_jobs))
+        .routes(routes!(job))
+        .routes(routes!(notifications))
+        .routes(routes!(mark_notifications_read))
+        .routes(routes!(clear_notifications))
 }
 
 #[derive(Debug, Clone, Copy, Serialize, ToSchema)]
@@ -167,8 +173,18 @@ impl From<notify::Notification> for Notification {
     }
 }
 
-/// The most recent notifications, newest first. New ones arrive on the
-/// WebSocket topic `notifications`.
+/// The caller's notifications and how far they have read them.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct NotificationList {
+    /// Newest first, without those the caller cleared away.
+    pub notifications: Vec<Notification>,
+    /// Notifications up to this ID count as read by the caller.
+    pub read_up_to: i64,
+}
+
+/// The most recent notifications, newest first, as the signed-in account
+/// left them: what it cleared away is gone, what it read is marked. New ones
+/// arrive on the WebSocket topic `notifications`.
 #[utoipa::path(
     get,
     path = "/notifications",
@@ -176,7 +192,7 @@ impl From<notify::Notification> for Notification {
     security(("session" = [])),
     params(JobsParams),
     responses(
-        (status = OK, body = Vec<Notification>),
+        (status = OK, body = NotificationList),
         (status = FORBIDDEN, body = Problem, description = "`forbidden`"),
     )
 )]
@@ -184,8 +200,64 @@ async fn notifications(
     auth: Auth,
     State(state): State<ApiState>,
     ApiQuery(params): ApiQuery<JobsParams>,
-) -> Result<Json<Vec<Notification>>, ApiError> {
+) -> Result<Json<NotificationList>, ApiError> {
     auth.require(Permission::SystemView)?;
-    let recent = state.notifier.recent(params.limit.unwrap_or(50)).await?;
-    Ok(Json(recent.into_iter().map(Notification::from).collect()))
+    let account = auth.0.account.id.get();
+    let (recent, marks) = state.notifier.for_account(account, params.limit.unwrap_or(50)).await?;
+    Ok(Json(NotificationList {
+        notifications: recent.into_iter().map(Notification::from).collect(),
+        read_up_to: marks.read_up_to,
+    }))
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NotificationMark {
+    /// ID of the newest notification the mark covers.
+    pub up_to: i64,
+}
+
+/// Marks the caller's notifications up to `up_to` as read, in every browser.
+#[utoipa::path(
+    post,
+    path = "/notifications/read",
+    tag = "jobs",
+    security(("session" = [])),
+    request_body = NotificationMark,
+    responses(
+        (status = NO_CONTENT, description = "Marked."),
+        (status = FORBIDDEN, body = Problem, description = "`forbidden`"),
+    )
+)]
+async fn mark_notifications_read(
+    auth: Auth,
+    State(state): State<ApiState>,
+    ApiJson(mark): ApiJson<NotificationMark>,
+) -> Result<StatusCode, ApiError> {
+    auth.require(Permission::SystemView)?;
+    state.notifier.mark_read(auth.0.account.id.get(), mark.up_to).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Clears the caller's notifications up to `up_to` away; other accounts
+/// still see them.
+#[utoipa::path(
+    post,
+    path = "/notifications/clear",
+    tag = "jobs",
+    security(("session" = [])),
+    request_body = NotificationMark,
+    responses(
+        (status = NO_CONTENT, description = "Cleared."),
+        (status = FORBIDDEN, body = Problem, description = "`forbidden`"),
+    )
+)]
+async fn clear_notifications(
+    auth: Auth,
+    State(state): State<ApiState>,
+    ApiJson(mark): ApiJson<NotificationMark>,
+) -> Result<StatusCode, ApiError> {
+    auth.require(Permission::SystemView)?;
+    state.notifier.clear(auth.0.account.id.get(), mark.up_to).await?;
+    Ok(StatusCode::NO_CONTENT)
 }

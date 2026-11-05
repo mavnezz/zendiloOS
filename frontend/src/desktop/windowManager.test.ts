@@ -4,7 +4,6 @@ import {
   activeWindow,
   closeWindow,
   emptyDesktop,
-  fitToViewport,
   focusWindow,
   MIN_VISIBLE,
   minimizeWindow,
@@ -12,6 +11,7 @@ import {
   openWindow,
   resizeWindow,
   restoreDesktop,
+  shownGeometry,
   TITLE_BAR,
   toggleMaximized,
 } from './windowManager'
@@ -91,12 +91,29 @@ describe('the window manager', () => {
     expect(activeWindow(state)).toBe('logs')
   })
 
-  it('brings windows back after the screen shrank', () => {
-    let state = moveWindow(withWindows('dashboard'), 'dashboard', { x: 1100, y: 700 }, screen)
-    state = fitToViewport(state, { width: 800, height: 500 })
+  it('shows windows on a smaller screen without forgetting their size', () => {
+    const state = moveWindow(withWindows('dashboard'), 'dashboard', { x: 1100, y: 700 }, screen)
+    const small = { width: 600, height: 400 }
+
+    expect(shownGeometry(find(state, 'dashboard').geometry, small)).toEqual({
+      x: 600 - MIN_VISIBLE,
+      y: 400 - TITLE_BAR,
+      width: 600,
+      height: 400,
+    })
+    // Back on the large screen, the window is as the user left it.
+    expect(shownGeometry(find(state, 'dashboard').geometry, screen)).toEqual(
+      find(state, 'dashboard').geometry,
+    )
+  })
+
+  it('keeps the chosen size when a window is moved on a smaller screen', () => {
+    const small = { width: 600, height: 400 }
+    const state = moveWindow(withWindows('dashboard'), 'dashboard', { x: 10, y: 20 }, small)
+
     expect(find(state, 'dashboard').geometry).toMatchObject({
-      x: 800 - MIN_VISIBLE,
-      y: 500 - TITLE_BAR,
+      x: 10,
+      y: 20,
       width: 640,
       height: 480,
     })

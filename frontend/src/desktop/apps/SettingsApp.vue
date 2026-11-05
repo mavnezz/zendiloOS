@@ -6,14 +6,16 @@ import { useI18n } from 'vue-i18n'
 import ChangePasswordForm from '@/features/auth/components/ChangePasswordForm.vue'
 import { useSessionStore } from '@/features/auth/store'
 import AboutSection from '@/features/system/components/AboutSection.vue'
-import { LANGUAGES, type Locale, setLocale } from '@/shared/i18n'
-import { setThemePreference, type ThemePreference, themePreference } from '@/shared/lib/theme'
+import { LANGUAGES } from '@/shared/i18n'
+import type { ThemePreference } from '@/shared/lib/theme'
 import { cn } from '@/shared/lib/utils'
+import { usePreferences } from '@/shared/preferences/store'
 
 type Section = 'account' | 'appearance' | 'about'
 
 const { t, locale } = useI18n()
 const session = useSessionStore()
+const preferences = usePreferences()
 
 const sections = [
   { id: 'account', icon: UserRound },
@@ -23,16 +25,6 @@ const sections = [
 const section = ref<Section>('account')
 
 const themes: ThemePreference[] = ['light', 'dark', 'system']
-const theme = ref<ThemePreference>(themePreference())
-
-function chooseTheme(next: ThemePreference): void {
-  theme.value = next
-  setThemePreference(next)
-}
-
-function chooseLanguage(next: Locale): void {
-  setLocale(next)
-}
 
 const choice = (selected: boolean) =>
   cn(
@@ -88,9 +80,9 @@ const choice = (selected: boolean) =>
               :key="option"
               type="button"
               role="radio"
-              :aria-checked="theme === option"
-              :class="choice(theme === option)"
-              @click="chooseTheme(option)"
+              :aria-checked="preferences.theme === option"
+              :class="choice(preferences.theme === option)"
+              @click="preferences.chooseTheme(option)"
             >
               {{ t(`settings.themes.${option}`) }}
             </button>
@@ -107,7 +99,7 @@ const choice = (selected: boolean) =>
               :lang="language.locale"
               :aria-checked="locale === language.locale"
               :class="choice(locale === language.locale)"
-              @click="chooseLanguage(language.locale)"
+              @click="preferences.chooseLanguage(language.locale)"
             >
               {{ language.name }}
             </button>

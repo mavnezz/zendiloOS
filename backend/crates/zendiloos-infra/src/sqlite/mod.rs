@@ -11,6 +11,7 @@ mod backup;
 mod groups;
 mod jobs;
 mod notifications;
+mod preferences;
 mod sessions;
 mod shares;
 
@@ -33,6 +34,7 @@ pub use audit::SqliteAuditLog;
 pub use groups::SqliteGroups;
 pub use jobs::SqliteJobs;
 pub use notifications::SqliteNotifications;
+pub use preferences::SqlitePreferences;
 pub use sessions::SqliteSessions;
 pub use shares::SqliteShares;
 

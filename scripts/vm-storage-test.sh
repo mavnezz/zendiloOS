@@ -62,11 +62,11 @@ curl -sk -c "$work/jar" -H "Origin: $base" -H 'Content-Type: application/json' \
     -d "$(jq -n --arg name "$user" --arg password "$password" '{name: $name, password: $password}')" \
     "$api/auth/login" | jq -er .csrf_token >"$work/csrf" || fail "cannot sign in"
 
-since=$(call GET '/notifications?limit=1' | jq '.[0].id // 0')
+since=$(call GET '/notifications?limit=1' | jq '.notifications[0].id // 0')
 notified() {
     call GET '/notifications?limit=50' \
         | jq -e --arg pool "$pool" --arg code "$1" --argjson since "$since" \
-            '.[] | select(.id > $since and .code == $code and .params.pool == $pool)'
+            '.notifications[] | select(.id > $since and .code == $code and .params.pool == $pool)'
 }
 
 if [[ -n $(pool_json) ]]; then

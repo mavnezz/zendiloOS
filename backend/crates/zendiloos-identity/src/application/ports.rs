@@ -7,7 +7,7 @@ use zendiloos_kernel::{PortError, RequestContext, Secret, Timestamp};
 
 use crate::domain::{
     Account, AccountId, AccountName, Group, GroupId, GroupName, NewAccount, NewGroup, NewSession,
-    PasswordHash, Session, SessionId, SetupCode, TokenHash,
+    PasswordHash, Preferences, Session, SessionId, SetupCode, TokenHash,
 };
 
 #[async_trait]
@@ -168,4 +168,13 @@ pub trait SetupCodes: Send + Sync {
 
     /// Removes the code; a no-op if there is none.
     async fn consume(&self) -> Result<(), PortError>;
+}
+
+/// Each account's [`Preferences`].
+#[async_trait]
+pub trait PreferenceRepository: Send + Sync {
+    /// Nothing chosen for an account that never saved any.
+    async fn load(&self, account: AccountId) -> Result<Preferences, PortError>;
+
+    async fn save(&self, account: AccountId, preferences: Preferences) -> Result<(), PortError>;
 }

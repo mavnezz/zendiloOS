@@ -7,7 +7,6 @@ import {
   closeWindow,
   type DesktopState,
   emptyDesktop,
-  fitToViewport,
   focusWindow,
   minimizeWindow,
   moveWindow,
@@ -43,7 +42,7 @@ export const useWindows = defineStore('windows', () => {
       stored = null
     }
     const known = new Set<string>(APPS.map((app) => app.id))
-    state.value = fitToViewport(restoreDesktop(stored, known), viewport.value)
+    state.value = restoreDesktop(stored, known)
   }
 
   function forget(): void {
@@ -64,9 +63,9 @@ export const useWindows = defineStore('windows', () => {
     { deep: true },
   )
 
+  /** The windows follow on screen; what is stored stays as the user left it. */
   function resized(): void {
     viewport.value = currentViewport()
-    state.value = fitToViewport(state.value, viewport.value)
   }
 
   return {

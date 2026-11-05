@@ -418,11 +418,67 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * The most recent notifications, newest first. New ones arrive on the
-         *     WebSocket topic `notifications`.
+         * The most recent notifications, newest first, as the signed-in account
+         *     left them: what it cleared away is gone, what it read is marked. New ones
+         *     arrive on the WebSocket topic `notifications`.
          */
         get: operations["notifications"];
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/notifications/clear": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Clears the caller's notifications up to `up_to` away; other accounts
+         *     still see them.
+         */
+        post: operations["clear_notifications"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/notifications/read": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Marks the caller's notifications up to `up_to` as read, in every browser. */
+        post: operations["mark_notifications_read"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/preferences": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The signed-in account's interface preferences, the same in every browser. */
+        get: operations["preferences"];
+        /** Replaces the signed-in account's interface preferences. */
+        put: operations["save_preferences"];
         post?: never;
         delete?: never;
         options?: never;
@@ -972,6 +1028,11 @@ export interface components {
             /** @description `ok` whenever the server answers. */
             status: string;
         };
+        /**
+         * @description A language of the interface.
+         * @enum {string}
+         */
+        InterfaceLanguage: "en" | "de";
         InterfaceMetrics: {
             name: string;
             /** Format: int64 */
@@ -979,6 +1040,19 @@ export interface components {
             /** Format: int64 */
             sent_bytes_per_second: number;
         };
+        /**
+         * @description How the signed-in account wants the interface. `null` means not chosen:
+         *     each browser keeps what it shows.
+         */
+        InterfacePreferences: {
+            language?: components["schemas"]["InterfaceLanguage"] | null;
+            theme?: components["schemas"]["InterfaceTheme"] | null;
+        };
+        /**
+         * @description Light or dark, or as the viewer's operating system.
+         * @enum {string}
+         */
+        InterfaceTheme: "light" | "dark" | "system";
         Job: {
             /** @description Who started it. */
             actor?: string | null;
@@ -1134,6 +1208,23 @@ export interface components {
         };
         /** @enum {string} */
         NotificationLevel: "info" | "success" | "warning" | "error";
+        /** @description The caller's notifications and how far they have read them. */
+        NotificationList: {
+            /** @description Newest first, without those the caller cleared away. */
+            notifications: components["schemas"]["Notification"][];
+            /**
+             * Format: int64
+             * @description Notifications up to this ID count as read by the caller.
+             */
+            read_up_to: number;
+        };
+        NotificationMark: {
+            /**
+             * Format: int64
+             * @description ID of the newest notification the mark covers.
+             */
+            up_to: number;
+        };
         NvmeHealth: {
             /** Format: int32 */
             available_spare_percent: number;
@@ -2637,7 +2728,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Notification"][];
+                    "application/json": components["schemas"]["NotificationList"];
                 };
             };
             /** @description `forbidden` */
@@ -2648,6 +2739,109 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["Problem"];
                 };
+            };
+        };
+    };
+    clear_notifications: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NotificationMark"];
+            };
+        };
+        responses: {
+            /** @description Cleared. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    mark_notifications_read: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NotificationMark"];
+            };
+        };
+        responses: {
+            /** @description Marked. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    preferences: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InterfacePreferences"];
+                };
+            };
+        };
+    };
+    save_preferences: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InterfacePreferences"];
+            };
+        };
+        responses: {
+            /** @description Saved. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

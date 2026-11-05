@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO notification_marks (account_id, read_up_to, cleared_up_to) VALUES (?, ?, ?)\n             ON CONFLICT (account_id) DO UPDATE SET\n                 read_up_to = max(read_up_to, excluded.read_up_to),\n                 cleared_up_to = max(cleared_up_to, excluded.cleared_up_to)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "4c7e4138a5caac6caef28f2805caea4b34a59345edea2a15ef87dd8e520d9d61"
+}

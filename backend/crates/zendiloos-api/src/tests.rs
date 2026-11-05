@@ -799,6 +799,9 @@ fn openapi_documents_every_route() {
             "/api/v1/logs/audit",
             "/api/v1/logs/journal",
             "/api/v1/notifications",
+            "/api/v1/notifications/clear",
+            "/api/v1/notifications/read",
+            "/api/v1/preferences",
             "/api/v1/setup",
             "/api/v1/shares",
             "/api/v1/shares/{id}",
@@ -1237,9 +1240,40 @@ async fn notifications_are_listed_newest_first() {
 
     let list = h.send(empty(with_cookie(get("/api/v1/notifications"), &session))).await;
     assert_eq!(list.status, StatusCode::OK);
-    assert_eq!(list.body[0]["code"], "pool_recovered");
-    assert_eq!(list.body[1]["level"], "warning");
-    assert_eq!(list.body[1]["params"], json!({ "pool": "tank" }));
+    let listed = &list.body["notifications"];
+    assert_eq!(listed[0]["code"], "pool_recovered");
+    assert_eq!(listed[1]["level"], "warning");
+    assert_eq!(listed[1]["params"], json!({ "pool": "tank" }));
+    assert_eq!(list.body["read_up_to"], 0);
+}
+
+#[tokio::test]
+async fn each_account_reads_and_clears_its_notifications_in_every_browser() {
+    let h = Harness::new();
+    let alice = h.sign_in("alice", Role::Admin).await;
+    let bob = h.sign_in("bob", Role::ReadOnly).await;
+    for code in ["pool_trouble", "pool_recovered", "scrub_finished"] {
+        h.notifier.notify(NewNotification::new(Level::Info, code)).await;
+    }
+    let ids = |list: &Reply| -> Vec<i64> {
+        list.body["notifications"].as_array().unwrap().iter().map(|n| n["id"].as_i64().unwrap()).collect()
+    };
+
+    let read =
+        h.send(json(with_csrf(post("/api/v1/notifications/read"), &alice), json!({ "up_to": 2 }))).await;
+    assert_eq!(read.status, StatusCode::NO_CONTENT, "{:?}", read.body);
+    let cleared =
+        h.send(json(with_csrf(post("/api/v1/notifications/clear"), &bob), json!({ "up_to": 1 }))).await;
+    assert_eq!(cleared.status, StatusCode::NO_CONTENT, "{:?}", cleared.body);
+
+    let list = h.send(empty(with_cookie(get("/api/v1/notifications"), &alice))).await;
+    assert_eq!((ids(&list), list.body["read_up_to"].as_i64()), (vec![3, 2, 1], Some(2)));
+    let list = h.send(empty(with_cookie(get("/api/v1/notifications"), &bob))).await;
+    assert_eq!((ids(&list), list.body["read_up_to"].as_i64()), (vec![3, 2], Some(1)));
+
+    let forged =
+        h.send(json(with_cookie(post("/api/v1/notifications/read"), &alice), json!({ "up_to": 3 }))).await;
+    assert_problem(&forged, StatusCode::FORBIDDEN, "csrf_rejected");
 }
 
 #[tokio::test]
@@ -1420,4 +1454,30 @@ async fn users_work_with_files_in_their_shares() {
             "remove bob photos:2024/c.jpg recycle",
         ]
     );
+}
+
+#[tokio::test]
+async fn each_account_keeps_its_interface_preferences() {
+    let h = Harness::new();
+    let alice = h.sign_in("alice", Role::ReadOnly).await;
+    let bob = h.sign_in("bob", Role::User).await;
+
+    let none = h.send(empty(with_cookie(get("/api/v1/preferences"), &alice))).await;
+    assert_eq!(
+        (none.status, none.body.clone()),
+        (StatusCode::OK, json!({ "language": null, "theme": null }))
+    );
+
+    let chosen = json!({ "language": "de", "theme": "dark" });
+    let saved =
+        h.send(json(with_csrf(changing(Method::PUT, "/api/v1/preferences"), &alice), chosen.clone())).await;
+    assert_eq!(saved.status, StatusCode::NO_CONTENT, "{:?}", saved.body);
+
+    assert_eq!(h.send(empty(with_cookie(get("/api/v1/preferences"), &alice))).await.body, chosen);
+    assert_eq!(h.send(empty(with_cookie(get("/api/v1/preferences"), &bob))).await.body["theme"], json!(null));
+
+    let unknown = json!({ "language": "fr", "theme": "dark" });
+    let refused =
+        h.send(json(with_csrf(changing(Method::PUT, "/api/v1/preferences"), &alice), unknown)).await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
 }

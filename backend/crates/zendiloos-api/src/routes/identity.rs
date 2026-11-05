@@ -1,5 +1,7 @@
-//! Initial setup, login, logout, the current session and password changes.
+//! Initial setup, login, logout, the current session, password changes and
+//! the account's interface preferences.
 
+use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum_extra::extract::CookieJar;
@@ -9,10 +11,10 @@ use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 use zendiloos_identity::application::commands::{ChangePasswordInput, LoginInput, SetupInput};
 use zendiloos_identity::application::{AuthContext, SignedIn};
-use zendiloos_identity::domain::Role;
+use zendiloos_identity::domain::{Language, Preferences, Role, Theme};
 use zendiloos_kernel::Secret;
 
-use crate::auth::{AuthAllowPending, SameOrigin, removal_cookie, session_cookie};
+use crate::auth::{Auth, AuthAllowPending, SameOrigin, removal_cookie, session_cookie};
 use crate::error::{ApiError, Problem};
 use crate::extract::{ApiJson, Client};
 use crate::state::ApiState;
@@ -24,6 +26,7 @@ pub(super) fn routes() -> OpenApiRouter<ApiState> {
         .routes(routes!(logout))
         .routes(routes!(session))
         .routes(routes!(change_password))
+        .routes(routes!(preferences, save_preferences))
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -245,5 +248,98 @@ async fn change_password(
         new_password: Secret::new(request.new_password),
     };
     state.identity.change_password.execute(&auth, input, &client).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// A language of the interface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum InterfaceLanguage {
+    En,
+    De,
+}
+
+/// Light or dark, or as the viewer's operating system.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum InterfaceTheme {
+    Light,
+    Dark,
+    System,
+}
+
+/// How the signed-in account wants the interface. `null` means not chosen:
+/// each browser keeps what it shows.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct InterfacePreferences {
+    #[serde(default)]
+    pub language: Option<InterfaceLanguage>,
+    #[serde(default)]
+    pub theme: Option<InterfaceTheme>,
+}
+
+impl From<Preferences> for InterfacePreferences {
+    fn from(preferences: Preferences) -> Self {
+        Self {
+            language: preferences.language.map(|language| match language {
+                Language::English => InterfaceLanguage::En,
+                Language::German => InterfaceLanguage::De,
+            }),
+            theme: preferences.theme.map(|theme| match theme {
+                Theme::Light => InterfaceTheme::Light,
+                Theme::Dark => InterfaceTheme::Dark,
+                Theme::System => InterfaceTheme::System,
+            }),
+        }
+    }
+}
+
+impl From<InterfacePreferences> for Preferences {
+    fn from(preferences: InterfacePreferences) -> Self {
+        Self {
+            language: preferences.language.map(|language| match language {
+                InterfaceLanguage::En => Language::English,
+                InterfaceLanguage::De => Language::German,
+            }),
+            theme: preferences.theme.map(|theme| match theme {
+                InterfaceTheme::Light => Theme::Light,
+                InterfaceTheme::Dark => Theme::Dark,
+                InterfaceTheme::System => Theme::System,
+            }),
+        }
+    }
+}
+
+/// The signed-in account's interface preferences, the same in every browser.
+#[utoipa::path(
+    get,
+    path = "/preferences",
+    tag = "identity",
+    security(("session" = [])),
+    responses((status = OK, body = InterfacePreferences))
+)]
+async fn preferences(
+    auth: Auth,
+    State(state): State<ApiState>,
+) -> Result<Json<InterfacePreferences>, ApiError> {
+    Ok(Json(state.identity.preferences.execute(&auth.0).await?.into()))
+}
+
+/// Replaces the signed-in account's interface preferences.
+#[utoipa::path(
+    put,
+    path = "/preferences",
+    tag = "identity",
+    security(("session" = [])),
+    request_body = InterfacePreferences,
+    responses((status = NO_CONTENT, description = "Saved."))
+)]
+async fn save_preferences(
+    auth: Auth,
+    State(state): State<ApiState>,
+    ApiJson(preferences): ApiJson<InterfacePreferences>,
+) -> Result<StatusCode, ApiError> {
+    state.identity.save_preferences.execute(&auth.0, preferences.into()).await?;
     Ok(StatusCode::NO_CONTENT)
 }

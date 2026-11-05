@@ -29,16 +29,24 @@ export const useNotifications = defineStore('notifications', () => {
 
   /**
    * Adds a message. `at` defaults to now; `toast: false` only adds it to
-   * the center, e.g. for what happened while nobody looked.
+   * the center, e.g. for what happened while nobody looked, and `read`
+   * for what the account has read in another browser.
    */
   function notify(
     kind: NotificationKind,
     title: string,
     body?: string,
-    options: { at?: number; toast?: boolean } = {},
+    options: { at?: number; toast?: boolean; read?: boolean } = {},
   ): void {
     const id = nextId++
-    const item = { id, kind, title, body, at: options.at ?? Date.now(), read: false }
+    const item = {
+      id,
+      kind,
+      title,
+      body,
+      at: options.at ?? Date.now(),
+      read: options.read ?? false,
+    }
     items.value = [item, ...items.value].sort((a, b) => b.at - a.at).slice(0, KEEP)
     if (options.toast === false) return
     toastIds.value.push(id)

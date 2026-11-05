@@ -17,8 +17,8 @@ use crate::domain::{AccountId, AccountName, Permission, Role, SessionId, Session
 use context::Context;
 pub use error::IdentityError;
 use ports::{
-    AccountRepository, GroupRepository, PasswordHasher, SessionRepository, SessionTokens, SetupCodes,
-    SystemAccounts,
+    AccountRepository, GroupRepository, PasswordHasher, PreferenceRepository, SessionRepository,
+    SessionTokens, SetupCodes, SystemAccounts,
 };
 
 /// Adapters for every port of this context, plugged in by the composition
@@ -28,6 +28,7 @@ pub struct IdentityPorts {
     pub accounts: Arc<dyn AccountRepository>,
     pub groups: Arc<dyn GroupRepository>,
     pub sessions: Arc<dyn SessionRepository>,
+    pub preferences: Arc<dyn PreferenceRepository>,
     pub system: Arc<dyn SystemAccounts>,
     pub hasher: Arc<dyn PasswordHasher>,
     pub tokens: Arc<dyn SessionTokens>,
@@ -59,10 +60,12 @@ pub struct IdentityUseCases {
     pub create_group: commands::CreateGroup,
     pub update_group: commands::UpdateGroup,
     pub delete_group: commands::DeleteGroup,
+    pub save_preferences: commands::SavePreferences,
     pub setup_status: queries::GetSetupStatus,
     pub authenticate: queries::Authenticate,
     pub list_accounts: queries::ListAccounts,
     pub list_groups: queries::ListGroups,
+    pub preferences: queries::GetPreferences,
 }
 
 impl IdentityUseCases {
@@ -82,9 +85,11 @@ impl IdentityUseCases {
             create_group: commands::CreateGroup::new(Arc::clone(&context)),
             update_group: commands::UpdateGroup::new(Arc::clone(&context)),
             delete_group: commands::DeleteGroup::new(Arc::clone(&context)),
+            save_preferences: commands::SavePreferences::new(Arc::clone(&context)),
             setup_status: queries::GetSetupStatus::new(Arc::clone(&context)),
             list_accounts: queries::ListAccounts::new(Arc::clone(&context)),
             list_groups: queries::ListGroups::new(Arc::clone(&context)),
+            preferences: queries::GetPreferences::new(Arc::clone(&context)),
             authenticate: queries::Authenticate::new(context),
         }
     }
