@@ -115,3 +115,7 @@ vm *args:
 # the API (the package must be installed and set up; see the script)
 vm-storage-test:
     scripts/vm-storage-test.sh
+
+# Shares over SMB and NFS with their permissions, in the test VM
+vm-sharing-test:
+    scripts/vm-sharing-test.sh

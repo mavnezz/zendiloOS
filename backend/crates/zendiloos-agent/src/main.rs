@@ -8,6 +8,7 @@ use tokio::net::UnixListener;
 use tokio::signal::unix::{SignalKind, signal};
 use zendiloos_agent::config::Config;
 use zendiloos_agent::{Operations, Server, passwd, serve};
+use zendiloos_agent_proto::Role;
 
 #[derive(Parser)]
 #[command(version, about = "The privileged zendiloos agent")]
@@ -15,6 +16,16 @@ struct Cli {
     /// Configuration file [default: /etc/zendiloos/agent.toml if it exists]
     #[arg(short, long, value_name = "FILE")]
     config: Option<PathBuf>,
+    /// Which requests to serve: `system` (disks, ZFS, accounts, server
+    /// configuration) or `files` (the contents of volumes)
+    #[arg(long, default_value = "system")]
+    role: RoleArg,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum RoleArg {
+    System,
+    Files,
 }
 
 #[tokio::main]
@@ -26,12 +37,17 @@ async fn main() -> anyhow::Result<()> {
     let passwd = std::fs::read_to_string("/etc/passwd").context("cannot read /etc/passwd")?;
     let (client_uid, client_gid) = passwd::lookup(&passwd, &config.client_user)
         .with_context(|| format!("unknown client account {:?}", config.client_user))?;
-    let operations = Operations::new(&config.tools, config.storage.erasable.clone())?;
+    let role = match cli.role {
+        RoleArg::System => Role::System,
+        RoleArg::Files => Role::Files,
+    };
+    let operations = Operations::new(role, &config.tools, config.storage.erasable.clone())?;
     let listener = listener(&config.socket, client_gid)?;
 
     tracing::info!(
         client = config.client_user,
         client_uid,
+        role = ?role,
         version = env!("CARGO_PKG_VERSION"),
         "agent started"
     );

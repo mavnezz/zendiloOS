@@ -10,6 +10,8 @@
 //! See docs/architecture.md, section 3.2.
 
 mod client;
+mod descriptor;
+mod files;
 mod framing;
 
 use std::fmt;
@@ -17,6 +19,10 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 pub use client::{AgentTransport, TransportError, UnixTransport};
+pub use descriptor::{read_message_with_file, write_message_with_file};
+pub use files::{
+    DirectoryEntry, EntryKind, FileLocation, InvalidSharePath, MAX_DIRECTORY_ENTRIES, SharePath, is_file_name,
+};
 pub use framing::{FrameError, read_message, write_message};
 
 /// Agent and API come from the same release; any difference is refused.
@@ -93,6 +99,35 @@ pub enum Request {
     ScrubPool {
         pool: PoolName,
     },
+    /// Creates dataset `<pool>/<name>` of a pool zendiloos created and
+    /// mounts it at `/volume<volume>/<name>` through a systemd mount unit.
+    CreateShare {
+        pool: PoolName,
+        volume: VolumeNumber,
+        name: ShareName,
+    },
+    /// Unmounts and destroys a share's dataset with all its files.
+    DestroyShare {
+        pool: PoolName,
+        volume: VolumeNumber,
+        name: ShareName,
+    },
+    /// Writes the Samba shares and NFS exports zendiloos manages, checks
+    /// them and makes the servers load them. Replaces what was there.
+    ApplySharing {
+        smb: Vec<SmbShare>,
+        nfs: Vec<NfsExport>,
+    },
+    /// Sets owner, mode and POSIX ACLs of a share's directory: `access`
+    /// gets read (and write); `removed` loses its entries. With
+    /// `recursive`, also on everything in the share (role `files`).
+    SetShareAccess {
+        volume: VolumeNumber,
+        name: ShareName,
+        access: Vec<ShareAccess>,
+        removed: Vec<Principal>,
+        recursive: bool,
+    },
     /// Creates a Linux user in group `zendiloos-users`: UID from 2000, no
     /// login shell, no home directory, locked Linux password. `conflict` if
     /// the name is taken.
@@ -127,6 +162,53 @@ pub enum Request {
         group: GroupName,
         members: Vec<UserName>,
     },
+    // The files agent: each of these runs with the credentials of `user`,
+    // a managed user, so the file system decides what is allowed, as it
+    // does for SMB and NFS.
+    /// Answers [`Response::Directory`].
+    ListDirectory {
+        user: UserName,
+        location: FileLocation,
+    },
+    /// Opens a regular file for reading; [`Response::File`] carries it.
+    OpenFile {
+        user: UserName,
+        location: FileLocation,
+    },
+    /// Creates an empty hidden file in the directory `location` for an
+    /// upload; [`Response::Upload`] carries its name and it, opened for
+    /// writing. Renamed with [`Request::MoveEntry`] when complete.
+    CreateUpload {
+        user: UserName,
+        location: FileLocation,
+    },
+    MakeDirectory {
+        user: UserName,
+        location: FileLocation,
+    },
+    /// Renames or moves; between shares by copying and removing. `conflict`
+    /// if `to` exists, unless `replace` and both are files.
+    MoveEntry {
+        user: UserName,
+        from: FileLocation,
+        to: FileLocation,
+        replace: bool,
+    },
+    /// Copies a file or directory tree. If `to` exists, a free name next to
+    /// it is chosen: `name (2).ext`. Answers [`Response::Copied`].
+    CopyEntry {
+        user: UserName,
+        from: FileLocation,
+        to: FileLocation,
+    },
+    /// Moves a file or directory tree into the user's recycle bin,
+    /// `.recycle/<user>` in the share, or deletes it for good if not
+    /// `recycle` or if it is in a recycle bin already.
+    RemoveEntry {
+        user: UserName,
+        location: FileLocation,
+        recycle: bool,
+    },
 }
 
 /// The `lsblk` columns of [`Request::ListBlockDevices`]; the parser in
@@ -149,6 +231,10 @@ impl Request {
             Request::DestroyPool { .. } => "destroy_pool",
             Request::ReplaceDisk { .. } => "replace_disk",
             Request::ScrubPool { .. } => "scrub_pool",
+            Request::CreateShare { .. } => "create_share",
+            Request::DestroyShare { .. } => "destroy_share",
+            Request::ApplySharing { .. } => "apply_sharing",
+            Request::SetShareAccess { .. } => "set_share_access",
             Request::CreateUser { .. } => "create_user",
             Request::DeleteUser { .. } => "delete_user",
             Request::SetSmbPassword { .. } => "set_smb_password",
@@ -156,6 +242,13 @@ impl Request {
             Request::CreateGroup { .. } => "create_group",
             Request::DeleteGroup { .. } => "delete_group",
             Request::SetGroupMembers { .. } => "set_group_members",
+            Request::ListDirectory { .. } => "list_directory",
+            Request::OpenFile { .. } => "open_file",
+            Request::CreateUpload { .. } => "create_upload",
+            Request::MakeDirectory { .. } => "make_directory",
+            Request::MoveEntry { .. } => "move_entry",
+            Request::CopyEntry { .. } => "copy_entry",
+            Request::RemoveEntry { .. } => "remove_entry",
         }
     }
 }
@@ -185,6 +278,24 @@ pub enum Response {
         zpool_status: String,
         zfs_list: String,
     },
+    Directory {
+        entries: Vec<DirectoryEntry>,
+        /// More than [`MAX_DIRECTORY_ENTRIES`]; the rest is left out.
+        truncated: bool,
+        /// The user may create and delete entries in it.
+        writable: bool,
+    },
+    /// A regular file, opened for reading; its descriptor comes along.
+    File {
+        size: u64,
+    },
+    /// A new upload file; its descriptor, opened for writing, comes along.
+    Upload {
+        name: String,
+    },
+    Copied {
+        path: SharePath,
+    },
     Error {
         code: ErrorCode,
         message: String,
@@ -202,6 +313,10 @@ pub enum ErrorCode {
     Forbidden,
     /// The name is already taken.
     Conflict,
+    /// The file or directory does not exist.
+    NotFound,
+    /// The file system refused the user the request names.
+    Denied,
     /// The operation ran but failed.
     Failed,
 }
@@ -327,6 +442,173 @@ impl TryFrom<String> for DiskId {
 impl From<DiskId> for String {
     fn from(id: DiskId) -> Self {
         id.0
+    }
+}
+
+/// Which agent carries out a request: the system agent (disks, ZFS,
+/// accounts, server configuration) or the files agent (the contents of
+/// volumes). Each refuses the other's requests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Role {
+    System,
+    Files,
+}
+
+impl Request {
+    pub fn role(&self) -> Role {
+        match self {
+            Request::SetShareAccess { .. }
+            | Request::ListDirectory { .. }
+            | Request::OpenFile { .. }
+            | Request::CreateUpload { .. }
+            | Request::MakeDirectory { .. }
+            | Request::MoveEntry { .. }
+            | Request::CopyEntry { .. }
+            | Request::RemoveEntry { .. } => Role::Files,
+            // The handshake works with both.
+            _ => Role::System,
+        }
+    }
+}
+
+/// Name of a share, also its dataset and directory name: a lowercase
+/// letter, then up to 31 lowercase letters, digits, `_` or `-`; not a name
+/// Samba reserves.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct ShareName(String);
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("not a valid share name")]
+pub struct InvalidShareName;
+
+impl ShareName {
+    const RESERVED: [&str; 5] = ["global", "homes", "printers", "print", "ipc"];
+
+    pub fn parse(name: &str) -> Result<Self, InvalidShareName> {
+        if is_linux_name(name) && !Self::RESERVED.contains(&name) {
+            Ok(Self(name.to_owned()))
+        } else {
+            Err(InvalidShareName)
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for ShareName {
+    type Error = InvalidShareName;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(&value)
+    }
+}
+
+impl From<ShareName> for String {
+    fn from(name: ShareName) -> Self {
+        name.0
+    }
+}
+
+/// A user or group a share grants access to.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum Principal {
+    User(UserName),
+    Group(GroupName),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShareAccess {
+    pub principal: Principal,
+    /// Read and write; otherwise read only.
+    pub write: bool,
+}
+
+/// A Samba share at `/volume<volume>/<name>`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SmbShare {
+    pub name: ShareName,
+    pub volume: VolumeNumber,
+    pub access: Vec<ShareAccess>,
+    /// Deleted files go to `.recycle/<user>` in the share.
+    pub recycle_bin: bool,
+}
+
+/// An NFS export of `/volume<volume>/<name>`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NfsExport {
+    pub name: ShareName,
+    pub volume: VolumeNumber,
+    pub clients: Vec<NfsClient>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NfsClient {
+    pub network: Network,
+    pub write: bool,
+}
+
+/// An IP address or network in CIDR notation, e.g. `192.168.1.0/24`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct Network {
+    address: std::net::IpAddr,
+    prefix: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("not an IP address or network")]
+pub struct InvalidNetwork;
+
+impl Network {
+    pub fn parse(value: &str) -> Result<Self, InvalidNetwork> {
+        let (address, prefix) = match value.split_once('/') {
+            Some((address, prefix)) => (address, Some(prefix)),
+            None => (value, None),
+        };
+        let address: std::net::IpAddr = address.parse().map_err(|_| InvalidNetwork)?;
+        let maximum = if address.is_ipv4() { 32 } else { 128 };
+        let prefix = match prefix {
+            Some(prefix) => prefix.parse::<u8>().map_err(|_| InvalidNetwork)?,
+            None => maximum,
+        };
+        if prefix > maximum {
+            return Err(InvalidNetwork);
+        }
+        Ok(Self { address, prefix })
+    }
+}
+
+impl fmt::Display for Network {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let maximum = if self.address.is_ipv4() { 32 } else { 128 };
+        if self.prefix == maximum {
+            write!(f, "{}", self.address)
+        } else {
+            write!(f, "{}/{}", self.address, self.prefix)
+        }
+    }
+}
+
+impl TryFrom<String> for Network {
+    type Error = InvalidNetwork;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(&value)
+    }
+}
+
+impl From<Network> for String {
+    fn from(network: Network) -> Self {
+        network.to_string()
     }
 }
 
@@ -644,6 +926,30 @@ mod tests {
         let create = json!({ "version": 1, "request": { "op": "create_pool", "name": "tank", "layout": "raidz2",
             "disks": ["ata-A", "ata-B"], "volume": 1 } });
         assert!(serde_json::from_value::<Envelope>(create).is_ok());
+    }
+
+    #[test]
+    fn sharing_arguments_are_plain_names_and_networks() {
+        for bad in ["homes", "printers", "global", "IPC", "-x", "a b", "a/b", "a]b"] {
+            assert_eq!(ShareName::parse(bad), Err(InvalidShareName), "{bad:?}");
+        }
+        assert!(ShareName::parse("photos").is_ok());
+        for (input, shown) in
+            [("192.168.1.0/24", "192.168.1.0/24"), ("10.0.0.5", "10.0.0.5"), ("fd00::/64", "fd00::/64")]
+        {
+            assert_eq!(Network::parse(input).unwrap().to_string(), shown);
+        }
+        for bad in ["", "host.example", "10.0.0.0/33", "10.0.0.0/", "*", "10.0.0.0/24(rw)", "10.0.0.1 *"] {
+            assert_eq!(Network::parse(bad), Err(InvalidNetwork), "{bad:?}");
+        }
+        let request = json!({ "version": 1, "request": { "op": "apply_sharing",
+            "smb": [{ "name": "photos", "volume": 1, "recycle_bin": true,
+                      "access": [{ "principal": { "group": "family" }, "write": true }] }],
+            "nfs": [{ "name": "photos", "volume": 1, "clients": [{ "network": "192.168.1.0/24", "write": false }] }] } });
+        assert!(serde_json::from_value::<Envelope>(request).is_ok());
+        let injected = json!({ "version": 1, "request": { "op": "apply_sharing", "smb": [], "nfs": [{ "name": "photos",
+            "volume": 1, "clients": [{ "network": "*(rw,no_root_squash)", "write": true }] }] } });
+        assert!(serde_json::from_value::<Envelope>(injected).is_err());
     }
 
     #[test]

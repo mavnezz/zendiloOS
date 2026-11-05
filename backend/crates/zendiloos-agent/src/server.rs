@@ -2,12 +2,14 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
+use std::os::fd::OwnedFd;
+
 use tokio::io::BufReader;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Semaphore;
 use zendiloos_agent_proto::{
     Envelope, ErrorCode, FrameError, MAX_REQUEST_BYTES, PROTOCOL_VERSION, Response, read_message,
-    write_message,
+    write_message_with_file,
 };
 
 use crate::operations::Operations;
@@ -43,16 +45,16 @@ impl Server {
             }
         };
         let (uid, pid) = (peer.uid(), peer.pid());
-        let (reader, mut writer) = stream.into_split();
+        let (reader, writer) = stream.into_split();
 
-        let response = if uid != self.client_uid {
+        let (response, file) = if uid != self.client_uid {
             // The socket's permissions should already prevent this.
             tracing::warn!(uid, pid, "refused a connection from a foreign account");
-            error_response(ErrorCode::Forbidden, "not the zendiloosd account")
+            (error_response(ErrorCode::Forbidden, "not the zendiloosd account"), None)
         } else {
             self.respond(BufReader::new(reader), uid, pid).await
         };
-        if let Err(error) = write_message(&mut writer, &response).await {
+        if let Err(error) = write_message_with_file(writer.as_ref(), &response, file.as_ref()).await {
             tracing::debug!(%error, "cannot send the response");
         }
     }
@@ -62,19 +64,21 @@ impl Server {
         mut reader: BufReader<impl tokio::io::AsyncRead + Unpin>,
         uid: u32,
         pid: Option<i32>,
-    ) -> Response {
+    ) -> (Response, Option<OwnedFd>) {
         let envelope: Envelope =
             match tokio::time::timeout(READ_TIMEOUT, read_message(&mut reader, MAX_REQUEST_BYTES)).await {
                 Ok(Ok(envelope)) => envelope,
                 Ok(Err(FrameError::Malformed(error))) => {
                     tracing::warn!(uid, pid, %error, "refused a malformed request");
-                    return error_response(ErrorCode::InvalidRequest, "malformed request");
+                    return (error_response(ErrorCode::InvalidRequest, "malformed request"), None);
                 }
                 Ok(Err(error)) => {
                     tracing::warn!(uid, pid, %error, "refused an unreadable request");
-                    return error_response(ErrorCode::InvalidRequest, "unreadable request");
+                    return (error_response(ErrorCode::InvalidRequest, "unreadable request"), None);
                 }
-                Err(_) => return error_response(ErrorCode::InvalidRequest, "no request received in time"),
+                Err(_) => {
+                    return (error_response(ErrorCode::InvalidRequest, "no request received in time"), None);
+                }
             };
 
         let request_id = envelope.request_id.as_ref().map(|id| id.as_str()).unwrap_or("-");
@@ -88,21 +92,19 @@ impl Server {
                 version = envelope.version,
                 "refused another protocol version"
             );
-            return error_response(
-                ErrorCode::VersionMismatch,
-                "zendiloosd and the agent are from different releases",
-            );
+            let message = "zendiloosd and the agent are from different releases";
+            return (error_response(ErrorCode::VersionMismatch, message), None);
         }
 
         let _permit = self.permits.acquire().await;
-        let response = self.operations.execute(&envelope.request).await;
+        let (response, file) = self.operations.execute_with_file(&envelope.request).await;
         match &response {
             Response::Error { code, message } => {
                 tracing::warn!(request_id, op, uid, pid, ?code, message, "operation failed");
             }
             _ => tracing::info!(request_id, op, uid, pid, "operation done"),
         }
-        response
+        (response, file)
     }
 }
 

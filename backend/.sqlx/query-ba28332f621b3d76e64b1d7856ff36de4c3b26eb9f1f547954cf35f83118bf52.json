@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM share_nfs_clients WHERE share_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "ba28332f621b3d76e64b1d7856ff36de4c3b26eb9f1f547954cf35f83118bf52"
+}

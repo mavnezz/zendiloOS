@@ -13,8 +13,9 @@
 #
 # Needs the VM running with the package installed and set up. Account and
 # password come from ZENDILOOS_USER and ZENDILOOS_PASSWORD (defaults: admin,
-# "correct horse battery"). Uses the VM's SATA disks ZDL-SATA-1 to -3, which
-# must not be in a pool; the removed disk is brought back at the end.
+# "correct horse battery"). Uses three free SATA disks of the VM (a SATA disk
+# can be pulled out of the kernel); pools in use stay alone, and the removed
+# disk is brought back at the end.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -68,15 +69,15 @@ notified() {
             '.[] | select(.id > $since and .code == $code and .params.pool == $pool)'
 }
 
-disks=$(call GET /storage/disks)
-name_of() { jq -r --arg serial "$1" '.[] | select(.serial == $serial) | .name' <<<"$disks"; }
-first=$(name_of ZDL-SATA-1) second=$(name_of ZDL-SATA-2) spare=$(name_of ZDL-SATA-3)
-[[ -n $first && -n $second && -n $spare ]] || fail "the VM's SATA disks were not found"
-
 if [[ -n $(pool_json) ]]; then
     say "Removing pool $pool left from an earlier run"
     job_succeeded "$(call POST "/storage/pools/$pool/destroy" "{\"confirm\":\"$pool\"}" | jq -r .id)"
 fi
+
+free=$(call GET /storage/disks | jq -r '[.[] | select((.usage == "unused" or .usage == "foreign")
+    and (.name | startswith("sd")) and .id_link != null and (.read_only | not)) | .name][:3] | join(" ")')
+read -r first second spare <<<"$free"
+[[ -n ${spare:-} ]] || fail "three free SATA disks are needed, found: ${free:-none}"
 
 say "1. Planning a mirror on $first and $second"
 plan=$(call POST /storage/pools/plan "{\"name\":\"$pool\",\"layout\":\"mirror\",\"disks\":[\"$first\",\"$second\"]}")

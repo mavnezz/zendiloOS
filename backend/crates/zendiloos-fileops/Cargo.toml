@@ -1,0 +1,20 @@
+[package]
+name = "zendiloos-fileops"
+description = "File operations beneath the root of a share, for the files agent and the simulator"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Runs as root in the files agent (with a user's credentials): keep it small.
+[dependencies]
+zendiloos-agent-proto.workspace = true
+rustix = { workspace = true, features = ["fs", "rand"] }
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

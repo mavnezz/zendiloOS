@@ -71,8 +71,8 @@ async fn creates_a_private_database_and_applies_all_migrations() {
         OpenReport {
             created: true,
             schema_before: None,
-            schema_after: 4,
-            applied: vec![1, 2, 3, 4],
+            schema_after: 5,
+            applied: vec![1, 2, 3, 4, 5],
             backup: None
         }
     );
@@ -90,7 +90,18 @@ async fn creates_a_private_database_and_applies_all_migrations() {
     .unwrap();
     assert_eq!(
         tables,
-        ["accounts", "audit_log", "group_members", "groups", "jobs", "notifications", "sessions"]
+        [
+            "accounts",
+            "audit_log",
+            "group_members",
+            "groups",
+            "jobs",
+            "notifications",
+            "sessions",
+            "share_access",
+            "share_nfs_clients",
+            "shares"
+        ]
     );
     db.close().await;
 }
@@ -104,7 +115,7 @@ async fn reopening_an_up_to_date_database_changes_nothing() {
 
     assert_eq!(
         report,
-        OpenReport { created: false, schema_before: Some(4), schema_after: 4, applied: vec![], backup: None }
+        OpenReport { created: false, schema_before: Some(5), schema_after: 5, applied: vec![], backup: None }
     );
     assert!(!env.backups().exists(), "no backup without pending migrations");
     db.close().await;

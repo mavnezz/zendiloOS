@@ -44,13 +44,19 @@ pub struct JournalConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct AgentConfig {
     pub transport: AgentTransportKind,
-    /// The agent's socket, for transport `unix`.
+    /// The system agent's socket, for transport `unix`.
     pub socket: PathBuf,
+    /// The files agent's socket, for transport `unix`.
+    pub files_socket: PathBuf,
 }
 
 impl Default for AgentConfig {
     fn default() -> Self {
-        Self { transport: AgentTransportKind::Unix, socket: PathBuf::from("/run/zendiloos/agent.sock") }
+        Self {
+            transport: AgentTransportKind::Unix,
+            socket: PathBuf::from("/run/zendiloos/agent.sock"),
+            files_socket: PathBuf::from("/run/zendiloos/files.sock"),
+        }
     }
 }
 
@@ -181,7 +187,8 @@ mod tests {
             config.agent,
             AgentConfig {
                 transport: AgentTransportKind::Simulated,
-                socket: PathBuf::from("/tmp/agent.sock")
+                socket: PathBuf::from("/tmp/agent.sock"),
+                files_socket: PathBuf::from("/run/zendiloos/files.sock"),
             }
         );
         assert_eq!(config.journal.journalctl.as_deref(), Some(Path::new("/bin/journalctl")));

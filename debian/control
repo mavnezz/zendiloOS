@@ -10,7 +10,8 @@ Vcs-Git: https://github.com/mavnezz/zendiloOS.git
 
 Package: zendiloos
 Architecture: amd64 arm64
-Depends: gdisk,
+Depends: acl,
+         gdisk,
          nginx,
          openssl,
          passwd,
@@ -22,6 +23,7 @@ Depends: gdisk,
          zfsutils-linux,
          ${misc:Depends},
          ${shlibs:Depends}
+Recommends: nfs-kernel-server
 Description: web-managed NAS operating system
  zendiloOS turns a Debian system into a NAS that is managed through a
  desktop in the web browser.

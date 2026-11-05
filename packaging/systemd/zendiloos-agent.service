@@ -17,12 +17,15 @@ ExecStart=/usr/libexec/zendiloos/zendiloos-agent
 #   partition tables and use ZFS ioctls (CAP_SYS_ADMIN); mount units go to
 #   /etc/systemd/system and are mounted by systemd, outside this sandbox;
 # - the shadow tools and smbpasswd write /etc and Samba's databases and
-#   set the group of /etc/shadow (CAP_CHOWN).
+#   set the group of /etc/shadow (CAP_CHOWN);
+# - shares: datasets and mount units as for pools; Samba and NFS
+#   configuration in /etc, NFS state in /var/lib/nfs.
+# The contents of volumes are the files agent's (zendiloos-files.service).
 NoNewPrivileges=yes
 CapabilityBoundingSet=CAP_SYS_RAWIO CAP_SYS_ADMIN CAP_CHOWN
 PrivateNetwork=yes
 ProtectSystem=strict
-ReadWritePaths=/etc -/var/lib/samba -/var/cache/samba -/run/samba
+ReadWritePaths=/etc -/var/lib/samba -/var/cache/samba -/run/samba -/var/lib/nfs
 ProtectHome=yes
 PrivateTmp=yes
 # Disks (SATA/SAS/USB, NVMe namespaces, virtio) and ZFS; nothing else.

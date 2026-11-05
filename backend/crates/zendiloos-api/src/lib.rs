@@ -39,6 +39,8 @@ pub const API_V1: &str = "/api/v1";
         (name = "storage", description = "Disks, SMART, RAID arrays and volumes"),
         (name = "logs", description = "The system journal and the audit log"),
         (name = "jobs", description = "Long-running operations and their progress"),
+        (name = "shares", description = "Shares over SMB and NFS and their permissions"),
+        (name = "files", description = "The file manager: share contents as the signed-in user"),
     ),
     components(schemas(routes::live::LiveRequest, routes::live::LiveMessage, routes::logs::LogSource)),
     modifiers(&SessionSecurity)

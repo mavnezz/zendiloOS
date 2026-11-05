@@ -15,6 +15,7 @@ use zendiloos_jobs::testing::MemoryJobs;
 use zendiloos_kernel::{Outcome, PortError, RequestContext};
 use zendiloos_notify::testing::MemoryNotifications;
 use zendiloos_notify::{Level, NewNotification, Notifier};
+use zendiloos_sharing::application::{FilesUseCases, SharingPorts, SharingUseCases};
 use zendiloos_storage::application::StorageUseCases;
 use zendiloos_storage::testing::FakeStorage;
 use zendiloos_system::application::ports::{
@@ -167,6 +168,29 @@ struct Harness {
     jobs: Jobs,
     storage: Arc<FakeStorage>,
     notifier: Notifier,
+    share_host: Arc<zendiloos_sharing::testing::Host>,
+    file_host: Arc<zendiloos_sharing::testing::Files>,
+}
+
+/// Account and group names from the identity fakes.
+struct IdentityDirectory(
+    Arc<zendiloos_identity::testing::InMemoryAccounts>,
+    Arc<zendiloos_identity::testing::InMemoryGroups>,
+);
+
+#[async_trait]
+impl zendiloos_sharing::application::ports::Directory for IdentityDirectory {
+    async fn names(&self) -> Result<zendiloos_sharing::application::ports::Names, PortError> {
+        Ok(zendiloos_sharing::application::ports::Names {
+            accounts: self.0.all().into_iter().map(|a| (a.id.get(), a.name.to_string())).collect(),
+            groups: self.1.all().into_iter().map(|g| (g.id.get(), g.name.to_string())).collect(),
+        })
+    }
+
+    async fn memberships(&self, account: i64) -> Result<Vec<i64>, PortError> {
+        let groups = self.1.all().into_iter();
+        Ok(groups.filter(|g| g.members.iter().any(|m| m.get() == account)).map(|g| g.id.get()).collect())
+    }
 }
 
 struct Reply {
@@ -221,15 +245,41 @@ impl Harness {
             FakeStorage::ports(jobs.clone(), identity.audit.clone(), identity.clock.clone());
         let storage = StorageUseCases::new(ports);
         let notifier = Notifier::new(Arc::new(MemoryNotifications::default()), identity.clock.clone());
+        let share_host = Arc::new(zendiloos_sharing::testing::Host::default());
+        let file_host = Arc::new(zendiloos_sharing::testing::Files::default());
+        let sharing_ports = SharingPorts {
+            shares: Arc::new(zendiloos_sharing::testing::Shares::default()),
+            directory: Arc::new(IdentityDirectory(identity.accounts.clone(), identity.groups.clone())),
+            volumes: Arc::new(zendiloos_sharing::testing::Volumes),
+            host: share_host.clone(),
+            files: file_host.clone(),
+            jobs: jobs.clone(),
+            audit: identity.audit.clone(),
+            clock: identity.clock.clone(),
+        };
+        let sharing = SharingUseCases::new(sharing_ports.clone());
+        let files = FilesUseCases::new(sharing_ports);
         let use_cases = UseCases {
             system,
             identity: identity.use_cases.clone(),
             storage,
+            sharing,
+            files,
             jobs: jobs.clone(),
             notifier: notifier.clone(),
         };
         let state = ApiState::new(use_cases, secure_cookies);
-        Self { app: router(state), identity, power, journal, jobs, storage: storage_fake, notifier }
+        Self {
+            app: router(state),
+            identity,
+            power,
+            journal,
+            jobs,
+            storage: storage_fake,
+            notifier,
+            share_host,
+            file_host,
+        }
     }
 
     async fn send(&self, request: Request<Body>) -> Reply {
@@ -733,6 +783,14 @@ fn openapi_documents_every_route() {
             "/api/v1/auth/logout",
             "/api/v1/auth/password",
             "/api/v1/auth/session",
+            "/api/v1/files/shares",
+            "/api/v1/files/shares/{id}/delete",
+            "/api/v1/files/shares/{id}/download",
+            "/api/v1/files/shares/{id}/folder",
+            "/api/v1/files/shares/{id}/folders",
+            "/api/v1/files/shares/{id}/rename",
+            "/api/v1/files/shares/{id}/transfer",
+            "/api/v1/files/shares/{id}/upload",
             "/api/v1/groups",
             "/api/v1/groups/{id}",
             "/api/v1/health",
@@ -742,6 +800,9 @@ fn openapi_documents_every_route() {
             "/api/v1/logs/journal",
             "/api/v1/notifications",
             "/api/v1/setup",
+            "/api/v1/shares",
+            "/api/v1/shares/{id}",
+            "/api/v1/shares/{id}/delete",
             "/api/v1/storage/arrays",
             "/api/v1/storage/disks",
             "/api/v1/storage/disks/{name}/smart",
@@ -1179,4 +1240,184 @@ async fn notifications_are_listed_newest_first() {
     assert_eq!(list.body[0]["code"], "pool_recovered");
     assert_eq!(list.body[1]["level"], "warning");
     assert_eq!(list.body[1]["params"], json!({ "pool": "tank" }));
+}
+
+#[tokio::test]
+async fn admins_create_change_and_delete_shares() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let bob = h.identity.add_account("bob", PASSWORD, Role::User).id.get();
+    let body = json!({
+        "name": "photos",
+        "description": "Pictures",
+        "pool": "tank",
+        "access": [{ "kind": "account", "id": bob, "access": "read_write" }],
+        "nfs": [{ "network": "192.168.1.0/24", "write": false }],
+    });
+
+    let created = h.send(json(with_csrf(post("/api/v1/shares"), &admin), body.clone())).await;
+    assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
+    assert_eq!(created.body["path"], "/volume1/photos");
+    assert_eq!(created.body["recycle_bin"], true);
+    let again = h.send(json(with_csrf(post("/api/v1/shares"), &admin), body)).await;
+    assert_problem(&again, StatusCode::CONFLICT, "name_taken");
+
+    let id = created.body["id"].as_i64().unwrap();
+    let uri = format!("/api/v1/shares/{id}");
+    let changes = json!({ "access": [{ "kind": "account", "id": bob, "access": "read" }] });
+    let updated = h.send(json(with_csrf(changing(Method::PATCH, &uri), &admin), changes)).await;
+    assert_eq!(updated.status, StatusCode::OK, "{:?}", updated.body);
+    assert_eq!(updated.body["share"]["access"][0]["access"], "read");
+    assert_eq!(updated.body["job"]["kind"], "sharing.apply_access");
+
+    let listed = h.send(empty(with_cookie(get("/api/v1/shares"), &admin))).await;
+    assert_eq!(listed.body.as_array().unwrap().len(), 1);
+
+    let wrong =
+        h.send(json(with_csrf(post(&format!("{uri}/delete")), &admin), json!({ "confirm": "x" }))).await;
+    assert_problem(&wrong, StatusCode::UNPROCESSABLE_ENTITY, "confirmation_mismatch");
+    let deleted =
+        h.send(json(with_csrf(post(&format!("{uri}/delete")), &admin), json!({ "confirm": "photos" }))).await;
+    assert_eq!(deleted.status, StatusCode::ACCEPTED);
+    job_done(&h, deleted.body["id"].as_i64().unwrap()).await;
+    assert!(h.share_host.calls().contains(&"destroy tank 1 photos".to_owned()));
+}
+
+#[tokio::test]
+async fn shares_validate_their_rules() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let create = |body| h.send(json(with_csrf(post("/api/v1/shares"), &admin), body));
+    let unknown = create(
+        json!({ "name": "x", "pool": "tank", "access": [{ "kind": "group", "id": 99, "access": "read" }] }),
+    )
+    .await;
+    assert_problem(&unknown, StatusCode::UNPROCESSABLE_ENTITY, "unknown_subject");
+    let volume = create(json!({ "name": "x", "pool": "cold" })).await;
+    assert_problem(&volume, StatusCode::UNPROCESSABLE_ENTITY, "volume_not_found");
+    let network =
+        create(json!({ "name": "x", "pool": "tank", "nfs": [{ "network": "*", "write": true }] })).await;
+    assert_problem(&network, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
+
+    let user = h.sign_in("bob", Role::User).await;
+    let denied = h.send(empty(with_cookie(get("/api/v1/shares"), &user))).await;
+    assert_problem(&denied, StatusCode::FORBIDDEN, "forbidden");
+}
+
+/// utoipa takes operation IDs from handler names; two handlers named alike
+/// in different modules would share one, and the TypeScript types of one
+/// route would describe the other.
+#[test]
+fn operation_ids_are_unique() {
+    let doc = serde_json::to_value(openapi()).unwrap();
+    let mut seen = std::collections::HashMap::new();
+    for (path, item) in doc["paths"].as_object().unwrap() {
+        for (method, operation) in item.as_object().unwrap() {
+            let Some(id) = operation.get("operationId").and_then(Value::as_str) else { continue };
+            if let Some(other) = seen.insert(id.to_owned(), format!("{method} {path}")) {
+                panic!("operation {id} is used by {other} and {method} {path}");
+            }
+        }
+    }
+    assert!(seen.len() > 30, "found only {} operations", seen.len());
+}
+
+#[tokio::test]
+async fn users_work_with_files_in_their_shares() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let bob = h.sign_in("bob", Role::User).await;
+    let carol = h.sign_in("carol", Role::User).await;
+    let id_of = |name: &str| {
+        h.identity.accounts.all().into_iter().find(|a| a.name.as_str() == name).unwrap().id.get()
+    };
+    let rules = json!([
+        { "kind": "account", "id": id_of("bob"), "access": "read_write" },
+        { "kind": "account", "id": id_of("carol"), "access": "read" },
+    ]);
+    let created = h
+        .send(json(
+            with_csrf(post("/api/v1/shares"), &admin),
+            json!({ "name": "photos", "pool": "tank", "access": rules }),
+        ))
+        .await;
+    let share = created.body["id"].as_i64().unwrap();
+    let files = format!("/api/v1/files/shares/{share}");
+
+    let mine = h.send(empty(with_cookie(get("/api/v1/files/shares"), &carol))).await;
+    assert_eq!(
+        (mine.body[0]["name"].clone(), mine.body[0]["access"].clone()),
+        (json!("photos"), json!("read"))
+    );
+    let admins = h.send(empty(with_cookie(get("/api/v1/files/shares"), &admin))).await;
+    assert_eq!(admins.body, json!([]), "administrators need a rule too");
+
+    let folder = h.send(empty(with_cookie(get(&format!("{files}/folder?path=2024")), &carol))).await;
+    assert_eq!(folder.status, StatusCode::OK, "{:?}", folder.body);
+    assert_eq!(
+        (folder.body["path"].clone(), folder.body["entries"][0]["name"].clone()),
+        (json!("2024"), json!("a.jpg"))
+    );
+    let foreign = h.send(empty(with_cookie(get(&format!("{files}/folder")), &admin))).await;
+    assert_problem(&foreign, StatusCode::NOT_FOUND, "not_found");
+    let escape = h.send(empty(with_cookie(get(&format!("{files}/folder?path=../x")), &carol))).await;
+    assert_problem(&escape, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
+
+    let upload = |session: &Session, name: &str| {
+        let request = with_csrf(post(&format!("{files}/upload?path=2024&name={name}")), session)
+            .header(header::CONTENT_TYPE, "application/octet-stream")
+            .body(Body::from("bytes"))
+            .unwrap();
+        h.send(request)
+    };
+    assert_problem(&upload(&carol, "b.jpg").await, StatusCode::FORBIDDEN, "permission_denied");
+    let stored = upload(&bob, "b.jpg").await;
+    assert_eq!((stored.status, stored.body["path"].clone()), (StatusCode::CREATED, json!("2024/b.jpg")));
+    assert_problem(&upload(&bob, "taken.jpg").await, StatusCode::CONFLICT, "name_taken");
+
+    let download =
+        h.send(empty(with_cookie(get(&format!("{files}/download?path=2024/a.jpg")), &carol))).await;
+    assert_eq!(download.status, StatusCode::OK);
+    assert_eq!(
+        download.header(header::CONTENT_DISPOSITION),
+        "attachment; filename=\"a.jpg\"; filename*=UTF-8''a.jpg"
+    );
+
+    let created =
+        h.send(json(with_csrf(post(&format!("{files}/folders")), &bob), json!({ "path": "2025" }))).await;
+    assert_eq!(created.status, StatusCode::CREATED);
+    let renamed = h
+        .send(json(
+            with_csrf(post(&format!("{files}/rename")), &bob),
+            json!({ "path": "2024/b.jpg", "name": "c.jpg" }),
+        ))
+        .await;
+    assert_eq!(renamed.body["path"], "2024/c.jpg");
+    let copy =
+        json!({ "mode": "copy", "paths": ["2024/c.jpg"], "target_share": share, "target_path": "2025" });
+    let copied = h.send(json(with_csrf(post(&format!("{files}/transfer")), &bob), copy)).await;
+    assert_eq!((copied.status, copied.body["kind"].clone()), (StatusCode::ACCEPTED, json!("files.copy")));
+    job_done(&h, copied.body["id"].as_i64().unwrap()).await;
+    let deleted = h
+        .send(json(with_csrf(post(&format!("{files}/delete")), &bob), json!({ "paths": ["2024/c.jpg"] })))
+        .await;
+    assert_eq!(deleted.status, StatusCode::ACCEPTED);
+    job_done(&h, deleted.body["id"].as_i64().unwrap()).await;
+
+    assert_eq!(
+        h.file_host.calls(),
+        [
+            "list carol photos:2024",
+            "create_upload bob photos:2024",
+            "move bob photos:2024/.zendiloos-upload-1 -> photos:2024/b.jpg",
+            "create_upload bob photos:2024",
+            "move bob photos:2024/.zendiloos-upload-1 -> photos:2024/taken.jpg",
+            "remove bob photos:2024/.zendiloos-upload-1",
+            "open carol photos:2024/a.jpg",
+            "mkdir bob photos:2025",
+            "move bob photos:2024/b.jpg -> photos:2024/c.jpg",
+            "copy bob photos:2024/c.jpg -> photos:2025/c.jpg",
+            "remove bob photos:2024/c.jpg recycle",
+        ]
+    );
 }

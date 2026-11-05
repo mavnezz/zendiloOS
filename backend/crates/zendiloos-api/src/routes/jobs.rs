@@ -16,7 +16,7 @@ use crate::extract::ApiQuery;
 use crate::state::ApiState;
 
 pub(super) fn routes() -> OpenApiRouter<ApiState> {
-    OpenApiRouter::new().routes(routes!(list)).routes(routes!(job)).routes(routes!(notifications))
+    OpenApiRouter::new().routes(routes!(list_jobs)).routes(routes!(job)).routes(routes!(notifications))
 }
 
 #[derive(Debug, Clone, Copy, Serialize, ToSchema)]
@@ -101,7 +101,7 @@ pub struct JobsParams {
         (status = FORBIDDEN, body = Problem, description = "`forbidden`"),
     )
 )]
-async fn list(
+async fn list_jobs(
     auth: Auth,
     State(state): State<ApiState>,
     ApiQuery(params): ApiQuery<JobsParams>,

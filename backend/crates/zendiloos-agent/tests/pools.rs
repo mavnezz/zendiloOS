@@ -9,7 +9,10 @@ use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 use zendiloos_agent::config::Tools;
 use zendiloos_agent::{AccountFiles, Erasable, ErasePolicy, HostPaths, Operations, Paths};
-use zendiloos_agent_proto::{DiskId, ErrorCode, Layout, PoolName, Request, Response, VolumeNumber};
+use zendiloos_agent_proto::{
+    DiskId, ErrorCode, GroupName, Layout, Network, NfsClient, NfsExport, PoolName, Principal, Request,
+    Response, Role, ShareAccess, ShareName, SmbShare, VolumeNumber,
+};
 
 /// 8 GiB in 512-byte sectors.
 const DISK_SECTORS: u64 = 16_777_216;
@@ -96,6 +99,8 @@ fn host(erasable: Erasable) -> Host {
         .unwrap();
     fs::write(root.join("swaps"), "Filename\tType\tSize\tUsed\tPriority\n").unwrap();
     fs::write(root.join("units/volume1.mount"), "[Mount]\n").unwrap();
+    fs::write(root.join("units/volume1-old\\x2dshare.mount"), "[Mount]\n").unwrap();
+    fs::create_dir_all(root.join("volume1/photos")).unwrap();
 
     let log = root.join("calls.log");
     let by_id = root.join("dev/disk/by-id");
@@ -128,6 +133,9 @@ fn host(erasable: Erasable) -> Host {
         wipefs: script("wipefs", ""),
         udevadm: script("udevadm", ""),
         systemctl: script("systemctl", ""),
+        testparm: script("testparm", ""),
+        exportfs: script("exportfs", ""),
+        setfacl: script("setfacl", ""),
         ..Tools::default()
     };
     let paths = Paths {
@@ -139,9 +147,12 @@ fn host(erasable: Erasable) -> Host {
             mountinfo: root.join("mountinfo"),
             swaps: root.join("swaps"),
             units: root.join("units"),
+            volumes: root.clone(),
+            samba_config: root.join("samba/zendiloos.conf"),
+            nfs_exports: root.join("exports.d/zendiloos.exports"),
         },
     };
-    let operations = Operations::with_paths(&tools, erasable, paths).unwrap();
+    let operations = Operations::with_paths(Role::System, &tools, erasable, paths).unwrap();
     Host { _dir: dir, root, operations }
 }
 
@@ -187,7 +198,8 @@ async fn creates_a_mirror_with_equal_partitions_and_a_mount_unit() {
     assert_eq!(
         create,
         "zpool create -o ashift=12 -O compression=lz4 -O atime=off -O xattr=sa -O acltype=posixacl \
-         -O dnodesize=auto -O normalization=formD -O utf8only=on -O mountpoint=legacy -O canmount=on \
+         -O dnodesize=auto -O normalization=formD -O utf8only=on -O setuid=off -O devices=off \
+         -O mountpoint=legacy -O canmount=on \
          -O zendiloos:volume=2 media mirror /dev/disk/by-id/ata-FREE-1-part1 /dev/disk/by-id/ata-FREE-2-part1"
     );
     assert_eq!(
@@ -262,7 +274,10 @@ async fn destroys_only_its_own_pools_and_erases_their_disks() {
 
     assert_eq!(host.run(destroy("tank", 1)).await, Response::Done);
     let calls = host.calls();
+    let share = calls.iter().position(|c| c == "systemctl disable --now volume1-old\\x2dshare.mount");
     let from = calls.iter().position(|c| c == "systemctl disable --now volume1.mount").expect("unmounted");
+    assert!(share.is_some_and(|share| share < from), "shares unmount first: {calls:#?}");
+    assert!(!host.path("units/volume1-old\\x2dshare.mount").exists());
     assert_eq!(
         &calls[from..],
         [
@@ -308,4 +323,94 @@ async fn replaces_a_device_with_a_partition_of_the_members_size() {
         disk: DiskId::parse("ata-MOUNTED").unwrap(),
     };
     assert_refused(host.run(busy).await, ErrorCode::Forbidden, "mounted");
+}
+
+fn share(name: &str) -> ShareName {
+    ShareName::parse(name).unwrap()
+}
+
+#[tokio::test]
+async fn shares_are_datasets_with_their_own_mount_unit() {
+    let host = host(Erasable::Policy(ErasePolicy::Unused));
+    let create = |name: &str, pool: &str| Request::CreateShare {
+        pool: PoolName::parse(pool).unwrap(),
+        volume: VolumeNumber::new(1).unwrap(),
+        name: share(name),
+    };
+    assert_eq!(host.run(create("my-photos", "tank")).await, Response::Done);
+    let calls = host.calls();
+    assert!(
+        calls.contains(
+            &"zfs create -o mountpoint=legacy -o setuid=off -o devices=off tank/my-photos".to_owned()
+        ),
+        "{calls:#?}"
+    );
+    assert_eq!(calls.last().unwrap(), "systemctl enable --now volume1-my\\x2dphotos.mount");
+    let unit = fs::read_to_string(host.path("units/volume1-my\\x2dphotos.mount")).unwrap();
+    assert!(unit.contains("What=tank/my-photos\nWhere=/volume1/my-photos\nType=zfs\n"), "{unit}");
+
+    assert_refused(host.run(create("other", "foreign")).await, ErrorCode::Forbidden, "not managed");
+
+    let destroy = Request::DestroyShare {
+        pool: PoolName::parse("tank").unwrap(),
+        volume: VolumeNumber::new(1).unwrap(),
+        name: share("my-photos"),
+    };
+    assert_eq!(host.run(destroy).await, Response::Done);
+    let calls = host.calls();
+    assert_eq!(calls.last().unwrap(), "zfs destroy -r tank/my-photos");
+    let flushed = calls
+        .iter()
+        .position(|c| c == "systemctl start zendiloos-nfs-flush.service")
+        .expect("the NFS server lets go first");
+    let unmounted = calls.iter().position(|c| c.starts_with("systemctl disable --now volume1-my")).unwrap();
+    assert!(flushed < unmounted, "{calls:#?}");
+    assert!(!host.path("units/volume1-my\\x2dphotos.mount").exists());
+}
+
+#[tokio::test]
+async fn writes_samba_and_nfs_configuration_after_checking_it() {
+    let host = host(Erasable::Policy(ErasePolicy::Unused));
+    let smb = vec![SmbShare {
+        name: share("photos"),
+        volume: VolumeNumber::new(1).unwrap(),
+        access: vec![ShareAccess {
+            principal: Principal::Group(GroupName::parse("family").unwrap()),
+            write: true,
+        }],
+        recycle_bin: false,
+    }];
+    let nfs = vec![NfsExport {
+        name: share("photos"),
+        volume: VolumeNumber::new(1).unwrap(),
+        clients: vec![NfsClient { network: Network::parse("192.168.1.0/24").unwrap(), write: false }],
+    }];
+
+    assert_eq!(host.run(Request::ApplySharing { smb, nfs }).await, Response::Done);
+
+    let samba = fs::read_to_string(host.path("samba/zendiloos.conf")).unwrap();
+    assert!(samba.contains("[photos]\n   path = /volume1/photos\n   valid users = @family\n"), "{samba}");
+    let exports = fs::read_to_string(host.path("exports.d/zendiloos.exports")).unwrap();
+    assert!(exports.contains("/volume1/photos 192.168.1.0/24(ro,"), "{exports}");
+    assert_eq!(
+        host.calls(),
+        [
+            "testparm --suppress-prompt /samba/zendiloos.check",
+            "systemctl try-reload-or-restart smbd.service",
+            "systemctl reload-or-restart nfs-server.service",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn each_agent_serves_only_its_role() {
+    let host = host(Erasable::Policy(ErasePolicy::Unused));
+    let access = Request::SetShareAccess {
+        volume: VolumeNumber::new(1).unwrap(),
+        name: share("photos"),
+        access: vec![],
+        removed: vec![],
+        recursive: false,
+    };
+    assert_refused(host.run(access).await, ErrorCode::Forbidden, "not for the System agent");
 }

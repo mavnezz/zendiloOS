@@ -62,7 +62,8 @@ This makes image-based updates possible later (the root filesystem can be
 replaced without losing configuration), detects drift, and keeps Zendiloos
 from editing configuration files it does not own. Zendiloos writes only its
 own files (for example `/etc/samba/zendiloos.conf`, pulled in with
-`include`) instead of rewriting `smb.conf`.
+`include`) instead of rewriting `smb.conf`; the package puts its own
+`smb.conf` in place only of Debian's unchanged default.
 
 ### 1.3 Installed Layout
 
@@ -77,15 +78,15 @@ The Debian package `zendiloos` (built with `just deb`) installs:
 | `/etc/zendiloos/tls/` | self-signed certificate, created at installation or first boot (`zendiloos-certificate.service`) |
 | `/etc/nginx/conf.d/zendiloos.conf` | HTTP → HTTPS redirect, TLS, security headers, rate limits, proxy to the API socket |
 | `/run/zendiloos/api.sock` | `zendiloosd.socket`, `zendiloos:www-data 0660`: only nginx reaches the API |
-| `/run/zendiloos/agent.sock` | `zendiloos-agent.socket`, `root:zendiloos 0660`: only zendiloosd reaches the agent |
+| `/run/zendiloos/agent.sock` | `zendiloos-agent.socket`, `root:zendiloos 0660`: only zendiloosd reaches the system agent |
+| `/run/zendiloos/files.sock` | `zendiloos-files.socket`, `root:zendiloos 0660`: the files agent, the same program with `--role files` |
+| `/etc/samba/smb.conf` | installed from `/usr/share/zendiloos/smb.conf` only if it is Debian's unchanged default (kept as `smb.conf.debian`); it includes `/etc/samba/zendiloos.conf`, which the agent writes |
 | `/var/lib/zendiloos/` | database, backups, setup code, console text (`0700`) |
 | `/run/issue.d/zendiloos.issue` | link to the console text: the login prompt shows the address and, until setup is done, the setup code |
 
 `zendiloosd` uses `Type=notify` and is ordered before `getty.target`, so the
-console prompt appears only once the setup code is written. Both services
-run with strict systemd sandboxing; `systemd-analyze security` rates
-zendiloosd 1.5 and the agent 1.3 ("OK"). The agent has no capabilities and
-no network as long as reboot and power off are its only operations.
+console prompt appears only once the setup code is written. All services
+run with strict systemd sandboxing; see 4.6 for what each may do.
 
 ### 1.4 Alternatives Considered
 
@@ -118,7 +119,7 @@ review comment.
 
 | Concept | In Zendiloos |
 |---|---|
-| Bounded context | one core crate each: `identity`, `system`, `storage`, `sharing`, `files`, `containers`, `network` |
+| Bounded context | one core crate each: `identity`, `system`, `storage`, `sharing`, `containers`, `network` |
 | Domain layer | entities, value objects, aggregates, domain rules and errors; pure Rust, no I/O |
 | Application layer | use cases (commands and queries) and the **ports** they need, as traits |
 | Primary (driving) adapter | `zendiloos-api`: HTTP and WebSocket |
@@ -132,8 +133,7 @@ review comment.
 | `zendiloos-identity` | accounts and groups with their Linux users and groups, roles and permissions, sessions, passwords, throttling, audit | kernel |
 | `zendiloos-system` | system information, metrics, power, logs | kernel |
 | `zendiloos-storage` | disks, SMART, ZFS pools and volumes, plans for erasing disks, monitoring; mdadm arrays read-only | kernel, jobs, notify |
-| `zendiloos-sharing` | SMB and NFS shares, share permissions | kernel |
-| `zendiloos-files` | file manager, recycle bin | kernel |
+| `zendiloos-sharing` | SMB and NFS shares, share permissions, and the file manager (share contents as the signed-in user) | kernel, jobs |
 | `zendiloos-containers` | containers, images, volumes, networks, apps | kernel |
 | `zendiloos-network` | interfaces, IP, DNS, hostname | kernel |
 | `zendiloos-infra` | all secondary adapters, SQLite migrations | kernel, contexts, agent-proto |
@@ -141,8 +141,9 @@ review comment.
 | `zendiloosd` | composition root (binary) | everything except agent |
 | `zendiloos-agent-proto` | wire protocol to the agent, `AgentTransport` trait, Unix client | – |
 | `zendiloos-exec` | the only way to run programs | – |
-| `zendiloos-agent` | privileged root service (binary) | agent-proto, exec |
-| `zendiloos-sim` | simulated agent behind `AgentTransport`; a model of a small NAS (disks, ZFS pools, resilver and scrub over time); executes nothing | agent-proto |
+| `zendiloos-agent` | privileged root service (binary): the system agent, and with `--role files` the files agent | agent-proto, exec, fileops |
+| `zendiloos-fileops` | file operations beneath a share's root (`openat2`), with the credentials of the calling thread | agent-proto |
+| `zendiloos-sim` | simulated agent behind `AgentTransport`; a model of a small NAS (disks, ZFS pools, resilver and scrub over time); executes nothing, but keeps share contents as real files in a scratch directory | agent-proto, fileops |
 | `zendiloos-jobs` | long-running operations: recorded, published to subscribers, marked as interrupted after a restart | kernel |
 | `zendiloos-notify` | notifications for administrators: a code with parameters, stored and published | kernel |
 | `zendiloos-logging` | logging setup shared by `zendiloosd` and the agent | – |
@@ -160,7 +161,7 @@ placeholder crates.
                v         v            v           v
       bounded contexts (core)      zendiloos-agent-proto <── zendiloos-agent ──> zendiloos-exec
       identity · system · storage          │                  (root)
-      sharing · files · containers         │
+      sharing · containers                 │
       network                              │
                │                           │
                └─────────────┬─────────────┘
@@ -171,7 +172,11 @@ placeholder crates.
 Rules:
 
 - **Context crates contain no I/O.** Their only dependencies are the kernel,
-  `thiserror` and `async-trait`: no sqlx, axum, tokio, sysinfo or serde.
+  `thiserror` and `async-trait`: no sqlx, axum, sysinfo or serde. Two
+  deliberate exceptions from tokio: `tokio::sync` for locks that serialize
+  changes, and `tokio::fs::File` as the handle of a file the agent opened,
+  which the file manager's port hands through; contexts never open files
+  themselves.
 - **Contexts do not depend on each other.** If one context needs something
   from another (sharing needs to know volumes), it declares a port in its
   own terms, and `zendiloos-infra` or the composition root implements that
@@ -305,12 +310,12 @@ frontend/src/
 
 | Property | Decision |
 |---|---|
-| Transport | Unix socket `/run/zendiloos/agent.sock`, created by systemd (`root:zendiloos 0660`), agent socket-activated |
+| Transport | Unix sockets created by systemd (`root:zendiloos 0660`), agents socket-activated: `/run/zendiloos/agent.sock` for the system agent (disks, ZFS, accounts, server configuration), `/run/zendiloos/files.sock` for the files agent (share contents); each refuses the other's requests |
 | Authentication | file permissions + `SO_PEERCRED`: only the UID of `zendiloos` is served |
-| Framing | one request per connection; JSON lines (NDJSON); size limits (requests 64 KiB) |
+| Framing | one request per connection; JSON lines (NDJSON); size limits (requests 64 KiB, responses 16 MiB) |
 | Operations | closed `enum Request` with typed arguments validated during deserialization; `deny_unknown_fields` |
 | Responses | a single response; **[Later]** a stream of frames (progress, logs) ending with a result |
-| Files | for the file manager the agent passes open file descriptors via `SCM_RIGHTS` (see 4.4) |
+| Files | for downloads and uploads the files agent passes the opened file's descriptor via `SCM_RIGHTS`, attached to the response line (see 4.4) |
 | Version | `proto_version` handshake field; API and agent ship from the same package version, a mismatch is rejected |
 | Traceability | every operation carries a request ID that appears in the API's audit log and in the agent's journal |
 | Limits | timeout per operation, bounded concurrency, destructive storage operations serialized |
@@ -328,7 +333,8 @@ simple to audit.
   environment, no stdin except for secrets (passwords never on the command
   line), timeout, output limit. Currently: `systemctl`, `lsblk`, `smartctl`,
   `zpool`, `zfs`, `sgdisk`, `wipefs`, `udevadm`, `useradd`, `userdel`,
-  `groupadd`, `groupdel`, `gpasswd`, `smbpasswd`.
+  `groupadd`, `groupdel`, `gpasswd`, `smbpasswd`, `testparm`, `exportfs`,
+  `setfacl`.
 - **Reads** of fixed files where no program is needed: `/proc/mdstat`.
   Although it is world-readable, the agent provides it, so that all storage
   state comes from one place and the simulation can provide all of it
@@ -342,7 +348,11 @@ simple to audit.
   hardened agent has its own), dependencies on Samba/NFS are explicit, and
   mounting at boot needs no `fstab` edits.
 - **systemd** through `systemctl` with fixed arguments (`reboot`,
-  `poweroff`). **[Later]** D-Bus (zbus) once operations need more than
+  `poweroff`, reloading `smbd` and `nfs-server`). What has to happen in the
+  host's network namespace runs as a unit of the package: the kernel's NFS
+  server keeps its export cache per namespace, so releasing a share's
+  exports before unmounting it starts `zendiloos-nfs-flush.service`
+  (`exportfs -r`, `exportfs -f`). **[Later]** D-Bus (zbus) once operations need more than
   queueing a job, such as following a unit's state.
 - **Interpretation happens unprivileged.** The agent returns raw tool output;
   parsing happens in `zendiloosd`. Exceptions are safety checks the agent
@@ -386,6 +396,10 @@ separate account.
 - For every account the agent creates a Linux account: UID from 2000, group
   `zendiloos-users`, shell `nologin`, no home directory, locked Linux
   password. Files on shares therefore belong to the right user.
+- UIDs and GIDs are never reused. The agent keeps the highest ID it ever
+  handed out in `/etc/zendiloos/id-high-water` and passes the next one to
+  `useradd`/`groupadd` explicitly: files and ACL entries keep the number,
+  so a new account must not inherit a deleted one's access.
 - When a password is set, Samba receives its own hash (`smbpasswd` via
   stdin). The plaintext password exists only during that request.
 - The agent refuses any change to accounts outside `zendiloos-users`. On an
@@ -434,25 +448,49 @@ convenience. Enforcement happens only in the backend (axum extractor
 
 ### 4.4 Share and File Permissions
 
-- Share permissions (per user/group: no access, read, read+write) live in
-  the database and are applied twice: in the Samba configuration
-  (`valid users`, `read list`, `write list`) and as POSIX ACLs on the share
-  directory. They therefore also apply to the file manager and NFS.
+- Share permissions (per account or group: no access, read, read and
+  write) live in the database and are applied twice: in the Samba
+  configuration (`valid users`, `read only = yes`, `write list`) and as
+  POSIX ACLs on the share's directory (owner root, mode 0770, an entry and
+  a default entry per account or group). The same rules therefore hold for
+  SMB, NFS and the file manager. A share nobody may use is not offered at
+  all: Samba would read an empty `valid users` as "everybody".
+  Administrators need a rule like everyone else.
+- Changed rules apply to the share's directory at once and to existing
+  files in a job (`setfacl -R`), except the users' recycle bins.
+- **Recycle bin:** Samba's `vfs_recycle` moves files deleted over SMB to
+  `.recycle/<user>/<folders>/<name>` in the share (`Copy #N of <name>` if
+  taken), hidden but not vetoed, so users can restore from it. Each user's
+  bin is private (0700). The agent creates `.recycle` itself with the
+  share's ACL: created by Samba, it would get the private mode, every other
+  user's bin could not be created, and Samba deletes files for good when it
+  cannot move them. The file manager deletes into the same bins; inside a
+  bin, deleting is for good.
 - **File manager: the kernel checks, not our code.** `zendiloosd` cannot
-  read shares itself. For every access it asks the agent to open the file
-  *as the signed-in user*: the agent switches to that user's UID/GID for
-  this call only (`setfsuid`/`setfsgid`), opens relative to the share root
-  with `openat2(RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS)` and passes the
-  descriptor back via `SCM_RIGHTS`. `zendiloosd` then streams the data
-  directly. The kernel prevents path traversal and symlink escapes, new
-  files get the right owner, and uploads/downloads do not pass through the
-  root process. **[Assumption]** to be confirmed with a prototype in phase 3.
+  read shares itself. Every operation goes to the files agent, which runs
+  it on a new thread that first takes on the signed-in user's credentials
+  (`setgroups`, `setresgid`, `setresuid` as raw system calls, which on
+  Linux change only the calling thread; the thread then has no
+  capabilities left, which the agent checks) and ends with the operation.
+  Only managed users qualify (UID 2000 to 59999, primary group
+  `zendiloos-users`), never root or system accounts. Paths are resolved
+  relative to the share's root with
+  `openat2(RESOLVE_BENEATH | RESOLVE_NO_XDEV | RESOLVE_NO_MAGICLINKS)`, so
+  neither `..` nor a symbolic link leads out of the share; copying and
+  removing trees goes name by name from directory descriptors and never
+  follows a link. For downloads and uploads the agent passes the opened
+  file back via `SCM_RIGHTS` and `zendiloosd` streams the data; the root
+  process never handles file contents. An upload is written to a hidden
+  file in the target folder and renamed when complete, so a broken upload
+  never replaces a file. New files belong to the user and inherit the
+  share's ACLs, exactly as over SMB. Copies, moves and deletions run as
+  jobs. Verified end to end in the test VM (`just vm-sharing-test`).
 - Alternative: the file manager runs with broad rights and checks ACLs
   itself. Simpler, but every gap in the checks becomes a data leak, and new
   files belong to the service account.
-- NFS (v3/v4 with `sec=sys`) trusts the client's UID. Exports are therefore
-  restricted to hosts/networks, and the interface states the risk.
-  **[Later]** Kerberos.
+- NFS (v4 with `sec=sys`, `root_squash`) trusts the client's UID. Exports
+  are therefore restricted to addresses or networks, and the interface
+  states the risk. **[Later]** Kerberos.
 
 ### 4.5 Login, Sessions, CSRF
 
@@ -503,8 +541,20 @@ convenience. Enforcement happens only in the backend (axum extractor
   commands, partition tables, ZFS ioctls) and `CAP_CHOWN` (the shadow
   tools); devices closed except SATA/SAS/USB, NVMe and virtio disks and
   `/dev/zfs`; writable only `/etc` and Samba's state directories.
-  `systemd-analyze security` rates the agent 2.1 and `zendiloosd` 1.6
-  ("OK").
+- The files agent (`zendiloos-files.service`, the same program with
+  `--role files`) serves only requests about share contents. It may write
+  below the volumes and act as a user, but touches no disk, no system
+  configuration and no network: capabilities `CAP_CHOWN`, `CAP_FOWNER` and
+  `CAP_DAC_READ_SEARCH` (share permissions on files owned by users) and
+  `CAP_SETUID`, `CAP_SETGID` (the file manager); `/etc`, `/usr` and `/var`
+  read-only; the database, Samba's state, `/etc/zendiloos`, SSH keys and
+  the shadow files inaccessible. It does without `RestrictSUIDSGID`: to
+  enforce it, systemd blocks `openat2()`, whose arguments seccomp cannot
+  inspect, and `openat2()` is what keeps paths inside a share. Volumes and
+  shares are created with `setuid=off` and `devices=off` instead, which
+  holds for Samba and NFS too.
+- `systemd-analyze security` rates `zendiloosd` 1.6, the system agent 2.1
+  and the files agent 2.2 ("OK").
 
 ### 4.7 Storage Guard Rails
 
@@ -576,8 +626,8 @@ the interface and the agent deal with a single tool chain (`zpool`, `zfs`).
 | Pool | one zpool with one vdev: single disk, mirror (2 or more disks), RAIDZ1 (3+), RAIDZ2 (4+), RAIDZ3 (5+); `ashift=12`; members referenced by `/dev/disk/by-partuuid` |
 | Volume | the pool's root dataset, mounted at **`/volume<N>`** (the lowest free number). One pool is one volume |
 | Mounting | `mountpoint=legacy` and a systemd mount unit per volume (`volume1.mount`, after `zfs-import.target`): mounts happen in the host's namespace rather than the hardened agent's, and the boot order is explicit |
-| Dataset defaults | `compression=lz4`, `atime=off`, `xattr=sa`, `acltype=posixacl` (for Samba ACLs), `dnodesize=auto`; `normalization=formD`, `utf8only=on` (fixed at creation) **[Assumption]** |
-| Share | (M4) a child dataset of the volume |
+| Dataset defaults | `compression=lz4`, `atime=off`, `xattr=sa`, `acltype=posixacl` (for Samba ACLs), `dnodesize=auto`, `setuid=off`, `devices=off`; `normalization=formD`, `utf8only=on` (fixed at creation) **[Assumption]** |
+| Share | a child dataset of the volume, mounted at `/volume<N>/<share>` by its own unit (`volume1-photos.mount`); created with `setuid=off` and `devices=off` also on pools made before those were defaults |
 | Monitoring | `zpool status` (health, resilver and scrub progress, errors per device) every minute, SMART of disks holding data every six hours; changes become notifications (degraded or recovered pool, finished resilver or scrub, volume 80 or 90 % full, a disk's SMART getting worse); scrub monthly by the timer of `zfsutils-linux`, and on demand |
 | Existing storage | mdadm arrays and Btrfs, ext4 or XFS filesystems found on the system are shown read-only (M2); zendiloos does not create or change them |
 | Kernel module | `zfs-dkms` and `zfsutils-linux` from Debian contrib, built for the installed kernel with its headers |

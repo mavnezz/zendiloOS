@@ -18,6 +18,7 @@ zendiloos-jobs.workspace = true
 zendiloos-notify.workspace = true
 zendiloos-kernel.workspace = true
 zendiloos-logging.workspace = true
+zendiloos-sharing.workspace = true
 zendiloos-sim.workspace = true
 zendiloos-storage.workspace = true
 zendiloos-system.workspace = true

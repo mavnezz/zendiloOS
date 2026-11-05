@@ -1,0 +1,12 @@
+[Unit]
+Description=zendiloOS: make the NFS server release unexported file systems
+Documentation=https://github.com/mavnezz/zendiloOS
+After=nfs-server.service
+
+# Started by zendiloos-agent before it unmounts a share or a volume. The
+# kernel's NFS server keeps its export cache per network namespace, and the
+# agent has its own, so the flush runs here, in the host's.
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/exportfs -r
+ExecStart=/usr/sbin/exportfs -f

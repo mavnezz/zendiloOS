@@ -131,6 +131,157 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/files/shares": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Shares whose rules name the signed-in user or one of their groups.
+         *     Needs `files.read`.
+         */
+        get: operations["my_shares"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/files/shares/{id}/delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Moves entries into the user's recycle bin if the share has one, deletes
+         *     them for good otherwise (and inside the recycle bin), as a job. Needs
+         *     `files.write`.
+         */
+        post: operations["delete_entries"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/files/shares/{id}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Downloads a file, always as an attachment. Needs `files.read`. */
+        get: operations["download"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/files/shares/{id}/folder": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** A folder's contents. Needs `files.read`. */
+        get: operations["list_folder"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/files/shares/{id}/folders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Creates a folder. Needs `files.write`. */
+        post: operations["create_folder"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/files/shares/{id}/rename": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Renames a file or folder. Needs `files.write`. */
+        post: operations["rename_entry"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/files/shares/{id}/transfer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Copies or moves entries into a folder, possibly of another share, as a
+         *     job. A copy whose name is taken gets a free one, `name (2).ext`; a move
+         *     fails. Needs `files.write`.
+         */
+        post: operations["transfer_entries"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/files/shares/{id}/upload": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Uploads a file: the request body, unchanged, any size the volume has
+         *     room for. Written under a hidden name and renamed when complete. Needs
+         *     `files.write`.
+         */
+        post: operations["upload"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/groups": {
         parameters: {
             query?: never;
@@ -199,7 +350,7 @@ export interface paths {
          * The most recent jobs, newest first. Changes arrive on the WebSocket
          *     topic `jobs`.
          */
-        get: operations["list"];
+        get: operations["list_jobs"];
         put?: never;
         post?: never;
         delete?: never;
@@ -291,6 +442,67 @@ export interface paths {
         put?: never;
         /** Creates the first administrator and signs them in. */
         post: operations["complete_setup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/shares": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** All shares, ordered by name. Needs `shares.manage`. */
+        get: operations["list_shares"];
+        put?: never;
+        /**
+         * Creates a share: a dataset on the volume with its permissions, offered
+         *     over SMB (and NFS, if clients are given). Needs `shares.manage`.
+         */
+        post: operations["create_share"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/shares/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Changes a share. New permissions apply to the share at once and to its
+         *     existing files in a job. Needs `shares.manage`.
+         */
+        patch: operations["update_share"];
+        trace?: never;
+    };
+    "/api/v1/shares/{id}/delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Stops offering the share and destroys it with all its files. Answers
+         *     with the job. Needs `shares.manage`.
+         */
+        post: operations["delete_share"];
         delete?: never;
         options?: never;
         head?: never;
@@ -600,6 +812,10 @@ export interface components {
             password: string;
             role: components["schemas"]["AccountRole"];
         };
+        CreateFolderRequest: {
+            /** @description The new folder, relative to the share's root. */
+            path: string;
+        };
         CreateGroupRequest: {
             description?: string | null;
             /** @description Account IDs. */
@@ -611,6 +827,15 @@ export interface components {
             confirm: string;
             /** @description From the plan. */
             token: string;
+        };
+        CreateShareRequest: {
+            access?: components["schemas"]["ShareRule"][];
+            description?: string | null;
+            name: string;
+            nfs?: components["schemas"]["NfsRule"][];
+            /** @description The pool (volume) to create it on. */
+            pool: string;
+            recycle_bin?: boolean;
         };
         CurrentAccount: {
             full_name?: string | null;
@@ -625,6 +850,13 @@ export interface components {
              */
             permissions: string[];
             role: components["schemas"]["AccountRole"];
+        };
+        DeleteEntriesRequest: {
+            paths: string[];
+        };
+        DeleteShareRequest: {
+            /** @description The share's name, typed again. */
+            confirm: string;
         };
         DestroyPoolRequest: {
             /** @description The pool's name, typed again. */
@@ -668,6 +900,29 @@ export interface components {
          * @enum {string}
          */
         DiskUsage: "system" | "array_member" | "pool_member" | "volume" | "foreign" | "unused";
+        FileEntry: {
+            kind: components["schemas"]["FileKind"];
+            /**
+             * Format: int64
+             * @description Last modification, Unix seconds.
+             */
+            modified: number;
+            name: string;
+            /** Format: int64 */
+            size: number;
+        };
+        /** @enum {string} */
+        FileKind: "file" | "directory" | "symlink" | "other";
+        /** @description A share the signed-in user may use. */
+        FileShare: {
+            access: components["schemas"]["ShareAccessLevel"];
+            description?: string | null;
+            /** Format: int64 */
+            id: number;
+            name: string;
+            /** @description Deleted entries go to `.recycle/<user>` in the share. */
+            recycle_bin: boolean;
+        };
         /** @description A reason behind the health verdict. */
         Finding: {
             /**
@@ -691,6 +946,15 @@ export interface components {
         };
         /** @enum {string} */
         FindingCode: "overall_failed" | "attribute_failing" | "attribute_failed_in_past" | "reallocated_sectors" | "pending_sectors" | "uncorrectable_sectors" | "error_log_entries" | "self_test_failed" | "nvme_critical_warning" | "nvme_spare_low" | "nvme_worn_out" | "nvme_media_errors";
+        Folder: {
+            entries: components["schemas"]["FileEntry"][];
+            /** @description The folder, relative to the share's root; empty for the root. */
+            path: string;
+            /** @description Too many entries; the rest is left out. */
+            truncated: boolean;
+            /** @description The user may create and delete entries here. */
+            writable: boolean;
+        };
         Group: {
             /** Format: int64 */
             created_at: number;
@@ -844,6 +1108,12 @@ export interface components {
         };
         /** @enum {string} */
         NewPoolLayout: "single" | "mirror" | "raidz1" | "raidz2" | "raidz3";
+        /** @description A host or network that may mount the share over NFS. */
+        NfsRule: {
+            /** @description An IP address or CIDR network, e.g. `192.168.1.0/24`. */
+            network: string;
+            write: boolean;
+        };
         /**
          * @description Something an administrator should know, as a code with parameters for
          *     the interface to word, e.g. `pool_trouble` with `pool` and `state`.
@@ -1062,6 +1332,11 @@ export interface components {
             size_bytes?: number | null;
             sync?: components["schemas"]["SyncProgress"] | null;
         };
+        RenameRequest: {
+            /** @description The new name, in the same folder. */
+            name: string;
+            path: string;
+        };
         ReplaceDiskRequest: {
             token: string;
         };
@@ -1126,6 +1401,41 @@ export interface components {
             /** @description No administrator exists yet; the interface must offer the setup. */
             required: boolean;
         };
+        Share: {
+            access: components["schemas"]["ShareRule"][];
+            /** Format: int64 */
+            created_at: number;
+            description?: string | null;
+            /** Format: int64 */
+            id: number;
+            name: string;
+            /** @description Empty: not exported over NFS. */
+            nfs: components["schemas"]["NfsRule"][];
+            /** @description E.g. `/volume1/photos`. */
+            path: string;
+            pool: string;
+            recycle_bin: boolean;
+            /** Format: int64 */
+            updated_at: number;
+            /** Format: int32 */
+            volume: number;
+        };
+        /** @enum {string} */
+        ShareAccessLevel: "read" | "read_write";
+        /** @description An account or group and what it may do in the share. */
+        ShareRule: {
+            access: components["schemas"]["ShareAccessLevel"];
+            /**
+             * Format: int64
+             * @description Account or group ID.
+             */
+            id: number;
+            kind: components["schemas"]["SubjectKind"];
+        };
+        ShareUpdate: {
+            job?: components["schemas"]["Job"] | null;
+            share: components["schemas"]["Share"];
+        };
         SmartAttribute: {
             /** @description `now`, `past` or absent. */
             failed?: string | null;
@@ -1175,6 +1485,8 @@ export interface components {
         /** @enum {string} */
         SmartStatus: "available" | "standby" | "unsupported";
         /** @enum {string} */
+        SubjectKind: "account" | "group";
+        /** @enum {string} */
         SyncOperation: "resync" | "recovery" | "check" | "repair" | "reshape";
         SyncProgress: {
             operation: components["schemas"]["SyncOperation"];
@@ -1211,6 +1523,20 @@ export interface components {
             label: string;
         };
         /** @enum {string} */
+        TransferMode: "copy" | "move";
+        TransferRequest: {
+            mode: components["schemas"]["TransferMode"];
+            /** @description Entries of this share, relative to its root. */
+            paths: string[];
+            /** @description The folder there, relative to its root. */
+            target_path?: string;
+            /**
+             * Format: int64
+             * @description The share to copy or move into; may be this one.
+             */
+            target_share: number;
+        };
+        /** @enum {string} */
         Transport: "sata" | "sas" | "nvme" | "usb" | "virtio" | "other";
         /** @description Absent fields stay as they are. */
         UpdateAccountRequest: {
@@ -1225,6 +1551,19 @@ export interface components {
             description?: string | null;
             /** @description Replaces all members. */
             members?: number[] | null;
+        };
+        /** @description Absent fields stay as they are. */
+        UpdateShareRequest: {
+            /** @description Replaces all rules. */
+            access?: components["schemas"]["ShareRule"][] | null;
+            /** @description An empty string removes the description. */
+            description?: string | null;
+            /** @description Replaces all NFS clients; empty stops exporting. */
+            nfs?: components["schemas"]["NfsRule"][] | null;
+            recycle_bin?: boolean | null;
+        };
+        UploadedFile: {
+            path: string;
         };
         /**
          * @description State of a pool or one of its devices.
@@ -1622,6 +1961,365 @@ export interface operations {
             };
         };
     };
+    my_shares: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FileShare"][];
+                };
+            };
+        };
+    };
+    delete_entries: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeleteEntriesRequest"];
+            };
+        };
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description `permission_denied` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    download: {
+        parameters: {
+            query: {
+                /** @description Relative to the share's root, e.g. `photos/2024/beach.jpg`. */
+                path: string;
+            };
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": number[];
+                };
+            };
+            /** @description `permission_denied` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_operation`: not a file */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    list_folder: {
+        parameters: {
+            query?: {
+                /** @description Relative to the share's root, e.g. `photos/2024`; empty for the root. */
+                path?: string;
+            };
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Folder"];
+                };
+            };
+            /** @description `permission_denied` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found`: no such share, or not shared with the user, or no such folder */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    create_folder: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateFolderRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `permission_denied` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `name_taken` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    rename_entry: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RenameRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UploadedFile"];
+                };
+            };
+            /** @description `permission_denied` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `name_taken` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    transfer_entries: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TransferRequest"];
+            };
+        };
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description `permission_denied` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input`, `invalid_operation` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    upload: {
+        parameters: {
+            query: {
+                /** @description The folder, relative to the share's root; empty for the root. */
+                path?: string;
+                /** @description The new file's name. */
+                name: string;
+                /** @description Replace a file of that name. */
+                replace?: boolean;
+            };
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/octet-stream": number[];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UploadedFile"];
+                };
+            };
+            /** @description `permission_denied` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `name_taken` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     list_groups: {
         parameters: {
             query?: never;
@@ -1782,7 +2480,7 @@ export interface operations {
             };
         };
     };
-    list: {
+    list_jobs: {
         parameters: {
             query?: {
                 /** @description At most 200; 50 if absent. */
@@ -2014,6 +2712,161 @@ export interface operations {
             };
             /** @description `too_many_attempts` */
             429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    list_shares: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Share"][];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    create_share: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateShareRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Share"];
+                };
+            };
+            /** @description `name_taken`, `refused` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input`, `volume_not_found`, `unknown_subject`, `duplicate_rule` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    update_share: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateShareRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShareUpdate"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input`, `unknown_subject`, `duplicate_rule` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_share: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeleteShareRequest"];
+            };
+        };
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `confirmation_mismatch` */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

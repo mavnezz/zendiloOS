@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO shares (name, description, pool, volume, recycle_bin, created_at, updated_at)\n               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)\n               ON CONFLICT (name) DO NOTHING\n               RETURNING id AS \"id!\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "shares",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "356d2429adcee6341ab630275043eebe21feca669bf434b97cae52d6847416b0"
+}

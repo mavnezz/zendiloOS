@@ -14,7 +14,7 @@ use zendiloos_agent::config::Tools;
 use zendiloos_agent::{AccountFiles, Erasable, ErasePolicy, HostPaths, Operations, Paths, Server, serve};
 use zendiloos_agent_proto::{
     AgentTransport, DiskName, ErrorCode, GroupName, LSBLK_COLUMNS, PROTOCOL_VERSION, Password, Request,
-    RequestId, Response, UnixTransport, UserName, ZFS_DATASET_COLUMNS,
+    RequestId, Response, Role, UnixTransport, UserName, ZFS_DATASET_COLUMNS,
 };
 
 /// A Debian system with the owner's user, one managed user and one managed
@@ -60,6 +60,9 @@ impl Agent {
             sgdisk: script("sgdisk", ""),
             wipefs: script("wipefs", ""),
             udevadm: script("udevadm", ""),
+            testparm: script("testparm", ""),
+            exportfs: script("exportfs", ""),
+            setfacl: script("setfacl", ""),
             useradd: script("useradd", ""),
             userdel: script("userdel", ""),
             groupadd: script("groupadd", ""),
@@ -74,14 +77,19 @@ impl Agent {
                 ),
             ),
         };
-        let files = AccountFiles { passwd: dir.path().join("passwd"), group: dir.path().join("group") };
+        let files = AccountFiles {
+            passwd: dir.path().join("passwd"),
+            group: dir.path().join("group"),
+            high_water: dir.path().join("id-high-water"),
+        };
         fs::write(&files.passwd, PASSWD).unwrap();
         fs::write(&files.group, GROUP).unwrap();
 
         // Files we create belong to us: the test runs as the client.
         let our_uid = fs::metadata(dir.path()).unwrap().uid();
         let paths = Paths { accounts: files, host: HostPaths::default() };
-        let operations = Operations::with_paths(&tools, Erasable::Policy(ErasePolicy::None), paths).unwrap();
+        let operations =
+            Operations::with_paths(Role::System, &tools, Erasable::Policy(ErasePolicy::None), paths).unwrap();
         let listener = UnixListener::bind(dir.path().join("agent.sock")).unwrap();
         let (stop, stopped) = oneshot::channel();
         let server = Server::new(operations, client_uid.unwrap_or(our_uid));
@@ -254,7 +262,7 @@ async fn creates_users_in_the_managed_range_only() {
     assert_eq!(
         agent.calls(),
         "useradd --no-log-init --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin \
-         --gid zendiloos-users --key UID_MIN=2000 --key UID_MAX=59999 -- carol\n"
+         --gid zendiloos-users --uid 2002 -- carol\n"
     );
 
     for taken in ["debian", "alice", "root"] {
@@ -293,7 +301,7 @@ async fn changes_managed_users_and_groups() {
         "smbpasswd -d alice
 gpasswd --members alice -- family
 gpasswd --members  -- family
-groupadd --key GID_MIN=2000 --key GID_MAX=59999 -- media
+groupadd --gid 2002 -- media
 groupdel -- family
 smbpasswd -x alice
 userdel -- alice

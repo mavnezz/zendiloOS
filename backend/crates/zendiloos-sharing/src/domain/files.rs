@@ -1,0 +1,127 @@
+//! Files inside shares, as the file manager sees them.
+
+use zendiloos_kernel::Timestamp;
+
+use super::ShareName;
+
+/// The recycle bin at a share's root; `<bin>/<user>` holds a user's files.
+pub const RECYCLE_DIRECTORY: &str = ".recycle";
+
+/// Whether `name` can name a file or folder: not empty, `.` or `..`, at
+/// most 255 bytes, without `/` and NUL.
+pub fn is_file_name(name: &str) -> bool {
+    !name.is_empty() && name.len() <= 255 && name != "." && name != ".." && !name.contains(['/', '\0'])
+}
+
+/// A path inside a share, relative to its root: names separated by `/`, at
+/// most 4096 bytes. Empty means the root.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+pub struct FilePath(String);
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("not a valid path inside a share")]
+pub struct InvalidFilePath;
+
+impl FilePath {
+    pub const MAX_BYTES: usize = 4096;
+
+    /// Leading and trailing `/` are ignored: `/photos/` is `photos`.
+    pub fn parse(value: &str) -> Result<Self, InvalidFilePath> {
+        let value = value.trim_matches('/');
+        let valid =
+            value.is_empty() || (value.len() <= Self::MAX_BYTES && value.split('/').all(is_file_name));
+        if valid { Ok(Self(value.to_owned())) } else { Err(InvalidFilePath) }
+    }
+
+    pub fn root() -> Self {
+        Self::default()
+    }
+
+    pub fn is_root(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// The last name; none for the root.
+    pub fn name(&self) -> Option<&str> {
+        self.0.rsplit('/').next().filter(|name| !name.is_empty())
+    }
+
+    /// The folder containing this path; none for the root.
+    pub fn parent(&self) -> Option<FilePath> {
+        (!self.is_root()).then(|| Self(self.0.rsplit_once('/').map_or("", |(parent, _)| parent).to_owned()))
+    }
+
+    pub fn join(&self, name: &str) -> Result<FilePath, InvalidFilePath> {
+        if !is_file_name(name) {
+            return Err(InvalidFilePath);
+        }
+        Self::parse(&if self.is_root() { name.to_owned() } else { format!("{}/{name}", self.0) })
+    }
+
+    /// Whether `self` is `other` or inside it.
+    pub fn starts_with(&self, other: &FilePath) -> bool {
+        other.is_root()
+            || self.0 == other.0
+            || self.0.strip_prefix(&other.0).is_some_and(|rest| rest.starts_with('/'))
+    }
+}
+
+/// A file or folder: `/volume<volume>/<share>/<path>`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileLocation {
+    pub volume: u16,
+    pub share: ShareName,
+    pub path: FilePath,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryKind {
+    File,
+    Directory,
+    Symlink,
+    /// Devices, sockets, pipes.
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Entry {
+    pub name: String,
+    pub kind: EntryKind,
+    pub size: u64,
+    pub modified: Timestamp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listing {
+    pub entries: Vec<Entry>,
+    /// Too many entries; the rest is left out.
+    pub truncated: bool,
+    /// The user may create and delete entries.
+    pub writable: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn paths_are_relative_and_plain() {
+        assert_eq!(FilePath::parse("/photos/2024/").unwrap().as_str(), "photos/2024");
+        assert!(FilePath::parse("/").unwrap().is_root());
+        for invalid in ["a//b", "../etc", "a/../b", "a/./b", "a\0b"] {
+            assert!(FilePath::parse(invalid).is_err(), "{invalid:?}");
+        }
+        let path = FilePath::parse("photos/2024/beach.jpg").unwrap();
+        assert_eq!(path.name(), Some("beach.jpg"));
+        assert_eq!(path.parent().unwrap().as_str(), "photos/2024");
+        assert_eq!(FilePath::root().name(), None);
+        assert_eq!(FilePath::parse("a").unwrap().parent(), Some(FilePath::root()));
+        assert!(path.starts_with(&FilePath::parse("photos").unwrap()));
+        assert!(!path.starts_with(&FilePath::parse("photo").unwrap()));
+        assert!(FilePath::root().join("a/b").is_err());
+    }
+}

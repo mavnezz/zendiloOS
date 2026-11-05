@@ -6,4 +6,8 @@ packaging/systemd/zendiloosd.service usr/lib/systemd/system/
 packaging/systemd/zendiloosd.socket usr/lib/systemd/system/
 packaging/systemd/zendiloos-agent.service usr/lib/systemd/system/
 packaging/systemd/zendiloos-agent.socket usr/lib/systemd/system/
+packaging/systemd/zendiloos-files.service usr/lib/systemd/system/
+packaging/systemd/zendiloos-files.socket usr/lib/systemd/system/
+packaging/systemd/zendiloos-nfs-flush.service usr/lib/systemd/system/
+packaging/samba/smb.conf usr/share/zendiloos/
 packaging/systemd/zendiloos-certificate.service usr/lib/systemd/system/

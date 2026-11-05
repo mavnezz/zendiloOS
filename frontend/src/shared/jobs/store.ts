@@ -38,7 +38,13 @@ export const useJobsStore = defineStore('jobs', () => {
     if (job.state === 'succeeded') {
       notifications.notify('success', jobTitle(job), t('jobs.succeeded'))
     } else {
-      const reason = job.error_code ? t('jobs.failedBecause', { code: job.error_code }) : ''
+      const code = job.error_code
+      const known = code && i18n.global.te(`jobs.errors.${code}`)
+      const reason = code
+        ? known
+          ? t(`jobs.errors.${code}`)
+          : t('jobs.failedBecause', { code })
+        : ''
       notifications.notify(
         'error',
         jobTitle(job),

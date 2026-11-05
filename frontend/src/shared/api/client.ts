@@ -30,6 +30,11 @@ export function configureApi(next: ApiHooks): void {
   hooks = next
 }
 
+/** The CSRF token, for requests that cannot go through {@link api}, e.g. uploads with progress. */
+export function csrfToken(): string | undefined {
+  return hooks.csrfToken()
+}
+
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
 
 /** 401 is the normal answer here and says nothing about an existing session. */

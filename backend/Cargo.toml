@@ -16,12 +16,14 @@ zendiloos-agent = { path = "crates/zendiloos-agent" }
 zendiloos-agent-proto = { path = "crates/zendiloos-agent-proto" }
 zendiloos-api = { path = "crates/zendiloos-api" }
 zendiloos-exec = { path = "crates/zendiloos-exec" }
+zendiloos-fileops = { path = "crates/zendiloos-fileops" }
 zendiloos-identity = { path = "crates/zendiloos-identity" }
 zendiloos-infra = { path = "crates/zendiloos-infra" }
 zendiloos-jobs = { path = "crates/zendiloos-jobs" }
 zendiloos-kernel = { path = "crates/zendiloos-kernel" }
 zendiloos-logging = { path = "crates/zendiloos-logging" }
 zendiloos-notify = { path = "crates/zendiloos-notify" }
+zendiloos-sharing = { path = "crates/zendiloos-sharing" }
 zendiloos-sim = { path = "crates/zendiloos-sim" }
 zendiloos-storage = { path = "crates/zendiloos-storage" }
 zendiloos-system = { path = "crates/zendiloos-system" }
@@ -36,6 +38,9 @@ clap = { version = "4", features = ["derive"] }
 getrandom = "0.4"
 http-body-util = "0.1"
 listenfd = "1"
+# Safe wrappers for the system calls the files agent needs: per-thread
+# credentials, openat2 and descriptor passing.
+rustix = { version = "1.1", features = ["fs", "net", "thread", "process", "rand"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"

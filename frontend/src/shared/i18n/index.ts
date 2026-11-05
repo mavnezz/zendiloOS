@@ -68,6 +68,11 @@ const KNOWN_PROBLEMS = [
   'disk_too_small',
   'pool_not_managed',
   'refused',
+  'volume_not_found',
+  'unknown_subject',
+  'duplicate_rule',
+  'permission_denied',
+  'invalid_operation',
   'network',
 ] as const
 
@@ -87,7 +92,7 @@ export function problemMessage(error: unknown): string {
   // The server explains rule violations itself (currently in English).
   if (error.code === 'invalid_input' && error.detail) return error.detail
   // For these, the server's detail names the disk and what it found.
-  const withDetail = ['refused', 'disk_unusable', 'disk_count']
+  const withDetail = ['refused', 'disk_unusable', 'disk_count', 'invalid_operation']
   if (isKnown(error.code)) {
     const message = t(`errors.${error.code}`)
     return withDetail.includes(error.code) && error.detail

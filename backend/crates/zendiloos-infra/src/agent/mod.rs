@@ -3,6 +3,8 @@
 //! the agent's socket or the simulation.
 
 mod accounts;
+mod files;
+mod sharing;
 mod storage;
 
 use std::sync::Arc;
@@ -14,6 +16,8 @@ use zendiloos_system::application::ports::PowerControl;
 use zendiloos_system::domain::PowerAction;
 
 pub use accounts::AgentSystemAccounts;
+pub use files::AgentFiles;
+pub use sharing::AgentSharing;
 pub use storage::{AgentStorage, RandomPlanTokens};
 
 const WHAT: &str = "privileged agent";

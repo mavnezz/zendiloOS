@@ -7,10 +7,12 @@
 
 mod accounts;
 pub mod config;
+mod files;
 mod operations;
 pub mod passwd;
 mod pools;
 mod server;
+mod sharing;
 
 pub use accounts::AccountFiles;
 pub use operations::{Operations, Paths};

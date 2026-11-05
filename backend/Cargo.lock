@@ -2501,6 +2501,7 @@ dependencies = [
  "anyhow",
  "clap",
  "listenfd",
+ "rustix",
  "serde",
  "tempfile",
  "thiserror",
@@ -2510,6 +2511,7 @@ dependencies = [
  "tracing-subscriber",
  "zendiloos-agent-proto",
  "zendiloos-exec",
+ "zendiloos-fileops",
  "zendiloos-logging",
 ]
 
@@ -2518,8 +2520,10 @@ name = "zendiloos-agent-proto"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "rustix",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tokio",
 ]
@@ -2546,6 +2550,7 @@ dependencies = [
  "zendiloos-jobs",
  "zendiloos-kernel",
  "zendiloos-notify",
+ "zendiloos-sharing",
  "zendiloos-storage",
  "zendiloos-system",
 ]
@@ -2556,6 +2561,16 @@ version = "0.1.0"
 dependencies = [
  "thiserror",
  "tokio",
+]
+
+[[package]]
+name = "zendiloos-fileops"
+version = "0.1.0"
+dependencies = [
+ "rustix",
+ "tempfile",
+ "thiserror",
+ "zendiloos-agent-proto",
 ]
 
 [[package]]
@@ -2592,6 +2607,7 @@ dependencies = [
  "zendiloos-jobs",
  "zendiloos-kernel",
  "zendiloos-notify",
+ "zendiloos-sharing",
  "zendiloos-sim",
  "zendiloos-storage",
  "zendiloos-system",
@@ -2635,14 +2651,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "zendiloos-sharing"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "zendiloos-jobs",
+ "zendiloos-kernel",
+]
+
+[[package]]
 name = "zendiloos-sim"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
  "zendiloos-agent-proto",
+ "zendiloos-fileops",
 ]
 
 [[package]]
@@ -2690,6 +2720,7 @@ dependencies = [
  "zendiloos-kernel",
  "zendiloos-logging",
  "zendiloos-notify",
+ "zendiloos-sharing",
  "zendiloos-sim",
  "zendiloos-storage",
  "zendiloos-system",

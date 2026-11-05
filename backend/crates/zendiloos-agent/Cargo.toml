@@ -12,10 +12,12 @@ publish.workspace = true
 [dependencies]
 zendiloos-agent-proto.workspace = true
 zendiloos-exec.workspace = true
+zendiloos-fileops.workspace = true
 zendiloos-logging.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 listenfd.workspace = true
+rustix = { workspace = true, features = ["thread", "process"] }
 serde.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "sync"] }

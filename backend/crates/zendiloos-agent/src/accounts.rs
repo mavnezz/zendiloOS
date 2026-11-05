@@ -28,12 +28,60 @@ const NOLOGIN: &str = "/usr/sbin/nologin";
 pub struct AccountFiles {
     pub passwd: PathBuf,
     pub group: PathBuf,
+    /// The highest UID and GID ever handed out; see [`next_id`].
+    pub high_water: PathBuf,
 }
 
 impl Default for AccountFiles {
     fn default() -> Self {
-        Self { passwd: PathBuf::from("/etc/passwd"), group: PathBuf::from("/etc/group") }
+        Self {
+            passwd: PathBuf::from("/etc/passwd"),
+            group: PathBuf::from("/etc/group"),
+            high_water: PathBuf::from("/etc/zendiloos/id-high-water"),
+        }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IdKind {
+    User,
+    Group,
+}
+
+impl IdKind {
+    fn key(self) -> &'static str {
+        match self {
+            IdKind::User => "uid",
+            IdKind::Group => "gid",
+        }
+    }
+}
+
+/// The next ID in the managed range: above every ID in use *and* every ID
+/// handed out before. IDs are never reused, because files and ACL entries
+/// keep the number: a new account must not inherit a deleted one's access.
+fn next_id(database: &str, high_water: &str, kind: IdKind) -> Option<u32> {
+    let in_use = database
+        .lines()
+        .filter_map(|line| line.split(':').nth(2)?.parse::<u32>().ok())
+        .filter(|id| MANAGED_IDS.contains(id))
+        .max();
+    let handed_out = high_water
+        .lines()
+        .find_map(|line| line.strip_prefix(&format!("{}=", kind.key()))?.trim().parse::<u32>().ok());
+    let next = in_use.max(handed_out).map_or(ID_MIN, |highest| highest + 1);
+    MANAGED_IDS.contains(&next).then_some(next)
+}
+
+fn set_high_water(high_water: &str, kind: IdKind, id: u32) -> String {
+    let mut lines: Vec<String> = high_water
+        .lines()
+        .filter(|line| !line.starts_with(&format!("{}=", kind.key())) && !line.starts_with('#'))
+        .map(str::to_owned)
+        .collect();
+    lines.push(format!("{}={id}", kind.key()));
+    lines.sort();
+    format!("# The highest IDs zendiloos handed out; they are never reused.\n{}\n", lines.join("\n"))
 }
 
 #[derive(Debug)]
@@ -75,8 +123,10 @@ impl Accounts {
         if passwd::group_id(&group, USERS_GROUP).is_none() {
             return Err(OperationError::Setup(format!("group {USERS_GROUP} is missing")));
         }
-        let uid_min = format!("UID_MIN={ID_MIN}");
-        let uid_max = format!("UID_MAX={ID_MAX}");
+        let marks = self.read_high_water()?;
+        let uid = next_id(&passwd, &marks, IdKind::User)
+            .ok_or_else(|| OperationError::Setup("no user IDs left".to_owned()))?
+            .to_string();
         let args = [
             "--no-log-init",
             "--no-create-home",
@@ -86,13 +136,12 @@ impl Accounts {
             NOLOGIN,
             "--gid",
             USERS_GROUP,
-            "--key",
-            &uid_min,
-            "--key",
-            &uid_max,
+            "--uid",
+            &uid,
             "--",
             name.as_str(),
         ];
+        self.write_high_water(&set_high_water(&marks, IdKind::User, uid.parse().unwrap_or(ID_MIN)))?;
         run(&self.useradd, &args).await?;
         Ok(Response::Done)
     }
@@ -145,9 +194,11 @@ impl Accounts {
         if passwd::group_id(&group, name.as_str()).is_some() {
             return Err(OperationError::Conflict);
         }
-        let gid_min = format!("GID_MIN={ID_MIN}");
-        let gid_max = format!("GID_MAX={ID_MAX}");
-        run(&self.groupadd, &["--key", &gid_min, "--key", &gid_max, "--", name.as_str()]).await?;
+        let marks = self.read_high_water()?;
+        let gid = next_id(&group, &marks, IdKind::Group)
+            .ok_or_else(|| OperationError::Setup("no group IDs left".to_owned()))?;
+        self.write_high_water(&set_high_water(&marks, IdKind::Group, gid))?;
+        run(&self.groupadd, &["--gid", &gid.to_string(), "--", name.as_str()]).await?;
         Ok(Response::Done)
     }
 
@@ -173,6 +224,27 @@ impl Accounts {
         let list = members.iter().map(UserName::as_str).collect::<Vec<_>>().join(",");
         run(&self.gpasswd, &["--members", &list, "--", name.as_str()]).await?;
         Ok(Response::Done)
+    }
+
+    /// Missing until the first account is created.
+    fn read_high_water(&self) -> Result<String, OperationError> {
+        match std::fs::read_to_string(&self.files.high_water) {
+            Ok(text) => Ok(text),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+            Err(error) => Err(OperationError::Read(self.files.high_water.clone(), error)),
+        }
+    }
+
+    /// Written before the ID is used, so that even a failed creation does
+    /// not lead to its reuse.
+    fn write_high_water(&self, content: &str) -> Result<(), OperationError> {
+        let path = &self.files.high_water;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| OperationError::Write(parent.to_owned(), e))?;
+        }
+        let temporary = path.with_extension("new");
+        std::fs::write(&temporary, content).map_err(|e| OperationError::Write(temporary.clone(), e))?;
+        std::fs::rename(&temporary, path).map_err(|e| OperationError::Write(path.clone(), e))
     }
 
     async fn read_files(&self) -> Result<(String, String), OperationError> {
@@ -207,4 +279,30 @@ fn require_managed_group(group: &str, name: &GroupName) -> Result<(), OperationE
 async fn run(program: &Program, args: &[&str]) -> Result<(), OperationError> {
     zendiloos_exec::run(program, args, LIMITS).await?.success(program)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PASSWD: &str = "root:x:0:0::/root:/bin/bash\ndebian:x:1000:1000::/home/debian:/bin/bash\n\
+                          alice:x:2001:990::/nonexistent:/usr/sbin/nologin\nnobody:x:65534:65534::/:/bin/false\n";
+
+    #[test]
+    fn ids_continue_above_everything_ever_handed_out() {
+        assert_eq!(next_id("", "", IdKind::User), Some(2000));
+        assert_eq!(next_id(PASSWD, "", IdKind::User), Some(2002), "ignores system and nobody IDs");
+        // bob had 2005 and was deleted: his number stays taken.
+        assert_eq!(next_id(PASSWD, "uid=2005\ngid=2100\n", IdKind::User), Some(2006));
+        assert_eq!(next_id(PASSWD, "gid=2100\n", IdKind::Group), Some(2101));
+        assert_eq!(next_id(PASSWD, &format!("uid={ID_MAX}"), IdKind::User), None, "range exhausted");
+    }
+
+    #[test]
+    fn the_high_water_file_keeps_both_kinds() {
+        let marks = set_high_water("", IdKind::User, 2003);
+        let marks = set_high_water(&marks, IdKind::Group, 2001);
+        let marks = set_high_water(&marks, IdKind::User, 2004);
+        assert_eq!(marks.lines().skip(1).collect::<Vec<_>>(), ["gid=2001", "uid=2004"]);
+    }
 }

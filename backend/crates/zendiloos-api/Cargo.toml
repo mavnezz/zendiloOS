@@ -13,6 +13,7 @@ publish.workspace = true
 zendiloos-identity.workspace = true
 zendiloos-jobs.workspace = true
 zendiloos-notify.workspace = true
+zendiloos-sharing.workspace = true
 zendiloos-kernel.workspace = true
 zendiloos-storage.workspace = true
 zendiloos-system.workspace = true
@@ -25,12 +26,13 @@ tower-http.workspace = true
 tracing.workspace = true
 utoipa.workspace = true
 utoipa-axum.workspace = true
-tokio = { workspace = true, features = ["time"] }
+tokio = { workspace = true, features = ["time", "fs", "io-util", "rt"] }
 
 [dev-dependencies]
 tokio-tungstenite = "0.29"
 zendiloos-identity = { workspace = true, features = ["testing"] }
 zendiloos-storage = { workspace = true, features = ["testing"] }
+zendiloos-sharing = { workspace = true, features = ["testing"] }
 zendiloos-jobs = { workspace = true, features = ["testing"] }
 zendiloos-notify = { workspace = true, features = ["testing"] }
 async-trait.workspace = true

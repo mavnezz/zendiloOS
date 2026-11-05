@@ -171,6 +171,8 @@ pub(crate) struct Pool {
     pub member_size: u64,
     pub used: u64,
     pub scan: Option<ScanRun>,
+    /// Datasets of shares below the root dataset.
+    pub shares: Vec<String>,
 }
 
 impl Pool {
@@ -418,6 +420,7 @@ impl Host {
             member_size,
             used,
             scan: None,
+            shares: Vec::new(),
         });
     }
 
@@ -537,6 +540,34 @@ impl Host {
         member.replacement = Some(Box::new(Member::new(path, device.wrapping_mul(31).wrapping_add(17))));
         pool.scan = Some(ScanRun { kind: ScanKind::Resilver, started_at: now });
         Ok(())
+    }
+
+    fn managed_pool(&mut self, pool: &str, volume: u16) -> Result<&mut Pool, Refusal> {
+        self.pools
+            .iter_mut()
+            .find(|p| p.name == pool && p.volume == Some(volume))
+            .ok_or_else(|| Refusal::Refused(format!("pool {pool} is not managed by zendiloos")))
+    }
+
+    pub fn create_share(&mut self, pool: &str, volume: u16, name: &str) -> Result<(), Refusal> {
+        let pool = self.managed_pool(pool, volume)?;
+        if pool.shares.iter().any(|share| share == name) {
+            return Err(Refusal::Conflict);
+        }
+        pool.shares.push(name.to_owned());
+        Ok(())
+    }
+
+    pub fn destroy_share(&mut self, pool: &str, volume: u16, name: &str) -> Result<(), Refusal> {
+        self.managed_pool(pool, volume)?.shares.retain(|share| share != name);
+        Ok(())
+    }
+
+    /// Like the files agent: only a share that is there.
+    pub fn share_present(&self, volume: u16, name: &str) -> Result<(), Refusal> {
+        let present =
+            self.pools.iter().any(|p| p.volume == Some(volume) && p.shares.iter().any(|s| s == name));
+        if present { Ok(()) } else { Err(Refusal::Refused(format!("share {name} is not mounted"))) }
     }
 
     pub fn scrub(&mut self, pool: &str, now: u64) -> Result<(), Refusal> {

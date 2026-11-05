@@ -10,12 +10,14 @@ publish.workspace = true
 # Shared by the root agent: keep the dependencies few.
 [dependencies]
 async-trait.workspace = true
+rustix = { workspace = true, features = ["net"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["net", "io-util", "time"] }
 
 [dev-dependencies]
+tempfile.workspace = true
 tokio.workspace = true
 
 [lints]

@@ -1,0 +1,505 @@
+//! The file manager: shares' contents as the signed-in user (`files.read`,
+//! `files.write`). The host acts with the user's own credentials, so the
+//! same permissions apply as over SMB and NFS.
+
+use axum::Json;
+use axum::body::{Body, Bytes};
+use axum::extract::{Path, State};
+use axum::http::{HeaderValue, StatusCode, header};
+use axum::response::{IntoResponse, Response};
+use futures_util::StreamExt;
+use serde::{Deserialize, Serialize};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use utoipa::{IntoParams, ToSchema};
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
+use zendiloos_identity::domain::Permission;
+use zendiloos_sharing::application::{FilesError, Transfer, Upload, UsableShare};
+use zendiloos_sharing::domain::{self as sharing, FilePath, ShareId};
+
+use crate::auth::Auth;
+use crate::error::{ApiError, Problem};
+use crate::extract::{ApiJson, ApiQuery, Client};
+use crate::routes::jobs::Job;
+use crate::routes::shares::ShareAccessLevel;
+use crate::state::ApiState;
+
+pub(super) fn routes() -> OpenApiRouter<ApiState> {
+    OpenApiRouter::new()
+        .routes(routes!(my_shares))
+        .routes(routes!(list_folder))
+        .routes(routes!(download))
+        .routes(routes!(upload))
+        .routes(routes!(create_folder))
+        .routes(routes!(rename_entry))
+        .routes(routes!(transfer_entries))
+        .routes(routes!(delete_entries))
+}
+
+impl From<FilesError> for ApiError {
+    fn from(error: FilesError) -> Self {
+        let rejected = |status, code, detail| ApiError::Rejected { status, code, detail };
+        match error {
+            FilesError::ShareNotFound | FilesError::NotFound => ApiError::NotFound,
+            FilesError::Denied => rejected(StatusCode::FORBIDDEN, "permission_denied", None),
+            FilesError::Exists => ApiError::NameTaken,
+            FilesError::InvalidName | FilesError::InvalidPath(_) => ApiError::InvalidInput(error.to_string()),
+            FilesError::Invalid(reason) => {
+                rejected(StatusCode::UNPROCESSABLE_ENTITY, "invalid_operation", Some(reason))
+            }
+            FilesError::Port(e) => ApiError::internal(e),
+        }
+    }
+}
+
+fn path(value: &str) -> Result<FilePath, ApiError> {
+    FilePath::parse(value).map_err(|e| ApiError::InvalidInput(e.to_string()))
+}
+
+fn paths(values: &[String]) -> Result<Vec<FilePath>, ApiError> {
+    values.iter().map(|value| path(value)).collect()
+}
+
+/// A share the signed-in user may use.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct FileShare {
+    pub id: i64,
+    pub name: String,
+    pub description: Option<String>,
+    pub access: ShareAccessLevel,
+    /// Deleted entries go to `.recycle/<user>` in the share.
+    pub recycle_bin: bool,
+}
+
+impl From<UsableShare> for FileShare {
+    fn from(usable: UsableShare) -> Self {
+        Self {
+            id: usable.share.id.get(),
+            name: usable.share.name.to_string(),
+            description: usable.share.description,
+            access: match usable.access {
+                sharing::Access::Read => ShareAccessLevel::Read,
+                sharing::Access::ReadWrite => ShareAccessLevel::ReadWrite,
+            },
+            recycle_bin: usable.share.recycle_bin,
+        }
+    }
+}
+
+/// Shares whose rules name the signed-in user or one of their groups.
+/// Needs `files.read`.
+#[utoipa::path(
+    get,
+    path = "/files/shares",
+    tag = "files",
+    security(("session" = [])),
+    responses((status = OK, body = Vec<FileShare>)),
+)]
+async fn my_shares(auth: Auth, State(state): State<ApiState>) -> Result<Json<Vec<FileShare>>, ApiError> {
+    auth.require(Permission::FilesRead)?;
+    let shares = state.files.shares(&auth.0.actor()).await?;
+    Ok(Json(shares.into_iter().map(FileShare::from).collect()))
+}
+
+#[derive(Debug, Clone, Copy, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FileKind {
+    File,
+    Directory,
+    Symlink,
+    Other,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct FileEntry {
+    pub name: String,
+    pub kind: FileKind,
+    pub size: u64,
+    /// Last modification, Unix seconds.
+    pub modified: i64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct Folder {
+    /// The folder, relative to the share's root; empty for the root.
+    pub path: String,
+    pub entries: Vec<FileEntry>,
+    /// Too many entries; the rest is left out.
+    pub truncated: bool,
+    /// The user may create and delete entries here.
+    pub writable: bool,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct FolderQuery {
+    /// Relative to the share's root, e.g. `photos/2024`; empty for the root.
+    #[serde(default)]
+    pub path: String,
+}
+
+/// A folder's contents. Needs `files.read`.
+#[utoipa::path(
+    get,
+    path = "/files/shares/{id}/folder",
+    tag = "files",
+    security(("session" = [])),
+    params(("id" = i64, Path), FolderQuery),
+    responses(
+        (status = OK, body = Folder),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`: no such share, or not shared with the user, or no such folder"),
+        (status = FORBIDDEN, body = Problem, description = "`permission_denied`"),
+    )
+)]
+async fn list_folder(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(id): Path<i64>,
+    ApiQuery(query): ApiQuery<FolderQuery>,
+) -> Result<Json<Folder>, ApiError> {
+    auth.require(Permission::FilesRead)?;
+    let folder = path(&query.path)?;
+    let listing = state.files.list(&auth.0.actor(), ShareId::new(id), folder.clone(), &client).await?;
+    Ok(Json(Folder {
+        path: folder.as_str().to_owned(),
+        entries: listing
+            .entries
+            .into_iter()
+            .map(|entry| FileEntry {
+                name: entry.name,
+                kind: match entry.kind {
+                    sharing::EntryKind::File => FileKind::File,
+                    sharing::EntryKind::Directory => FileKind::Directory,
+                    sharing::EntryKind::Symlink => FileKind::Symlink,
+                    sharing::EntryKind::Other => FileKind::Other,
+                },
+                size: entry.size,
+                modified: entry.modified.unix_seconds(),
+            })
+            .collect(),
+        truncated: listing.truncated,
+        writable: listing.writable,
+    }))
+}
+
+/// `Content-Disposition` for `name`: an ASCII fallback and the exact name
+/// (RFC 6266, RFC 8187).
+fn attachment(name: &str) -> HeaderValue {
+    let fallback: String = name
+        .chars()
+        .map(|c| if (c.is_ascii_graphic() && c != '"' && c != '\\') || c == ' ' { c } else { '_' })
+        .collect();
+    let mut encoded = String::new();
+    for byte in name.bytes() {
+        if byte.is_ascii_alphanumeric() || b"!#$&+-.^_`|~".contains(&byte) {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    HeaderValue::from_str(&format!("attachment; filename=\"{fallback}\"; filename*=UTF-8''{encoded}"))
+        .unwrap_or_else(|_| HeaderValue::from_static("attachment"))
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct FileQuery {
+    /// Relative to the share's root, e.g. `photos/2024/beach.jpg`.
+    pub path: String,
+}
+
+/// Downloads a file, always as an attachment. Needs `files.read`.
+#[utoipa::path(
+    get,
+    path = "/files/shares/{id}/download",
+    tag = "files",
+    security(("session" = [])),
+    params(("id" = i64, Path), FileQuery),
+    responses(
+        (status = OK, content_type = "application/octet-stream", body = Vec<u8>),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`"),
+        (status = FORBIDDEN, body = Problem, description = "`permission_denied`"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_operation`: not a file"),
+    )
+)]
+async fn download(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(id): Path<i64>,
+    ApiQuery(query): ApiQuery<FileQuery>,
+) -> Result<Response, ApiError> {
+    auth.require(Permission::FilesRead)?;
+    let file_path = path(&query.path)?;
+    let name = file_path.name().ok_or_else(|| ApiError::InvalidInput("not a file".into()))?.to_owned();
+    let (file, size) = state.files.open(&auth.0.actor(), ShareId::new(id), file_path, &client).await?;
+    let chunks = futures_util::stream::try_unfold(file, |mut file| async move {
+        let mut buffer = vec![0; 256 * 1024];
+        let read = file.read(&mut buffer).await?;
+        buffer.truncate(read);
+        Ok::<_, std::io::Error>((read > 0).then(|| (Bytes::from(buffer), file)))
+    });
+    let headers = [
+        (header::CONTENT_TYPE, HeaderValue::from_static("application/octet-stream")),
+        (header::CONTENT_DISPOSITION, attachment(&name)),
+        (header::CONTENT_LENGTH, HeaderValue::from(size)),
+        (header::CACHE_CONTROL, HeaderValue::from_static("no-store")),
+    ];
+    Ok((headers, Body::from_stream(chunks)).into_response())
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct UploadQuery {
+    /// The folder, relative to the share's root; empty for the root.
+    #[serde(default)]
+    pub path: String,
+    /// The new file's name.
+    pub name: String,
+    /// Replace a file of that name.
+    #[serde(default)]
+    pub replace: bool,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct UploadedFile {
+    pub path: String,
+}
+
+/// Uploads a file: the request body, unchanged, any size the volume has
+/// room for. Written under a hidden name and renamed when complete. Needs
+/// `files.write`.
+#[utoipa::path(
+    post,
+    path = "/files/shares/{id}/upload",
+    tag = "files",
+    security(("session" = [])),
+    params(("id" = i64, Path), UploadQuery),
+    request_body(content = Vec<u8>, content_type = "application/octet-stream"),
+    responses(
+        (status = CREATED, body = UploadedFile),
+        (status = CONFLICT, body = Problem, description = "`name_taken`"),
+        (status = FORBIDDEN, body = Problem, description = "`permission_denied`"),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`"),
+    )
+)]
+async fn upload(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(id): Path<i64>,
+    ApiQuery(query): ApiQuery<UploadQuery>,
+    body: Body,
+) -> Result<(StatusCode, Json<UploadedFile>), ApiError> {
+    auth.require(Permission::FilesWrite)?;
+    let actor = auth.0.actor();
+    let folder = path(&query.path)?;
+    let Upload { mut file, ticket } = state
+        .files
+        .begin_upload(&actor, ShareId::new(id), folder, &query.name, query.replace, &client)
+        .await?;
+    // In a task of its own: if the client goes away, the handler is
+    // dropped, but the half-written file must still be removed.
+    let task = tokio::spawn(async move {
+        let written = async {
+            let mut chunks = body.into_data_stream();
+            while let Some(chunk) = chunks.next().await {
+                file.write_all(&chunk.map_err(std::io::Error::other)?).await?;
+            }
+            file.sync_all().await
+        }
+        .await;
+        match written {
+            Ok(()) => state.files.finish_upload(&actor, ticket, &client).await.map_err(ApiError::from),
+            Err(error) => {
+                state.files.abort_upload(&actor, ticket, &client).await;
+                Err(ApiError::BadRequest(format!("the upload did not complete: {error}")))
+            }
+        }
+    });
+    let stored = task.await.map_err(ApiError::internal)??;
+    Ok((StatusCode::CREATED, Json(UploadedFile { path: stored.as_str().to_owned() })))
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateFolderRequest {
+    /// The new folder, relative to the share's root.
+    pub path: String,
+}
+
+/// Creates a folder. Needs `files.write`.
+#[utoipa::path(
+    post,
+    path = "/files/shares/{id}/folders",
+    tag = "files",
+    security(("session" = [])),
+    params(("id" = i64, Path)),
+    request_body = CreateFolderRequest,
+    responses(
+        (status = CREATED),
+        (status = CONFLICT, body = Problem, description = "`name_taken`"),
+        (status = FORBIDDEN, body = Problem, description = "`permission_denied`"),
+    )
+)]
+async fn create_folder(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(id): Path<i64>,
+    ApiJson(request): ApiJson<CreateFolderRequest>,
+) -> Result<StatusCode, ApiError> {
+    auth.require(Permission::FilesWrite)?;
+    state.files.make_directory(&auth.0.actor(), ShareId::new(id), path(&request.path)?, &client).await?;
+    Ok(StatusCode::CREATED)
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RenameRequest {
+    pub path: String,
+    /// The new name, in the same folder.
+    pub name: String,
+}
+
+/// Renames a file or folder. Needs `files.write`.
+#[utoipa::path(
+    post,
+    path = "/files/shares/{id}/rename",
+    tag = "files",
+    security(("session" = [])),
+    params(("id" = i64, Path)),
+    request_body = RenameRequest,
+    responses(
+        (status = OK, body = UploadedFile),
+        (status = CONFLICT, body = Problem, description = "`name_taken`"),
+        (status = FORBIDDEN, body = Problem, description = "`permission_denied`"),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`"),
+    )
+)]
+async fn rename_entry(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(id): Path<i64>,
+    ApiJson(request): ApiJson<RenameRequest>,
+) -> Result<Json<UploadedFile>, ApiError> {
+    auth.require(Permission::FilesWrite)?;
+    let renamed = state
+        .files
+        .rename(&auth.0.actor(), ShareId::new(id), path(&request.path)?, &request.name, &client)
+        .await?;
+    Ok(Json(UploadedFile { path: renamed.as_str().to_owned() }))
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TransferMode {
+    Copy,
+    Move,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TransferRequest {
+    pub mode: TransferMode,
+    /// Entries of this share, relative to its root.
+    pub paths: Vec<String>,
+    /// The share to copy or move into; may be this one.
+    pub target_share: i64,
+    /// The folder there, relative to its root.
+    #[serde(default)]
+    pub target_path: String,
+}
+
+/// Copies or moves entries into a folder, possibly of another share, as a
+/// job. A copy whose name is taken gets a free one, `name (2).ext`; a move
+/// fails. Needs `files.write`.
+#[utoipa::path(
+    post,
+    path = "/files/shares/{id}/transfer",
+    tag = "files",
+    security(("session" = [])),
+    params(("id" = i64, Path)),
+    request_body = TransferRequest,
+    responses(
+        (status = ACCEPTED, body = Job),
+        (status = FORBIDDEN, body = Problem, description = "`permission_denied`"),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_input`, `invalid_operation`"),
+    )
+)]
+async fn transfer_entries(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(id): Path<i64>,
+    ApiJson(request): ApiJson<TransferRequest>,
+) -> Result<(StatusCode, Json<Job>), ApiError> {
+    auth.require(Permission::FilesWrite)?;
+    let mode = match request.mode {
+        TransferMode::Copy => Transfer::Copy,
+        TransferMode::Move => Transfer::Move,
+    };
+    let job = state
+        .files
+        .transfer(
+            &auth.0.actor(),
+            mode,
+            ShareId::new(id),
+            paths(&request.paths)?,
+            ShareId::new(request.target_share),
+            path(&request.target_path)?,
+            &client,
+        )
+        .await?;
+    Ok((StatusCode::ACCEPTED, Json(job.into())))
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DeleteEntriesRequest {
+    pub paths: Vec<String>,
+}
+
+/// Moves entries into the user's recycle bin if the share has one, deletes
+/// them for good otherwise (and inside the recycle bin), as a job. Needs
+/// `files.write`.
+#[utoipa::path(
+    post,
+    path = "/files/shares/{id}/delete",
+    tag = "files",
+    security(("session" = [])),
+    params(("id" = i64, Path)),
+    request_body = DeleteEntriesRequest,
+    responses(
+        (status = ACCEPTED, body = Job),
+        (status = FORBIDDEN, body = Problem, description = "`permission_denied`"),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`"),
+    )
+)]
+async fn delete_entries(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(id): Path<i64>,
+    ApiJson(request): ApiJson<DeleteEntriesRequest>,
+) -> Result<(StatusCode, Json<Job>), ApiError> {
+    auth.require(Permission::FilesWrite)?;
+    let job = state.files.delete(&auth.0.actor(), ShareId::new(id), paths(&request.paths)?, &client).await?;
+    Ok((StatusCode::ACCEPTED, Json(job.into())))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn attachments_keep_the_exact_name() {
+        assert_eq!(
+            attachment("Urlaub 2024 ü \"x\".jpg"),
+            "attachment; filename=\"Urlaub 2024 _ _x_.jpg\"; filename*=UTF-8''Urlaub%202024%20%C3%BC%20%22x%22.jpg"
+        );
+    }
+}

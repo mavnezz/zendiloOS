@@ -50,7 +50,8 @@ them.
 | M0 | done | packages installed in the VM, login through nginx, a real reboot through API and agent with matching request IDs in audit log and journal |
 | M1 | done | desktop with live metrics over WebSocket on a workstation and in the VM |
 | M2 | done | in the VM: four SATA and one NVMe disk with SMART, the virtio system disk recognized as such, an mdadm RAID 1 with a Btrfs volume and its usage; an account created in the interface signs in to SMB, a wrong password does not; groups appear as Linux groups; the journal and the audit log are readable in the interface |
-| M3 | done, in review | `just vm-storage-test` in the VM, through the API: a ZFS mirror is created from a plan, one disk is pulled out of the kernel, the monitor reports the degraded pool, the disk is replaced through the API, the resilver finishes and is reported, the data is intact, a scrub finds no errors, the pool is destroyed |
+| M3 | done | `just vm-storage-test` in the VM, through the API: a ZFS mirror is created from a plan, one disk is pulled out of the kernel, the monitor reports the degraded pool, the disk is replaced through the API, the resilver finishes and is reported, the data is intact, a scrub finds no errors, the pool is destroyed |
+| M4 | done, in review | `just vm-sharing-test` in the VM, through the API and with real clients inside the VM: over SMB (smbclient) a writer writes, a reader reads and cannot write, others cannot connect, and the share's ACLs match; a read-only NFS export with root squashed; the file manager, signed in as the same users, sees files written over SMB and SMB sees its uploads, with the same owners, inherited ACLs and refusals, while `..` and symbolic links do not lead out of the share; copying, renaming and deleting into the recycle bin as jobs; removed access reaches existing files; each writer's deletions land in their own recycle bin. Not yet tried with a Windows or macOS client |
 
 ## 3. Test Environments
 

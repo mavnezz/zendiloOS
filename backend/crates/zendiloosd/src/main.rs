@@ -20,16 +20,19 @@ use zendiloos_identity::application::commands::PurgeExpiredSessions;
 use zendiloos_identity::application::{IdentityConfig, IdentityPorts, IdentityUseCases};
 use zendiloos_infra::SystemClock;
 use zendiloos_infra::agent::{
-    AgentPowerControl, AgentStorage, AgentSystemAccounts, RandomPlanTokens, agent_version,
+    AgentFiles, AgentPowerControl, AgentSharing, AgentStorage, AgentSystemAccounts, RandomPlanTokens,
+    agent_version,
 };
 use zendiloos_infra::host::{HostSystemInfo, JournalctlReader, MetricsHub};
 use zendiloos_infra::identity::{Argon2PasswordHasher, FileSetupCodes, RandomSessionTokens};
 use zendiloos_infra::sqlite::{
     Database, SqliteAccounts, SqliteAuditLog, SqliteGroups, SqliteJobs, SqliteNotifications, SqliteSessions,
+    SqliteShares,
 };
 use zendiloos_jobs::Jobs;
-use zendiloos_kernel::AuditLog;
+use zendiloos_kernel::{AuditLog, RequestContext};
 use zendiloos_notify::Notifier;
+use zendiloos_sharing::application::{FilesUseCases, SharingPorts, SharingUseCases};
 use zendiloos_sim::SimulatedAgent;
 use zendiloos_storage::application::monitor::StorageMonitor;
 use zendiloos_storage::application::{StoragePorts, StorageUseCases};
@@ -81,7 +84,7 @@ async fn main() -> anyhow::Result<()> {
 async fn serve(config: Config) -> anyhow::Result<()> {
     let database = open_database(&config).await?;
     let audit: Arc<dyn AuditLog> = Arc::new(SqliteAuditLog::new(database.clone()));
-    let agent = agent_transport(&config).await;
+    let (agent, files_agent) = agent_transports(&config).await;
     let identity = identity(&config, &database, audit.clone(), agent.clone())?;
     let setup_code = announce_setup(&config, &identity).await?;
     let purge = spawn_session_purge(identity.purge_expired_sessions.clone());
@@ -106,7 +109,9 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         tracing::warn!(interrupted, "jobs of the previous run were interrupted");
     }
     let notifier = Notifier::new(Arc::new(SqliteNotifications::new(database.clone())), Arc::new(SystemClock));
+    let agent_for_sharing = agent.clone();
     let agent_storage = Arc::new(AgentStorage::new(agent));
+    let agent_storage_for_sharing = agent_storage.clone();
     let storage = StorageUseCases::new(StoragePorts {
         devices: agent_storage.clone(),
         smart: agent_storage.clone(),
@@ -114,14 +119,32 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         zfs: agent_storage.clone(),
         admin: agent_storage,
         jobs: jobs.clone(),
-        audit,
+        audit: audit.clone(),
         clock: Arc::new(SystemClock),
         tokens: Arc::new(RandomPlanTokens),
         notifier: notifier.clone(),
     });
     let monitor = spawn_storage_monitor(Arc::clone(&storage.monitor));
+    let sharing_store = Arc::new(SqliteShares::new(database.clone()));
+    let sharing_ports = SharingPorts {
+        shares: sharing_store.clone(),
+        directory: sharing_store,
+        volumes: agent_storage_for_sharing,
+        host: Arc::new(AgentSharing::new(agent_for_sharing, files_agent.clone())),
+        files: Arc::new(AgentFiles::new(files_agent)),
+        jobs: jobs.clone(),
+        audit: audit.clone(),
+        clock: Arc::new(SystemClock),
+    };
+    let sharing = SharingUseCases::new(sharing_ports.clone());
+    let files = FilesUseCases::new(sharing_ports);
+    // The servers offer what the database says, whatever happened since.
+    if let Err(error) = sharing.apply(&RequestContext::default()).await {
+        tracing::warn!(error = %error_chain(&error), "cannot apply the sharing configuration");
+    }
 
-    let state = ApiState::new(UseCases { system, identity, storage, jobs, notifier }, config.secure_cookies);
+    let use_cases = UseCases { system, identity, storage, sharing, files, jobs, notifier };
+    let state = ApiState::new(use_cases, config.secure_cookies);
     let app = zendiloos_api::router(state);
 
     let issue = config.state_dir.join("console.issue");
@@ -154,21 +177,29 @@ async fn serve(config: Config) -> anyhow::Result<()> {
 /// The way to the privileged agent. An unreachable agent is not fatal:
 /// systemd starts it on the first connection, and only privileged
 /// operations need it.
-async fn agent_transport(config: &Config) -> Arc<dyn AgentTransport> {
-    let transport: Arc<dyn AgentTransport> = match config.agent.transport {
-        AgentTransportKind::Unix => {
-            Arc::new(UnixTransport::new(&config.agent.socket, Duration::from_secs(30)))
-        }
+/// The system and the files agent. The simulation serves both.
+async fn agent_transports(config: &Config) -> (Arc<dyn AgentTransport>, Arc<dyn AgentTransport>) {
+    let (system, files): (Arc<dyn AgentTransport>, Arc<dyn AgentTransport>) = match config.agent.transport {
+        AgentTransportKind::Unix => (
+            Arc::new(UnixTransport::new(&config.agent.socket, Duration::from_secs(30))),
+            // Applying permissions to a large share takes a while.
+            Arc::new(UnixTransport::new(&config.agent.files_socket, Duration::from_secs(3600))),
+        ),
         AgentTransportKind::Simulated => {
             tracing::warn!("using the simulated agent: privileged operations are not carried out");
-            Arc::new(SimulatedAgent::new())
+            // Share contents are real files, kept with the state.
+            let simulated =
+                Arc::new(SimulatedAgent::new().with_files(config.state_dir.join("simulated-volumes")));
+            (simulated.clone(), simulated)
         }
     };
-    match agent_version(transport.as_ref()).await {
-        Ok(version) => tracing::info!(version, "agent reachable"),
-        Err(error) => tracing::warn!(error = %error_chain(&error), "agent not reachable"),
+    for (role, transport) in [("system", &system), ("files", &files)] {
+        match agent_version(transport.as_ref()).await {
+            Ok(version) => tracing::info!(role, version, "agent reachable"),
+            Err(error) => tracing::warn!(role, error = %error_chain(&error), "agent not reachable"),
+        }
     }
-    transport
+    (system, files)
 }
 
 /// `outer: inner: innermost`, so the log shows the root cause.

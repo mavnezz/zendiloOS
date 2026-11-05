@@ -10,8 +10,26 @@ retire_default_site() {
     fi
 }
 
+# Samba: zendiloOS writes its shares to /etc/samba/zendiloos.conf. On a
+# system whose smb.conf is still Debian's original, it takes over smb.conf
+# (no [homes], no printers, no guests); a changed smb.conf is left alone.
+configure_samba() {
+    ours=/etc/samba/zendiloos.conf
+    if [ ! -e "$ours" ]; then
+        printf '# Written by zendiloOS. Changes here are overwritten; use the web interface.\n' > "$ours"
+    fi
+    if [ -f /usr/share/samba/smb.conf ] && cmp -s /etc/samba/smb.conf /usr/share/samba/smb.conf; then
+        cp -p /etc/samba/smb.conf /etc/samba/smb.conf.debian
+        cp /usr/share/zendiloos/smb.conf /etc/samba/smb.conf
+        deb-systemd-invoke try-reload-or-restart smbd.service || true
+    elif ! grep -qs '^[[:space:]]*include[[:space:]]*=[[:space:]]*/etc/samba/zendiloos.conf' /etc/samba/smb.conf; then
+        echo "zendiloos: add 'include = /etc/samba/zendiloos.conf' to /etc/samba/smb.conf to offer its shares" >&2
+    fi
+}
+
 case "$1" in
     configure)
+        configure_samba
         /usr/libexec/zendiloos/make-certificate
         retire_default_site
         if nginx -t >/dev/null 2>&1; then

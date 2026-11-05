@@ -1,0 +1,62 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT share_id AS \"share_id!\", account_id, group_id, access FROM share_access ORDER BY position",
+  "describe": {
+    "columns": [
+      {
+        "name": "share_id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "share_access",
+            "name": "share_id"
+          }
+        }
+      },
+      {
+        "name": "account_id",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "share_access",
+            "name": "account_id"
+          }
+        }
+      },
+      {
+        "name": "group_id",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "share_access",
+            "name": "group_id"
+          }
+        }
+      },
+      {
+        "name": "access",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "share_access",
+            "name": "access"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "c3a4f63149a8b032e266a112ff673320b6a36867ab7b6ae0aa42c8eed15b5cbd"
+}

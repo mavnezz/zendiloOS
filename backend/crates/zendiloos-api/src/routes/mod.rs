@@ -1,8 +1,10 @@
 mod accounts;
+mod files;
 mod identity;
 pub(crate) mod jobs;
 pub(crate) mod live;
 pub(crate) mod logs;
+mod shares;
 mod storage;
 mod system;
 
@@ -19,4 +21,6 @@ pub(crate) fn v1() -> OpenApiRouter<ApiState> {
         .merge(accounts::routes())
         .merge(logs::routes())
         .merge(jobs::routes())
+        .merge(shares::routes())
+        .merge(files::routes())
 }

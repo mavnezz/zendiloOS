@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::Deserialize;
-use zendiloos_agent_proto::{DiskId, DiskName, Layout, PoolName, Response, VolumeNumber};
+use zendiloos_agent_proto::{DiskId, DiskName, Layout, PoolName, Response, ShareName, VolumeNumber};
 use zendiloos_exec::{Limits, Program};
 
 use crate::config::Tools;
@@ -42,7 +42,7 @@ const PARTITION_NAME: &str = "zendiloos";
 /// The GPT type OpenZFS uses for its partitions.
 const PARTITION_TYPE: &str = "BF01";
 /// Properties of every new pool's root dataset (docs/architecture.md, 5).
-const DATASET_PROPERTIES: [&str; 9] = [
+const DATASET_PROPERTIES: [&str; 11] = [
     "compression=lz4",
     "atime=off",
     "xattr=sa",
@@ -50,6 +50,9 @@ const DATASET_PROPERTIES: [&str; 9] = [
     "dnodesize=auto",
     "normalization=formD",
     "utf8only=on",
+    // Volumes hold data: no setuid programs or device files take effect.
+    "setuid=off",
+    "devices=off",
     "mountpoint=legacy",
     "canmount=on",
 ];
@@ -88,6 +91,10 @@ pub struct HostPaths {
     pub mountinfo: PathBuf,
     pub swaps: PathBuf,
     pub units: PathBuf,
+    /// Where `/volume<N>` directories are: `/`.
+    pub volumes: PathBuf,
+    pub samba_config: PathBuf,
+    pub nfs_exports: PathBuf,
 }
 
 impl Default for HostPaths {
@@ -99,6 +106,9 @@ impl Default for HostPaths {
             mountinfo: PathBuf::from("/proc/self/mountinfo"),
             swaps: PathBuf::from("/proc/swaps"),
             units: PathBuf::from("/etc/systemd/system"),
+            volumes: PathBuf::from("/"),
+            samba_config: PathBuf::from("/etc/samba/zendiloos.conf"),
+            nfs_exports: PathBuf::from("/etc/exports.d/zendiloos.exports"),
         }
     }
 }
@@ -113,6 +123,7 @@ pub(crate) struct Pools {
     wipefs: Program,
     udevadm: Program,
     systemctl: Program,
+    exportfs: Program,
     /// One change to disks and pools at a time.
     serial: tokio::sync::Mutex<()>,
 }
@@ -151,6 +162,7 @@ impl Pools {
             wipefs: Program::new(&tools.wipefs)?,
             udevadm: Program::new(&tools.udevadm)?,
             systemctl: Program::new(&tools.systemctl)?,
+            exportfs: Program::new(&tools.exportfs)?,
             serial: tokio::sync::Mutex::new(()),
         })
     }
@@ -212,11 +224,16 @@ impl Pools {
         self.require_managed(name, Some(volume)).await?;
         let members = self.members(name).await?;
 
-        let unit = self.unit_path(volume);
-        if unit.exists() {
-            run(&self.systemctl, &["disable", "--now", &unit_name(volume)]).await?;
-            fs::remove_file(&unit).map_err(|e| OperationError::Write(unit.clone(), e))?;
-            run(&self.systemctl, &["daemon-reload"]).await?;
+        // The shares' mounts first, then the volume's.
+        let share_units: Vec<String> = fs::read_dir(&self.paths.units)
+            .map_err(|e| OperationError::Read(self.paths.units.clone(), e))?
+            .filter_map(Result::ok)
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|unit| unit.starts_with(&format!("volume{}-", volume.get())) && unit.ends_with(".mount"))
+            .collect();
+        self.release_nfs().await?;
+        for unit in share_units.iter().chain(std::iter::once(&unit_name(volume))) {
+            self.remove_unit(unit).await?;
         }
         run(&self.zpool, &["destroy", name.as_str()]).await?;
 
@@ -266,6 +283,93 @@ impl Pools {
         let partition = self.prepare(&disk, member_bytes / MIB).await?;
         run(&self.zpool, &["replace", pool.as_str(), &device.to_string(), &partition]).await?;
         Ok(Response::Done)
+    }
+
+    /// A share's dataset, mounted below the pool's volume.
+    pub(crate) async fn create_share(
+        &self,
+        pool: &PoolName,
+        volume: VolumeNumber,
+        name: &ShareName,
+    ) -> Result<Response, OperationError> {
+        let _serial = self.serial.lock().await;
+        self.require_managed(pool, Some(volume)).await?;
+        let dataset = format!("{}/{}", pool.as_str(), name.as_str());
+        let unit = share_unit_name(volume, name);
+        if self.paths.units.join(&unit).exists() {
+            return Err(OperationError::Conflict);
+        }
+        let existing = output(&self.zfs, &["list", "-H", "-o", "name", "-d", "1", pool.as_str()]).await?;
+        if existing.lines().any(|line| line == dataset) {
+            return Err(OperationError::Conflict);
+        }
+        // setuid and devices explicitly, for pools made before they were defaults.
+        let options = ["create", "-o", "mountpoint=legacy", "-o", "setuid=off", "-o", "devices=off"];
+        run(&self.zfs, &[&options[..], &[dataset.as_str()]].concat()).await?;
+        let content = format!(
+            "# Created by zendiloOS for the share {share}; removed with the share.\n\
+             [Unit]\n\
+             Description=zendiloOS share {share} (ZFS dataset {dataset})\n\
+             Requires=zfs-import.target\n\
+             After=zfs-import.target\n\
+             \n\
+             [Mount]\n\
+             What={dataset}\n\
+             Where=/volume{number}/{share}\n\
+             Type=zfs\n\
+             \n\
+             [Install]\n\
+             WantedBy=multi-user.target\n",
+            share = name.as_str(),
+            number = volume.get(),
+        );
+        self.install_unit(&unit, &content).await?;
+        Ok(Response::Done)
+    }
+
+    /// Unmounts a share and destroys its dataset with all files.
+    pub(crate) async fn destroy_share(
+        &self,
+        pool: &PoolName,
+        volume: VolumeNumber,
+        name: &ShareName,
+    ) -> Result<Response, OperationError> {
+        let _serial = self.serial.lock().await;
+        self.require_managed(pool, Some(volume)).await?;
+        self.release_nfs().await?;
+        self.remove_unit(&share_unit_name(volume, name)).await?;
+        let dataset = format!("{}/{}", pool.as_str(), name.as_str());
+        run(&self.zfs, &["destroy", "-r", &dataset]).await?;
+        Ok(Response::Done)
+    }
+
+    /// The kernel's NFS server keeps file systems it exported busy until
+    /// its export cache is flushed. Through a unit of the package, because
+    /// the cache is per network namespace and this agent has its own.
+    async fn release_nfs(&self) -> Result<(), OperationError> {
+        if self.exportfs.path().exists() {
+            run(&self.systemctl, &["start", "zendiloos-nfs-flush.service"]).await?;
+        }
+        Ok(())
+    }
+
+    async fn install_unit(&self, unit: &str, content: &str) -> Result<(), OperationError> {
+        let path = self.paths.units.join(unit);
+        let temporary = path.with_extension("mount.new");
+        fs::write(&temporary, content).map_err(|e| OperationError::Write(temporary.clone(), e))?;
+        fs::rename(&temporary, &path).map_err(|e| OperationError::Write(path.clone(), e))?;
+        run(&self.systemctl, &["daemon-reload"]).await?;
+        run(&self.systemctl, &["enable", "--now", unit]).await
+    }
+
+    async fn remove_unit(&self, unit: &str) -> Result<(), OperationError> {
+        let path = self.paths.units.join(unit);
+        if path.exists() {
+            run(&self.systemctl, &["disable", "--now", unit]).await?;
+            fs::remove_file(&path).map_err(|e| OperationError::Write(path.clone(), e))?;
+            run(&self.systemctl, &["daemon-reload"]).await?;
+        }
+        Ok(())
     }
 
     pub(crate) async fn scrub(&self, pool: &PoolName) -> Result<Response, OperationError> {
@@ -403,7 +507,6 @@ impl Pools {
     }
 
     async fn mount(&self, name: &PoolName, volume: VolumeNumber) -> Result<(), OperationError> {
-        let unit = self.unit_path(volume);
         let content = format!(
             "# Created by zendiloOS for the ZFS pool {pool}; removed with the pool.\n\
              [Unit]\n\
@@ -421,11 +524,7 @@ impl Pools {
             pool = name.as_str(),
             number = volume.get(),
         );
-        let temporary = unit.with_extension("mount.new");
-        fs::write(&temporary, content).map_err(|e| OperationError::Write(temporary.clone(), e))?;
-        fs::rename(&temporary, &unit).map_err(|e| OperationError::Write(unit.clone(), e))?;
-        run(&self.systemctl, &["daemon-reload"]).await?;
-        run(&self.systemctl, &["enable", "--now", &unit_name(volume)]).await
+        self.install_unit(&unit_name(volume), &content).await
     }
 
     fn unit_path(&self, volume: VolumeNumber) -> PathBuf {
@@ -475,7 +574,12 @@ fn unit_name(volume: VolumeNumber) -> String {
     format!("volume{}.mount", volume.get())
 }
 
-async fn run<S: AsRef<str>>(program: &Program, args: &[S]) -> Result<(), OperationError> {
+/// The mount unit of `/volume<N>/<share>`; systemd escapes `-` in paths.
+pub(crate) fn share_unit_name(volume: VolumeNumber, share: &ShareName) -> String {
+    format!("volume{}-{}.mount", volume.get(), share.as_str().replace('-', "\\x2d"))
+}
+
+pub(crate) async fn run<S: AsRef<str>>(program: &Program, args: &[S]) -> Result<(), OperationError> {
     let args: Vec<&str> = args.iter().map(AsRef::as_ref).collect();
     zendiloos_exec::run(program, &args, LIMITS).await?.success(program)?;
     Ok(())

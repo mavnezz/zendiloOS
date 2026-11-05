@@ -12,6 +12,7 @@ mod groups;
 mod jobs;
 mod notifications;
 mod sessions;
+mod shares;
 
 #[cfg(test)]
 mod tests;
@@ -33,6 +34,7 @@ pub use groups::SqliteGroups;
 pub use jobs::SqliteJobs;
 pub use notifications::SqliteNotifications;
 pub use sessions::SqliteSessions;
+pub use shares::SqliteShares;
 
 static MIGRATOR: Migrator = sqlx::migrate!();
 

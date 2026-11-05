@@ -1,0 +1,29 @@
+[package]
+name = "zendiloos-sharing"
+description = "Bounded context Sharing: SMB shares, NFS exports and their permissions"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Core crate of a bounded context: no I/O, no frameworks. Adapters live in
+# zendiloos-infra and zendiloos-api. See docs/architecture.md, 2.1.
+[dependencies]
+zendiloos-kernel.workspace = true
+zendiloos-jobs.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio = { workspace = true, features = ["sync", "fs"] }
+
+[dev-dependencies]
+tokio.workspace = true
+zendiloos-jobs = { workspace = true, features = ["testing"] }
+
+[features]
+# In-memory fakes of the ports, for tests of crates that use this context.
+testing = []
+
+[lints]
+workspace = true

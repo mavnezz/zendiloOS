@@ -1,9 +1,17 @@
-import { Gauge, HardDrive, ScrollText, Settings, UsersRound } from 'lucide-vue-next'
+import {
+  Files,
+  FolderOpen,
+  Gauge,
+  HardDrive,
+  ScrollText,
+  Settings,
+  UsersRound,
+} from 'lucide-vue-next'
 import { type Component, defineAsyncComponent } from 'vue'
 
 import type { Size } from './windowManager'
 
-export type AppId = 'dashboard' | 'storage' | 'users' | 'logs' | 'settings'
+export type AppId = 'dashboard' | 'files' | 'storage' | 'shares' | 'users' | 'logs' | 'settings'
 
 export interface AppDefinition {
   id: AppId
@@ -28,12 +36,28 @@ export const APPS: AppDefinition[] = [
     component: defineAsyncComponent(() => import('@/features/system/components/DashboardApp.vue')),
   },
   {
+    id: 'files',
+    icon: Files,
+    permission: 'files.read',
+    size: { width: 900, height: 620 },
+    minimum: { width: 360, height: 320 },
+    component: defineAsyncComponent(() => import('./apps/FilesApp.vue')),
+  },
+  {
     id: 'storage',
     icon: HardDrive,
     permission: 'storage.view',
     size: { width: 960, height: 660 },
     minimum: { width: 360, height: 320 },
     component: defineAsyncComponent(() => import('./apps/StorageApp.vue')),
+  },
+  {
+    id: 'shares',
+    icon: FolderOpen,
+    permission: 'shares.manage',
+    size: { width: 860, height: 620 },
+    minimum: { width: 360, height: 320 },
+    component: defineAsyncComponent(() => import('@/features/shares/components/SharesManager.vue')),
   },
   {
     id: 'users',

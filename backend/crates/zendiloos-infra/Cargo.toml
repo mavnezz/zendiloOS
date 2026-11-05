@@ -13,6 +13,7 @@ zendiloos-exec.workspace = true
 zendiloos-identity.workspace = true
 zendiloos-jobs.workspace = true
 zendiloos-notify.workspace = true
+zendiloos-sharing.workspace = true
 zendiloos-kernel.workspace = true
 zendiloos-storage.workspace = true
 zendiloos-system.workspace = true

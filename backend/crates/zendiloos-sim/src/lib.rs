@@ -10,18 +10,26 @@
 //! those of a Debian system plus whatever is created while it runs; any
 //! other name counts as managed, so accounts from an earlier run keep
 //! working.
+//!
+//! With [`SimulatedAgent::with_files`], share contents are real files in a
+//! scratch directory, handled by the same code as in the files agent but
+//! without taking on the user's credentials: nothing is refused for lack of
+//! permissions.
 
 mod host;
 
 use std::collections::HashSet;
+use std::os::fd::OwnedFd;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use zendiloos_agent_proto::{
-    AgentTransport, DiskName, ErrorCode, Layout, PROTOCOL_VERSION, Request, RequestId, Response,
-    TransportError,
+    AgentTransport, DiskName, ErrorCode, FileLocation, Layout, PROTOCOL_VERSION, Request, RequestId,
+    Response, TransportError,
 };
+use zendiloos_fileops::{FileError, ShareRoot};
 
 /// Users and groups of the simulated Debian system, which the agent never
 /// changes.
@@ -45,6 +53,8 @@ pub struct SimulatedAgent {
     created: Mutex<HashSet<(Kind, String)>>,
     host: Mutex<host::Host>,
     clock: SimClock,
+    /// Where `/volume<N>/<share>` directories are kept, if anywhere.
+    files: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for SimulatedAgent {
@@ -97,7 +107,79 @@ impl SimulatedAgent {
             created: Mutex::default(),
             host: Mutex::new(host::Host::nas()),
             clock,
+            files: None,
         }
+    }
+
+    /// Keeps share contents in `root`, as `root/volume<N>/<share>`.
+    pub fn with_files(mut self, root: impl Into<PathBuf>) -> Self {
+        self.files = Some(root.into());
+        self
+    }
+
+    fn share_directory(&self, volume: u16, share: &str) -> Option<PathBuf> {
+        Some(self.files.as_ref()?.join(format!("volume{volume}")).join(share))
+    }
+
+    fn file_operation(&self, request: &Request) -> (Response, Option<OwnedFd>) {
+        let Some(root) = &self.files else {
+            return (error(ErrorCode::Failed, "the simulated agent keeps no files"), None);
+        };
+        let share = |location: &FileLocation| {
+            // Shares from an earlier run have no directory yet.
+            if let Some(directory) = self.share_directory(location.volume.get(), location.share.as_str()) {
+                std::fs::create_dir_all(directory)?;
+            }
+            ShareRoot::open(root, location.volume, &location.share, false)
+        };
+        let result = (|| -> Result<(Response, Option<OwnedFd>), FileError> {
+            Ok(match request {
+                Request::ListDirectory { location, .. } => {
+                    let listing = share(location)?.list(&location.path)?;
+                    let (entries, truncated, writable) =
+                        (listing.entries, listing.truncated, listing.writable);
+                    (Response::Directory { entries, truncated, writable }, None)
+                }
+                Request::OpenFile { location, .. } => {
+                    let (file, size) = share(location)?.open_file(&location.path)?;
+                    (Response::File { size }, Some(file))
+                }
+                Request::CreateUpload { location, .. } => {
+                    let (file, name) = share(location)?.create_upload(&location.path)?;
+                    (Response::Upload { name }, Some(file))
+                }
+                Request::MakeDirectory { location, .. } => {
+                    share(location)?.make_directory(&location.path)?;
+                    (Response::Done, None)
+                }
+                Request::MoveEntry { from, to, replace, .. } => {
+                    share(from)?.move_entry(&from.path, &share(to)?, &to.path, *replace)?;
+                    (Response::Done, None)
+                }
+                Request::CopyEntry { from, to, .. } => {
+                    let path = share(from)?.copy_entry(&from.path, &share(to)?, &to.path)?;
+                    (Response::Copied { path }, None)
+                }
+                Request::RemoveEntry { user, location, recycle } => {
+                    share(location)?.remove(&location.path, recycle.then_some(user.as_str()))?;
+                    (Response::Done, None)
+                }
+                other => (
+                    error(ErrorCode::InvalidRequest, &format!("{} is not a file operation", other.name())),
+                    None,
+                ),
+            })
+        })();
+        result.unwrap_or_else(|failure| {
+            let code = match failure {
+                FileError::NotFound => ErrorCode::NotFound,
+                FileError::Denied => ErrorCode::Denied,
+                FileError::Exists => ErrorCode::Conflict,
+                FileError::Invalid(_) => ErrorCode::InvalidRequest,
+                FileError::Io(_) => ErrorCode::Failed,
+            };
+            (error(code, &failure.to_string()), None)
+        })
     }
 
     fn host(&self) -> std::sync::MutexGuard<'_, host::Host> {
@@ -175,6 +257,36 @@ impl AgentTransport for SimulatedAgent {
                 let now = (self.clock)();
                 changed(self.host().scrub(pool.as_str(), now))
             }
+            Request::CreateShare { pool, volume, name } => {
+                let created = self.host().create_share(pool.as_str(), volume.get(), name.as_str());
+                if let (Ok(()), Some(directory)) =
+                    (&created, self.share_directory(volume.get(), name.as_str()))
+                    && let Err(error) = std::fs::create_dir_all(&directory)
+                {
+                    tracing::warn!(%error, directory = %directory.display(), "simulated agent: no share directory");
+                }
+                changed(created)
+            }
+            Request::DestroyShare { pool, volume, name } => {
+                let destroyed = self.host().destroy_share(pool.as_str(), volume.get(), name.as_str());
+                if let (Ok(()), Some(directory)) =
+                    (&destroyed, self.share_directory(volume.get(), name.as_str()))
+                {
+                    let _ = std::fs::remove_dir_all(directory);
+                }
+                changed(destroyed)
+            }
+            Request::ApplySharing { smb, nfs } => {
+                tracing::info!(
+                    smb = smb.len(),
+                    nfs = nfs.len(),
+                    "simulated agent: sharing configuration not written"
+                );
+                Response::Done
+            }
+            Request::SetShareAccess { volume, name, .. } => {
+                changed(self.host().share_present(volume.get(), name.as_str()))
+            }
             Request::CreateUser { name } => self.create(Kind::User, name.as_str()),
             Request::DeleteUser { name } => self.change(Kind::User, name.as_str(), true),
             Request::SetSmbPassword { name, .. } | Request::SetUserEnabled { name, .. } => {
@@ -188,9 +300,32 @@ impl AgentTransport for SimulatedAgent {
                     None => self.change(Kind::Group, group.as_str(), false),
                 }
             }
+            // A descriptor that comes along is closed here.
+            Request::ListDirectory { .. }
+            | Request::OpenFile { .. }
+            | Request::CreateUpload { .. }
+            | Request::MakeDirectory { .. }
+            | Request::MoveEntry { .. }
+            | Request::CopyEntry { .. }
+            | Request::RemoveEntry { .. } => self.file_operation(&request).0,
         };
         self.received.lock().unwrap_or_else(PoisonError::into_inner).push(request);
         Ok(response)
+    }
+
+    async fn call_with_file(
+        &self,
+        request: Request,
+        request_id: Option<RequestId>,
+    ) -> Result<(Response, Option<OwnedFd>), TransportError> {
+        match request {
+            Request::OpenFile { .. } | Request::CreateUpload { .. } => {
+                let answer = self.file_operation(&request);
+                self.received.lock().unwrap_or_else(PoisonError::into_inner).push(request);
+                Ok(answer)
+            }
+            other => Ok((self.call(other, request_id).await?, None)),
+        }
     }
 }
 
@@ -235,6 +370,52 @@ mod tests {
             Response::Zfs { zpool_status, .. } => serde_json::from_str(&zpool_status).unwrap(),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn keeps_share_contents_in_a_directory() {
+        use std::io::{Read, Write};
+
+        use zendiloos_agent_proto::{PoolName, ShareName, SharePath, UserName, VolumeNumber};
+        let root = tempfile::tempdir().unwrap();
+        let agent = SimulatedAgent::new().with_files(root.path());
+        let (pool, volume, name) = (
+            PoolName::parse("tank").unwrap(),
+            VolumeNumber::new(1).unwrap(),
+            ShareName::parse("docs").unwrap(),
+        );
+        let created =
+            agent.call(Request::CreateShare { pool, volume, name: name.clone() }, None).await.unwrap();
+        assert_eq!(created, Response::Done);
+        let at =
+            |path: &str| FileLocation { volume, share: name.clone(), path: SharePath::parse(path).unwrap() };
+        let user = UserName::parse("anna").unwrap();
+
+        let (answer, file) = agent
+            .call_with_file(Request::CreateUpload { user: user.clone(), location: at("") }, None)
+            .await
+            .unwrap();
+        let Response::Upload { name: upload } = answer else { panic!("{answer:?}") };
+        std::fs::File::from(file.unwrap()).write_all(b"hello").unwrap();
+        let commit =
+            Request::MoveEntry { user: user.clone(), from: at(&upload), to: at("a.txt"), replace: false };
+        assert_eq!(agent.call(commit, None).await.unwrap(), Response::Done);
+
+        let (answer, file) = agent
+            .call_with_file(Request::OpenFile { user: user.clone(), location: at("a.txt") }, None)
+            .await
+            .unwrap();
+        assert_eq!(answer, Response::File { size: 5 });
+        let mut text = String::new();
+        std::fs::File::from(file.unwrap()).read_to_string(&mut text).unwrap();
+        assert_eq!(text, "hello");
+
+        let listing = agent.call(Request::ListDirectory { user, location: at("") }, None).await.unwrap();
+        let Response::Directory { entries, .. } = listing else { panic!("{listing:?}") };
+        assert_eq!(entries.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["a.txt"]);
+        let missing =
+            agent.call(Request::OpenFile { user: UserName::parse("x").unwrap(), location: at("b") }, None);
+        assert!(matches!(missing.await.unwrap(), Response::Error { code: ErrorCode::NotFound, .. }));
     }
 
     #[tokio::test]

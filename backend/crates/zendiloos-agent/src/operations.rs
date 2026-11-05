@@ -1,16 +1,20 @@
 use std::io;
+use std::os::fd::OwnedFd;
 use std::time::Duration;
 
 use tokio::io::AsyncReadExt;
 
 use zendiloos_agent_proto::{
-    DiskName, ErrorCode, LSBLK_COLUMNS, PROTOCOL_VERSION, Request, Response, ZFS_DATASET_COLUMNS,
+    DiskName, ErrorCode, LSBLK_COLUMNS, PROTOCOL_VERSION, Request, Response, Role, ZFS_DATASET_COLUMNS,
 };
 use zendiloos_exec::{ExecError, Limits, Output, Program};
+use zendiloos_fileops::FileError;
 
 use crate::accounts::{AccountFiles, Accounts};
 use crate::config::Tools;
+use crate::files::Files;
 use crate::pools::{Erasable, HostPaths, Pools};
+use crate::sharing::Sharing;
 
 /// Where the agent finds the host's account databases, devices and units;
 /// other than the real places only in tests.
@@ -36,27 +40,47 @@ pub struct Operations {
     zfs: Program,
     accounts: Accounts,
     pools: Pools,
+    sharing: Sharing,
+    files: Files,
+    role: Role,
 }
 
 impl Operations {
-    pub fn new(tools: &Tools, erasable: Erasable) -> Result<Self, ExecError> {
-        Self::with_paths(tools, erasable, Paths::default())
+    pub fn new(role: Role, tools: &Tools, erasable: Erasable) -> Result<Self, ExecError> {
+        Self::with_paths(role, tools, erasable, Paths::default())
     }
 
     /// Like [`Operations::new`], looking at the host elsewhere. For tests.
-    pub fn with_paths(tools: &Tools, erasable: Erasable, paths: Paths) -> Result<Self, ExecError> {
+    pub fn with_paths(
+        role: Role,
+        tools: &Tools,
+        erasable: Erasable,
+        paths: Paths,
+    ) -> Result<Self, ExecError> {
         Ok(Self {
             systemctl: Program::new(&tools.systemctl)?,
             lsblk: Program::new(&tools.lsblk)?,
             smartctl: Program::new(&tools.smartctl)?,
             zpool: Program::new(&tools.zpool)?,
             zfs: Program::new(&tools.zfs)?,
+            files: Files::new(paths.accounts.clone(), paths.host.volumes.clone()),
             accounts: Accounts::new(tools, paths.accounts)?,
+            sharing: Sharing::new(tools, paths.host.clone())?,
             pools: Pools::new(tools, erasable, paths.host)?,
+            role,
         })
     }
 
     pub async fn execute(&self, request: &Request) -> Response {
+        self.execute_with_file(request).await.0
+    }
+
+    /// The answer, and the file it carries, if any.
+    pub async fn execute_with_file(&self, request: &Request) -> (Response, Option<OwnedFd>) {
+        if request.role() != self.role && !matches!(request, Request::Hello {}) {
+            let message = format!("{} is not for the {:?} agent", request.name(), self.role);
+            return (Response::Error { code: ErrorCode::Forbidden, message }, None);
+        }
         let result = match request {
             Request::Hello {} => Ok(Response::Hello {
                 protocol_version: PROTOCOL_VERSION,
@@ -75,6 +99,14 @@ impl Operations {
             Request::DestroyPool { name, volume } => self.pools.destroy(name, *volume).await,
             Request::ReplaceDisk { pool, device, disk } => self.pools.replace(pool, *device, disk).await,
             Request::ScrubPool { pool } => self.pools.scrub(pool).await,
+            Request::CreateShare { pool, volume, name } => self.pools.create_share(pool, *volume, name).await,
+            Request::DestroyShare { pool, volume, name } => {
+                self.pools.destroy_share(pool, *volume, name).await
+            }
+            Request::ApplySharing { smb, nfs } => self.sharing.apply(smb, nfs).await,
+            Request::SetShareAccess { volume, name, access, removed, recursive } => {
+                self.sharing.set_access(*volume, name, access, removed, *recursive).await
+            }
             Request::CreateUser { name } => self.accounts.create_user(name).await,
             Request::DeleteUser { name } => self.accounts.delete_user(name).await,
             Request::SetSmbPassword { name, password } => {
@@ -86,8 +118,17 @@ impl Operations {
             Request::SetGroupMembers { group, members } => {
                 self.accounts.set_group_members(group, members).await
             }
+            Request::ListDirectory { .. }
+            | Request::OpenFile { .. }
+            | Request::CreateUpload { .. }
+            | Request::MakeDirectory { .. }
+            | Request::MoveEntry { .. }
+            | Request::CopyEntry { .. }
+            | Request::RemoveEntry { .. } => {
+                return self.files.execute(request).await.unwrap_or_else(|error| (failure(&error), None));
+            }
         };
-        result.unwrap_or_else(|error| Response::Error { code: error.code(), message: error.to_string() })
+        (result.unwrap_or_else(|error| failure(&error)), None)
     }
 
     async fn systemctl(&self, verb: &'static str) -> Result<Response, OperationError> {
@@ -154,6 +195,10 @@ impl Operations {
     }
 }
 
+fn failure(error: &OperationError) -> Response {
+    Response::Error { code: error.code(), message: error.to_string() }
+}
+
 fn utf8(output: Output) -> Result<String, OperationError> {
     String::from_utf8(output.stdout).map_err(|_| OperationError::NotUtf8)
 }
@@ -181,6 +226,10 @@ pub(crate) enum OperationError {
     Refused(String),
     #[error("cannot write {}", .0.display())]
     Write(std::path::PathBuf, #[source] io::Error),
+    #[error("cannot take on the user's credentials")]
+    Credentials(#[source] io::Error),
+    #[error(transparent)]
+    File(zendiloos_fileops::FileError),
 }
 
 impl OperationError {
@@ -188,6 +237,13 @@ impl OperationError {
         match self {
             OperationError::Conflict => ErrorCode::Conflict,
             OperationError::NotManaged(_) | OperationError::Refused(_) => ErrorCode::Forbidden,
+            OperationError::File(error) => match error {
+                FileError::NotFound => ErrorCode::NotFound,
+                FileError::Denied => ErrorCode::Denied,
+                FileError::Exists => ErrorCode::Conflict,
+                FileError::Invalid(_) => ErrorCode::InvalidRequest,
+                FileError::Io(_) => ErrorCode::Failed,
+            },
             _ => ErrorCode::Failed,
         }
     }

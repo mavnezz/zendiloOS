@@ -28,9 +28,28 @@ pub fn group_id(group_file: &str, group: &str) -> Option<u32> {
     })
 }
 
+/// GIDs of the groups that list `user` as a member.
+pub fn memberships(group_file: &str, user: &str) -> Vec<u32> {
+    group_file
+        .lines()
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split(':').collect();
+            let [_, _, gid, members] = fields[..] else { return None };
+            members.split(',').any(|member| member == user).then(|| gid.parse().ok()).flatten()
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_memberships() {
+        let group = "root:x:0:\nfamily:x:2001:alice,bob\nfriends:x:2002:bobby\nwork:x:2003:bob\nbad:x:\n";
+        assert_eq!(memberships(group, "bob"), [2001, 2003]);
+        assert_eq!(memberships(group, "carol"), Vec::<u32>::new());
+    }
 
     #[test]
     fn finds_groups() {

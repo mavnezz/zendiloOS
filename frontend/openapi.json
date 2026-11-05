@@ -469,6 +469,563 @@
         ]
       }
     },
+    "/api/v1/files/shares": {
+      "get": {
+        "tags": [
+          "files"
+        ],
+        "summary": "Shares whose rules name the signed-in user or one of their groups.\nNeeds `files.read`.",
+        "operationId": "my_shares",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/FileShare"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/files/shares/{id}/delete": {
+      "post": {
+        "tags": [
+          "files"
+        ],
+        "summary": "Moves entries into the user's recycle bin if the share has one, deletes\nthem for good otherwise (and inside the recycle bin), as a job. Needs\n`files.write`.",
+        "operationId": "delete_entries",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteEntriesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`permission_denied`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/files/shares/{id}/download": {
+      "get": {
+        "tags": [
+          "files"
+        ],
+        "summary": "Downloads a file, always as an attachment. Needs `files.read`.",
+        "operationId": "download",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "description": "Relative to the share's root, e.g. `photos/2024/beach.jpg`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`permission_denied`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_operation`: not a file",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/files/shares/{id}/folder": {
+      "get": {
+        "tags": [
+          "files"
+        ],
+        "summary": "A folder's contents. Needs `files.read`.",
+        "operationId": "list_folder",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "description": "Relative to the share's root, e.g. `photos/2024`; empty for the root.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Folder"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`permission_denied`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no such share, or not shared with the user, or no such folder",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/files/shares/{id}/folders": {
+      "post": {
+        "tags": [
+          "files"
+        ],
+        "summary": "Creates a folder. Needs `files.write`.",
+        "operationId": "create_folder",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateFolderRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {},
+          "403": {
+            "description": "`permission_denied`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`name_taken`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/files/shares/{id}/rename": {
+      "post": {
+        "tags": [
+          "files"
+        ],
+        "summary": "Renames a file or folder. Needs `files.write`.",
+        "operationId": "rename_entry",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenameRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadedFile"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`permission_denied`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`name_taken`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/files/shares/{id}/transfer": {
+      "post": {
+        "tags": [
+          "files"
+        ],
+        "summary": "Copies or moves entries into a folder, possibly of another share, as a\njob. A copy whose name is taken gets a free one, `name (2).ext`; a move\nfails. Needs `files.write`.",
+        "operationId": "transfer_entries",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TransferRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`permission_denied`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`, `invalid_operation`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/files/shares/{id}/upload": {
+      "post": {
+        "tags": [
+          "files"
+        ],
+        "summary": "Uploads a file: the request body, unchanged, any size the volume has\nroom for. Written under a hidden name and renamed when complete. Needs\n`files.write`.",
+        "operationId": "upload",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "description": "The folder, relative to the share's root; empty for the root.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "query",
+            "description": "The new file's name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "replace",
+            "in": "query",
+            "description": "Replace a file of that name.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadedFile"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`permission_denied`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`name_taken`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/groups": {
       "get": {
         "tags": [
@@ -691,7 +1248,7 @@
           "jobs"
         ],
         "summary": "The most recent jobs, newest first. Changes arrive on the WebSocket\ntopic `jobs`.",
-        "operationId": "list",
+        "operationId": "list_jobs",
         "parameters": [
           {
             "name": "limit",
@@ -1053,6 +1610,229 @@
             }
           }
         }
+      }
+    },
+    "/api/v1/shares": {
+      "get": {
+        "tags": [
+          "shares"
+        ],
+        "summary": "All shares, ordered by name. Needs `shares.manage`.",
+        "operationId": "list_shares",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Share"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "shares"
+        ],
+        "summary": "Creates a share: a dataset on the volume with its permissions, offered\nover SMB (and NFS, if clients are given). Needs `shares.manage`.",
+        "operationId": "create_share",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateShareRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Share"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`name_taken`, `refused`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`, `volume_not_found`, `unknown_subject`, `duplicate_rule`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/shares/{id}": {
+      "patch": {
+        "tags": [
+          "shares"
+        ],
+        "summary": "Changes a share. New permissions apply to the share at once and to its\nexisting files in a job. Needs `shares.manage`.",
+        "operationId": "update_share",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateShareRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShareUpdate"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`, `unknown_subject`, `duplicate_rule`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/shares/{id}/delete": {
+      "post": {
+        "tags": [
+          "shares"
+        ],
+        "summary": "Stops offering the share and destroys it with all its files. Answers\nwith the job. Needs `shares.manage`.",
+        "operationId": "delete_share",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteShareRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`confirmation_mismatch`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
       }
     },
     "/api/v1/storage/arrays": {
@@ -1903,6 +2683,19 @@
         },
         "additionalProperties": false
       },
+      "CreateFolderRequest": {
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "The new folder, relative to the share's root."
+          }
+        },
+        "additionalProperties": false
+      },
       "CreateGroupRequest": {
         "type": "object",
         "required": [
@@ -1947,6 +2740,44 @@
         },
         "additionalProperties": false
       },
+      "CreateShareRequest": {
+        "type": "object",
+        "required": [
+          "name",
+          "pool"
+        ],
+        "properties": {
+          "access": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ShareRule"
+            }
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "nfs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NfsRule"
+            }
+          },
+          "pool": {
+            "type": "string",
+            "description": "The pool (volume) to create it on."
+          },
+          "recycle_bin": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
       "CurrentAccount": {
         "type": "object",
         "required": [
@@ -1985,6 +2816,34 @@
             "$ref": "#/components/schemas/AccountRole"
           }
         }
+      },
+      "DeleteEntriesRequest": {
+        "type": "object",
+        "required": [
+          "paths"
+        ],
+        "properties": {
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "DeleteShareRequest": {
+        "type": "object",
+        "required": [
+          "confirm"
+        ],
+        "properties": {
+          "confirm": {
+            "type": "string",
+            "description": "The share's name, typed again."
+          }
+        },
+        "additionalProperties": false
       },
       "DestroyPoolRequest": {
         "type": "object",
@@ -2126,6 +2985,74 @@
           "unused"
         ]
       },
+      "FileEntry": {
+        "type": "object",
+        "required": [
+          "name",
+          "kind",
+          "size",
+          "modified"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/FileKind"
+          },
+          "modified": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Last modification, Unix seconds."
+          },
+          "name": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "FileKind": {
+        "type": "string",
+        "enum": [
+          "file",
+          "directory",
+          "symlink",
+          "other"
+        ]
+      },
+      "FileShare": {
+        "type": "object",
+        "description": "A share the signed-in user may use.",
+        "required": [
+          "id",
+          "name",
+          "access",
+          "recycle_bin"
+        ],
+        "properties": {
+          "access": {
+            "$ref": "#/components/schemas/ShareAccessLevel"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "name": {
+            "type": "string"
+          },
+          "recycle_bin": {
+            "type": "boolean",
+            "description": "Deleted entries go to `.recycle/<user>` in the share."
+          }
+        }
+      },
       "Finding": {
         "type": "object",
         "description": "A reason behind the health verdict.",
@@ -2191,6 +3118,35 @@
           "nvme_worn_out",
           "nvme_media_errors"
         ]
+      },
+      "Folder": {
+        "type": "object",
+        "required": [
+          "path",
+          "entries",
+          "truncated",
+          "writable"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FileEntry"
+            }
+          },
+          "path": {
+            "type": "string",
+            "description": "The folder, relative to the share's root; empty for the root."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "Too many entries; the rest is left out."
+          },
+          "writable": {
+            "type": "boolean",
+            "description": "The user may create and delete entries here."
+          }
+        }
       },
       "Group": {
         "type": "object",
@@ -2703,6 +3659,24 @@
           "raidz2",
           "raidz3"
         ]
+      },
+      "NfsRule": {
+        "type": "object",
+        "description": "A host or network that may mount the share over NFS.",
+        "required": [
+          "network",
+          "write"
+        ],
+        "properties": {
+          "network": {
+            "type": "string",
+            "description": "An IP address or CIDR network, e.g. `192.168.1.0/24`."
+          },
+          "write": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
       },
       "Notification": {
         "type": "object",
@@ -3351,6 +4325,23 @@
           }
         }
       },
+      "RenameRequest": {
+        "type": "object",
+        "required": [
+          "path",
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The new name, in the same folder."
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
       "ReplaceDiskRequest": {
         "type": "object",
         "required": [
@@ -3534,6 +4525,124 @@
           "required": {
             "type": "boolean",
             "description": "No administrator exists yet; the interface must offer the setup."
+          }
+        }
+      },
+      "Share": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "pool",
+          "volume",
+          "path",
+          "recycle_bin",
+          "access",
+          "nfs",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "access": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ShareRule"
+            }
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "name": {
+            "type": "string"
+          },
+          "nfs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NfsRule"
+            },
+            "description": "Empty: not exported over NFS."
+          },
+          "path": {
+            "type": "string",
+            "description": "E.g. `/volume1/photos`."
+          },
+          "pool": {
+            "type": "string"
+          },
+          "recycle_bin": {
+            "type": "boolean"
+          },
+          "updated_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "volume": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "ShareAccessLevel": {
+        "type": "string",
+        "enum": [
+          "read",
+          "read_write"
+        ]
+      },
+      "ShareRule": {
+        "type": "object",
+        "description": "An account or group and what it may do in the share.",
+        "required": [
+          "kind",
+          "id",
+          "access"
+        ],
+        "properties": {
+          "access": {
+            "$ref": "#/components/schemas/ShareAccessLevel"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Account or group ID."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/SubjectKind"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ShareUpdate": {
+        "type": "object",
+        "required": [
+          "share"
+        ],
+        "properties": {
+          "job": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Job",
+                "description": "Applies changed permissions to existing files, if they changed."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "share": {
+            "$ref": "#/components/schemas/Share"
           }
         }
       },
@@ -3742,6 +4851,13 @@
           "unsupported"
         ]
       },
+      "SubjectKind": {
+        "type": "string",
+        "enum": [
+          "account",
+          "group"
+        ]
+      },
       "SyncOperation": {
         "type": "string",
         "enum": [
@@ -3859,6 +4975,43 @@
           }
         }
       },
+      "TransferMode": {
+        "type": "string",
+        "enum": [
+          "copy",
+          "move"
+        ]
+      },
+      "TransferRequest": {
+        "type": "object",
+        "required": [
+          "mode",
+          "paths",
+          "target_share"
+        ],
+        "properties": {
+          "mode": {
+            "$ref": "#/components/schemas/TransferMode"
+          },
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Entries of this share, relative to its root."
+          },
+          "target_path": {
+            "type": "string",
+            "description": "The folder there, relative to its root."
+          },
+          "target_share": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The share to copy or move into; may be this one."
+          }
+        },
+        "additionalProperties": false
+      },
       "Transport": {
         "type": "string",
         "enum": [
@@ -3924,6 +5077,57 @@
           }
         },
         "additionalProperties": false
+      },
+      "UpdateShareRequest": {
+        "type": "object",
+        "description": "Absent fields stay as they are.",
+        "properties": {
+          "access": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ShareRule"
+            },
+            "description": "Replaces all rules."
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "An empty string removes the description."
+          },
+          "nfs": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/NfsRule"
+            },
+            "description": "Replaces all NFS clients; empty stops exporting."
+          },
+          "recycle_bin": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "UploadedFile": {
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        }
       },
       "VdevState": {
         "type": "string",
@@ -4059,6 +5263,14 @@
     {
       "name": "jobs",
       "description": "Long-running operations and their progress"
+    },
+    {
+      "name": "shares",
+      "description": "Shares over SMB and NFS and their permissions"
+    },
+    {
+      "name": "files",
+      "description": "The file manager: share contents as the signed-in user"
     }
   ]
 }
