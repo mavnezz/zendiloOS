@@ -188,6 +188,15 @@ jq -e '.entries | map(.name) | index("hello.txt") and index("album")' <<<"$listi
     || fail "ben's listing: $listing"
 [[ $(jq .writable <<<"$listing") == false ]] || fail "ben's folder is writable: $listing"
 [[ $(call_as ben GET "$files/download?path=hello.txt") == 'hello from anna' ]] || fail "ben's download"
+# Through nginx: a byte range resumes a download; text may be shown inline,
+# sandboxed, HTML never.
+headers=$(curl -sk -D - -o "$work/part" -b "$work/ben.jar" -H 'Range: bytes=6-' "$api$files/download?path=hello.txt")
+grep -qi '^HTTP/[0-9.]* 206' <<<"$headers" || fail "no partial download: $headers"
+grep -qi '^content-range: bytes 6-15/16' <<<"$headers" || fail "content range: $headers"
+[[ $(cat "$work/part") == 'from anna' ]] || fail "the part: $(cat "$work/part")"
+headers=$(curl -sk -D - -o /dev/null -b "$work/ben.jar" "$api$files/download?path=hello.txt&inline=true")
+grep -qi '^content-type: text/plain' <<<"$headers" && grep -qi '^content-disposition: inline' <<<"$headers" \
+    && grep -qi '^content-security-policy: sandbox' <<<"$headers" || fail "no sandboxed preview: $headers"
 code=$(status_as ben POST "$files/upload?name=ben.txt" -H 'Content-Type: application/octet-stream' --data-binary "@$work/web.txt")
 [[ $code == 403 ]] || fail "ben could upload: $code"
 code=$(status_as ben POST "$files/delete" -H 'Content-Type: application/json' -d '{"paths":["hello.txt"]}')
@@ -206,6 +215,11 @@ vm "sudo test -f '$path/album (2)/from-web.txt'" || fail "the copy is missing"
 call_as anna POST "$files/rename" '{"path":"album (2)","name":"copy"}' | jq -e '.path == "copy"' >/dev/null || fail "rename"
 job_succeeded "$(call_as anna POST "$files/delete" '{"paths":["copy"]}' | jq -r .id)"
 vm "sudo test -f $path/.recycle/anna/copy/from-web.txt" || fail "the deleted folder is not in anna's recycle bin"
+restored=$(call_as anna POST "$files/restore" '{"paths":[".recycle/anna/copy"]}')
+[[ $(jq -r '.paths[0]' <<<"$restored") == copy ]] || fail "restore: $restored"
+vm "sudo test -f $path/copy/from-web.txt && sudo test ! -e $path/.recycle/anna/copy" || fail "the folder is not back"
+[[ $(vm "sudo stat -c '%U' $path/copy/from-web.txt") == anna ]] || fail "the restored file changed owner"
+job_succeeded "$(call_as anna POST "$files/delete" '{"paths":["copy"]}' | jq -r .id)"
 smb_ok anna "$anna_pw" 'ls album/from-web.txt'
 
 say "5. ben loses access"
