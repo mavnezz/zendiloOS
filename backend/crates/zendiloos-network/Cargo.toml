@@ -12,6 +12,7 @@ publish.workspace = true
 [dependencies]
 zendiloos-kernel.workspace = true
 async-trait.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true

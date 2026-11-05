@@ -3,6 +3,12 @@
 
 use std::net::IpAddr;
 
+mod settings;
+
+pub use settings::{
+    InterfaceSettings, InvalidSettings, Ipv4Setting, Ipv6Setting, MAX_DNS, is_interface_name,
+};
+
 /// What kind of device an interface is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InterfaceKind {
