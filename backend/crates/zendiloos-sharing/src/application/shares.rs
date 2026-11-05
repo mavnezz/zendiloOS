@@ -135,6 +135,7 @@ pub fn config(shares: &[Share], names: &Names) -> SharingConfig {
                 volume: share.volume,
                 access: principals(&share.access, names),
                 recycle_bin: share.recycle_bin,
+                comment: share.description.clone(),
             })
             .collect(),
         nfs: shares

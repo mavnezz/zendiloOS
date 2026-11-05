@@ -3,7 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use zendiloos_agent_proto::{
     self as proto, AgentTransport, ErrorCode, GroupName, NfsClient, NfsExport, Request, Response,
-    ShareAccess, SmbShare, UserName,
+    ShareAccess, ShareComment, SmbShare, UserName,
 };
 use zendiloos_kernel::{PortError, RequestContext};
 use zendiloos_sharing::application::ports::{HostError, ShareHost, Volume, Volumes};
@@ -110,6 +110,8 @@ impl ShareHost for AgentSharing {
                     volume: volume(spec.volume)?,
                     access: access(&spec.access)?,
                     recycle_bin: spec.recycle_bin,
+                    // What Samba could misread is dropped from the text.
+                    comment: spec.comment.as_deref().and_then(ShareComment::lossy),
                 })
             })
             .collect::<Result<_, HostError>>()?;

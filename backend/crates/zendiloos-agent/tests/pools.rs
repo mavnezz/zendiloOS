@@ -379,6 +379,7 @@ async fn writes_samba_and_nfs_configuration_after_checking_it() {
             write: true,
         }],
         recycle_bin: false,
+        comment: None,
     }];
     let nfs = vec![NfsExport {
         name: share("photos"),

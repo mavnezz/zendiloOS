@@ -167,6 +167,8 @@ pub struct SmbSpec {
     pub volume: u16,
     pub access: Vec<(Principal, Access)>,
     pub recycle_bin: bool,
+    /// The share's description, shown by clients.
+    pub comment: Option<String>,
 }
 
 /// One NFS export as the host should offer it.

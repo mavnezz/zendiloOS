@@ -58,6 +58,9 @@ pub fn samba_config(shares: &[SmbShare]) -> String {
             volume = share.volume.get(),
             valid = valid.join(" "),
         );
+        if let Some(comment) = &share.comment {
+            let _ = writeln!(text, "   comment = {}", comment.as_str());
+        }
         text.push_str("   read only = yes\n");
         if !writers.is_empty() {
             let _ = writeln!(text, "   write list = {}", writers.join(" "));
@@ -74,6 +77,9 @@ pub fn samba_config(shares: &[SmbShare]) -> String {
                 "   recycle:keeptree = yes\n   recycle:versions = yes\n   recycle:touch = yes\n   \
                  recycle:directory_mode = 0700\n",
             );
+            // Temporary files and the lock files of office programs come and
+            // go all the time; they would only fill the bins.
+            text.push_str("   recycle:exclude = *.tmp|*.temp|~$*|.~lock.*#|*.swp\n");
         } else {
             text.push_str("   vfs objects = catia fruit streams_xattr\n");
         }
@@ -257,7 +263,7 @@ impl Sharing {
 
 #[cfg(test)]
 mod tests {
-    use zendiloos_agent_proto::{GroupName, Network, NfsClient, UserName};
+    use zendiloos_agent_proto::{GroupName, Network, NfsClient, ShareComment, UserName};
 
     use super::*;
 
@@ -276,21 +282,26 @@ mod tests {
                     access(Principal::User(UserName::parse("guest-bob").unwrap()), false),
                 ],
                 recycle_bin: true,
+                comment: Some(ShareComment::parse("Family photos").unwrap()),
             },
             SmbShare {
                 name: ShareName::parse("nobody").unwrap(),
                 volume: VolumeNumber::new(1).unwrap(),
                 access: vec![],
                 recycle_bin: false,
+                comment: None,
             },
         ];
         let text = samba_config(&shares);
         assert!(
-            text.contains("[photos]\n   path = /volume2/photos\n   valid users = @family guest-bob\n"),
+            text.contains(
+                "[photos]\n   path = /volume2/photos\n   valid users = @family guest-bob\n   comment = Family photos\n"
+            ),
             "{text}"
         );
         assert!(text.contains("   read only = yes\n   write list = @family\n"), "{text}");
         assert!(text.contains("recycle:repository = .recycle/%U"), "{text}");
+        assert!(text.contains("recycle:exclude = *.tmp|*.temp|~$*|.~lock.*#|*.swp\n"), "{text}");
         assert!(!text.contains("[nobody]"), "a share without access is not offered: {text}");
     }
 

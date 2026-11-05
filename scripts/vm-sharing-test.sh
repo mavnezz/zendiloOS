@@ -115,7 +115,7 @@ token=$(jq -er .token <<<"$plan") || fail "plan: $plan"
 job_succeeded "$(call POST /storage/pools "{\"token\":\"$token\",\"confirm\":\"$pool\"}" | jq -r .id)"
 anna=$(call POST /accounts '{"name":"anna","role":"user","password":"first secret phrase"}' | jq -er .id) || fail "anna"
 ben=$(call POST /accounts '{"name":"ben","role":"user","password":"second secret phrase"}' | jq -er .id) || fail "ben"
-share=$(call POST /shares "{\"name\":\"photos\",\"pool\":\"$pool\",\"access\":[{\"kind\":\"account\",\"id\":$anna,\"access\":\"read_write\"},{\"kind\":\"account\",\"id\":$ben,\"access\":\"read\"}],\"nfs\":[{\"network\":\"127.0.0.1\",\"write\":false}]}")
+share=$(call POST /shares "{\"name\":\"photos\",\"description\":\"Family photos, 100% ours\",\"pool\":\"$pool\",\"access\":[{\"kind\":\"account\",\"id\":$anna,\"access\":\"read_write\"},{\"kind\":\"account\",\"id\":$ben,\"access\":\"read\"}],\"nfs\":[{\"network\":\"127.0.0.1\",\"write\":false}]}")
 share_id=$(jq -er .id <<<"$share") || fail "share: $share"
 path=$(jq -r .path <<<"$share")
 echo "   $path"
@@ -129,6 +129,8 @@ smb_ok ben 'second secret phrase' 'get hello.txt ben-copy.txt'
 vm "grep -q 'hello from anna' /tmp/ben-copy.txt" || fail "ben read something else"
 smb_denied ben 'second secret phrase' 'put hello.txt ben.txt'
 smb_refused admin "$password" 'ls'
+# The description is the comment, without what Samba would expand.
+vm "testparm -s 2>/dev/null | grep -qx '\s*comment = Family photos, 100 ours'" || fail "the share has no comment"
 acl=$(vm "sudo getfacl -p $path")
 grep -q '^user:anna:rwx' <<<"$acl" && grep -q '^user:ben:r-x' <<<"$acl" || fail "ACLs do not match: $acl"
 [[ $(vm "sudo stat -c '%U' $path/hello.txt") == anna ]] || fail "the file does not belong to anna"
@@ -208,6 +210,10 @@ update=$(call PATCH "/shares/$share_id" "{\"access\":[{\"kind\":\"account\",\"id
 job_succeeded "$(jq -er .job.id <<<"$update")"
 vm "echo 'from ben' > /tmp/ben.txt"
 smb_ok ben "$ben_pw" 'put ben.txt; del ben.txt'
+# Office lock files and temporary files do not fill the bins.
+vm "echo lock > '/tmp/~\$report.docx'"
+smb_ok ben "$ben_pw" 'put ~$report.docx; del ~$report.docx'
+vm "sudo test ! -e '$path/.recycle/ben/~\$report.docx'" || fail "a lock file went to the recycle bin"
 vm "sudo test -f $path/.recycle/ben/ben.txt" || fail "ben's file is not in his recycle bin"
 smb_denied ben "$ben_pw" 'ls .recycle/anna/*'
 

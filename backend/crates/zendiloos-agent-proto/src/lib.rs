@@ -538,6 +538,61 @@ pub struct SmbShare {
     pub access: Vec<ShareAccess>,
     /// Deleted files go to `.recycle/<user>` in the share.
     pub recycle_bin: bool,
+    /// Shown by clients beside the share's name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<ShareComment>,
+}
+
+/// A share's description as Samba's `comment`. It ends up in `smb.conf`, so
+/// nothing in it may end the line or continue it (control characters, a
+/// backslash) or be expanded by Samba (`%`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct ShareComment(String);
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("not a valid share comment")]
+pub struct InvalidShareComment;
+
+impl ShareComment {
+    pub const MAX_CHARS: usize = 200;
+
+    fn allowed(c: char) -> bool {
+        !c.is_control() && c != '\\' && c != '%'
+    }
+
+    pub fn parse(text: &str) -> Result<Self, InvalidShareComment> {
+        let valid = !text.is_empty()
+            && text.trim() == text
+            && text.chars().count() <= Self::MAX_CHARS
+            && text.chars().all(Self::allowed);
+        if valid { Ok(Self(text.to_owned())) } else { Err(InvalidShareComment) }
+    }
+
+    /// `text` without what [`parse`](Self::parse) refuses, shortened to fit;
+    /// `None` if nothing is left.
+    pub fn lossy(text: &str) -> Option<Self> {
+        let kept: String = text.chars().filter(|&c| Self::allowed(c)).take(Self::MAX_CHARS).collect();
+        Self::parse(kept.trim()).ok()
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for ShareComment {
+    type Error = InvalidShareComment;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(&value)
+    }
+}
+
+impl From<ShareComment> for String {
+    fn from(comment: ShareComment) -> Self {
+        comment.0
+    }
 }
 
 /// An NFS export of `/volume<volume>/<name>`.
@@ -926,6 +981,22 @@ mod tests {
         let create = json!({ "version": 1, "request": { "op": "create_pool", "name": "tank", "layout": "raidz2",
             "disks": ["ata-A", "ata-B"], "volume": 1 } });
         assert!(serde_json::from_value::<Envelope>(create).is_ok());
+    }
+
+    #[test]
+    fn share_comments_cannot_reach_beyond_their_line() {
+        assert!(ShareComment::parse("Family photos, 2024 – 2026").is_ok());
+        let injection = "Photos\n   root preexec = /bin/sh";
+        for bad in ["", " padded", "a\\", "50% off", "tab\there", injection] {
+            assert_eq!(ShareComment::parse(bad), Err(InvalidShareComment), "{bad:?}");
+        }
+        assert_eq!(ShareComment::lossy(injection).unwrap().as_str(), "Photos   root preexec = /bin/sh");
+        assert_eq!(ShareComment::lossy("100%\\").unwrap().as_str(), "100");
+        assert_eq!(ShareComment::lossy("%%"), None);
+        assert_eq!(ShareComment::lossy(&"x".repeat(300)).unwrap().as_str().len(), ShareComment::MAX_CHARS);
+        let request =
+            json!({ "name": "photos", "volume": 1, "access": [], "recycle_bin": false, "comment": "a\nb" });
+        assert!(serde_json::from_value::<SmbShare>(request).is_err());
     }
 
     #[test]
