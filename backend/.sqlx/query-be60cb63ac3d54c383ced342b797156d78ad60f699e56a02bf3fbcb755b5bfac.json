@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO file_favourites (account_id, share_id, path, position) VALUES (?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "be60cb63ac3d54c383ced342b797156d78ad60f699e56a02bf3fbcb755b5bfac"
+}

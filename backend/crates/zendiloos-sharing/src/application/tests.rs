@@ -13,7 +13,7 @@ use super::{
     FilesError, FilesUseCases, NewShareInput, ShareChanges, SharingError, SharingPorts, SharingUseCases,
     Transfer,
 };
-use crate::domain::{Access, AccessRule, FilePath, Principal, ShareId, Subject};
+use crate::domain::{Access, AccessRule, Favourite, FilePath, Principal, ShareId, Subject};
 use crate::testing::{Files, Host, Shares, Volumes};
 
 struct Static;
@@ -406,6 +406,22 @@ async fn copies_moves_and_deletes_run_as_jobs() {
             "remove alice photos:missing recycle",
         ]
     );
+}
+
+#[tokio::test]
+async fn favourites_are_per_account_and_only_in_usable_shares() {
+    let s = setup();
+    let id = with_photos(&s).await;
+    let favourite = |path: &str| Favourite { share: id, path: file(path) };
+
+    let saved = s.files.set_favourites(&bob(), vec![favourite("2024"), favourite("")]).await.unwrap();
+    assert_eq!(saved.iter().map(|(f, _)| f.path.as_str()).collect::<Vec<_>>(), ["2024", ""]);
+    assert_eq!(saved[0].1.as_str(), "photos");
+    assert!(s.files.favourites(&alice()).await.unwrap().is_empty(), "per account");
+    let elsewhere = s.files.set_favourites(&carol(), vec![favourite("2024")]).await;
+    assert!(matches!(elsewhere, Err(FilesError::ShareNotFound)), "carol may not use the share");
+    let twice = s.files.set_favourites(&bob(), vec![favourite("2024"), favourite("2024")]).await;
+    assert!(matches!(twice, Err(FilesError::Invalid(_))));
 }
 
 #[tokio::test]

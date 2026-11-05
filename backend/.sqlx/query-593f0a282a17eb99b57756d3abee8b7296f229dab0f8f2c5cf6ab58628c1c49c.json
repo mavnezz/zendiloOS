@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT share_id, path FROM file_favourites WHERE account_id = ? ORDER BY position",
+  "describe": {
+    "columns": [
+      {
+        "name": "share_id",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "file_favourites",
+            "name": "share_id"
+          }
+        }
+      },
+      {
+        "name": "path",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_favourites",
+            "name": "path"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "593f0a282a17eb99b57756d3abee8b7296f229dab0f8f2c5cf6ab58628c1c49c"
+}

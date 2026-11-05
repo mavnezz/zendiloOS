@@ -13,6 +13,7 @@ import {
   Pencil,
   RotateCcw,
   Scissors,
+  Star,
   Trash2,
   Upload,
   X,
@@ -38,9 +39,11 @@ import {
   joinPath,
   previewKind,
   uploadFile,
+  useFavourites,
   useFileActions,
   useFolder,
   useMyShares,
+  useSetFavourites,
 } from '../api'
 import FilePreview from './FilePreview.vue'
 import NameDialog from './NameDialog.vue'
@@ -114,6 +117,37 @@ const single = computed(() =>
 
 function open(target: string): void {
   path.value = target
+}
+
+// Favourite folders, across shares.
+const { data: favourites } = useFavourites()
+const setFavourites = useSetFavourites()
+const isFavourite = computed(() =>
+  (favourites.value ?? []).some((f) => f.share_id === shareId.value && f.path === path.value),
+)
+
+function favouriteName(favourite: { share_name: string; path: string }): string {
+  return favourite.path.split('/').pop() || favourite.share_name
+}
+
+function goTo(favourite: { share_id: number; path: string }): void {
+  shareId.value = favourite.share_id
+  path.value = favourite.path
+}
+
+/** Adds the folder shown, or removes it. */
+async function toggleFavourite(): Promise<void> {
+  if (shareId.value === null) return
+  const current = (favourites.value ?? []).map(({ share_id, path }) => ({ share_id, path }))
+  const here = { share_id: shareId.value, path: path.value }
+  const next = isFavourite.value
+    ? current.filter((f) => f.share_id !== here.share_id || f.path !== here.path)
+    : [...current, here]
+  try {
+    await setFavourites(next)
+  } catch (failure) {
+    fail(failure)
+  }
 }
 
 /** The file shown in the preview, by its path in the share. */
@@ -367,6 +401,22 @@ function icon(entry: FileEntry) {
         <Folder class="size-4 shrink-0 text-primary" />
         <span class="truncate">{{ item.name }}</span>
       </button>
+      <template v-if="favourites?.length">
+        <p class="mt-3 hidden px-2 text-xs font-medium text-muted-foreground @3xl:block">
+          {{ t('files.favourites') }}
+        </p>
+        <button
+          v-for="favourite in favourites"
+          :key="`${favourite.share_id}:${favourite.path}`"
+          type="button"
+          class="hidden items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent @3xl:flex"
+          :title="`${favourite.share_name}/${favourite.path}`"
+          @click="goTo(favourite)"
+        >
+          <Star class="size-4 shrink-0 fill-current text-amber-500" />
+          <span class="truncate">{{ favouriteName(favourite) }}</span>
+        </button>
+      </template>
     </nav>
 
     <div
@@ -421,6 +471,17 @@ function icon(entry: FileEntry) {
           <Badge v-if="share.access === 'read'" variant="secondary">{{
             t('files.readOnly')
           }}</Badge>
+          <Button
+            v-if="!inRecycleBin"
+            variant="ghost"
+            size="icon"
+            :title="isFavourite ? t('files.unfavourite') : t('files.favourite')"
+            :aria-label="isFavourite ? t('files.unfavourite') : t('files.favourite')"
+            :aria-pressed="isFavourite"
+            @click="toggleFavourite"
+          >
+            <Star :class="isFavourite ? 'fill-current text-amber-500' : ''" />
+          </Button>
           <Button
             variant="ghost"
             size="icon"

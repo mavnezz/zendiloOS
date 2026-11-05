@@ -3,8 +3,8 @@ mod share;
 mod snapshot;
 
 pub use files::{
-    Entry, EntryKind, FileLocation, FilePath, InvalidFilePath, Listing, RECYCLE_DIRECTORY, is_file_name,
-    is_new_file_name,
+    Entry, EntryKind, Favourite, FileLocation, FilePath, InvalidFavourites, InvalidFilePath, Listing,
+    MAX_FAVOURITES, RECYCLE_DIRECTORY, favourites, is_file_name, is_new_file_name,
 };
 pub use share::{
     Access, AccessRule, Compression, InvalidNetwork, InvalidSettings, InvalidShareName, MIN_QUOTA_BYTES,

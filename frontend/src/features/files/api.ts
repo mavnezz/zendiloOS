@@ -2,7 +2,7 @@ import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/vue-query'
 import { computed, type Ref } from 'vue'
 
 import { ApiProblem, api, csrfToken, unwrap } from '@/shared/api/client'
-import type { Job, TransferRequest } from '@/shared/api/types'
+import type { Favourite, Job, TransferRequest } from '@/shared/api/types'
 
 /** Shares the signed-in user may use. */
 export function useMyShares() {
@@ -10,6 +10,24 @@ export function useMyShares() {
     queryKey: ['files', 'shares'],
     queryFn: () => unwrap(api.GET('/api/v1/files/shares')),
   })
+}
+
+/** The signed-in account's favourite folders. */
+export function useFavourites() {
+  return useQuery({
+    queryKey: ['files', 'favourites'],
+    queryFn: () => unwrap(api.GET('/api/v1/files/favourites')),
+  })
+}
+
+/** Replaces the favourites, in the order given. */
+export function useSetFavourites() {
+  const client = useQueryClient()
+  return async (favourites: Pick<Favourite, 'share_id' | 'path'>[]): Promise<Favourite[]> => {
+    const saved = await unwrap(api.PUT('/api/v1/files/favourites', { body: { favourites } }))
+    client.setQueryData(['files', 'favourites'], saved)
+    return saved
+  }
 }
 
 /** One folder of a share; `share` null shows nothing. */

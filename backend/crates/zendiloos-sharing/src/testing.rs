@@ -32,7 +32,11 @@ impl ports::Volumes for Volumes {
 pub const FILE_CONTENT: &str = "abcdefghij";
 
 #[derive(Default)]
-pub struct Shares(Mutex<Vec<Share>>, Mutex<std::collections::HashMap<ShareId, Vec<SnapshotSchedule>>>);
+pub struct Shares(
+    Mutex<Vec<Share>>,
+    Mutex<std::collections::HashMap<ShareId, Vec<SnapshotSchedule>>>,
+    Mutex<std::collections::HashMap<i64, Vec<crate::domain::Favourite>>>,
+);
 
 #[async_trait]
 impl ShareRepository for Shares {
@@ -86,6 +90,19 @@ impl ShareRepository for Shares {
         schedules: &[SnapshotSchedule],
     ) -> Result<(), PortError> {
         self.1.lock().unwrap().insert(id, schedules.to_vec());
+        Ok(())
+    }
+
+    async fn favourites(&self, account: i64) -> Result<Vec<crate::domain::Favourite>, PortError> {
+        Ok(self.2.lock().unwrap().get(&account).cloned().unwrap_or_default())
+    }
+
+    async fn set_favourites(
+        &self,
+        account: i64,
+        favourites: &[crate::domain::Favourite],
+    ) -> Result<(), PortError> {
+        self.2.lock().unwrap().insert(account, favourites.to_vec());
         Ok(())
     }
 }

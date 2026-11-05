@@ -13,7 +13,8 @@ use zendiloos_kernel::{Actor, PortError, RequestContext};
 use super::SharingPorts;
 use super::ports::FileHostError;
 use crate::domain::{
-    Access, FileLocation, FilePath, InvalidFilePath, Listing, Share, ShareId, Subject, is_new_file_name,
+    self, Access, Favourite, FileLocation, FilePath, InvalidFilePath, Listing, MAX_FAVOURITES, Share,
+    ShareId, ShareName, Subject, is_new_file_name,
 };
 
 /// Most entries one copy, move or delete takes.
@@ -171,6 +172,48 @@ impl FilesUseCases {
     ) -> Result<(tokio::fs::File, u64), FilesError> {
         let share = self.share(actor, id).await?.share;
         Ok(self.ports.files.open(&actor.name, &at(&share, path), context).await?)
+    }
+
+    /// The account's favourite folders in shares it may still use, with
+    /// each share's name.
+    pub async fn favourites(&self, actor: &Actor) -> Result<Vec<(Favourite, ShareName)>, FilesError> {
+        let usable = self.shares(actor).await?;
+        let favourites = self.ports.shares.favourites(actor.account_id).await?;
+        Ok(favourites
+            .into_iter()
+            .filter_map(|favourite| {
+                let share = usable.iter().find(|u| u.share.id == favourite.share)?;
+                Some((favourite, share.share.name.clone()))
+            })
+            .collect())
+    }
+
+    /// Replaces the account's favourites; each must be in a share it may
+    /// use. Favourites in shares it lost access to are kept, unshown, in
+    /// case access comes back.
+    pub async fn set_favourites(
+        &self,
+        actor: &Actor,
+        list: Vec<Favourite>,
+    ) -> Result<Vec<(Favourite, ShareName)>, FilesError> {
+        let usable = self.shares(actor).await?;
+        if list.iter().any(|favourite| !usable.iter().any(|u| u.share.id == favourite.share)) {
+            return Err(FilesError::ShareNotFound);
+        }
+        let mut list = domain::favourites(list).map_err(|error| FilesError::Invalid(error.to_string()))?;
+        // Those in shares the account cannot use now: never in `list`.
+        let hidden: Vec<Favourite> = self
+            .ports
+            .shares
+            .favourites(actor.account_id)
+            .await?
+            .into_iter()
+            .filter(|favourite| !usable.iter().any(|u| u.share.id == favourite.share))
+            .collect();
+        list.extend(hidden);
+        list.truncate(MAX_FAVOURITES);
+        self.ports.shares.set_favourites(actor.account_id, &list).await?;
+        self.favourites(actor).await
     }
 
     /// The folder `path` as a tar archive being written, its exact length,

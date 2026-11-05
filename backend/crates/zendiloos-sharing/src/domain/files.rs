@@ -148,3 +148,51 @@ mod tests {
         assert!(FilePath::root().join("a/b").is_err());
     }
 }
+
+/// The most favourites one account keeps.
+pub const MAX_FAVOURITES: usize = 50;
+
+/// A folder someone wants at hand in the file manager.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Favourite {
+    pub share: super::ShareId,
+    pub path: FilePath,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum InvalidFavourites {
+    #[error("at most {MAX_FAVOURITES} favourites")]
+    TooMany,
+    #[error("a folder is a favourite only once")]
+    Duplicate,
+}
+
+/// An account's favourites, checked, in the order given.
+pub fn favourites(list: Vec<Favourite>) -> Result<Vec<Favourite>, InvalidFavourites> {
+    if list.len() > MAX_FAVOURITES {
+        return Err(InvalidFavourites::TooMany);
+    }
+    if list.iter().enumerate().any(|(index, favourite)| list[..index].contains(favourite)) {
+        return Err(InvalidFavourites::Duplicate);
+    }
+    Ok(list)
+}
+
+#[cfg(test)]
+mod favourite_tests {
+    use super::*;
+    use crate::domain::ShareId;
+
+    fn at(share: i64, path: &str) -> Favourite {
+        Favourite { share: ShareId::new(share), path: FilePath::parse(path).unwrap() }
+    }
+
+    #[test]
+    fn favourites_are_few_and_each_once() {
+        let list = vec![at(1, "album"), at(2, "album"), at(1, "")];
+        assert_eq!(favourites(list.clone()), Ok(list), "the order stays");
+        assert_eq!(favourites(vec![at(1, "a"), at(1, "/a/")]), Err(InvalidFavourites::Duplicate));
+        let many = (0..=MAX_FAVOURITES).map(|n| at(1, &format!("f{n}"))).collect();
+        assert_eq!(favourites(many), Err(InvalidFavourites::TooMany));
+    }
+}

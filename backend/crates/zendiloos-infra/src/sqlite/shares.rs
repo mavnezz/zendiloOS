@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use zendiloos_kernel::{PortError, Timestamp};
 use zendiloos_sharing::application::ports::{Directory, Names, ShareRepository};
 use zendiloos_sharing::domain::{
-    Access, AccessRule, Compression, Frequency, NewShare, NfsClient, RecordSize, Share, ShareId, ShareName,
-    ShareSettings, SnapshotSchedule, Subject,
+    Access, AccessRule, Compression, Favourite, FilePath, Frequency, NewShare, NfsClient, RecordSize, Share,
+    ShareId, ShareName, ShareSettings, SnapshotSchedule, Subject,
 };
 
 use super::Database;
@@ -299,6 +299,45 @@ impl ShareRepository for SqliteShares {
         }
         transaction.commit().await.map_err(db_error)
     }
+
+    async fn favourites(&self, account: i64) -> Result<Vec<Favourite>, PortError> {
+        let rows = sqlx::query!(
+            "SELECT share_id, path FROM file_favourites WHERE account_id = ? ORDER BY position",
+            account
+        )
+        .fetch_all(self.db.pool())
+        .await
+        .map_err(db_error)?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| {
+                Some(Favourite { share: ShareId::new(row.share_id), path: FilePath::parse(&row.path).ok()? })
+            })
+            .collect())
+    }
+
+    async fn set_favourites(&self, account: i64, favourites: &[Favourite]) -> Result<(), PortError> {
+        let mut transaction = self.db.pool().begin().await.map_err(db_error)?;
+        sqlx::query!("DELETE FROM file_favourites WHERE account_id = ?", account)
+            .execute(&mut *transaction)
+            .await
+            .map_err(db_error)?;
+        for (position, favourite) in favourites.iter().enumerate() {
+            let (share, path) = (favourite.share.get(), favourite.path.as_str());
+            let position = i64::try_from(position).unwrap_or(i64::MAX);
+            sqlx::query!(
+                "INSERT INTO file_favourites (account_id, share_id, path, position) VALUES (?, ?, ?, ?)",
+                account,
+                share,
+                path,
+                position
+            )
+            .execute(&mut *transaction)
+            .await
+            .map_err(db_error)?;
+        }
+        transaction.commit().await.map_err(db_error)
+    }
 }
 
 #[async_trait]
@@ -398,7 +437,15 @@ mod tests {
         shares.update(&share).await.unwrap();
         assert_eq!(shares.list().await.unwrap(), [share.clone()]);
 
+        let favourite = |path: &str| Favourite { share: share.id, path: FilePath::parse(path).unwrap() };
+        let mine = [favourite("b"), favourite("a"), favourite("")];
+        shares.set_favourites(alice.id.get(), &mine).await.unwrap();
+        assert_eq!(shares.favourites(alice.id.get()).await.unwrap(), mine, "in the order given");
+        shares.set_favourites(alice.id.get(), &mine[1..]).await.unwrap();
+        assert_eq!(shares.favourites(alice.id.get()).await.unwrap(), mine[1..]);
+
         SqliteAccounts::new(db.clone()).delete(alice.id).await.unwrap();
+        assert!(shares.favourites(alice.id.get()).await.unwrap().is_empty(), "they go with the account");
         let rules = shares.find(share.id).await.unwrap().unwrap().access;
         assert_eq!(
             rules,

@@ -29,6 +29,7 @@ use crate::state::ApiState;
 pub(super) fn routes() -> OpenApiRouter<ApiState> {
     OpenApiRouter::new()
         .routes(routes!(my_shares))
+        .routes(routes!(favourites, set_favourites))
         .routes(routes!(list_folder))
         .routes(routes!(download))
         .routes(routes!(download_folder))
@@ -621,6 +622,81 @@ async fn restore_entries(
     let restored =
         state.files.restore(&auth.0.actor(), ShareId::new(id), paths(&request.paths)?, &client).await?;
     Ok(Json(RestoredEntries { paths: restored.iter().map(|p| p.as_str().to_owned()).collect() }))
+}
+
+/// A folder kept at hand.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct Favourite {
+    pub share_id: i64,
+    pub share_name: String,
+    /// Relative to the share's root; empty for the share itself.
+    pub path: String,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FavouriteFolder {
+    pub share_id: i64,
+    #[serde(default)]
+    pub path: String,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetFavouritesRequest {
+    /// In the order to show them; at most 50.
+    pub favourites: Vec<FavouriteFolder>,
+}
+
+fn favourite_dtos(list: Vec<(sharing::Favourite, sharing::ShareName)>) -> Vec<Favourite> {
+    list.into_iter()
+        .map(|(favourite, share)| Favourite {
+            share_id: favourite.share.get(),
+            share_name: share.to_string(),
+            path: favourite.path.as_str().to_owned(),
+        })
+        .collect()
+}
+
+/// The signed-in account's favourite folders, in shares it may use.
+/// Needs `files.read`.
+#[utoipa::path(
+    get,
+    path = "/files/favourites",
+    tag = "files",
+    security(("session" = [])),
+    responses((status = OK, body = Vec<Favourite>))
+)]
+async fn favourites(auth: Auth, State(state): State<ApiState>) -> Result<Json<Vec<Favourite>>, ApiError> {
+    auth.require(Permission::FilesRead)?;
+    Ok(Json(favourite_dtos(state.files.favourites(&auth.0.actor()).await?)))
+}
+
+/// Replaces the signed-in account's favourite folders. Needs `files.read`.
+#[utoipa::path(
+    put,
+    path = "/files/favourites",
+    tag = "files",
+    security(("session" = [])),
+    request_body = SetFavouritesRequest,
+    responses(
+        (status = OK, body = Vec<Favourite>),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`: a share the account may not use"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_operation`: too many, or twice"),
+    )
+)]
+async fn set_favourites(
+    auth: Auth,
+    State(state): State<ApiState>,
+    ApiJson(request): ApiJson<SetFavouritesRequest>,
+) -> Result<Json<Vec<Favourite>>, ApiError> {
+    auth.require(Permission::FilesRead)?;
+    let list = request
+        .favourites
+        .into_iter()
+        .map(|f| Ok(sharing::Favourite { share: ShareId::new(f.share_id), path: path(&f.path)? }))
+        .collect::<Result<Vec<_>, ApiError>>()?;
+    Ok(Json(favourite_dtos(state.files.set_favourites(&auth.0.actor(), list).await?)))
 }
 
 #[cfg(test)]

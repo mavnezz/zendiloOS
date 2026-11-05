@@ -814,6 +814,7 @@ fn openapi_documents_every_route() {
             "/api/v1/auth/logout",
             "/api/v1/auth/password",
             "/api/v1/auth/session",
+            "/api/v1/files/favourites",
             "/api/v1/files/shares",
             "/api/v1/files/shares/{id}/archive",
             "/api/v1/files/shares/{id}/delete",
@@ -1907,6 +1908,17 @@ async fn downloads_resume_and_harmless_kinds_show_in_the_browser() {
         "attachment; filename=\"2024.tar\"; filename*=UTF-8''2024.tar"
     );
     assert_eq!(folder.header(header::CONTENT_LENGTH), "10");
+
+    let share_id = created.body["id"].as_i64().unwrap();
+    let put_favourites = |body: Value| {
+        h.send(json(with_csrf(changing(Method::PUT, "/api/v1/files/favourites"), &carol), body))
+    };
+    let saved = put_favourites(json!({ "favourites": [{ "share_id": share_id, "path": "2024" }] })).await;
+    assert_eq!(saved.body, json!([{ "share_id": share_id, "share_name": "photos", "path": "2024" }]));
+    let listed = h.send(empty(with_cookie(get("/api/v1/files/favourites"), &carol))).await;
+    assert_eq!(listed.body, saved.body);
+    let foreign = put_favourites(json!({ "favourites": [{ "share_id": share_id + 1 }] })).await;
+    assert_problem(&foreign, StatusCode::NOT_FOUND, "not_found");
 
     let picture = fetch("path=a.jpg&inline=true", &[]).await;
     assert_eq!(picture.header(header::CONTENT_TYPE), "image/jpeg");

@@ -469,6 +469,90 @@
         ]
       }
     },
+    "/api/v1/files/favourites": {
+      "get": {
+        "tags": [
+          "files"
+        ],
+        "summary": "The signed-in account's favourite folders, in shares it may use.\nNeeds `files.read`.",
+        "operationId": "favourites",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Favourite"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "files"
+        ],
+        "summary": "Replaces the signed-in account's favourite folders. Needs `files.read`.",
+        "operationId": "set_favourites",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetFavouritesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Favourite"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: a share the account may not use",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_operation`: too many, or twice",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/files/shares": {
       "get": {
         "tags": [
@@ -3922,6 +4006,44 @@
           "unused"
         ]
       },
+      "Favourite": {
+        "type": "object",
+        "description": "A folder kept at hand.",
+        "required": [
+          "share_id",
+          "share_name",
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Relative to the share's root; empty for the share itself."
+          },
+          "share_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "share_name": {
+            "type": "string"
+          }
+        }
+      },
+      "FavouriteFolder": {
+        "type": "object",
+        "required": [
+          "share_id"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "share_id": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "additionalProperties": false
+      },
       "FileEntry": {
         "type": "object",
         "required": [
@@ -5848,6 +5970,22 @@
             "description": "When the session ends at the latest, as Unix time in seconds."
           }
         }
+      },
+      "SetFavouritesRequest": {
+        "type": "object",
+        "required": [
+          "favourites"
+        ],
+        "properties": {
+          "favourites": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FavouriteFolder"
+            },
+            "description": "In the order to show them; at most 50."
+          }
+        },
+        "additionalProperties": false
       },
       "SetSelfTestPlans": {
         "type": "object",

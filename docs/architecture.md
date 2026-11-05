@@ -532,6 +532,10 @@ topics `jobs` and `notifications` apply the same rules.
   ends short of its length and the browser reports it as failed. At the
   share's top the recycle bins are left out, everywhere uploads in
   progress; at most four folders are written at once.
+- **Favourites** are folders an account keeps at hand, in its order (at
+  most 50, in the database with the account and the share). Only those in
+  shares the account may use are shown; the others are kept, should
+  access come back.
 - Alternative: the file manager runs with broad rights and checks ACLs
   itself. Simpler, but every gap in the checks becomes a data leak, and new
   files belong to the service account.

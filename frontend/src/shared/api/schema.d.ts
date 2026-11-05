@@ -131,6 +131,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/files/favourites": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The signed-in account's favourite folders, in shares it may use.
+         *     Needs `files.read`.
+         */
+        get: operations["favourites"];
+        /** Replaces the signed-in account's favourite folders. Needs `files.read`. */
+        put: operations["set_favourites"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/files/shares": {
         parameters: {
             query?: never;
@@ -1236,6 +1257,19 @@ export interface components {
          * @enum {string}
          */
         DiskUsage: "system" | "array_member" | "pool_member" | "volume" | "foreign" | "unused";
+        /** @description A folder kept at hand. */
+        Favourite: {
+            /** @description Relative to the share's root; empty for the share itself. */
+            path: string;
+            /** Format: int64 */
+            share_id: number;
+            share_name: string;
+        };
+        FavouriteFolder: {
+            path?: string;
+            /** Format: int64 */
+            share_id: number;
+        };
         FileEntry: {
             kind: components["schemas"]["FileKind"];
             /**
@@ -1876,6 +1910,10 @@ export interface components {
              * @description When the session ends at the latest, as Unix time in seconds.
              */
             expires_at: number;
+        };
+        SetFavouritesRequest: {
+            /** @description In the order to show them; at most 50. */
+            favourites: components["schemas"]["FavouriteFolder"][];
         };
         SetSelfTestPlans: {
             plans: components["schemas"]["SelfTestPlan"][];
@@ -2577,6 +2615,66 @@ export interface operations {
             };
             /** @description `unauthenticated` */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    favourites: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Favourite"][];
+                };
+            };
+        };
+    };
+    set_favourites: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetFavouritesRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Favourite"][];
+                };
+            };
+            /** @description `not_found`: a share the account may not use */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_operation`: too many, or twice */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
