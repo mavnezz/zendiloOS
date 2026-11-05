@@ -405,6 +405,22 @@ impl Pools {
         Ok(Response::Done)
     }
 
+    /// Returns a share to one of its snapshots; later snapshots go too
+    /// (`-r`), since ZFS can only roll back to the most recent one.
+    pub(crate) async fn rollback_snapshot(
+        &self,
+        pool: &PoolName,
+        volume: VolumeNumber,
+        share: &ShareName,
+        label: &SnapshotLabel,
+    ) -> Result<Response, OperationError> {
+        let _serial = self.serial.lock().await;
+        self.require_managed(pool, Some(volume)).await?;
+        let dataset = self.share_dataset(pool, share).await?;
+        run(&self.zfs, &["rollback", "-r", &format!("{dataset}@{}", label.as_str())]).await?;
+        Ok(Response::Done)
+    }
+
     /// Quota, compression and record size of a share's dataset.
     pub(crate) async fn set_share_properties(
         &self,

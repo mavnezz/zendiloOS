@@ -621,6 +621,25 @@ impl Host {
         Ok(())
     }
 
+    /// Like `zfs rollback -r`: the snapshots taken after `label` go.
+    pub fn rollback_snapshot(
+        &mut self,
+        pool: &str,
+        volume: u16,
+        share: &str,
+        label: &str,
+    ) -> Result<(), Refusal> {
+        let pool = self.managed_pool(pool, volume)?;
+        let Some(taken) =
+            pool.snapshots.iter().find(|s| s.share == share && s.label == label).map(|s| s.label.clone())
+        else {
+            return Err(Refusal::Refused(format!("there is no snapshot {}/{share}@{label}", pool.name)));
+        };
+        // Labels are the time they were taken, so later ones sort after.
+        pool.snapshots.retain(|s| s.share != share || s.label <= taken);
+        Ok(())
+    }
+
     /// Like `zfs list -H -p -t filesystem -d 1 -o name,used,available`: the
     /// share datasets, each holding a little.
     pub fn share_usage(&self) -> String {

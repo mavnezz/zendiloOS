@@ -2898,6 +2898,80 @@
         ]
       }
     },
+    "/api/v1/shares/{id}/snapshots/{label}/rollback": {
+      "post": {
+        "tags": [
+          "shares"
+        ],
+        "summary": "Returns the share to a snapshot: everything changed since is lost, and\nso are the snapshots taken after it. Needs `shares.manage` and the\nshare's name as confirmation.",
+        "operationId": "rollback_snapshot",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "label",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RollbackRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RolledBack"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`confirmation_mismatch`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/storage/arrays": {
       "get": {
         "tags": [
@@ -6423,6 +6497,34 @@
               "type": "string"
             },
             "description": "Where each went, in the order asked."
+          }
+        }
+      },
+      "RollbackRequest": {
+        "type": "object",
+        "required": [
+          "confirm"
+        ],
+        "properties": {
+          "confirm": {
+            "type": "string",
+            "description": "The share's name, typed by the user."
+          }
+        },
+        "additionalProperties": false
+      },
+      "RolledBack": {
+        "type": "object",
+        "required": [
+          "destroyed"
+        ],
+        "properties": {
+          "destroyed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Labels of the later snapshots that went with the rollback."
           }
         }
       },

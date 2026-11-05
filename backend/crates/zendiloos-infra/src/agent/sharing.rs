@@ -226,6 +226,23 @@ impl ShareHost for AgentSharing {
         change(self.system.as_ref(), request, context).await
     }
 
+    async fn rollback_snapshot(
+        &self,
+        pool_name: &str,
+        number: u16,
+        name: &ShareName,
+        snapshot: &str,
+        context: &RequestContext,
+    ) -> Result<(), HostError> {
+        let request = Request::RollbackSnapshot {
+            pool: pool(pool_name)?,
+            volume: volume(number)?,
+            share: share(name)?,
+            label: label(snapshot)?,
+        };
+        change(self.system.as_ref(), request, context).await
+    }
+
     async fn create_dataset(
         &self,
         pool_name: &str,

@@ -300,6 +300,9 @@ impl AgentTransport for SimulatedAgent {
                 share.as_str(),
                 label.as_str(),
             )),
+            Request::RollbackSnapshot { pool, volume, share, label } => changed(
+                self.host().rollback_snapshot(pool.as_str(), volume.get(), share.as_str(), label.as_str()),
+            ),
             Request::ListSnapshots {} => Response::Snapshots { zfs_list: self.host().snapshot_list() },
             // The console belongs to the machine the simulation pretends to be.
             Request::ShowOnConsole { .. } => Response::Done,

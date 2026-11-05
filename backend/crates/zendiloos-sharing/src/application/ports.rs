@@ -145,6 +145,16 @@ pub trait ShareHost: Send + Sync {
         context: &RequestContext,
     ) -> Result<(), HostError>;
 
+    /// Returns the share to the snapshot; later snapshots are destroyed.
+    async fn rollback_snapshot(
+        &self,
+        pool: &str,
+        volume: u16,
+        share: &ShareName,
+        label: &str,
+        context: &RequestContext,
+    ) -> Result<(), HostError>;
+
     /// Permissions of the share's directory; with `recursive` also of its
     /// contents.
     async fn set_access(

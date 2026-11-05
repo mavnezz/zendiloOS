@@ -823,6 +823,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/shares/{id}/snapshots/{label}/rollback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Returns the share to a snapshot: everything changed since is lost, and
+         *     so are the snapshots taken after it. Needs `shares.manage` and the
+         *     share's name as confirmation.
+         */
+        post: operations["rollback_snapshot"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/storage/arrays": {
         parameters: {
             query?: never;
@@ -2014,6 +2035,14 @@ export interface components {
         RestoredEntries: {
             /** @description Where each went, in the order asked. */
             paths: string[];
+        };
+        RollbackRequest: {
+            /** @description The share's name, typed by the user. */
+            confirm: string;
+        };
+        RolledBack: {
+            /** @description Labels of the later snapshots that went with the rollback. */
+            destroyed: string[];
         };
         RunningSelfTest: {
             /**
@@ -4432,6 +4461,50 @@ export interface operations {
             };
             /** @description `not_found` */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    rollback_snapshot: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+                label: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RollbackRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RolledBack"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `confirmation_mismatch` */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

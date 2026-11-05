@@ -281,6 +281,15 @@ call_as anna GET "$files/folder?path=album&snapshot=$snapshot" | jq -e '.entries
 job_succeeded "$(call_as anna POST "$files/snapshots/$snapshot/restore" '{"paths":["album/from-web.txt"]}' | jq -r .id)"
 [[ $(vm "sudo cat $path/album/from-web.txt") == 'written in the browser' ]] || fail "the file is not back"
 [[ $(vm "sudo stat -c '%U' $path/album/from-web.txt") == anna ]] || fail "the copied-back file does not belong to anna"
+# Rolling back: what changed since is gone, so are later snapshots.
+later=$(call POST "/shares/$share_id/snapshots" '{"note":"later"}' | jq -er .label) || fail "no later snapshot"
+vm "sudo touch $path/after-the-snapshot.txt"
+[[ $(status_as admin POST "/shares/$share_id/snapshots/$snapshot/rollback" -H 'Content-Type: application/json' -d '{"confirm":"photo"}') == 422 ]] \
+    || fail "a rollback without the right name"
+rolled=$(call POST "/shares/$share_id/snapshots/$snapshot/rollback" '{"confirm":"photos"}')
+[[ $(jq -r '.destroyed | join(",")' <<<"$rolled") == "$later" ]] || fail "rollback: $rolled"
+vm "sudo test ! -e $path/after-the-snapshot.txt" || fail "the rollback kept a later file"
+vm "! sudo zfs list -H -t snapshot -o name | grep -qF '@$later'" || fail "the later snapshot is still there"
 [[ $(status_as admin POST "/shares/$share_id/snapshots/$snapshot/delete") == 204 ]] || fail "cannot delete the snapshot"
 vm "! sudo zfs list -H -t snapshot -o name | grep -qF '@$snapshot'" || fail "the snapshot is still there"
 

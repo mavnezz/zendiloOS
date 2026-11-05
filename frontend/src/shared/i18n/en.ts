@@ -758,6 +758,12 @@ const en = {
       usedOfQuota: '{used} of {quota} used',
     },
     snapshots: {
+      rollback: 'Roll back to this snapshot',
+      rollbackWarning: 'Everything changed in {share} since {time} is lost.',
+      rollbackLater:
+        'The later snapshot is deleted too. | The {count} later snapshots are deleted too.',
+      rollbackConfirm: 'Type {share} to confirm',
+      rolledBack: 'The share is back as it was on {time}.',
       open: 'Snapshots',
       title: 'Snapshots of {name}',
       description:

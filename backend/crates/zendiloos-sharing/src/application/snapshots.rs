@@ -80,6 +80,37 @@ impl SharingUseCases {
         Ok(destroyed?)
     }
 
+    /// Returns the share to snapshot `label`: everything changed since is
+    /// gone, and so are the snapshots taken after it. `confirm` must be the
+    /// share's name. Returns the labels of the snapshots that went.
+    pub async fn rollback_snapshot(
+        &self,
+        id: ShareId,
+        label: &str,
+        confirm: &str,
+        actor: &Actor,
+        request: &RequestContext,
+    ) -> Result<Vec<String>, SharingError> {
+        let _changes = self.changes.lock().await;
+        let share = self.ports.shares.find(id).await?.ok_or(SharingError::ShareNotFound)?;
+        if confirm != share.name.as_str() {
+            return Err(SharingError::ConfirmationMismatch);
+        }
+        let snapshots = of_share(&share, self.ports.host.snapshots(request).await?);
+        let Some(target) = snapshots.iter().find(|s| domain::is_label(label) && s.label == label) else {
+            return Err(SharingError::SnapshotNotFound);
+        };
+        let later: Vec<String> =
+            snapshots.iter().filter(|s| s.taken_at > target.taken_at).map(|s| s.label.clone()).collect();
+        let host = &self.ports.host;
+        let rolled = host.rollback_snapshot(&share.pool, share.volume, &share.name, label, request).await;
+        let outcome = if rolled.is_ok() { Outcome::Success } else { Outcome::Failure };
+        self.audit("sharing.rollback_snapshot", outcome, &format!("{}@{label}", share.name), actor, request)
+            .await;
+        rolled?;
+        Ok(later)
+    }
+
     /// Replaces how often the share is snapshotted and how many to keep.
     /// Snapshots of a schedule that is removed stay until deleted by hand.
     pub async fn set_snapshot_schedules(

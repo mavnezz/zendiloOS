@@ -24,6 +24,7 @@ pub(super) fn routes() -> OpenApiRouter<ApiState> {
         .routes(routes!(delete_share))
         .routes(routes!(snapshots, take_snapshot))
         .routes(routes!(delete_snapshot))
+        .routes(routes!(rollback_snapshot))
         .routes(routes!(set_snapshot_schedules))
 }
 
@@ -574,6 +575,50 @@ async fn delete_snapshot(
     auth.require(Permission::SharesManage)?;
     state.sharing.delete_snapshot(ShareId::new(id), &label, &auth.0.actor(), &client).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RollbackRequest {
+    /// The share's name, typed by the user.
+    pub confirm: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RolledBack {
+    /// Labels of the later snapshots that went with the rollback.
+    pub destroyed: Vec<String>,
+}
+
+/// Returns the share to a snapshot: everything changed since is lost, and
+/// so are the snapshots taken after it. Needs `shares.manage` and the
+/// share's name as confirmation.
+#[utoipa::path(
+    post,
+    path = "/shares/{id}/snapshots/{label}/rollback",
+    tag = "shares",
+    security(("session" = [])),
+    params(("id" = i64, Path), ("label" = String, Path)),
+    request_body = RollbackRequest,
+    responses(
+        (status = OK, body = RolledBack),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`confirmation_mismatch`"),
+    )
+)]
+async fn rollback_snapshot(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path((id, label)): Path<(i64, String)>,
+    ApiJson(request): ApiJson<RollbackRequest>,
+) -> Result<Json<RolledBack>, ApiError> {
+    auth.require(Permission::SharesManage)?;
+    let destroyed = state
+        .sharing
+        .rollback_snapshot(ShareId::new(id), &label, &request.confirm, &auth.0.actor(), &client)
+        .await?;
+    Ok(Json(RolledBack { destroyed }))
 }
 
 /// Replaces how often the share is snapshotted and how many to keep, one

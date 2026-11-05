@@ -448,6 +448,16 @@ async fn snapshots_are_of_one_share_and_destroy_nothing_else() {
     };
     assert_eq!(host.run(destroy).await, Response::Done);
     assert_eq!(host.calls().last().unwrap(), "zfs destroy tank/photos@zdl-2026-11-05_19.40.01");
+    let rollback = |share_name: &str, pool: &str| Request::RollbackSnapshot {
+        pool: PoolName::parse(pool).unwrap(),
+        volume: VolumeNumber::new(1).unwrap(),
+        share: share(share_name),
+        label: label(),
+    };
+    assert_eq!(host.run(rollback("photos", "tank")).await, Response::Done);
+    assert_eq!(host.calls().last().unwrap(), "zfs rollback -r tank/photos@zdl-2026-11-05_19.40.01");
+    assert_refused(host.run(rollback("nothing", "tank")).await, ErrorCode::Forbidden, "no share");
+    assert_refused(host.run(rollback("photos", "foreign")).await, ErrorCode::Forbidden, "not managed");
 
     assert!(matches!(host.run(Request::ListSnapshots {}).await, Response::Snapshots { .. }));
     assert_eq!(

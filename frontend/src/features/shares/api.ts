@@ -100,6 +100,17 @@ export function useSnapshotActions() {
           }),
         ),
       ),
+    /** Returns the share to the snapshot; answers the later snapshots that went. */
+    rollback: (id: number, label: string, confirm: string): Promise<string[]> =>
+      refreshing(
+        id,
+        unwrap(
+          api.POST('/api/v1/shares/{id}/snapshots/{label}/rollback', {
+            params: { path: { id, label } },
+            body: { confirm },
+          }),
+        ),
+      ).then((answer) => answer.destroyed),
     schedule: (id: number, body: ShareSnapshotSchedule[]): Promise<ShareSnapshotSchedule[]> =>
       refreshing(
         id,

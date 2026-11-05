@@ -250,6 +250,19 @@ impl ShareHost for Host {
         Ok(())
     }
 
+    async fn rollback_snapshot(
+        &self,
+        pool: &str,
+        _volume: u16,
+        share: &ShareName,
+        label: &str,
+        _: &RequestContext,
+    ) -> Result<(), HostError> {
+        self.calls.lock().unwrap().push(format!("rollback {pool}/{share}@{label}"));
+        self.snapshots.lock().unwrap().retain(|s| s.share != *share || s.label.as_str() <= label);
+        Ok(())
+    }
+
     async fn set_access(
         &self,
         volume: u16,

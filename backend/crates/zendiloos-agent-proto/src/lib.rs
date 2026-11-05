@@ -133,6 +133,14 @@ pub enum Request {
         share: ShareName,
         label: SnapshotLabel,
     },
+    /// Returns a share to one of its snapshots (`zfs rollback -r`): what
+    /// changed since is gone, and so are the snapshots taken after it.
+    RollbackSnapshot {
+        pool: PoolName,
+        volume: VolumeNumber,
+        share: ShareName,
+        label: SnapshotLabel,
+    },
     /// All snapshots with their properties (`zfs list -t snapshot`).
     ListSnapshots {},
     /// Quota, compression and record size of share dataset
@@ -308,6 +316,7 @@ impl Request {
             Request::StopScrub { .. } => "stop_scrub",
             Request::CreateSnapshot { .. } => "create_snapshot",
             Request::DestroySnapshot { .. } => "destroy_snapshot",
+            Request::RollbackSnapshot { .. } => "rollback_snapshot",
             Request::ListSnapshots {} => "list_snapshots",
             Request::ShowOnConsole { .. } => "show_on_console",
             Request::SetShareProperties { .. } => "set_share_properties",

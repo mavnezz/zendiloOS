@@ -770,6 +770,12 @@ const de: Messages = {
       usedOfQuota: '{used} von {quota} belegt',
     },
     snapshots: {
+      rollback: 'Auf diesen Snapshot zurücksetzen',
+      rollbackWarning: 'Alles, was sich in {share} seit {time} geändert hat, geht verloren.',
+      rollbackLater:
+        'Der spätere Snapshot wird ebenfalls gelöscht. | Die {count} späteren Snapshots werden ebenfalls gelöscht.',
+      rollbackConfirm: 'Geben Sie zur Bestätigung {share} ein',
+      rolledBack: 'Die Freigabe ist wieder auf dem Stand vom {time}.',
       open: 'Snapshots',
       title: 'Snapshots von {name}',
       description:

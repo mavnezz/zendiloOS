@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Camera, Trash2 } from 'lucide-vue-next'
+import { Camera, RotateCcw, Trash2 } from 'lucide-vue-next'
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
@@ -42,6 +42,29 @@ const note = ref('')
 const confirming = ref<string | null>(null)
 const failure = ref<string | null>(null)
 const saved = ref(false)
+/** The snapshot to roll back to, and the share's name as typed. */
+const rollingBack = ref<string | null>(null)
+const typedName = ref('')
+const rolledBack = ref<string | null>(null)
+
+/** Snapshots taken after `label`: they go with a rollback. */
+function laterThan(label: string): number {
+  const all = data.value?.snapshots ?? []
+  const target = all.find((s) => s.label === label)
+  return target ? all.filter((s) => s.taken_at > target.taken_at).length : 0
+}
+
+function rollback(label: string): Promise<void> {
+  const share = props.share
+  if (!share) return Promise.resolve()
+  return run(async () => {
+    await actions.rollback(share.id, label, typedName.value)
+    const taken = data.value?.snapshots.find((s) => s.label === label)
+    rolledBack.value = taken ? formatDateTime(taken.taken_at * 1000) : label
+    rollingBack.value = null
+    typedName.value = ''
+  })
+}
 
 function emptyPlans(): Record<SnapshotFrequency, Plan> {
   return {
@@ -71,6 +94,9 @@ watch(open, (isOpen) => {
   confirming.value = null
   failure.value = null
   saved.value = false
+  rollingBack.value = null
+  typedName.value = ''
+  rolledBack.value = null
 })
 
 async function run(action: () => Promise<unknown>): Promise<void> {
@@ -124,6 +150,7 @@ function remove(label: string): Promise<void> {
   >
     <Alert v-if="error" variant="destructive">{{ problemMessage(error) }}</Alert>
     <Alert v-if="failure" variant="destructive">{{ failure }}</Alert>
+    <Alert v-if="rolledBack">{{ t('shares.snapshots.rolledBack', { time: rolledBack }) }}</Alert>
 
     <form class="grid gap-2" @submit.prevent="saveSchedules">
       <h3 class="text-sm font-medium">{{ t('shares.snapshots.schedules') }}</h3>
@@ -177,39 +204,91 @@ function remove(label: string): Promise<void> {
         <li
           v-for="snapshot in data?.snapshots ?? []"
           :key="snapshot.label"
-          class="flex items-center gap-2 px-3 py-2 text-sm"
+          class="grid gap-2 px-3 py-2 text-sm"
         >
-          <div class="min-w-0 flex-1">
-            <p class="font-medium tabular-nums">{{ formatDateTime(snapshot.taken_at * 1000) }}</p>
-            <p class="truncate text-xs text-muted-foreground">
-              <template v-if="snapshot.note">{{ snapshot.note }} · </template>
-              {{ formatBytes(snapshot.used_bytes) }}
-            </p>
+          <div class="flex items-center gap-2">
+            <div class="min-w-0 flex-1">
+              <p class="font-medium tabular-nums">{{ formatDateTime(snapshot.taken_at * 1000) }}</p>
+              <p class="truncate text-xs text-muted-foreground">
+                <template v-if="snapshot.note">{{ snapshot.note }} · </template>
+                {{ formatBytes(snapshot.used_bytes) }}
+              </p>
+            </div>
+            <Badge v-if="!snapshot.schedules.length" variant="outline">
+              {{ t('shares.snapshots.byHand') }}
+            </Badge>
+            <Badge v-for="frequency in snapshot.schedules" :key="frequency" variant="secondary">
+              {{ t(`shares.snapshots.frequency.${frequency}`) }}
+            </Badge>
+            <Button
+              v-if="confirming !== snapshot.label"
+              variant="ghost"
+              size="icon"
+              :title="t('shares.snapshots.rollback')"
+              :aria-label="t('shares.snapshots.rollback')"
+              @click="((rollingBack = snapshot.label), (typedName = ''))"
+            >
+              <RotateCcw />
+            </Button>
+            <template v-if="confirming === snapshot.label">
+              <Button size="sm" variant="destructive" @click="remove(snapshot.label)">
+                {{ t('shares.snapshots.confirmDelete') }}
+              </Button>
+              <Button size="sm" variant="ghost" @click="confirming = null">
+                {{ t('desktop.cancel') }}
+              </Button>
+            </template>
+            <Button
+              v-else
+              variant="ghost"
+              size="icon"
+              :title="t('users.delete')"
+              :aria-label="t('users.delete')"
+              @click="confirming = snapshot.label"
+            >
+              <Trash2 />
+            </Button>
           </div>
-          <Badge v-if="!snapshot.schedules.length" variant="outline">
-            {{ t('shares.snapshots.byHand') }}
-          </Badge>
-          <Badge v-for="frequency in snapshot.schedules" :key="frequency" variant="secondary">
-            {{ t(`shares.snapshots.frequency.${frequency}`) }}
-          </Badge>
-          <template v-if="confirming === snapshot.label">
-            <Button size="sm" variant="destructive" @click="remove(snapshot.label)">
-              {{ t('shares.snapshots.confirmDelete') }}
-            </Button>
-            <Button size="sm" variant="ghost" @click="confirming = null">
-              {{ t('desktop.cancel') }}
-            </Button>
-          </template>
-          <Button
-            v-else
-            variant="ghost"
-            size="icon"
-            :title="t('users.delete')"
-            :aria-label="t('users.delete')"
-            @click="confirming = snapshot.label"
+          <form
+            v-if="rollingBack === snapshot.label"
+            class="grid gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-3"
+            @submit.prevent="rollback(snapshot.label)"
           >
-            <Trash2 />
-          </Button>
+            <p>
+              {{
+                t('shares.snapshots.rollbackWarning', {
+                  share: share?.name ?? '',
+                  time: formatDateTime(snapshot.taken_at * 1000),
+                })
+              }}
+              <template v-if="laterThan(snapshot.label)">
+                {{
+                  t(
+                    'shares.snapshots.rollbackLater',
+                    { count: laterThan(snapshot.label) },
+                    laterThan(snapshot.label),
+                  )
+                }}
+              </template>
+            </p>
+            <Label :for="`rollback-${snapshot.label}`">
+              {{ t('shares.snapshots.rollbackConfirm', { share: share?.name ?? '' }) }}
+            </Label>
+            <div class="flex gap-2">
+              <Input :id="`rollback-${snapshot.label}`" v-model="typedName" autocomplete="off" />
+              <Button
+                type="submit"
+                size="sm"
+                variant="destructive"
+                :disabled="typedName !== share?.name"
+              >
+                {{ t('shares.snapshots.rollback') }}
+              </Button>
+              <Button type="button" size="sm" variant="ghost" @click="rollingBack = null">
+                {{ t('desktop.cancel') }}
+              </Button>
+            </div>
+          </form>
         </li>
       </ul>
     </div>

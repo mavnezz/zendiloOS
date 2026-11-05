@@ -530,6 +530,28 @@ async fn snapshots_by_hand_are_listed_and_deleted_one_by_one() {
 }
 
 #[tokio::test]
+async fn rolling_back_needs_the_name_and_lets_go_of_later_snapshots() {
+    let s = setup();
+    let request = RequestContext::default();
+    let id = photos(&s).await;
+    let first = s.sharing.take_snapshot(id, "", &alice(), &request).await.unwrap();
+    s.clock.advance(3600);
+    let second = s.sharing.take_snapshot(id, "", &alice(), &request).await.unwrap();
+
+    let unconfirmed = s.sharing.rollback_snapshot(id, &first.label, "photo", &alice(), &request).await;
+    assert!(matches!(unconfirmed, Err(SharingError::ConfirmationMismatch)), "{unconfirmed:?}");
+    let missing =
+        s.sharing.rollback_snapshot(id, "zdl-2020-01-01_00.00.00", "photos", &alice(), &request).await;
+    assert!(matches!(missing, Err(SharingError::SnapshotNotFound)), "{missing:?}");
+
+    let gone = s.sharing.rollback_snapshot(id, &first.label, "photos", &alice(), &request).await.unwrap();
+    assert_eq!(gone, std::slice::from_ref(&second.label));
+    let (left, _) = s.sharing.snapshots(id, &request).await.unwrap();
+    assert_eq!(left.iter().map(|s| s.label.as_str()).collect::<Vec<_>>(), [first.label.as_str()]);
+    assert!(s.host.calls().contains(&format!("rollback tank/photos@{}", first.label)));
+}
+
+#[tokio::test]
 async fn schedules_take_snapshots_when_due_and_let_go_of_their_own_old_ones() {
     use crate::domain::{Frequency, SnapshotSchedule};
     let s = setup();

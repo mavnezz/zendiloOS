@@ -856,6 +856,7 @@ fn openapi_documents_every_route() {
             "/api/v1/shares/{id}/snapshots",
             "/api/v1/shares/{id}/snapshots/schedules",
             "/api/v1/shares/{id}/snapshots/{label}/delete",
+            "/api/v1/shares/{id}/snapshots/{label}/rollback",
             "/api/v1/storage/arrays",
             "/api/v1/storage/disks",
             "/api/v1/storage/disks/{name}/self-test",

@@ -117,6 +117,9 @@ impl Operations {
             Request::DestroySnapshot { pool, volume, share, label } => {
                 self.pools.destroy_snapshot(pool, *volume, share, label).await
             }
+            Request::RollbackSnapshot { pool, volume, share, label } => {
+                self.pools.rollback_snapshot(pool, *volume, share, label).await
+            }
             Request::ListSnapshots {} => self.pools.list_snapshots().await,
             Request::SetShareProperties { pool, volume, share, quota_bytes, compression, record_size } => {
                 self.pools
