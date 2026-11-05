@@ -20,7 +20,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::Deserialize;
-use zendiloos_agent_proto::{DiskId, DiskName, Layout, PoolName, Response, ShareName, VolumeNumber};
+use zendiloos_agent_proto::{
+    DiskId, DiskName, Layout, PoolName, Response, ShareName, SnapshotFrequency, SnapshotLabel, SnapshotNote,
+    VolumeNumber,
+};
 use zendiloos_exec::{Limits, Program};
 
 use crate::config::Tools;
@@ -38,6 +41,9 @@ const RESERVE_BYTES: u64 = 128 * MIB;
 const START_BYTES: u64 = MIB;
 /// The ZFS user property that marks pools zendiloos created.
 const VOLUME_PROPERTY: &str = "zendiloos:volume";
+/// Snapshot properties: the schedules it was taken for, and a note.
+const SCHEDULE_PROPERTY: &str = "zendiloos:schedule";
+const NOTE_PROPERTY: &str = "zendiloos:note";
 const PARTITION_NAME: &str = "zendiloos";
 /// The GPT type OpenZFS uses for its partitions.
 const PARTITION_TYPE: &str = "BF01";
@@ -341,6 +347,65 @@ impl Pools {
         let dataset = format!("{}/{}", pool.as_str(), name.as_str());
         run(&self.zfs, &["destroy", "-r", &dataset]).await?;
         Ok(Response::Done)
+    }
+
+    /// `<pool>/<share>`, if that dataset exists directly below the pool.
+    async fn share_dataset(&self, pool: &PoolName, share: &ShareName) -> Result<String, OperationError> {
+        let dataset = format!("{}/{}", pool.as_str(), share.as_str());
+        let existing = output(&self.zfs, &["list", "-H", "-o", "name", "-d", "1", pool.as_str()]).await?;
+        if existing.lines().any(|line| line == dataset) {
+            Ok(dataset)
+        } else {
+            Err(refused(format!("there is no share {dataset}")))
+        }
+    }
+
+    /// Takes a snapshot of a share on a pool zendiloos created.
+    pub(crate) async fn create_snapshot(
+        &self,
+        pool: &PoolName,
+        volume: VolumeNumber,
+        share: &ShareName,
+        label: &SnapshotLabel,
+        schedules: &[SnapshotFrequency],
+        note: Option<&SnapshotNote>,
+    ) -> Result<Response, OperationError> {
+        let _serial = self.serial.lock().await;
+        self.require_managed(pool, Some(volume)).await?;
+        let dataset = self.share_dataset(pool, share).await?;
+        let mut args = vec!["snapshot".to_owned()];
+        if !schedules.is_empty() {
+            let names: Vec<&str> = schedules.iter().map(|frequency| frequency.as_str()).collect();
+            args.extend(["-o".to_owned(), format!("{SCHEDULE_PROPERTY}={}", names.join(","))]);
+        }
+        if let Some(note) = note {
+            args.extend(["-o".to_owned(), format!("{NOTE_PROPERTY}={}", note.as_str())]);
+        }
+        args.push(format!("{dataset}@{}", label.as_str()));
+        run(&self.zfs, &args).await?;
+        Ok(Response::Done)
+    }
+
+    /// Destroys one snapshot of such a share. The label's shape rules out
+    /// ZFS's ranges (`%`) and lists (`,`), so it is exactly one snapshot.
+    pub(crate) async fn destroy_snapshot(
+        &self,
+        pool: &PoolName,
+        volume: VolumeNumber,
+        share: &ShareName,
+        label: &SnapshotLabel,
+    ) -> Result<Response, OperationError> {
+        let _serial = self.serial.lock().await;
+        self.require_managed(pool, Some(volume)).await?;
+        let dataset = self.share_dataset(pool, share).await?;
+        run(&self.zfs, &["destroy", &format!("{dataset}@{}", label.as_str())]).await?;
+        Ok(Response::Done)
+    }
+
+    pub(crate) async fn list_snapshots(&self) -> Result<Response, OperationError> {
+        let columns = format!("name,creation,used,referenced,{SCHEDULE_PROPERTY},{NOTE_PROPERTY}");
+        let zfs_list = output(&self.zfs, &["list", "-H", "-p", "-t", "snapshot", "-o", &columns]).await?;
+        Ok(Response::Snapshots { zfs_list })
     }
 
     /// The kernel's NFS server keeps file systems it exported busy until

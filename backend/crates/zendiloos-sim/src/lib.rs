@@ -261,6 +261,24 @@ impl AgentTransport for SimulatedAgent {
                 let now = (self.clock)();
                 changed(self.host().stop_scrub(pool.as_str(), now))
             }
+            Request::CreateSnapshot { pool, volume, share, label, schedules, note } => {
+                let names: Vec<&str> = schedules.iter().map(|f| f.as_str()).collect();
+                let snapshot = host::SimSnapshot {
+                    share: share.as_str().to_owned(),
+                    label: label.as_str().to_owned(),
+                    created: (self.clock)(),
+                    schedules: if names.is_empty() { "-".to_owned() } else { names.join(",") },
+                    note: note.as_ref().map_or("-".to_owned(), |n| n.as_str().to_owned()),
+                };
+                changed(self.host().create_snapshot(pool.as_str(), volume.get(), share.as_str(), snapshot))
+            }
+            Request::DestroySnapshot { pool, volume, share, label } => changed(self.host().destroy_snapshot(
+                pool.as_str(),
+                volume.get(),
+                share.as_str(),
+                label.as_str(),
+            )),
+            Request::ListSnapshots {} => Response::Snapshots { zfs_list: self.host().snapshot_list() },
             Request::CreateShare { pool, volume, name } => {
                 let created = self.host().create_share(pool.as_str(), volume.get(), name.as_str());
                 if let (Ok(()), Some(directory)) =

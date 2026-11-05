@@ -1,7 +1,15 @@
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
+import { type MaybeRefOrGetter, toValue } from 'vue'
 
 import { api, unwrap } from '@/shared/api/client'
-import type { CreateShareRequest, Job, Share, UpdateShareRequest } from '@/shared/api/types'
+import type {
+  CreateShareRequest,
+  Job,
+  Share,
+  ShareSnapshot,
+  ShareSnapshotSchedule,
+  UpdateShareRequest,
+} from '@/shared/api/types'
 
 export function useShares() {
   return useQuery({
@@ -50,6 +58,54 @@ export function useShareActions() {
     remove: (id: number, confirm: string): Promise<Job> =>
       refreshing(
         unwrap(api.POST('/api/v1/shares/{id}/delete', { ...path(id), body: { confirm } })),
+      ),
+  }
+}
+
+/** A share's snapshots, newest first, and its schedules. */
+export function useShareSnapshots(id: MaybeRefOrGetter<number | null>) {
+  return useQuery({
+    queryKey: ['shares', id, 'snapshots'],
+    queryFn: () =>
+      unwrap(
+        api.GET('/api/v1/shares/{id}/snapshots', { params: { path: { id: toValue(id) ?? 0 } } }),
+      ),
+    enabled: () => toValue(id) != null,
+  })
+}
+
+export function useSnapshotActions() {
+  const client = useQueryClient()
+  const refreshing = async <T>(id: number, request: Promise<T>): Promise<T> => {
+    try {
+      return await request
+    } finally {
+      await client.invalidateQueries({ queryKey: ['shares', id, 'snapshots'] })
+    }
+  }
+  return {
+    take: (id: number, note: string): Promise<ShareSnapshot> =>
+      refreshing(
+        id,
+        unwrap(
+          api.POST('/api/v1/shares/{id}/snapshots', { params: { path: { id } }, body: { note } }),
+        ),
+      ),
+    remove: (id: number, label: string): Promise<void> =>
+      refreshing(
+        id,
+        unwrap(
+          api.POST('/api/v1/shares/{id}/snapshots/{label}/delete', {
+            params: { path: { id, label } },
+          }),
+        ),
+      ),
+    schedule: (id: number, body: ShareSnapshotSchedule[]): Promise<ShareSnapshotSchedule[]> =>
+      refreshing(
+        id,
+        unwrap(
+          api.PUT('/api/v1/shares/{id}/snapshots/schedules', { params: { path: { id } }, body }),
+        ),
       ),
   }
 }

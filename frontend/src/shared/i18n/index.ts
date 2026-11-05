@@ -68,6 +68,8 @@ const KNOWN_PROBLEMS = [
   'disk_too_small',
   'pool_not_managed',
   'refused',
+  'not_scrubbing',
+  'snapshot_taken',
   'volume_not_found',
   'unknown_subject',
   'duplicate_rule',

@@ -6,7 +6,8 @@ use async_trait::async_trait;
 use zendiloos_kernel::{PortError, RequestContext};
 
 use crate::domain::{
-    Access, FileLocation, FilePath, Listing, NewShare, Principal, Share, ShareId, ShareName, SharingConfig,
+    Access, FileLocation, FilePath, Frequency, Listing, NewShare, Principal, Share, ShareId, ShareName,
+    SharingConfig, Snapshot, SnapshotSchedule,
 };
 
 #[async_trait]
@@ -24,6 +25,16 @@ pub trait ShareRepository: Send + Sync {
     async fn update(&self, share: &Share) -> Result<(), PortError>;
 
     async fn delete(&self, id: ShareId) -> Result<(), PortError>;
+
+    /// The share's snapshot schedules, ordered by frequency.
+    async fn snapshot_schedules(&self, id: ShareId) -> Result<Vec<SnapshotSchedule>, PortError>;
+
+    /// Replaces the share's snapshot schedules.
+    async fn set_snapshot_schedules(
+        &self,
+        id: ShareId,
+        schedules: &[SnapshotSchedule],
+    ) -> Result<(), PortError>;
 }
 
 /// Names of accounts and groups by ID, from the Identity context.
@@ -88,6 +99,32 @@ pub trait ShareHost: Send + Sync {
 
     /// Replaces what the SMB and NFS servers offer.
     async fn apply(&self, config: &SharingConfig, context: &RequestContext) -> Result<(), HostError>;
+
+    /// The snapshots of share datasets, on every pool.
+    async fn snapshots(&self, context: &RequestContext) -> Result<Vec<Snapshot>, HostError>;
+
+    /// Takes snapshot `<pool>/<share>@<label>` for `schedules` (none: by
+    /// hand), with an optional note.
+    #[allow(clippy::too_many_arguments)]
+    async fn create_snapshot(
+        &self,
+        pool: &str,
+        volume: u16,
+        share: &ShareName,
+        label: &str,
+        schedules: &[Frequency],
+        note: Option<&str>,
+        context: &RequestContext,
+    ) -> Result<(), HostError>;
+
+    async fn destroy_snapshot(
+        &self,
+        pool: &str,
+        volume: u16,
+        share: &ShareName,
+        label: &str,
+        context: &RequestContext,
+    ) -> Result<(), HostError>;
 
     /// Permissions of the share's directory; with `recursive` also of its
     /// contents.

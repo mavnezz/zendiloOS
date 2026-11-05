@@ -271,6 +271,7 @@ impl Harness {
             jobs: jobs.clone(),
             audit: identity.audit.clone(),
             clock: identity.clock.clone(),
+            notifier: notifier.clone(),
         };
         let sharing = SharingUseCases::new(sharing_ports.clone());
         let files = FilesUseCases::new(sharing_ports);
@@ -830,6 +831,9 @@ fn openapi_documents_every_route() {
             "/api/v1/shares",
             "/api/v1/shares/{id}",
             "/api/v1/shares/{id}/delete",
+            "/api/v1/shares/{id}/snapshots",
+            "/api/v1/shares/{id}/snapshots/schedules",
+            "/api/v1/shares/{id}/snapshots/{label}/delete",
             "/api/v1/storage/arrays",
             "/api/v1/storage/disks",
             "/api/v1/storage/disks/{name}/smart",
@@ -1635,4 +1639,55 @@ async fn charts_start_with_the_last_minutes() {
     assert_eq!(reply.status, StatusCode::OK, "{:?}", reply.body);
     assert_eq!(reply.body["at"], json!([98, 100]));
     assert_eq!(reply.body["cpu_percent"].as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn administrators_take_schedule_and_delete_snapshots_of_a_share() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let bob = h.sign_in("bob", Role::User).await;
+    let bob_id = h.identity.accounts.all().into_iter().find(|a| a.name.as_str() == "bob").unwrap().id.get();
+    let rules = json!([{ "kind": "account", "id": bob_id, "access": "read_write" }]);
+    let created = h
+        .send(json(
+            with_csrf(post("/api/v1/shares"), &admin),
+            json!({ "name": "photos", "pool": "tank", "access": rules }),
+        ))
+        .await;
+    let base = format!("/api/v1/shares/{}/snapshots", created.body["id"]);
+
+    let taken = h.send(json(with_csrf(post(&base), &admin), json!({ "note": "before the move" }))).await;
+    assert_eq!(taken.status, StatusCode::CREATED, "{:?}", taken.body);
+    let label = taken.body["label"].as_str().unwrap().to_owned();
+    assert!(label.starts_with("zdl-"), "{label}");
+    assert_eq!(taken.body["schedules"], json!([]));
+
+    let schedules = json!([{ "frequency": "daily", "keep": 7 }, { "frequency": "hourly", "keep": 24 }]);
+    let saved =
+        h.send(json(with_csrf(changing(Method::PUT, &format!("{base}/schedules")), &admin), schedules)).await;
+    assert_eq!(
+        saved.body,
+        json!([{ "frequency": "hourly", "keep": 24 }, { "frequency": "daily", "keep": 7 }])
+    );
+    let refused = h
+        .send(json(
+            with_csrf(changing(Method::PUT, &format!("{base}/schedules")), &admin),
+            json!([{ "frequency": "daily", "keep": 0 }]),
+        ))
+        .await;
+    assert_problem(&refused, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
+
+    let listed = h.send(empty(with_cookie(get(&base), &admin))).await;
+    assert_eq!(
+        (listed.body["snapshots"][0]["note"].clone(), listed.body["schedules"].as_array().unwrap().len()),
+        (json!("before the move"), 2)
+    );
+    assert_problem(&h.send(empty(with_cookie(get(&base), &bob))).await, StatusCode::FORBIDDEN, "forbidden");
+
+    let missing =
+        h.send(empty(with_csrf(post(&format!("{base}/zdl-2020-01-01_00.00.00/delete")), &admin))).await;
+    assert_problem(&missing, StatusCode::NOT_FOUND, "not_found");
+    let deleted = h.send(empty(with_csrf(post(&format!("{base}/{label}/delete")), &admin))).await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT);
+    assert_eq!(h.send(empty(with_cookie(get(&base), &admin))).await.body["snapshots"], json!([]));
 }

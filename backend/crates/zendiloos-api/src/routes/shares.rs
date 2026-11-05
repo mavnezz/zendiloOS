@@ -22,6 +22,9 @@ pub(super) fn routes() -> OpenApiRouter<ApiState> {
         .routes(routes!(list_shares, create_share))
         .routes(routes!(update_share))
         .routes(routes!(delete_share))
+        .routes(routes!(snapshots, take_snapshot))
+        .routes(routes!(delete_snapshot))
+        .routes(routes!(set_snapshot_schedules))
 }
 
 impl From<SharingError> for ApiError {
@@ -44,6 +47,10 @@ impl From<SharingError> for ApiError {
                 rejected(StatusCode::UNPROCESSABLE_ENTITY, "confirmation_mismatch", None)
             }
             SharingError::Refused(reason) => rejected(StatusCode::CONFLICT, "refused", Some(reason)),
+            SharingError::InvalidSchedule(e) => ApiError::InvalidInput(e.to_string()),
+            SharingError::InvalidNote(e) => ApiError::InvalidInput(e.to_string()),
+            SharingError::SnapshotNotFound => ApiError::NotFound,
+            SharingError::SnapshotTaken => rejected(StatusCode::CONFLICT, "snapshot_taken", None),
             SharingError::Port(e) => ApiError::internal(e),
         }
     }
@@ -299,4 +306,207 @@ async fn delete_share(
     auth.require(Permission::SharesManage)?;
     let job = state.sharing.delete(ShareId::new(id), &request.confirm, &auth.0.actor(), &client).await?;
     Ok((StatusCode::ACCEPTED, Json(job.into())))
+}
+
+/// How often a schedule takes a snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SnapshotFrequency {
+    Hourly,
+    Daily,
+    Weekly,
+    Monthly,
+}
+
+impl From<sharing::Frequency> for SnapshotFrequency {
+    fn from(frequency: sharing::Frequency) -> Self {
+        match frequency {
+            sharing::Frequency::Hourly => Self::Hourly,
+            sharing::Frequency::Daily => Self::Daily,
+            sharing::Frequency::Weekly => Self::Weekly,
+            sharing::Frequency::Monthly => Self::Monthly,
+        }
+    }
+}
+
+impl From<SnapshotFrequency> for sharing::Frequency {
+    fn from(frequency: SnapshotFrequency) -> Self {
+        match frequency {
+            SnapshotFrequency::Hourly => Self::Hourly,
+            SnapshotFrequency::Daily => Self::Daily,
+            SnapshotFrequency::Weekly => Self::Weekly,
+            SnapshotFrequency::Monthly => Self::Monthly,
+        }
+    }
+}
+
+/// A snapshot of a share: what it looked like at a moment. Windows offers
+/// them as "Previous Versions".
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ShareSnapshot {
+    /// Its name, the UTC time it was taken: `zdl-YYYY-MM-DD_HH.MM.SS`.
+    pub label: String,
+    /// Unix seconds.
+    pub taken_at: i64,
+    /// The schedules it was taken for; empty if someone took it by hand.
+    pub schedules: Vec<SnapshotFrequency>,
+    pub note: Option<String>,
+    /// Space it holds on its own: data that changed since.
+    pub used_bytes: u64,
+    /// What the share held then.
+    pub referenced_bytes: u64,
+}
+
+impl From<sharing::Snapshot> for ShareSnapshot {
+    fn from(snapshot: sharing::Snapshot) -> Self {
+        Self {
+            label: snapshot.label,
+            taken_at: snapshot.taken_at.unix_seconds(),
+            schedules: snapshot.schedules.into_iter().map(SnapshotFrequency::from).collect(),
+            note: snapshot.note,
+            used_bytes: snapshot.used_bytes,
+            referenced_bytes: snapshot.referenced_bytes,
+        }
+    }
+}
+
+/// How often to snapshot a share and how many of those to keep.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ShareSnapshotSchedule {
+    pub frequency: SnapshotFrequency,
+    /// 1 to 100.
+    pub keep: u32,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ShareSnapshots {
+    /// Newest first.
+    pub snapshots: Vec<ShareSnapshot>,
+    pub schedules: Vec<ShareSnapshotSchedule>,
+}
+
+fn schedule_dto(schedule: sharing::SnapshotSchedule) -> ShareSnapshotSchedule {
+    ShareSnapshotSchedule { frequency: schedule.frequency.into(), keep: schedule.keep }
+}
+
+/// The share's snapshots, newest first, and its schedules. Needs
+/// `shares.manage`.
+#[utoipa::path(
+    get,
+    path = "/shares/{id}/snapshots",
+    tag = "shares",
+    security(("session" = [])),
+    params(("id" = i64, Path)),
+    responses(
+        (status = OK, body = ShareSnapshots),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`"),
+    )
+)]
+async fn snapshots(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(id): Path<i64>,
+) -> Result<Json<ShareSnapshots>, ApiError> {
+    auth.require(Permission::SharesManage)?;
+    let (snapshots, schedules) = state.sharing.snapshots(ShareId::new(id), &client).await?;
+    Ok(Json(ShareSnapshots {
+        snapshots: snapshots.into_iter().map(ShareSnapshot::from).collect(),
+        schedules: schedules.into_iter().map(schedule_dto).collect(),
+    }))
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TakeSnapshotRequest {
+    /// Up to 200 characters, one line.
+    #[serde(default)]
+    pub note: String,
+}
+
+/// Takes a snapshot now. Schedules never delete one taken by hand. Needs
+/// `shares.manage`.
+#[utoipa::path(
+    post,
+    path = "/shares/{id}/snapshots",
+    tag = "shares",
+    security(("session" = [])),
+    params(("id" = i64, Path)),
+    request_body = TakeSnapshotRequest,
+    responses(
+        (status = CREATED, body = ShareSnapshot),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`"),
+        (status = CONFLICT, body = Problem, description = "`snapshot_taken`: one this second already; `refused`"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_input`"),
+    )
+)]
+async fn take_snapshot(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(id): Path<i64>,
+    ApiJson(request): ApiJson<TakeSnapshotRequest>,
+) -> Result<(StatusCode, Json<ShareSnapshot>), ApiError> {
+    auth.require(Permission::SharesManage)?;
+    let snapshot =
+        state.sharing.take_snapshot(ShareId::new(id), &request.note, &auth.0.actor(), &client).await?;
+    Ok((StatusCode::CREATED, Json(snapshot.into())))
+}
+
+/// Deletes one snapshot; the share's data stays as it is. Needs
+/// `shares.manage`.
+#[utoipa::path(
+    post,
+    path = "/shares/{id}/snapshots/{label}/delete",
+    tag = "shares",
+    security(("session" = [])),
+    params(("id" = i64, Path), ("label" = String, Path)),
+    responses(
+        (status = NO_CONTENT, description = "Deleted."),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`"),
+    )
+)]
+async fn delete_snapshot(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path((id, label)): Path<(i64, String)>,
+) -> Result<StatusCode, ApiError> {
+    auth.require(Permission::SharesManage)?;
+    state.sharing.delete_snapshot(ShareId::new(id), &label, &auth.0.actor(), &client).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Replaces how often the share is snapshotted and how many to keep, one
+/// schedule per frequency. Snapshots of a schedule that is removed stay
+/// until deleted by hand. Needs `shares.manage`.
+#[utoipa::path(
+    put,
+    path = "/shares/{id}/snapshots/schedules",
+    tag = "shares",
+    security(("session" = [])),
+    params(("id" = i64, Path)),
+    request_body = Vec<ShareSnapshotSchedule>,
+    responses(
+        (status = OK, body = Vec<ShareSnapshotSchedule>),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_input`"),
+    )
+)]
+async fn set_snapshot_schedules(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(id): Path<i64>,
+    ApiJson(request): ApiJson<Vec<ShareSnapshotSchedule>>,
+) -> Result<Json<Vec<ShareSnapshotSchedule>>, ApiError> {
+    auth.require(Permission::SharesManage)?;
+    let schedules = request
+        .into_iter()
+        .map(|s| sharing::SnapshotSchedule { frequency: s.frequency.into(), keep: s.keep })
+        .collect();
+    let saved =
+        state.sharing.set_snapshot_schedules(ShareId::new(id), schedules, &auth.0.actor(), &client).await?;
+    Ok(Json(saved.into_iter().map(schedule_dto).collect()))
 }

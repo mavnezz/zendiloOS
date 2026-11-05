@@ -11,7 +11,8 @@ use zendiloos_agent::config::Tools;
 use zendiloos_agent::{AccountFiles, Erasable, ErasePolicy, HostPaths, Operations, Paths};
 use zendiloos_agent_proto::{
     DiskId, ErrorCode, GroupName, Layout, Network, NfsClient, NfsExport, PoolName, Principal, Request,
-    Response, Role, ShareAccess, ShareName, SmbShare, VolumeNumber,
+    Response, Role, ShareAccess, ShareName, SmbShare, SnapshotFrequency, SnapshotLabel, SnapshotNote,
+    VolumeNumber,
 };
 
 /// 8 GiB in 512-byte sectors.
@@ -125,6 +126,7 @@ fn host(erasable: Erasable) -> Host {
             "zfs",
             "case \"$*\" in\n\
              *'-s local -d 0'*) echo 1 ;;\n\
+             *'-o name -d 1 tank') printf 'tank\\ntank/photos\\n' ;;\n\
              *' tank') echo 1 ;;\n\
              *) echo - ;;\n\
              esac",
@@ -414,4 +416,41 @@ async fn each_agent_serves_only_its_role() {
         recursive: false,
     };
     assert_refused(host.run(access).await, ErrorCode::Forbidden, "not for the System agent");
+}
+
+#[tokio::test]
+async fn snapshots_are_of_one_share_and_destroy_nothing_else() {
+    let host = host(Erasable::Policy(ErasePolicy::Unused));
+    let label = || SnapshotLabel::parse("zdl-2026-11-05_19.40.01").unwrap();
+    let take = |share_name: &str, pool: &str| Request::CreateSnapshot {
+        pool: PoolName::parse(pool).unwrap(),
+        volume: VolumeNumber::new(1).unwrap(),
+        share: share(share_name),
+        label: label(),
+        schedules: vec![SnapshotFrequency::Hourly, SnapshotFrequency::Daily],
+        note: Some(SnapshotNote::parse("before the move").unwrap()),
+    };
+
+    assert_eq!(host.run(take("photos", "tank")).await, Response::Done);
+    assert_eq!(
+        host.calls().last().unwrap(),
+        "zfs snapshot -o zendiloos:schedule=hourly,daily -o zendiloos:note=before the move tank/photos@zdl-2026-11-05_19.40.01"
+    );
+    assert_refused(host.run(take("nothing", "tank")).await, ErrorCode::Forbidden, "no share");
+    assert_refused(host.run(take("photos", "foreign")).await, ErrorCode::Forbidden, "not managed");
+
+    let destroy = Request::DestroySnapshot {
+        pool: PoolName::parse("tank").unwrap(),
+        volume: VolumeNumber::new(1).unwrap(),
+        share: share("photos"),
+        label: label(),
+    };
+    assert_eq!(host.run(destroy).await, Response::Done);
+    assert_eq!(host.calls().last().unwrap(), "zfs destroy tank/photos@zdl-2026-11-05_19.40.01");
+
+    assert!(matches!(host.run(Request::ListSnapshots {}).await, Response::Snapshots { .. }));
+    assert_eq!(
+        host.calls().last().unwrap(),
+        "zfs list -H -p -t snapshot -o name,creation,used,referenced,zendiloos:schedule,zendiloos:note"
+    );
 }

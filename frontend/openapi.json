@@ -1997,6 +1997,246 @@
         ]
       }
     },
+    "/api/v1/shares/{id}/snapshots": {
+      "get": {
+        "tags": [
+          "shares"
+        ],
+        "summary": "The share's snapshots, newest first, and its schedules. Needs\n`shares.manage`.",
+        "operationId": "snapshots",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShareSnapshots"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "shares"
+        ],
+        "summary": "Takes a snapshot now. Schedules never delete one taken by hand. Needs\n`shares.manage`.",
+        "operationId": "take_snapshot",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TakeSnapshotRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShareSnapshot"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`snapshot_taken`: one this second already; `refused`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/shares/{id}/snapshots/schedules": {
+      "put": {
+        "tags": [
+          "shares"
+        ],
+        "summary": "Replaces how often the share is snapshotted and how many to keep, one\nschedule per frequency. Snapshots of a schedule that is removed stay\nuntil deleted by hand. Needs `shares.manage`.",
+        "operationId": "set_snapshot_schedules",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ShareSnapshotSchedule"
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ShareSnapshotSchedule"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/shares/{id}/snapshots/{label}/delete": {
+      "post": {
+        "tags": [
+          "shares"
+        ],
+        "summary": "Deletes one snapshot; the share's data stays as it is. Needs\n`shares.manage`.",
+        "operationId": "delete_snapshot",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "label",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted."
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/storage/arrays": {
       "get": {
         "tags": [
@@ -5257,6 +5497,95 @@
         },
         "additionalProperties": false
       },
+      "ShareSnapshot": {
+        "type": "object",
+        "description": "A snapshot of a share: what it looked like at a moment. Windows offers\nthem as \"Previous Versions\".",
+        "required": [
+          "label",
+          "taken_at",
+          "schedules",
+          "used_bytes",
+          "referenced_bytes"
+        ],
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "Its name, the UTC time it was taken: `zdl-YYYY-MM-DD_HH.MM.SS`."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "referenced_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "What the share held then.",
+            "minimum": 0
+          },
+          "schedules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SnapshotFrequency"
+            },
+            "description": "The schedules it was taken for; empty if someone took it by hand."
+          },
+          "taken_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix seconds."
+          },
+          "used_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Space it holds on its own: data that changed since.",
+            "minimum": 0
+          }
+        }
+      },
+      "ShareSnapshotSchedule": {
+        "type": "object",
+        "description": "How often to snapshot a share and how many of those to keep.",
+        "required": [
+          "frequency",
+          "keep"
+        ],
+        "properties": {
+          "frequency": {
+            "$ref": "#/components/schemas/SnapshotFrequency"
+          },
+          "keep": {
+            "type": "integer",
+            "format": "int32",
+            "description": "1 to 100.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "ShareSnapshots": {
+        "type": "object",
+        "required": [
+          "snapshots",
+          "schedules"
+        ],
+        "properties": {
+          "schedules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ShareSnapshotSchedule"
+            }
+          },
+          "snapshots": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ShareSnapshot"
+            },
+            "description": "Newest first."
+          }
+        }
+      },
       "ShareUpdate": {
         "type": "object",
         "required": [
@@ -5484,6 +5813,16 @@
           "unsupported"
         ]
       },
+      "SnapshotFrequency": {
+        "type": "string",
+        "description": "How often a schedule takes a snapshot.",
+        "enum": [
+          "hourly",
+          "daily",
+          "weekly",
+          "monthly"
+        ]
+      },
       "StorageOverview": {
         "type": "object",
         "description": "What the storage is and what is wrong with it.",
@@ -5688,6 +6027,16 @@
             "description": "Version of Zendiloos."
           }
         }
+      },
+      "TakeSnapshotRequest": {
+        "type": "object",
+        "properties": {
+          "note": {
+            "type": "string",
+            "description": "Up to 200 characters, one line."
+          }
+        },
+        "additionalProperties": false
       },
       "TemperatureMetrics": {
         "type": "object",

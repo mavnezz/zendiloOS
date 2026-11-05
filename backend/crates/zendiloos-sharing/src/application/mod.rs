@@ -3,6 +3,7 @@
 mod files;
 pub mod ports;
 mod shares;
+mod snapshots;
 
 #[cfg(test)]
 mod tests;
@@ -11,6 +12,7 @@ use std::sync::Arc;
 
 use zendiloos_jobs::Jobs;
 use zendiloos_kernel::{AuditLog, Clock};
+use zendiloos_notify::Notifier;
 
 pub use files::{FilesError, FilesUseCases, Transfer, Upload, UploadTicket, UsableShare};
 use ports::{Directory, FileHost, ShareHost, ShareRepository, Volumes};
@@ -28,4 +30,7 @@ pub struct SharingPorts {
     pub jobs: Jobs,
     pub audit: Arc<dyn AuditLog>,
     pub clock: Arc<dyn Clock>,
+    /// For what goes wrong without anybody watching, e.g. a scheduled
+    /// snapshot.
+    pub notifier: Notifier,
 }

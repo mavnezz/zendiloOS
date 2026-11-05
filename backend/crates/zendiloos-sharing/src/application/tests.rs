@@ -5,6 +5,8 @@ use async_trait::async_trait;
 use zendiloos_jobs::testing::{FixedClock, MemoryJobs};
 use zendiloos_jobs::{Job, JobState, Jobs};
 use zendiloos_kernel::{Actor, AuditEntry, AuditLog, PortError, RequestContext};
+use zendiloos_notify::Notifier;
+use zendiloos_notify::testing::MemoryNotifications;
 
 use super::ports::{Directory, Names};
 use super::{
@@ -41,18 +43,42 @@ impl AuditLog for NoAudit {
     }
 }
 
+/// A clock tests move by hand; it starts at 2026-11-05 00:00 UTC.
+#[derive(Default)]
+struct Moving(std::sync::atomic::AtomicI64);
+
+impl Moving {
+    const START: i64 = 1_793_836_800;
+
+    fn advance(&self, seconds: i64) {
+        self.0.fetch_add(seconds, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+impl zendiloos_kernel::Clock for Moving {
+    fn now(&self) -> zendiloos_kernel::Timestamp {
+        zendiloos_kernel::Timestamp::from_unix_seconds(
+            Self::START + self.0.load(std::sync::atomic::Ordering::Relaxed),
+        )
+    }
+}
+
 struct Setup {
     sharing: SharingUseCases,
     files: FilesUseCases,
     host: Arc<Host>,
     file_host: Arc<Files>,
     jobs: Jobs,
+    clock: Arc<Moving>,
+    notices: Arc<MemoryNotifications>,
 }
 
 fn setup() -> Setup {
     let host = Arc::new(Host::default());
     let file_host = Arc::new(Files::default());
     let jobs = Jobs::new(Arc::new(MemoryJobs::default()), Arc::new(FixedClock));
+    let clock = Arc::new(Moving::default());
+    let notices = Arc::new(MemoryNotifications::default());
     let ports = SharingPorts {
         shares: Arc::new(Shares::default()),
         directory: Arc::new(Static),
@@ -61,7 +87,8 @@ fn setup() -> Setup {
         files: file_host.clone(),
         jobs: jobs.clone(),
         audit: Arc::new(NoAudit),
-        clock: Arc::new(FixedClock),
+        clock: clock.clone(),
+        notifier: Notifier::new(notices.clone(), Arc::new(FixedClock)),
     };
     Setup {
         sharing: SharingUseCases::new(ports.clone()),
@@ -69,6 +96,8 @@ fn setup() -> Setup {
         host,
         file_host,
         jobs,
+        clock,
+        notices,
     }
 }
 
@@ -346,4 +375,98 @@ async fn copies_moves_and_deletes_run_as_jobs() {
             "remove alice photos:missing recycle",
         ]
     );
+}
+
+// Snapshots
+
+async fn photos(s: &Setup) -> ShareId {
+    let input = NewShareInput {
+        name: "photos".into(),
+        description: None,
+        pool: "tank".into(),
+        recycle_bin: true,
+        access: vec![AccessRule { subject: Subject::Account(1), access: Access::ReadWrite }],
+        nfs: vec![],
+    };
+    s.sharing.create(input, &alice(), &RequestContext::default()).await.unwrap().id
+}
+
+#[tokio::test]
+async fn snapshots_by_hand_are_listed_and_deleted_one_by_one() {
+    let s = setup();
+    let request = RequestContext::default();
+    let id = photos(&s).await;
+
+    let taken = s.sharing.take_snapshot(id, " before the move ", &alice(), &request).await.unwrap();
+    assert_eq!(taken.label, "zdl-2026-11-05_00.00.00");
+    assert_eq!(taken.note.as_deref(), Some("before the move"));
+    let again = s.sharing.take_snapshot(id, "", &alice(), &request).await;
+    assert!(matches!(again, Err(SharingError::SnapshotTaken)), "same second: {again:?}");
+    let bad = s.sharing.take_snapshot(id, "two\nlines", &alice(), &request).await;
+    assert!(matches!(bad, Err(SharingError::InvalidNote(_))), "{bad:?}");
+
+    let (listed, schedules) = s.sharing.snapshots(id, &request).await.unwrap();
+    assert_eq!((listed.len(), schedules.len()), (1, 0));
+    let missing = s.sharing.delete_snapshot(id, "zdl-2026-01-01_00.00.00", &alice(), &request).await;
+    assert!(matches!(missing, Err(SharingError::SnapshotNotFound)), "{missing:?}");
+    let not_a_label = s.sharing.delete_snapshot(id, "-r", &alice(), &request).await;
+    assert!(matches!(not_a_label, Err(SharingError::SnapshotNotFound)), "{not_a_label:?}");
+    s.sharing.delete_snapshot(id, &taken.label, &alice(), &request).await.unwrap();
+    assert!(s.sharing.snapshots(id, &request).await.unwrap().0.is_empty());
+}
+
+#[tokio::test]
+async fn schedules_take_snapshots_when_due_and_let_go_of_their_own_old_ones() {
+    use crate::domain::{Frequency, SnapshotSchedule};
+    let s = setup();
+    let request = RequestContext::default();
+    let id = photos(&s).await;
+    let plan = |frequency, keep| SnapshotSchedule { frequency, keep };
+    let invalid =
+        s.sharing.set_snapshot_schedules(id, vec![plan(Frequency::Daily, 0)], &alice(), &request).await;
+    assert!(matches!(invalid, Err(SharingError::InvalidSchedule(_))), "{invalid:?}");
+    let schedules = vec![plan(Frequency::Daily, 1), plan(Frequency::Hourly, 2)];
+    s.sharing.set_snapshot_schedules(id, schedules, &alice(), &request).await.unwrap();
+
+    for _ in 0..4 {
+        s.sharing.take_due_snapshots().await;
+        s.clock.advance(3600);
+    }
+
+    let calls: Vec<String> = s.host.calls().into_iter().filter(|c| c.contains('@')).collect();
+    assert_eq!(
+        calls,
+        [
+            "snapshot tank/photos@zdl-2026-11-05_00.00.00 [hourly,daily]",
+            "snapshot tank/photos@zdl-2026-11-05_01.00.00 [hourly]",
+            "snapshot tank/photos@zdl-2026-11-05_02.00.00 [hourly]",
+            "snapshot tank/photos@zdl-2026-11-05_03.00.00 [hourly]",
+            // The hourly one of 01:00 is beyond the two kept; the first is
+            // still the daily one.
+            "destroy tank/photos@zdl-2026-11-05_01.00.00",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_failing_schedule_is_reported_once_until_it_works_again() {
+    use crate::domain::{Frequency, SnapshotSchedule};
+    let s = setup();
+    let request = RequestContext::default();
+    let id = photos(&s).await;
+    let hourly = vec![SnapshotSchedule { frequency: Frequency::Hourly, keep: 3 }];
+    s.sharing.set_snapshot_schedules(id, hourly, &alice(), &request).await.unwrap();
+    s.host.refuse_snapshots.store(true, std::sync::atomic::Ordering::Relaxed);
+
+    s.sharing.take_due_snapshots().await;
+    s.clock.advance(300);
+    s.sharing.take_due_snapshots().await;
+    assert_eq!(s.notices.all().iter().map(|n| n.code.as_str()).collect::<Vec<_>>(), ["snapshot_failed"]);
+
+    s.host.refuse_snapshots.store(false, std::sync::atomic::Ordering::Relaxed);
+    s.sharing.take_due_snapshots().await;
+    s.host.refuse_snapshots.store(true, std::sync::atomic::Ordering::Relaxed);
+    s.clock.advance(3600);
+    s.sharing.take_due_snapshots().await;
+    assert_eq!(s.notices.all().len(), 2, "reported again after it had worked");
 }

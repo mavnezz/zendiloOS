@@ -13,4 +13,4 @@ pub use audit::{Actor, AuditEntry, AuditLog, Outcome};
 pub use error::PortError;
 pub use request::RequestContext;
 pub use secret::{Secret, constant_time_eq};
-pub use time::{Clock, Timestamp};
+pub use time::{Clock, Timestamp, UtcTime};

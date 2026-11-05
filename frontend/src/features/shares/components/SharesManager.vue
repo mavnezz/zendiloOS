@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { FolderOpen, Pencil, Plus, Trash2 } from 'lucide-vue-next'
+import { Camera, FolderOpen, Pencil, Plus, Trash2 } from 'lucide-vue-next'
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
@@ -16,6 +16,7 @@ import { Label } from '@/shared/ui/label'
 
 import { useShareActions, useShares, useSubjects } from '../api'
 import ShareDialog from './ShareDialog.vue'
+import SnapshotsDialog from './SnapshotsDialog.vue'
 
 const { t } = useI18n()
 const { data: shares, error, isPending, refetch } = useShares()
@@ -27,6 +28,7 @@ const jobs = useJobsStore()
 const creating = ref(false)
 const editing = ref<Share | null>(null)
 const deleting = ref<Share | null>(null)
+const snapshotting = ref<Share | null>(null)
 const confirm = ref('')
 const deleteError = ref<string | null>(null)
 
@@ -87,6 +89,15 @@ async function remove(): Promise<void> {
         <Button
           variant="ghost"
           size="icon"
+          :title="t('shares.snapshots.open')"
+          :aria-label="t('shares.snapshots.open')"
+          @click="snapshotting = share"
+        >
+          <Camera />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
           :title="t('users.edit')"
           :aria-label="t('users.edit')"
           @click="editing = share"
@@ -118,6 +129,11 @@ async function remove(): Promise<void> {
     </section>
 
     <ShareDialog v-model:open="creating" />
+    <SnapshotsDialog
+      :open="snapshotting !== null"
+      :share="snapshotting"
+      @update:open="(isOpen) => !isOpen && (snapshotting = null)"
+    />
     <ShareDialog
       :open="editing !== null"
       :share="editing ?? undefined"

@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use zendiloos_kernel::{PortError, Timestamp};
 use zendiloos_sharing::application::ports::{Directory, Names, ShareRepository};
 use zendiloos_sharing::domain::{
-    Access, AccessRule, NewShare, NfsClient, Share, ShareId, ShareName, Subject,
+    Access, AccessRule, Frequency, NewShare, NfsClient, Share, ShareId, ShareName, SnapshotSchedule, Subject,
 };
 
 use super::Database;
@@ -218,6 +218,52 @@ impl ShareRepository for SqliteShares {
             .map_err(db_error)?;
         Ok(())
     }
+
+    async fn snapshot_schedules(&self, id: ShareId) -> Result<Vec<SnapshotSchedule>, PortError> {
+        let id = id.get();
+        let rows =
+            sqlx::query!("SELECT frequency, keep FROM share_snapshot_schedules WHERE share_id = ?", id)
+                .fetch_all(self.db.pool())
+                .await
+                .map_err(db_error)?;
+        let mut schedules: Vec<SnapshotSchedule> = rows
+            .into_iter()
+            .filter_map(|row| {
+                Some(SnapshotSchedule {
+                    frequency: Frequency::parse(&row.frequency)?,
+                    keep: u32::try_from(row.keep).ok()?,
+                })
+            })
+            .collect();
+        schedules.sort_by_key(|schedule| schedule.frequency);
+        Ok(schedules)
+    }
+
+    async fn set_snapshot_schedules(
+        &self,
+        id: ShareId,
+        schedules: &[SnapshotSchedule],
+    ) -> Result<(), PortError> {
+        let id = id.get();
+        let mut transaction = self.db.pool().begin().await.map_err(db_error)?;
+        sqlx::query!("DELETE FROM share_snapshot_schedules WHERE share_id = ?", id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(db_error)?;
+        for schedule in schedules {
+            let (frequency, keep) = (schedule.frequency.as_str(), i64::from(schedule.keep));
+            sqlx::query!(
+                "INSERT INTO share_snapshot_schedules (share_id, frequency, keep) VALUES (?, ?, ?)",
+                id,
+                frequency,
+                keep
+            )
+            .execute(&mut *transaction)
+            .await
+            .map_err(db_error)?;
+        }
+        transaction.commit().await.map_err(db_error)
+    }
 }
 
 #[async_trait]
@@ -318,8 +364,18 @@ mod tests {
             [AccessRule { subject: Subject::Group(family.id.get()), access: Access::ReadWrite }]
         );
 
+        let plans = [
+            SnapshotSchedule { frequency: Frequency::Daily, keep: 7 },
+            SnapshotSchedule { frequency: Frequency::Hourly, keep: 24 },
+        ];
+        shares.set_snapshot_schedules(share.id, &plans).await.unwrap();
+        assert_eq!(shares.snapshot_schedules(share.id).await.unwrap(), [plans[1], plans[0]]);
+        shares.set_snapshot_schedules(share.id, &plans[..1]).await.unwrap();
+        assert_eq!(shares.snapshot_schedules(share.id).await.unwrap(), [plans[0]]);
+
         shares.delete(share.id).await.unwrap();
         assert!(shares.list().await.unwrap().is_empty());
+        assert!(shares.snapshot_schedules(share.id).await.unwrap().is_empty(), "they go with the share");
         db.close().await;
     }
 }

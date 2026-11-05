@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT frequency, keep FROM share_snapshot_schedules WHERE share_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "frequency",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "share_snapshot_schedules",
+            "name": "frequency"
+          }
+        }
+      },
+      {
+        "name": "keep",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "share_snapshot_schedules",
+            "name": "keep"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "d9b81f57cdcc95a9ba4fac6c4f133fd1355215458a995f3d7459c3182e13ad71"
+}

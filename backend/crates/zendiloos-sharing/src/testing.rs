@@ -10,8 +10,8 @@ use crate::application::ports::{
     self, FileHost, FileHostError, HostError, ShareHost, ShareRepository, Volume,
 };
 use crate::domain::{
-    Access, Entry, EntryKind, FileLocation, FilePath, Listing, NewShare, Principal, Share, ShareId,
-    ShareName, SharingConfig,
+    Access, Entry, EntryKind, FileLocation, FilePath, Frequency, Listing, NewShare, Principal, Share,
+    ShareId, ShareName, SharingConfig, Snapshot, SnapshotSchedule,
 };
 use zendiloos_kernel::Timestamp;
 
@@ -29,7 +29,7 @@ impl ports::Volumes for Volumes {
 }
 
 #[derive(Default)]
-pub struct Shares(Mutex<Vec<Share>>);
+pub struct Shares(Mutex<Vec<Share>>, Mutex<std::collections::HashMap<ShareId, Vec<SnapshotSchedule>>>);
 
 #[async_trait]
 impl ShareRepository for Shares {
@@ -68,6 +68,20 @@ impl ShareRepository for Shares {
 
     async fn delete(&self, id: ShareId) -> Result<(), PortError> {
         self.0.lock().unwrap().retain(|s| s.id != id);
+        self.1.lock().unwrap().remove(&id);
+        Ok(())
+    }
+
+    async fn snapshot_schedules(&self, id: ShareId) -> Result<Vec<SnapshotSchedule>, PortError> {
+        Ok(self.1.lock().unwrap().get(&id).cloned().unwrap_or_default())
+    }
+
+    async fn set_snapshot_schedules(
+        &self,
+        id: ShareId,
+        schedules: &[SnapshotSchedule],
+    ) -> Result<(), PortError> {
+        self.1.lock().unwrap().insert(id, schedules.to_vec());
         Ok(())
     }
 }
@@ -77,6 +91,10 @@ pub struct Host {
     pub calls: Mutex<Vec<String>>,
     pub configs: Mutex<Vec<SharingConfig>>,
     pub refuse_access: std::sync::atomic::AtomicBool,
+    /// Snapshots as the host has them; taking and destroying change them.
+    pub snapshots: Mutex<Vec<Snapshot>>,
+    /// Taking snapshots fails, e.g. because the pool is gone.
+    pub refuse_snapshots: std::sync::atomic::AtomicBool,
 }
 
 impl Host {
@@ -119,6 +137,56 @@ impl ShareHost for Host {
     async fn apply(&self, config: &SharingConfig, _: &RequestContext) -> Result<(), HostError> {
         self.calls.lock().unwrap().push(format!("apply {}", config.smb.len()));
         self.configs.lock().unwrap().push(config.clone());
+        Ok(())
+    }
+
+    async fn snapshots(&self, _: &RequestContext) -> Result<Vec<Snapshot>, HostError> {
+        Ok(self.snapshots.lock().unwrap().clone())
+    }
+
+    async fn create_snapshot(
+        &self,
+        pool: &str,
+        _volume: u16,
+        share: &ShareName,
+        label: &str,
+        schedules: &[Frequency],
+        note: Option<&str>,
+        _: &RequestContext,
+    ) -> Result<(), HostError> {
+        if self.refuse_snapshots.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(HostError::Refused("the pool is not imported".into()));
+        }
+        let names: Vec<&str> = schedules.iter().map(|f| f.as_str()).collect();
+        self.calls.lock().unwrap().push(format!("snapshot {pool}/{share}@{label} [{}]", names.join(",")));
+        let mut snapshots = self.snapshots.lock().unwrap();
+        if snapshots.iter().any(|s| s.share == *share && s.label == label) {
+            return Err(HostError::Conflict);
+        }
+        snapshots.push(Snapshot {
+            pool: pool.to_owned(),
+            share: share.clone(),
+            label: label.to_owned(),
+            taken_at: crate::domain::label_time(label)
+                .unwrap_or(zendiloos_kernel::Timestamp::from_unix_seconds(0)),
+            schedules: schedules.to_vec(),
+            note: note.map(str::to_owned),
+            used_bytes: 0,
+            referenced_bytes: 0,
+        });
+        Ok(())
+    }
+
+    async fn destroy_snapshot(
+        &self,
+        pool: &str,
+        _volume: u16,
+        share: &ShareName,
+        label: &str,
+        _: &RequestContext,
+    ) -> Result<(), HostError> {
+        self.calls.lock().unwrap().push(format!("destroy {pool}/{share}@{label}"));
+        self.snapshots.lock().unwrap().retain(|s| !(s.share == *share && s.label == label));
         Ok(())
     }
 

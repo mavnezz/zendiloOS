@@ -136,6 +136,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         jobs: jobs.clone(),
         audit: audit.clone(),
         clock: Arc::new(SystemClock),
+        notifier: notifier.clone(),
     };
     let sharing = SharingUseCases::new(sharing_ports.clone());
     let files = FilesUseCases::new(sharing_ports);
@@ -151,6 +152,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     }
     let network = NetworkUseCases::new(Arc::new(ip));
 
+    let snapshots = spawn_snapshot_schedules(sharing.clone());
     let use_cases = UseCases { system, identity, storage, sharing, files, network, jobs, notifier };
     let state = ApiState::new(use_cases, config.secure_cookies);
     let app = zendiloos_api::router(state);
@@ -177,6 +179,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     purge.abort();
     sampler.abort();
     monitor.abort();
+    snapshots.abort();
     database.close().await;
     tracing::info!("zendiloosd stopped");
     Ok(())
@@ -264,6 +267,19 @@ fn spawn_storage_monitor(monitor: Arc<StorageMonitor>) -> JoinHandle<()> {
         loop {
             every_minute.tick().await;
             monitor.check().await;
+        }
+    })
+}
+
+/// Takes scheduled snapshots of shares and lets go of old ones. Every five
+/// minutes, so a schedule runs at most that late; a missed one (the machine
+/// was off) is taken on the first look.
+fn spawn_snapshot_schedules(sharing: SharingUseCases) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut every_five_minutes = tokio::time::interval(Duration::from_secs(5 * 60));
+        loop {
+            every_five_minutes.tick().await;
+            sharing.take_due_snapshots().await;
         }
     })
 }

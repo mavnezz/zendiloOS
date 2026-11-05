@@ -175,6 +175,19 @@ pub(crate) struct Pool {
     pub scan: Option<ScanRun>,
     /// Datasets of shares below the root dataset.
     pub shares: Vec<String>,
+    pub snapshots: Vec<SimSnapshot>,
+}
+
+/// A snapshot of a share, as `zfs list -t snapshot` would show it.
+#[derive(Debug, Clone)]
+pub(crate) struct SimSnapshot {
+    pub share: String,
+    pub label: String,
+    pub created: u64,
+    /// `hourly,daily` or `-`.
+    pub schedules: String,
+    /// The note or `-`.
+    pub note: String,
 }
 
 impl Pool {
@@ -431,6 +444,7 @@ impl Host {
             used,
             scan: None,
             shares: Vec::new(),
+            snapshots: Vec::new(),
         });
     }
 
@@ -571,6 +585,54 @@ impl Host {
     pub fn destroy_share(&mut self, pool: &str, volume: u16, name: &str) -> Result<(), Refusal> {
         self.managed_pool(pool, volume)?.shares.retain(|share| share != name);
         Ok(())
+    }
+
+    pub fn create_snapshot(
+        &mut self,
+        pool: &str,
+        volume: u16,
+        share: &str,
+        snapshot: SimSnapshot,
+    ) -> Result<(), Refusal> {
+        let pool = self.managed_pool(pool, volume)?;
+        if !pool.shares.iter().any(|s| s == share) {
+            return Err(Refusal::Refused(format!("there is no share {}/{share}", pool.name)));
+        }
+        if pool.snapshots.iter().any(|s| s.share == share && s.label == snapshot.label) {
+            return Err(Refusal::Conflict);
+        }
+        pool.snapshots.push(snapshot);
+        Ok(())
+    }
+
+    pub fn destroy_snapshot(
+        &mut self,
+        pool: &str,
+        volume: u16,
+        share: &str,
+        label: &str,
+    ) -> Result<(), Refusal> {
+        let pool = self.managed_pool(pool, volume)?;
+        let before = pool.snapshots.len();
+        pool.snapshots.retain(|s| !(s.share == share && s.label == label));
+        if pool.snapshots.len() == before {
+            return Err(Refusal::Refused(format!("there is no snapshot {}/{share}@{label}", pool.name)));
+        }
+        Ok(())
+    }
+
+    /// Like `zfs list -H -p -t snapshot -o name,creation,used,referenced,…`.
+    pub fn snapshot_list(&self) -> String {
+        let mut text = String::new();
+        for pool in &self.pools {
+            for s in &pool.snapshots {
+                text.push_str(&format!(
+                    "{}/{}@{}\t{}\t{}\t{}\t{}\t{}\n",
+                    pool.name, s.share, s.label, s.created, 0, pool.used, s.schedules, s.note
+                ));
+            }
+        }
+        text
     }
 
     /// Like the files agent: only a share that is there.

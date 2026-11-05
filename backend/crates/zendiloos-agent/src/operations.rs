@@ -100,6 +100,13 @@ impl Operations {
             Request::ReplaceDisk { pool, device, disk } => self.pools.replace(pool, *device, disk).await,
             Request::ScrubPool { pool } => self.pools.scrub(pool).await,
             Request::StopScrub { pool } => self.pools.stop_scrub(pool).await,
+            Request::CreateSnapshot { pool, volume, share, label, schedules, note } => {
+                self.pools.create_snapshot(pool, *volume, share, label, schedules, note.as_ref()).await
+            }
+            Request::DestroySnapshot { pool, volume, share, label } => {
+                self.pools.destroy_snapshot(pool, *volume, share, label).await
+            }
+            Request::ListSnapshots {} => self.pools.list_snapshots().await,
             Request::CreateShare { pool, volume, name } => self.pools.create_share(pool, *volume, name).await,
             Request::DestroyShare { pool, volume, name } => {
                 self.pools.destroy_share(pool, *volume, name).await

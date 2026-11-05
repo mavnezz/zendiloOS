@@ -585,6 +585,71 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/shares/{id}/snapshots": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The share's snapshots, newest first, and its schedules. Needs
+         *     `shares.manage`.
+         */
+        get: operations["snapshots"];
+        put?: never;
+        /**
+         * Takes a snapshot now. Schedules never delete one taken by hand. Needs
+         *     `shares.manage`.
+         */
+        post: operations["take_snapshot"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/shares/{id}/snapshots/schedules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Replaces how often the share is snapshotted and how many to keep, one
+         *     schedule per frequency. Snapshots of a schedule that is removed stay
+         *     until deleted by hand. Needs `shares.manage`.
+         */
+        put: operations["set_snapshot_schedules"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/shares/{id}/snapshots/{label}/delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Deletes one snapshot; the share's data stays as it is. Needs
+         *     `shares.manage`.
+         */
+        post: operations["delete_snapshot"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/storage/arrays": {
         parameters: {
             query?: never;
@@ -1700,6 +1765,46 @@ export interface components {
             id: number;
             kind: components["schemas"]["SubjectKind"];
         };
+        /**
+         * @description A snapshot of a share: what it looked like at a moment. Windows offers
+         *     them as "Previous Versions".
+         */
+        ShareSnapshot: {
+            /** @description Its name, the UTC time it was taken: `zdl-YYYY-MM-DD_HH.MM.SS`. */
+            label: string;
+            note?: string | null;
+            /**
+             * Format: int64
+             * @description What the share held then.
+             */
+            referenced_bytes: number;
+            /** @description The schedules it was taken for; empty if someone took it by hand. */
+            schedules: components["schemas"]["SnapshotFrequency"][];
+            /**
+             * Format: int64
+             * @description Unix seconds.
+             */
+            taken_at: number;
+            /**
+             * Format: int64
+             * @description Space it holds on its own: data that changed since.
+             */
+            used_bytes: number;
+        };
+        /** @description How often to snapshot a share and how many of those to keep. */
+        ShareSnapshotSchedule: {
+            frequency: components["schemas"]["SnapshotFrequency"];
+            /**
+             * Format: int32
+             * @description 1 to 100.
+             */
+            keep: number;
+        };
+        ShareSnapshots: {
+            schedules: components["schemas"]["ShareSnapshotSchedule"][];
+            /** @description Newest first. */
+            snapshots: components["schemas"]["ShareSnapshot"][];
+        };
         ShareUpdate: {
             job?: components["schemas"]["Job"] | null;
             share: components["schemas"]["Share"];
@@ -1752,6 +1857,11 @@ export interface components {
         };
         /** @enum {string} */
         SmartStatus: "available" | "standby" | "unsupported";
+        /**
+         * @description How often a schedule takes a snapshot.
+         * @enum {string}
+         */
+        SnapshotFrequency: "hourly" | "daily" | "weekly" | "monthly";
         /** @description What the storage is and what is wrong with it. */
         StorageOverview: {
             /** Format: int64 */
@@ -1813,6 +1923,10 @@ export interface components {
             vendor?: string | null;
             /** @description Version of Zendiloos. */
             version: string;
+        };
+        TakeSnapshotRequest: {
+            /** @description Up to 200 characters, one line. */
+            note?: string;
         };
         TemperatureMetrics: {
             /** Format: float */
@@ -3295,6 +3409,161 @@ export interface operations {
             };
             /** @description `confirmation_mismatch` */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    snapshots: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShareSnapshots"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    take_snapshot: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TakeSnapshotRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShareSnapshot"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `snapshot_taken`: one this second already; `refused` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    set_snapshot_schedules: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ShareSnapshotSchedule"][];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShareSnapshotSchedule"][];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_snapshot: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+                label: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `not_found` */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

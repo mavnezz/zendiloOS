@@ -561,6 +561,10 @@ const en = {
       removed: 'removed',
       unknown: 'in an unknown state',
     },
+    snapshot_failed: {
+      title: 'No snapshot of {share}',
+      body: "A scheduled snapshot could not be taken. Is the share's volume there?",
+    },
     pool_trouble: {
       title: 'Pool {pool} is {state}',
       body: 'Open Storage to see which disk is affected.',
@@ -639,6 +643,28 @@ const en = {
     dropHere: 'Drop files here to upload them',
   },
   shares: {
+    snapshots: {
+      open: 'Snapshots',
+      title: 'Snapshots of {name}',
+      description:
+        'A snapshot keeps what the share looked like at a moment and costs only what changes after it. Windows offers them as "Previous Versions" in a file\'s properties.',
+      schedules: 'Taken by themselves',
+      frequency: {
+        hourly: 'Every hour',
+        daily: 'Every day',
+        weekly: 'Every week',
+        monthly: 'Every month',
+      },
+      keep: 'Keep',
+      save: 'Save schedules',
+      saved: 'Saved',
+      note: 'Note for a snapshot now (optional)',
+      take: 'Take snapshot',
+      list: 'Snapshots',
+      none: 'No snapshots yet.',
+      byHand: 'By hand',
+      confirmDelete: 'Delete',
+    },
     intro:
       'Shares are folders on a volume, offered over SMB (Windows, macOS, Linux) and, if wanted, NFS.',
     new: 'New share',
@@ -703,6 +729,8 @@ const en = {
     disk_unusable: 'A chosen disk cannot be used.',
     disk_too_small: 'The disk is smaller than the one it would replace.',
     pool_not_managed: 'zendiloOS did not create this pool and does not change it.',
+    not_scrubbing: 'The pool is not being checked right now.',
+    snapshot_taken: 'A snapshot was taken this second already. Try again.',
     refused: 'The system refused for safety reasons.',
     volume_not_found: 'The volume does not exist or is not mounted.',
     unknown_subject: 'An account or group in the permissions does not exist.',

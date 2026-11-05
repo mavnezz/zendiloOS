@@ -41,6 +41,15 @@ pub enum SharingError {
     #[error("refused by the host: {0}")]
     Refused(String),
     #[error(transparent)]
+    InvalidSchedule(#[from] crate::domain::InvalidSchedule),
+    #[error(transparent)]
+    InvalidNote(#[from] crate::domain::InvalidNote),
+    #[error("there is no such snapshot")]
+    SnapshotNotFound,
+    /// Snapshots are named after the second they are taken in.
+    #[error("a snapshot was taken this second; try again")]
+    SnapshotTaken,
+    #[error(transparent)]
     Port(#[from] PortError),
 }
 
@@ -153,14 +162,16 @@ pub fn config(shares: &[Share], names: &Names) -> SharingConfig {
 /// All use cases of this context. Cheap to clone.
 #[derive(Clone)]
 pub struct SharingUseCases {
-    ports: SharingPorts,
+    pub(super) ports: SharingPorts,
     /// Changes and server configuration, one at a time.
-    changes: Arc<tokio::sync::Mutex<()>>,
+    pub(super) changes: Arc<tokio::sync::Mutex<()>>,
+    /// Shares whose scheduled snapshot failed; reported once until one works.
+    pub(super) snapshot_failures: Arc<std::sync::Mutex<std::collections::HashSet<ShareId>>>,
 }
 
 impl SharingUseCases {
     pub fn new(ports: SharingPorts) -> Self {
-        Self { ports, changes: Arc::new(tokio::sync::Mutex::new(())) }
+        Self { ports, changes: Arc::new(tokio::sync::Mutex::new(())), snapshot_failures: Arc::default() }
     }
 
     pub async fn list(&self) -> Result<Vec<Share>, SharingError> {
@@ -181,7 +192,7 @@ impl SharingUseCases {
         Ok(())
     }
 
-    async fn audit(
+    pub(super) async fn audit(
         &self,
         action: &'static str,
         outcome: Outcome,

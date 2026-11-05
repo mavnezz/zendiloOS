@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM share_snapshot_schedules WHERE share_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "c9f41e507225c985c73ce8839fd6c4c68f39da2a4cc1c31667776906de171ab1"
+}

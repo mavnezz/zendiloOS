@@ -9,7 +9,9 @@ use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-use zendiloos_agent_proto::{NfsExport, Principal, Response, ShareAccess, ShareName, SmbShare, VolumeNumber};
+use zendiloos_agent_proto::{
+    NfsExport, Principal, Response, SNAPSHOT_LABEL_FORMAT, ShareAccess, ShareName, SmbShare, VolumeNumber,
+};
 use zendiloos_exec::Program;
 
 use crate::config::Tools;
@@ -66,8 +68,13 @@ pub fn samba_config(shares: &[SmbShare]) -> String {
             let _ = writeln!(text, "   write list = {}", writers.join(" "));
         }
         text.push_str("   browseable = yes\n   inherit acls = yes\n   map acl inherit = yes\n");
+        // ZFS snapshots as "Previous Versions" in Windows: they are named
+        // after their UTC time (see zendiloos-sharing's snapshot labels).
+        let _ =
+            writeln!(text, "   shadow:snapdir = .zfs/snapshot\n   shadow:format = {SNAPSHOT_LABEL_FORMAT}");
+        text.push_str("   shadow:localtime = no\n   shadow:sort = desc\n");
         if share.recycle_bin {
-            text.push_str("   vfs objects = catia fruit streams_xattr recycle\n");
+            text.push_str("   vfs objects = shadow_copy2 catia fruit streams_xattr recycle\n");
             let _ = writeln!(text, "   recycle:repository = {RECYCLE_DIRECTORY}/%U");
             // Each user's bin is private. `.recycle` itself exists with the
             // share's permissions (see `set_access`): created by Samba, it
@@ -83,7 +90,7 @@ pub fn samba_config(shares: &[SmbShare]) -> String {
             // makes it one pattern that matches nothing.
             text.push_str("   recycle:exclude = *.tmp, *.temp, ~$*, .~lock.*#, *.swp\n");
         } else {
-            text.push_str("   vfs objects = catia fruit streams_xattr\n");
+            text.push_str("   vfs objects = shadow_copy2 catia fruit streams_xattr\n");
         }
         // Hidden, not vetoed: users restore their files from it.
         let _ = writeln!(text, "   hide files = /{RECYCLE_DIRECTORY}/");
@@ -303,6 +310,8 @@ mod tests {
         );
         assert!(text.contains("   read only = yes\n   write list = @family\n"), "{text}");
         assert!(text.contains("recycle:repository = .recycle/%U"), "{text}");
+        assert!(text.contains("vfs objects = shadow_copy2 catia fruit streams_xattr recycle\n"), "{text}");
+        assert!(text.contains("shadow:format = zdl-%Y-%m-%d_%H.%M.%S\n"), "{text}");
         assert!(text.contains("recycle:exclude = *.tmp, *.temp, ~$*, .~lock.*#, *.swp\n"), "{text}");
         assert!(!text.contains("[nobody]"), "a share without access is not offered: {text}");
     }

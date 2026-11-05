@@ -12,6 +12,7 @@ publish.workspace = true
 [dependencies]
 zendiloos-kernel.workspace = true
 zendiloos-jobs.workspace = true
+zendiloos-notify.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
@@ -20,6 +21,7 @@ tokio = { workspace = true, features = ["sync", "fs"] }
 [dev-dependencies]
 tokio.workspace = true
 zendiloos-jobs = { workspace = true, features = ["testing"] }
+zendiloos-notify = { workspace = true, features = ["testing"] }
 
 [features]
 # In-memory fakes of the ports, for tests of crates that use this context.

@@ -103,6 +103,28 @@ pub enum Request {
     StopScrub {
         pool: PoolName,
     },
+    /// Takes snapshot `<pool>/<share>@<label>` of a share on a pool
+    /// zendiloos created, noting the schedules it is for and a note as ZFS
+    /// properties.
+    CreateSnapshot {
+        pool: PoolName,
+        volume: VolumeNumber,
+        share: ShareName,
+        label: SnapshotLabel,
+        #[serde(default)]
+        schedules: Vec<SnapshotFrequency>,
+        #[serde(default)]
+        note: Option<SnapshotNote>,
+    },
+    /// Destroys one snapshot of such a share; never the share itself.
+    DestroySnapshot {
+        pool: PoolName,
+        volume: VolumeNumber,
+        share: ShareName,
+        label: SnapshotLabel,
+    },
+    /// All snapshots with their properties (`zfs list -t snapshot`).
+    ListSnapshots {},
     /// Creates dataset `<pool>/<name>` of a pool zendiloos created and
     /// mounts it at `/volume<volume>/<name>` through a systemd mount unit.
     CreateShare {
@@ -236,6 +258,9 @@ impl Request {
             Request::ReplaceDisk { .. } => "replace_disk",
             Request::ScrubPool { .. } => "scrub_pool",
             Request::StopScrub { .. } => "stop_scrub",
+            Request::CreateSnapshot { .. } => "create_snapshot",
+            Request::DestroySnapshot { .. } => "destroy_snapshot",
+            Request::ListSnapshots {} => "list_snapshots",
             Request::CreateShare { .. } => "create_share",
             Request::DestroyShare { .. } => "destroy_share",
             Request::ApplySharing { .. } => "apply_sharing",
@@ -300,6 +325,11 @@ pub enum Response {
     },
     Copied {
         path: SharePath,
+    },
+    Snapshots {
+        /// `zfs list -H -p -t snapshot -o name,creation,used,referenced,`
+        /// `zendiloos:schedule,zendiloos:note`.
+        zfs_list: String,
     },
     Error {
         code: ErrorCode,
@@ -546,6 +576,110 @@ pub struct SmbShare {
     /// Shown by clients beside the share's name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comment: Option<ShareComment>,
+}
+
+/// [`SnapshotLabel`]s as a `strftime` format, for Samba's `shadow:format`.
+pub const SNAPSHOT_LABEL_FORMAT: &str = "zdl-%Y-%m-%d_%H.%M.%S";
+
+/// The name of a snapshot after the `@`: its UTC time as
+/// `zdl-YYYY-MM-DD_HH.MM.SS`, the form Samba's shadow_copy2 reads. Nothing
+/// else, so it can be neither an option nor a path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct SnapshotLabel(String);
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("not a valid snapshot label")]
+pub struct InvalidSnapshotLabel;
+
+impl SnapshotLabel {
+    pub fn parse(label: &str) -> Result<Self, InvalidSnapshotLabel> {
+        let shape = "zdl-0000-00-00_00.00.00";
+        let valid = label.len() == shape.len()
+            && label
+                .bytes()
+                .zip(shape.bytes())
+                .all(|(c, s)| if s == b'0' { c.is_ascii_digit() } else { c == s });
+        if valid { Ok(Self(label.to_owned())) } else { Err(InvalidSnapshotLabel) }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for SnapshotLabel {
+    type Error = InvalidSnapshotLabel;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(&value)
+    }
+}
+
+impl From<SnapshotLabel> for String {
+    fn from(label: SnapshotLabel) -> Self {
+        label.0
+    }
+}
+
+/// A schedule a snapshot is taken for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SnapshotFrequency {
+    Hourly,
+    Daily,
+    Weekly,
+    Monthly,
+}
+
+impl SnapshotFrequency {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Hourly => "hourly",
+            Self::Daily => "daily",
+            Self::Weekly => "weekly",
+            Self::Monthly => "monthly",
+        }
+    }
+}
+
+/// A note on a snapshot, kept as a ZFS property: at most 200 characters,
+/// no control characters, not empty.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct SnapshotNote(String);
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("not a valid snapshot note")]
+pub struct InvalidSnapshotNote;
+
+impl SnapshotNote {
+    pub const MAX_CHARS: usize = 200;
+
+    pub fn parse(text: &str) -> Result<Self, InvalidSnapshotNote> {
+        let valid = !text.is_empty()
+            && text.chars().count() <= Self::MAX_CHARS
+            && !text.chars().any(char::is_control);
+        if valid { Ok(Self(text.to_owned())) } else { Err(InvalidSnapshotNote) }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for SnapshotNote {
+    type Error = InvalidSnapshotNote;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(&value)
+    }
+}
+
+impl From<SnapshotNote> for String {
+    fn from(note: SnapshotNote) -> Self {
+        note.0
+    }
 }
 
 /// A share's description as Samba's `comment`. It ends up in `smb.conf`, so
@@ -986,6 +1120,28 @@ mod tests {
         let create = json!({ "version": 1, "request": { "op": "create_pool", "name": "tank", "layout": "raidz2",
             "disks": ["ata-A", "ata-B"], "volume": 1 } });
         assert!(serde_json::from_value::<Envelope>(create).is_ok());
+    }
+
+    #[test]
+    fn snapshot_labels_are_times_and_notes_one_line() {
+        assert!(SnapshotLabel::parse("zdl-2026-11-05_19.40.01").is_ok());
+        for bad in [
+            "",
+            "-r",
+            "zdl-2026-11-05_19.40.0",
+            "tank@x",
+            "zdl-2026-11-05_19.40.01/../x",
+            "zdl-2026-1a-05_19.40.01",
+        ] {
+            assert_eq!(SnapshotLabel::parse(bad), Err(InvalidSnapshotLabel), "{bad:?}");
+        }
+        assert!(SnapshotNote::parse("before the move = big").is_ok());
+        for bad in ["", "two\nlines", &"x".repeat(201)] {
+            assert_eq!(SnapshotNote::parse(bad), Err(InvalidSnapshotNote), "{bad:?}");
+        }
+        let request = json!({ "version": 1, "request": { "op": "create_snapshot", "pool": "tank", "volume": 1,
+            "share": "photos", "label": "zdl-2026-11-05_19.40.01", "schedules": ["daily"] } });
+        assert!(serde_json::from_value::<Envelope>(request).is_ok());
     }
 
     #[test]

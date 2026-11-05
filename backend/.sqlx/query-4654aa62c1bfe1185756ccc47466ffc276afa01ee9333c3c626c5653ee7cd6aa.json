@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO share_snapshot_schedules (share_id, frequency, keep) VALUES (?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "4654aa62c1bfe1185756ccc47466ffc276afa01ee9333c3c626c5653ee7cd6aa"
+}

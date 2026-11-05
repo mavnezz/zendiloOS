@@ -570,6 +570,10 @@ const de: Messages = {
       removed: 'entfernt',
       unknown: 'in einem unbekannten Zustand',
     },
+    snapshot_failed: {
+      title: 'Kein Snapshot von {share}',
+      body: 'Ein geplanter Snapshot konnte nicht aufgenommen werden. Ist das Volume der Freigabe da?',
+    },
     pool_trouble: {
       title: 'Pool {pool} ist {state}',
       body: 'Unter Speicher sehen Sie, welche Platte betroffen ist.',
@@ -649,6 +653,28 @@ const de: Messages = {
     dropHere: 'Dateien hier ablegen, um sie hochzuladen',
   },
   shares: {
+    snapshots: {
+      open: 'Snapshots',
+      title: 'Snapshots von {name}',
+      description:
+        'Ein Snapshot hält fest, wie die Freigabe in einem Moment aussah, und kostet nur, was sich danach ändert. Windows bietet sie in den Eigenschaften einer Datei als „Vorgängerversionen“ an.',
+      schedules: 'Automatisch aufnehmen',
+      frequency: {
+        hourly: 'Stündlich',
+        daily: 'Täglich',
+        weekly: 'Wöchentlich',
+        monthly: 'Monatlich',
+      },
+      keep: 'Behalten',
+      save: 'Pläne speichern',
+      saved: 'Gespeichert',
+      note: 'Notiz für einen Snapshot jetzt (optional)',
+      take: 'Snapshot aufnehmen',
+      list: 'Snapshots',
+      none: 'Noch keine Snapshots.',
+      byHand: 'Von Hand',
+      confirmDelete: 'Löschen',
+    },
     intro:
       'Freigaben sind Ordner auf einem Volume, erreichbar über SMB (Windows, macOS, Linux) und bei Bedarf NFS.',
     new: 'Neue Freigabe',
@@ -718,6 +744,9 @@ const de: Messages = {
     disk_unusable: 'Eine gewählte Platte kann nicht verwendet werden.',
     disk_too_small: 'Die Platte ist kleiner als die, die sie ersetzen soll.',
     pool_not_managed: 'zendiloOS hat diesen Pool nicht angelegt und ändert ihn nicht.',
+    not_scrubbing: 'Der Pool wird gerade nicht geprüft.',
+    snapshot_taken:
+      'In dieser Sekunde wurde schon ein Snapshot aufgenommen. Bitte noch einmal versuchen.',
     refused: 'Das System hat aus Sicherheitsgründen abgelehnt.',
     volume_not_found: 'Das Volume gibt es nicht oder es ist nicht eingehängt.',
     unknown_subject: 'Ein Konto oder eine Gruppe in den Rechten gibt es nicht.',
