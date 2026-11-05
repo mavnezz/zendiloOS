@@ -1058,6 +1058,7 @@ export interface components {
             /** @description The pool (volume) to create it on. */
             pool: string;
             recycle_bin?: boolean;
+            settings?: components["schemas"]["ShareSettingsDto"] | null;
         };
         CurrentAccount: {
             full_name?: string | null;
@@ -1736,6 +1737,11 @@ export interface components {
         Severity: "notice" | "warning" | "critical";
         Share: {
             access: components["schemas"]["ShareRule"][];
+            /**
+             * Format: int64
+             * @description What it may still take: up to its quota, or what the pool has left.
+             */
+            available_bytes?: number | null;
             /** Format: int64 */
             created_at: number;
             description?: string | null;
@@ -1748,13 +1754,24 @@ export interface components {
             path: string;
             pool: string;
             recycle_bin: boolean;
+            settings: components["schemas"]["ShareSettingsDto"];
             /** Format: int64 */
             updated_at: number;
+            /**
+             * Format: int64
+             * @description What the share holds; absent while its volume is not there.
+             */
+            used_bytes?: number | null;
             /** Format: int32 */
             volume: number;
         };
         /** @enum {string} */
         ShareAccessLevel: "read" | "read_write";
+        /**
+         * @description How a share's dataset compresses data.
+         * @enum {string}
+         */
+        ShareCompressionKind: "off" | "lz4" | "zstd";
         /** @description An account or group and what it may do in the share. */
         ShareRule: {
             access: components["schemas"]["ShareAccessLevel"];
@@ -1764,6 +1781,21 @@ export interface components {
              */
             id: number;
             kind: components["schemas"]["SubjectKind"];
+        };
+        /** @description How a share's dataset stores data. */
+        ShareSettingsDto: {
+            compression: components["schemas"]["ShareCompressionKind"];
+            /**
+             * Format: int64
+             * @description Limits the share's own data (snapshots not counted); at least 1 GiB.
+             *     `null`: no quota.
+             */
+            quota_bytes?: number | null;
+            /**
+             * Format: int64
+             * @description 16384, 131072 (the default) or 1048576.
+             */
+            record_size_bytes: number;
         };
         /**
          * @description A snapshot of a share: what it looked like at a moment. Windows offers
@@ -1972,6 +2004,7 @@ export interface components {
             /** @description Replaces all NFS clients; empty stops exporting. */
             nfs?: components["schemas"]["NfsRule"][] | null;
             recycle_bin?: boolean | null;
+            settings?: components["schemas"]["ShareSettingsDto"] | null;
         };
         UploadedFile: {
             path: string;

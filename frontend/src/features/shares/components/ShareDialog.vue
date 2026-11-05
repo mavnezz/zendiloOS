@@ -3,7 +3,7 @@ import { Plus, Trash2, TriangleAlert } from 'lucide-vue-next'
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import type { NfsRule, Share, ShareRule } from '@/shared/api/types'
+import type { NfsRule, Share, ShareCompressionKind, ShareRule } from '@/shared/api/types'
 import { problemMessage } from '@/shared/i18n'
 import { useNotifications } from '@/shared/lib/notifications'
 import { Alert } from '@/shared/ui/alert'
@@ -30,6 +30,12 @@ const name = ref('')
 const description = ref('')
 const pool = ref('')
 const recycleBin = ref(true)
+/** In GiB as typed; empty means no quota. */
+const quota = ref('')
+const compression = ref<ShareCompressionKind>('lz4')
+const recordSize = ref(131072)
+const GIB = 1024 ** 3
+const RECORD_SIZES = [16384, 131072, 1048576]
 /** `account:3` or `group:5` → level. */
 const levels = ref<Record<string, Level>>({})
 const nfs = ref<NfsRule[]>([])
@@ -45,6 +51,12 @@ watch(open, (isOpen) => {
   description.value = props.share?.description ?? ''
   pool.value = props.share?.pool ?? volumes.value?.[0]?.name ?? ''
   recycleBin.value = props.share?.recycle_bin ?? true
+  const settings = props.share?.settings
+  quota.value = settings?.quota_bytes
+    ? String(Math.round((settings.quota_bytes / GIB) * 10) / 10)
+    : ''
+  compression.value = settings?.compression ?? 'lz4'
+  recordSize.value = settings?.record_size_bytes ?? 131072
   levels.value = Object.fromEntries(
     (props.share?.access ?? []).map((rule) => [key(rule.kind, rule.id), rule.access]),
   )
@@ -65,6 +77,15 @@ function rules(): ShareRule[] {
     })
 }
 
+function settings() {
+  const gib = Number(quota.value.replace(',', '.'))
+  return {
+    quota_bytes: quota.value.trim() === '' || !Number.isFinite(gib) ? null : Math.round(gib * GIB),
+    compression: compression.value,
+    record_size_bytes: recordSize.value,
+  }
+}
+
 async function submit(): Promise<void> {
   pending.value = true
   error.value = null
@@ -76,6 +97,7 @@ async function submit(): Promise<void> {
         recycle_bin: recycleBin.value,
         access: rules(),
         nfs: nfsRules,
+        settings: settings(),
       })
       notifications.notify(
         'success',
@@ -90,6 +112,7 @@ async function submit(): Promise<void> {
         recycle_bin: recycleBin.value,
         access: rules(),
         nfs: nfsRules,
+        settings: settings(),
       })
       notifications.notify('success', t('shares.created', { name: share.name }), share.path)
     }
@@ -195,6 +218,46 @@ async function submit(): Promise<void> {
           <span class="block text-xs text-muted-foreground">{{ t('shares.recycleBinHint') }}</span>
         </span>
       </label>
+
+      <fieldset class="grid gap-3">
+        <legend class="mb-1 text-sm font-medium">{{ t('shares.storage.title') }}</legend>
+        <div class="grid gap-1">
+          <Label for="share-quota">{{ t('shares.storage.quota') }}</Label>
+          <Input
+            id="share-quota"
+            v-model="quota"
+            inputmode="decimal"
+            :placeholder="t('shares.storage.noQuota')"
+          />
+          <p class="text-xs text-muted-foreground">{{ t('shares.storage.quotaHint') }}</p>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div class="grid gap-1">
+            <Label for="share-compression">{{ t('shares.storage.compression') }}</Label>
+            <select
+              id="share-compression"
+              v-model="compression"
+              class="h-9 rounded-md border bg-background px-3 text-sm shadow-xs"
+            >
+              <option v-for="kind in ['lz4', 'zstd', 'off'] as const" :key="kind" :value="kind">
+                {{ t(`shares.storage.compressions.${kind}`) }}
+              </option>
+            </select>
+          </div>
+          <div class="grid gap-1">
+            <Label for="share-record-size">{{ t('shares.storage.recordSize') }}</Label>
+            <select
+              id="share-record-size"
+              v-model.number="recordSize"
+              class="h-9 rounded-md border bg-background px-3 text-sm shadow-xs"
+            >
+              <option v-for="size in RECORD_SIZES" :key="size" :value="size">
+                {{ t(`shares.storage.recordSizes.${size}`) }}
+              </option>
+            </select>
+          </div>
+        </div>
+      </fieldset>
 
       <fieldset class="grid gap-2">
         <legend class="mb-1 text-sm font-medium">{{ t('shares.nfs') }}</legend>

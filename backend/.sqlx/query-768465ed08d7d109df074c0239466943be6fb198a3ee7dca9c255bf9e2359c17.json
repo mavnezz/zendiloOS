@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id AS \"id!\", name, description, pool, volume, recycle_bin AS \"recycle_bin: bool\",\n                      created_at, updated_at\n               FROM shares ORDER BY name",
+  "query": "SELECT id AS \"id!\", name, description, pool, volume, recycle_bin AS \"recycle_bin: bool\",\n                      quota_bytes, compression, record_size, created_at, updated_at\n               FROM shares ORDER BY name",
   "describe": {
     "columns": [
       {
@@ -70,8 +70,41 @@
         }
       },
       {
-        "name": "created_at",
+        "name": "quota_bytes",
         "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "shares",
+            "name": "quota_bytes"
+          }
+        }
+      },
+      {
+        "name": "compression",
+        "ordinal": 7,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "shares",
+            "name": "compression"
+          }
+        }
+      },
+      {
+        "name": "record_size",
+        "ordinal": 8,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "shares",
+            "name": "record_size"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 9,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -82,7 +115,7 @@
       },
       {
         "name": "updated_at",
-        "ordinal": 7,
+        "ordinal": 10,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -102,9 +135,12 @@
       false,
       false,
       false,
+      true,
+      false,
+      false,
       false,
       false
     ]
   },
-  "hash": "351f6e4256aaaa04f9b4b081ccfb01c8d33d1db0bb101020ae7e339f4de33de1"
+  "hash": "768465ed08d7d109df074c0239466943be6fb198a3ee7dca9c255bf9e2359c17"
 }

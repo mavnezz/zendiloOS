@@ -653,6 +653,27 @@ const de: Messages = {
     dropHere: 'Dateien hier ablegen, um sie hochzuladen',
   },
   shares: {
+    storage: {
+      title: 'Speicher',
+      quota: 'Kontingent in GiB',
+      noQuota: 'Kein Kontingent',
+      quotaHint:
+        'Begrenzt, was die Freigabe enthält; Snapshots zählen nicht mit. Mindestens 1 GiB.',
+      compression: 'Kompression',
+      compressions: {
+        lz4: 'Schnell (lz4)',
+        zstd: 'Kleiner (zstd)',
+        off: 'Aus',
+      },
+      recordSize: 'Blockgröße',
+      recordSizes: {
+        '16384': '16 KiB: Datenbanken, VM-Images',
+        '131072': '128 KiB: die meisten Dateien',
+        '1048576': '1 MiB: große Mediendateien',
+      },
+      used: '{used} belegt',
+      usedOfQuota: '{used} von {quota} belegt',
+    },
     snapshots: {
       open: 'Snapshots',
       title: 'Snapshots von {name}',

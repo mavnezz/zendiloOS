@@ -1735,3 +1735,36 @@ async fn users_see_their_own_jobs_and_no_storage_notifications() {
     assert_problem(&notices, StatusCode::FORBIDDEN, "forbidden");
     assert_eq!(h.send(empty(with_cookie(get("/api/v1/notifications"), &admin))).await.status, StatusCode::OK);
 }
+
+#[tokio::test]
+async fn shares_have_a_quota_compression_and_record_size_and_show_their_usage() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let gib: u64 = 1 << 30;
+    let settings = json!({ "quota_bytes": 5 * gib, "compression": "zstd", "record_size_bytes": 1_048_576 });
+    let created = h
+        .send(json(
+            with_csrf(post("/api/v1/shares"), &admin),
+            json!({ "name": "media", "pool": "tank", "settings": settings }),
+        ))
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
+    assert_eq!(created.body["settings"], settings);
+
+    let listed = h.send(empty(with_cookie(get("/api/v1/shares"), &admin))).await;
+    assert_eq!(listed.body[0]["settings"]["compression"], "zstd");
+    assert_eq!(listed.body[0]["used_bytes"], 0);
+
+    let path = format!("/api/v1/shares/{}", created.body["id"]);
+    let odd = json!({ "settings": { "quota_bytes": null, "compression": "lz4", "record_size_bytes": 4096 } });
+    let refused = h.send(json(with_csrf(changing(Method::PATCH, &path), &admin), odd)).await;
+    assert_problem(&refused, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
+    let tiny =
+        json!({ "settings": { "quota_bytes": 1024, "compression": "lz4", "record_size_bytes": 131_072 } });
+    let refused = h.send(json(with_csrf(changing(Method::PATCH, &path), &admin), tiny)).await;
+    assert_problem(&refused, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
+    let none =
+        json!({ "settings": { "quota_bytes": null, "compression": "lz4", "record_size_bytes": 131_072 } });
+    let changed = h.send(json(with_csrf(changing(Method::PATCH, &path), &admin), none.clone())).await;
+    assert_eq!(changed.body["share"]["settings"], none["settings"], "{:?}", changed.body);
+}

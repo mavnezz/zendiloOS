@@ -13,7 +13,7 @@ use super::SharingPorts;
 use super::ports::{HostError, Names};
 use crate::domain::{
     Access, AccessRule, InvalidNetwork, InvalidShareName, NewShare, NfsClient, NfsSpec, Principal, Share,
-    ShareId, ShareName, SharingConfig, SmbSpec, Subject, network,
+    ShareId, ShareName, ShareSettings, ShareUsage, SharingConfig, SmbSpec, Subject, network,
 };
 
 pub const MAX_DESCRIPTION_CHARS: usize = 200;
@@ -40,6 +40,8 @@ pub enum SharingError {
     ConfirmationMismatch,
     #[error("refused by the host: {0}")]
     Refused(String),
+    #[error(transparent)]
+    InvalidSettings(#[from] crate::domain::InvalidSettings),
     #[error(transparent)]
     InvalidSchedule(#[from] crate::domain::InvalidSchedule),
     #[error(transparent)]
@@ -72,6 +74,7 @@ pub struct NewShareInput {
     pub access: Vec<AccessRule>,
     /// Networks as typed; validated here.
     pub nfs: Vec<(String, bool)>,
+    pub settings: ShareSettings,
 }
 
 /// Changes to a share; `None` leaves a field as it is.
@@ -81,6 +84,7 @@ pub struct ShareChanges {
     pub recycle_bin: Option<bool>,
     pub access: Option<Vec<AccessRule>>,
     pub nfs: Option<Vec<(String, bool)>>,
+    pub settings: Option<ShareSettings>,
 }
 
 fn description(value: Option<&str>) -> Result<Option<String>, SharingError> {
@@ -182,7 +186,33 @@ impl SharingUseCases {
     /// or after accounts or groups changed.
     pub async fn apply(&self, request: &RequestContext) -> Result<(), SharingError> {
         let _changes = self.changes.lock().await;
-        self.apply_locked(request).await
+        self.apply_locked(request).await?;
+        // The datasets get what the database says, whatever changed them.
+        for share in self.ports.shares.list().await? {
+            if let Err(error) = self
+                .ports
+                .host
+                .set_properties(&share.pool, share.volume, &share.name, &share.settings, request)
+                .await
+            {
+                tracing::warn!(%error, share = share.name.as_str(), "cannot set the share's properties");
+            }
+        }
+        Ok(())
+    }
+
+    /// What each share holds and may still take; shares whose volume is
+    /// not there are left out.
+    pub async fn usage(&self, request: &RequestContext) -> Result<Vec<(ShareId, ShareUsage)>, SharingError> {
+        let shares = self.ports.shares.list().await?;
+        let usage = self.ports.host.usage(request).await?;
+        Ok(shares
+            .iter()
+            .filter_map(|share| {
+                let found = usage.iter().find(|u| u.pool == share.pool && u.name == share.name)?;
+                Some((share.id, found.clone()))
+            })
+            .collect())
     }
 
     async fn apply_locked(&self, request: &RequestContext) -> Result<(), SharingError> {
@@ -218,6 +248,7 @@ impl SharingUseCases {
         let name = ShareName::parse(input.name.trim())?;
         let description = description(input.description.as_deref())?;
         let nfs = clients(input.nfs)?;
+        input.settings.check()?;
 
         let _changes = self.changes.lock().await;
         let names = self.ports.directory.names().await?;
@@ -234,6 +265,7 @@ impl SharingUseCases {
 
         self.ports.host.create_dataset(&input.pool, volume, &name, request).await?;
         let stored = async {
+            self.ports.host.set_properties(&input.pool, volume, &name, &input.settings, request).await?;
             let access = principals(&input.access, &names);
             self.ports.host.set_access(volume, &name, &access, &[], false, request).await?;
             let new = NewShare {
@@ -242,6 +274,7 @@ impl SharingUseCases {
                 pool: input.pool.clone(),
                 volume,
                 recycle_bin: input.recycle_bin,
+                settings: input.settings,
                 access: input.access,
                 nfs,
                 created_at: self.ports.clock.now(),
@@ -294,6 +327,24 @@ impl SharingUseCases {
             self.ports.host.set_access(share.volume, &share.name, &now, &removed, false, request).await?;
             share.access = access;
             follow_up = Some((now, removed));
+        }
+        if let Some(settings) = changes.settings
+            && settings != share.settings
+        {
+            let used = self
+                .ports
+                .host
+                .usage(request)
+                .await?
+                .into_iter()
+                .find(|u| u.pool == share.pool && u.name == share.name)
+                .map_or(0, |u| u.used_bytes);
+            settings.check_against(used)?;
+            self.ports
+                .host
+                .set_properties(&share.pool, share.volume, &share.name, &settings, request)
+                .await?;
+            share.settings = settings;
         }
         if let Some(description) = description {
             share.description = description;

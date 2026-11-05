@@ -643,6 +643,26 @@ const en = {
     dropHere: 'Drop files here to upload them',
   },
   shares: {
+    storage: {
+      title: 'Storage',
+      quota: 'Quota in GiB',
+      noQuota: 'No quota',
+      quotaHint: 'Limits what the share holds; snapshots do not count. At least 1 GiB.',
+      compression: 'Compression',
+      compressions: {
+        lz4: 'Fast (lz4)',
+        zstd: 'Smaller (zstd)',
+        off: 'Off',
+      },
+      recordSize: 'Block size',
+      recordSizes: {
+        '16384': '16 KiB: databases, VM images',
+        '131072': '128 KiB: most files',
+        '1048576': '1 MiB: large media',
+      },
+      used: '{used} used',
+      usedOfQuota: '{used} of {quota} used',
+    },
     snapshots: {
       open: 'Snapshots',
       title: 'Snapshots of {name}',

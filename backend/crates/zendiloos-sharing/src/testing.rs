@@ -11,7 +11,7 @@ use crate::application::ports::{
 };
 use crate::domain::{
     Access, Entry, EntryKind, FileLocation, FilePath, Frequency, Listing, NewShare, Principal, Share,
-    ShareId, ShareName, SharingConfig, Snapshot, SnapshotSchedule,
+    ShareId, ShareName, ShareSettings, ShareUsage, SharingConfig, Snapshot, SnapshotSchedule,
 };
 use zendiloos_kernel::Timestamp;
 
@@ -50,6 +50,7 @@ impl ShareRepository for Shares {
             pool: new.pool,
             volume: new.volume,
             recycle_bin: new.recycle_bin,
+            settings: new.settings,
             access: new.access,
             nfs: new.nfs,
             created_at: new.created_at,
@@ -95,6 +96,8 @@ pub struct Host {
     pub snapshots: Mutex<Vec<Snapshot>>,
     /// Taking snapshots fails, e.g. because the pool is gone.
     pub refuse_snapshots: std::sync::atomic::AtomicBool,
+    /// What every share dataset holds, in bytes.
+    pub used_bytes: std::sync::atomic::AtomicU64,
 }
 
 impl Host {
@@ -138,6 +141,43 @@ impl ShareHost for Host {
         self.calls.lock().unwrap().push(format!("apply {}", config.smb.len()));
         self.configs.lock().unwrap().push(config.clone());
         Ok(())
+    }
+
+    async fn set_properties(
+        &self,
+        pool: &str,
+        _volume: u16,
+        name: &ShareName,
+        settings: &ShareSettings,
+        _: &RequestContext,
+    ) -> Result<(), HostError> {
+        let quota = settings.quota_bytes.map_or("none".to_owned(), |q| q.to_string());
+        self.calls.lock().unwrap().push(format!(
+            "properties {pool}/{name} refquota={quota} compression={} recordsize={}",
+            settings.compression.as_str(),
+            settings.record_size.bytes()
+        ));
+        Ok(())
+    }
+
+    /// Every share created so far, holding [`Host::used_bytes`] each.
+    async fn usage(&self, _: &RequestContext) -> Result<Vec<ShareUsage>, HostError> {
+        let used = self.used_bytes.load(std::sync::atomic::Ordering::Relaxed);
+        let calls = self.calls();
+        Ok(calls
+            .iter()
+            .filter_map(|call| call.strip_prefix("create "))
+            .filter_map(|rest| {
+                let mut parts = rest.split(' ');
+                let (pool, _volume, name) = (parts.next()?, parts.next()?, parts.next()?);
+                Some(ShareUsage {
+                    pool: pool.to_owned(),
+                    name: ShareName::parse(name).ok()?,
+                    used_bytes: used,
+                    available_bytes: 1 << 40,
+                })
+            })
+            .collect())
     }
 
     async fn snapshots(&self, _: &RequestContext) -> Result<Vec<Snapshot>, HostError> {

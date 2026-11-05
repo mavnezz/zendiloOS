@@ -47,6 +47,7 @@ impl From<SharingError> for ApiError {
                 rejected(StatusCode::UNPROCESSABLE_ENTITY, "confirmation_mismatch", None)
             }
             SharingError::Refused(reason) => rejected(StatusCode::CONFLICT, "refused", Some(reason)),
+            SharingError::InvalidSettings(e) => ApiError::InvalidInput(e.to_string()),
             SharingError::InvalidSchedule(e) => ApiError::InvalidInput(e.to_string()),
             SharingError::InvalidNote(e) => ApiError::InvalidInput(e.to_string()),
             SharingError::SnapshotNotFound => ApiError::NotFound,
@@ -99,11 +100,80 @@ pub struct Share {
     /// E.g. `/volume1/photos`.
     pub path: String,
     pub recycle_bin: bool,
+    pub settings: ShareSettingsDto,
+    /// What the share holds; absent while its volume is not there.
+    pub used_bytes: Option<u64>,
+    /// What it may still take: up to its quota, or what the pool has left.
+    pub available_bytes: Option<u64>,
     pub access: Vec<ShareRule>,
     /// Empty: not exported over NFS.
     pub nfs: Vec<NfsRule>,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+/// How a share's dataset compresses data.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ShareCompressionKind {
+    Off,
+    /// Fast; the default.
+    Lz4,
+    /// Smaller, costs more CPU.
+    Zstd,
+}
+
+/// How a share's dataset stores data.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ShareSettingsDto {
+    /// Limits the share's own data (snapshots not counted); at least 1 GiB.
+    /// `null`: no quota.
+    pub quota_bytes: Option<u64>,
+    pub compression: ShareCompressionKind,
+    /// 16384, 131072 (the default) or 1048576.
+    pub record_size_bytes: u64,
+}
+
+impl From<sharing::ShareSettings> for ShareSettingsDto {
+    fn from(settings: sharing::ShareSettings) -> Self {
+        Self {
+            quota_bytes: settings.quota_bytes,
+            compression: match settings.compression {
+                sharing::Compression::Off => ShareCompressionKind::Off,
+                sharing::Compression::Lz4 => ShareCompressionKind::Lz4,
+                sharing::Compression::Zstd => ShareCompressionKind::Zstd,
+            },
+            record_size_bytes: settings.record_size.bytes(),
+        }
+    }
+}
+
+impl TryFrom<ShareSettingsDto> for sharing::ShareSettings {
+    type Error = ApiError;
+
+    fn try_from(settings: ShareSettingsDto) -> Result<Self, ApiError> {
+        Ok(Self {
+            quota_bytes: settings.quota_bytes,
+            compression: match settings.compression {
+                ShareCompressionKind::Off => sharing::Compression::Off,
+                ShareCompressionKind::Lz4 => sharing::Compression::Lz4,
+                ShareCompressionKind::Zstd => sharing::Compression::Zstd,
+            },
+            record_size: sharing::RecordSize::from_bytes(settings.record_size_bytes).ok_or_else(|| {
+                ApiError::InvalidInput("the record size is 16384, 131072 or 1048576 bytes".to_owned())
+            })?,
+        })
+    }
+}
+
+impl Share {
+    fn with_usage(share: sharing::Share, usage: Option<&sharing::ShareUsage>) -> Self {
+        let mut dto = Self::from(share);
+        dto.used_bytes = usage.map(|u| u.used_bytes);
+        dto.available_bytes = usage.map(|u| u.available_bytes);
+        dto
+    }
 }
 
 impl From<sharing::Share> for Share {
@@ -116,6 +186,9 @@ impl From<sharing::Share> for Share {
             pool: share.pool,
             volume: share.volume,
             recycle_bin: share.recycle_bin,
+            settings: share.settings.into(),
+            used_bytes: None,
+            available_bytes: None,
             access: share.access.into_iter().map(ShareRule::from).collect(),
             nfs: share.nfs.into_iter().map(|c| NfsRule { network: c.network, write: c.write }).collect(),
             created_at: share.created_at.unix_seconds(),
@@ -163,10 +236,27 @@ impl From<ShareRule> for sharing::AccessRule {
         (status = FORBIDDEN, body = Problem, description = "`forbidden`"),
     )
 )]
-async fn list_shares(auth: Auth, State(state): State<ApiState>) -> Result<Json<Vec<Share>>, ApiError> {
+async fn list_shares(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+) -> Result<Json<Vec<Share>>, ApiError> {
     auth.require(Permission::SharesManage)?;
     let shares = state.sharing.list().await?;
-    Ok(Json(shares.into_iter().map(Share::from).collect()))
+    // Without the agent, the shares are still listed, just without usage.
+    let usage = state.sharing.usage(&client).await.unwrap_or_else(|error| {
+        tracing::warn!(%error, "cannot read what the shares hold");
+        Vec::new()
+    });
+    Ok(Json(
+        shares
+            .into_iter()
+            .map(|share| {
+                let found = usage.iter().find(|(id, _)| *id == share.id).map(|(_, u)| u);
+                Share::with_usage(share, found)
+            })
+            .collect(),
+    ))
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -182,6 +272,9 @@ pub struct CreateShareRequest {
     pub access: Vec<ShareRule>,
     #[serde(default)]
     pub nfs: Vec<NfsRule>,
+    /// Absent: no quota, lz4, 128 KiB records.
+    #[serde(default)]
+    pub settings: Option<ShareSettingsDto>,
 }
 
 fn yes() -> bool {
@@ -216,6 +309,7 @@ async fn create_share(
         recycle_bin: request.recycle_bin,
         access: request.access.into_iter().map(Into::into).collect(),
         nfs: request.nfs.into_iter().map(|c| (c.network, c.write)).collect(),
+        settings: request.settings.map(TryInto::try_into).transpose()?.unwrap_or_default(),
     };
     let share = state.sharing.create(input, &auth.0.actor(), &client).await?;
     Ok((StatusCode::CREATED, Json(share.into())))
@@ -232,6 +326,9 @@ pub struct UpdateShareRequest {
     pub access: Option<Vec<ShareRule>>,
     /// Replaces all NFS clients; empty stops exporting.
     pub nfs: Option<Vec<NfsRule>>,
+    /// Replaces quota, compression and record size. A quota below what the
+    /// share holds is refused.
+    pub settings: Option<ShareSettingsDto>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -269,6 +366,7 @@ async fn update_share(
         recycle_bin: request.recycle_bin,
         access: request.access.map(|rules| rules.into_iter().map(Into::into).collect()),
         nfs: request.nfs.map(|clients| clients.into_iter().map(|c| (c.network, c.write)).collect()),
+        settings: request.settings.map(TryInto::try_into).transpose()?,
     };
     let (share, job) = state.sharing.update(ShareId::new(id), changes, &auth.0.actor(), &client).await?;
     Ok(Json(ShareUpdate { share: share.into(), job: job.map(Job::from) }))

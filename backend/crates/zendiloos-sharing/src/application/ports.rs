@@ -7,7 +7,7 @@ use zendiloos_kernel::{PortError, RequestContext};
 
 use crate::domain::{
     Access, FileLocation, FilePath, Frequency, Listing, NewShare, Principal, Share, ShareId, ShareName,
-    SharingConfig, Snapshot, SnapshotSchedule,
+    ShareSettings, ShareUsage, SharingConfig, Snapshot, SnapshotSchedule,
 };
 
 #[async_trait]
@@ -99,6 +99,19 @@ pub trait ShareHost: Send + Sync {
 
     /// Replaces what the SMB and NFS servers offer.
     async fn apply(&self, config: &SharingConfig, context: &RequestContext) -> Result<(), HostError>;
+
+    /// Quota, compression and record size of the share's dataset.
+    async fn set_properties(
+        &self,
+        pool: &str,
+        volume: u16,
+        name: &ShareName,
+        settings: &ShareSettings,
+        context: &RequestContext,
+    ) -> Result<(), HostError>;
+
+    /// What the share datasets hold and may still take, on every pool.
+    async fn usage(&self, context: &RequestContext) -> Result<Vec<ShareUsage>, HostError>;
 
     /// The snapshots of share datasets, on every pool.
     async fn snapshots(&self, context: &RequestContext) -> Result<Vec<Snapshot>, HostError>;

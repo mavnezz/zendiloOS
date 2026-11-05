@@ -621,6 +621,18 @@ impl Host {
         Ok(())
     }
 
+    /// Like `zfs list -H -p -t filesystem -d 1 -o name,used,available`: the
+    /// share datasets, each holding a little.
+    pub fn share_usage(&self) -> String {
+        let mut text = String::new();
+        for pool in &self.pools {
+            for share in &pool.shares {
+                text.push_str(&format!("{}/{share}\t{}\t{}\n", pool.name, 1 << 30, pool.member_size / 2));
+            }
+        }
+        text
+    }
+
     /// Like `zfs list -H -p -t snapshot -o name,creation,used,referenced,…`.
     pub fn snapshot_list(&self) -> String {
         let mut text = String::new();

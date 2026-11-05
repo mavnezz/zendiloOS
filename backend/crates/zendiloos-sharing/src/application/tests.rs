@@ -117,6 +117,7 @@ fn input(name: &str, pool: &str) -> NewShareInput {
         recycle_bin: true,
         access: vec![rule(Subject::Group(10), Access::ReadWrite), rule(Subject::Account(2), Access::Read)],
         nfs: vec![("192.168.1.0/24".into(), false)],
+        settings: crate::domain::ShareSettings::default(),
     }
 }
 
@@ -140,7 +141,15 @@ async fn creating_a_share_makes_its_dataset_permissions_and_configuration() {
     assert_eq!(share.path(), "/volume1/photos");
     assert_eq!(share.description.as_deref(), Some("Holiday photos"));
     assert_eq!(share.nfs[0].network, "192.168.1.0/24");
-    assert_eq!(s.host.calls(), ["create tank 1 photos", "access 1 photos [@family:rw,bob:r] -[]", "apply 1"]);
+    assert_eq!(
+        s.host.calls(),
+        [
+            "create tank 1 photos",
+            "properties tank/photos refquota=none compression=lz4 recordsize=131072",
+            "access 1 photos [@family:rw,bob:r] -[]",
+            "apply 1"
+        ]
+    );
     let config = s.host.configs.lock().unwrap().last().unwrap().clone();
     assert_eq!(
         config.smb[0].access,
@@ -182,7 +191,14 @@ async fn a_failed_creation_removes_the_dataset() {
     s.host.refuse_access.store(true, std::sync::atomic::Ordering::Relaxed);
     let result = s.sharing.create(input("photos", "tank"), &alice(), &RequestContext::default()).await;
     assert!(matches!(result, Err(SharingError::Refused(_))), "{result:?}");
-    assert_eq!(s.host.calls(), ["create tank 1 photos", "destroy tank 1 photos"]);
+    assert_eq!(
+        s.host.calls(),
+        [
+            "create tank 1 photos",
+            "properties tank/photos refquota=none compression=lz4 recordsize=131072",
+            "destroy tank 1 photos"
+        ]
+    );
     assert!(s.sharing.list().await.unwrap().is_empty());
 }
 
@@ -203,7 +219,7 @@ async fn changed_access_applies_now_and_to_existing_files_in_a_job() {
     assert_eq!(updated.access.len(), 2);
     assert_eq!(finished(&s.jobs, job.unwrap()).await.state, JobState::Succeeded);
     assert_eq!(
-        &s.host.calls()[3..],
+        &s.host.calls()[4..],
         [
             "access 1 photos [alice:rw,@family:r] -[bob]",
             "apply 1",
@@ -234,7 +250,7 @@ async fn deleting_needs_the_name_and_stops_offering_first() {
     assert!(matches!(wrong, Err(SharingError::ConfirmationMismatch)));
     let job = s.sharing.delete(share.id, "photos", &alice(), &request).await.unwrap();
     assert_eq!(finished(&s.jobs, job).await.state, JobState::Succeeded);
-    assert_eq!(&s.host.calls()[3..], ["apply 0", "destroy tank 1 photos"]);
+    assert_eq!(&s.host.calls()[4..], ["apply 0", "destroy tank 1 photos"]);
 }
 
 fn bob() -> Actor {
@@ -387,6 +403,7 @@ async fn photos(s: &Setup) -> ShareId {
         recycle_bin: true,
         access: vec![AccessRule { subject: Subject::Account(1), access: Access::ReadWrite }],
         nfs: vec![],
+        settings: crate::domain::ShareSettings::default(),
     };
     s.sharing.create(input, &alice(), &RequestContext::default()).await.unwrap().id
 }
@@ -469,4 +486,57 @@ async fn a_failing_schedule_is_reported_once_until_it_works_again() {
     s.clock.advance(3600);
     s.sharing.take_due_snapshots().await;
     assert_eq!(s.notices.all().len(), 2, "reported again after it had worked");
+}
+
+// Settings
+
+#[tokio::test]
+async fn settings_go_to_the_dataset_and_a_quota_never_below_what_is_there() {
+    use crate::domain::{Compression, MIN_QUOTA_BYTES, RecordSize, ShareSettings};
+    let s = setup();
+    let request = RequestContext::default();
+    let mut new = input("photos", "tank");
+    new.settings = ShareSettings {
+        quota_bytes: Some(2 * MIN_QUOTA_BYTES),
+        compression: Compression::Zstd,
+        record_size: RecordSize::M1,
+    };
+    let share = s.sharing.create(new, &alice(), &request).await.unwrap();
+    assert!(s.host.calls().iter().any(|c| c
+        == &format!(
+            "properties tank/photos refquota={} compression=zstd recordsize=1048576",
+            2 * MIN_QUOTA_BYTES
+        )));
+    let mut tiny = input("tiny", "tank");
+    tiny.settings.quota_bytes = Some(1024);
+    assert!(matches!(
+        s.sharing.create(tiny, &alice(), &request).await,
+        Err(SharingError::InvalidSettings(_))
+    ));
+
+    s.host.used_bytes.store(3 * MIN_QUOTA_BYTES, std::sync::atomic::Ordering::Relaxed);
+    let smaller = ShareSettings { quota_bytes: Some(2 * MIN_QUOTA_BYTES), ..ShareSettings::default() };
+    let refused = s
+        .sharing
+        .update(
+            share.id,
+            ShareChanges { settings: Some(smaller), ..ShareChanges::default() },
+            &alice(),
+            &request,
+        )
+        .await;
+    assert!(matches!(refused, Err(SharingError::InvalidSettings(_))), "{refused:?}");
+    let none = ShareSettings::default();
+    let (updated, _) = s
+        .sharing
+        .update(
+            share.id,
+            ShareChanges { settings: Some(none), ..ShareChanges::default() },
+            &alice(),
+            &request,
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated.settings, none);
+    assert_eq!(s.sharing.usage(&request).await.unwrap()[0].1.used_bytes, 3 * MIN_QUOTA_BYTES);
 }

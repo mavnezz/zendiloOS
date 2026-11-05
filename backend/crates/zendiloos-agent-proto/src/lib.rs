@@ -125,6 +125,20 @@ pub enum Request {
     },
     /// All snapshots with their properties (`zfs list -t snapshot`).
     ListSnapshots {},
+    /// Quota, compression and record size of share dataset
+    /// `<pool>/<share>` on a pool zendiloos created.
+    SetShareProperties {
+        pool: PoolName,
+        volume: VolumeNumber,
+        share: ShareName,
+        /// `refquota`: the share's own data, snapshots not counted; `None`
+        /// for no quota.
+        quota_bytes: Option<u64>,
+        compression: ShareCompression,
+        record_size: ShareRecordSize,
+    },
+    /// What the share datasets hold and may take (`zfs list -d 1`).
+    ShareUsage {},
     /// What the console login prompt shows: where the web interface is and,
     /// while the initial setup is pending, the setup code. The agent writes
     /// the text itself; only the code comes from zendiloosd.
@@ -269,6 +283,8 @@ impl Request {
             Request::DestroySnapshot { .. } => "destroy_snapshot",
             Request::ListSnapshots {} => "list_snapshots",
             Request::ShowOnConsole { .. } => "show_on_console",
+            Request::SetShareProperties { .. } => "set_share_properties",
+            Request::ShareUsage {} => "share_usage",
             Request::CreateShare { .. } => "create_share",
             Request::DestroyShare { .. } => "destroy_share",
             Request::ApplySharing { .. } => "apply_sharing",
@@ -337,6 +353,10 @@ pub enum Response {
     Snapshots {
         /// `zfs list -H -p -t snapshot -o name,creation,used,referenced,`
         /// `zendiloos:schedule,zendiloos:note`.
+        zfs_list: String,
+    },
+    ShareUsage {
+        /// `zfs list -H -p -t filesystem -d 1 -o name,used,available`.
         zfs_list: String,
     },
     Error {
@@ -632,6 +652,44 @@ impl TryFrom<String> for ConsoleSetupCode {
 impl From<ConsoleSetupCode> for String {
     fn from(code: ConsoleSetupCode) -> Self {
         code.0
+    }
+}
+
+/// Compression of a share's dataset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShareCompression {
+    Off,
+    Lz4,
+    Zstd,
+}
+
+impl ShareCompression {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Lz4 => "lz4",
+            Self::Zstd => "zstd",
+        }
+    }
+}
+
+/// Record size of a share's dataset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShareRecordSize {
+    K16,
+    K128,
+    M1,
+}
+
+impl ShareRecordSize {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::K16 => "16K",
+            Self::K128 => "128K",
+            Self::M1 => "1M",
+        }
     }
 }
 

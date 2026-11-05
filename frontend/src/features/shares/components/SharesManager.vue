@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 
 import type { Share } from '@/shared/api/types'
 import { problemMessage } from '@/shared/i18n'
+import { formatBytes } from '@/shared/lib/format'
 import { useJobsStore } from '@/shared/jobs/store'
 import { useNotifications } from '@/shared/lib/notifications'
 import { Alert } from '@/shared/ui/alert'
@@ -82,6 +83,16 @@ async function remove(): Promise<void> {
           <p class="truncate text-xs text-muted-foreground">
             <span class="font-mono">{{ share.path }}</span>
             <template v-if="share.description"> · {{ share.description }}</template>
+          </p>
+          <p v-if="share.used_bytes != null" class="truncate text-xs text-muted-foreground">
+            {{
+              share.settings.quota_bytes
+                ? t('shares.storage.usedOfQuota', {
+                    used: formatBytes(share.used_bytes),
+                    quota: formatBytes(share.settings.quota_bytes),
+                  })
+                : t('shares.storage.used', { used: formatBytes(share.used_bytes) })
+            }}
           </p>
         </div>
         <Badge v-if="share.nfs.length" variant="outline">NFS</Badge>

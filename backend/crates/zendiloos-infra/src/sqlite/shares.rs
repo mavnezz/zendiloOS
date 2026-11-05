@@ -4,7 +4,8 @@ use async_trait::async_trait;
 use zendiloos_kernel::{PortError, Timestamp};
 use zendiloos_sharing::application::ports::{Directory, Names, ShareRepository};
 use zendiloos_sharing::domain::{
-    Access, AccessRule, Frequency, NewShare, NfsClient, Share, ShareId, ShareName, SnapshotSchedule, Subject,
+    Access, AccessRule, Compression, Frequency, NewShare, NfsClient, RecordSize, Share, ShareId, ShareName,
+    ShareSettings, SnapshotSchedule, Subject,
 };
 
 use super::Database;
@@ -37,8 +38,28 @@ struct ShareRow {
     pool: String,
     volume: i64,
     recycle_bin: bool,
+    quota_bytes: Option<i64>,
+    compression: String,
+    record_size: i64,
     created_at: i64,
     updated_at: i64,
+}
+
+fn columns(settings: &ShareSettings) -> Result<(Option<i64>, &'static str, i64), PortError> {
+    let quota = settings.quota_bytes.map(i64::try_from).transpose().map_err(|_| stored("quota"))?;
+    let record_size = i64::try_from(settings.record_size.bytes()).map_err(|_| stored("record size"))?;
+    Ok((quota, settings.compression.as_str(), record_size))
+}
+
+fn settings(row: &ShareRow) -> Result<ShareSettings, PortError> {
+    Ok(ShareSettings {
+        quota_bytes: row.quota_bytes.map(u64::try_from).transpose().map_err(|_| stored("quota"))?,
+        compression: Compression::parse(&row.compression).ok_or_else(|| stored("compression"))?,
+        record_size: u64::try_from(row.record_size)
+            .ok()
+            .and_then(RecordSize::from_bytes)
+            .ok_or_else(|| stored("record size"))?,
+    })
 }
 
 async fn replace_rules(
@@ -122,6 +143,7 @@ impl SqliteShares {
         }
         rows.into_iter()
             .map(|row| {
+                let settings = settings(&row)?;
                 Ok(Share {
                     id: ShareId::new(row.id),
                     name: ShareName::parse(&row.name).map_err(|e| stored(e.to_string()))?,
@@ -129,6 +151,7 @@ impl SqliteShares {
                     pool: row.pool,
                     volume: u16::try_from(row.volume).map_err(|_| stored("volume"))?,
                     recycle_bin: row.recycle_bin,
+                    settings,
                     access: access.remove(&row.id).unwrap_or_default(),
                     nfs: nfs.remove(&row.id).unwrap_or_default(),
                     created_at: Timestamp::from_unix_seconds(row.created_at),
@@ -145,7 +168,7 @@ impl ShareRepository for SqliteShares {
         let rows = sqlx::query_as!(
             ShareRow,
             r#"SELECT id AS "id!", name, description, pool, volume, recycle_bin AS "recycle_bin: bool",
-                      created_at, updated_at
+                      quota_bytes, compression, record_size, created_at, updated_at
                FROM shares ORDER BY name"#
         )
         .fetch_all(self.db.pool())
@@ -160,10 +183,12 @@ impl ShareRepository for SqliteShares {
 
     async fn create(&self, new: NewShare) -> Result<Option<Share>, PortError> {
         let (name, at, volume) = (new.name.as_str(), new.created_at.unix_seconds(), i64::from(new.volume));
+        let (quota, compression, record_size) = columns(&new.settings)?;
         let mut tx = self.db.pool().begin().await.map_err(db_error)?;
         let id = sqlx::query_scalar!(
-            r#"INSERT INTO shares (name, description, pool, volume, recycle_bin, created_at, updated_at)
-               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+            r#"INSERT INTO shares (name, description, pool, volume, recycle_bin, quota_bytes, compression, record_size,
+                                   created_at, updated_at)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
                ON CONFLICT (name) DO NOTHING
                RETURNING id AS "id!""#,
             name,
@@ -171,6 +196,9 @@ impl ShareRepository for SqliteShares {
             new.pool,
             volume,
             new.recycle_bin,
+            quota,
+            compression,
+            record_size,
             at
         )
         .fetch_optional(&mut *tx)
@@ -186,6 +214,7 @@ impl ShareRepository for SqliteShares {
             pool: new.pool,
             volume: new.volume,
             recycle_bin: new.recycle_bin,
+            settings: new.settings,
             access: new.access,
             nfs: new.nfs,
             created_at: new.created_at,
@@ -195,11 +224,17 @@ impl ShareRepository for SqliteShares {
 
     async fn update(&self, share: &Share) -> Result<(), PortError> {
         let (id, at) = (share.id.get(), share.updated_at.unix_seconds());
+        let (quota, compression, record_size) = columns(&share.settings)?;
         let mut tx = self.db.pool().begin().await.map_err(db_error)?;
         sqlx::query!(
-            "UPDATE shares SET description = ?, recycle_bin = ?, updated_at = ? WHERE id = ?",
+            "UPDATE shares SET description = ?, recycle_bin = ?, quota_bytes = ?, compression = ?, record_size = ?,
+                               updated_at = ?
+             WHERE id = ?",
             share.description,
             share.recycle_bin,
+            quota,
+            compression,
+            record_size,
             at,
             id
         )
@@ -341,6 +376,11 @@ mod tests {
                 AccessRule { subject: Subject::Account(alice.id.get()), access: Access::Read },
             ],
             nfs: vec![NfsClient { network: "192.168.1.0/24".into(), write: false }],
+            settings: ShareSettings {
+                quota_bytes: Some(5 << 30),
+                compression: Compression::Zstd,
+                record_size: RecordSize::M1,
+            },
             created_at: at,
         };
         let mut share = shares.create(new.clone()).await.unwrap().unwrap();
@@ -354,6 +394,7 @@ mod tests {
 
         share.nfs.clear();
         share.recycle_bin = false;
+        share.settings = ShareSettings::default();
         shares.update(&share).await.unwrap();
         assert_eq!(shares.list().await.unwrap(), [share.clone()]);
 

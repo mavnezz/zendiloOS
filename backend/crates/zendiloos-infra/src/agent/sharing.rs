@@ -3,11 +3,15 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use zendiloos_agent_proto::{
     self as proto, AgentTransport, ErrorCode, GroupName, NfsClient, NfsExport, Request, Response,
-    ShareAccess, ShareComment, SmbShare, SnapshotFrequency, SnapshotLabel, SnapshotNote, UserName,
+    ShareAccess, ShareComment, ShareCompression, ShareRecordSize, SmbShare, SnapshotFrequency, SnapshotLabel,
+    SnapshotNote, UserName,
 };
 use zendiloos_kernel::{PortError, RequestContext, Timestamp};
 use zendiloos_sharing::application::ports::{HostError, ShareHost, Volume, Volumes};
-use zendiloos_sharing::domain::{Access, Frequency, Principal, ShareName, SharingConfig, Snapshot, is_label};
+use zendiloos_sharing::domain::{
+    Access, Compression, Frequency, Principal, RecordSize, ShareName, ShareSettings, ShareUsage,
+    SharingConfig, Snapshot, is_label,
+};
 use zendiloos_storage::application::ports::ZfsSource;
 
 use super::{WHAT, agent_error, call_raw, unexpected};
@@ -121,8 +125,61 @@ pub fn parse_snapshots(text: &str) -> Vec<Snapshot> {
     snapshots
 }
 
+/// `zfs list -H -p -t filesystem -d 1 -o name,used,available`: the
+/// datasets directly below a pool, as shares; pools themselves are left out.
+pub fn parse_usage(text: &str) -> Vec<ShareUsage> {
+    text.lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\t');
+            let (name, used, available) = (fields.next()?, fields.next()?, fields.next()?);
+            let (pool, share) = name.split_once('/')?;
+            Some(ShareUsage {
+                pool: pool.to_owned(),
+                name: ShareName::parse(share).ok()?,
+                used_bytes: used.parse().ok()?,
+                available_bytes: available.parse().ok()?,
+            })
+        })
+        .collect()
+}
+
 #[async_trait]
 impl ShareHost for AgentSharing {
+    async fn set_properties(
+        &self,
+        pool_name: &str,
+        number: u16,
+        name: &ShareName,
+        settings: &ShareSettings,
+        context: &RequestContext,
+    ) -> Result<(), HostError> {
+        let request = Request::SetShareProperties {
+            pool: pool(pool_name)?,
+            volume: volume(number)?,
+            share: share(name)?,
+            quota_bytes: settings.quota_bytes,
+            compression: match settings.compression {
+                Compression::Off => ShareCompression::Off,
+                Compression::Lz4 => ShareCompression::Lz4,
+                Compression::Zstd => ShareCompression::Zstd,
+            },
+            record_size: match settings.record_size {
+                RecordSize::K16 => ShareRecordSize::K16,
+                RecordSize::K128 => ShareRecordSize::K128,
+                RecordSize::M1 => ShareRecordSize::M1,
+            },
+        };
+        change(self.system.as_ref(), request, context).await
+    }
+
+    async fn usage(&self, context: &RequestContext) -> Result<Vec<ShareUsage>, HostError> {
+        match call_raw(self.system.as_ref(), Request::ShareUsage {}, context).await? {
+            Response::ShareUsage { zfs_list } => Ok(parse_usage(&zfs_list)),
+            Response::Error { code, message } => Err(agent_error(code, &message).into()),
+            other => Err(unexpected(other).into()),
+        }
+    }
+
     async fn snapshots(&self, context: &RequestContext) -> Result<Vec<Snapshot>, HostError> {
         match call_raw(self.system.as_ref(), Request::ListSnapshots {}, context).await? {
             Response::Snapshots { zfs_list } => Ok(parse_snapshots(&zfs_list)),
@@ -273,6 +330,18 @@ mod tests {
         let label = zendiloos_sharing::domain::label_at(Timestamp::from_unix_seconds(1_793_907_601));
         assert!(SnapshotLabel::parse(&label).is_ok(), "{label}");
         assert_eq!(zendiloos_sharing::domain::LABEL_FORMAT, proto::SNAPSHOT_LABEL_FORMAT);
+    }
+
+    #[test]
+    fn reads_what_the_shares_hold() {
+        let text = "tank\t3221225472\t5000000000\ntank/photos\t1073741824\t4294967296\nbackup/old\t5\t6\nrpool/ROOT\t1\t2\n";
+        let usage = parse_usage(text);
+        assert_eq!(usage.len(), 2, "the pool itself and names no share can have are left out");
+        assert_eq!(
+            (usage[0].pool.as_str(), usage[0].name.as_str(), usage[0].used_bytes),
+            ("tank", "photos", 1 << 30)
+        );
+        assert_eq!(usage[0].available_bytes, 4 << 30);
     }
 
     #[test]

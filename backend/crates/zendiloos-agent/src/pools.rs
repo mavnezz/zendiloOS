@@ -21,8 +21,8 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use zendiloos_agent_proto::{
-    DiskId, DiskName, Layout, PoolName, Response, ShareName, SnapshotFrequency, SnapshotLabel, SnapshotNote,
-    VolumeNumber,
+    DiskId, DiskName, Layout, PoolName, Response, ShareCompression, ShareName, ShareRecordSize,
+    SnapshotFrequency, SnapshotLabel, SnapshotNote, VolumeNumber,
 };
 use zendiloos_exec::{Limits, Program};
 
@@ -403,6 +403,37 @@ impl Pools {
         let dataset = self.share_dataset(pool, share).await?;
         run(&self.zfs, &["destroy", &format!("{dataset}@{}", label.as_str())]).await?;
         Ok(Response::Done)
+    }
+
+    /// Quota, compression and record size of a share's dataset.
+    pub(crate) async fn set_share_properties(
+        &self,
+        pool: &PoolName,
+        volume: VolumeNumber,
+        share: &ShareName,
+        quota_bytes: Option<u64>,
+        compression: ShareCompression,
+        record_size: ShareRecordSize,
+    ) -> Result<Response, OperationError> {
+        let _serial = self.serial.lock().await;
+        self.require_managed(pool, Some(volume)).await?;
+        let dataset = self.share_dataset(pool, share).await?;
+        let quota = quota_bytes.map_or("none".to_owned(), |bytes| bytes.to_string());
+        let properties = [
+            format!("refquota={quota}"),
+            format!("compression={}", compression.as_str()),
+            format!("recordsize={}", record_size.as_str()),
+        ];
+        let mut args = vec!["set".to_owned()];
+        args.extend(properties);
+        args.push(dataset);
+        run(&self.zfs, &args).await?;
+        Ok(Response::Done)
+    }
+
+    pub(crate) async fn share_usage(&self) -> Result<Response, OperationError> {
+        let args = ["list", "-H", "-p", "-t", "filesystem", "-d", "1", "-o", "name,used,available"];
+        Ok(Response::ShareUsage { zfs_list: output(&self.zfs, &args).await? })
     }
 
     pub(crate) async fn list_snapshots(&self) -> Result<Response, OperationError> {

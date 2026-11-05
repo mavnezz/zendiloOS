@@ -11,8 +11,8 @@ use zendiloos_agent::config::Tools;
 use zendiloos_agent::{AccountFiles, Erasable, ErasePolicy, HostPaths, Operations, Paths};
 use zendiloos_agent_proto::{
     DiskId, ErrorCode, GroupName, Layout, Network, NfsClient, NfsExport, PoolName, Principal, Request,
-    Response, Role, ShareAccess, ShareName, SmbShare, SnapshotFrequency, SnapshotLabel, SnapshotNote,
-    VolumeNumber,
+    Response, Role, ShareAccess, ShareCompression, ShareName, ShareRecordSize, SmbShare, SnapshotFrequency,
+    SnapshotLabel, SnapshotNote, VolumeNumber,
 };
 
 /// 8 GiB in 512-byte sectors.
@@ -467,4 +467,29 @@ async fn scrubs_only_its_own_pools() {
     for request in [Request::ScrubPool { pool: pool("rpool") }, Request::StopScrub { pool: pool("rpool") }] {
         assert_refused(host.run(request).await, ErrorCode::Forbidden, "not managed");
     }
+}
+
+#[tokio::test]
+async fn share_properties_go_to_the_share_dataset_only() {
+    let host = host(Erasable::Policy(ErasePolicy::Unused));
+    let set = |share_name: &str, pool: &str, quota| Request::SetShareProperties {
+        pool: PoolName::parse(pool).unwrap(),
+        volume: VolumeNumber::new(1).unwrap(),
+        share: share(share_name),
+        quota_bytes: quota,
+        compression: ShareCompression::Zstd,
+        record_size: ShareRecordSize::M1,
+    };
+
+    assert_eq!(host.run(set("photos", "tank", Some(5 << 30))).await, Response::Done);
+    assert_eq!(
+        host.calls().last().unwrap(),
+        "zfs set refquota=5368709120 compression=zstd recordsize=1M tank/photos"
+    );
+    assert_eq!(host.run(set("photos", "tank", None)).await, Response::Done);
+    assert!(host.calls().last().unwrap().starts_with("zfs set refquota=none "));
+    assert_refused(host.run(set("nothing", "tank", None)).await, ErrorCode::Forbidden, "no share");
+    assert_refused(host.run(set("photos", "foreign", None)).await, ErrorCode::Forbidden, "not managed");
+
+    assert!(matches!(host.run(Request::ShareUsage {}).await, Response::ShareUsage { .. }));
 }

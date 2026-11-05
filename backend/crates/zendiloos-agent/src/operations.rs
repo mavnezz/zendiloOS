@@ -109,6 +109,12 @@ impl Operations {
                 self.pools.destroy_snapshot(pool, *volume, share, label).await
             }
             Request::ListSnapshots {} => self.pools.list_snapshots().await,
+            Request::SetShareProperties { pool, volume, share, quota_bytes, compression, record_size } => {
+                self.pools
+                    .set_share_properties(pool, *volume, share, *quota_bytes, *compression, *record_size)
+                    .await
+            }
+            Request::ShareUsage {} => self.pools.share_usage().await,
             Request::ShowOnConsole { setup_code } => {
                 crate::console::show(&self.console_issue, setup_code.as_ref())
             }

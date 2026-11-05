@@ -3331,6 +3331,17 @@
           },
           "recycle_bin": {
             "type": "boolean"
+          },
+          "settings": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ShareSettingsDto",
+                "description": "Absent: no quota, lz4, 128 KiB records."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "additionalProperties": false
@@ -5410,6 +5421,7 @@
           "volume",
           "path",
           "recycle_bin",
+          "settings",
           "access",
           "nfs",
           "created_at",
@@ -5421,6 +5433,15 @@
             "items": {
               "$ref": "#/components/schemas/ShareRule"
             }
+          },
+          "available_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "What it may still take: up to its quota, or what the pool has left.",
+            "minimum": 0
           },
           "created_at": {
             "type": "integer",
@@ -5456,9 +5477,21 @@
           "recycle_bin": {
             "type": "boolean"
           },
+          "settings": {
+            "$ref": "#/components/schemas/ShareSettingsDto"
+          },
           "updated_at": {
             "type": "integer",
             "format": "int64"
+          },
+          "used_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "What the share holds; absent while its volume is not there.",
+            "minimum": 0
           },
           "volume": {
             "type": "integer",
@@ -5472,6 +5505,15 @@
         "enum": [
           "read",
           "read_write"
+        ]
+      },
+      "ShareCompressionKind": {
+        "type": "string",
+        "description": "How a share's dataset compresses data.",
+        "enum": [
+          "off",
+          "lz4",
+          "zstd"
         ]
       },
       "ShareRule": {
@@ -5493,6 +5535,35 @@
           },
           "kind": {
             "$ref": "#/components/schemas/SubjectKind"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ShareSettingsDto": {
+        "type": "object",
+        "description": "How a share's dataset stores data.",
+        "required": [
+          "compression",
+          "record_size_bytes"
+        ],
+        "properties": {
+          "compression": {
+            "$ref": "#/components/schemas/ShareCompressionKind"
+          },
+          "quota_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Limits the share's own data (snapshots not counted); at least 1 GiB.\n`null`: no quota.",
+            "minimum": 0
+          },
+          "record_size_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "16384, 131072 (the default) or 1048576.",
+            "minimum": 0
           }
         },
         "additionalProperties": false
@@ -6192,6 +6263,17 @@
             "type": [
               "boolean",
               "null"
+            ]
+          },
+          "settings": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ShareSettingsDto",
+                "description": "Replaces quota, compression and record size. A quota below what the\nshare holds is refused."
+              },
+              {
+                "type": "null"
+              }
             ]
           }
         },

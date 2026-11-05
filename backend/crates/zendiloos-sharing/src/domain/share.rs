@@ -114,6 +114,109 @@ pub struct NfsClient {
     pub write: bool,
 }
 
+/// How a share's dataset compresses what is written to it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Compression {
+    Off,
+    /// Fast, and what ZFS recommends by default.
+    #[default]
+    Lz4,
+    /// Smaller, costs more CPU; for archives and documents.
+    Zstd,
+}
+
+impl Compression {
+    pub const ALL: [Compression; 3] = [Self::Off, Self::Lz4, Self::Zstd];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Lz4 => "lz4",
+            Self::Zstd => "zstd",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|c| c.as_str() == value)
+    }
+}
+
+/// The largest block ZFS writes for a file: small for databases and VM
+/// images, large for big media files.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum RecordSize {
+    K16,
+    /// ZFS's default; right for most files.
+    #[default]
+    K128,
+    M1,
+}
+
+impl RecordSize {
+    pub const ALL: [RecordSize; 3] = [Self::K16, Self::K128, Self::M1];
+
+    pub fn bytes(self) -> u64 {
+        match self {
+            Self::K16 => 16 * 1024,
+            Self::K128 => 128 * 1024,
+            Self::M1 => 1024 * 1024,
+        }
+    }
+
+    pub fn from_bytes(bytes: u64) -> Option<Self> {
+        Self::ALL.into_iter().find(|r| r.bytes() == bytes)
+    }
+}
+
+/// The smallest quota: below it, a share fills up with its first photos.
+pub const MIN_QUOTA_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// How a share's dataset stores data. The quota limits the share's own
+/// data (`refquota`): snapshots do not count against it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ShareSettings {
+    pub quota_bytes: Option<u64>,
+    pub compression: Compression,
+    pub record_size: RecordSize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum InvalidSettings {
+    #[error("a quota is at least 1 GiB")]
+    QuotaTooSmall,
+    #[error("the quota is below what the share holds ({used} bytes)")]
+    QuotaBelowUsage { used: u64 },
+}
+
+impl ShareSettings {
+    pub fn check(&self) -> Result<(), InvalidSettings> {
+        match self.quota_bytes {
+            Some(quota) if quota < MIN_QUOTA_BYTES => Err(InvalidSettings::QuotaTooSmall),
+            _ => Ok(()),
+        }
+    }
+
+    /// A quota below what the share holds already would stop every write
+    /// at once; that is refused instead.
+    pub fn check_against(&self, used: u64) -> Result<(), InvalidSettings> {
+        self.check()?;
+        match self.quota_bytes {
+            Some(quota) if quota < used => Err(InvalidSettings::QuotaBelowUsage { used }),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// What a share's dataset holds and may still take.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShareUsage {
+    pub pool: String,
+    pub name: ShareName,
+    pub used_bytes: u64,
+    /// Up to the quota, or what the pool has left.
+    pub available_bytes: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Share {
     pub id: ShareId,
@@ -123,6 +226,7 @@ pub struct Share {
     pub pool: String,
     pub volume: u16,
     pub recycle_bin: bool,
+    pub settings: ShareSettings,
     pub access: Vec<AccessRule>,
     /// Empty: not exported over NFS.
     pub nfs: Vec<NfsClient>,
@@ -148,6 +252,7 @@ pub struct NewShare {
     pub pool: String,
     pub volume: u16,
     pub recycle_bin: bool,
+    pub settings: ShareSettings,
     pub access: Vec<AccessRule>,
     pub nfs: Vec<NfsClient>,
     pub created_at: Timestamp,
@@ -189,6 +294,22 @@ pub struct SharingConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_quota_is_at_least_a_gibibyte_and_never_below_what_is_there() {
+        let gib = MIN_QUOTA_BYTES;
+        let with = |quota| ShareSettings { quota_bytes: quota, ..ShareSettings::default() };
+        assert_eq!(with(None).check_against(u64::MAX), Ok(()));
+        assert_eq!(with(Some(gib - 1)).check(), Err(InvalidSettings::QuotaTooSmall));
+        assert_eq!(with(Some(2 * gib)).check_against(gib), Ok(()));
+        assert_eq!(
+            with(Some(2 * gib)).check_against(3 * gib),
+            Err(InvalidSettings::QuotaBelowUsage { used: 3 * gib })
+        );
+        assert_eq!(ShareSettings::default().compression, Compression::Lz4);
+        assert_eq!(RecordSize::from_bytes(1 << 20), Some(RecordSize::M1));
+        assert_eq!(Compression::parse("gzip-9"), None);
+    }
 
     #[test]
     fn share_names() {

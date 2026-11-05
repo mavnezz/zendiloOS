@@ -281,6 +281,11 @@ impl AgentTransport for SimulatedAgent {
             Request::ListSnapshots {} => Response::Snapshots { zfs_list: self.host().snapshot_list() },
             // The console belongs to the machine the simulation pretends to be.
             Request::ShowOnConsole { .. } => Response::Done,
+            // Properties change nothing the simulation shows.
+            Request::SetShareProperties { volume, share, .. } => {
+                changed(self.host().share_present(volume.get(), share.as_str()))
+            }
+            Request::ShareUsage {} => Response::ShareUsage { zfs_list: self.host().share_usage() },
             Request::CreateShare { pool, volume, name } => {
                 let created = self.host().create_share(pool.as_str(), volume.get(), name.as_str());
                 if let (Ok(()), Some(directory)) =
