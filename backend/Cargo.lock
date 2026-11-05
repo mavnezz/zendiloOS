@@ -2549,6 +2549,7 @@ dependencies = [
  "zendiloos-identity",
  "zendiloos-jobs",
  "zendiloos-kernel",
+ "zendiloos-network",
  "zendiloos-notify",
  "zendiloos-sharing",
  "zendiloos-storage",
@@ -2606,6 +2607,7 @@ dependencies = [
  "zendiloos-identity",
  "zendiloos-jobs",
  "zendiloos-kernel",
+ "zendiloos-network",
  "zendiloos-notify",
  "zendiloos-sharing",
  "zendiloos-sim",
@@ -2638,6 +2640,15 @@ dependencies = [
  "anyhow",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "zendiloos-network"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "tokio",
+ "zendiloos-kernel",
 ]
 
 [[package]]
@@ -2719,6 +2730,7 @@ dependencies = [
  "zendiloos-jobs",
  "zendiloos-kernel",
  "zendiloos-logging",
+ "zendiloos-network",
  "zendiloos-notify",
  "zendiloos-sharing",
  "zendiloos-sim",

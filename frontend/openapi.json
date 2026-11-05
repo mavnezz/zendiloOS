@@ -1482,6 +1482,41 @@
         ]
       }
     },
+    "/api/v1/network": {
+      "get": {
+        "tags": [
+          "network"
+        ],
+        "summary": "Interfaces, addresses, default routes and name servers. Needs\n`system.view`.",
+        "operationId": "network",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NetworkInfo"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/notifications": {
       "get": {
         "tags": [
@@ -2687,6 +2722,15 @@
           "readonly"
         ]
       },
+      "AddressScope": {
+        "type": "string",
+        "enum": [
+          "global",
+          "site",
+          "link",
+          "host"
+        ]
+      },
       "ArrayHealth": {
         "type": "string",
         "enum": [
@@ -3003,6 +3047,27 @@
           },
           "role": {
             "$ref": "#/components/schemas/AccountRole"
+          }
+        }
+      },
+      "DefaultRoute": {
+        "type": "object",
+        "required": [
+          "gateway",
+          "interface",
+          "metric"
+        ],
+        "properties": {
+          "gateway": {
+            "type": "string"
+          },
+          "interface": {
+            "type": "string"
+          },
+          "metric": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
           }
         }
       },
@@ -3391,6 +3456,33 @@
           }
         }
       },
+      "InterfaceAddress": {
+        "type": "object",
+        "required": [
+          "address",
+          "prefix",
+          "scope",
+          "dynamic"
+        ],
+        "properties": {
+          "address": {
+            "type": "string",
+            "description": "E.g. `192.168.1.20` or `2001:db8::20`."
+          },
+          "dynamic": {
+            "type": "boolean",
+            "description": "From DHCP or router advertisements rather than configured."
+          },
+          "prefix": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "scope": {
+            "$ref": "#/components/schemas/AddressScope"
+          }
+        }
+      },
       "InterfaceLanguage": {
         "type": "string",
         "description": "A language of the interface.",
@@ -3448,6 +3540,15 @@
           }
         },
         "additionalProperties": false
+      },
+      "InterfaceState": {
+        "type": "string",
+        "enum": [
+          "up",
+          "no_carrier",
+          "down",
+          "unknown"
+        ]
       },
       "InterfaceTheme": {
         "type": "string",
@@ -3880,6 +3981,83 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          }
+        }
+      },
+      "NetworkInfo": {
+        "type": "object",
+        "description": "How the machine is connected: its interfaces (without the loopback and\nthe plumbing of containers), default routes and name servers.",
+        "required": [
+          "interfaces",
+          "default_routes",
+          "name_servers"
+        ],
+        "properties": {
+          "default_routes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DefaultRoute"
+            },
+            "description": "The preferred one first."
+          },
+          "interfaces": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NetworkInterface"
+            }
+          },
+          "name_servers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "NetworkInterface": {
+        "type": "object",
+        "required": [
+          "name",
+          "kind",
+          "state",
+          "mtu",
+          "addresses"
+        ],
+        "properties": {
+          "addresses": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InterfaceAddress"
+            },
+            "description": "Global ones first."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`ethernet`, `wireless`, `bridge`, `bond`, `vlan`, or the kernel's\nname for other kinds, e.g. `wireguard`."
+          },
+          "mac": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "member_of": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The bridge or bond it belongs to; the addresses are on that one."
+          },
+          "mtu": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/InterfaceState"
           }
         }
       },

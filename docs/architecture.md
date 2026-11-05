@@ -135,7 +135,7 @@ review comment.
 | `zendiloos-storage` | disks, SMART, ZFS pools and volumes, plans for erasing disks, monitoring; mdadm arrays read-only | kernel, jobs, notify |
 | `zendiloos-sharing` | SMB and NFS shares, share permissions, and the file manager (share contents as the signed-in user) | kernel, jobs |
 | `zendiloos-containers` | containers, images, volumes, networks, apps | kernel |
-| `zendiloos-network` | interfaces, IP, DNS, hostname | kernel |
+| `zendiloos-network` | interfaces, addresses, default routes, name servers (read-only until M6); later IP configuration, DNS, hostname | kernel |
 | `zendiloos-infra` | all secondary adapters, SQLite migrations | kernel, contexts, agent-proto |
 | `zendiloos-api` | primary adapter: axum routes, DTOs, OpenAPI, auth middleware, WebSocket | kernel, contexts |
 | `zendiloosd` | composition root (binary) | everything except agent |
@@ -365,11 +365,18 @@ simple to audit.
 Read-only and unprivileged: `/proc` and `/sys` for metrics (`sysinfo` for
 CPU, memory, processes, sensors; an own parser for `/proc/diskstats`), and
 the journal for the log viewer. For the journal `zendiloosd` runs
-`journalctl --output=json`, the only program it runs, through
-`zendiloos-exec`, with the supplementary group `systemd-journal`. A request
-chooses among fixed views (everything, zendiloOS, storage, file sharing,
-kernel), a minimum priority, a page size and a cursor; nothing else reaches
-the command line.
+`journalctl --output=json` through `zendiloos-exec`, with the
+supplementary group `systemd-journal`. A request chooses among fixed views
+(everything, zendiloOS, storage, file sharing, kernel), a minimum priority,
+a page size and a cursor; nothing else reaches the command line.
+
+The network is read with `ip -json` (addresses with `-details`, default
+routes of both families), the only other program `zendiloosd` runs, with
+fixed arguments; name servers come from `/etc/resolv.conf`, or from
+systemd-resolved's own list when that file only names its stub. Reading
+needs netlink but no capability, so `zendiloosd` may open `AF_NETLINK`
+sockets. The agent cannot do this: it has a network namespace of its own.
+Loopback, `veth`, `tun`/`tap` and Docker's bridges are left out.
 
 ---
 

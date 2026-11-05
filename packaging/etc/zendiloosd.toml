@@ -20,6 +20,10 @@
 #[journal]
 #journalctl = "/usr/bin/journalctl"
 
+# The network is read with ip; found in /usr/sbin or /sbin if not set.
+#[network]
+#ip = "/usr/sbin/ip"
+
 #[log]
 #filter = "info"
 #format = "text"

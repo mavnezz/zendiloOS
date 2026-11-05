@@ -23,7 +23,7 @@ use zendiloos_infra::agent::{
     AgentFiles, AgentPowerControl, AgentSharing, AgentStorage, AgentSystemAccounts, RandomPlanTokens,
     agent_version,
 };
-use zendiloos_infra::host::{HostSystemInfo, JournalctlReader, MetricsHub};
+use zendiloos_infra::host::{HostSystemInfo, IpNetworkReader, JournalctlReader, MetricsHub};
 use zendiloos_infra::identity::{Argon2PasswordHasher, FileSetupCodes, RandomSessionTokens};
 use zendiloos_infra::sqlite::{
     Database, SqliteAccounts, SqliteAuditLog, SqliteGroups, SqliteJobs, SqliteNotifications,
@@ -31,6 +31,7 @@ use zendiloos_infra::sqlite::{
 };
 use zendiloos_jobs::Jobs;
 use zendiloos_kernel::{AuditLog, RequestContext};
+use zendiloos_network::application::NetworkUseCases;
 use zendiloos_notify::Notifier;
 use zendiloos_sharing::application::{FilesUseCases, SharingPorts, SharingUseCases};
 use zendiloos_sim::SimulatedAgent;
@@ -143,7 +144,14 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         tracing::warn!(error = %error_chain(&error), "cannot apply the sharing configuration");
     }
 
-    let use_cases = UseCases { system, identity, storage, sharing, files, jobs, notifier };
+    let ip = IpNetworkReader::new(config.network.ip.as_deref());
+    match ip.path() {
+        Some(path) => tracing::info!(path = %path.display(), "reading the network with ip"),
+        None => tracing::warn!("ip not found: the network will not be shown"),
+    }
+    let network = NetworkUseCases::new(Arc::new(ip));
+
+    let use_cases = UseCases { system, identity, storage, sharing, files, network, jobs, notifier };
     let state = ApiState::new(use_cases, config.secure_cookies);
     let app = zendiloos_api::router(state);
 

@@ -1,0 +1,13 @@
+[
+  {
+    "dst": "default",
+    "nhid": 3201664940,
+    "gateway": "fe80::2",
+    "dev": "enp0s4",
+    "protocol": "ra",
+    "metric": 100,
+    "flags": [],
+    "expires": 1641,
+    "pref": "medium"
+  }
+]

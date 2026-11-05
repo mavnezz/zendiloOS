@@ -40,7 +40,9 @@ RestrictSUIDSGID=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
 RemoveIPC=yes
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# Netlink: `ip` reads the network for the interface (reading needs no
+# capability).
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged

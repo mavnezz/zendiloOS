@@ -410,6 +410,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/network": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Interfaces, addresses, default routes and name servers. Needs
+         *     `system.view`.
+         */
+        get: operations["network"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/notifications": {
         parameters: {
             query?: never;
@@ -838,6 +858,8 @@ export interface components {
         /** @enum {string} */
         AccountRole: "admin" | "user" | "readonly";
         /** @enum {string} */
+        AddressScope: "global" | "site" | "link" | "host";
+        /** @enum {string} */
         ArrayHealth: "healthy" | "degraded" | "rebuilding" | "inactive";
         ArrayMember: {
             /** @description Kernel name of the disk or partition. */
@@ -945,6 +967,12 @@ export interface components {
              */
             permissions: string[];
             role: components["schemas"]["AccountRole"];
+        };
+        DefaultRoute: {
+            gateway: string;
+            interface: string;
+            /** Format: int32 */
+            metric: number;
         };
         DeleteEntriesRequest: {
             paths: string[];
@@ -1067,6 +1095,15 @@ export interface components {
             /** @description `ok` whenever the server answers. */
             status: string;
         };
+        InterfaceAddress: {
+            /** @description E.g. `192.168.1.20` or `2001:db8::20`. */
+            address: string;
+            /** @description From DHCP or router advertisements rather than configured. */
+            dynamic: boolean;
+            /** Format: int32 */
+            prefix: number;
+            scope: components["schemas"]["AddressScope"];
+        };
         /**
          * @description A language of the interface.
          * @enum {string}
@@ -1087,6 +1124,8 @@ export interface components {
             language?: components["schemas"]["InterfaceLanguage"] | null;
             theme?: components["schemas"]["InterfaceTheme"] | null;
         };
+        /** @enum {string} */
+        InterfaceState: "up" | "no_carrier" | "down" | "unknown";
         /**
          * @description Light or dark, or as the viewer's operating system.
          * @enum {string}
@@ -1218,6 +1257,32 @@ export interface components {
             temperatures: components["schemas"]["TemperatureMetrics"][];
             /** Format: int64 */
             uptime_seconds: number;
+        };
+        /**
+         * @description How the machine is connected: its interfaces (without the loopback and
+         *     the plumbing of containers), default routes and name servers.
+         */
+        NetworkInfo: {
+            /** @description The preferred one first. */
+            default_routes: components["schemas"]["DefaultRoute"][];
+            interfaces: components["schemas"]["NetworkInterface"][];
+            name_servers: string[];
+        };
+        NetworkInterface: {
+            /** @description Global ones first. */
+            addresses: components["schemas"]["InterfaceAddress"][];
+            /**
+             * @description `ethernet`, `wireless`, `bridge`, `bond`, `vlan`, or the kernel's
+             *     name for other kinds, e.g. `wireguard`.
+             */
+            kind: string;
+            mac?: string | null;
+            /** @description The bridge or bond it belongs to; the addresses are on that one. */
+            member_of?: string | null;
+            /** Format: int32 */
+            mtu: number;
+            name: string;
+            state: components["schemas"]["InterfaceState"];
         };
         /** @enum {string} */
         NewPoolLayout: "single" | "mirror" | "raidz1" | "raidz2" | "raidz3";
@@ -2758,6 +2823,34 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    network: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NetworkInfo"];
                 };
             };
             /** @description `forbidden` */

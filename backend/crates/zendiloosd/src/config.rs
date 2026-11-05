@@ -28,6 +28,7 @@ pub struct Config {
     pub secure_cookies: bool,
     pub agent: AgentConfig,
     pub journal: JournalConfig,
+    pub network: NetworkConfig,
     pub log: LogConfig,
 }
 
@@ -38,6 +39,14 @@ pub struct JournalConfig {
     /// Absolute path of `journalctl`; looked up in the usual places if
     /// absent.
     pub journalctl: Option<PathBuf>,
+}
+
+/// How zendiloosd reads the machine's network.
+#[derive(Debug, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct NetworkConfig {
+    /// Absolute path of `ip`; looked up in the usual places if absent.
+    pub ip: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -78,6 +87,7 @@ impl Default for Config {
             secure_cookies: true,
             agent: AgentConfig::default(),
             journal: JournalConfig::default(),
+            network: NetworkConfig::default(),
             log: LogConfig::default(),
         }
     }
@@ -173,6 +183,9 @@ mod tests {
             [journal]
             journalctl = "/bin/journalctl"
 
+            [network]
+            ip = "/bin/ip"
+
             [log]
             filter = "debug"
             format = "json"
@@ -192,6 +205,7 @@ mod tests {
             }
         );
         assert_eq!(config.journal.journalctl.as_deref(), Some(Path::new("/bin/journalctl")));
+        assert_eq!(config.network.ip.as_deref(), Some(Path::new("/bin/ip")));
         assert_eq!(config.log, LogConfig { filter: "debug".to_owned(), format: LogFormat::Json });
     }
 

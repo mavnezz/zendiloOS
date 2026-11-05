@@ -1,0 +1,181 @@
+[
+  {
+    "ifindex": 1,
+    "ifname": "lo",
+    "flags": [
+      "LOOPBACK",
+      "UP",
+      "LOWER_UP"
+    ],
+    "mtu": 65536,
+    "qdisc": "noqueue",
+    "operstate": "UNKNOWN",
+    "group": "default",
+    "txqlen": 1000,
+    "link_type": "loopback",
+    "address": "00:00:00:00:00:00",
+    "broadcast": "00:00:00:00:00:00",
+    "promiscuity": 0,
+    "allmulti": 0,
+    "min_mtu": 0,
+    "max_mtu": 0,
+    "num_tx_queues": 1,
+    "num_rx_queues": 1,
+    "gso_max_size": 65536,
+    "gso_max_segs": 65535,
+    "tso_max_size": 524280,
+    "tso_max_segs": 65535,
+    "gro_max_size": 65536,
+    "gso_ipv4_max_size": 65536,
+    "gro_ipv4_max_size": 65536,
+    "addr_info": [
+      {
+        "family": "inet",
+        "local": "127.0.0.1",
+        "prefixlen": 8,
+        "scope": "host",
+        "label": "lo",
+        "valid_life_time": 4294967295,
+        "preferred_life_time": 4294967295
+      },
+      {
+        "family": "inet6",
+        "local": "::1",
+        "prefixlen": 128,
+        "scope": "host",
+        "noprefixroute": true,
+        "valid_life_time": 4294967295,
+        "preferred_life_time": 4294967295
+      }
+    ]
+  },
+  {
+    "ifindex": 2,
+    "ifname": "enp0s4",
+    "flags": [
+      "BROADCAST",
+      "MULTICAST",
+      "UP",
+      "LOWER_UP"
+    ],
+    "mtu": 1500,
+    "qdisc": "fq_codel",
+    "operstate": "UP",
+    "group": "default",
+    "txqlen": 1000,
+    "link_type": "ether",
+    "address": "52:54:00:12:34:56",
+    "broadcast": "ff:ff:ff:ff:ff:ff",
+    "promiscuity": 0,
+    "allmulti": 0,
+    "min_mtu": 68,
+    "max_mtu": 65535,
+    "num_tx_queues": 1,
+    "num_rx_queues": 1,
+    "gso_max_size": 65536,
+    "gso_max_segs": 65535,
+    "tso_max_size": 65536,
+    "tso_max_segs": 65535,
+    "gro_max_size": 65536,
+    "gso_ipv4_max_size": 65536,
+    "gro_ipv4_max_size": 65536,
+    "parentbus": "virtio",
+    "parentdev": "virtio1",
+    "altnames": [
+      "enx525400123456"
+    ],
+    "addr_info": [
+      {
+        "family": "inet",
+        "local": "10.0.2.15",
+        "prefixlen": 24,
+        "metric": 100,
+        "broadcast": "10.0.2.255",
+        "scope": "global",
+        "dynamic": true,
+        "label": "enp0s4",
+        "valid_life_time": 85689,
+        "preferred_life_time": 85689
+      },
+      {
+        "family": "inet6",
+        "local": "fec0::5054:ff:fe12:3456",
+        "prefixlen": 64,
+        "scope": "site",
+        "dynamic": true,
+        "mngtmpaddr": true,
+        "noprefixroute": true,
+        "valid_life_time": 86253,
+        "preferred_life_time": 14253
+      },
+      {
+        "family": "inet6",
+        "local": "fe80::5054:ff:fe12:3456",
+        "prefixlen": 64,
+        "scope": "link",
+        "protocol": "kernel_ll",
+        "valid_life_time": 4294967295,
+        "preferred_life_time": 4294967295
+      }
+    ]
+  },
+  {
+    "ifindex": 3,
+    "ifname": "enp0s5",
+    "flags": [
+      "BROADCAST",
+      "MULTICAST",
+      "UP",
+      "LOWER_UP"
+    ],
+    "mtu": 1500,
+    "qdisc": "fq_codel",
+    "operstate": "UP",
+    "group": "default",
+    "txqlen": 1000,
+    "link_type": "ether",
+    "address": "52:54:00:5a:d1:05",
+    "broadcast": "ff:ff:ff:ff:ff:ff",
+    "promiscuity": 0,
+    "allmulti": 0,
+    "min_mtu": 68,
+    "max_mtu": 65535,
+    "num_tx_queues": 1,
+    "num_rx_queues": 1,
+    "gso_max_size": 65536,
+    "gso_max_segs": 65535,
+    "tso_max_size": 65536,
+    "tso_max_segs": 65535,
+    "gro_max_size": 65536,
+    "gso_ipv4_max_size": 65536,
+    "gro_ipv4_max_size": 65536,
+    "parentbus": "virtio",
+    "parentdev": "virtio2",
+    "altnames": [
+      "enx5254005ad105"
+    ],
+    "addr_info": [
+      {
+        "family": "inet",
+        "local": "192.168.1.90",
+        "prefixlen": 24,
+        "metric": 200,
+        "broadcast": "192.168.1.255",
+        "scope": "global",
+        "dynamic": true,
+        "label": "enp0s5",
+        "valid_life_time": 85689,
+        "preferred_life_time": 85689
+      },
+      {
+        "family": "inet6",
+        "local": "fe80::5054:ff:fe5a:d105",
+        "prefixlen": 64,
+        "scope": "link",
+        "protocol": "kernel_ll",
+        "valid_life_time": 4294967295,
+        "preferred_life_time": 4294967295
+      }
+    ]
+  }
+]

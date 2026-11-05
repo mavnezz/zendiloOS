@@ -1,0 +1,24 @@
+[package]
+name = "zendiloos-network"
+description = "Bounded context Network: interfaces, addresses, routes and name servers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Core crate of a bounded context: no I/O, no frameworks. Adapters live in
+# zendiloos-infra and zendiloos-api. See docs/architecture.md, 2.1.
+[dependencies]
+zendiloos-kernel.workspace = true
+async-trait.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+
+[features]
+# A fixed network, for tests.
+testing = []
+
+[lints]
+workspace = true

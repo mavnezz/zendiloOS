@@ -13,6 +13,8 @@ use zendiloos_identity::testing::{SETUP_CODE, TestIdentity};
 use zendiloos_jobs::Jobs;
 use zendiloos_jobs::testing::MemoryJobs;
 use zendiloos_kernel::{Outcome, PortError, RequestContext};
+use zendiloos_network::application::NetworkUseCases;
+use zendiloos_network::testing::FixedNetwork;
 use zendiloos_notify::testing::MemoryNotifications;
 use zendiloos_notify::{Level, NewNotification, Notifier};
 use zendiloos_sharing::application::{FilesUseCases, SharingPorts, SharingUseCases};
@@ -265,6 +267,7 @@ impl Harness {
             storage,
             sharing,
             files,
+            network: NetworkUseCases::new(Arc::new(FixedNetwork)),
             jobs: jobs.clone(),
             notifier: notifier.clone(),
         };
@@ -798,6 +801,7 @@ fn openapi_documents_every_route() {
             "/api/v1/jobs/{id}",
             "/api/v1/logs/audit",
             "/api/v1/logs/journal",
+            "/api/v1/network",
             "/api/v1/notifications",
             "/api/v1/notifications/clear",
             "/api/v1/notifications/read",
@@ -1492,4 +1496,25 @@ async fn each_account_keeps_its_interface_preferences() {
     let refused =
         h.send(json(with_csrf(changing(Method::PUT, "/api/v1/preferences"), &alice), unknown)).await;
     assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn every_account_sees_how_the_machine_is_connected() {
+    let h = Harness::new();
+    let session = h.sign_in("bob", Role::ReadOnly).await;
+
+    let reply = h.send(empty(with_cookie(get("/api/v1/network"), &session))).await;
+
+    assert_eq!(reply.status, StatusCode::OK, "{:?}", reply.body);
+    assert_eq!(reply.body["interfaces"][0]["name"], "enp1s0");
+    assert_eq!(reply.body["interfaces"][0]["kind"], "ethernet");
+    assert_eq!(
+        reply.body["interfaces"][0]["addresses"][0],
+        json!({ "address": "192.168.1.20", "prefix": 24, "scope": "global", "dynamic": true })
+    );
+    assert_eq!(
+        reply.body["default_routes"][0],
+        json!({ "gateway": "192.168.1.1", "interface": "enp1s0", "metric": 100 })
+    );
+    assert_eq!(reply.body["name_servers"], json!(["192.168.1.1"]));
 }
