@@ -23,6 +23,7 @@ pub(super) fn routes() -> OpenApiRouter<ApiState> {
         .routes(routes!(smart))
         .routes(routes!(start_self_test))
         .routes(routes!(abort_self_test))
+        .routes(routes!(self_test_plans, set_self_test_plans))
         .routes(routes!(arrays))
         .routes(routes!(pools, create_pool))
         .routes(routes!(plan_pool))
@@ -79,6 +80,12 @@ impl From<StorageError> for ApiError {
             StorageError::PlanChanged => rejected(StatusCode::CONFLICT, "plan_changed", None),
             StorageError::Refused(reason) => rejected(StatusCode::CONFLICT, "refused", Some(reason)),
             StorageError::NotScrubbing => rejected(StatusCode::CONFLICT, "not_scrubbing", None),
+            StorageError::SelfTestUnsupported => {
+                rejected(StatusCode::CONFLICT, "self_test_unsupported", None)
+            }
+            StorageError::SelfTestRunning => rejected(StatusCode::CONFLICT, "self_test_running", None),
+            StorageError::NotTesting => rejected(StatusCode::CONFLICT, "not_testing", None),
+            StorageError::InvalidSelfTestPlan(e) => ApiError::InvalidInput(e.to_string()),
             StorageError::Port(e) => ApiError::internal(e),
         }
     }
@@ -382,6 +389,8 @@ pub struct SmartReport {
     pub short_test_minutes: Option<u32>,
     /// The same for the long test.
     pub long_test_minutes: Option<u32>,
+    /// Whether the drive can test itself at all.
+    pub self_tests_supported: bool,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -412,6 +421,7 @@ impl SmartReport {
             running_self_test: None,
             short_test_minutes: None,
             long_test_minutes: None,
+            self_tests_supported: false,
         }
     }
 }
@@ -486,6 +496,7 @@ impl From<storage::SmartReport> for SmartReport {
                 .map(|t| RunningSelfTest { remaining_percent: t.remaining_percent }),
             short_test_minutes: data.self_test_minutes.map(|(short, _)| short),
             long_test_minutes: data.self_test_minutes.map(|(_, long)| long),
+            self_tests_supported: data.self_tests_supported,
         }
     }
 }
@@ -1435,7 +1446,7 @@ async fn stop_scrub(
 }
 
 /// A drive's self-test.
-#[derive(Debug, Clone, Copy, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SelfTestKind {
     /// A few minutes.
@@ -1473,11 +1484,7 @@ async fn start_self_test(
     ApiJson(request): ApiJson<StartSelfTestRequest>,
 ) -> Result<StatusCode, ApiError> {
     auth.require(Permission::StorageManage)?;
-    let kind = match request.kind {
-        SelfTestKind::Short => storage::SelfTestKind::Short,
-        SelfTestKind::Long => storage::SelfTestKind::Long,
-    };
-    state.storage.self_test.execute(&name, Some(kind), &auth.0.actor(), &client).await?;
+    state.storage.self_test.execute(&name, Some(request.kind.into()), &auth.0.actor(), &client).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1502,4 +1509,155 @@ async fn abort_self_test(
     auth.require(Permission::StorageManage)?;
     state.storage.self_test.execute(&name, None, &auth.0.actor(), &client).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+impl From<SelfTestKind> for storage::SelfTestKind {
+    fn from(kind: SelfTestKind) -> Self {
+        match kind {
+            SelfTestKind::Short => Self::Short,
+            SelfTestKind::Long => Self::Long,
+        }
+    }
+}
+
+impl From<storage::SelfTestKind> for SelfTestKind {
+    fn from(kind: storage::SelfTestKind) -> Self {
+        match kind {
+            storage::SelfTestKind::Short => Self::Short,
+            storage::SelfTestKind::Long => Self::Long,
+        }
+    }
+}
+
+/// How often a plan has the disks test themselves.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SelfTestFrequency {
+    Daily,
+    /// The long test at most this often.
+    Weekly,
+    Monthly,
+}
+
+impl From<SelfTestFrequency> for storage::SelfTestFrequency {
+    fn from(frequency: SelfTestFrequency) -> Self {
+        match frequency {
+            SelfTestFrequency::Daily => Self::Daily,
+            SelfTestFrequency::Weekly => Self::Weekly,
+            SelfTestFrequency::Monthly => Self::Monthly,
+        }
+    }
+}
+
+impl From<storage::SelfTestFrequency> for SelfTestFrequency {
+    fn from(frequency: storage::SelfTestFrequency) -> Self {
+        match frequency {
+            storage::SelfTestFrequency::Daily => Self::Daily,
+            storage::SelfTestFrequency::Weekly => Self::Weekly,
+            storage::SelfTestFrequency::Monthly => Self::Monthly,
+        }
+    }
+}
+
+/// A plan for one kind of self-test.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SelfTestPlan {
+    pub kind: SelfTestKind,
+    pub frequency: SelfTestFrequency,
+    /// The hour it starts from, 0 to 23, in the NAS's time zone; it may
+    /// start up to four hours later, if the NAS was off.
+    pub hour: u8,
+    /// The disks by serial number; empty: every disk that can test itself.
+    #[serde(default)]
+    pub disks: Vec<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ScheduledSelfTest {
+    #[serde(flatten)]
+    pub plan: SelfTestPlan,
+    /// When it last started its tests, in Unix seconds.
+    pub last_run_at: Option<i64>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SelfTestPlans {
+    /// At most one per kind, the short test first.
+    pub plans: Vec<ScheduledSelfTest>,
+    /// How far the NAS's clock is ahead of UTC now, in seconds: the plans'
+    /// hours are in its time.
+    pub utc_offset_seconds: i32,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetSelfTestPlans {
+    pub plans: Vec<SelfTestPlan>,
+}
+
+fn plans_dto(plans: zendiloos_storage::application::self_tests::SelfTestPlans) -> SelfTestPlans {
+    SelfTestPlans {
+        plans: plans
+            .plans
+            .into_iter()
+            .map(|scheduled| ScheduledSelfTest {
+                plan: SelfTestPlan {
+                    kind: scheduled.plan.kind.into(),
+                    frequency: scheduled.plan.frequency.into(),
+                    hour: scheduled.plan.hour,
+                    disks: scheduled.plan.disks,
+                },
+                last_run_at: scheduled.last_run.map(|at| at.unix_seconds()),
+            })
+            .collect(),
+        utc_offset_seconds: plans.utc_offset,
+    }
+}
+
+/// When the disks test themselves. Needs `storage.view`.
+#[utoipa::path(
+    get,
+    path = "/storage/self-test-plans",
+    tag = "storage",
+    security(("session" = [])),
+    responses((status = OK, body = SelfTestPlans))
+)]
+async fn self_test_plans(auth: Auth, State(state): State<ApiState>) -> Result<Json<SelfTestPlans>, ApiError> {
+    auth.require(Permission::StorageView)?;
+    Ok(Json(plans_dto(state.storage.self_test_schedule.plans().await?)))
+}
+
+/// Replaces the self-test plans; a kind without a plan is not tested on a
+/// schedule. A long test runs weekly at most. Needs `storage.manage`.
+#[utoipa::path(
+    put,
+    path = "/storage/self-test-plans",
+    tag = "storage",
+    security(("session" = [])),
+    request_body = SetSelfTestPlans,
+    responses(
+        (status = OK, body = SelfTestPlans),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_input`"),
+    )
+)]
+async fn set_self_test_plans(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    ApiJson(request): ApiJson<SetSelfTestPlans>,
+) -> Result<Json<SelfTestPlans>, ApiError> {
+    auth.require(Permission::StorageManage)?;
+    let plans = request
+        .plans
+        .into_iter()
+        .map(|plan| storage::SelfTestPlan {
+            kind: plan.kind.into(),
+            frequency: plan.frequency.into(),
+            hour: plan.hour,
+            disks: plan.disks,
+        })
+        .collect();
+    let saved = state.storage.self_test_schedule.set_plans(plans, &auth.0.actor(), &client).await?;
+    Ok(Json(plans_dto(saved)))
 }

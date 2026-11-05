@@ -26,7 +26,7 @@ use zendiloos_infra::host::{HostSystemInfo, IpNetworkReader, JournalctlReader, M
 use zendiloos_infra::identity::{Argon2PasswordHasher, FileSetupCodes, RandomSessionTokens};
 use zendiloos_infra::sqlite::{
     Database, SqliteAccounts, SqliteAuditLog, SqliteGroups, SqliteJobs, SqliteNotifications,
-    SqlitePreferences, SqliteSessions, SqliteShares,
+    SqlitePreferences, SqliteSelfTestPlans, SqliteSessions, SqliteShares,
 };
 use zendiloos_jobs::Jobs;
 use zendiloos_kernel::{AuditLog, RequestContext};
@@ -35,6 +35,7 @@ use zendiloos_notify::Notifier;
 use zendiloos_sharing::application::{FilesUseCases, SharingPorts, SharingUseCases};
 use zendiloos_sim::SimulatedAgent;
 use zendiloos_storage::application::monitor::StorageMonitor;
+use zendiloos_storage::application::self_tests::SelfTestSchedule;
 use zendiloos_storage::application::{StoragePorts, StorageUseCases};
 use zendiloos_system::application::{SystemPorts, SystemUseCases};
 
@@ -124,6 +125,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         clock: Arc::new(SystemClock),
         tokens: Arc::new(RandomPlanTokens),
         notifier: notifier.clone(),
+        self_test_plans: Arc::new(SqliteSelfTestPlans::new(database.clone())),
     });
     let monitor = spawn_storage_monitor(Arc::clone(&storage.monitor));
     let sharing_store = Arc::new(SqliteShares::new(database.clone()));
@@ -153,6 +155,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     let network = NetworkUseCases::new(Arc::new(ip));
 
     let snapshots = spawn_snapshot_schedules(sharing.clone());
+    let self_tests = spawn_self_test_schedule(storage.self_test_schedule.clone());
     let use_cases = UseCases { system, identity, storage, sharing, files, network, jobs, notifier };
     let state = ApiState::new(use_cases, config.secure_cookies);
     let app = zendiloos_api::router(state);
@@ -184,6 +187,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     sampler.abort();
     monitor.abort();
     snapshots.abort();
+    self_tests.abort();
     database.close().await;
     tracing::info!("zendiloosd stopped");
     Ok(())
@@ -284,6 +288,18 @@ fn spawn_snapshot_schedules(sharing: SharingUseCases) -> JoinHandle<()> {
         loop {
             every_five_minutes.tick().await;
             sharing.take_due_snapshots().await;
+        }
+    })
+}
+
+/// Starts the disks' scheduled self-tests. Every five minutes, so a test
+/// starts at most that late into its window.
+fn spawn_self_test_schedule(schedule: SelfTestSchedule) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut every_five_minutes = tokio::time::interval(Duration::from_secs(5 * 60));
+        loop {
+            every_five_minutes.tick().await;
+            schedule.run_due().await;
         }
     })
 }

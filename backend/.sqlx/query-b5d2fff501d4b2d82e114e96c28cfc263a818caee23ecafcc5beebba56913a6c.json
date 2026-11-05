@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO self_test_plans (kind, frequency, hour) VALUES (?, ?, ?) ON CONFLICT (kind) DO UPDATE SET frequency = excluded.frequency, hour = excluded.hour",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "b5d2fff501d4b2d82e114e96c28cfc263a818caee23ecafcc5beebba56913a6c"
+}

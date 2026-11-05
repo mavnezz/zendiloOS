@@ -12,6 +12,7 @@ mod groups;
 mod jobs;
 mod notifications;
 mod preferences;
+mod self_tests;
 mod sessions;
 mod shares;
 
@@ -35,6 +36,7 @@ pub use groups::SqliteGroups;
 pub use jobs::SqliteJobs;
 pub use notifications::SqliteNotifications;
 pub use preferences::SqlitePreferences;
+pub use self_tests::SqliteSelfTestPlans;
 pub use sessions::SqliteSessions;
 pub use shares::SqliteShares;
 

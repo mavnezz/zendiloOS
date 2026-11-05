@@ -5,6 +5,7 @@ mod events;
 mod overview;
 mod plan;
 mod pool;
+mod self_test;
 mod smart;
 mod volume;
 
@@ -20,6 +21,10 @@ pub use plan::{
 pub use pool::{
     Pool, PoolDevice, PoolLayout, PoolSpace, Replacing, Scan, ScanEstimate, ScanKind, ScanPass, ScanState,
     VdevState, VolumeNumber, resolve_pool_disks,
+};
+pub use self_test::{
+    InvalidSelfTestPlan, MAX_PLAN_DISKS, SELF_TEST_WINDOW_HOURS, ScheduledSelfTest, SelfTestFrequency,
+    SelfTestPlan, self_test_plans,
 };
 pub use smart::{
     Assessment, AtaAttribute, AttributeFailure, Finding, Health, NvmeHealth, RunningSelfTest, SelfTest,

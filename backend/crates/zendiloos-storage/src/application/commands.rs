@@ -430,8 +430,14 @@ impl SelfTest {
         if !devices.iter().any(|device| device.kind == domain::DeviceKind::Disk && device.name == disk) {
             return Err(StorageError::DiskNotFound);
         }
-        if !matches!(c.smart.smart_report(disk, request).await?, domain::SmartReport::Available(_)) {
+        let domain::SmartReport::Available(data) = c.smart.smart_report(disk, request).await? else {
             return Err(StorageError::Refused(format!("{disk} reports no SMART data (or sleeps)")));
+        };
+        match kind {
+            Some(_) if !data.self_tests_supported => return Err(StorageError::SelfTestUnsupported),
+            Some(_) if data.running_self_test.is_some() => return Err(StorageError::SelfTestRunning),
+            None if data.running_self_test.is_none() => return Err(StorageError::NotTesting),
+            _ => {}
         }
         let (action, outcome) = match kind {
             Some(kind) => ("storage.self_test", c.smart.start_self_test(disk, kind, request).await),
@@ -609,16 +615,24 @@ mod tests {
         let s = setup();
         let request = RequestContext::default();
 
-        s.storage
-            .self_test
-            .execute("sda", Some(domain::SelfTestKind::Long), &alice(), &request)
-            .await
-            .unwrap();
-        s.storage.self_test.execute("sda", None, &alice(), &request).await.unwrap();
-        let sleeping =
-            s.storage.self_test.execute("sdb", Some(domain::SelfTestKind::Short), &alice(), &request).await;
+        let test = |disk: &'static str, kind: Option<domain::SelfTestKind>| {
+            let s = &s;
+            let request = request.clone();
+            async move { s.storage.self_test.execute(disk, kind, &alice(), &request).await }
+        };
+        let (short, long) = (Some(domain::SelfTestKind::Short), Some(domain::SelfTestKind::Long));
+
+        let idle = test("sda", None).await;
+        assert!(matches!(idle, Err(StorageError::NotTesting)), "{idle:?}");
+        test("sda", long).await.unwrap();
+        let again = test("sda", short).await;
+        assert!(matches!(again, Err(StorageError::SelfTestRunning)), "{again:?}");
+        test("sda", None).await.unwrap();
+        let unable = test("nvme0n1", short).await;
+        assert!(matches!(unable, Err(StorageError::SelfTestUnsupported)), "{unable:?}");
+        let sleeping = test("sdb", short).await;
         assert!(matches!(sleeping, Err(StorageError::Refused(_))), "{sleeping:?}");
-        let missing = s.storage.self_test.execute("sdz", None, &alice(), &request).await;
+        let missing = test("sdz", None).await;
         assert!(matches!(missing, Err(StorageError::DiskNotFound)), "{missing:?}");
 
         assert_eq!(s.fake.calls(), ["self-test sda Long", "abort self-test sda"]);

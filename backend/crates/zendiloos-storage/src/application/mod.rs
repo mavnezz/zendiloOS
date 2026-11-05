@@ -5,11 +5,14 @@ mod error;
 pub mod monitor;
 pub mod ports;
 pub mod queries;
+pub mod self_tests;
 
 use std::sync::Arc;
 
 pub use error::StorageError;
-use ports::{ArraySource, BlockDeviceSource, PlanTokens, PoolAdmin, SmartSource, ZfsSource};
+use ports::{
+    ArraySource, BlockDeviceSource, PlanTokens, PoolAdmin, SelfTestPlanStore, SmartSource, ZfsSource,
+};
 use zendiloos_jobs::Jobs;
 use zendiloos_kernel::{AuditLog, Clock};
 use zendiloos_notify::Notifier;
@@ -28,6 +31,7 @@ pub struct StoragePorts {
     pub clock: Arc<dyn Clock>,
     pub tokens: Arc<dyn PlanTokens>,
     pub notifier: Notifier,
+    pub self_test_plans: Arc<dyn SelfTestPlanStore>,
 }
 
 /// All use cases of this context.
@@ -47,6 +51,7 @@ pub struct StorageUseCases {
     pub scrub_pool: commands::ScrubPool,
     pub stop_scrub: commands::StopScrub,
     pub self_test: commands::SelfTest,
+    pub self_test_schedule: self_tests::SelfTestSchedule,
     pub monitor: Arc<monitor::StorageMonitor>,
 }
 
@@ -63,6 +68,13 @@ impl StorageUseCases {
             ports.devices.clone(),
             ports.zfs.clone(),
             Arc::clone(&monitor),
+            ports.clock.clone(),
+        );
+        let self_test_schedule = self_tests::SelfTestSchedule::new(
+            ports.devices.clone(),
+            ports.smart.clone(),
+            ports.self_test_plans,
+            ports.audit.clone(),
             ports.clock.clone(),
         );
         let context = Arc::new(commands::Context::new(
@@ -84,6 +96,7 @@ impl StorageUseCases {
             scrub_pool: commands::ScrubPool::new(Arc::clone(&context)),
             stop_scrub: commands::StopScrub::new(Arc::clone(&context)),
             self_test: commands::SelfTest::new(context),
+            self_test_schedule,
             monitor,
             overview,
             list_disks: queries::ListDisks::new(ports.devices.clone(), ports.zfs.clone()),

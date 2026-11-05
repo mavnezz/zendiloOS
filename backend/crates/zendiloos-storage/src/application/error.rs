@@ -1,7 +1,7 @@
 use zendiloos_kernel::PortError;
 
 use crate::application::ports::AdminError;
-use crate::domain::PlanError;
+use crate::domain::{InvalidSelfTestPlan, PlanError};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {
@@ -26,6 +26,14 @@ pub enum StorageError {
     /// Only a running scrub can be stopped; a resilver must finish.
     #[error("the pool is not being scrubbed")]
     NotScrubbing,
+    #[error("the disk cannot test itself")]
+    SelfTestUnsupported,
+    #[error("the disk is testing itself already")]
+    SelfTestRunning,
+    #[error("the disk is not testing itself")]
+    NotTesting,
+    #[error(transparent)]
+    InvalidSelfTestPlan(#[from] InvalidSelfTestPlan),
     #[error(transparent)]
     Port(#[from] PortError),
 }

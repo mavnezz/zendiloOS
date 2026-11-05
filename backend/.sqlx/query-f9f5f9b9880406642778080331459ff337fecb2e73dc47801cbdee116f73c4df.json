@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM self_test_plan_disks WHERE kind = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "f9f5f9b9880406642778080331459ff337fecb2e73dc47801cbdee116f73c4df"
+}

@@ -1,12 +1,14 @@
-//! What this context needs from the outside world. All of it comes from
-//! the privileged agent (or its simulation), so every call carries the
-//! request context for correlation.
+//! What this context needs from the outside world. Nearly all of it comes
+//! from the privileged agent (or its simulation), so those calls carry the
+//! request context for correlation; the self-test plans are in the
+//! database.
 
 use async_trait::async_trait;
-use zendiloos_kernel::{PortError, RequestContext};
+use zendiloos_kernel::{PortError, RequestContext, Timestamp};
 
 use crate::domain::{
-    Array, BlockDevice, Pool, PoolLayout, PoolName, SelfTestKind, SmartReport, VolumeNumber,
+    Array, BlockDevice, Pool, PoolLayout, PoolName, ScheduledSelfTest, SelfTestKind, SelfTestPlan,
+    SmartReport, VolumeNumber,
 };
 
 /// The host's block device tree.
@@ -99,4 +101,17 @@ pub trait PoolAdmin: Send + Sync {
 /// Unguessable tokens for confirming plans.
 pub trait PlanTokens: Send + Sync {
     fn token(&self) -> String;
+}
+
+/// The self-test plans and when each last started its tests.
+#[async_trait]
+pub trait SelfTestPlanStore: Send + Sync {
+    /// Ordered by kind.
+    async fn plans(&self) -> Result<Vec<ScheduledSelfTest>, PortError>;
+
+    /// Replaces the plans; a kind that stays keeps when it last ran, so
+    /// changing its hour does not run it again tonight.
+    async fn save(&self, plans: &[SelfTestPlan]) -> Result<(), PortError>;
+
+    async fn ran(&self, kind: SelfTestKind, at: Timestamp) -> Result<(), PortError>;
 }

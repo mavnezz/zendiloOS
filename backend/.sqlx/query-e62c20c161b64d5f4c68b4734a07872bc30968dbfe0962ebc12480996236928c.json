@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE self_test_plans SET last_run = ? WHERE kind = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "e62c20c161b64d5f4c68b4734a07872bc30968dbfe0962ebc12480996236928c"
+}

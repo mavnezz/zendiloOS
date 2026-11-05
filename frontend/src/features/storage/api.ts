@@ -2,7 +2,15 @@ import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import { type MaybeRefOrGetter, toValue } from 'vue'
 
 import { api, unwrap } from '@/shared/api/client'
-import type { Job, NewPoolLayout, PoolPlan, ReplacePlan, SelfTestKind } from '@/shared/api/types'
+import type {
+  Job,
+  NewPoolLayout,
+  PoolPlan,
+  ReplacePlan,
+  SelfTestKind,
+  SelfTestPlan,
+  SelfTestPlans,
+} from '@/shared/api/types'
 
 /** Arrays change while they rebuild, so they are polled more often. */
 const ARRAY_REFRESH_MS = 5_000
@@ -51,6 +59,18 @@ export async function startSelfTest(disk: string, kind: SelfTestKind): Promise<v
       body: { kind },
     }),
   )
+}
+
+export function useSelfTestPlans() {
+  return useQuery({
+    queryKey: ['storage', 'self-test-plans'],
+    queryFn: () => unwrap(api.GET('/api/v1/storage/self-test-plans')),
+  })
+}
+
+/** Replaces every plan; a kind left out is not tested on a schedule. */
+export function saveSelfTestPlans(plans: SelfTestPlan[]): Promise<SelfTestPlans> {
+  return unwrap(api.PUT('/api/v1/storage/self-test-plans', { body: { plans } }))
 }
 
 /** Stops the disk's running self-test. */

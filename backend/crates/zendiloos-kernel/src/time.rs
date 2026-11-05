@@ -101,6 +101,13 @@ fn seconds(duration: Duration) -> i64 {
 /// tested deterministically.
 pub trait Clock: Send + Sync {
     fn now(&self) -> Timestamp;
+
+    /// How far the host's wall clock is ahead of UTC at `at`, in seconds:
+    /// its time zone with daylight saving time. Schedules people set ("at
+    /// two at night") are in this time.
+    fn utc_offset(&self, _at: Timestamp) -> i32 {
+        0
+    }
 }
 
 #[cfg(test)]

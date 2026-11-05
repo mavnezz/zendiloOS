@@ -41,15 +41,32 @@ pub struct SmartData {
     pub running_self_test: Option<RunningSelfTest>,
     /// How long the drive says its tests take, in minutes: short, long.
     pub self_test_minutes: Option<(u32, u32)>,
+    /// Whether the drive can test itself at all.
+    pub self_tests_supported: bool,
 }
 
 /// The tests a drive runs on itself, without stopping its work.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SelfTestKind {
     /// A few minutes: electronics and a sample of the surface.
     Short,
     /// Hours: every sector. Run it when the disk is little used.
     Long,
+}
+
+impl SelfTestKind {
+    pub const ALL: [SelfTestKind; 2] = [Self::Short, Self::Long];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Short => "short",
+            Self::Long => "long",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.as_str() == value)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -245,6 +262,7 @@ mod tests {
             last_self_test: None,
             running_self_test: None,
             self_test_minutes: None,
+            self_tests_supported: true,
         }
     }
 
@@ -328,6 +346,7 @@ mod tests {
             }),
             running_self_test: None,
             self_test_minutes: None,
+            self_tests_supported: true,
             ..ata(vec![])
         };
         assert_eq!(data.assess().findings, [Finding::SelfTestFailed]);

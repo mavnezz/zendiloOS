@@ -40,6 +40,12 @@ struct Output {
 #[derive(Deserialize)]
 struct AtaSmartData {
     self_test: Option<AtaSelfTest>,
+    capabilities: Option<AtaCapabilities>,
+}
+
+#[derive(Deserialize)]
+struct AtaCapabilities {
+    self_tests_supported: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -269,7 +275,12 @@ pub fn parse(exit_status: i32, json: &str) -> Result<SmartReport, ParseError> {
         data_units_read: log.data_units_read,
         data_units_written: log.data_units_written,
     });
-    let ata_test = output.ata_smart_data.and_then(|data| data.self_test);
+    let (ata_test, ata_self_tests) = match output.ata_smart_data {
+        Some(data) => {
+            (data.self_test, data.capabilities.and_then(|c| c.self_tests_supported).unwrap_or(false))
+        }
+        None => (None, false),
+    };
     let mut running_self_test = ata_test
         .as_ref()
         .and_then(|test| test.status.as_ref())
@@ -287,6 +298,8 @@ pub fn parse(exit_status: i32, json: &str) -> Result<SmartReport, ParseError> {
             description: entry.status.string,
             power_on_hours: entry.lifetime_hours,
         });
+    // smartctl reads an NVMe drive's self-test log only if it can test itself.
+    let self_tests_supported = ata_self_tests || output.nvme_self_test_log.is_some();
     if let Some(log) = output.nvme_self_test_log {
         // 0: no test running; the completion is the share done.
         if log.current_self_test_operation.is_some_and(|operation| operation.value != 0) {
@@ -323,6 +336,7 @@ pub fn parse(exit_status: i32, json: &str) -> Result<SmartReport, ParseError> {
         last_self_test,
         running_self_test,
         self_test_minutes,
+        self_tests_supported,
     })))
 }
 
@@ -346,6 +360,18 @@ mod tests {
         assert_eq!(last.description, "Completed without error");
         assert_eq!(data.running_self_test, None);
         assert_eq!(data.self_test_minutes, Some((2, 54)));
+        assert!(data.self_tests_supported);
+    }
+
+    /// QEMU's NVMe disk cannot test itself; `smartctl -t short` then says so
+    /// and still exits with 0, so whether it can is read beforehand: an
+    /// NVMe drive that can has a self-test log in `--all`.
+    #[test]
+    fn knows_which_drives_can_test_themselves() {
+        let nvme = available(parse(0, include_str!("fixtures/smartctl-nvme-qemu.json")).unwrap());
+        assert!(!nvme.self_tests_supported);
+        let sata = available(parse(0, include_str!("fixtures/smartctl-sata-qemu.json")).unwrap());
+        assert!(sata.self_tests_supported);
     }
 
     /// The forms smartctl documents for a test that runs (ATA status 241 to
@@ -363,6 +389,7 @@ mod tests {
             "table":[{"self_test_code":{"value":2,"string":"Extended"},"self_test_result":{"value":7,"string":"Completed: failed segments"},"power_on_hours":800}]}}"#;
         let SmartReport::Available(data) = parse(0, nvme).unwrap() else { panic!("no SMART data") };
         assert_eq!(data.running_self_test, Some(RunningSelfTest { remaining_percent: Some(70) }));
+        assert!(data.self_tests_supported);
         let last = data.last_self_test.unwrap();
         assert!(!last.passed, "a failed NVMe test is not read as passed");
         assert_eq!(last.description, "Extended: Completed: failed segments");

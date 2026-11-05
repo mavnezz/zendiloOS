@@ -40,3 +40,17 @@ export function usageLabel(disk: {
   if (disk.usage === 'pool_member') return t('storage.usage.pool_member', { pool: disk.pool })
   return t(`storage.usage.${disk.usage}`)
 }
+
+/** An hour of the day as on a clock, e.g. `02:00`. */
+export function formatHour(hour: number): string {
+  return `${String(hour).padStart(2, '0')}:00`
+}
+
+/** An offset from UTC, e.g. `UTC+01:00`. */
+export function formatUtcOffset(seconds: number): string {
+  const sign = seconds < 0 ? '−' : '+'
+  const minutes = Math.round(Math.abs(seconds) / 60)
+  const hh = String(Math.floor(minutes / 60)).padStart(2, '0')
+  const mm = String(minutes % 60).padStart(2, '0')
+  return `UTC${sign}${hh}:${mm}`
+}

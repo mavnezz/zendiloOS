@@ -1,20 +1,37 @@
 <script setup lang="ts">
-import { ChevronRight, HardDrive, MemoryStick } from 'lucide-vue-next'
+import { CalendarClock, ChevronRight, HardDrive, MemoryStick } from 'lucide-vue-next'
+import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import type { Disk } from '@/shared/api/types'
 import { problemMessage } from '@/shared/i18n'
 import { formatBytes } from '@/shared/lib/format'
 import { Alert } from '@/shared/ui/alert'
+import { Button } from '@/shared/ui/button'
 
-import { useDisks } from '../api'
-import { usageLabel } from '../format'
+import { useDisks, useSelfTestPlans } from '../api'
+import { formatHour, usageLabel } from '../format'
 import DiskSmartBadge from './DiskSmartBadge.vue'
+import SelfTestPlansDialog from './SelfTestPlansDialog.vue'
 
+/** Whether the signed-in account may plan self-tests (`storage.manage`). */
+defineProps<{ canManage: boolean }>()
 defineEmits<{ select: [name: string] }>()
 
 const { t } = useI18n()
 const { data: disks, error, isPending } = useDisks()
+const { data: plans } = useSelfTestPlans()
+const planning = ref(false)
+
+const schedule = computed(() =>
+  (plans.value?.plans ?? []).map((plan) =>
+    t('storage.selfTestPlans.summary', {
+      kind: t(`storage.selfTest.${plan.kind}`),
+      frequency: t(`storage.selfTestPlans.frequency.${plan.frequency}`),
+      hour: formatHour(plan.hour),
+    }),
+  ),
+)
 
 function usage(disk: Disk): string {
   return usageLabel(disk)
@@ -23,6 +40,16 @@ function usage(disk: Disk): string {
 
 <template>
   <div class="grid gap-3">
+    <div class="flex items-center gap-2 rounded-xl border bg-card p-3 text-sm">
+      <CalendarClock class="size-5 shrink-0 text-primary" />
+      <p class="min-w-0 flex-1">
+        <span class="font-medium">{{ t('storage.selfTestPlans.title') }}:</span>
+        {{ schedule.length ? schedule.join(' · ') : t('storage.selfTestPlans.none') }}
+      </p>
+      <Button v-if="canManage" variant="outline" size="sm" @click="planning = true">
+        {{ t('storage.selfTestPlans.button') }}
+      </Button>
+    </div>
     <Alert v-if="error" variant="destructive">{{ problemMessage(error) }}</Alert>
     <p v-else-if="!isPending && !disks?.length" class="text-sm text-muted-foreground">
       {{ t('storage.noDisks') }}
@@ -55,5 +82,6 @@ function usage(disk: Disk): string {
         </button>
       </li>
     </ul>
+    <SelfTestPlansDialog v-if="canManage" v-model:open="planning" />
   </div>
 </template>

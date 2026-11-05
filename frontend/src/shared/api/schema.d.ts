@@ -907,6 +907,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/storage/self-test-plans": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** When the disks test themselves. Needs `storage.view`. */
+        get: operations["self_test_plans"];
+        /**
+         * Replaces the self-test plans; a kind without a plan is not tested on a
+         *     schedule. A long test runs weekly at most. Needs `storage.manage`.
+         */
+        put: operations["set_self_test_plans"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/storage/volumes": {
         parameters: {
             query?: never;
@@ -1740,6 +1761,13 @@ export interface components {
         ScanKind: "scrub" | "resilver";
         /** @enum {string} */
         ScanState: "running" | "finished" | "canceled";
+        ScheduledSelfTest: components["schemas"]["SelfTestPlan"] & {
+            /**
+             * Format: int64
+             * @description When it last started its tests, in Unix seconds.
+             */
+            last_run_at?: number | null;
+        };
         SelfTest: {
             description: string;
             passed: boolean;
@@ -1747,10 +1775,38 @@ export interface components {
             power_on_hours?: number | null;
         };
         /**
+         * @description How often a plan has the disks test themselves.
+         * @enum {string}
+         */
+        SelfTestFrequency: "daily" | "weekly" | "monthly";
+        /**
          * @description A drive's self-test.
          * @enum {string}
          */
         SelfTestKind: "short" | "long";
+        /** @description A plan for one kind of self-test. */
+        SelfTestPlan: {
+            /** @description The disks by serial number; empty: every disk that can test itself. */
+            disks?: string[];
+            frequency: components["schemas"]["SelfTestFrequency"];
+            /**
+             * Format: int32
+             * @description The hour it starts from, 0 to 23, in the NAS's time zone; it may
+             *     start up to four hours later, if the NAS was off.
+             */
+            hour: number;
+            kind: components["schemas"]["SelfTestKind"];
+        };
+        SelfTestPlans: {
+            /** @description At most one per kind, the short test first. */
+            plans: components["schemas"]["ScheduledSelfTest"][];
+            /**
+             * Format: int32
+             * @description How far the NAS's clock is ahead of UTC now, in seconds: the plans'
+             *     hours are in its time.
+             */
+            utc_offset_seconds: number;
+        };
         SessionInfo: {
             account: components["schemas"]["CurrentAccount"];
             /**
@@ -1763,6 +1819,9 @@ export interface components {
              * @description When the session ends at the latest, as Unix time in seconds.
              */
             expires_at: number;
+        };
+        SetSelfTestPlans: {
+            plans: components["schemas"]["SelfTestPlan"][];
         };
         SetupRequest: {
             /** @description Name of the first administrator account. */
@@ -1937,6 +1996,8 @@ export interface components {
             /** @description Why there is no data, for `unsupported`. */
             reason?: string | null;
             running_self_test?: components["schemas"]["RunningSelfTest"] | null;
+            /** @description Whether the drive can test itself at all. */
+            self_tests_supported: boolean;
             serial?: string | null;
             /**
              * Format: int32
@@ -4161,6 +4222,57 @@ export interface operations {
             };
             /** @description `not_scrubbing` */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    self_test_plans: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SelfTestPlans"];
+                };
+            };
+        };
+    };
+    set_self_test_plans: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetSelfTestPlans"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SelfTestPlans"];
+                };
+            };
+            /** @description `invalid_input` */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -2931,6 +2931,74 @@
         ]
       }
     },
+    "/api/v1/storage/self-test-plans": {
+      "get": {
+        "tags": [
+          "storage"
+        ],
+        "summary": "When the disks test themselves. Needs `storage.view`.",
+        "operationId": "self_test_plans",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SelfTestPlans"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "storage"
+        ],
+        "summary": "Replaces the self-test plans; a kind without a plan is not tested on a\nschedule. A long test runs weekly at most. Needs `storage.manage`.",
+        "operationId": "set_self_test_plans",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetSelfTestPlans"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SelfTestPlans"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/storage/volumes": {
       "get": {
         "tags": [
@@ -5434,6 +5502,26 @@
           "canceled"
         ]
       },
+      "ScheduledSelfTest": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/SelfTestPlan"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "last_run_at": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int64",
+                "description": "When it last started its tests, in Unix seconds."
+              }
+            }
+          }
+        ]
+      },
       "SelfTest": {
         "type": "object",
         "required": [
@@ -5457,6 +5545,15 @@
           }
         }
       },
+      "SelfTestFrequency": {
+        "type": "string",
+        "description": "How often a plan has the disks test themselves.",
+        "enum": [
+          "daily",
+          "weekly",
+          "monthly"
+        ]
+      },
       "SelfTestKind": {
         "type": "string",
         "description": "A drive's self-test.",
@@ -5464,6 +5561,58 @@
           "short",
           "long"
         ]
+      },
+      "SelfTestPlan": {
+        "type": "object",
+        "description": "A plan for one kind of self-test.",
+        "required": [
+          "kind",
+          "frequency",
+          "hour"
+        ],
+        "properties": {
+          "disks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The disks by serial number; empty: every disk that can test itself."
+          },
+          "frequency": {
+            "$ref": "#/components/schemas/SelfTestFrequency"
+          },
+          "hour": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The hour it starts from, 0 to 23, in the NAS's time zone; it may\nstart up to four hours later, if the NAS was off.",
+            "minimum": 0
+          },
+          "kind": {
+            "$ref": "#/components/schemas/SelfTestKind"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SelfTestPlans": {
+        "type": "object",
+        "required": [
+          "plans",
+          "utc_offset_seconds"
+        ],
+        "properties": {
+          "plans": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ScheduledSelfTest"
+            },
+            "description": "At most one per kind, the short test first."
+          },
+          "utc_offset_seconds": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How far the NAS's clock is ahead of UTC now, in seconds: the plans'\nhours are in its time."
+          }
+        }
       },
       "SessionInfo": {
         "type": "object",
@@ -5486,6 +5635,21 @@
             "description": "When the session ends at the latest, as Unix time in seconds."
           }
         }
+      },
+      "SetSelfTestPlans": {
+        "type": "object",
+        "required": [
+          "plans"
+        ],
+        "properties": {
+          "plans": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SelfTestPlan"
+            }
+          }
+        },
+        "additionalProperties": false
       },
       "SetupRequest": {
         "type": "object",
@@ -5870,7 +6034,8 @@
         "required": [
           "status",
           "findings",
-          "attributes"
+          "attributes",
+          "self_tests_supported"
         ],
         "properties": {
           "attributes": {
@@ -5997,6 +6162,10 @@
                 "type": "null"
               }
             ]
+          },
+          "self_tests_supported": {
+            "type": "boolean",
+            "description": "Whether the drive can test itself at all."
           },
           "serial": {
             "type": [

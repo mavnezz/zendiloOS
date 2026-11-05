@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT kind, serial FROM self_test_plan_disks ORDER BY rowid",
+  "describe": {
+    "columns": [
+      {
+        "name": "kind",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "self_test_plan_disks",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "name": "serial",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "self_test_plan_disks",
+            "name": "serial"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "64c3a580cbcfc345533981d3465abd5e743c238e4194cc7e0e87ede0817aba9a"
+}

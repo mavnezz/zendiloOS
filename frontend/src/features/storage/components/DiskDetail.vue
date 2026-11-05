@@ -170,6 +170,9 @@ function finding(item: SmartFinding): string {
               </Button>
             </div>
           </template>
+          <p v-else-if="!report.self_tests_supported" class="text-sm text-muted-foreground">
+            {{ t('storage.selfTest.unsupported') }}
+          </p>
           <template v-else>
             <p class="text-sm text-muted-foreground">{{ t('storage.selfTest.hint') }}</p>
             <div v-if="canManage" class="flex flex-wrap justify-end gap-2">

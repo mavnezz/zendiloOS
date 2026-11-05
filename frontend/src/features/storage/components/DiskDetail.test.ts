@@ -27,6 +27,7 @@ function available(extra: Partial<SmartReport> = {}): SmartReport {
     findings: [],
     short_test_minutes: 2,
     long_test_minutes: 125,
+    self_tests_supported: true,
     ...extra,
   }
 }
@@ -73,6 +74,15 @@ describe('a disk’s self-test', () => {
     await flushPromises()
 
     expect(abortSelfTest).toHaveBeenCalledWith('sda')
+  })
+
+  it('says so when the disk cannot test itself', () => {
+    report.value = available({ self_tests_supported: false })
+
+    const text = mountDetail().text()
+
+    expect(text).toContain('This disk cannot test itself.')
+    expect(text).not.toContain('Short test')
   })
 
   it('offers nothing to start to those who may only look', () => {

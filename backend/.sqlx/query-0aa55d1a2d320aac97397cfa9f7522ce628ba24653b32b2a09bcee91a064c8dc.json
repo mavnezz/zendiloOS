@@ -1,0 +1,62 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT kind, frequency, hour, last_run FROM self_test_plans",
+  "describe": {
+    "columns": [
+      {
+        "name": "kind",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "self_test_plans",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "name": "frequency",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "self_test_plans",
+            "name": "frequency"
+          }
+        }
+      },
+      {
+        "name": "hour",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "self_test_plans",
+            "name": "hour"
+          }
+        }
+      },
+      {
+        "name": "last_run",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "self_test_plans",
+            "name": "last_run"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "0aa55d1a2d320aac97397cfa9f7522ce628ba24653b32b2a09bcee91a064c8dc"
+}

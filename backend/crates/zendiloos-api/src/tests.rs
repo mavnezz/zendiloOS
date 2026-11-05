@@ -848,6 +848,7 @@ fn openapi_documents_every_route() {
             "/api/v1/storage/pools/{name}/replace/plan",
             "/api/v1/storage/pools/{name}/scrub",
             "/api/v1/storage/pools/{name}/scrub/stop",
+            "/api/v1/storage/self-test-plans",
             "/api/v1/storage/volumes",
             "/api/v1/system/info",
             "/api/v1/system/metrics/history",
@@ -1789,4 +1790,33 @@ async fn administrators_have_disks_test_themselves() {
     assert_problem(&start(&admin, "sdz", "short").await, StatusCode::NOT_FOUND, "not_found");
     let stop = h.send(empty(with_csrf(post("/api/v1/storage/disks/sda/self-test/abort"), &admin))).await;
     assert_eq!(stop.status, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn administrators_plan_self_tests_everyone_with_storage_view_sees_them() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let viewer = h.sign_in("bob", Role::ReadOnly).await;
+    let plans = json!({ "plans": [
+        { "kind": "long", "frequency": "monthly", "hour": 3, "disks": ["T1"] },
+        { "kind": "short", "frequency": "daily", "hour": 2 },
+    ] });
+    let put = |session: &Session, body: serde_json::Value| {
+        h.send(json(with_csrf(changing(Method::PUT, "/api/v1/storage/self-test-plans"), session), body))
+    };
+
+    let saved = put(&admin, plans.clone()).await;
+    assert_eq!(saved.status, StatusCode::OK);
+    assert_eq!(saved.body["plans"][0]["kind"], "short");
+    assert_eq!(saved.body["plans"][0]["disks"], json!([]));
+    assert_eq!(saved.body["plans"][1]["disks"], json!(["T1"]));
+    assert_eq!(saved.body["plans"][1]["last_run_at"], serde_json::Value::Null);
+    assert!(saved.body["utc_offset_seconds"].is_i64());
+
+    let seen = h.send(empty(with_cookie(get("/api/v1/storage/self-test-plans"), &viewer))).await;
+    assert_eq!(seen.status, StatusCode::OK);
+    assert_eq!(seen.body["plans"], saved.body["plans"]);
+    assert_problem(&put(&viewer, plans).await, StatusCode::FORBIDDEN, "forbidden");
+    let nightly_long = json!({ "plans": [{ "kind": "long", "frequency": "daily", "hour": 2 }] });
+    assert_problem(&put(&admin, nightly_long).await, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
 }

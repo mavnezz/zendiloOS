@@ -71,8 +71,8 @@ async fn creates_a_private_database_and_applies_all_migrations() {
         OpenReport {
             created: true,
             schema_before: None,
-            schema_after: 9,
-            applied: vec![1, 2, 3, 4, 5, 6, 7, 8, 9],
+            schema_after: 10,
+            applied: vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
             backup: None
         }
     );
@@ -99,6 +99,8 @@ async fn creates_a_private_database_and_applies_all_migrations() {
             "jobs",
             "notification_marks",
             "notifications",
+            "self_test_plan_disks",
+            "self_test_plans",
             "sessions",
             "share_access",
             "share_nfs_clients",
@@ -118,7 +120,13 @@ async fn reopening_an_up_to_date_database_changes_nothing() {
 
     assert_eq!(
         report,
-        OpenReport { created: false, schema_before: Some(9), schema_after: 9, applied: vec![], backup: None }
+        OpenReport {
+            created: false,
+            schema_before: Some(10),
+            schema_after: 10,
+            applied: vec![],
+            backup: None
+        }
     );
     assert!(!env.backups().exists(), "no backup without pending migrations");
     db.close().await;

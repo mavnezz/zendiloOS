@@ -11,7 +11,8 @@ use zendiloos_kernel::{AuditLog, Clock, PortError, RequestContext};
 
 use crate::application::StoragePorts;
 use crate::application::ports::{
-    AdminError, ArraySource, BlockDeviceSource, NewPool, PlanTokens, PoolAdmin, SmartSource, ZfsSource,
+    AdminError, ArraySource, BlockDeviceSource, NewPool, PlanTokens, PoolAdmin, SelfTestPlanStore,
+    SmartSource, ZfsSource,
 };
 use crate::domain::{
     Array, ArrayMember, BlockDevice, DeviceKind, Filesystem, MemberState, Pool, PoolDevice, PoolLayout,
@@ -27,6 +28,8 @@ pub struct FakeStorage {
     pub sdd_serial: Mutex<String>,
     /// Pool `tank`'s scan: a scrub runs once one was started, until stopped.
     pub scan: Mutex<Option<Scan>>,
+    /// Disks testing themselves: from a start until stopped.
+    pub testing: Mutex<Vec<String>>,
     tokens: AtomicU64,
 }
 
@@ -53,6 +56,7 @@ impl FakeStorage {
             clock,
             tokens: fake.clone(),
             notifier,
+            self_test_plans: Arc::new(MemorySelfTestPlans::default()),
         };
         (ports, fake)
     }
@@ -236,11 +240,13 @@ impl SmartSource for FakeStorage {
         _: &RequestContext,
     ) -> Result<(), PortError> {
         self.record(format!("self-test {disk} {kind:?}"));
+        self.testing.lock().unwrap().push(disk.to_owned());
         Ok(())
     }
 
     async fn abort_self_test(&self, disk: &str, _: &RequestContext) -> Result<(), PortError> {
         self.record(format!("abort self-test {disk}"));
+        self.testing.lock().unwrap().retain(|d| d != disk);
         Ok(())
     }
 
@@ -261,8 +267,15 @@ impl SmartSource for FakeStorage {
             nvme: None,
             error_log_count: Some(0),
             last_self_test: None,
-            running_self_test: None,
+            running_self_test: self
+                .testing
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|d| d == disk)
+                .then_some(crate::domain::RunningSelfTest { remaining_percent: Some(90) }),
             self_test_minutes: None,
+            self_tests_supported: !disk.starts_with("nvme"),
         })))
     }
 }
@@ -315,5 +328,38 @@ impl ZfsSource for FakeStorage {
             volume: VolumeNumber::new(1),
             space: Some(PoolSpace { used_bytes: 1 << 40, available_bytes: 3 << 40, mounted: true }),
         }])
+    }
+}
+
+/// [`SelfTestPlanStore`] in memory.
+#[derive(Default)]
+pub struct MemorySelfTestPlans {
+    plans: Mutex<Vec<crate::domain::ScheduledSelfTest>>,
+}
+
+#[async_trait]
+impl SelfTestPlanStore for MemorySelfTestPlans {
+    async fn plans(&self) -> Result<Vec<crate::domain::ScheduledSelfTest>, PortError> {
+        Ok(self.plans.lock().unwrap().clone())
+    }
+
+    async fn save(&self, plans: &[crate::domain::SelfTestPlan]) -> Result<(), PortError> {
+        let mut stored = self.plans.lock().unwrap();
+        let next = plans
+            .iter()
+            .map(|plan| crate::domain::ScheduledSelfTest {
+                plan: plan.clone(),
+                last_run: stored.iter().find(|s| s.plan.kind == plan.kind).and_then(|s| s.last_run),
+            })
+            .collect();
+        *stored = next;
+        Ok(())
+    }
+
+    async fn ran(&self, kind: SelfTestKind, at: zendiloos_kernel::Timestamp) -> Result<(), PortError> {
+        for scheduled in self.plans.lock().unwrap().iter_mut().filter(|s| s.plan.kind == kind) {
+            scheduled.last_run = Some(at);
+        }
+        Ok(())
     }
 }

@@ -22,6 +22,7 @@ argon2.workspace = true
 async-trait.workspace = true
 base64.workspace = true
 getrandom.workspace = true
+jiff.workspace = true
 serde.workspace = true
 # Keeps the order of objects: ZFS lists vdevs in the pool's order.
 serde_json = { workspace = true, features = ["preserve_order"] }

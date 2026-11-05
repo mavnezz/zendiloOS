@@ -79,7 +79,7 @@ function open(next: Section): void {
           :can-manage="canManage"
           @back="selectedDisk = null"
         />
-        <DisksSection v-else @select="selectedDisk = $event" />
+        <DisksSection v-else :can-manage="canManage" @select="selectedDisk = $event" />
       </template>
     </div>
   </div>
