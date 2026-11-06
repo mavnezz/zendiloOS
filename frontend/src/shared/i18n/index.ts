@@ -82,6 +82,7 @@ const KNOWN_PROBLEMS = [
   'project_exists',
   'app_project',
   'not_own_project',
+  'project_unconfirmed',
   'compose_risks',
   'share_denied',
   'source_exists',

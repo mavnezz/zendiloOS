@@ -7,7 +7,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::Value;
 use zendiloos_agent_proto::{self as proto, AgentTransport, ErrorCode, Request, Response};
-use zendiloos_containers::application::ports::{DockerEngine, EngineError, ProjectAction};
+use zendiloos_containers::application::ports::{CheckedCompose, DockerEngine, EngineError, ProjectAction};
 use zendiloos_containers::domain::{
     ComposeListing, ComposeModel, ComposeService, Container, ContainerAction, ContainerState, ContainerUsage,
     DiskUsage, Image, Mount, Network, ProjectName, PublishedPort, UsageSample,
@@ -462,20 +462,35 @@ impl DockerEngine for AgentDockerEngine {
         directory: &str,
         compose: &str,
         context: &RequestContext,
-    ) -> Result<ComposeModel, EngineError> {
+    ) -> Result<CheckedCompose, EngineError> {
         let request = Request::CheckCompose {
             project: proto::ProjectName::parse(project.as_str()).map_err(invalid)?,
             directory: proto::ProjectDirectory::parse(directory).map_err(invalid)?,
             compose: proto::ComposeText::parse(compose).map_err(invalid)?,
         };
-        compose_model(&self.printed(request, context).await?)
+        let config = self.printed(request, context).await?;
+        Ok(CheckedCompose { model: compose_model(&config)?, config: config.trim_end().to_owned() })
+    }
+
+    async fn deploy_project(
+        &self,
+        project: &str,
+        config: &str,
+        pull: bool,
+        context: &RequestContext,
+    ) -> Result<(), EngineError> {
+        let request = Request::DeployProject {
+            project: proto::ProjectName::parse(project).map_err(invalid)?,
+            config: proto::ProjectConfig::parse(config).map_err(invalid)?,
+            pull,
+        };
+        self.done(request, context).await
     }
 
     async fn control_project(
         &self,
         project: &str,
         action: ProjectAction,
-        file: Option<&str>,
         context: &RequestContext,
     ) -> Result<(), EngineError> {
         let action = match action {
@@ -486,11 +501,8 @@ impl DockerEngine for AgentDockerEngine {
             ProjectAction::Pull => proto::ProjectAction::Pull,
             ProjectAction::Down => proto::ProjectAction::Down,
         };
-        let request = Request::ControlProject {
-            project: proto::ProjectName::parse(project).map_err(invalid)?,
-            action,
-            file: file.map(proto::ProjectFile::parse).transpose().map_err(invalid)?,
-        };
+        let request =
+            Request::ControlProject { project: proto::ProjectName::parse(project).map_err(invalid)?, action };
         self.done(request, context).await
     }
 

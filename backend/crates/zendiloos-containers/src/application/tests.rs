@@ -40,11 +40,15 @@ fn context() -> RequestContext {
     RequestContext::default()
 }
 
-/// Waits until the engine was asked for `call`; jobs run in the background.
-async fn asked(t: &TestContainers, call: &str) {
+/// Waits until the engine was asked for `call` (or `call` followed by
+/// more, such as a deploy's project); jobs run in the background. Says
+/// what was asked.
+async fn asked(t: &TestContainers, call: &str) -> String {
     for _ in 0..200 {
-        if t.engine.calls().iter().any(|c| c == call) {
-            return;
+        if let Some(found) =
+            t.engine.calls().into_iter().find(|c| c == call || c.starts_with(&format!("{call} ")))
+        {
+            return found;
         }
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
@@ -152,7 +156,8 @@ async fn a_project_that_reaches_beyond_its_containers_needs_consent() {
         t.storage.files.lock().unwrap().get(&(1, "docker/tesla/compose.yaml".to_owned())).map(String::as_str),
         Some(compose)
     );
-    asked(&t, "project up tesla /volume1/docker/docker/tesla/compose.yaml").await;
+    let deployed = asked(&t, "deploy tesla pull=false").await;
+    assert!(deployed.contains(r#""privileged":true"#), "what was confirmed runs: {deployed}");
     assert!(t.engine.calls().contains(&"check tesla /volume1/docker/docker/tesla".to_owned()));
     let created = audit.actions().into_iter().find(|a| a.0 == "containers.project_create").unwrap();
     assert_eq!(created.2, Some("risks_accepted"));
@@ -177,7 +182,7 @@ async fn projects_need_a_free_name_a_readable_file_and_a_writable_share() {
     assert!(matches!(badly, Err(ContainersError::InvalidName(_))), "{badly:?}");
     let resting = NewProject { start: false, ..new_project("tesla", plain, false) };
     assert!(t.containers.create_project(resting, &alice(), &context()).await.unwrap().is_none());
-    assert!(!t.engine.calls().iter().any(|c| c.starts_with("project up")), "not started");
+    assert!(!t.engine.calls().iter().any(|c| c.starts_with("deploy")), "not started");
 }
 
 #[tokio::test]
@@ -193,11 +198,53 @@ async fn an_own_projects_file_is_changed_and_deployed_again() {
 
     let changed = "services:\n  app:\n    image: nginx:1.27\n";
     t.containers.change_compose("tesla", changed, false, &alice(), &context()).await.unwrap();
-    asked(&t, "project up tesla /volume1/docker/docker/tesla/compose.yaml").await;
+    let deployed = asked(&t, "deploy tesla pull=false").await;
+    assert!(deployed.contains("nginx:1.27"), "{deployed}");
     let source = t.containers.project_compose("tesla", &alice(), &context()).await.unwrap();
     assert_eq!(source.files[0].1, changed);
     let foreign = t.containers.change_compose("stack", changed, false, &alice(), &context()).await;
     assert!(matches!(foreign, Err(ContainersError::NotOwn)), "{foreign:?}");
+}
+
+#[tokio::test]
+async fn a_file_changed_in_the_share_does_not_run() {
+    let (t, _) = setup();
+    let plain = "services:\n  app:\n    image: nginx\n";
+    t.containers.create_project(new_project("tesla", plain, false), &alice(), &context()).await.unwrap();
+    asked(&t, "deploy tesla pull=false").await;
+    // Someone who may write the share changes the file there.
+    let changed = "services:\n  app:\n    image: nginx\n    privileged: true\n";
+    t.storage.files.lock().unwrap().insert((1, "docker/tesla/compose.yaml".to_owned()), changed.to_owned());
+
+    t.containers.redeploy("tesla", &alice(), &context()).await.unwrap();
+
+    let deployed = asked(&t, "deploy tesla pull=true").await;
+    assert!(deployed.contains(r#""privileged":false"#), "what was confirmed runs: {deployed}");
+    let source = t.containers.project_compose("tesla", &alice(), &context()).await.unwrap();
+    assert_eq!(source.files[0].1, plain, "the editor shows what runs");
+}
+
+#[tokio::test]
+async fn a_project_made_before_runs_once_its_file_is_saved() {
+    let (t, _) = setup();
+    let plain = "services:\n  app:\n    image: nginx\n";
+    let resting = NewProject { start: false, ..new_project("tesla", plain, false) };
+    t.containers.create_project(resting, &alice(), &context()).await.unwrap();
+    // As a project made before the confirmed file was kept.
+    for project in t.projects.0.lock().unwrap().iter_mut() {
+        (project.compose, project.config) = (None, None);
+    }
+    t.storage.files.lock().unwrap().insert((1, "docker/tesla/compose.yaml".to_owned()), plain.to_owned());
+
+    let refused = t.containers.redeploy("tesla", &alice(), &context()).await;
+    assert!(matches!(refused, Err(ContainersError::Unconfirmed)), "{refused:?}");
+    let source = t.containers.project_compose("tesla", &alice(), &context()).await.unwrap();
+    assert_eq!(source.files[0].1, plain, "read from the share to be saved");
+
+    t.containers.change_compose("tesla", plain, false, &alice(), &context()).await.unwrap();
+    asked(&t, "deploy tesla pull=false").await;
+    t.containers.redeploy("tesla", &alice(), &context()).await.unwrap();
+    asked(&t, "deploy tesla pull=true").await;
 }
 
 #[tokio::test]
@@ -213,7 +260,7 @@ async fn apps_of_catalogs_are_left_to_the_app_center() {
         assert!(matches!(refused, Err(ContainersError::AppProject)), "{refused:?}");
     }
     t.containers.control_project("kuma", ProjectAction::Restart, &alice(), &context()).await.unwrap();
-    assert_eq!(t.engine.calls(), ["project restart kuma -"]);
+    assert_eq!(t.engine.calls(), ["project restart kuma"]);
 }
 
 #[tokio::test]
@@ -225,11 +272,11 @@ async fn projects_made_elsewhere_are_shown_updated_and_removed() {
     assert_eq!(source.files[0].0, "/opt/stack/compose.yml");
 
     t.containers.redeploy("stack", &alice(), &context()).await.unwrap();
-    asked(&t, "project up stack -").await;
-    assert!(t.engine.calls().contains(&"project pull stack -".to_owned()), "images fetched first");
+    asked(&t, "project up stack").await;
+    assert!(t.engine.calls().contains(&"project pull stack".to_owned()), "images fetched first");
 
     t.containers.delete_project("stack", &alice(), &context()).await.unwrap();
-    asked(&t, "project down stack -").await;
+    asked(&t, "project down stack").await;
     let logs = t.containers.project_logs("stack", 100, &context()).await.unwrap();
     assert!(logs.contains("ready"));
     for _ in 0..200 {
@@ -267,8 +314,8 @@ async fn newer_images_are_found_and_their_projects_updated() {
 
     let job = t.containers.apply_updates(Some(&alice()), &context()).await.unwrap().expect("a job");
     assert_eq!(job.kind, "containers.update");
-    asked(&t, "project up stack -").await;
-    assert!(t.engine.calls().contains(&"project pull stack -".to_owned()));
+    asked(&t, "project up stack").await;
+    assert!(t.engine.calls().contains(&"project pull stack".to_owned()));
     assert!(!t.engine.calls().iter().any(|c| c.contains(" kuma")), "the app is the App Center's");
     for _ in 0..200 {
         if audit.actions().iter().any(|a| a.0 == "containers.update") {
@@ -289,7 +336,7 @@ async fn updates_come_on_schedule_only_when_due() {
     assert!(t.containers.scheduled(2, 339).await.unwrap().is_none());
     assert!(t.engine.calls().is_empty(), "not even checked");
     assert!(t.containers.scheduled(2, 340).await.unwrap().is_some());
-    asked(&t, "project up stack -").await;
+    asked(&t, "project up stack").await;
 
     let unchecked = UpdateSettings { check: false, schedule: Some(schedule) };
     let refused = t.containers.set_update_settings(unchecked, &alice(), &context()).await;

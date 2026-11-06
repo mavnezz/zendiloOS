@@ -76,6 +76,7 @@ impl From<ContainersError> for ApiError {
                 ),
             ),
             ContainersError::Denied => rejected(StatusCode::FORBIDDEN, "share_denied", None),
+            ContainersError::Unconfirmed => rejected(StatusCode::CONFLICT, "project_unconfirmed", None),
             ContainersError::Port(e) => ApiError::internal(e),
         }
     }
@@ -818,7 +819,8 @@ async fn control_project(
 /// an app of a catalog. Needs `containers.manage`.
 #[utoipa::path(post, path = "/docker/projects/{name}/redeploy", tag = "docker", security(("session" = [])), params(("name" = String, Path)),
     responses((status = ACCEPTED, body = Job), (status = FORBIDDEN, body = Problem, description = "`forbidden`, `csrf_rejected`"),
-        (status = NOT_FOUND, body = Problem, description = "`not_found`"), (status = CONFLICT, body = Problem, description = "`app_project`")))]
+        (status = NOT_FOUND, body = Problem, description = "`not_found`"),
+        (status = CONFLICT, body = Problem, description = "`app_project`; `project_unconfirmed`: made before what was confirmed was kept, save its file once")))]
 async fn redeploy_project(
     auth: Auth,
     State(state): State<ApiState>,

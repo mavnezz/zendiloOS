@@ -2746,7 +2746,7 @@
             }
           },
           "409": {
-            "description": "`app_project`",
+            "description": "`app_project`; `project_unconfirmed`: made before what was confirmed was kept, save its file once",
             "content": {
               "application/json": {
                 "schema": {

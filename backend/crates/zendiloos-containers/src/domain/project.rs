@@ -49,8 +49,15 @@ pub struct OwnProject {
     pub folder: String,
     /// The folder on the machine: `/volume1/docker/docker/teslamate`.
     pub directory: String,
-    /// Its Compose file on the machine.
+    /// Its Compose file on the machine: a copy to look at; what runs is
+    /// `config`.
     pub file: String,
+    /// The Compose file as the administrator last confirmed it, which the
+    /// editor shows; `None` for a project made before it was kept.
+    pub compose: Option<String>,
+    /// What Compose made of it then (normalized, as JSON): this runs, never
+    /// the file in the share, which others may write.
+    pub config: Option<String>,
     pub created_at: Timestamp,
     pub created_by: String,
 }
@@ -142,6 +149,8 @@ mod tests {
             folder: format!("docker/{name}"),
             directory: format!("/volume1/docker/docker/{name}"),
             file: format!("/volume1/docker/docker/{name}/compose.yaml"),
+            compose: None,
+            config: None,
             created_at: Timestamp::from_unix_seconds(0),
             created_by: "alice".into(),
         }

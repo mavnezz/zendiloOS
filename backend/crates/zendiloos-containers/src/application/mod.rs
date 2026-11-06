@@ -71,6 +71,11 @@ pub enum ContainersError {
     Risky(Vec<Risk>),
     #[error("the share does not exist or cannot be written")]
     Denied,
+    /// Made before zendiloOS kept what was confirmed: deployed from the
+    /// share then, which others may write. Saving its Compose file once
+    /// confirms it.
+    #[error("the project's Compose file needs to be saved once to be confirmed")]
+    Unconfirmed,
     #[error(transparent)]
     Port(#[from] PortError),
 }

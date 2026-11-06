@@ -9,7 +9,7 @@ use std::sync::PoisonError;
 use zendiloos_jobs::Job;
 use zendiloos_kernel::{Actor, AuditEntry, Outcome, RequestContext};
 
-use super::ports::ProjectAction;
+use super::projects::Deployment;
 use super::{Containers, ContainersError, job_error};
 use crate::domain::{ImageCheck, Origin, RegistryImage, UpdateReport, UpdateSettings, UpdateState, is_newer};
 
@@ -73,14 +73,16 @@ impl Containers {
         let report = self.check_updates(context).await?;
         let containers = self.ports.engine.containers(context).await?;
         let newer: Vec<String> = report.available().flat_map(|image| image.containers.clone()).collect();
-        let projects: Vec<(String, Option<String>)> = self
+        // An administrator's project comes up as they confirmed it, never
+        // from its file in the share.
+        let projects: Vec<(String, Deployment)> = self
             .projects(context)
             .await?
             .into_iter()
             .filter(|p| p.containers.iter().any(|c| newer.contains(&c.name)))
             .filter_map(|p| match p.origin {
-                Origin::Own(own) => Some((p.name, Some(own.file))),
-                Origin::Foreign { .. } => Some((p.name, None)),
+                Origin::Own(own) => Some((p.name, Deployment::of(&own))),
+                Origin::Foreign { .. } => Some((p.name, Deployment::Foreign)),
                 Origin::App { .. } => None,
             })
             .collect();
@@ -103,14 +105,9 @@ impl Containers {
                 let engine = &this.ports.engine;
                 let steps = (projects.len() + pulls.len()).max(1) as f32;
                 let mut failed: Option<ContainersError> = None;
-                for (done, (name, file)) in projects.iter().enumerate() {
+                for (done, (name, how)) in projects.iter().enumerate() {
                     progress.step(name, Some(done as f32 / steps)).await;
-                    let mut outcome =
-                        engine.control_project(name, ProjectAction::Pull, file.as_deref(), &context).await;
-                    if outcome.is_ok() {
-                        outcome =
-                            engine.control_project(name, ProjectAction::Up, file.as_deref(), &context).await;
-                    }
+                    let outcome = how.run(&this, name, true, &context).await;
                     this.record_update(name, outcome.is_ok(), who.as_ref(), &context).await;
                     if let Err(error) = outcome {
                         failed.get_or_insert(error.into());

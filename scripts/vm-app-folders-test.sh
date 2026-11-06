@@ -2,7 +2,7 @@
 # Tests an app given a folder in a share rather than the whole share, end to
 # end in a test VM, through the HTTPS API:
 #
-#   1. the app (Navidrome, read only) mounts the folder through its pin at
+#   1. the app (Jellyfin, read only) mounts the folder through its pin at
 #      /run/zendiloos-app-shares/<app>/<share id>, and sees nothing else of
 #      the share
 #   2. the folder is swapped for a link to /: a restart by Docker itself
@@ -12,7 +12,7 @@
 #   4. removing the app removes its pin and unit
 #
 # Needs the VM running with the package installed and set up, Docker's data
-# on a pool and the network to fetch Navidrome's image; account and password
+# on a pool and the network to fetch Jellyfin's image; account and password
 # as for vm-storage-test.sh. Runs in the second VM by default (the first
 # holds a LAN test). Puts everything back.
 set -euo pipefail
@@ -24,8 +24,8 @@ api="$base/api/v1"
 user=${ZENDILOOS_USER:-admin}
 password=${ZENDILOOS_PASSWORD:-correct horse battery}
 share=appfolders
-app=navidrome
-pin=/run/zendiloos-app-shares/$app/music
+app=jellyfin
+pin=/run/zendiloos-app-shares/$app/data
 unit=zendiloos-app-$app-shares.service
 container=$app-$app-1
 work=$(mktemp -d)
@@ -73,8 +73,8 @@ job_succeeded() {
     [[ $state == succeeded* ]] || fail "job $id: $state"
 }
 
-# What the container shows at /music, one name per line.
-inside() { vm "sudo docker exec $container ls -1 /music"; }
+# What the container shows at /data, one name per line.
+inside() { vm "sudo docker exec $container ls -1 /data"; }
 running() { [[ $(vm "sudo docker inspect -f '{{.State.Running}}' $container") == true ]]; }
 
 remove_app() {
@@ -114,12 +114,12 @@ volume=$(call GET /storage/pools | jq -r --arg p "$pool" '.[] | select(.name == 
 path="/volume$volume/$share"
 vm "sudo touch $path/Library/Albums/in-albums $path/Other/elsewhere"
 request=$(jq -n --arg folder "$share/Library/Albums" \
-    '{source:1,app:"navidrome",ports:{},shares:{music:$folder},settings:{},confirm_permissions:false,pool:null}')
+    '{source:1,app:"jellyfin",ports:{},shares:{data:$folder},settings:{},confirm_permissions:true,pool:null}')
 [[ $(status POST /apps/installed "$request") == 202 ]] || fail "install: $(cat "$work/last")"
 job_succeeded "$(jq -r .job.id "$work/last")"
-call GET "/apps/installed/$app" | jq -e --arg f "$share/Library/Albums" '.shares.music == $f' >/dev/null \
+call GET "/apps/installed/$app" | jq -e --arg f "$share/Library/Albums" '.shares.data == $f' >/dev/null \
     || fail "the app's share: $(call GET "/apps/installed/$app" | jq -c .shares)"
-source=$(vm "sudo docker inspect -f '{{range .Mounts}}{{if eq .Destination \"/music\"}}{{.Source}}{{end}}{{end}}' $container")
+source=$(vm "sudo docker inspect -f '{{range .Mounts}}{{if eq .Destination \"/data\"}}{{.Source}}{{end}}{{end}}' $container")
 [[ $source == "$pin" ]] || fail "the container mounts $source"
 vm "sudo findmnt -n $pin" >/dev/null || fail "nothing is mounted at $pin"
 [[ $(vm "systemctl is-enabled $unit") == enabled ]] || fail "$unit is not enabled"

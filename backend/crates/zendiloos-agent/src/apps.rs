@@ -38,7 +38,7 @@ use zendiloos_catalog::{Manifest, Placement, Problem, RESERVED_HOST_PORTS, Setti
 use zendiloos_exec::{Limits, Output, Program, Surroundings};
 
 use crate::accounts::{AccountFiles, app_account};
-use crate::app_shares::{self, Pin, open_mounted};
+use crate::app_shares::{self, Owner, Pin, open_mounted};
 use crate::operations::OperationError;
 use crate::pools::{APPS_DIRECTORY, HostPaths};
 
@@ -222,49 +222,25 @@ impl Apps {
             return Ok((root.to_string_lossy().into_owned(), None));
         }
         app_shares::walk(&root, &choice.folder)?;
-        let at = app_shares::pin_path(&self.paths, app, id)?.to_string_lossy().into_owned();
-        let pin =
-            Pin { share: root.to_string_lossy().into_owned(), folder: choice.folder.clone(), at: at.clone() };
+        let at = app_shares::pin_path(&self.paths, Owner::App(app), id)?.to_string_lossy().into_owned();
+        let pin = Pin {
+            share: root.to_string_lossy().into_owned(),
+            folder: choice.folder.clone(),
+            at: at.clone(),
+            file: false,
+            create: false,
+        };
         Ok((at, Some(pin)))
     }
 
     /// The unit pinning the app's folders: written and enabled when there
     /// are any, stopped and removed when there are none.
     async fn place_pin_unit(&self, app: &AppName, pins: &[Pin]) -> Result<(), OperationError> {
-        let unit = app_shares::unit_name(app);
-        let path = self.paths.units.join(&unit);
-        if pins.is_empty() {
-            return self.remove_pin_unit(app).await;
-        }
-        let mut shares: Vec<&str> = pins.iter().map(|pin| pin.share.as_str()).collect();
-        shares.sort_unstable();
-        shares.dedup();
-        let content = app_shares::unit(&self.paths.agent, app, &shares);
-        let temporary = path.with_extension("service.new");
-        fs::write(&temporary, content).map_err(|e| OperationError::Write(temporary.clone(), e))?;
-        fs::rename(&temporary, &path).map_err(|e| OperationError::Write(path.clone(), e))?;
-        self.systemctl(&["daemon-reload"]).await?;
-        self.systemctl(&["enable", &unit]).await
+        app_shares::place_unit(&self.systemctl, &self.paths, Owner::App(app), pins).await
     }
 
     async fn remove_pin_unit(&self, app: &AppName) -> Result<(), OperationError> {
-        let unit = app_shares::unit_name(app);
-        let path = self.paths.units.join(&unit);
-        if path.exists() {
-            self.systemctl(&["disable", "--now", &unit]).await?;
-            fs::remove_file(&path).map_err(|e| OperationError::Write(path.clone(), e))?;
-            self.systemctl(&["daemon-reload"]).await?;
-        }
-        Ok(())
-    }
-
-    async fn systemctl(&self, args: &[&str]) -> Result<(), OperationError> {
-        let output = zendiloos_exec::run(&self.systemctl, args, LIMITS).await?;
-        if output.status.success() {
-            Ok(())
-        } else {
-            Err(OperationError::Failed(format!("systemctl {}: {}", args.join(" "), complaint(&output))))
-        }
+        app_shares::remove_unit(&self.systemctl, &self.paths, Owner::App(app)).await
     }
 
     /// The machine's time zone, from where `/etc/localtime` leads; UTC if
@@ -564,7 +540,7 @@ impl Apps {
                 app_shares::walk(Path::new(&pin.share), &pin.folder)?;
             }
             // Pinned again: a folder that was missing at boot may be back.
-            self.systemctl(&["restart", &app_shares::unit_name(app)]).await?;
+            app_shares::repin(&self.systemctl, Owner::App(app)).await?;
         }
         self.check_mounts(&normalized)?;
         self.compose_done(app, &["up", "--detach", "--remove-orphans", "--quiet-pull"], LONG).await

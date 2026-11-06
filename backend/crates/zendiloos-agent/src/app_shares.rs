@@ -1,90 +1,228 @@
-//! Folders in shares that apps were given, pinned (docs/architecture.md,
-//! 4.9).
+//! Folders and files in shares that apps and administrators' Compose
+//! projects mount, pinned (docs/architecture.md, 4.9).
 //!
 //! A share's root is its dataset's mount point: nobody but root can move it.
-//! A folder in a share can be swapped for a link by anyone who may write to
-//! the share (an NFS client, another app), and Docker follows links in a
-//! bind mount's source every time it starts a container, also when it
-//! restarts one by itself. So an app never mounts such a folder by its
-//! path. The folder is walked to from the share's root name by name,
-//! without following a link or leaving the share's file system, and what
-//! was opened is mounted at `/run/zendiloos-app-shares/<app>/<share id>`,
-//! a place only root can change; the containers mount that.
+//! Something in a share can be swapped for a link by anyone who may write
+//! to the share (a user over SMB, an NFS client, another app), and Docker
+//! follows links in a bind mount's source every time it starts a container,
+//! also when it restarts one by itself. So containers never mount such a
+//! folder or file by its path. It is walked to from the share's root name by
+//! name, without following a link or leaving the share's file system, and
+//! what was opened is mounted at `/run/zendiloos-app-shares/<app>/<id>` or
+//! `/run/zendiloos-project-shares/<project>/<id>`, places only root can
+//! change; the containers mount those.
 //!
 //! The mounts are made in the host's mount namespace, outside the agent's
-//! sandbox: by a unit per app, `zendiloos-app-<app>-shares.service`, which
-//! runs this binary as `pin-shares <app>` at boot before Docker starts, and
-//! again before each start of the app; stopping it unmounts them.
+//! sandbox: by a unit per app or project
+//! (`zendiloos-app-<app>-shares.service`,
+//! `zendiloos-project-<project>-shares.service`), which runs this binary as
+//! `pin-shares <app>` or `pin-project <project>` at boot before Docker
+//! starts, and again before each start; stopping it unmounts them. A folder
+//! a project's bind names that does not exist yet is made by that unit, as
+//! Docker would make it: the agent's own view of the volumes is read-only.
 
 use std::fs;
 use std::os::fd::{AsFd, OwnedFd};
-use std::os::unix::fs::DirBuilderExt;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
-use rustix::fs::{Mode, OFlags, fstat, open, openat};
+use rustix::fs::{FileType, Mode, OFlags, fstat, mkdirat, open, openat};
+use rustix::io::Errno;
 use rustix::mount::{MoveMountFlags, OpenTreeFlags, UnmountFlags, move_mount, open_tree, unmount};
 use serde::{Deserialize, Serialize};
-use zendiloos_agent_proto::{AppFolder, AppName};
+use zendiloos_agent_proto::{AppFolder, AppName, ProjectName};
+use zendiloos_exec::{Limits, Program};
 
 use crate::operations::OperationError;
 use crate::pools::HostPaths;
 
-/// One folder an app mounts in place of a share.
+/// Whose folders: an app's of a catalog, or an administrator's project.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Owner<'a> {
+    App(&'a AppName),
+    Project(&'a ProjectName),
+}
+
+impl Owner<'_> {
+    fn name(&self) -> &str {
+        match self {
+            Self::App(app) => app.as_str(),
+            Self::Project(project) => project.as_str(),
+        }
+    }
+
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::App(_) => "app",
+            Self::Project(_) => "project",
+        }
+    }
+
+    /// `zendiloos-app-<app>-shares.service`,
+    /// `zendiloos-project-<project>-shares.service`.
+    pub(crate) fn unit_name(&self) -> String {
+        format!("zendiloos-{}-{}-shares.service", self.kind(), self.name())
+    }
+
+    /// Its normalized Compose file, kept by root.
+    pub(crate) fn kept(&self, paths: &HostPaths) -> PathBuf {
+        let folder = match self {
+            Self::App(_) => &paths.apps,
+            Self::Project(_) => &paths.projects,
+        };
+        folder.join(format!("{}.json", self.name()))
+    }
+
+    fn base<'p>(&self, paths: &'p HostPaths) -> &'p Path {
+        match self {
+            Self::App(_) => &paths.app_shares,
+            Self::Project(_) => &paths.project_shares,
+        }
+    }
+
+    /// Where its pins are mounted.
+    fn places(&self, paths: &HostPaths) -> PathBuf {
+        self.base(paths).join(self.name())
+    }
+
+    /// The commands of this program that pin and unpin.
+    fn commands(&self) -> (&'static str, &'static str) {
+        match self {
+            Self::App(_) => ("pin-shares", "unpin-shares"),
+            Self::Project(_) => ("pin-project", "unpin-project"),
+        }
+    }
+}
+
+/// One folder or file a container mounts in place of a path in a share.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Pin {
-    /// The share's root, `/volume<N>/<share>`.
+    /// The share's root, `/volume<N>/<share>`, or the volume's,
+    /// `/volume<N>`: a mounted file system.
     pub share: String,
-    /// The folder in it.
+    /// The folder or file in it.
     pub folder: AppFolder,
     /// Where it is mounted for the containers.
     pub at: String,
+    /// A file rather than a folder.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub file: bool,
+    /// Made, as a folder, if it does not exist: what Docker does for a
+    /// bind whose source is missing.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub create: bool,
 }
 
-/// `zendiloos-app-<app>-shares.service`.
-pub(crate) fn unit_name(app: &AppName) -> String {
-    format!("zendiloos-app-{}-shares.service", app.as_str())
-}
-
-/// The unit that pins `app`'s folders, after the shares' own mounts and
+/// The unit that pins `owner`'s folders, after the shares' own mounts and
 /// before Docker. It runs outside any mount namespace of its own, or the
 /// host would not see what it mounts; what it may do is narrowed
-/// otherwise.
-pub(crate) fn unit(agent: &Path, app: &AppName, shares: &[&str]) -> String {
-    let agent = agent.display();
+/// otherwise. A project's unit may make missing folders in shares, as
+/// Docker would, so it may write where the shares' permissions say no.
+pub(crate) fn unit(agent: &Path, owner: Owner<'_>, shares: &[&str]) -> String {
+    let (pin, unpin) = owner.commands();
+    let (what, capabilities) = match owner {
+        Owner::App(_) => ("the folders of shares it was given", "CAP_SYS_ADMIN CAP_DAC_READ_SEARCH"),
+        Owner::Project(_) => (
+            "the folders and files in shares its binds name",
+            "CAP_SYS_ADMIN CAP_DAC_READ_SEARCH CAP_DAC_OVERRIDE",
+        ),
+    };
     format!(
-        "# Created by zendiloOS for the app {app}; removed with the app.\n\
+        "# Created by zendiloOS for the {kind} {name}; removed with the {kind}.\n\
          [Unit]\n\
-         Description=zendiloOS app {app}: the folders of shares it was given\n\
+         Description=zendiloOS {kind} {name}: {what}\n\
          RequiresMountsFor={mounts}\n\
          Before=docker.service\n\
          \n\
          [Service]\n\
          Type=oneshot\n\
          RemainAfterExit=yes\n\
-         ExecStart={agent} pin-shares {app}\n\
-         ExecStop={agent} unpin-shares {app}\n\
+         ExecStart={agent} {pin} {name}\n\
+         ExecStop={agent} {unpin} {name}\n\
          NoNewPrivileges=yes\n\
-         CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH\n\
+         CapabilityBoundingSet={capabilities}\n\
          RestrictAddressFamilies=AF_UNIX\n\
          LockPersonality=yes\n\
          MemoryDenyWriteExecute=yes\n\
          \n\
          [Install]\n\
          WantedBy=multi-user.target\n",
-        app = app.as_str(),
+        kind = owner.kind(),
+        name = owner.name(),
+        agent = agent.display(),
         mounts = shares.join(" "),
     )
 }
 
-/// Where the folder for the share `id` of `app` is mounted.
-pub(crate) fn pin_path(paths: &HostPaths, app: &AppName, id: &str) -> Result<PathBuf, OperationError> {
+const SYSTEMCTL: Limits = Limits { timeout: Duration::from_secs(120), max_stdout: 1024 * 1024 };
+
+async fn systemctl(program: &Program, args: &[&str]) -> Result<(), OperationError> {
+    let output = zendiloos_exec::run(program, args, SYSTEMCTL).await?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let lines: Vec<&str> = output.stderr.lines().filter(|line| !line.trim().is_empty()).collect();
+    let tail = lines[lines.len().saturating_sub(5)..].join("\n");
+    Err(OperationError::Failed(format!("systemctl {}: {tail}", args.join(" "))))
+}
+
+/// Writes and enables the unit pinning `owner`'s folders when there are
+/// any; stops and removes it when there are none. Starting it is the
+/// caller's.
+pub(crate) async fn place_unit(
+    program: &Program,
+    paths: &HostPaths,
+    owner: Owner<'_>,
+    pins: &[Pin],
+) -> Result<(), OperationError> {
+    if pins.is_empty() {
+        return remove_unit(program, paths, owner).await;
+    }
+    let name = owner.unit_name();
+    let path = paths.units.join(&name);
+    let mut shares: Vec<&str> = pins.iter().map(|pin| pin.share.as_str()).collect();
+    shares.sort_unstable();
+    shares.dedup();
+    let content = unit(&paths.agent, owner, &shares);
+    let temporary = path.with_extension("service.new");
+    fs::write(&temporary, content).map_err(|e| OperationError::Write(temporary.clone(), e))?;
+    fs::rename(&temporary, &path).map_err(|e| OperationError::Write(path.clone(), e))?;
+    systemctl(program, &["daemon-reload"]).await?;
+    systemctl(program, &["enable", &name]).await
+}
+
+/// Stops (and so unpins) and removes `owner`'s unit, if there is one.
+pub(crate) async fn remove_unit(
+    program: &Program,
+    paths: &HostPaths,
+    owner: Owner<'_>,
+) -> Result<(), OperationError> {
+    let name = owner.unit_name();
+    let path = paths.units.join(&name);
+    if path.exists() {
+        systemctl(program, &["disable", "--now", &name]).await?;
+        fs::remove_file(&path).map_err(|e| OperationError::Write(path.clone(), e))?;
+        systemctl(program, &["daemon-reload"]).await?;
+    }
+    Ok(())
+}
+
+/// Pins `owner`'s folders now (again): a folder that was missing at boot
+/// may be back, and what was pinned stays the same otherwise.
+pub(crate) async fn repin(program: &Program, owner: Owner<'_>) -> Result<(), OperationError> {
+    systemctl(program, &["restart", &owner.unit_name()]).await
+}
+
+/// Where the pin `id` of `owner` is mounted.
+pub(crate) fn pin_path(paths: &HostPaths, owner: Owner<'_>, id: &str) -> Result<PathBuf, OperationError> {
     let plain = !id.is_empty()
         && id.len() <= 64
         && id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'));
     if !plain {
         return Err(refused(format!("the share id {id:?} cannot name a folder")));
     }
-    Ok(paths.app_shares.join(app.as_str()).join(id))
+    Ok(owner.places(paths).join(id))
 }
 
 /// Opens `folder` in the share at `share`, which must be a mounted file
@@ -96,18 +234,114 @@ pub(crate) fn walk(share: &Path, folder: &AppFolder) -> Result<OwnedFd, Operatio
 
 /// Opens `folder` below `root` (the share at `share`), as [`walk`] does.
 fn descend(root: &OwnedFd, share: &Path, folder: &AppFolder) -> Result<OwnedFd, OperationError> {
-    let file_system = fstat(root).map_err(|_| not_reachable(share, folder, "cannot be opened"))?.st_dev;
+    let file_system = device(root, share, folder)?;
     let mut current = openat(root, ".", PATH_FLAGS, Mode::empty())
         .map_err(|_| not_reachable(share, folder, "cannot be opened"))?;
     for name in folder.names() {
         current = openat(&current, name, PATH_FLAGS, Mode::empty())
             .map_err(|_| not_reachable(share, folder, "is missing, a link or no folder"))?;
-        let device = fstat(&current).map_err(|_| not_reachable(share, folder, "cannot be opened"))?.st_dev;
-        if device != file_system {
+        if device(&current, share, folder)? != file_system {
             return Err(not_reachable(share, folder, "has another file system mounted on the way"));
         }
     }
     Ok(current)
+}
+
+fn device(fd: &OwnedFd, share: &Path, folder: &AppFolder) -> Result<u64, OperationError> {
+    Ok(fstat(fd).map_err(|_| not_reachable(share, folder, "cannot be opened"))?.st_dev)
+}
+
+/// What a bind finds at `folder` of the share at `share`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Found {
+    Folder,
+    File,
+    /// It, or a folder on the way, does not exist.
+    Missing,
+}
+
+/// Looks for `folder` (a folder or a file) as [`walk`] goes: a link or
+/// another file system on the way is refused, a missing name is
+/// [`Found::Missing`].
+pub(crate) fn find(share: &Path, folder: &AppFolder) -> Result<Found, OperationError> {
+    let root = open_mounted(share)?;
+    match last(&root, share, folder, false)? {
+        Some(fd) => kind(&fd, share, folder),
+        None => Ok(Found::Missing),
+    }
+}
+
+/// Opens the last name of `folder` below `root` without following it,
+/// folder or file; `None` if something on the way is missing (unless
+/// `make`, which makes the folders on the way).
+fn last(
+    root: &OwnedFd,
+    share: &Path,
+    folder: &AppFolder,
+    make: bool,
+) -> Result<Option<OwnedFd>, OperationError> {
+    let file_system = device(root, share, folder)?;
+    let names: Vec<&str> = folder.names().collect();
+    let Some((last, way)) = names.split_last() else {
+        return Ok(Some(
+            openat(root, ".", PATH_FLAGS, Mode::empty())
+                .map_err(|_| not_reachable(share, folder, "cannot be opened"))?,
+        ));
+    };
+    let mut current = openat(root, ".", PATH_FLAGS, Mode::empty())
+        .map_err(|_| not_reachable(share, folder, "cannot be opened"))?;
+    for name in way {
+        let Some(next) = step(&current, name, make, share, folder)? else { return Ok(None) };
+        current = next;
+        if device(&current, share, folder)? != file_system {
+            return Err(not_reachable(share, folder, "has another file system mounted on the way"));
+        }
+    }
+    let end = match openat(&current, *last, ANY_FLAGS, Mode::empty()) {
+        Ok(fd) => fd,
+        Err(Errno::NOENT) if make => step(&current, last, true, share, folder)?
+            .ok_or_else(|| not_reachable(share, folder, "cannot be made"))?,
+        Err(Errno::NOENT) => return Ok(None),
+        Err(_) => return Err(not_reachable(share, folder, "cannot be opened")),
+    };
+    if device(&end, share, folder)? != file_system {
+        return Err(not_reachable(share, folder, "has another file system mounted on the way"));
+    }
+    Ok(Some(end))
+}
+
+/// The folder `name` in `current`, made first if `make` and missing; never
+/// a link.
+fn step(
+    current: &OwnedFd,
+    name: &str,
+    make: bool,
+    share: &Path,
+    folder: &AppFolder,
+) -> Result<Option<OwnedFd>, OperationError> {
+    match openat(current, name, PATH_FLAGS, Mode::empty()) {
+        Ok(fd) => return Ok(Some(fd)),
+        Err(Errno::NOENT) if make => {}
+        Err(Errno::NOENT) => return Ok(None),
+        Err(_) => return Err(not_reachable(share, folder, "is a link or no folder")),
+    }
+    match mkdirat(current, name, Mode::from_raw_mode(0o755)) {
+        Ok(()) | Err(Errno::EXIST) => {}
+        Err(_) => return Err(not_reachable(share, folder, "cannot be made")),
+    }
+    openat(current, name, PATH_FLAGS, Mode::empty())
+        .map(Some)
+        .map_err(|_| not_reachable(share, folder, "is a link or no folder"))
+}
+
+fn kind(fd: &OwnedFd, share: &Path, folder: &AppFolder) -> Result<Found, OperationError> {
+    let stat = fstat(fd).map_err(|_| not_reachable(share, folder, "cannot be opened"))?;
+    match FileType::from_raw_mode(stat.st_mode) {
+        FileType::Directory => Ok(Found::Folder),
+        FileType::RegularFile => Ok(Found::File),
+        FileType::Symlink => Err(not_reachable(share, folder, "is a link")),
+        _ => Err(not_reachable(share, folder, "is neither a folder nor a file")),
+    }
 }
 
 /// Whether `at` is the pin of `folder` in `share` now: a mount of the very
@@ -129,37 +363,67 @@ pub(crate) fn is_pinned(at: &Path, share: &Path, folder: &AppFolder) -> Result<(
 /// `pin-shares <app>`: mounts each folder of the app's kept compose file at
 /// its place, and nothing else stays there.
 pub fn pin_shares(paths: &HostPaths, app: &AppName) -> Result<(), String> {
-    pin(paths, app).map_err(|error| error.to_string())
+    pin(paths, Owner::App(app)).map_err(|error| error.to_string())
 }
 
 /// `unpin-shares <app>`: unmounts the app's folders and removes their
 /// places.
 pub fn unpin_shares(paths: &HostPaths, app: &AppName) -> Result<(), String> {
-    unpin(paths, app).map_err(|error| error.to_string())
+    unpin(paths, Owner::App(app)).map_err(|error| error.to_string())
 }
 
-fn pin(paths: &HostPaths, app: &AppName) -> Result<(), OperationError> {
-    let pins = kept_pins(paths, app)?;
-    let base = own_folder(&paths.app_shares)?;
-    let folder = own_folder(&paths.app_shares.join(app.as_str()))?;
-    drop((base, folder));
+/// `pin-project <project>`: as [`pin_shares`], for an administrator's
+/// project.
+pub fn pin_project(paths: &HostPaths, project: &ProjectName) -> Result<(), String> {
+    pin(paths, Owner::Project(project)).map_err(|error| error.to_string())
+}
+
+/// `unpin-project <project>`.
+pub fn unpin_project(paths: &HostPaths, project: &ProjectName) -> Result<(), String> {
+    unpin(paths, Owner::Project(project)).map_err(|error| error.to_string())
+}
+
+fn pin(paths: &HostPaths, owner: Owner<'_>) -> Result<(), OperationError> {
+    let pins = kept_pins(paths, owner)?;
+    let places = owner.places(paths);
+    drop((own_folder(owner.base(paths))?, own_folder(&places)?));
     let wanted: Vec<PathBuf> = pins.iter().map(|pin| PathBuf::from(&pin.at)).collect();
-    clear(&paths.app_shares.join(app.as_str()), |path| !wanted.contains(&path.to_path_buf()))?;
+    clear(&places, |path| !wanted.contains(&path.to_path_buf()))?;
     for pin in &pins {
         let at = PathBuf::from(&pin.at);
         let id = at.file_name().and_then(|name| name.to_str()).unwrap_or_default();
-        if pin_path(paths, app, id)? != at {
-            return Err(refused(format!("{} is no place for a folder of {}", pin.at, app.as_str())));
+        if pin_path(paths, owner, id)? != at {
+            return Err(refused(format!("{} is no place for a folder of {}", pin.at, owner.name())));
         }
-        let source = walk(Path::new(&pin.share), &pin.folder)?;
+        let (share, folder) = (Path::new(&pin.share), &pin.folder);
+        let root = open_mounted(share)?;
+        let source = last(&root, share, folder, pin.create)?
+            .ok_or_else(|| not_reachable(share, folder, "is missing"))?;
+        let found = kind(&source, share, folder)?;
+        if (found == Found::File) != pin.file {
+            let what = if pin.file { "no file" } else { "no folder" };
+            return Err(not_reachable(share, folder, &format!("is {what} any more")));
+        }
         release(&at)?;
-        match fs::DirBuilder::new().mode(0o700).create(&at) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(OperationError::Write(at.clone(), error)),
-        }
+        let made = if pin.file {
+            fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .mode(0o600)
+                .custom_flags(libc_nofollow())
+                .open(&at)
+                .map(drop)
+        } else {
+            match fs::DirBuilder::new().mode(0o700).create(&at) {
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+                other => other,
+            }
+        };
+        made.map_err(|e| OperationError::Write(at.clone(), e))?;
+        let flags = if pin.file { ANY_FLAGS } else { PATH_FLAGS };
         let target =
-            open(&at, PATH_FLAGS, Mode::empty()).map_err(|e| OperationError::Write(at.clone(), e.into()))?;
+            open(&at, flags, Mode::empty()).map_err(|e| OperationError::Write(at.clone(), e.into()))?;
         let tree = open_tree(
             &source,
             "",
@@ -178,8 +442,13 @@ fn pin(paths: &HostPaths, app: &AppName) -> Result<(), OperationError> {
     Ok(())
 }
 
-fn unpin(paths: &HostPaths, app: &AppName) -> Result<(), OperationError> {
-    let folder = paths.app_shares.join(app.as_str());
+/// `O_NOFOLLOW` for [`std::fs::OpenOptions`].
+fn libc_nofollow() -> i32 {
+    OFlags::NOFOLLOW.bits() as i32
+}
+
+fn unpin(paths: &HostPaths, owner: Owner<'_>) -> Result<(), OperationError> {
+    let folder = owner.places(paths);
     clear(&folder, |_| true)?;
     match fs::remove_dir(&folder) {
         Ok(()) => Ok(()),
@@ -188,9 +457,9 @@ fn unpin(paths: &HostPaths, app: &AppName) -> Result<(), OperationError> {
     }
 }
 
-/// The pins the kept compose file of `app` lists.
-fn kept_pins(paths: &HostPaths, app: &AppName) -> Result<Vec<Pin>, OperationError> {
-    let path = paths.apps.join(format!("{}.json", app.as_str()));
+/// The pins `owner`'s kept compose file lists.
+fn kept_pins(paths: &HostPaths, owner: Owner<'_>) -> Result<Vec<Pin>, OperationError> {
+    let path = owner.kept(paths);
     let text = fs::read_to_string(&path).map_err(|e| OperationError::Read(path.clone(), e))?;
     let normalized: serde_json::Value =
         serde_json::from_str(&text).map_err(|_| refused(format!("{} cannot be read", path.display())))?;
@@ -232,7 +501,12 @@ fn clear(folder: &Path, remove: impl Fn(&Path) -> bool) -> Result<(), OperationE
         let path = entry.map_err(|e| OperationError::Read(folder.to_owned(), e))?.path();
         if remove(&path) {
             release(&path)?;
-            match fs::remove_dir(&path) {
+            let removed = match fs::symlink_metadata(&path) {
+                Ok(metadata) if metadata.is_dir() => fs::remove_dir(&path),
+                Ok(_) => fs::remove_file(&path),
+                Err(error) => Err(error),
+            };
+            match removed {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => return Err(OperationError::Write(path, error)),
@@ -252,12 +526,22 @@ fn release(at: &Path) -> Result<(), OperationError> {
     Ok(())
 }
 
+/// Whether something (a folder or a file) is mounted at `path`.
 fn is_mount_point(path: &Path) -> bool {
-    open_mounted(path).is_ok()
+    let (Ok(own), Ok(parent)) = (
+        open(path, ANY_FLAGS, Mode::empty()),
+        open(path.parent().unwrap_or(Path::new("/")), PATH_FLAGS, Mode::empty()),
+    ) else {
+        return false;
+    };
+    let (Ok(stat), Ok(above)) = (fstat(&own), fstat(&parent)) else { return false };
+    stat.st_dev != above.st_dev || mount_id(&own) != mount_id(&parent)
 }
 
 const PATH_FLAGS: OFlags =
     OFlags::PATH.union(OFlags::DIRECTORY).union(OFlags::NOFOLLOW).union(OFlags::CLOEXEC);
+/// A folder or a file, not followed if it is a link.
+const ANY_FLAGS: OFlags = OFlags::PATH.union(OFlags::NOFOLLOW).union(OFlags::CLOEXEC);
 
 /// Opens a directory that is a file system's root (a dataset or a pin
 /// mounted there), without following a link to it.
@@ -301,6 +585,10 @@ mod tests {
         AppName::parse("jellyfin").unwrap()
     }
 
+    fn project() -> ProjectName {
+        ProjectName::parse("teslamate").unwrap()
+    }
+
     #[test]
     fn a_folder_is_reached_only_name_by_name() {
         let share = tempfile::tempdir().unwrap();
@@ -319,30 +607,86 @@ mod tests {
     }
 
     #[test]
+    fn a_bind_finds_folders_and_files_but_never_a_link() {
+        let share = tempfile::tempdir().unwrap();
+        fs::create_dir_all(share.path().join("app/data")).unwrap();
+        fs::write(share.path().join("app/nginx.conf"), "").unwrap();
+        std::os::unix::fs::symlink("/", share.path().join("app/escape")).unwrap();
+        std::os::unix::fs::symlink("/etc/shadow", share.path().join("app/secret")).unwrap();
+        std::os::unix::fs::symlink("app", share.path().join("inside")).unwrap();
+        let root = open(share.path(), PATH_FLAGS, Mode::empty()).unwrap();
+        let look = |folder: &str| {
+            let folder = AppFolder::parse(folder).unwrap();
+            last(&root, share.path(), &folder, false)
+                .and_then(|fd| fd.map_or(Ok(Found::Missing), |fd| kind(&fd, share.path(), &folder)))
+        };
+        assert_eq!(look("app/data").unwrap(), Found::Folder);
+        assert_eq!(look("app/nginx.conf").unwrap(), Found::File);
+        assert_eq!(look("app/new").unwrap(), Found::Missing);
+        assert_eq!(look("app/new/deeper").unwrap(), Found::Missing);
+        for refused in ["app/escape", "app/secret", "inside/data", "app/nginx.conf/x"] {
+            assert!(look(refused).is_err(), "{refused}");
+        }
+    }
+
+    #[test]
+    fn missing_folders_are_made_on_the_way_but_not_through_a_link() {
+        let share = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink("/tmp", share.path().join("link")).unwrap();
+        let root = open(share.path(), PATH_FLAGS, Mode::empty()).unwrap();
+        let folder = AppFolder::parse("docker/app/data").unwrap();
+        let made = last(&root, share.path(), &folder, true).unwrap().unwrap();
+        assert_eq!(kind(&made, share.path(), &folder).unwrap(), Found::Folder);
+        assert!(share.path().join("docker/app/data").is_dir());
+        let through = AppFolder::parse("link/data").unwrap();
+        assert!(last(&root, share.path(), &through, true).is_err(), "made through a link");
+    }
+
+    #[test]
     fn only_a_mounted_share_is_walked() {
         let share = tempfile::tempdir().unwrap();
         let error = walk(share.path(), &AppFolder::whole()).unwrap_err();
+        assert!(error.to_string().contains("is not mounted"), "{error}");
+        let error = find(share.path(), &AppFolder::parse("x").unwrap()).unwrap_err();
         assert!(error.to_string().contains("is not mounted"), "{error}");
     }
 
     #[test]
     fn pins_have_a_place_of_their_own() {
-        let paths = HostPaths { app_shares: PathBuf::from("/run/pins"), ..HostPaths::default() };
-        assert_eq!(pin_path(&paths, &app(), "media").unwrap(), Path::new("/run/pins/jellyfin/media"));
+        let paths = HostPaths {
+            app_shares: PathBuf::from("/run/pins"),
+            project_shares: PathBuf::from("/run/project-pins"),
+            ..HostPaths::default()
+        };
+        assert_eq!(
+            pin_path(&paths, Owner::App(&app()), "media").unwrap(),
+            Path::new("/run/pins/jellyfin/media")
+        );
+        assert_eq!(
+            pin_path(&paths, Owner::Project(&project()), "1").unwrap(),
+            Path::new("/run/project-pins/teslamate/1")
+        );
         for odd in ["", "..", "a/b", "a b", &"x".repeat(65)] {
-            assert!(pin_path(&paths, &app(), odd).is_err(), "{odd:?}");
+            assert!(pin_path(&paths, Owner::App(&app()), odd).is_err(), "{odd:?}");
         }
     }
 
     #[test]
     fn the_unit_comes_after_the_shares_and_before_docker() {
-        let unit = unit(Path::new("/usr/libexec/zendiloos/zendiloos-agent"), &app(), &["/volume1/media"]);
+        let agent = Path::new("/usr/libexec/zendiloos/zendiloos-agent");
+        let unit = unit(agent, Owner::App(&app()), &["/volume1/media"]);
         assert!(unit.contains("RequiresMountsFor=/volume1/media\n"));
         assert!(unit.contains("Before=docker.service\n"));
         assert!(unit.contains("ExecStart=/usr/libexec/zendiloos/zendiloos-agent pin-shares jellyfin\n"));
         assert!(unit.contains("ExecStop=/usr/libexec/zendiloos/zendiloos-agent unpin-shares jellyfin\n"));
         assert!(!unit.contains("ProtectSystem"), "a mount namespace of its own would hide the mounts");
-        assert_eq!(unit_name(&app()), "zendiloos-app-jellyfin-shares.service");
+        assert!(!unit.contains("CAP_DAC_OVERRIDE"), "an app's unit makes nothing");
+        assert_eq!(Owner::App(&app()).unit_name(), "zendiloos-app-jellyfin-shares.service");
+
+        let unit = super::unit(agent, Owner::Project(&project()), &["/volume1/docker"]);
+        assert!(unit.contains("ExecStart=/usr/libexec/zendiloos/zendiloos-agent pin-project teslamate\n"));
+        assert!(unit.contains("ExecStop=/usr/libexec/zendiloos/zendiloos-agent unpin-project teslamate\n"));
+        assert_eq!(Owner::Project(&project()).unit_name(), "zendiloos-project-teslamate-shares.service");
     }
 
     #[test]
@@ -350,11 +694,19 @@ mod tests {
         let none = json!({ "services": {}, "x-zendiloos": { "app_data": "/volume1/@apps/x", "shares": [] } });
         assert!(pins_of(&none).unwrap().is_empty());
         let pinned = json!({ "x-zendiloos": { "pins": [
-            { "share": "/volume1/media", "folder": "Films", "at": "/run/zendiloos-app-shares/jellyfin/media" }
+            { "share": "/volume1/media", "folder": "Films", "at": "/run/zendiloos-app-shares/jellyfin/media" },
+            { "share": "/volume1/docker", "folder": "app/nginx.conf", "at": "/run/x/app/2", "file": true },
         ] } });
         let pins = pins_of(&pinned).unwrap();
         assert_eq!(pins[0].folder.as_str(), "Films");
+        assert!(!pins[0].file && !pins[0].create);
+        assert!(pins[1].file);
         let odd = json!({ "x-zendiloos": { "pins": [{ "share": "/volume1/media", "folder": "../etc", "at": "/x" }] } });
         assert!(pins_of(&odd).is_err());
+        assert_eq!(
+            serde_json::to_value(&pins[0]).unwrap(),
+            json!({ "share": "/volume1/media", "folder": "Films", "at": "/run/zendiloos-app-shares/jellyfin/media" }),
+            "apps' kept files stay as they were"
+        );
     }
 }

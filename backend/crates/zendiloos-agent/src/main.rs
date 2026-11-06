@@ -7,8 +7,11 @@ use listenfd::ListenFd;
 use tokio::net::UnixListener;
 use tokio::signal::unix::{SignalKind, signal};
 use zendiloos_agent::config::Config;
-use zendiloos_agent::{HostPaths, Operations, Server, passwd, pin_shares, run_packages, serve, unpin_shares};
-use zendiloos_agent_proto::{AppName, Role};
+use zendiloos_agent::{
+    HostPaths, Operations, Server, passwd, pin_project, pin_shares, run_packages, serve, unpin_project,
+    unpin_shares,
+};
+use zendiloos_agent_proto::{AppName, ProjectName, Role};
 
 #[derive(Parser)]
 #[command(version, about = "The privileged zendiloos agent")]
@@ -24,14 +27,20 @@ struct Cli {
     command: Option<Command>,
 }
 
-/// Run once instead of serving, by an app's unit
-/// (`zendiloos-app-<app>-shares.service`), outside the agent's sandbox.
+/// Run once instead of serving, by an app's or a project's unit
+/// (`zendiloos-app-<app>-shares.service`,
+/// `zendiloos-project-<project>-shares.service`), outside the agent's
+/// sandbox.
 #[derive(clap::Subcommand)]
 enum Command {
     /// Mount the folders of shares the app was given at their places
     PinShares { app: String },
     /// Unmount them again
     UnpinShares { app: String },
+    /// Mount the folders and files in shares an administrator's project binds
+    PinProject { project: String },
+    /// Unmount them again
+    UnpinProject { project: String },
     /// Run apt on a task (in zendiloos-packages.service), recording each step
     RunPackages { id: String, task: String, release: Option<String> },
 }
@@ -51,19 +60,20 @@ async fn main() -> anyhow::Result<()> {
     }
     if let Some(command) = cli.command {
         let paths = HostPaths::default();
-        let (app, done) = match &command {
-            Command::PinShares { app } => (app, "pinned"),
-            Command::UnpinShares { app } => (app, "unpinned"),
+        let app = |name: &str| AppName::parse(name).map_err(|_| anyhow::anyhow!("{name:?} is no app"));
+        let project =
+            |name: &str| ProjectName::parse(name).map_err(|_| anyhow::anyhow!("{name:?} is no project"));
+        let (name, done, outcome) = match &command {
+            Command::PinShares { app: name } => (name, "pinned", pin_shares(&paths, &app(name)?)),
+            Command::UnpinShares { app: name } => (name, "unpinned", unpin_shares(&paths, &app(name)?)),
+            Command::PinProject { project: name } => (name, "pinned", pin_project(&paths, &project(name)?)),
+            Command::UnpinProject { project: name } => {
+                (name, "unpinned", unpin_project(&paths, &project(name)?))
+            }
             Command::RunPackages { .. } => unreachable!("handled above"),
         };
-        let app = AppName::parse(app).map_err(|_| anyhow::anyhow!("{app:?} is no app"))?;
-        match command {
-            Command::PinShares { .. } => pin_shares(&paths, &app),
-            Command::UnpinShares { .. } => unpin_shares(&paths, &app),
-            Command::RunPackages { .. } => unreachable!("handled above"),
-        }
-        .map_err(|error| anyhow::anyhow!("{}: {error}", app.as_str()))?;
-        println!("{}: folders of shares {done}", app.as_str());
+        outcome.map_err(|error| anyhow::anyhow!("{name}: {error}"))?;
+        println!("{name}: folders of shares {done}");
         return Ok(());
     }
     let config = Config::load(cli.config.as_deref())?;

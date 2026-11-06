@@ -18,7 +18,7 @@ use std::time::Duration;
 use serde_json::{Map, Value};
 use zendiloos_agent_proto::{
     ComposeText, ContainerAction, ContainerId, ImageId, ImageReference, NetworkName, ProjectAction,
-    ProjectDirectory, ProjectFile, ProjectName, Response, Subnet,
+    ProjectDirectory, ProjectName, Response, Subnet,
 };
 use zendiloos_exec::{Limits, Output, Program, Surroundings};
 
@@ -196,8 +196,9 @@ impl Docker {
     }
 
     /// The Compose file as Compose understands it, read from stdin with
-    /// `directory` as where relative paths start. Its `.env` there counts,
-    /// as it will when the project runs.
+    /// `directory` as where relative paths start. A `.env` there does not
+    /// count: what comes out is what runs (`DeployProject`), and the share
+    /// could change it in between.
     pub(crate) async fn check_compose(
         &self,
         project: &ProjectName,
@@ -212,6 +213,8 @@ impl Docker {
             directory.as_str(),
             "--project-name",
             project.as_str(),
+            "--env-file",
+            "/dev/null",
             "config",
             "--format",
             "json",
@@ -236,23 +239,25 @@ impl Docker {
         Ok(files.split(',').map(str::trim).filter(|file| !file.is_empty()).map(str::to_owned).collect())
     }
 
-    /// The reported files of a project that is not an app of a catalog's.
+    /// The reported files of a project zendiloOS does not keep: neither an
+    /// app of a catalog's nor an administrator's project made here.
     async fn foreign_files(&self, project: &ProjectName) -> Result<Vec<String>, OperationError> {
         let files = self.reported_files(project).await?;
         if files.iter().any(|file| file.starts_with(KEPT_BY_ZENDILOOS)) {
             return Err(OperationError::Refused(format!(
-                "{} is an app of a catalog: the App Center changes it",
+                "{} is kept by zendiloOS: an app of a catalog, or a project made here",
                 project.as_str()
             )));
         }
         Ok(files)
     }
 
+    /// Acts on a project made outside zendiloOS (an administrator's own go
+    /// through `Projects`).
     pub(crate) async fn control_project(
         &self,
         project: &ProjectName,
         action: ProjectAction,
-        file: Option<&ProjectFile>,
     ) -> Result<Response, OperationError> {
         let name = project.as_str();
         match action {
@@ -279,10 +284,15 @@ impl Docker {
                 self.done(&["compose", "--project-name", name, "down", "--remove-orphans"], LONG).await
             }
             ProjectAction::Up | ProjectAction::Pull => {
-                let files = match file {
-                    Some(file) => vec![file.as_str().to_owned()],
-                    None => self.foreign_files(project).await?,
-                };
+                let files = self.foreign_files(project).await?;
+                // Whoever may write the share could change such a file
+                // before it runs, as root.
+                if let Some(file) = files.iter().find(|file| in_a_volume(file)) {
+                    return Err(OperationError::Refused(format!(
+                        "{file} lies in a share, where others may change it: make {name} a project of \
+                         zendiloOS's, or keep its files outside the shares"
+                    )));
+                }
                 let Some(first) = files.first() else {
                     return Err(OperationError::Failed(format!("Compose reports no file for {name}")));
                 };
@@ -341,10 +351,23 @@ impl Docker {
     }
 }
 
-/// A regular file of at most [`MAX_FILE`] bytes, as text.
+/// Whether `path` lies in a volume, `/volume<N>/…`.
+fn in_a_volume(path: &str) -> bool {
+    path.strip_prefix("/volume")
+        .and_then(|rest| rest.split_once('/'))
+        .is_some_and(|(number, _)| !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// A regular file of at most [`MAX_FILE`] bytes, as text; never through a
+/// link at its end, for it is read as root.
 fn read_small(path: &Path) -> Result<String, OperationError> {
+    use std::os::unix::fs::OpenOptionsExt;
     let error = |e| OperationError::Read(path.to_owned(), e);
-    let file = fs::File::open(path).map_err(error)?;
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32 | rustix::fs::OFlags::NONBLOCK.bits() as i32)
+        .open(path)
+        .map_err(error)?;
     let metadata = file.metadata().map_err(error)?;
     if !metadata.is_file() || metadata.len() > MAX_FILE {
         return Err(OperationError::Refused(format!(

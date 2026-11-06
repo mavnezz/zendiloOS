@@ -400,7 +400,7 @@ Loopback, `veth`, `tun`/`tap` and Docker's bridges are left out.
 | Device on the LAN without an account | log in, take over during initial setup | throttling, setup code, no default password, TLS |
 | Signed-in user without admin rights | other users' files, privilege escalation | server-side permission checks, file access with the user's own kernel permissions |
 | Web page in the same browser | CSRF, WebSocket hijacking | `SameSite=Strict`, CSRF header, origin check including the WebSocket upgrade, strict CSP |
-| Compromised `zendiloosd` | root | the agent offers only validated domain operations, no generic execution; system disk protected |
+| Compromised `zendiloosd` | root | the agent offers only validated domain operations, no generic execution; system disk protected. **Accepted limit:** an administrator may run any Compose project and give an app the Docker socket (4.9), and the agent carries that out as asked, so whoever controls `zendiloosd` controls Docker and with it the machine; an administrator's account is as good as root, as on other NAS systems |
 | Malicious container | host | Docker access only through agent policy (see 4.9) |
 
 ### 4.2 Accounts
@@ -806,13 +806,31 @@ on the machine. The file lives in a share (`compose.yaml` in a folder such
 as `docker/teslamate`), written and read through the file manager's use
 cases with the administrator's permissions, so it is backed up and
 snapshotted with the share; relative paths start there. Before a file is
-deployed, `docker compose config` reads it (from stdin, in that folder),
-and what reaches beyond the containers is named: `privileged`, the Docker
-socket, folders outside the volumes, the host's network, PID, IPC or user
-namespace, devices, extra capabilities, no seccomp or AppArmor. Each must
-be confirmed, then and on every change; the audit log records
-`risks_accepted`. Deploying (pull, then `up --detach --remove-orphans`)
-and removing (`down`; images, data and the folder stay) are jobs.
+deployed, `docker compose config` reads it (from stdin, in that folder; a
+`.env` there does not count), and what reaches beyond the containers is
+named: `privileged`, the Docker socket, folders outside the volumes, the
+host's network, PID, IPC or user namespace, devices, extra capabilities,
+no seccomp or AppArmor. Each must be confirmed, then and on every change;
+the audit log records `risks_accepted`. Deploying (pull, then
+`up --detach --remove-orphans`) and removing (`down`; images, data and the
+folder stay) are jobs.
+
+**What runs is what was confirmed**, never the file in the share: whoever
+may write that share (other accounts, an NFS client, an app given it)
+could change the file, a `.env` or an included file between confirming
+and the next deploy, redeploy or scheduled image update, and Compose runs
+as root. So zendiloosd keeps the file as saved (the editor shows it) and
+what Compose made of it then, normalized as JSON with includes and
+`env_file` resolved, in its database, and deploys that (`DeployProject`).
+The copy in the share is for looking at. The agent pins every bind whose
+source lies in a volume, as for apps (the folder or file walked to without
+links, mounted under `/run/zendiloos-project-shares/<project>/`, a unit per
+project before Docker at boot; a missing folder a bind may create is made
+there, as Docker would), keeps the result as
+`/etc/zendiloos/projects/<project>.json` and runs Compose on that file with
+an empty `.env`; `down` removes it again. A project made before this was
+kept runs once its file is saved again. A project made elsewhere whose
+Compose file lies in a share is not deployed here, for the same reason.
 
 **Use over time:** zendiloosd samples `docker stats` every 20 seconds and
 keeps twelve hours in memory, by container name, with the network's rates

@@ -25,7 +25,8 @@ fn db_error(error: sqlx::Error) -> PortError {
 impl ProjectRepository for SqliteProjects {
     async fn list(&self) -> Result<Vec<OwnProject>, PortError> {
         let rows = sqlx::query!(
-            "SELECT name, share_id, folder, directory, file, created_at, created_by FROM docker_projects ORDER BY name"
+            "SELECT name, share_id, folder, directory, file, compose, config, created_at, created_by
+             FROM docker_projects ORDER BY name"
         )
         .fetch_all(self.db.pool())
         .await
@@ -38,6 +39,8 @@ impl ProjectRepository for SqliteProjects {
                     folder: row.folder,
                     directory: row.directory,
                     file: row.file,
+                    compose: row.compose,
+                    config: row.config,
                     created_at: Timestamp::from_unix_seconds(row.created_at),
                     created_by: row.created_by,
                 })
@@ -48,15 +51,32 @@ impl ProjectRepository for SqliteProjects {
     async fn create(&self, project: &OwnProject) -> Result<bool, PortError> {
         let (name, created_at) = (project.name.as_str(), project.created_at.unix_seconds());
         let result = sqlx::query!(
-            "INSERT INTO docker_projects (name, share_id, folder, directory, file, created_at, created_by)
-             VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (name) DO NOTHING",
+            "INSERT INTO docker_projects
+                 (name, share_id, folder, directory, file, compose, config, created_at, created_by)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (name) DO NOTHING",
             name,
             project.share_id,
             project.folder,
             project.directory,
             project.file,
+            project.compose,
+            project.config,
             created_at,
             project.created_by
+        )
+        .execute(self.db.pool())
+        .await
+        .map_err(db_error)?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    async fn confirm(&self, name: &ProjectName, compose: &str, config: &str) -> Result<bool, PortError> {
+        let name = name.as_str();
+        let result = sqlx::query!(
+            "UPDATE docker_projects SET compose = ?, config = ? WHERE name = ?",
+            compose,
+            config,
+            name
         )
         .execute(self.db.pool())
         .await
@@ -86,6 +106,8 @@ mod tests {
             folder: format!("docker/{name}"),
             directory: format!("/volume1/docker/docker/{name}"),
             file: format!("/volume1/docker/docker/{name}/compose.yaml"),
+            compose: Some("services: {}\n".into()),
+            config: Some(r#"{"services":{}}"#.into()),
             created_at: Timestamp::from_unix_seconds(1_800_000_000),
             created_by: "alice".into(),
         }
@@ -101,6 +123,13 @@ mod tests {
         assert!(!projects.create(&project("tesla")).await.unwrap(), "the name is taken");
 
         assert_eq!(projects.list().await.unwrap(), [project("arr"), project("tesla")]);
+        let tesla = ProjectName::parse("tesla").unwrap();
+        assert!(
+            projects.confirm(&tesla, "services: {web: {}}\n", r#"{"services":{"web":{}}}"#).await.unwrap()
+        );
+        let confirmed = projects.list().await.unwrap().into_iter().find(|p| p.name == tesla).unwrap();
+        assert_eq!(confirmed.config.as_deref(), Some(r#"{"services":{"web":{}}}"#));
+        assert!(!projects.confirm(&ProjectName::parse("none").unwrap(), "", "{}").await.unwrap());
         assert!(projects.delete(&ProjectName::parse("tesla").unwrap()).await.unwrap());
         assert!(!projects.delete(&ProjectName::parse("tesla").unwrap()).await.unwrap());
     }

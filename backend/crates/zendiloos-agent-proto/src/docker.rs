@@ -126,13 +126,6 @@ checked_text!(
 );
 
 checked_text!(
-    /// A project's Compose file, below a volume.
-    ProjectFile,
-    "Compose file",
-    |text| below_volume(text) && (text.ends_with(".yml") || text.ends_with(".yaml"))
-);
-
-checked_text!(
     /// An IPv4 or IPv6 network for a Docker network: `172.30.0.0/24`.
     Subnet,
     "subnet",
@@ -176,6 +169,43 @@ impl TryFrom<String> for ComposeText {
 
 impl From<ComposeText> for String {
     fn from(value: ComposeText) -> Self {
+        value.0
+    }
+}
+
+/// An administrator's project as Compose normalized it when they confirmed
+/// it (`docker compose config --format json`): a JSON object with its
+/// services, at most 1 MiB. Its paths are absolute; nothing else is read
+/// to run it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct ProjectConfig(String);
+
+impl ProjectConfig {
+    pub const MAX_BYTES: usize = 1024 * 1024;
+
+    pub fn parse(text: &str) -> Result<Self, InvalidDockerName> {
+        let valid = text.len() <= Self::MAX_BYTES
+            && serde_json::from_str::<serde_json::Value>(text)
+                .is_ok_and(|value| value.get("services").is_some_and(serde_json::Value::is_object));
+        if valid { Ok(Self(text.to_owned())) } else { Err(InvalidDockerName("normalized Compose project")) }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for ProjectConfig {
+    type Error = InvalidDockerName;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(&value)
+    }
+}
+
+impl From<ProjectConfig> for String {
+    fn from(value: ProjectConfig) -> Self {
         value.0
     }
 }
@@ -249,21 +279,29 @@ mod tests {
     }
 
     #[test]
-    fn project_files_lie_below_a_volume() {
-        assert!(ProjectFile::parse("/volume1/docker/teslamate/compose.yaml").is_ok());
+    fn project_folders_lie_below_a_volume() {
         assert!(ProjectDirectory::parse("/volume12/docker/teslamate").is_ok());
         for bad in [
-            "/etc/zendiloos/apps/x.yaml",
-            "/volume1/../etc/compose.yaml",
-            "/volume1/docker/./compose.yaml",
-            "/volumeX/compose.yaml",
-            "/volume1/docker/compose.json",
-            "/volume1//compose.yaml",
-            "volume1/compose.yaml",
+            "/etc/zendiloos/apps",
+            "/volume1/../etc",
+            "/volume1/docker/./x",
+            "/volumeX/docker",
+            "/volume1//docker",
+            "volume1/docker",
         ] {
-            assert!(ProjectFile::parse(bad).is_err(), "{bad}");
+            assert!(ProjectDirectory::parse(bad).is_err(), "{bad}");
         }
         assert!(ProjectDirectory::parse("/volume1").is_err(), "a volume itself is no project folder");
+    }
+
+    #[test]
+    fn project_configs_are_compose_objects() {
+        assert!(ProjectConfig::parse(r#"{"name":"x","services":{"web":{"image":"nginx"}}}"#).is_ok());
+        for bad in ["", "services: {}", "[]", r#"{"name":"x"}"#, r#"{"services":[]}"#] {
+            assert!(ProjectConfig::parse(bad).is_err(), "{bad}");
+        }
+        let large = format!(r#"{{"services":{{}},"x":"{}"}}"#, "a".repeat(ProjectConfig::MAX_BYTES));
+        assert!(ProjectConfig::parse(&large).is_err());
     }
 
     #[test]

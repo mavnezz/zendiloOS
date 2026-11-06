@@ -200,6 +200,10 @@ vm-docker-test:
 vm-app-folders-test:
     scripts/vm-app-folders-test.sh
 
+# Administrators' projects in the VM: what runs is what was confirmed, binds pinned
+vm-project-pins-test:
+    scripts/vm-project-pins-test.sh
+
 # Notification channels (a webhook in the VM, an email channel without server)
 vm-notify-test:
     scripts/vm-notify-test.sh

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE docker_projects SET compose = ?, config = ? WHERE name = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "c4534f993a146f5a70038f28a0ca4d6b539f897b87f2be444021c13090c41527"
+}

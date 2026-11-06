@@ -17,6 +17,7 @@ mod operations;
 mod packages;
 pub mod passwd;
 mod pools;
+mod projects;
 mod server;
 mod sharing;
 mod ssh;
@@ -24,7 +25,7 @@ mod time;
 mod web;
 
 pub use accounts::AccountFiles;
-pub use app_shares::{pin_shares, unpin_shares};
+pub use app_shares::{pin_project, pin_shares, unpin_project, unpin_shares};
 pub use network::NetworkPaths;
 pub use operations::{Operations, Paths};
 pub use packages::run_packages;

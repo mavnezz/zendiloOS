@@ -1919,6 +1919,8 @@ const en = {
     project_exists: 'A project of that name exists.',
     app_project: 'The App Center manages this app.',
     not_own_project: 'This project’s Compose file is not kept in zendiloOS.',
+    project_unconfirmed:
+      'This project was made before zendiloOS kept what you confirmed. Open its Compose file and save it once; from then on it runs as saved, not from the file in the share.',
     compose_risks: 'The Compose file needs your confirmation',
     share_denied: 'You may not write in this shared folder.',
     source_exists: 'This catalog is there already.',

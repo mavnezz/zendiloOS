@@ -41,6 +41,7 @@ fn is_long(request: &Request) -> bool {
         | Request::StartApp { .. }
         | Request::StopApp { .. }
         | Request::RemoveApp { .. }
+        | Request::DeployProject { .. }
         | Request::CreatePool { .. }
         | Request::DestroyPool { .. }
         | Request::ReplaceDisk { .. }

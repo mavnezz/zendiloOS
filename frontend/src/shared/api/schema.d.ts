@@ -6710,7 +6710,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description `app_project` */
+            /** @description `app_project`; `project_unconfirmed`: made before what was confirmed was kept, save its file once */
             409: {
                 headers: {
                     [name: string]: unknown;

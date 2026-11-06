@@ -333,7 +333,16 @@ impl SimDocker {
                 }
                 output(json!({"name": "sim", "services": {"app": service}}).to_string())
             }
-            Request::ControlProject { project, action, file } => {
+            Request::DeployProject { project, .. } => {
+                if apps.contains_key(project.as_str()) {
+                    return Some(refused("an app of a catalog: the App Center changes it"));
+                }
+                let name = project.as_str();
+                self.own.insert(name.to_owned(), format!("/etc/zendiloos/projects/{name}.json"));
+                let up = Request::ControlProject { project: project.clone(), action: ProjectAction::Up };
+                self.handle(&up, apps, now)
+            }
+            Request::ControlProject { project, action } => {
                 let name = project.as_str();
                 if apps.contains_key(name) {
                     return Some(match action {
@@ -346,9 +355,6 @@ impl SimDocker {
                 }
                 match action {
                     ProjectAction::Up => {
-                        if let Some(file) = file {
-                            self.own.insert(name.to_owned(), file.as_str().to_owned());
-                        }
                         if !self.containers.iter().any(|c| c.project.as_deref() == Some(name)) {
                             self.next += 1;
                             let id = hex(self.next);

@@ -7,10 +7,10 @@ use std::path::PathBuf;
 
 use tempfile::TempDir;
 use zendiloos_agent::config::Tools;
-use zendiloos_agent::{Erasable, ErasePolicy, Operations};
+use zendiloos_agent::{Erasable, ErasePolicy, HostPaths, Operations, Paths};
 use zendiloos_agent_proto::{
-    ComposeText, ContainerAction, ContainerId, ErrorCode, NetworkName, ProjectAction, ProjectDirectory,
-    ProjectFile, ProjectName, Request, Response, Role, Subnet,
+    ComposeText, ContainerAction, ContainerId, ErrorCode, NetworkName, ProjectAction, ProjectConfig,
+    ProjectDirectory, ProjectName, Request, Response, Role, Subnet,
 };
 
 const FIRST: &str = "d853eed323e74b49b6a84ea78784086ec720c3be10be36393589bfc80ad6ada1";
@@ -40,7 +40,7 @@ case "$*" in
   "ps --all --quiet --no-trunc --filter "*) echo {FIRST} ;;
   "container inspect "*) echo '[{{"Id":"{FIRST}"}}]' ;;
   "compose ls --all --format json")
-    echo '[{{"Name":"stack","ConfigFiles":"{foreign}"}},{{"Name":"kuma","ConfigFiles":"/etc/zendiloos/apps/kuma.json"}}]' ;;
+    echo '[{{"Name":"stack","ConfigFiles":"{foreign}"}},{{"Name":"kuma","ConfigFiles":"/etc/zendiloos/apps/kuma.json"}},{{"Name":"shared","ConfigFiles":"/volume1/docker/shared/compose.yaml"}}]' ;;
   *" config --format json")
     if grep -q broken; then echo 'yaml: line 2: mapping values are not allowed' >&2; exit 15; fi
     echo '{{"name":"tesla"}}' ;;
@@ -81,7 +81,17 @@ esac
             docker,
             dockerd: any,
         };
-        let agent = Operations::new(Role::System, &tools, Erasable::Policy(ErasePolicy::Unused)).unwrap();
+        let host = HostPaths {
+            volumes: root.clone(),
+            units: root.join("units"),
+            projects: root.join("etc-projects"),
+            project_shares: root.join("project-shares"),
+            ..HostPaths::default()
+        };
+        let paths = Paths { host, ..Paths::default() };
+        let agent =
+            Operations::with_paths(Role::System, &tools, Erasable::Policy(ErasePolicy::Unused), paths)
+                .unwrap();
         Self { _dir: dir, root, agent }
     }
 
@@ -119,8 +129,7 @@ async fn every_container_is_inspected_at_once() {
 async fn projects_start_by_their_containers_label() {
     let host = Host::new();
 
-    let request =
-        Request::ControlProject { project: project("stack"), action: ProjectAction::Restart, file: None };
+    let request = Request::ControlProject { project: project("stack"), action: ProjectAction::Restart };
     assert_eq!(host.agent.execute(&request).await, Response::Done);
 
     assert_eq!(
@@ -130,8 +139,7 @@ async fn projects_start_by_their_containers_label() {
             format!("docker restart {FIRST}"),
         ]
     );
-    let empty =
-        Request::ControlProject { project: project("empty"), action: ProjectAction::Start, file: None };
+    let empty = Request::ControlProject { project: project("empty"), action: ProjectAction::Start };
     assert!(matches!(host.agent.execute(&empty).await, Response::Error { .. }));
 }
 
@@ -141,8 +149,7 @@ async fn foreign_projects_come_up_from_the_file_compose_reports() {
     let foreign = host.root.join("stack/compose.yaml").display().to_string();
     let directory = host.root.join("stack").display().to_string();
 
-    let request =
-        Request::ControlProject { project: project("stack"), action: ProjectAction::Up, file: None };
+    let request = Request::ControlProject { project: project("stack"), action: ProjectAction::Up };
     assert_eq!(host.agent.execute(&request).await, Response::Done);
 
     assert_eq!(
@@ -152,15 +159,71 @@ async fn foreign_projects_come_up_from_the_file_compose_reports() {
              up --detach --remove-orphans --quiet-pull"
         )
     );
-    let own = ProjectFile::parse("/volume1/docker/tesla/compose.yaml").unwrap();
-    let pull =
-        Request::ControlProject { project: project("tesla"), action: ProjectAction::Pull, file: Some(own) };
-    assert_eq!(host.agent.execute(&pull).await, Response::Done);
+}
+
+#[tokio::test]
+async fn foreign_projects_with_their_file_in_a_share_are_not_deployed() {
+    let host = Host::new();
+
+    for action in [ProjectAction::Up, ProjectAction::Pull] {
+        let request = Request::ControlProject { project: project("shared"), action };
+        let Response::Error { code, message } = host.agent.execute(&request).await else {
+            panic!("{action:?} done")
+        };
+        assert_eq!(code, ErrorCode::Forbidden);
+        assert!(message.contains("lies in a share"), "{message}");
+    }
+    assert!(!host.calls().iter().any(|call| call.contains(" up ") || call.contains(" pull")));
+}
+
+fn config(text: &str) -> ProjectConfig {
+    ProjectConfig::parse(text).unwrap()
+}
+
+#[tokio::test]
+async fn administrators_projects_run_from_what_was_confirmed_and_kept() {
+    let host = Host::new();
+    let kept = host.root.join("etc-projects/tesla.json");
+    let confirmed = r#"{"name":"tesla","services":{"web":{"image":"nginx","volumes":[
+        {"type":"bind","source":"/etc/localtime","target":"/etc/localtime","read_only":true}]}}}"#;
+
+    let deploy = Request::DeployProject { project: project("tesla"), config: config(confirmed), pull: true };
+    assert_eq!(host.agent.execute(&deploy).await, Response::Done);
+
+    let compose =
+        format!("docker compose --file {} --env-file /dev/null --project-name tesla", kept.display());
     assert_eq!(
-        host.calls().last().unwrap(),
-        "docker compose --file /volume1/docker/tesla/compose.yaml --project-directory /volume1/docker/tesla \
-         --project-name tesla pull --quiet"
+        host.calls(),
+        [format!("{compose} pull --quiet"), format!("{compose} up --detach --remove-orphans --quiet-pull")]
     );
+    let file: serde_json::Value = serde_json::from_str(&fs::read_to_string(&kept).unwrap()).unwrap();
+    assert_eq!(file["services"]["web"]["volumes"][0]["source"], "/etc/localtime");
+    assert_eq!(file["x-zendiloos"]["pins"], serde_json::json!([]));
+    assert_eq!(fs::metadata(&kept).unwrap().permissions().mode() & 0o777, 0o600);
+
+    // Down takes what it kept along.
+    let down = Request::ControlProject { project: project("tesla"), action: ProjectAction::Down };
+    assert_eq!(host.agent.execute(&down).await, Response::Done);
+    assert_eq!(host.calls().last().unwrap(), &format!("{compose} down --remove-orphans"));
+    assert!(!kept.exists());
+}
+
+#[tokio::test]
+async fn a_bind_in_a_volume_that_cannot_be_pinned_stops_the_deploy() {
+    let host = Host::new();
+    fs::create_dir_all(host.root.join("volume1/docker/tesla/data")).unwrap();
+    let source = host.root.join("volume1/docker/tesla/data").display().to_string();
+    let confirmed = format!(
+        r#"{{"services":{{"web":{{"image":"nginx","volumes":[{{"type":"bind","source":"{source}","target":"/data"}}]}}}}}}"#
+    );
+
+    let deploy =
+        Request::DeployProject { project: project("tesla"), config: config(&confirmed), pull: false };
+    let Response::Error { message, .. } = host.agent.execute(&deploy).await else { panic!("deployed") };
+
+    assert!(message.contains("is not mounted"), "{message}");
+    assert!(host.calls().is_empty(), "nothing ran: {:?}", host.calls());
+    assert!(!host.root.join("etc-projects/tesla.json").exists());
 }
 
 #[tokio::test]
@@ -168,7 +231,7 @@ async fn apps_of_catalogs_stay_with_the_app_center() {
     let host = Host::new();
 
     for action in [ProjectAction::Up, ProjectAction::Pull, ProjectAction::Down] {
-        let request = Request::ControlProject { project: project("kuma"), action, file: None };
+        let request = Request::ControlProject { project: project("kuma"), action };
         let Response::Error { code, .. } = host.agent.execute(&request).await else {
             panic!("{action:?} done")
         };
@@ -205,7 +268,8 @@ async fn compose_files_are_checked_from_stdin_and_errors_come_back() {
     assert_eq!(host.output(check("services: {}\n")).await, "{\"name\":\"tesla\"}\n");
     assert_eq!(
         host.calls().last().unwrap(),
-        "docker compose --file - --project-directory /volume1/docker/tesla --project-name tesla config --format json"
+        "docker compose --file - --project-directory /volume1/docker/tesla --project-name tesla --env-file /dev/null \
+         config --format json"
     );
     let Response::Error { code, message } = host.agent.execute(&check("services:\n  broken: x: y\n")).await
     else {

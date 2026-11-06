@@ -4,7 +4,7 @@
 use zendiloos_jobs::Job;
 use zendiloos_kernel::{Actor, AuditEntry, Outcome, RequestContext};
 
-use super::ports::{ProjectAction, ProjectPlace};
+use super::ports::{EngineError, ProjectAction, ProjectPlace};
 use super::{Containers, ContainersError, job_error};
 use crate::domain::{COMPOSE_FILE, Origin, OwnProject, Project, ProjectName, Risk, assemble, risks};
 
@@ -49,6 +49,46 @@ fn folder(text: &str) -> Result<String, ContainersError> {
     }
 }
 
+/// How a project is brought up.
+#[derive(Debug, Clone)]
+pub(super) enum Deployment {
+    /// An administrator's, from what Compose made of the file they
+    /// confirmed.
+    Own(String),
+    /// An administrator's made before that was kept: not deployed until its
+    /// file is saved once.
+    Unconfirmed,
+    /// Made another way: from the files Compose reports.
+    Foreign,
+}
+
+impl Deployment {
+    pub(super) fn of(project: &OwnProject) -> Self {
+        project.config.clone().map_or(Self::Unconfirmed, Self::Own)
+    }
+
+    /// Pulls (if `pull`) and brings the project up.
+    pub(super) async fn run(
+        &self,
+        containers: &Containers,
+        name: &str,
+        pull: bool,
+        context: &RequestContext,
+    ) -> Result<(), EngineError> {
+        let engine = &containers.ports.engine;
+        match self {
+            Self::Own(config) => engine.deploy_project(name, config, pull, context).await,
+            Self::Unconfirmed => Err(EngineError::Refused(ContainersError::Unconfirmed.to_string())),
+            Self::Foreign => {
+                if pull {
+                    engine.control_project(name, ProjectAction::Pull, context).await?;
+                }
+                engine.control_project(name, ProjectAction::Up, context).await
+            }
+        }
+    }
+}
+
 impl Containers {
     /// Every project, by name.
     pub async fn projects(&self, context: &RequestContext) -> Result<Vec<Project>, ContainersError> {
@@ -68,8 +108,9 @@ impl Containers {
         Ok(self.ports.storage.places(actor).await?)
     }
 
-    /// What `compose` lets containers do, if Compose can read it; refused
-    /// unless `accept` while it reaches beyond them.
+    /// What `compose` lets containers do, if Compose can read it, and what
+    /// Compose made of it, which is what will run; refused unless `accept`
+    /// while it reaches beyond the containers.
     async fn checked(
         &self,
         name: &ProjectName,
@@ -77,13 +118,13 @@ impl Containers {
         compose: &str,
         accept: bool,
         context: &RequestContext,
-    ) -> Result<Vec<Risk>, ContainersError> {
-        let model = self.ports.engine.check_compose(name, directory, compose, context).await?;
-        let found = risks(&model);
+    ) -> Result<(Vec<Risk>, String), ContainersError> {
+        let checked = self.ports.engine.check_compose(name, directory, compose, context).await?;
+        let found = risks(&checked.model);
         if !found.is_empty() && !accept {
             return Err(ContainersError::Risky(found));
         }
-        Ok(found)
+        Ok((found, checked.config))
     }
 
     /// What `compose` would let the containers do, if Compose can read it:
@@ -102,7 +143,7 @@ impl Containers {
             Some((share_id, place)) => self.ports.storage.directory(actor, share_id, &folder(place)?).await?,
             None => self.own(name.as_str(), context).await?.directory,
         };
-        self.checked(&name, &directory, compose, true, context).await
+        Ok(self.checked(&name, &directory, compose, true, context).await?.0)
     }
 
     async fn record(
@@ -138,7 +179,8 @@ impl Containers {
         }
         let storage = &self.ports.storage;
         let directory = storage.directory(actor, new.share_id, &folder).await?;
-        let found = self.checked(&name, &directory, &new.compose, new.accept_risks, context).await?;
+        let (found, config) =
+            self.checked(&name, &directory, &new.compose, new.accept_risks, context).await?;
         storage.write(actor, new.share_id, &folder, COMPOSE_FILE, &new.compose, context).await?;
         let project = OwnProject {
             name: name.clone(),
@@ -146,6 +188,8 @@ impl Containers {
             folder,
             file: format!("{directory}/{COMPOSE_FILE}"),
             directory,
+            compose: Some(new.compose.clone()),
+            config: Some(config.clone()),
             created_at: self.now(),
             created_by: actor.name.clone(),
         };
@@ -156,14 +200,14 @@ impl Containers {
         if !new.start {
             return Ok(None);
         }
-        Ok(Some(self.deploy(name.to_string(), Some(project.file), false, actor, context).await?))
+        Ok(Some(self.deploy(name.to_string(), Deployment::Own(config), false, actor, context).await?))
     }
 
     /// Pulls (if `pull`) and brings up a project's containers, in a job.
     async fn deploy(
         &self,
         name: String,
-        file: Option<String>,
+        how: Deployment,
         pull: bool,
         actor: &Actor,
         context: &RequestContext,
@@ -174,17 +218,8 @@ impl Containers {
             .ports
             .jobs
             .start("containers.project_deploy", Some(name.clone()), Some(actor), move |progress| async move {
-                let engine = &this.ports.engine;
-                let mut done = Ok(());
-                if pull {
-                    progress.step("pulling", Some(0.1)).await;
-                    done =
-                        engine.control_project(&name, ProjectAction::Pull, file.as_deref(), &context).await;
-                }
-                if done.is_ok() {
-                    progress.step("starting", Some(0.6)).await;
-                    done = engine.control_project(&name, ProjectAction::Up, file.as_deref(), &context).await;
-                }
+                progress.step(if pull { "pulling" } else { "starting" }, Some(0.1)).await;
+                let done = how.run(&this, &name, pull, &context).await;
                 let done = this
                     .audited("containers.project_deploy", &name, &who, &context, done.map_err(Into::into))
                     .await;
@@ -213,15 +248,20 @@ impl Containers {
         context: &RequestContext,
     ) -> Result<Job, ContainersError> {
         let project = self.own(name, context).await?;
-        let found = self.checked(&project.name, &project.directory, compose, accept_risks, context).await?;
+        let (found, config) =
+            self.checked(&project.name, &project.directory, compose, accept_risks, context).await?;
         let storage = &self.ports.storage;
         storage.write(actor, project.share_id, &project.folder, COMPOSE_FILE, compose, context).await?;
+        if !self.ports.projects.confirm(&project.name, compose, &config).await? {
+            return Err(ContainersError::NotFound);
+        }
         self.record("containers.project_change", name, !found.is_empty(), actor, context).await;
-        self.deploy(name.to_owned(), Some(project.file), false, actor, context).await
+        self.deploy(name.to_owned(), Deployment::Own(config), false, actor, context).await
     }
 
-    /// The project's Compose files: an administrator's from its share, read
-    /// with their permissions; another's as Compose reports them.
+    /// The project's Compose files: an administrator's as they confirmed it
+    /// (one made before that was kept: from its share, read with their
+    /// permissions); another's as Compose reports them.
     pub async fn project_compose(
         &self,
         name: &str,
@@ -230,8 +270,13 @@ impl Containers {
     ) -> Result<ComposeSource, ContainersError> {
         match self.project(name, context).await?.origin {
             Origin::Own(project) => {
-                let path = format!("{}/{COMPOSE_FILE}", project.folder);
-                let text = self.ports.storage.read(actor, project.share_id, &path, context).await?;
+                let text = match project.compose {
+                    Some(text) => text,
+                    None => {
+                        let path = format!("{}/{COMPOSE_FILE}", project.folder);
+                        self.ports.storage.read(actor, project.share_id, &path, context).await?
+                    }
+                };
                 Ok(ComposeSource { files: vec![(project.file, text)], editable: true })
             }
             Origin::App { .. } => Err(ContainersError::AppProject),
@@ -255,7 +300,7 @@ impl Containers {
         }
         let project = self.project(name, context).await?;
         let done =
-            self.ports.engine.control_project(&project.name, action, None, context).await.map_err(Into::into);
+            self.ports.engine.control_project(&project.name, action, context).await.map_err(Into::into);
         let audited = match action {
             ProjectAction::Start => "containers.project_start",
             ProjectAction::Stop => "containers.project_stop",
@@ -271,12 +316,15 @@ impl Containers {
         actor: &Actor,
         context: &RequestContext,
     ) -> Result<Job, ContainersError> {
-        let file = match self.project(name, context).await?.origin {
-            Origin::Own(project) => Some(project.file),
+        let how = match self.project(name, context).await?.origin {
+            Origin::Own(project) => Deployment::of(&project),
             Origin::App { .. } => return Err(ContainersError::AppProject),
-            Origin::Foreign { .. } => None,
+            Origin::Foreign { .. } => Deployment::Foreign,
         };
-        self.deploy(name.to_owned(), file, true, actor, context).await
+        if matches!(how, Deployment::Unconfirmed) {
+            return Err(ContainersError::Unconfirmed);
+        }
+        self.deploy(name.to_owned(), how, true, actor, context).await
     }
 
     /// Removes a project's containers and networks, in a job; images, data
@@ -308,7 +356,7 @@ impl Containers {
                     done = this
                         .ports
                         .engine
-                        .control_project(&name, ProjectAction::Down, None, &context)
+                        .control_project(&name, ProjectAction::Down, &context)
                         .await
                         .map_err(Into::into);
                 }

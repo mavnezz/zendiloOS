@@ -107,11 +107,16 @@ pub struct HostPaths {
     pub docker_config: PathBuf,
     /// The normalized compose files of the installed apps.
     pub apps: PathBuf,
+    /// The normalized compose files of administrators' projects, as they
+    /// were last deployed.
+    pub projects: PathBuf,
     /// Its link names the time zone apps get.
     pub localtime: PathBuf,
     /// Where the folders of shares apps were given are mounted
     /// (`app_shares`), only root may change it.
     pub app_shares: PathBuf,
+    /// The same for the folders and files administrators' projects bind.
+    pub project_shares: PathBuf,
     /// This program, which units run to mount those folders and apt.
     pub agent: PathBuf,
     /// Where the runs of apt are recorded.
@@ -140,8 +145,10 @@ impl Default for HostPaths {
             console_issue: PathBuf::from("/run/issue.d/zendiloos.issue"),
             docker_config: PathBuf::from("/etc/docker/daemon.json"),
             apps: PathBuf::from("/etc/zendiloos/apps"),
+            projects: PathBuf::from("/etc/zendiloos/projects"),
             localtime: PathBuf::from("/etc/localtime"),
             app_shares: PathBuf::from("/run/zendiloos-app-shares"),
+            project_shares: PathBuf::from("/run/zendiloos-project-shares"),
             agent: PathBuf::from("/usr/libexec/zendiloos/zendiloos-agent"),
             packages: PathBuf::from("/var/lib/zendiloos-packages"),
             docker_socket: PathBuf::from("/run/docker.sock"),

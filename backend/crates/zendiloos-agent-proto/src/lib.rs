@@ -35,7 +35,7 @@ pub use client::{AgentTransport, TransportError, UnixTransport};
 pub use descriptor::{read_message_with_file, write_message_with_file};
 pub use docker::{
     ComposeText, ContainerAction, ContainerId, ImageId, ImageReference, InvalidDockerName, NetworkName,
-    ProjectAction, ProjectDirectory, ProjectFile, ProjectName, Subnet,
+    ProjectAction, ProjectConfig, ProjectDirectory, ProjectName, Subnet,
 };
 pub use files::{
     DirectoryEntry, EntryKind, FileLocation, FileRoot, HOMES_DIRECTORY, InvalidSharePath,
@@ -302,13 +302,25 @@ pub enum Request {
         directory: ProjectDirectory,
         compose: ComposeText,
     },
-    /// Acts on a Compose project. `Up` and `Pull` need its file: `file`
-    /// for an administrator's project, otherwise the one Compose reports
-    /// for it; never for an app of a catalog, which the App Center keeps.
+    /// Acts on a Compose project that is not an app of a catalog's (the App
+    /// Center keeps those). `Up` and `Pull` take the files Compose reports,
+    /// refused when they lie in a volume, where whoever may write the share
+    /// could change them; administrators' projects deploy with
+    /// [`Request::DeployProject`]. `Down` of an administrator's project also
+    /// removes what deploying it kept.
     ControlProject {
         project: ProjectName,
         action: ProjectAction,
-        file: Option<ProjectFile>,
+    },
+    /// Deploys an administrator's project as they confirmed it: `config`
+    /// is what Compose made of their file then. The folders and files its
+    /// binds name in volumes are pinned (walked to without links, mounted
+    /// where only root can change them), the result is kept by root, and
+    /// with `pull` its images are fetched before it comes up.
+    DeployProject {
+        project: ProjectName,
+        config: ProjectConfig,
+        pull: bool,
     },
     /// The last `lines` lines of the project's containers, with timestamps.
     ProjectLogs {
@@ -609,6 +621,7 @@ impl Request {
             Request::RemoveNetwork { .. } => "remove_network",
             Request::CheckCompose { .. } => "check_compose",
             Request::ControlProject { .. } => "control_project",
+            Request::DeployProject { .. } => "deploy_project",
             Request::ProjectLogs { .. } => "project_logs",
             Request::ProjectFiles { .. } => "project_files",
             Request::NetworkState {} => "network_state",

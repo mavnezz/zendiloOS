@@ -96,23 +96,34 @@ pub trait DockerEngine: Send + Sync {
 
     async fn remove_network(&self, name: &str, context: &RequestContext) -> Result<(), EngineError>;
 
-    /// `compose` as Compose reads it with `directory` as its folder;
-    /// [`EngineError::Refused`] with Compose's words if it cannot.
+    /// `compose` as Compose reads it with `directory` as its folder (a
+    /// `.env` there does not count); [`EngineError::Refused`] with
+    /// Compose's words if it cannot.
     async fn check_compose(
         &self,
         project: &ProjectName,
         directory: &str,
         compose: &str,
         context: &RequestContext,
-    ) -> Result<ComposeModel, EngineError>;
+    ) -> Result<CheckedCompose, EngineError>;
 
-    /// `file`: an administrator's project's; otherwise the one Compose
-    /// reports.
+    /// Acts on a project not made here; `Down` also on an administrator's,
+    /// with what deploying it kept.
     async fn control_project(
         &self,
         project: &str,
         action: ProjectAction,
-        file: Option<&str>,
+        context: &RequestContext,
+    ) -> Result<(), EngineError>;
+
+    /// Deploys an administrator's project from `config`, what Compose made
+    /// of the file they confirmed; with `pull`, its images are fetched
+    /// first.
+    async fn deploy_project(
+        &self,
+        project: &str,
+        config: &str,
+        pull: bool,
         context: &RequestContext,
     ) -> Result<(), EngineError>;
 
@@ -140,8 +151,20 @@ pub trait ProjectRepository: Send + Sync {
     /// `false` if the name is taken.
     async fn create(&self, project: &OwnProject) -> Result<bool, PortError>;
 
+    /// Keeps `compose` as confirmed and `config` as what runs; `false` if
+    /// there is no such project.
+    async fn confirm(&self, name: &ProjectName, compose: &str, config: &str) -> Result<bool, PortError>;
+
     /// `false` if there was none.
     async fn delete(&self, name: &ProjectName) -> Result<bool, PortError>;
+}
+
+/// A Compose file as Compose read it: what it lets containers do, and the
+/// whole project normalized, as JSON, which is what runs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CheckedCompose {
+    pub model: ComposeModel,
+    pub config: String,
 }
 
 /// A share an administrator may put a project's folder in.

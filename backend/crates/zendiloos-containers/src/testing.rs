@@ -10,8 +10,8 @@ use zendiloos_jobs::testing::MemoryJobs;
 use zendiloos_kernel::{Actor, AuditLog, Clock, PortError, RequestContext, Timestamp};
 
 use crate::application::ports::{
-    DataPlace, DockerData, DockerEngine, EngineError, ProjectAction, ProjectPlace, ProjectRepository,
-    ProjectStorage, Registries, StorageError, UpdateSettingsRepository,
+    CheckedCompose, DataPlace, DockerData, DockerEngine, EngineError, ProjectAction, ProjectPlace,
+    ProjectRepository, ProjectStorage, Registries, StorageError, UpdateSettingsRepository,
 };
 use crate::application::{Containers, ContainersPorts};
 use crate::domain::{
@@ -236,29 +236,46 @@ impl DockerEngine for FakeEngine {
         directory: &str,
         compose: &str,
         _: &RequestContext,
-    ) -> Result<ComposeModel, EngineError> {
+    ) -> Result<CheckedCompose, EngineError> {
         self.call(format!("check {project} {directory}"));
         if compose.contains("broken") {
             return Err(EngineError::Refused("yaml: line 2: mapping values are not allowed".into()));
         }
-        Ok(ComposeModel {
-            services: vec![ComposeService {
-                name: "app".into(),
-                image: Some("nginx".into()),
-                privileged: compose.contains("privileged: true"),
-                ..ComposeService::default()
-            }],
+        let privileged = compose.contains("privileged: true");
+        let image = compose.lines().find_map(|l| l.trim().strip_prefix("image: ")).unwrap_or("nginx");
+        Ok(CheckedCompose {
+            model: ComposeModel {
+                services: vec![ComposeService {
+                    name: "app".into(),
+                    image: Some(image.into()),
+                    privileged,
+                    ..ComposeService::default()
+                }],
+            },
+            config: format!(
+                r#"{{"name":"{project}","services":{{"app":{{"image":"{image}","privileged":{privileged}}}}}}}"#
+            ),
         })
+    }
+
+    async fn deploy_project(
+        &self,
+        project: &str,
+        config: &str,
+        pull: bool,
+        context: &RequestContext,
+    ) -> Result<(), EngineError> {
+        self.call(format!("deploy {project} pull={pull} {config}"));
+        self.control_project(project, ProjectAction::Up, context).await
     }
 
     async fn control_project(
         &self,
         project: &str,
         action: ProjectAction,
-        file: Option<&str>,
         _: &RequestContext,
     ) -> Result<(), EngineError> {
-        self.call(format!("project {} {project} {}", action.as_str(), file.unwrap_or("-")));
+        self.call(format!("project {} {project}", action.as_str()));
         let mut containers = self.containers.lock().unwrap();
         match action {
             ProjectAction::Up => {
@@ -306,7 +323,7 @@ impl DockerEngine for FakeEngine {
 }
 
 #[derive(Default)]
-pub struct MemoryProjects(Mutex<Vec<OwnProject>>);
+pub struct MemoryProjects(pub Mutex<Vec<OwnProject>>);
 
 #[async_trait]
 impl ProjectRepository for MemoryProjects {
@@ -322,6 +339,14 @@ impl ProjectRepository for MemoryProjects {
             return Ok(false);
         }
         projects.push(project.clone());
+        Ok(true)
+    }
+
+    async fn confirm(&self, name: &ProjectName, compose: &str, config: &str) -> Result<bool, PortError> {
+        let mut projects = self.0.lock().unwrap();
+        let Some(project) = projects.iter_mut().find(|p| &p.name == name) else { return Ok(false) };
+        project.compose = Some(compose.to_owned());
+        project.config = Some(config.to_owned());
         Ok(true)
     }
 

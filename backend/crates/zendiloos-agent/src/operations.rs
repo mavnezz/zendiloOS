@@ -5,8 +5,8 @@ use std::time::Duration;
 use tokio::io::AsyncReadExt;
 
 use zendiloos_agent_proto::{
-    DiskName, ErrorCode, LSBLK_COLUMNS, PROTOCOL_VERSION, Request, Response, Role, SelfTestKind,
-    ZFS_DATASET_COLUMNS,
+    DiskName, ErrorCode, LSBLK_COLUMNS, PROTOCOL_VERSION, ProjectAction, Request, Response, Role,
+    SelfTestKind, ZFS_DATASET_COLUMNS,
 };
 use zendiloos_exec::{ExecError, Limits, Output, Program};
 use zendiloos_fileops::FileError;
@@ -19,6 +19,7 @@ use crate::files::Files;
 use crate::network::{Network, NetworkPaths};
 use crate::packages::Packages;
 use crate::pools::{Erasable, HostPaths, Pools};
+use crate::projects::Projects;
 use crate::sharing::Sharing;
 use crate::ssh::{Ssh, SshPaths};
 use crate::time::{Time, TimePaths};
@@ -61,6 +62,7 @@ pub struct Operations {
     ssh: Ssh,
     web: Web,
     docker: Docker,
+    projects: Projects,
     console_issue: std::path::PathBuf,
     role: Role,
 }
@@ -89,6 +91,11 @@ impl Operations {
             ssh: Ssh::new(tools, paths.ssh)?,
             web: Web::new(tools, paths.web)?,
             docker: Docker::new(Program::new(&tools.docker)?),
+            projects: Projects::new(
+                Program::new(&tools.docker)?,
+                Program::new(&tools.systemctl)?,
+                paths.host.clone(),
+            ),
             console_issue: paths.host.console_issue.clone(),
             sharing: Sharing::new(tools, paths.host.clone(), paths.accounts.clone())?,
             apps: Apps::new(
@@ -214,8 +221,15 @@ impl Operations {
             Request::CheckCompose { project, directory, compose } => {
                 self.docker.check_compose(project, directory, compose).await
             }
-            Request::ControlProject { project, action, file } => {
-                self.docker.control_project(project, *action, file.as_ref()).await
+            Request::ControlProject { project, action } => {
+                if *action == ProjectAction::Down && self.projects.is_kept(project) {
+                    self.projects.down(project).await
+                } else {
+                    self.docker.control_project(project, *action).await
+                }
+            }
+            Request::DeployProject { project, config, pull } => {
+                self.projects.deploy(project, config, *pull).await
             }
             Request::ProjectLogs { project, lines } => self.docker.project_logs(project, *lines).await,
             Request::ProjectFiles { project } => self.docker.project_files(project).await,

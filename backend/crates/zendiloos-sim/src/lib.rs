@@ -586,6 +586,7 @@ impl AgentTransport for SimulatedAgent {
             | Request::RemoveNetwork { .. }
             | Request::CheckCompose { .. }
             | Request::ControlProject { .. }
+            | Request::DeployProject { .. }
             | Request::ProjectLogs { .. }
             | Request::ProjectFiles { .. } => error(ErrorCode::Failed, "simulated Docker did not answer"),
             Request::AppLogs { app, .. } => Response::AppLogs {
