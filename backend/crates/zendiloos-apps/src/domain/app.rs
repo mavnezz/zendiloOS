@@ -65,7 +65,23 @@ pub struct Setting {
     pub required: bool,
     /// zendiloOS generates it once, when installing; nobody is asked.
     pub generate: bool,
+    /// How many characters a generated value has.
+    pub length: u8,
+    pub alphabet: SecretAlphabet,
 }
+
+/// The characters a generated value is made of.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SecretAlphabet {
+    /// `A–Z`, `a–z`, `0–9`.
+    #[default]
+    Alphanumeric,
+    /// `0–9`, `a–f`: for keys an app reads as hexadecimal.
+    Hex,
+}
+
+/// The length of a generated value the catalog does not set.
+pub const SECRET_LENGTH: u8 = 32;
 
 /// Exceptions from the policy, confirmed when installing.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -73,11 +89,22 @@ pub struct Permissions {
     pub devices: Vec<String>,
     pub capabilities: Vec<String>,
     pub host_network: bool,
+    /// The Docker socket: control over every container, and so over the
+    /// whole NAS.
+    pub docker_socket: bool,
 }
 
 impl Permissions {
     pub fn is_empty(&self) -> bool {
-        self.devices.is_empty() && self.capabilities.is_empty() && !self.host_network
+        self.devices.is_empty() && self.capabilities.is_empty() && !self.host_network && !self.docker_socket
+    }
+
+    /// Whether `self` asks for something `before` did not.
+    pub fn asks_more_than(&self, before: &Self) -> bool {
+        self.devices.iter().any(|d| !before.devices.contains(d))
+            || self.capabilities.iter().any(|c| !before.capabilities.contains(c))
+            || (self.host_network && !before.host_network)
+            || (self.docker_socket && !before.docker_socket)
     }
 }
 
@@ -94,7 +121,9 @@ pub struct Translation {
 pub struct CatalogApp {
     pub id: String,
     pub name: String,
-    pub version: String,
+    /// The app's own version, for apps whose images name one; most follow
+    /// a moving tag and name none.
+    pub version: Option<String>,
     pub tagline: String,
     pub description: String,
     pub categories: Vec<String>,

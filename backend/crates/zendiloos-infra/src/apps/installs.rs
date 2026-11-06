@@ -4,6 +4,7 @@
 
 use async_trait::async_trait;
 use zendiloos_apps::application::ports::{AppHostError, AppShares, Secrets, ShareChoice};
+use zendiloos_apps::domain::SecretAlphabet;
 use zendiloos_kernel::{PortError, RequestContext};
 use zendiloos_sharing::application::{SharingError, SharingUseCases};
 use zendiloos_sharing::domain::{Access, ShareName};
@@ -65,18 +66,24 @@ impl AppShares for SharingForApps {
 pub struct RandomSecrets;
 
 impl Secrets for RandomSecrets {
-    fn generate(&self) -> String {
-        const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-        let mut secret = String::with_capacity(32);
-        while secret.len() < 32 {
+    fn generate(&self, length: u8, alphabet: SecretAlphabet) -> String {
+        let alphabet: &[u8] = match alphabet {
+            SecretAlphabet::Alphanumeric => b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789",
+            SecretAlphabet::Hex => b"0123456789abcdef",
+        };
+        // Bytes at or above the largest multiple of the alphabet's size
+        // would favour some characters: they are thrown away.
+        let limit = 256 - 256 % alphabet.len();
+        let length = usize::from(length);
+        let mut secret = String::with_capacity(length);
+        while secret.len() < length {
             let mut bytes = [0u8; 64];
             getrandom::fill(&mut bytes).expect("the operating system's random source is unavailable");
-            // 248 = 4 × 62: bytes above would favour some characters.
-            for byte in bytes.into_iter().filter(|b| *b < 248) {
-                if secret.len() == 32 {
+            for byte in bytes.into_iter().filter(|b| usize::from(*b) < limit) {
+                if secret.len() == length {
                     break;
                 }
-                secret.push(char::from(ALPHABET[usize::from(byte) % ALPHABET.len()]));
+                secret.push(char::from(alphabet[usize::from(byte) % alphabet.len()]));
             }
         }
         secret
@@ -88,10 +95,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn secrets_are_32_letters_and_digits() {
-        let (one, two) = (RandomSecrets.generate(), RandomSecrets.generate());
+    fn secrets_have_the_length_and_characters_asked_for() {
+        let generate = |length, alphabet| RandomSecrets.generate(length, alphabet);
+        let (one, two) =
+            (generate(32, SecretAlphabet::Alphanumeric), generate(32, SecretAlphabet::Alphanumeric));
         assert_eq!(one.len(), 32);
         assert!(one.chars().all(|c| c.is_ascii_alphanumeric()));
         assert_ne!(one, two);
+        let hex = generate(64, SecretAlphabet::Hex);
+        assert_eq!(hex.len(), 64);
+        assert!(hex.chars().all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)));
     }
 }

@@ -1,3 +1,11 @@
+zendiloos (0.1.1) unstable; urgency=medium
+
+  * The community catalog's current format: optional versions, the Docker
+    socket as a permission, more device kinds, generated secrets as asked.
+  * README with screenshots; Renovate follows the catalog's checks.
+
+ -- zendiloOS <julian@stuch.info>  Fri, 06 Nov 2026 21:30:00 +0100
+
 zendiloos (0.1.0) unstable; urgency=medium
 
   * Initial package: management service, privileged agent, web interface.

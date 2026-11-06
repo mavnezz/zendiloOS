@@ -12,8 +12,9 @@ import { Input } from '@/shared/ui/input'
 import { Label } from '@/shared/ui/label'
 
 import { useDocker, useInstallActions, useShareList } from '../api'
-import { appText, paragraphs } from '../texts'
+import { appText, asksForMore, paragraphs } from '../texts'
 import FolderPicker from './FolderPicker.vue'
+import PermissionList from './PermissionList.vue'
 
 const props = defineProps<{ app: CatalogAppDetail }>()
 const open = defineModel<boolean>('open', { default: false })
@@ -62,12 +63,7 @@ const failure = ref<string | null>(null)
 const asked = computed(() => props.app.settings.filter((setting) => !setting.generate))
 const generated = computed(() => props.app.settings.filter((setting) => setting.generate))
 const permissions = computed(() => props.app.permissions)
-const asksMore = computed(
-  () =>
-    permissions.value.devices.length > 0 ||
-    permissions.value.capabilities.length > 0 ||
-    permissions.value.host_network,
-)
+const asksMore = computed(() => asksForMore(permissions.value))
 const notes = computed(() => paragraphs(appText(props.app, 'notes', locale.value)))
 /** What reaches beyond the rules is installed only once read. */
 const risky = computed(() => asksMore.value || !props.app.official)
@@ -299,15 +295,7 @@ const required = 'text-destructive'
           <p v-for="(paragraph, index) in notes" :key="index">{{ paragraph }}</p>
           <template v-if="asksMore">
             <p class="font-medium text-foreground">{{ t('appStore.permissionsTitle') }}</p>
-            <ul class="grid list-disc gap-1 pl-4">
-              <li v-for="device in permissions.devices" :key="device">
-                {{ t('appStore.deviceExplained', { device }) }}
-              </li>
-              <li v-for="capability in permissions.capabilities" :key="capability">
-                {{ t('appStore.capabilityExplained', { capability }) }}
-              </li>
-              <li v-if="permissions.host_network">{{ t('appStore.hostNetworkExplained') }}</li>
-            </ul>
+            <PermissionList :permissions="permissions" />
           </template>
         </div>
       </section>

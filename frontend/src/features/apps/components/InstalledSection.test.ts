@@ -36,7 +36,7 @@ function app(id: string, extra: Partial<InstalledApp> = {}): InstalledApp {
     web: { port: 8096, path: '/web', https: false },
     ports: { web: 8096 },
     shares: {},
-    permissions: { devices: [], capabilities: [], host_network: false },
+    permissions: { devices: [], capabilities: [], host_network: false, docker_socket: false },
     update: null,
     pool: 'tank',
     installed_at: 0,
@@ -51,7 +51,7 @@ beforeEach(() => {
   update.mockClear()
   retry.mockClear()
   apps.value = [
-    app('jellyfin', { update: '1.1' }),
+    app('jellyfin', { update: { version: '1.1' } }),
     app('immich', { state: 'failed', run_state: 'stopped', web: null }),
   ]
 })

@@ -3078,7 +3078,7 @@ dependencies = [
 [[package]]
 name = "zendiloos-catalog"
 version = "0.1.0"
-source = "git+https://github.com/mavnezz/zendiloOS.community.applications?rev=9b2b46fe088806c0b6821cfe40738e302744376d#9b2b46fe088806c0b6821cfe40738e302744376d"
+source = "git+https://github.com/mavnezz/zendiloOS.community.applications?rev=0e2a26040b440294c3ec5c80140e6eecc1bcd9a1#0e2a26040b440294c3ec5c80140e6eecc1bcd9a1"
 dependencies = [
  "serde",
  "serde-saphyr",

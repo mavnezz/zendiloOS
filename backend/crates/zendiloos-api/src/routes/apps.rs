@@ -200,6 +200,24 @@ pub struct AppPermissions {
     pub devices: Vec<String>,
     pub capabilities: Vec<String>,
     pub host_network: bool,
+    /// The Docker socket: control over every container, so over the NAS.
+    pub docker_socket: bool,
+}
+
+fn permissions_dto(permissions: &apps::Permissions) -> AppPermissions {
+    AppPermissions {
+        devices: permissions.devices.clone(),
+        capabilities: permissions.capabilities.clone(),
+        host_network: permissions.host_network,
+        docker_socket: permissions.docker_socket,
+    }
+}
+
+/// A newer state of an installed app.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AppUpdate {
+    /// The version its catalog names, if it names one.
+    pub version: Option<String>,
 }
 
 /// An app as the store lists it.
@@ -210,7 +228,8 @@ pub struct CatalogApp {
     pub official: bool,
     pub id: String,
     pub name: String,
-    pub version: String,
+    /// The app's own version, if its catalog names one.
+    pub version: Option<String>,
     pub tagline: String,
     pub categories: Vec<String>,
     /// Exceptions from the policy, confirmed when installing.
@@ -248,6 +267,8 @@ pub struct AppSetting {
     pub required: bool,
     /// zendiloOS makes it up; nobody is asked.
     pub generate: bool,
+    /// How many characters a generated value has.
+    pub length: Option<u8>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -287,11 +308,7 @@ fn summary(listed: &ListedApp) -> CatalogApp {
         version: app.version.clone(),
         tagline: app.tagline.clone(),
         categories: app.categories.clone(),
-        permissions: AppPermissions {
-            devices: app.permissions.devices.clone(),
-            capabilities: app.permissions.capabilities.clone(),
-            host_network: app.permissions.host_network,
-        },
+        permissions: permissions_dto(&app.permissions),
         translations: app
             .translations
             .iter()
@@ -358,6 +375,7 @@ fn detail(listed: ListedApp) -> CatalogAppDetail {
                 default: s.default,
                 required: s.required,
                 generate: s.generate,
+                length: s.generate.then_some(s.length),
             })
             .collect(),
         compose: app.compose,
@@ -548,7 +566,7 @@ pub struct InstalledApp {
     /// The catalog it came from; it may be gone since.
     pub source_id: i64,
     pub name: String,
-    pub version: String,
+    pub version: Option<String>,
     pub tagline: String,
     pub translations: BTreeMap<String, AppTexts>,
     /// Of the version installed; for its icon.
@@ -564,8 +582,8 @@ pub struct InstalledApp {
     /// (`media/Films`).
     pub shares: BTreeMap<String, String>,
     pub permissions: AppPermissions,
-    /// The version its catalog offers now, if it is another.
-    pub update: Option<String>,
+    /// What its catalog offers now, if it is newer.
+    pub update: Option<AppUpdate>,
     /// The pool its data and Docker's are on.
     pub pool: String,
     pub installed_at: i64,
@@ -607,12 +625,8 @@ fn installed_dto(view: InstalledView) -> InstalledApp {
         web,
         ports: app.values.ports,
         shares: app.values.shares,
-        permissions: AppPermissions {
-            devices: catalog.permissions.devices,
-            capabilities: catalog.permissions.capabilities,
-            host_network: catalog.permissions.host_network,
-        },
-        update,
+        permissions: permissions_dto(&catalog.permissions),
+        update: update.map(|update| AppUpdate { version: update.version }),
         pool: app.pool,
         installed_at: app.installed_at.unix_seconds(),
         updated_at: app.updated_at.unix_seconds(),

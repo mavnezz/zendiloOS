@@ -761,12 +761,24 @@ PNG and served as `image/png`.
 catalog's crate `zendiloos-catalog` (pure: text in, problems out). The
 agent and `zendiloos-infra` use it as a git dependency pinned to one
 commit, so a change to the catalog's checks reaches zendiloOS only when
-the pin is moved deliberately. The policy allows by name: images pinned by
-digest, bind mounts only from the app's data folder and the shares the
-administrator picks, published ports from variables, no Docker volumes, no
-`privileged`, no host namespaces, no Docker socket; devices, extra
-capabilities and the host network only as permissions the app declares
-and the administrator confirms.
+the pin is moved deliberately: Renovate opens a pull request for each new
+commit of the catalog (`renovate.json`), CI checks it, a maintainer merges
+it, the next release ships it. The apps themselves are read live from the
+index, so new apps need no release. Within `format: 1` the catalog stays
+readable by released versions of zendiloOS; what they cannot read gets a
+new index (`/v2/`) beside the old one. The policy allows by name: images
+following a tag of their developers, bind mounts only from the app's data
+folder and the shares the administrator picks, published ports from
+variables, no Docker volumes, no `privileged`, no host namespaces; devices
+of the kinds the format lists (graphics, VPN, serial, cameras, sound,
+Coral TPUs; passed only when the machine has them), extra capabilities
+(`NET_ADMIN`, `SYS_NICE`), the host network and the Docker socket only as
+permissions the app declares and the administrator confirms. The Docker
+socket hands an app control over the whole NAS, and the interface says so;
+the agent binds it only for an app whose kept compose file records the
+permission, and only when `/run/docker.sock` is root's socket. Generated
+secrets take the length and alphabet the catalog asks for (32 letters and
+digits otherwise).
 
 **The Docker app** (context `zendiloos-containers`) shows the engine as
 it is: every container, image, network and Compose project, whoever made

@@ -47,8 +47,15 @@ pub struct InstalledView {
     pub app: InstalledApp,
     /// `None` if Docker could not be asked.
     pub containers: Option<Containers>,
-    /// The version its catalog offers now, if it differs.
-    pub update: Option<String>,
+    /// What its catalog offers now, if it differs.
+    pub update: Option<AvailableUpdate>,
+}
+
+/// A newer state of an installed app than the one it runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AvailableUpdate {
+    /// The version the catalog names, if it names one.
+    pub version: Option<String>,
 }
 
 #[derive(Clone)]
@@ -97,10 +104,7 @@ fn job_error(error: &AppHostError) -> JobError {
 
 /// Whether `new` asks for something `old` did not.
 fn asks_more(new: &CatalogApp, old: &CatalogApp) -> bool {
-    let (new, old) = (&new.permissions, &old.permissions);
-    new.devices.iter().any(|d| !old.devices.contains(d))
-        || new.capabilities.iter().any(|c| !old.capabilities.contains(c))
-        || (new.host_network && !old.host_network)
+    new.permissions.asks_more_than(&old.permissions)
 }
 
 impl Installs {
@@ -152,15 +156,17 @@ impl Installs {
                 None
             }
         };
-        let offered: BTreeMap<(i64, String), (String, String)> = match self.ports.catalogs.apps().await {
-            Ok(listed) => {
-                listed.into_iter().map(|l| ((l.source.id, l.app.id), (l.app.digest, l.app.version))).collect()
-            }
-            Err(error) => {
-                tracing::warn!(%error, "apps: cannot read the catalogs");
-                BTreeMap::new()
-            }
-        };
+        let offered: BTreeMap<(i64, String), (String, Option<String>)> =
+            match self.ports.catalogs.apps().await {
+                Ok(listed) => listed
+                    .into_iter()
+                    .map(|l| ((l.source.id, l.app.id), (l.app.digest, l.app.version)))
+                    .collect(),
+                Err(error) => {
+                    tracing::warn!(%error, "apps: cannot read the catalogs");
+                    BTreeMap::new()
+                }
+            };
         Ok(installed
             .into_iter()
             .map(|app| {
@@ -169,7 +175,7 @@ impl Installs {
                 let update = offered
                     .get(&(app.source_id, app.id.clone()))
                     .filter(|(digest, _)| *digest != app.app.digest)
-                    .map(|(_, version)| version.clone());
+                    .map(|(_, version)| AvailableUpdate { version: version.clone() });
                 InstalledView { app, containers, update }
             })
             .collect())
@@ -237,7 +243,9 @@ impl Installs {
             other_apps: &other_apps,
             busy: &busy,
         };
-        Ok(install_values(app, &given, || self.ports.secrets.generate())?)
+        Ok(install_values(app, &given, |setting| {
+            self.ports.secrets.generate(setting.length, setting.alphabet)
+        })?)
     }
 
     /// Records the app and starts the job that installs it.
@@ -343,7 +351,7 @@ impl Installs {
         installed.updated_at = self.ports.clock.now();
         self.ports.installed.update(&installed).await?;
         drop(changes);
-        let version = installed.app.version.clone();
+        let version = installed.app.version.clone().unwrap_or_else(|| installed.app.digest.clone());
         let job = self.run_install("apps.update", installed, actor, context).await?;
         self.audit("apps.update", Outcome::Success, &format!("{id} {version}"), actor, context).await;
         Ok(job)
@@ -760,6 +768,8 @@ mod tests {
             default: None,
             required: true,
             generate: true,
+            length: crate::domain::SECRET_LENGTH,
+            alphabet: crate::domain::SecretAlphabet::Alphanumeric,
         }];
         s.reader.serve(OFFICIAL_INDEX, vec![jellyfin.clone()]);
         s.catalogs.refresh().await.unwrap();
@@ -770,19 +780,22 @@ mod tests {
         let up_to_date = s.installs.update("jellyfin", false, &alice(), &context).await;
         assert!(matches!(up_to_date, Err(AppsError::UpToDate)));
 
-        jellyfin.version = "2.0".into();
+        jellyfin.version = Some("2.0".into());
         jellyfin.digest = "sha256:jellyfin-2".into();
         jellyfin.permissions = Permissions { devices: vec!["/dev/dri".into()], ..Permissions::default() };
         s.reader.serve(OFFICIAL_INDEX, vec![jellyfin]);
         s.catalogs.refresh().await.unwrap();
-        assert_eq!(s.installs.get("jellyfin", &context).await.unwrap().update.as_deref(), Some("2.0"));
+        assert_eq!(
+            s.installs.get("jellyfin", &context).await.unwrap().update.and_then(|u| u.version).as_deref(),
+            Some("2.0")
+        );
 
         let unconfirmed = s.installs.update("jellyfin", false, &alice(), &context).await;
         assert!(matches!(unconfirmed, Err(AppsError::PermissionsNotConfirmed)));
         let job = s.installs.update("jellyfin", true, &alice(), &context).await.unwrap();
         assert_eq!(finished(&s.jobs, job).await.state, JobState::Succeeded);
         let view = s.installs.get("jellyfin", &context).await.unwrap();
-        assert_eq!(view.app.app.version, "2.0");
+        assert_eq!(view.app.app.version.as_deref(), Some("2.0"));
         assert_eq!(view.app.values.ports["web"], 8097, "the port stays");
         assert_eq!(view.app.values.settings["SECRET"], "secret-1", "the secret stays");
         assert_eq!(view.update, None);

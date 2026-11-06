@@ -8057,7 +8057,8 @@
         "required": [
           "devices",
           "capabilities",
-          "host_network"
+          "host_network",
+          "docker_socket"
         ],
         "properties": {
           "capabilities": {
@@ -8071,6 +8072,10 @@
             "items": {
               "type": "string"
             }
+          },
+          "docker_socket": {
+            "type": "boolean",
+            "description": "The Docker socket: control over every container, so over the NAS."
           },
           "host_network": {
             "type": "boolean"
@@ -8137,6 +8142,15 @@
           },
           "label": {
             "type": "string"
+          },
+          "length": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "How many characters a generated value has.",
+            "minimum": 0
           },
           "required": {
             "type": "boolean"
@@ -8245,6 +8259,19 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "AppUpdate": {
+        "type": "object",
+        "description": "A newer state of an installed app.",
+        "properties": {
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The version its catalog names, if it names one."
           }
         }
       },
@@ -8531,7 +8558,6 @@
           "official",
           "id",
           "name",
-          "version",
           "tagline",
           "categories",
           "permissions",
@@ -8581,7 +8607,11 @@
             }
           },
           "version": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The app's own version, if its catalog names one."
           }
         }
       },
@@ -10465,7 +10495,6 @@
           "id",
           "source_id",
           "name",
-          "version",
           "tagline",
           "translations",
           "digest",
@@ -10554,18 +10583,25 @@
             }
           },
           "update": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "The version its catalog offers now, if it is another."
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AppUpdate",
+                "description": "What its catalog offers now, if it is newer."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "updated_at": {
             "type": "integer",
             "format": "int64"
           },
           "version": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "web": {
             "oneOf": [

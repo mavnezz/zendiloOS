@@ -1,0 +1,22 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "enabledManagers": ["cargo"],
+  "packageRules": [
+    {
+      "description": "Only the community catalog's checks are followed here; other dependencies are updated by hand.",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["*"],
+      "enabled": false
+    },
+    {
+      "description": "A pull request for each new commit of the community catalog (docs/architecture.md 4.9): CI checks the agent against it, a maintainer merges it, the next release ships it.",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["zendiloos-catalog"],
+      "enabled": true,
+      "commitMessageTopic": "the community catalog's checks",
+      "semanticCommits": "disabled",
+      "prBodyNotes": ["Read the catalog's `docs/format.md` for what changed: a new permission or field needs support in zendiloOS before the update is merged."]
+    }
+  ]
+}

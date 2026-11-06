@@ -4,7 +4,6 @@
     {
       "id": "adguard-home",
       "name": "AdGuard Home",
-      "version": "0.107.80",
       "tagline": "Block ads and trackers for every device on your network",
       "description": "AdGuard Home is a DNS server that filters ads, trackers and malicious\ndomains for the whole network. Once the router or the devices use it as\ntheir DNS server, blocked domains are no longer resolved, without any\nsoftware on the devices themselves. It keeps a query log and statistics,\nsupports filter lists, custom rules, per-client settings and parental\ncontrols, and can forward queries to upstream servers over encrypted DNS\n(DNS-over-HTTPS, DNS-over-TLS, DNS-over-QUIC).\n",
       "categories": [
@@ -47,23 +46,22 @@
           "notes": "Der Einrichtungsassistent öffnet sich in der Weboberfläche. Belasse die\nAdmin-Weboberfläche dort auf Port 3000 (der Assistent schlägt ihn vor):\nzendiloOS leitet nur diesen Port weiter, mit einem anderen Port ist die\nOberfläche nicht mehr erreichbar. Belasse den DNS-Server auf Port 53.\nTrage danach die Adresse des NAS im Router als DNS-Server ein. Der\nDHCP-Server von AdGuard Home steht nicht zur Verfügung.\n"
         }
       },
-      "compose": "services:\n  adguard-home:\n    image: adguard/adguardhome:v0.107.80@sha256:e2e1b48c832f7705be915873f95de0d5114de573736441d7f2923a8a6293027c\n    restart: unless-stopped\n    environment:\n      TZ: ${TZ}\n      ADGUARD_HOME_DEFAULT_WEB_PORT: \"3000\"\n    ports:\n      - ${PORT_WEB}:3000\n      - ${PORT_DNS}:53\n      - ${PORT_DNS}:53/udp\n    volumes:\n      - ${APP_DATA}/work:/opt/adguardhome/work\n      - ${APP_DATA}/conf:/opt/adguardhome/conf\n",
+      "compose": "services:\n  adguard-home:\n    image: adguard/adguardhome:latest\n    restart: unless-stopped\n    environment:\n      TZ: ${TZ}\n      ADGUARD_HOME_DEFAULT_WEB_PORT: \"3000\"\n    ports:\n      - ${PORT_WEB}:3000\n      - ${PORT_DNS}:53\n      - ${PORT_DNS}:53/udp\n    volumes:\n      - ${APP_DATA}/work:/opt/adguardhome/work\n      - ${APP_DATA}/conf:/opt/adguardhome/conf\n",
       "icon": "icons/adguard-home.png",
-      "digest": "sha256:4edf69f719c72d9f6329f50c658dd23af1ea21922f8334b75e7e5b57b5a3b80c"
+      "digest": "sha256:267bcb0f866f008af09291d1682f4cf1ad5df935fd125efa6160fc24bafa9789"
     },
     {
-      "id": "audiobookshelf",
-      "name": "Audiobookshelf",
-      "version": "2.37.2",
-      "tagline": "Listen to your audiobooks and podcasts in the browser and on your phone",
-      "description": "Audiobookshelf is a server for audiobooks and podcasts. It sorts your\naudiobook files into a library with covers, authors, series and chapters,\nand plays them in the browser and in the mobile apps, which remember where\neach listener stopped and can download books for offline listening. It\nfetches metadata and covers from online sources, subscribes to podcasts\nand downloads new episodes on its own. Every member of the household gets\ntheir own account with their own progress.\n",
+      "id": "autobrr",
+      "name": "autobrr",
+      "tagline": "Grabs torrents the moment they are announced",
+      "description": "autobrr watches the IRC announce channels and RSS feeds of torrent\ntrackers and grabs new releases the moment they appear, according to\nfilters you set: resolution, source, size, release groups and more. It\nsends them straight to qBittorrent or to Radarr, Sonarr and Lidarr, which\nis faster than waiting for their next RSS check.\n",
       "categories": [
-        "media"
+        "downloads"
       ],
-      "developer": "Audiobookshelf contributors",
-      "website": "https://www.audiobookshelf.org",
-      "source": "https://github.com/advplyr/audiobookshelf",
-      "license": "GPL-3.0-only",
+      "developer": "autobrr contributors",
+      "website": "https://autobrr.com",
+      "source": "https://github.com/autobrr/autobrr",
+      "license": "GPL-2.0-or-later",
       "maintainers": [
         "mavnezz"
       ],
@@ -71,7 +69,7 @@
         "amd64",
         "arm64"
       ],
-      "notes": "Open the web interface and create the root account, the administrator.\nThen add an audiobook library from the folder /audiobooks and a podcast\nlibrary from the folder /podcasts.\n",
+      "notes": "Create the first account when you open the app, then connect qBittorrent\nand the *arr apps with the NAS's address and their ports.\n",
       "web": {
         "port": "web",
         "path": "/",
@@ -81,38 +79,389 @@
         {
           "id": "web",
           "label": "Web interface",
-          "default": 13378
+          "default": 7474
+        }
+      ],
+      "translations": {
+        "de": {
+          "tagline": "Torrents im Moment ihrer Ankündigung holen",
+          "description": "autobrr beobachtet die IRC-Ankündigungskanäle und RSS-Feeds von\nTorrent-Trackern und holt neue Releases, sobald sie erscheinen, nach\nFiltern, die du festlegst: Auflösung, Quelle, Größe, Release-Gruppen\nund mehr. Es schickt sie direkt an qBittorrent oder an Radarr, Sonarr\nund Lidarr, schneller als deren nächste RSS-Abfrage.\n",
+          "notes": "Lege beim ersten Aufruf das erste Konto an und verbinde dann\nqBittorrent und die *arr-Apps über die Adresse des NAS und ihre Ports.\n"
+        }
+      },
+      "compose": "services:\n  autobrr:\n    image: ghcr.io/autobrr/autobrr:latest\n    restart: unless-stopped\n    environment:\n      TZ: ${TZ}\n    ports:\n      - ${PORT_WEB}:7474\n    volumes:\n      - ${APP_DATA}/config:/config\n",
+      "icon": "icons/autobrr.png",
+      "digest": "sha256:268e7b14a47289b46a26e29dc87458e42dc49fcd8bea6566c7d853c94bd6c9a7"
+    },
+    {
+      "id": "bazarr",
+      "name": "Bazarr",
+      "tagline": "Finds subtitles for your films and series",
+      "description": "Bazarr works alongside Sonarr and Radarr and downloads subtitles in the\nlanguages you choose for every film and episode they manage. It searches\nmany subtitle providers, picks the best match for each release, keeps\nlooking for better ones and saves them next to the video files.\n",
+      "categories": [
+        "media",
+        "downloads"
+      ],
+      "developer": "Bazarr contributors",
+      "website": "https://www.bazarr.media",
+      "source": "https://github.com/morpheus65535/bazarr",
+      "license": "GPL-3.0-only",
+      "maintainers": [
+        "mavnezz"
+      ],
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "notes": "Connect Sonarr and Radarr under Settings with the NAS's address, their\nports and API keys. Bazarr sees the library under /data, as they do.\n",
+      "web": {
+        "port": "web",
+        "path": "/",
+        "scheme": "http"
+      },
+      "ports": [
+        {
+          "id": "web",
+          "label": "Web interface",
+          "default": 6767
         }
       ],
       "shares": [
         {
-          "id": "audiobooks",
-          "label": "Audiobooks",
-          "description": "The share with your audiobooks. Audiobookshelf writes to it when you upload books or save metadata and covers into the book folders.",
-          "access": "read-write"
-        },
-        {
-          "id": "podcasts",
-          "label": "Podcasts",
-          "description": "The share where Audiobookshelf stores downloaded podcast episodes.",
+          "id": "data",
+          "label": "Media and downloads",
+          "description": "One share for downloads and library, the same in every app of the media stack: then files are moved and hard-linked instead of copied.",
           "access": "read-write"
         }
       ],
       "translations": {
         "de": {
-          "tagline": "Hörbücher und Podcasts im Browser und auf dem Handy hören",
-          "description": "Audiobookshelf ist ein Server für Hörbücher und Podcasts. Er ordnet\nHörbuch-Dateien in eine Bibliothek mit Covern, Autoren, Reihen und\nKapiteln und spielt sie im Browser und in den Handy-Apps ab. Die Apps\nmerken sich, wo jeder Hörer aufgehört hat, und laden Bücher zum\nOffline-Hören herunter. Metadaten und Cover holt Audiobookshelf aus\nOnline-Quellen, Podcasts abonniert es und lädt neue Folgen selbst\nherunter. Jedes Mitglied des Haushalts bekommt ein eigenes Konto mit\neigenem Fortschritt.\n",
-          "notes": "Öffne die Weboberfläche und lege das root-Konto an, den Administrator.\nFüge dann eine Hörbuch-Bibliothek aus dem Ordner /audiobooks und eine\nPodcast-Bibliothek aus dem Ordner /podcasts hinzu.\n"
+          "tagline": "Untertitel für Filme und Serien finden",
+          "description": "Bazarr arbeitet mit Sonarr und Radarr zusammen und lädt Untertitel in\nden gewünschten Sprachen für jeden Film und jede Folge, die diese\nverwalten. Es durchsucht viele Untertitel-Anbieter, wählt für jede\nVersion den passenden, sucht weiter nach besseren und speichert sie\nneben den Videodateien.\n",
+          "notes": "Verbinde Sonarr und Radarr unter Settings mit der Adresse des NAS,\nihren Ports und API-Schlüsseln. Bazarr sieht die Bibliothek wie sie\nunter /data.\n"
         }
       },
-      "compose": "services:\n  audiobookshelf:\n    image: ghcr.io/advplyr/audiobookshelf:2.37.2@sha256:b897c33f05972fb1bf484f7487bc878fa91ec8691335c1db6e2929c3a7658efa\n    restart: unless-stopped\n    user: \"${PUID}:${PGID}\"\n    environment:\n      TZ: ${TZ}\n    ports:\n      - ${PORT_WEB}:80\n    volumes:\n      - ${APP_DATA}/config:/config\n      - ${APP_DATA}/metadata:/metadata\n      - ${SHARE_AUDIOBOOKS}:/audiobooks\n      - ${SHARE_PODCASTS}:/podcasts\n",
-      "icon": "icons/audiobookshelf.png",
-      "digest": "sha256:569086a2909eacf7465a3788fb8e38e79fa7caea8490c74cd74c7c97129a0768"
+      "compose": "services:\n  bazarr:\n    image: lscr.io/linuxserver/bazarr:latest\n    restart: unless-stopped\n    environment:\n      PUID: ${PUID}\n      PGID: ${PGID}\n      TZ: ${TZ}\n    ports:\n      - ${PORT_WEB}:6767\n    volumes:\n      - ${APP_DATA}/config:/config\n      - ${SHARE_DATA}:/data\n",
+      "icon": "icons/bazarr.png",
+      "digest": "sha256:e826c82228b7cf6d436e81eeb7f242a7adae906d36262326b80030e7f6837228"
+    },
+    {
+      "id": "bookshelf",
+      "name": "Bookshelf",
+      "tagline": "Finds, downloads and sorts e-books and audiobooks",
+      "description": "Bookshelf continues Readarr, whose development has ended. It keeps a list\nof the authors and books you want, searches your indexers for e-books and\naudiobooks, hands releases to a download client such as qBittorrent and\nfiles them into your library with metadata from Goodreads.\n",
+      "categories": [
+        "downloads"
+      ],
+      "developer": "Bookshelf contributors",
+      "website": "https://github.com/pennydreadful/bookshelf",
+      "source": "https://github.com/pennydreadful/bookshelf",
+      "license": "GPL-3.0-only",
+      "maintainers": [
+        "mavnezz"
+      ],
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "notes": "Connect qBittorrent and Prowlarr with the NAS's address and their ports,\nfor example http://192.168.1.10:8080. Keep downloads and books in the same\nshare, such as /data/torrents and /data/media/books: then Bookshelf\nhard-links finished downloads instead of copying them.\n",
+      "web": {
+        "port": "web",
+        "path": "/",
+        "scheme": "http"
+      },
+      "ports": [
+        {
+          "id": "web",
+          "label": "Web interface",
+          "default": 8787
+        }
+      ],
+      "shares": [
+        {
+          "id": "data",
+          "label": "Media and downloads",
+          "description": "One share for downloads and library, the same in every app of the media stack: then files are moved and hard-linked instead of copied.",
+          "access": "read-write"
+        }
+      ],
+      "translations": {
+        "de": {
+          "tagline": "E-Books und Hörbücher automatisch finden und einsortieren",
+          "description": "Bookshelf führt Readarr fort, dessen Entwicklung eingestellt ist. Es\nführt eine Liste der Autoren und Bücher, die du haben möchtest, sucht\nE-Books und Hörbücher über deine Indexer, übergibt sie an einen\nDownload-Client wie qBittorrent und legt sie mit Metadaten von\nGoodreads in deiner Bibliothek ab.\n",
+          "notes": "Verbinde qBittorrent und Prowlarr über die Adresse des NAS und ihre\nPorts, zum Beispiel http://192.168.1.10:8080. Lege Downloads und\nBücher in dieselbe Freigabe, etwa nach /data/torrents und\n/data/media/books: Dann verlinkt Bookshelf fertige Downloads, statt\nsie zu kopieren.\n"
+        }
+      },
+      "compose": "services:\n  bookshelf:\n    image: ghcr.io/pennydreadful/bookshelf:softcover\n    restart: unless-stopped\n    environment:\n      PUID: ${PUID}\n      PGID: ${PGID}\n      TZ: ${TZ}\n    ports:\n      - ${PORT_WEB}:8787\n    volumes:\n      - ${APP_DATA}/config:/config\n      - ${SHARE_DATA}:/data\n",
+      "icon": "icons/bookshelf.png",
+      "digest": "sha256:da334a1e31fb12f55fe5496eecf1136fe5b91201a0081069b7a6375c93e996b0"
+    },
+    {
+      "id": "cross-seed",
+      "name": "cross-seed",
+      "tagline": "Seeds the torrents you already have on more trackers",
+      "description": "cross-seed finds the torrents you already have on other trackers. It\ncompares the contents of qBittorrent with the search results and RSS\nfeeds of your Torznab indexers, from Prowlarr for example, and adds every\nmatch to qBittorrent, linked to the data that is already there: you seed\nthe same files on more trackers without downloading them again. It checks\nthe RSS feeds every 30 minutes and searches your library once a day;\nthrough its API, qBittorrent and autobrr can start a search as soon as a\ndownload finishes or a release is announced. It is meant mainly for\nprivate trackers and has no interface; it is configured through a file.\n",
+      "categories": [
+        "downloads"
+      ],
+      "developer": "cross-seed contributors",
+      "website": "https://www.cross-seed.org",
+      "source": "https://github.com/cross-seed/cross-seed",
+      "license": "Apache-2.0",
+      "maintainers": [
+        "mavnezz"
+      ],
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "notes": "cross-seed only runs once config.js in the folder config of the app's\ndata is filled in; the file appears at the first start. Enter the\nTorznab URLs of your indexers under torznab, from Prowlarr for example\nhttp://host.docker.internal:9696/1/api?apikey=…, qBittorrent under\ntorrentClients as qbittorrent:http://user:password@host.docker.internal:8080\nand a folder in the share under linkDirs, such as\n/data/torrents/cross-seed, then restart the app. For calls from\nqBittorrent or autobrr to port 2468, also set apiKey (at least 24\ncharacters).\n",
+      "ports": [
+        {
+          "id": "api",
+          "label": "API for qBittorrent and autobrr",
+          "default": 2468
+        }
+      ],
+      "shares": [
+        {
+          "id": "data",
+          "label": "Media and downloads",
+          "description": "One share for downloads and library, the same in every app of the media stack: then files are moved and hard-linked instead of copied.",
+          "access": "read-write"
+        }
+      ],
+      "translations": {
+        "de": {
+          "tagline": "Vorhandene Torrents auf weiteren Trackern seeden",
+          "description": "cross-seed findet die Torrents, die du schon hast, auf anderen\nTrackern. Es vergleicht den Inhalt von qBittorrent mit den\nSuchergebnissen und RSS-Feeds deiner Torznab-Indexer, etwa aus\nProwlarr, und fügt jeden Treffer in qBittorrent hinzu, verlinkt mit\nden vorhandenen Daten: Du seedest dieselben Dateien auf mehr Trackern,\nohne sie erneut herunterzuladen. Es prüft die RSS-Feeds alle 30\nMinuten und durchsucht deine Bibliothek einmal am Tag; über seine API\nkönnen qBittorrent und autobrr eine Suche starten, sobald ein Download\nfertig ist oder ein Release angekündigt wird. Es ist vor allem für\nprivate Tracker gedacht und hat keine Oberfläche; eingerichtet wird es\nüber eine Datei.\n",
+          "notes": "cross-seed läuft erst, wenn config.js im Ordner config der App-Daten\nausgefüllt ist; die Datei entsteht beim ersten Start. Trage unter\ntorznab die Torznab-URLs deiner Indexer ein, aus Prowlarr etwa\nhttp://host.docker.internal:9696/1/api?apikey=…, unter torrentClients\nqBittorrent als\nqbittorrent:http://benutzer:passwort@host.docker.internal:8080 und\nunter linkDirs einen Ordner in der Freigabe wie\n/data/torrents/cross-seed, und starte die App dann neu. Für Aufrufe\nvon qBittorrent oder autobrr an Port 2468 setze außerdem apiKey\n(mindestens 24 Zeichen).\n"
+        }
+      },
+      "compose": "services:\n  cross-seed:\n    image: ghcr.io/cross-seed/cross-seed:6\n    restart: unless-stopped\n    user: \"${PUID}:${PGID}\"\n    command: daemon\n    environment:\n      TZ: ${TZ}\n    ports:\n      - ${PORT_API}:2468\n    extra_hosts:\n      - host.docker.internal:host-gateway\n    volumes:\n      - ${APP_DATA}/config:/config\n      - ${SHARE_DATA}:/data\n",
+      "icon": "icons/cross-seed.png",
+      "digest": "sha256:81abe9b7921dcb54095a01a9de4c1d130012107a5b8e4b382a9f2e42663c1537"
+    },
+    {
+      "id": "decluttarr",
+      "name": "Decluttarr",
+      "tagline": "Clears stalled and failed downloads out of Radarr and Sonarr",
+      "description": "Decluttarr keeps the download queues of Radarr and Sonarr clean. Every\nten minutes it removes downloads that failed, stalled, stay too slow,\nhang while fetching metadata, are missing files or belong to films and\nseries deleted in the meantime, as well as releases Radarr or Sonarr\nrefuse to import because they are no upgrade. Most of them go on the\nblocklist, and Radarr and Sonarr search for a replacement right away.\nWith access to qBittorrent it measures speeds there directly and leaves\ntorrents tagged `Keep` alone. It has no interface of its own.\n",
+      "categories": [
+        "downloads"
+      ],
+      "developer": "ManiMatter",
+      "website": "https://github.com/ManiMatter/decluttarr",
+      "source": "https://github.com/ManiMatter/decluttarr",
+      "license": "GPL-3.0-only",
+      "maintainers": [
+        "mavnezz"
+      ],
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "notes": "Radarr and Sonarr must use English as their interface language\n(Settings → UI): Decluttarr reads their status messages. The download\nclient must be named qBittorrent in Radarr and Sonarr, or Decluttarr\ndoes not find its torrents in qBittorrent.\n",
+      "settings": [
+        {
+          "id": "RADARR_URL",
+          "label": "Radarr address",
+          "type": "text",
+          "default": "http://host.docker.internal:7878",
+          "required": true
+        },
+        {
+          "id": "RADARR_API_KEY",
+          "label": "Radarr API key",
+          "description": "In Radarr under Settings → General.",
+          "type": "password",
+          "required": true
+        },
+        {
+          "id": "SONARR_URL",
+          "label": "Sonarr address",
+          "type": "text",
+          "default": "http://host.docker.internal:8989",
+          "required": true
+        },
+        {
+          "id": "SONARR_API_KEY",
+          "label": "Sonarr API key",
+          "description": "In Sonarr under Settings → General.",
+          "type": "password",
+          "required": true
+        },
+        {
+          "id": "QBITTORRENT_URL",
+          "label": "qBittorrent address",
+          "type": "text",
+          "default": "http://host.docker.internal:8080",
+          "required": true
+        },
+        {
+          "id": "QBITTORRENT_API_KEY",
+          "label": "qBittorrent API key",
+          "description": "In qBittorrent under Tools → Options → WebUI → API Key. Without it, Decluttarr works from the queues of Radarr and Sonarr alone.",
+          "type": "password"
+        }
+      ],
+      "translations": {
+        "de": {
+          "tagline": "Hängende und fehlgeschlagene Downloads aus Radarr und Sonarr räumen",
+          "description": "Decluttarr hält die Download-Warteschlangen von Radarr und Sonarr\nsauber. Alle zehn Minuten entfernt es Downloads, die fehlgeschlagen\nsind, stocken, dauerhaft zu langsam sind, beim Laden der Metadaten\nhängen, denen Dateien fehlen oder die zu inzwischen gelöschten Filmen\nund Serien gehören, dazu Releases, die Radarr oder Sonarr nicht\nimportieren, weil sie keine Verbesserung sind. Die meisten landen auf\nder Sperrliste, und Radarr und Sonarr suchen sofort nach Ersatz. Mit\nZugriff auf qBittorrent misst es die Geschwindigkeit direkt dort und\nlässt Torrents mit dem Tag `Keep` in Ruhe. Eine eigene Oberfläche hat\nes nicht.\n",
+          "notes": "Radarr und Sonarr müssen Englisch als Sprache der Oberfläche nutzen\n(Settings → UI), denn Decluttarr liest ihre Statusmeldungen. Der\nDownload-Client muss in Radarr und Sonarr qBittorrent heißen, sonst\nfindet Decluttarr seine Torrents in qBittorrent nicht.\n"
+        }
+      },
+      "compose": "services:\n  decluttarr:\n    image: ghcr.io/manimatter/decluttarr:latest\n    restart: unless-stopped\n    environment:\n      TZ: ${TZ}\n      REMOVE_FAILED_DOWNLOADS: \"true\"\n      REMOVE_FAILED_IMPORTS: |\n        message_patterns:\n          - \"Not a Custom Format upgrade for existing*\"\n          - \"Not an upgrade for existing*\"\n      REMOVE_METADATA_MISSING: \"true\"\n      REMOVE_MISSING_FILES: \"true\"\n      REMOVE_ORPHANS: \"true\"\n      REMOVE_SLOW: \"true\"\n      REMOVE_STALLED: \"true\"\n      RADARR: |\n        - base_url: \"${RADARR_URL}\"\n          api_key: \"${RADARR_API_KEY}\"\n      SONARR: |\n        - base_url: \"${SONARR_URL}\"\n          api_key: \"${SONARR_API_KEY}\"\n      QBITTORRENT: |\n        - base_url: \"${QBITTORRENT_URL}\"\n          api_key: \"${QBITTORRENT_API_KEY}\"\n    extra_hosts:\n      - host.docker.internal:host-gateway\n",
+      "icon": "icons/decluttarr.png",
+      "digest": "sha256:b335bbb83f218721b98371081e2207bddb228fa50a05c3376bd551ecef788063"
+    },
+    {
+      "id": "dispatcharr",
+      "name": "Dispatcharr",
+      "tagline": "Manages IPTV channels, programme guides and streams",
+      "description": "Dispatcharr collects channels from IPTV playlists, matches them with\nprogramme guides (EPG) and logos and offers them as a tuner that Jellyfin,\nPlex and other players can use. It groups and renames channels, switches\nto a backup stream when one fails and can buffer and re-stream through\nFFmpeg, with the GPU if the NAS has one.\n",
+      "categories": [
+        "media"
+      ],
+      "developer": "Dispatcharr contributors",
+      "website": "https://dispatcharr.tv",
+      "source": "https://github.com/Dispatcharr/Dispatcharr",
+      "license": "AGPL-3.0-only",
+      "maintainers": [
+        "mavnezz"
+      ],
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "notes": "Create the administrator account when you open the app. Players reach the\ntuner at the NAS's address on the same port.\n",
+      "web": {
+        "port": "web",
+        "path": "/",
+        "scheme": "http"
+      },
+      "ports": [
+        {
+          "id": "web",
+          "label": "Web interface and tuner",
+          "default": 9191
+        }
+      ],
+      "permissions": {
+        "devices": [
+          "/dev/dri"
+        ]
+      },
+      "translations": {
+        "de": {
+          "tagline": "IPTV-Sender, Programmführer und Streams verwalten",
+          "description": "Dispatcharr sammelt Sender aus IPTV-Playlists, ordnet ihnen\nProgrammführer (EPG) und Logos zu und stellt sie als Tuner bereit, den\nJellyfin, Plex und andere Player nutzen können. Es gruppiert und\nbenennt Sender um, wechselt bei Ausfällen auf einen Ersatz-Stream und\nkann über FFmpeg puffern und weiterstreamen, mit der GPU, wenn das NAS\neine hat.\n",
+          "notes": "Lege beim ersten Aufruf das Administratorkonto an. Player erreichen\nden Tuner über die Adresse des NAS auf demselben Port.\n"
+        }
+      },
+      "compose": "services:\n  dispatcharr:\n    image: ghcr.io/dispatcharr/dispatcharr:latest\n    restart: unless-stopped\n    environment:\n      TZ: ${TZ}\n      DISPATCHARR_ENV: aio\n      REDIS_HOST: localhost\n      CELERY_BROKER_URL: redis://localhost:6379/0\n      DISPATCHARR_LOG_LEVEL: info\n    ports:\n      - ${PORT_WEB}:9191\n    volumes:\n      - ${APP_DATA}/data:/data\n    devices:\n      - /dev/dri:/dev/dri\n",
+      "icon": "icons/dispatcharr.png",
+      "digest": "sha256:4c80c485070446bf7d71cf66981a37e0a60f16e7596dfdec08d028949cc3e8f6"
+    },
+    {
+      "id": "flaresolverr",
+      "name": "FlareSolverr",
+      "tagline": "Gets indexers past Cloudflare's browser check",
+      "description": "FlareSolverr is a proxy that opens pages in a headless browser, waits\nuntil the challenge of Cloudflare or DDoS-Guard has passed and hands back\nthe page and its cookies. Prowlarr uses it for indexers whose sites sit\nbehind such a check. It has no interface of its own.\n",
+      "categories": [
+        "downloads"
+      ],
+      "developer": "FlareSolverr contributors",
+      "website": "https://github.com/FlareSolverr/FlareSolverr",
+      "source": "https://github.com/FlareSolverr/FlareSolverr",
+      "license": "MIT",
+      "maintainers": [
+        "mavnezz"
+      ],
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "notes": "In Prowlarr, add FlareSolverr under Settings → Indexers as a proxy at\nhttp://<NAS address>:8191 and give it a tag; indexers with that tag use\nit.\n",
+      "ports": [
+        {
+          "id": "api",
+          "label": "Proxy for Prowlarr",
+          "default": 8191
+        }
+      ],
+      "translations": {
+        "de": {
+          "tagline": "Indexer an der Browserprüfung von Cloudflare vorbeibringen",
+          "description": "FlareSolverr ist ein Proxy, der Seiten in einem unsichtbaren Browser\nöffnet, wartet, bis die Prüfung von Cloudflare oder DDoS-Guard\nbestanden ist, und Seite und Cookies zurückgibt. Prowlarr nutzt ihn\nfür Indexer, deren Seiten hinter so einer Prüfung liegen. Eine eigene\nOberfläche hat er nicht.\n",
+          "notes": "Füge FlareSolverr in Prowlarr unter Settings → Indexers als Proxy mit\nhttp://<Adresse des NAS>:8191 hinzu und gib ihm ein Tag; Indexer mit\ndiesem Tag nutzen ihn.\n"
+        }
+      },
+      "compose": "services:\n  flaresolverr:\n    image: ghcr.io/flaresolverr/flaresolverr:latest\n    restart: unless-stopped\n    environment:\n      TZ: ${TZ}\n      LOG_LEVEL: info\n    ports:\n      - ${PORT_API}:8191\n",
+      "icon": "icons/flaresolverr.png",
+      "digest": "sha256:131869dbc338a351978b5c7646888385f7fe742db14f54db22705c83561e296b"
+    },
+    {
+      "id": "homarr",
+      "name": "Homarr",
+      "tagline": "A start page for the apps and services on your network",
+      "description": "Homarr is a dashboard for the apps you run. Boards are put together in the\nbrowser by drag and drop, without configuration files: tiles open your\napps and show whether they respond, and widgets show data from more than\n80 integrations, such as running downloads in qBittorrent, upcoming\nepisodes and films from Sonarr and Radarr, what is playing on Jellyfin or\nPlex, blocked queries in Pi-hole or AdGuard Home and the state of Home\nAssistant entities. A search covers the boards and the connected apps.\nHomarr has its own user accounts and groups with permissions per board,\nand can sign in through OIDC or LDAP. With access to Docker it lists the\ncontainers on the NAS and starts, stops and restarts them.\n",
+      "categories": [
+        "productivity",
+        "monitoring"
+      ],
+      "developer": "Homarr Labs",
+      "website": "https://homarr.dev",
+      "source": "https://github.com/homarr-labs/homarr",
+      "license": "Apache-2.0",
+      "maintainers": [
+        "mavnezz"
+      ],
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "notes": "On the first visit, create the administrator account in the onboarding.\nAdd apps and integrations with the NAS's address and their ports, for\nexample http://192.168.1.10:8096. Homarr gets the Docker socket for its\nDocker integration: the containers widget and page list every container on\nthe NAS and can start, stop, restart and remove them.\n",
+      "web": {
+        "port": "web",
+        "path": "/",
+        "scheme": "http"
+      },
+      "ports": [
+        {
+          "id": "web",
+          "label": "Web interface",
+          "default": 7575
+        }
+      ],
+      "settings": [
+        {
+          "id": "SECRET_ENCRYPTION_KEY",
+          "label": "Encryption key",
+          "type": "password",
+          "generate": true,
+          "length": 64,
+          "alphabet": "hex"
+        }
+      ],
+      "permissions": {
+        "docker_socket": true
+      },
+      "translations": {
+        "de": {
+          "tagline": "Eine Startseite für die Apps und Dienste in deinem Netzwerk",
+          "description": "Homarr ist ein Dashboard für deine Apps. Boards stellst du im Browser\nper Drag-and-drop zusammen, ohne Konfigurationsdateien: Kacheln öffnen\ndeine Apps und zeigen, ob sie antworten, und Widgets zeigen Daten aus\nmehr als 80 Integrationen, etwa laufende Downloads in qBittorrent,\nkommende Folgen und Filme aus Sonarr und Radarr, was gerade auf\nJellyfin oder Plex läuft, blockierte Anfragen in Pi-hole oder AdGuard\nHome und den Zustand von Home-Assistant-Entitäten. Eine Suche\ndurchsucht die Boards und die verbundenen Apps. Homarr hat eigene\nBenutzerkonten und Gruppen mit Rechten pro Board und kann sich über\nOIDC oder LDAP anmelden. Mit Zugriff auf Docker listet es die\nContainer auf dem NAS auf und startet, stoppt und startet sie neu.\n",
+          "notes": "Lege beim ersten Aufruf im Einrichtungsassistenten das\nAdministratorkonto an. Apps und Integrationen fügst du mit der Adresse\ndes NAS und ihren Ports hinzu, zum Beispiel http://192.168.1.10:8096.\nHomarr bekommt den Docker-Socket für seine Docker-Integration: Widget\nund Seite für Container listen alle Container auf dem NAS auf und\nkönnen sie starten, stoppen, neu starten und entfernen.\n"
+        }
+      },
+      "compose": "services:\n  homarr:\n    image: ghcr.io/homarr-labs/homarr:latest\n    restart: unless-stopped\n    environment:\n      TZ: ${TZ}\n      SECRET_ENCRYPTION_KEY: ${SECRET_ENCRYPTION_KEY}\n    ports:\n      - ${PORT_WEB}:7575\n    volumes:\n      - ${APP_DATA}/appdata:/appdata\n      - /var/run/docker.sock:/var/run/docker.sock\n",
+      "icon": "icons/homarr.png",
+      "digest": "sha256:aad864205486592864574389a4995cb3585e21154dbdc5dab80df4ee44db09b8"
     },
     {
       "id": "home-assistant",
       "name": "Home Assistant",
-      "version": "2026.11.0",
       "tagline": "Control and automate the devices in your home",
       "description": "Home Assistant is a home automation platform that runs on your own\nhardware. Through integrations it connects lights, switches, sensors,\nthermostats, media players and thousands of other devices and services,\nand finds many of them on the home network by itself. Dashboards show the\nstate of the home and control it; automations react to the time of day,\npresence and sensor values. Data stays local, and no cloud account is\nneeded.\n",
       "categories": [
@@ -129,7 +478,7 @@
         "amd64",
         "arm64"
       ],
-      "notes": "Create the first account in the onboarding wizard. The app uses the host\nnetwork so that it can find devices on the home network; its web interface\nis always on port 8123. Bluetooth and USB adapters (Zigbee, Z-Wave) are not\navailable to the app; use adapters or bridges that connect over the network\ninstead. The add-on store of Home Assistant OS is not part of this\ninstallation.\n",
+      "notes": "Create the first account in the onboarding wizard. The app uses the host\nnetwork so that it can find devices on the home network; its web interface\nis always on port 8123. Zigbee and Z-Wave sticks reach the app as\n/dev/ttyUSB0, /dev/ttyUSB1, /dev/ttyACM0 or /dev/ttyACM1 when they are\nplugged in before the app starts. Bluetooth is not available, because it\nwould need the system bus of the NAS; ESPHome Bluetooth proxies work\ninstead. The add-on store of Home Assistant OS is not part of this\ninstallation.\n",
       "web": {
         "port": "web",
         "path": "/",
@@ -144,23 +493,28 @@
         }
       ],
       "permissions": {
+        "devices": [
+          "/dev/ttyUSB0",
+          "/dev/ttyUSB1",
+          "/dev/ttyACM0",
+          "/dev/ttyACM1"
+        ],
         "host_network": true
       },
       "translations": {
         "de": {
           "tagline": "Geräte im Haus steuern und automatisieren",
           "description": "Home Assistant ist eine Plattform für die Hausautomation, die auf\neigener Hardware läuft. Über Integrationen bindet sie Lampen,\nSchalter, Sensoren, Thermostate, Mediaplayer und Tausende weitere\nGeräte und Dienste an und findet viele davon selbst im Heimnetz.\nDashboards zeigen den Zustand des Hauses und steuern es;\nAutomatisierungen reagieren auf Tageszeit, Anwesenheit und Messwerte.\nDie Daten bleiben lokal, ein Cloud-Konto ist nicht nötig.\n",
-          "notes": "Lege im Einrichtungsassistenten das erste Konto an. Die App nutzt das\nNetzwerk des Hosts, damit sie Geräte im Heimnetz findet; ihre\nWeboberfläche liegt deshalb immer auf Port 8123. Bluetooth und\nUSB-Adapter (Zigbee, Z-Wave) stehen der App nicht zur Verfügung;\nverwende stattdessen Adapter oder Bridges, die über das Netzwerk\nangebunden werden. Den Add-on-Store von Home Assistant OS gibt es in\ndieser Installation nicht.\n"
+          "notes": "Lege im Einrichtungsassistenten das erste Konto an. Die App nutzt das\nNetzwerk des Hosts, damit sie Geräte im Heimnetz findet; ihre\nWeboberfläche liegt deshalb immer auf Port 8123. Zigbee- und\nZ-Wave-Sticks erreichen die App als /dev/ttyUSB0, /dev/ttyUSB1,\n/dev/ttyACM0 oder /dev/ttyACM1, wenn sie vor dem Start der App\neingesteckt sind. Bluetooth steht nicht zur Verfügung, weil es den\nSystembus des NAS bräuchte; ESPHome-Bluetooth-Proxys funktionieren\nstattdessen. Den Add-on-Store von Home Assistant OS gibt es in dieser\nInstallation nicht.\n"
         }
       },
-      "compose": "services:\n  home-assistant:\n    image: ghcr.io/home-assistant/home-assistant:2026.11.0@sha256:c6c1ca9931036bf3a2c4cc088d8db25dfea3b33935a5ecc83c40349462e2f69e\n    restart: unless-stopped\n    network_mode: host\n    stop_grace_period: 60s\n    environment:\n      TZ: ${TZ}\n    volumes:\n      - ${APP_DATA}/config:/config\n",
+      "compose": "services:\n  home-assistant:\n    image: ghcr.io/home-assistant/home-assistant:stable\n    restart: unless-stopped\n    network_mode: host\n    stop_grace_period: 60s\n    environment:\n      TZ: ${TZ}\n    volumes:\n      - ${APP_DATA}/config:/config\n    devices:\n      - /dev/ttyUSB0:/dev/ttyUSB0\n      - /dev/ttyUSB1:/dev/ttyUSB1\n      - /dev/ttyACM0:/dev/ttyACM0\n      - /dev/ttyACM1:/dev/ttyACM1\n",
       "icon": "icons/home-assistant.png",
-      "digest": "sha256:8155b3adfa7ad93ed86c6d4799ef75c136b8138aff9a33e228c6d88b1de06207"
+      "digest": "sha256:53bcadf169e3e55a36d08d46850241927e16103733b0a4a202dfd768aba567ae"
     },
     {
       "id": "immich",
       "name": "Immich",
-      "version": "3.3.6",
       "tagline": "Back up and browse the photos and videos from your phones",
       "description": "Immich backs up the photos and videos from your phones to the NAS. The\nmobile apps upload new pictures in the background; the web interface and\nthe apps show them on a timeline, on a map and in albums. Immich\nrecognises faces, finds pictures by what they show (\"dog on the beach\"),\nreads their metadata and lets you share albums with other accounts or by\nlink. Every member of the household gets their own account and storage.\nFace recognition and search run on the NAS itself.\n",
       "categories": [
@@ -214,14 +568,52 @@
           "notes": "Öffne die Weboberfläche und lege das erste Konto an; es wird\nAdministrator. Immich legt in der Foto-Freigabe eine eigene\nOrdnerstruktur an (library, upload, thumbs und weitere): Füge Bilder\nüber Immich hinzu und lösche sie dort, nicht durch Ändern der Dateien in\nder Freigabe.\n"
         }
       },
-      "compose": "services:\n  immich-server:\n    image: ghcr.io/immich-app/immich-server:v3.3.6@sha256:e1981983b1c13f6024b57d72e7ecae3342eed1581201ab09fb248932d86c593a\n    restart: unless-stopped\n    user: \"${PUID}:${PGID}\"\n    security_opt:\n      - no-new-privileges:true\n    cap_drop:\n      - NET_RAW\n    environment:\n      TZ: ${TZ}\n      DB_USERNAME: postgres\n      DB_PASSWORD: ${DB_PASSWORD}\n      DB_DATABASE_NAME: immich\n    ports:\n      - ${PORT_WEB}:2283\n    volumes:\n      - ${SHARE_PHOTOS}:/data\n    depends_on:\n      - redis\n      - database\n\n  immich-machine-learning:\n    image: ghcr.io/immich-app/immich-machine-learning:v3.3.6@sha256:14367bfb374b8576ddf49abd67c5ca0190a4c7fcf6303cdad65d7f7bf1a50bc2\n    restart: unless-stopped\n    user: \"${PUID}:${PGID}\"\n    security_opt:\n      - no-new-privileges:true\n    cap_drop:\n      - NET_RAW\n    environment:\n      TZ: ${TZ}\n    volumes:\n      - ${APP_DATA}/model-cache:/cache\n\n  redis:\n    image: docker.io/valkey/valkey:9@sha256:c123e3715db63d06d4ad6964884037aa0d5d4d703939b9929954112889708e1d\n    restart: unless-stopped\n    user: \"${PUID}:${PGID}\"\n    security_opt:\n      - no-new-privileges:true\n    cap_drop:\n      - NET_RAW\n    volumes:\n      - ${APP_DATA}/redis:/data\n    healthcheck:\n      test: redis-cli ping | grep -q PONG || exit 1\n\n  database:\n    image: ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0@sha256:bcf63357191b76a916ae5eb93464d65c07511da41e3bf7a8416db519b40b1c23\n    restart: unless-stopped\n    user: \"${PUID}:${PGID}\"\n    security_opt:\n      - no-new-privileges:true\n    cap_drop:\n      - NET_RAW\n    environment:\n      POSTGRES_USER: postgres\n      POSTGRES_PASSWORD: ${DB_PASSWORD}\n      POSTGRES_DB: immich\n      POSTGRES_INITDB_ARGS: --data-checksums\n    volumes:\n      - ${APP_DATA}/postgres:/var/lib/postgresql/data\n    shm_size: 128mb\n",
+      "compose": "services:\n  immich-server:\n    image: ghcr.io/immich-app/immich-server:release\n    restart: unless-stopped\n    user: \"${PUID}:${PGID}\"\n    security_opt:\n      - no-new-privileges:true\n    cap_drop:\n      - NET_RAW\n    environment:\n      TZ: ${TZ}\n      DB_USERNAME: postgres\n      DB_PASSWORD: ${DB_PASSWORD}\n      DB_DATABASE_NAME: immich\n    ports:\n      - ${PORT_WEB}:2283\n    volumes:\n      - ${SHARE_PHOTOS}:/data\n    depends_on:\n      - redis\n      - database\n\n  immich-machine-learning:\n    image: ghcr.io/immich-app/immich-machine-learning:release\n    restart: unless-stopped\n    user: \"${PUID}:${PGID}\"\n    security_opt:\n      - no-new-privileges:true\n    cap_drop:\n      - NET_RAW\n    environment:\n      TZ: ${TZ}\n    volumes:\n      - ${APP_DATA}/model-cache:/cache\n\n  redis:\n    image: docker.io/valkey/valkey:9\n    restart: unless-stopped\n    user: \"${PUID}:${PGID}\"\n    security_opt:\n      - no-new-privileges:true\n    cap_drop:\n      - NET_RAW\n    volumes:\n      - ${APP_DATA}/redis:/data\n    healthcheck:\n      test: redis-cli ping | grep -q PONG || exit 1\n\n  database:\n    image: ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0\n    restart: unless-stopped\n    user: \"${PUID}:${PGID}\"\n    security_opt:\n      - no-new-privileges:true\n    cap_drop:\n      - NET_RAW\n    environment:\n      POSTGRES_USER: postgres\n      POSTGRES_PASSWORD: ${DB_PASSWORD}\n      POSTGRES_DB: immich\n      POSTGRES_INITDB_ARGS: --data-checksums\n    volumes:\n      - ${APP_DATA}/postgres:/var/lib/postgresql/data\n    shm_size: 128mb\n",
       "icon": "icons/immich.png",
-      "digest": "sha256:39d4cad6459948691c810b45bc01bfec7f36dd333199bc3e2028232518f670cf"
+      "digest": "sha256:e08cb098786f7c1e94e0e03e2b34d8e2c7ed8be60bb59f72f557b63a7d657ade"
+    },
+    {
+      "id": "janitorr",
+      "name": "Janitorr",
+      "tagline": "Deletes films and series nobody watches before the disk runs full",
+      "description": "Janitorr cleans up a library managed by Radarr and Sonarr. It deletes\nfilms and seasons by age: how long ago they were downloaded or, with\nJellystat or Streamystats, last watched. The fuller the disk, the sooner\nthey go; with enough free space nothing is deleted. Tags in Radarr and\nSonarr keep media for good or give it its own expiry, and shows can be\nthinned out to their newest episodes. Janitorr also removes the matching\nrequests in Seerr and the leftovers in Jellyfin or Emby, and can show a\n\"Leaving soon\" collection in Jellyfin before anything goes. It has no\ninterface; it is configured through a file.\n",
+      "categories": [
+        "media"
+      ],
+      "developer": "Schaka",
+      "website": "https://github.com/Schaka/janitorr",
+      "source": "https://github.com/Schaka/janitorr",
+      "license": "GPL-3.0-only",
+      "maintainers": [
+        "mavnezz"
+      ],
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "notes": "Janitorr deletes media. Copy the template\nhttps://github.com/Schaka/janitorr/blob/main/src/main/resources/application-template.yml\nas application.yml into the folder config of the app's data, fill in\nRadarr, Sonarr, Jellyfin and Seerr with addresses such as\nhttp://host.docker.internal:7878 and their API keys, and restart the app.\nLeave dry-run: true until the log in the folder logs shows only what\nshould go. \"Leaving soon\" needs Jellyfin to see the library under /data,\nas Janitorr does.\n",
+      "shares": [
+        {
+          "id": "data",
+          "label": "Media and downloads",
+          "description": "One share for downloads and library, the same in every app of the media stack: then files are moved and hard-linked instead of copied.",
+          "access": "read-write"
+        }
+      ],
+      "translations": {
+        "de": {
+          "tagline": "Filme und Serien löschen, die niemand schaut, bevor die Platte voll ist",
+          "description": "Janitorr räumt eine Bibliothek auf, die Radarr und Sonarr verwalten.\nEs löscht Filme und Staffeln nach Alter: wie lange der Download oder,\nmit Jellystat oder Streamystats, das letzte Anschauen her ist. Je\nvoller die Platte, desto früher; bei genug freiem Platz wird nichts\ngelöscht. Tags in Radarr und Sonarr schützen Medien dauerhaft oder\ngeben ihnen eine eigene Frist, und Serien lassen sich auf ihre neuesten\nFolgen ausdünnen. Janitorr entfernt außerdem die passenden Anfragen in\nSeerr und die Reste in Jellyfin oder Emby und kann vorher in Jellyfin\neine Sammlung „Leaving soon“ zeigen. Eine Oberfläche hat es nicht; es\nwird über eine Datei eingerichtet.\n",
+          "notes": "Janitorr löscht Medien. Kopiere die Vorlage\nhttps://github.com/Schaka/janitorr/blob/main/src/main/resources/application-template.yml\nals application.yml in den Ordner config der App-Daten, trage Radarr,\nSonarr, Jellyfin und Seerr mit Adressen wie\nhttp://host.docker.internal:7878 und ihren API-Schlüsseln ein und\nstarte die App neu. Lass dry-run: true stehen, bis das Log im Ordner\nlogs nur zeigt, was wirklich weg soll. „Leaving soon“ setzt voraus,\ndass Jellyfin die Bibliothek wie Janitorr unter /data sieht.\n"
+        }
+      },
+      "compose": "services:\n  janitorr:\n    image: ghcr.io/schaka/janitorr:jvm-stable\n    restart: unless-stopped\n    user: \"${PUID}:${PGID}\"\n    mem_limit: 256m\n    environment:\n      TZ: ${TZ}\n    extra_hosts:\n      - host.docker.internal:host-gateway\n    volumes:\n      - ${APP_DATA}/config:/config\n      - ${APP_DATA}/logs:/logs\n      - ${SHARE_DATA}:/data\n",
+      "icon": "icons/janitorr.png",
+      "digest": "sha256:1a3ab65cc88b47e2666934551e185c96d6fbb29de695a98b58cf7fa8e852eb2c"
     },
     {
       "id": "jellyfin",
       "name": "Jellyfin",
-      "version": "12.4",
       "tagline": "Stream your films, series and music to every device",
       "description": "Jellyfin is a free media server. It sorts your films, series, music and\nphotos into a library with posters and descriptions, and streams them to\nbrowsers, phones, TVs and media players. It converts video on the fly when\na device cannot play the original, and gives every member of the household\ntheir own account, watch history and parental controls. No subscription,\nno cloud account.\n",
       "categories": [
@@ -238,7 +630,7 @@
         "amd64",
         "arm64"
       ],
-      "notes": "Create the first account in the setup wizard, then add libraries from the\nfolder /media. With a GPU in the NAS, turn on hardware acceleration under\nDashboard → Playback → Transcoding.\n",
+      "notes": "Create the first account in the setup wizard, then add libraries from the\nfolder /data. With a GPU in the NAS, turn on hardware acceleration under\nDashboard → Playback → Transcoding.\n",
       "web": {
         "port": "web",
         "path": "/",
@@ -253,9 +645,9 @@
       ],
       "shares": [
         {
-          "id": "media",
-          "label": "Media library",
-          "description": "The share with your films, series and music.",
+          "id": "data",
+          "label": "Media and downloads",
+          "description": "One share for downloads and library, the same in every app of the media stack: then files are moved and hard-linked instead of copied.",
           "access": "read-only"
         }
       ],
@@ -268,26 +660,26 @@
         "de": {
           "tagline": "Filme, Serien und Musik auf jedes Gerät streamen",
           "description": "Jellyfin ist ein freier Medienserver. Er ordnet Filme, Serien, Musik\nund Fotos in eine Bibliothek mit Covern und Beschreibungen und streamt\nsie in den Browser, aufs Handy, auf Fernseher und Mediaplayer. Kann ein\nGerät das Original nicht abspielen, wandelt Jellyfin das Video beim\nAbspielen um. Jedes Mitglied des Haushalts bekommt ein eigenes Konto mit\neigenem Verlauf und Jugendschutz. Ohne Abo, ohne Cloud-Konto.\n",
-          "notes": "Lege im Einrichtungsassistenten das erste Konto an und füge dann\nBibliotheken aus dem Ordner /media hinzu. Hat das NAS eine GPU, schalte\nunter Dashboard → Wiedergabe → Transkodierung die Hardwarebeschleunigung\nein.\n"
+          "notes": "Lege im Einrichtungsassistenten das erste Konto an und füge dann\nBibliotheken aus dem Ordner /data hinzu. Hat das NAS eine GPU, schalte\nunter Dashboard → Wiedergabe → Transkodierung die Hardwarebeschleunigung\nein.\n"
         }
       },
-      "compose": "services:\n  jellyfin:\n    image: lscr.io/linuxserver/jellyfin:12.4ubu2604-ls58@sha256:b7eabe1f098f4e850bfd63d6721369117195410a471db1a41748ab768b81a639\n    restart: unless-stopped\n    environment:\n      PUID: ${PUID}\n      PGID: ${PGID}\n      TZ: ${TZ}\n    ports:\n      - ${PORT_WEB}:8096\n    volumes:\n      - ${APP_DATA}/config:/config\n      - ${SHARE_MEDIA}:/media:ro\n    devices:\n      - /dev/dri:/dev/dri\n",
+      "compose": "services:\n  jellyfin:\n    image: lscr.io/linuxserver/jellyfin:latest\n    restart: unless-stopped\n    environment:\n      PUID: ${PUID}\n      PGID: ${PGID}\n      TZ: ${TZ}\n    ports:\n      - ${PORT_WEB}:8096\n    volumes:\n      - ${APP_DATA}/config:/config\n      - ${SHARE_DATA}:/data:ro\n    devices:\n      - /dev/dri:/dev/dri\n",
       "icon": "icons/jellyfin.png",
-      "digest": "sha256:f5f845edf760ec889c7044a26286168c6903aaf7a8fd54b0d56d3b99d2436517"
+      "digest": "sha256:55213e26bdf52ca6073d8b88e080a3e30a75fe61a0d896dadc68b11b3cef4eb9"
     },
     {
-      "id": "navidrome",
-      "name": "Navidrome",
-      "version": "0.64.2",
-      "tagline": "Stream your music collection to the browser and to Subsonic apps",
-      "description": "Navidrome is a music server. It reads your music collection with its tags\nand cover art and streams it to the browser. It speaks the Subsonic API,\nso it also works with the many Subsonic apps for phones and desktops, and\ncan convert music on the fly to a smaller format for mobile connections.\nPlaylists, favourites, ratings and play counts are kept per account, and\nevery member of the household gets their own. New and changed files in\nthe music share are picked up on their own.\n",
+      "id": "jellystat",
+      "name": "Jellystat",
+      "tagline": "Statistics on what is watched on your Jellyfin server",
+      "description": "Jellystat records what is played on a Jellyfin server and turns it into\nstatistics. It follows running sessions live and keeps a watch history per\nuser, film, series and library: what was watched, when, for how long, on\nwhich device and client, and whether it was played directly or\ntranscoded. Charts show activity by day, hour and library, the most\nwatched titles and the most active users. Jellystat syncs the libraries\non a schedule, can read the data of Jellyfin's Playback Reporting plugin\nand backs its database up to files you can restore. The developer is\nrewriting Jellystat from scratch; until then the current version receives\nfixes for major bugs only.\n",
       "categories": [
-        "media"
+        "media",
+        "monitoring"
       ],
-      "developer": "Navidrome contributors",
-      "website": "https://www.navidrome.org",
-      "source": "https://github.com/navidrome/navidrome",
-      "license": "GPL-3.0-only",
+      "developer": "CyferShepard",
+      "website": "https://github.com/CyferShepard/Jellystat",
+      "source": "https://github.com/CyferShepard/Jellystat",
+      "license": "MIT",
       "maintainers": [
         "mavnezz"
       ],
@@ -295,60 +687,7 @@
         "amd64",
         "arm64"
       ],
-      "notes": "Open the web interface and create the first account; it becomes the\nadministrator.\n",
-      "web": {
-        "port": "web",
-        "path": "/",
-        "scheme": "http"
-      },
-      "ports": [
-        {
-          "id": "web",
-          "label": "Web interface and Subsonic API",
-          "default": 4533
-        }
-      ],
-      "shares": [
-        {
-          "id": "music",
-          "label": "Music library",
-          "description": "The share with your music.",
-          "access": "read-only"
-        }
-      ],
-      "translations": {
-        "de": {
-          "tagline": "Die eigene Musiksammlung im Browser und in Subsonic-Apps hören",
-          "description": "Navidrome ist ein Musikserver. Er liest die Musiksammlung mit Tags und\nCovern ein und streamt sie in den Browser. Weil er die Subsonic-API\nspricht, funktioniert er auch mit den vielen Subsonic-Apps für Handy und\nDesktop, und er wandelt Musik bei Bedarf in ein kleineres Format für\nmobile Verbindungen um. Playlists, Favoriten, Bewertungen und\nWiedergabezähler gelten je Konto, und jedes Mitglied des Haushalts\nbekommt ein eigenes. Neue und geänderte Dateien in der Musik-Freigabe\nfindet Navidrome von selbst.\n",
-          "notes": "Öffne die Weboberfläche und lege das erste Konto an; es wird\nAdministrator.\n"
-        }
-      },
-      "compose": "services:\n  navidrome:\n    image: deluan/navidrome:0.64.2@sha256:38dc2727bfcfd5ede290f8ada114fc90368146f265ae4701ddddbcbe2a44ee52\n    restart: unless-stopped\n    user: \"${PUID}:${PGID}\"\n    environment:\n      TZ: ${TZ}\n    ports:\n      - ${PORT_WEB}:4533\n    volumes:\n      - ${APP_DATA}/data:/data\n      - ${SHARE_MUSIC}:/music:ro\n",
-      "icon": "icons/navidrome.png",
-      "digest": "sha256:8d213e2011c0d2dc1557019550e53885341555f5ebe36c1d5c8ddf3c2f0512b7"
-    },
-    {
-      "id": "nextcloud",
-      "name": "Nextcloud",
-      "version": "34.0.5",
-      "tagline": "Files, calendars and contacts on your own server",
-      "description": "Nextcloud keeps your files on the NAS and makes them available in the\nbrowser, in the desktop sync clients for Windows, macOS and Linux and in the\napps for Android and iOS. You can share files and folders with other users\nor by link, and keep earlier versions of a file. Calendars and contacts sync\nwith phones and computers over CalDAV and CardDAV. Further apps for notes,\ntasks, photos, chat or office documents can be added from the built-in app\nstore. This installation uses PostgreSQL as database and Redis for caching\nand file locking, and runs background jobs every five minutes.\n",
-      "categories": [
-        "files",
-        "productivity"
-      ],
-      "developer": "Nextcloud GmbH",
-      "website": "https://nextcloud.com",
-      "source": "https://github.com/nextcloud/server",
-      "license": "AGPL-3.0-or-later",
-      "maintainers": [
-        "mavnezz"
-      ],
-      "architectures": [
-        "amd64",
-        "arm64"
-      ],
-      "notes": "The database is already set up; the setup wizard only asks for the\nadministrator account. The address you open the wizard with becomes the\nonly trusted domain. To reach Nextcloud under another name later, for\nexample through a reverse proxy, add it to `trusted_domains` in\nnextcloud/config/config.php in the app's data folder.\n",
+      "notes": "On the first visit, create the Jellystat account, then enter Jellyfin by\nthe NAS's address and its port, for example http://192.168.1.10:8096, and\nan API key created in Jellyfin's dashboard under API Keys. The first sync\nof a large library takes a while.\n",
       "web": {
         "port": "web",
         "path": "/",
@@ -358,7 +697,7 @@
         {
           "id": "web",
           "label": "Web interface",
-          "default": 8081
+          "default": 3002
         }
       ],
       "settings": [
@@ -367,23 +706,131 @@
           "label": "Database password",
           "type": "password",
           "generate": true
+        },
+        {
+          "id": "JWT_SECRET",
+          "label": "Sign-in token secret",
+          "type": "password",
+          "generate": true
         }
       ],
       "translations": {
         "de": {
-          "tagline": "Dateien, Kalender und Kontakte auf dem eigenen Server",
-          "description": "Nextcloud speichert deine Dateien auf dem NAS und macht sie im Browser,\nin den Sync-Programmen für Windows, macOS und Linux und in den Apps für\nAndroid und iOS verfügbar. Dateien und Ordner lassen sich mit anderen\nBenutzern oder per Link teilen, ältere Versionen einer Datei bleiben\nerhalten. Kalender und Kontakte werden über CalDAV und CardDAV mit\nHandys und Computern abgeglichen. Weitere Apps für Notizen, Aufgaben,\nFotos, Chat oder Office-Dokumente lassen sich aus dem eingebauten\nApp-Store hinzufügen. Diese Installation nutzt PostgreSQL als Datenbank\nund Redis als Cache und für Dateisperren und führt Hintergrundaufgaben\nalle fünf Minuten aus.\n",
-          "notes": "Die Datenbank ist bereits eingerichtet; der Einrichtungsassistent fragt\nnur noch nach dem Administratorkonto. Die Adresse, unter der du den\nAssistenten öffnest, wird zur einzigen vertrauenswürdigen Domain. Soll\nNextcloud später unter einem anderen Namen erreichbar sein, etwa über\neinen Reverse Proxy, trage ihn unter `trusted_domains` in\nnextcloud/config/config.php im Datenordner der App ein.\n"
+          "tagline": "Statistiken darüber, was auf deinem Jellyfin-Server geschaut wird",
+          "description": "Jellystat zeichnet auf, was auf einem Jellyfin-Server abgespielt wird,\nund macht daraus Statistiken. Es verfolgt laufende Sitzungen live und\nführt einen Verlauf pro Benutzer, Film, Serie und Bibliothek: was\ngeschaut wurde, wann, wie lange, auf welchem Gerät und Client und ob\ndirekt abgespielt oder transkodiert. Diagramme zeigen die Aktivität nach\nTag, Uhrzeit und Bibliothek, die meistgesehenen Titel und die aktivsten\nBenutzer. Jellystat gleicht die Bibliotheken nach Zeitplan ab, kann die\nDaten des Jellyfin-Plugins Playback Reporting übernehmen und sichert\nseine Datenbank in Dateien, aus denen du sie wiederherstellen kannst.\nDer Entwickler schreibt Jellystat von Grund auf neu; bis dahin bekommt\ndie aktuelle Version nur Korrekturen für größere Fehler.\n",
+          "notes": "Lege beim ersten Aufruf das Jellystat-Konto an und gib dann Jellyfin\nmit der Adresse des NAS und seinem Port an, zum Beispiel\nhttp://192.168.1.10:8096, dazu einen API-Schlüssel, den du im\nJellyfin-Dashboard unter API-Schlüssel erstellst. Der erste Abgleich\neiner großen Bibliothek dauert eine Weile.\n"
         }
       },
-      "compose": "services:\n  nextcloud:\n    image: nextcloud:34.0.5-apache@sha256:7db1a3d4a72fabefe9aab8acac1b5d29b0fee74c3c325add5b6aa7f26c053e90\n    restart: unless-stopped\n    environment:\n      TZ: ${TZ}\n      POSTGRES_HOST: db\n      POSTGRES_DB: nextcloud\n      POSTGRES_USER: nextcloud\n      POSTGRES_PASSWORD: ${DB_PASSWORD}\n      REDIS_HOST: redis\n    ports:\n      - ${PORT_WEB}:80\n    volumes:\n      - ${APP_DATA}/nextcloud:/var/www/html\n    depends_on:\n      db:\n        condition: service_healthy\n      redis:\n        condition: service_started\n\n  cron:\n    image: nextcloud:34.0.5-apache@sha256:7db1a3d4a72fabefe9aab8acac1b5d29b0fee74c3c325add5b6aa7f26c053e90\n    restart: unless-stopped\n    entrypoint: /cron.sh\n    init: true\n    environment:\n      TZ: ${TZ}\n      REDIS_HOST: redis\n    volumes:\n      - ${APP_DATA}/nextcloud:/var/www/html\n    depends_on:\n      - nextcloud\n\n  db:\n    image: postgres:18.6-alpine@sha256:8a334ab9502c8ccb8d7dec4e83b36b5ce8ed7b396e585f1c86b0e69c416f4fca\n    restart: unless-stopped\n    user: ${PUID}:${PGID}\n    environment:\n      TZ: ${TZ}\n      POSTGRES_DB: nextcloud\n      POSTGRES_USER: nextcloud\n      POSTGRES_PASSWORD: ${DB_PASSWORD}\n    volumes:\n      - ${APP_DATA}/postgres:/var/lib/postgresql\n    healthcheck:\n      test: [CMD, pg_isready, -U, nextcloud, -d, nextcloud]\n      interval: 10s\n      timeout: 5s\n      retries: 6\n\n  redis:\n    image: redis:8.10.3-alpine@sha256:21090af93f8324db2f0f0f4f38a7c60369d47d917e000c3423d89d2ae2883537\n    restart: unless-stopped\n    command: [redis-server, --save, '', --appendonly, 'no']\n    tmpfs:\n      - /data\n",
-      "icon": "icons/nextcloud.png",
-      "digest": "sha256:56501904333116872fb80cf8d131d5d58026bad83fbc813e0875133cf022449a"
+      "compose": "services:\n  jellystat:\n    image: cyfershepard/jellystat:latest\n    restart: unless-stopped\n    environment:\n      TZ: ${TZ}\n      POSTGRES_USER: postgres\n      POSTGRES_PASSWORD: ${DB_PASSWORD}\n      POSTGRES_IP: database\n      POSTGRES_PORT: 5432\n      JWT_SECRET: ${JWT_SECRET}\n    ports:\n      - ${PORT_WEB}:3000\n    volumes:\n      - ${APP_DATA}/backup:/app/backend/backup-data\n    depends_on:\n      database:\n        condition: service_healthy\n\n  database:\n    image: postgres:18-alpine\n    restart: unless-stopped\n    environment:\n      TZ: ${TZ}\n      POSTGRES_USER: postgres\n      POSTGRES_PASSWORD: ${DB_PASSWORD}\n    volumes:\n      - ${APP_DATA}/postgres:/var/lib/postgresql\n    shm_size: 1gb\n    healthcheck:\n      test: pg_isready --dbname=postgres --username=postgres\n      interval: 10s\n      timeout: 5s\n      retries: 5\n",
+      "icon": "icons/jellystat.png",
+      "digest": "sha256:f36ef83c0c7faaeee94d639b626715095ab4e21a236bbbd6c8b24c93a7aed380"
+    },
+    {
+      "id": "kapowarr",
+      "name": "Kapowarr",
+      "tagline": "Builds and manages a library of comic books",
+      "description": "Kapowarr does for comics what Sonarr does for series. You add the volumes\nyou want, and it searches GetComics for their issues, trade paperbacks and\none-shots, downloads them directly or through services such as Mega and\nPixeldrain, or hands them to a torrent client. Finished downloads are\nrenamed by your naming scheme and moved into the volume's folder; archives\ncan be unpacked and converted. Metadata comes from Comic Vine, and an\nexisting collection can be imported.\n",
+      "categories": [
+        "media",
+        "downloads"
+      ],
+      "developer": "Cas van Tijn",
+      "website": "https://casvt.github.io/Kapowarr/",
+      "source": "https://github.com/Casvt/Kapowarr",
+      "license": "GPL-3.0-only",
+      "maintainers": [
+        "mavnezz"
+      ],
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "notes": "Enter a Comic Vine API key (free at https://comicvine.gamespot.com/api/)\nunder Settings → General and add a root folder below /data, such as\n/data/media/comics. Kapowarr asks for no password until you set one under\nSettings → General → Authentication.\n",
+      "web": {
+        "port": "web",
+        "path": "/",
+        "scheme": "http"
+      },
+      "ports": [
+        {
+          "id": "web",
+          "label": "Web interface",
+          "default": 5656
+        }
+      ],
+      "shares": [
+        {
+          "id": "data",
+          "label": "Media and downloads",
+          "description": "One share for downloads and library, the same in every app of the media stack: then files are moved and hard-linked instead of copied.",
+          "access": "read-write"
+        }
+      ],
+      "translations": {
+        "de": {
+          "tagline": "Eine Comic-Sammlung aufbauen und verwalten",
+          "description": "Kapowarr macht für Comics, was Sonarr für Serien macht. Du fügst die\ngewünschten Bände hinzu, und es sucht auf GetComics nach ihren Heften,\nSammelbänden und One-Shots, lädt sie direkt oder über Dienste wie Mega\nund Pixeldrain herunter oder übergibt sie an einen Torrent-Client.\nFertige Downloads werden nach deinem Namensschema umbenannt und in den\nOrdner des Bands verschoben; Archive lassen sich entpacken und\numwandeln. Die Metadaten kommen von Comic Vine, eine vorhandene\nSammlung lässt sich importieren.\n",
+          "notes": "Trage unter Settings → General einen Comic-Vine-API-Schlüssel ein\n(kostenlos unter https://comicvine.gamespot.com/api/) und füge einen\nRoot-Ordner unterhalb von /data hinzu, etwa /data/media/comics.\nKapowarr fragt nach keinem Passwort, bis du unter Settings → General →\nAuthentication eines festlegst.\n"
+        }
+      },
+      "compose": "services:\n  kapowarr:\n    image: mrcas/kapowarr:latest\n    restart: unless-stopped\n    environment:\n      PUID: ${PUID}\n      PGID: ${PGID}\n      TZ: ${TZ}\n    ports:\n      - ${PORT_WEB}:5656\n    volumes:\n      - ${APP_DATA}/db:/app/db\n      - ${APP_DATA}/temp_downloads:/app/temp_downloads\n      - ${SHARE_DATA}:/data\n",
+      "icon": "icons/kapowarr.png",
+      "digest": "sha256:b69a2c9a01c4f581c4ac9eece187c53f2c18c2fa872975f4a89f1ce45e090536"
+    },
+    {
+      "id": "lidarr",
+      "name": "Lidarr",
+      "tagline": "Finds, downloads and sorts music automatically",
+      "description": "Lidarr manages your music collection by artist. It watches for new albums\nof the artists you follow, searches your indexers, hands releases to a\ndownload client such as qBittorrent and files finished albums with tags\nand cover art into your library.\n",
+      "categories": [
+        "downloads"
+      ],
+      "developer": "Lidarr team",
+      "website": "https://lidarr.audio",
+      "source": "https://github.com/Lidarr/Lidarr",
+      "license": "GPL-3.0-only",
+      "maintainers": [
+        "mavnezz"
+      ],
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "notes": "Connect qBittorrent and Prowlarr with the NAS's address and their ports,\nfor example http://192.168.1.10:8080. Keep downloads and music in the same\nshare, such as /data/torrents and /data/media/music: then Lidarr\nhard-links finished downloads instead of copying them.\n",
+      "web": {
+        "port": "web",
+        "path": "/",
+        "scheme": "http"
+      },
+      "ports": [
+        {
+          "id": "web",
+          "label": "Web interface",
+          "default": 8686
+        }
+      ],
+      "shares": [
+        {
+          "id": "data",
+          "label": "Media and downloads",
+          "description": "One share for downloads and library, the same in every app of the media stack: then files are moved and hard-linked instead of copied.",
+          "access": "read-write"
+        }
+      ],
+      "translations": {
+        "de": {
+          "tagline": "Musik automatisch finden, herunterladen und einsortieren",
+          "description": "Lidarr verwaltet deine Musiksammlung nach Künstlern. Es achtet auf\nneue Alben der Künstler, denen du folgst, sucht sie über deine\nIndexer, übergibt sie an einen Download-Client wie qBittorrent und\nlegt fertige Alben mit Tags und Covern in deiner Bibliothek ab.\n",
+          "notes": "Verbinde qBittorrent und Prowlarr über die Adresse des NAS und ihre\nPorts, zum Beispiel http://192.168.1.10:8080. Lege Downloads und Musik\nin dieselbe Freigabe, etwa nach /data/torrents und /data/media/music:\nDann verlinkt Lidarr fertige Downloads, statt sie zu kopieren.\n"
+        }
+      },
+      "compose": "services:\n  lidarr:\n    image: lscr.io/linuxserver/lidarr:latest\n    restart: unless-stopped\n    environment:\n      PUID: ${PUID}\n      PGID: ${PGID}\n      TZ: ${TZ}\n    ports:\n      - ${PORT_WEB}:8686\n    volumes:\n      - ${APP_DATA}/config:/config\n      - ${SHARE_DATA}:/data\n",
+      "icon": "icons/lidarr.png",
+      "digest": "sha256:5fd92c4d4430287f5097ce817a26e736ee34f62faadc22a2e38bd8d04c084625"
     },
     {
       "id": "pihole",
       "name": "Pi-hole",
-      "version": "2026.10.1",
       "tagline": "Block ads and trackers network-wide with your own DNS server",
       "description": "Pi-hole is a DNS server that blocks ads, trackers and malicious domains\nfor the whole network. Once the router or the devices use it as their DNS\nserver, requests for domains on its block lists are not resolved, without\nany software on the devices themselves. The web interface shows which\ndevices asked for which domains and how many requests were blocked, and\nmanages block lists, allow lists, groups of clients and local DNS records.\n",
       "categories": [
@@ -434,14 +881,13 @@
           "notes": "Melde dich an der Weboberfläche mit dem Passwort an, das du hier\neingibst. zendiloOS setzt es, deshalb lässt es sich in Pi-hole selbst\nnicht ändern. Trage danach die Adresse des NAS im Router als DNS-Server\nein. Der DHCP-Server von Pi-hole steht nicht zur Verfügung: Er bräuchte\ndas Netzwerk des Hosts und zusätzliche Rechte.\n"
         }
       },
-      "compose": "services:\n  pihole:\n    image: pihole/pihole:2026.10.1@sha256:30f803ad5dd60ff96cc0a63008a2e9271af481c1b0399a182192b2e91152c1f9\n    restart: unless-stopped\n    environment:\n      TZ: ${TZ}\n      PIHOLE_UID: ${PUID}\n      PIHOLE_GID: ${PGID}\n      FTLCONF_webserver_api_password: ${WEB_PASSWORD}\n      FTLCONF_dns_listeningMode: ALL\n      FTLCONF_ntp_sync_active: \"false\"\n    ports:\n      - ${PORT_WEB}:80\n      - ${PORT_DNS}:53\n      - ${PORT_DNS}:53/udp\n    volumes:\n      - ${APP_DATA}/etc-pihole:/etc/pihole\n",
+      "compose": "services:\n  pihole:\n    image: pihole/pihole:latest\n    restart: unless-stopped\n    environment:\n      TZ: ${TZ}\n      PIHOLE_UID: ${PUID}\n      PIHOLE_GID: ${PGID}\n      FTLCONF_webserver_api_password: ${WEB_PASSWORD}\n      FTLCONF_dns_listeningMode: ALL\n      FTLCONF_ntp_sync_active: \"false\"\n    ports:\n      - ${PORT_WEB}:80\n      - ${PORT_DNS}:53\n      - ${PORT_DNS}:53/udp\n    volumes:\n      - ${APP_DATA}/etc-pihole:/etc/pihole\n",
       "icon": "icons/pihole.png",
-      "digest": "sha256:13ce37ccb74e766b5fc60c9cc6b79a3d810cbe70bdc5d397c944e5f8dc258f5e"
+      "digest": "sha256:aca1e5c228ae0f7a667c6fc1f12810ec24ce8e846fff6562f3c89923b1e61bcf"
     },
     {
       "id": "plex",
       "name": "Plex Media Server",
-      "version": "1.43.5",
       "tagline": "Stream your films, series and music to the Plex apps",
       "description": "Plex Media Server sorts your films, series, music and photos into\nlibraries with posters and descriptions, and streams them to the Plex apps\non phones, TVs, game consoles and streaming sticks, and to the browser. It\nconverts video on the fly when a device cannot play the original, and\nevery member of the household can have their own profile and watch\nhistory. Plex is closed source and needs a free Plex account; some\nfeatures, such as hardware transcoding and streaming outside the home in\nthe mobile and TV apps, need a paid subscription.\n",
       "categories": [
@@ -458,7 +904,7 @@
         "amd64",
         "arm64"
       ],
-      "notes": "Get a claim token at https://www.plex.tv/claim right before installing and\nenter it as \"Plex claim token\": on its first start the server links itself\nto your Plex account. The token is valid for four minutes. Then add\nlibraries from the folder /media. So that devices at home connect\ndirectly, enter http://<NAS address>:<port> under Settings → Network →\nCustom server access URLs. Hardware transcoding needs a Plex Pass.\n",
+      "notes": "Get a claim token at https://www.plex.tv/claim right before installing and\nenter it as \"Plex claim token\": on its first start the server links itself\nto your Plex account. The token is valid for four minutes. Then add\nlibraries from the folder /data. So that devices at home connect\ndirectly, enter http://<NAS address>:<port> under Settings → Network →\nCustom server access URLs. Hardware transcoding needs a Plex Pass.\n",
       "web": {
         "port": "web",
         "path": "/web",
@@ -473,9 +919,9 @@
       ],
       "shares": [
         {
-          "id": "media",
-          "label": "Media library",
-          "description": "The share with your films, series and music.",
+          "id": "data",
+          "label": "Media and downloads",
+          "description": "One share for downloads and library, the same in every app of the media stack: then files are moved and hard-linked instead of copied.",
           "access": "read-only"
         }
       ],
@@ -496,19 +942,104 @@
         "de": {
           "tagline": "Filme, Serien und Musik an die Plex-Apps streamen",
           "description": "Plex Media Server ordnet Filme, Serien, Musik und Fotos in Bibliotheken\nmit Covern und Beschreibungen und streamt sie an die Plex-Apps auf\nHandys, Fernsehern, Spielkonsolen und Streaming-Sticks sowie in den\nBrowser. Kann ein Gerät das Original nicht abspielen, wandelt Plex das\nVideo beim Abspielen um. Jedes Mitglied des Haushalts kann ein eigenes\nProfil mit eigenem Verlauf haben. Plex ist nicht quelloffen und braucht\nein kostenloses Plex-Konto; einige Funktionen, etwa\nHardware-Transkodierung und das Streamen außer Haus in den Handy- und\nTV-Apps, brauchen ein kostenpflichtiges Abo.\n",
-          "notes": "Hol dir direkt vor der Installation unter https://www.plex.tv/claim\neinen Claim-Token und trage ihn bei „Plex claim token“ ein: Beim ersten\nStart verknüpft sich der Server damit mit deinem Plex-Konto. Der Token\ngilt vier Minuten. Füge dann Bibliotheken aus dem Ordner /media hinzu.\nDamit Geräte im Heimnetz sich direkt verbinden, trage unter\nEinstellungen → Netzwerk bei den benutzerdefinierten\nServer-Zugriffs-URLs http://<NAS-Adresse>:<Port> ein.\nHardware-Transkodierung braucht einen Plex Pass.\n"
+          "notes": "Hol dir direkt vor der Installation unter https://www.plex.tv/claim\neinen Claim-Token und trage ihn bei „Plex claim token“ ein: Beim ersten\nStart verknüpft sich der Server damit mit deinem Plex-Konto. Der Token\ngilt vier Minuten. Füge dann Bibliotheken aus dem Ordner /data hinzu.\nDamit Geräte im Heimnetz sich direkt verbinden, trage unter\nEinstellungen → Netzwerk bei den benutzerdefinierten\nServer-Zugriffs-URLs http://<NAS-Adresse>:<Port> ein.\nHardware-Transkodierung braucht einen Plex Pass.\n"
         }
       },
-      "compose": "services:\n  plex:\n    image: lscr.io/linuxserver/plex:1.43.5.11079-b3b13e506-ls331@sha256:0c2f1122a4275efeea953a9882359f3809b27279d3c3022392e8e610a2eccc67\n    restart: unless-stopped\n    environment:\n      PUID: ${PUID}\n      PGID: ${PGID}\n      TZ: ${TZ}\n      VERSION: docker\n      PLEX_CLAIM: ${PLEX_CLAIM}\n    ports:\n      - ${PORT_WEB}:32400\n    volumes:\n      - ${APP_DATA}/config:/config\n      - ${SHARE_MEDIA}:/media:ro\n    devices:\n      - /dev/dri:/dev/dri\n",
+      "compose": "services:\n  plex:\n    image: lscr.io/linuxserver/plex:latest\n    restart: unless-stopped\n    environment:\n      PUID: ${PUID}\n      PGID: ${PGID}\n      TZ: ${TZ}\n      VERSION: docker\n      PLEX_CLAIM: ${PLEX_CLAIM}\n    ports:\n      - ${PORT_WEB}:32400\n    volumes:\n      - ${APP_DATA}/config:/config\n      - ${SHARE_DATA}:/data:ro\n    devices:\n      - /dev/dri:/dev/dri\n",
       "icon": "icons/plex.png",
-      "digest": "sha256:ea25056c615803d827b7739d135c009a4e99b2031270766608d71939b06011b4"
+      "digest": "sha256:cb9aec102d70ba3d5a8fe52683b878535057140f7ed7adfd75af22bc39888602"
+    },
+    {
+      "id": "profilarr",
+      "name": "Profilarr",
+      "tagline": "Manages quality profiles and custom formats for Radarr and Sonarr",
+      "description": "Profilarr keeps the quality settings of Radarr and Sonarr in one place and\nsyncs them to any number of instances: quality profiles, custom formats,\nregular expressions, naming schemes, quality definitions and delay\nprofiles. It links curated databases such as Dictionarry or TRaSH Guides\nand keeps your own changes when they update, or you build your own\ndatabase. A parser that works like the one in Radarr and Sonarr tests\nrelease names against custom formats and simulates how a profile scores\nand ranks releases. Scheduled jobs sync, search for better releases,\nrename files and folders after a preview and make backups; notifications\ngo to Discord, Telegram, Slack, ntfy, Gotify and others.\n",
+      "categories": [
+        "downloads"
+      ],
+      "developer": "Dictionarry",
+      "website": "https://dictionarry.dev",
+      "source": "https://github.com/Dictionarry-Hub/profilarr",
+      "license": "AGPL-3.0-only",
+      "maintainers": [
+        "mavnezz"
+      ],
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "notes": "On the first visit, create the login account. Add Radarr and Sonarr with\nthe NAS's address, their ports and their API keys, for example\nhttp://192.168.1.10:7878. Profilarr works with Radarr 5 and 6 and Sonarr 4\n(Sonarr 5 experimentally).\n",
+      "web": {
+        "port": "web",
+        "path": "/",
+        "scheme": "http"
+      },
+      "ports": [
+        {
+          "id": "web",
+          "label": "Web interface",
+          "default": 6868
+        }
+      ],
+      "translations": {
+        "de": {
+          "tagline": "Qualitätsprofile und Custom Formats für Radarr und Sonarr verwalten",
+          "description": "Profilarr hält die Qualitätseinstellungen von Radarr und Sonarr an\neinem Ort und überträgt sie auf beliebig viele Instanzen:\nQualitätsprofile, Custom Formats, reguläre Ausdrücke, Namensschemata,\nQualitätsdefinitionen und Verzögerungsprofile. Es bindet gepflegte\nDatenbanken wie Dictionarry oder TRaSH Guides ein und behält deine\neigenen Änderungen, wenn sie sich aktualisieren, oder du baust eine\neigene Datenbank. Ein Parser, der wie der in Radarr und Sonarr\narbeitet, prüft Release-Namen gegen Custom Formats und simuliert, wie\nein Profil Releases bewertet und reiht. Geplante Aufgaben gleichen ab,\nsuchen nach besseren Releases, benennen Dateien und Ordner nach einer\nVorschau um und legen Sicherungen an; Benachrichtigungen gehen an\nDiscord, Telegram, Slack, ntfy, Gotify und weitere.\n",
+          "notes": "Lege beim ersten Aufruf das Anmeldekonto an. Füge Radarr und Sonarr mit\nder Adresse des NAS, ihren Ports und ihren API-Schlüsseln hinzu, zum\nBeispiel http://192.168.1.10:7878. Profilarr arbeitet mit Radarr 5 und\n6 sowie Sonarr 4 (Sonarr 5 experimentell).\n"
+        }
+      },
+      "compose": "services:\n  profilarr:\n    image: ghcr.io/dictionarry-hub/profilarr:latest\n    restart: unless-stopped\n    environment:\n      PUID: ${PUID}\n      PGID: ${PGID}\n      TZ: ${TZ}\n      PARSER_HOST: parser\n      PARSER_PORT: 5000\n    ports:\n      - ${PORT_WEB}:6868\n    volumes:\n      - ${APP_DATA}/config:/config\n    depends_on:\n      parser:\n        condition: service_healthy\n\n  parser:\n    image: ghcr.io/dictionarry-hub/profilarr-parser:latest\n    restart: unless-stopped\n",
+      "icon": "icons/profilarr.png",
+      "digest": "sha256:134d35d592138f4b2009b6f3af5a3916278bb6ade5961bb8796c26e091c7ec86"
+    },
+    {
+      "id": "prowlarr",
+      "name": "Prowlarr",
+      "tagline": "Manages indexers for Radarr, Sonarr and Lidarr in one place",
+      "description": "Prowlarr keeps your torrent trackers and Usenet indexers in one place and\nhands them to Radarr, Sonarr, Lidarr and Bookshelf, so each indexer is set\nup once. It shows how each indexer is doing, searches all of them by hand\nand routes requests through FlareSolverr where a site sits behind\nCloudflare.\n",
+      "categories": [
+        "downloads"
+      ],
+      "developer": "Prowlarr team",
+      "website": "https://prowlarr.com",
+      "source": "https://github.com/Prowlarr/Prowlarr",
+      "license": "GPL-3.0-only",
+      "maintainers": [
+        "mavnezz"
+      ],
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "notes": "Add Radarr, Sonarr and Lidarr under Settings → Apps with the NAS's\naddress, their ports and API keys. For sites behind Cloudflare, add\nFlareSolverr under Settings → Indexers as a proxy at http://<NAS\naddress>:8191.\n",
+      "web": {
+        "port": "web",
+        "path": "/",
+        "scheme": "http"
+      },
+      "ports": [
+        {
+          "id": "web",
+          "label": "Web interface",
+          "default": 9696
+        }
+      ],
+      "translations": {
+        "de": {
+          "tagline": "Indexer für Radarr, Sonarr und Lidarr an einer Stelle verwalten",
+          "description": "Prowlarr verwaltet deine Torrent-Tracker und Usenet-Indexer an einer\nStelle und gibt sie an Radarr, Sonarr, Lidarr und Bookshelf weiter,\nsodass jeder Indexer nur einmal eingerichtet wird. Es zeigt, wie es\njedem Indexer geht, durchsucht alle von Hand und leitet Anfragen über\nFlareSolverr, wo eine Seite hinter Cloudflare liegt.\n",
+          "notes": "Füge Radarr, Sonarr und Lidarr unter Settings → Apps mit der Adresse\ndes NAS, ihren Ports und API-Schlüsseln hinzu. Für Seiten hinter\nCloudflare trägst du FlareSolverr unter Settings → Indexers als Proxy\nmit http://<Adresse des NAS>:8191 ein.\n"
+        }
+      },
+      "compose": "services:\n  prowlarr:\n    image: lscr.io/linuxserver/prowlarr:latest\n    restart: unless-stopped\n    environment:\n      PUID: ${PUID}\n      PGID: ${PGID}\n      TZ: ${TZ}\n    ports:\n      - ${PORT_WEB}:9696\n    volumes:\n      - ${APP_DATA}/config:/config\n",
+      "icon": "icons/prowlarr.png",
+      "digest": "sha256:d81200372d176c96857579337ff658ee853102d621a719efe64d9ff5c372309d"
     },
     {
       "id": "qbittorrent",
       "name": "qBittorrent",
-      "version": "5.3.0",
       "tagline": "BitTorrent client with a web interface",
-      "description": "qBittorrent downloads and shares files over BitTorrent. It is operated\nthrough a web interface: add torrents by file or magnet link, set\ncategories and tags, limit bandwidth by schedule, choose individual files\nwithin a torrent and search across torrent sites with search plugins. It\nsupports DHT, peer exchange, encrypted connections and RSS feeds that\ndownload new items automatically. Downloads land in the chosen share.\n",
+      "description": "qBittorrent downloads and shares files over BitTorrent. It is operated\nthrough a web interface: add torrents by file or magnet link, set\ncategories and tags, limit bandwidth by schedule, choose individual files\nwithin a torrent and search across torrent sites with search plugins. It\nsupports DHT, peer exchange, encrypted connections and RSS feeds that\ndownload new items automatically.\n",
       "categories": [
         "downloads"
       ],
@@ -523,7 +1054,7 @@
         "amd64",
         "arm64"
       ],
-      "notes": "Sign in as `admin` with the temporary password that qBittorrent prints to\nthe app's log when it starts, then set your own password under Tools →\nOptions → WebUI; until then, every start creates a new one. Change the\nports in zendiloOS, not in qBittorrent's options.\n",
+      "notes": "Sign in as `admin` with the temporary password that qBittorrent prints to\nthe app's log when it starts, then set your own password under Tools →\nOptions → WebUI; until then, every start creates a new one. Save downloads\nbelow /data, for example in /data/torrents, the share Radarr and Sonarr\nuse as well. Change the ports in zendiloOS, not in qBittorrent's options.\n",
       "web": {
         "port": "web",
         "path": "/",
@@ -543,36 +1074,35 @@
       ],
       "shares": [
         {
-          "id": "downloads",
-          "label": "Downloads",
-          "description": "The share in which qBittorrent stores downloads.",
+          "id": "data",
+          "label": "Media and downloads",
+          "description": "One share for downloads and library, the same in every app of the media stack: then files are moved and hard-linked instead of copied.",
           "access": "read-write"
         }
       ],
       "translations": {
         "de": {
           "tagline": "BitTorrent-Client mit Weboberfläche",
-          "description": "qBittorrent lädt Dateien über BitTorrent herunter und teilt sie. Bedient\nwird es über eine Weboberfläche: Torrents per Datei oder Magnet-Link\nhinzufügen, Kategorien und Tags vergeben, die Bandbreite nach Zeitplan\nbegrenzen, einzelne Dateien eines Torrents auswählen und mit\nSuch-Plugins auf Torrent-Seiten suchen. Es unterstützt DHT, Peer\nExchange, verschlüsselte Verbindungen und RSS-Feeds, die neue Einträge\nautomatisch herunterladen. Downloads landen in der gewählten Freigabe.\n",
-          "notes": "Melde dich als `admin` mit dem vorläufigen Passwort an, das qBittorrent\nbeim Start ins Protokoll der App schreibt, und lege dann unter Werkzeuge →\nOptionen → Webinterface ein eigenes Passwort fest; bis dahin entsteht bei\njedem Start ein neues. Ändere die Ports in zendiloOS, nicht in den\nOptionen von qBittorrent.\n"
+          "description": "qBittorrent lädt Dateien über BitTorrent herunter und teilt sie.\nBedient wird es über eine Weboberfläche: Torrents per Datei oder\nMagnet-Link hinzufügen, Kategorien und Tags vergeben, die Bandbreite\nnach Zeitplan begrenzen, einzelne Dateien eines Torrents auswählen und\nmit Such-Plugins auf Torrent-Seiten suchen. Es unterstützt DHT, Peer\nExchange, verschlüsselte Verbindungen und RSS-Feeds, die neue Einträge\nautomatisch herunterladen.\n",
+          "notes": "Melde dich als `admin` mit dem vorläufigen Passwort an, das\nqBittorrent beim Start ins Protokoll der App schreibt, und lege dann\nunter Werkzeuge → Optionen → Webinterface ein eigenes Passwort fest;\nbis dahin entsteht bei jedem Start ein neues. Speichere Downloads\nunter /data, zum Beispiel in /data/torrents, der Freigabe, die auch\nRadarr und Sonarr nutzen. Ändere die Ports in zendiloOS, nicht in den\nOptionen von qBittorrent.\n"
         }
       },
-      "compose": "services:\n  qbittorrent:\n    image: lscr.io/linuxserver/qbittorrent:5.3.0_v2.1.2-ls486@sha256:05c1454f9a32967affc1f34f67f8cc0cc57dd805dca45489fe797095a6286556\n    restart: unless-stopped\n    user: ${PUID}:${PGID}\n    environment:\n      TZ: ${TZ}\n      WEBUI_PORT: ${PORT_WEB}\n      TORRENTING_PORT: ${PORT_PEER}\n    ports:\n      - ${PORT_WEB}:${PORT_WEB}\n      - ${PORT_PEER}:${PORT_PEER}\n      - ${PORT_PEER}:${PORT_PEER}/udp\n    volumes:\n      - ${APP_DATA}/config:/config\n      - ${SHARE_DOWNLOADS}:/downloads\n",
+      "compose": "services:\n  qbittorrent:\n    image: lscr.io/linuxserver/qbittorrent:latest\n    restart: unless-stopped\n    environment:\n      PUID: ${PUID}\n      PGID: ${PGID}\n      TZ: ${TZ}\n      WEBUI_PORT: ${PORT_WEB}\n      TORRENTING_PORT: ${PORT_PEER}\n    ports:\n      - ${PORT_WEB}:${PORT_WEB}\n      - ${PORT_PEER}:${PORT_PEER}\n      - ${PORT_PEER}:${PORT_PEER}/udp\n    volumes:\n      - ${APP_DATA}/config:/config\n      - ${SHARE_DATA}:/data\n",
       "icon": "icons/qbittorrent.png",
-      "digest": "sha256:a7562b04e26fb0eea6cebffbfca06f7a0d0fe8793e2e9f817246f81725fa84fc"
+      "digest": "sha256:0a6eae594310a0963deda820dde6bf67d63567b16abb5b7d885305aafbd9fb4c"
     },
     {
-      "id": "syncthing",
-      "name": "Syncthing",
-      "version": "2.1.7",
-      "tagline": "Keep folders in sync between your devices, without a cloud",
-      "description": "Syncthing synchronises folders between computers, phones and the NAS. The\ndevices connect to each other directly and encrypt everything they send;\nno account and no central server hold your files. You choose per folder\nwhich devices take part and whether a device only sends, only receives or\nboth. Deleted and changed files can be kept as older versions. Syncthing\nruns on Windows, macOS and Linux; third-party apps bring it to Android and\niOS.\n",
+      "id": "radarr",
+      "name": "Radarr",
+      "tagline": "Finds, downloads and sorts films automatically",
+      "description": "Radarr keeps a list of the films you want. It searches your indexers for\nthem, hands releases to a download client such as qBittorrent and moves\nfinished downloads into your film library under clean names. It swaps in\nbetter releases as they appear and tells Jellyfin or Plex when something\nnew has arrived.\n",
       "categories": [
-        "files"
+        "downloads"
       ],
-      "developer": "Syncthing contributors",
-      "website": "https://syncthing.net",
-      "source": "https://github.com/syncthing/syncthing",
-      "license": "MPL-2.0",
+      "developer": "Radarr team",
+      "website": "https://radarr.video",
+      "source": "https://github.com/Radarr/Radarr",
+      "license": "GPL-3.0-only",
       "maintainers": [
         "mavnezz"
       ],
@@ -580,7 +1110,7 @@
         "amd64",
         "arm64"
       ],
-      "notes": "Set a user name and password for the web interface under Actions →\nSettings → GUI first. New folders are created in the chosen share.\nSyncthing runs in its own network here and may not find devices on the home\nnetwork by itself. If transfers are slow or go through a relay, enter the\nNAS's address on the other devices under Edit Device → Advanced →\nAddresses, for example tcp://192.168.1.10:22000 (with the sync port you\nchose).\n",
+      "notes": "Connect qBittorrent and Prowlarr with the NAS's address and their ports,\nfor example http://192.168.1.10:8080. Keep downloads and films in the same\nshare, such as /data/torrents and /data/media/movies: then Radarr\nhard-links finished downloads instead of copying them.\n",
       "web": {
         "port": "web",
         "path": "/",
@@ -590,51 +1120,40 @@
         {
           "id": "web",
           "label": "Web interface",
-          "default": 8384
-        },
-        {
-          "id": "sync",
-          "label": "File transfers (TCP and QUIC)",
-          "default": 22000
-        },
-        {
-          "id": "discovery",
-          "label": "Local discovery (UDP)",
-          "default": 21027
+          "default": 7878
         }
       ],
       "shares": [
         {
-          "id": "sync",
-          "label": "Synced folders",
-          "description": "The share in which Syncthing keeps the folders it synchronises.",
+          "id": "data",
+          "label": "Media and downloads",
+          "description": "One share for downloads and library, the same in every app of the media stack: then files are moved and hard-linked instead of copied.",
           "access": "read-write"
         }
       ],
       "translations": {
         "de": {
-          "tagline": "Ordner zwischen deinen Geräten abgleichen, ohne Cloud",
-          "description": "Syncthing gleicht Ordner zwischen Computern, Handys und dem NAS ab. Die\nGeräte verbinden sich direkt miteinander und verschlüsseln alles, was\nsie übertragen; kein Konto und kein zentraler Server verwahrt deine\nDateien. Für jeden Ordner legst du fest, welche Geräte teilnehmen und ob\nein Gerät nur sendet, nur empfängt oder beides. Gelöschte und geänderte\nDateien können als ältere Versionen erhalten bleiben. Syncthing läuft\nunter Windows, macOS und Linux; Apps von Drittanbietern bringen es auf\nAndroid und iOS.\n",
-          "notes": "Lege zuerst unter Aktionen → Einstellungen → GUI einen Benutzernamen und\nein Passwort für die Weboberfläche fest. Neue Ordner entstehen in der\ngewählten Freigabe. Syncthing läuft hier in einem eigenen Netz und\nfindet Geräte im Heimnetz womöglich nicht von selbst. Sind Übertragungen\nlangsam oder laufen sie über ein Relay, trage auf den anderen Geräten\nunter Gerät bearbeiten → Erweitert → Adressen die Adresse des NAS ein,\nzum Beispiel tcp://192.168.1.10:22000 (mit dem gewählten Sync-Port).\n"
+          "tagline": "Filme automatisch finden, herunterladen und einsortieren",
+          "description": "Radarr führt eine Liste der Filme, die du haben möchtest. Es sucht sie\nüber deine Indexer, übergibt Treffer an einen Download-Client wie\nqBittorrent und verschiebt fertige Downloads mit sauberen Namen in\ndeine Filmbibliothek. Erscheint eine bessere Version, tauscht es sie\naus, und Jellyfin oder Plex erfahren, wenn etwas Neues da ist.\n",
+          "notes": "Verbinde qBittorrent und Prowlarr über die Adresse des NAS und ihre\nPorts, zum Beispiel http://192.168.1.10:8080. Lege Downloads und Filme\nin dieselbe Freigabe, etwa nach /data/torrents und /data/media/movies:\nDann verlinkt Radarr fertige Downloads, statt sie zu kopieren.\n"
         }
       },
-      "compose": "services:\n  syncthing:\n    image: syncthing/syncthing:2.1.7@sha256:2b71da7c0d0a91a6ae5285ad079226fecc0a365d08b27720e1f7037b018f7546\n    restart: unless-stopped\n    user: ${PUID}:${PGID}\n    environment:\n      TZ: ${TZ}\n      STHOMEDIR: /config\n    ports:\n      - ${PORT_WEB}:8384\n      - ${PORT_SYNC}:22000\n      - ${PORT_SYNC}:22000/udp\n      - ${PORT_DISCOVERY}:21027/udp\n    volumes:\n      - ${APP_DATA}/config:/config\n      - ${SHARE_SYNC}:/var/syncthing\n",
-      "icon": "icons/syncthing.png",
-      "digest": "sha256:28d65c058a79c0d9a5422cf55ced26455c51310f88a74af401e2dbd19f0118e0"
+      "compose": "services:\n  radarr:\n    image: lscr.io/linuxserver/radarr:latest\n    restart: unless-stopped\n    environment:\n      PUID: ${PUID}\n      PGID: ${PGID}\n      TZ: ${TZ}\n    ports:\n      - ${PORT_WEB}:7878\n    volumes:\n      - ${APP_DATA}/config:/config\n      - ${SHARE_DATA}:/data\n",
+      "icon": "icons/radarr.png",
+      "digest": "sha256:1ed16afee56ed8a4fd000344ed1e4715151f08d2f628571b0f8de34b8e13c565"
     },
     {
-      "id": "transmission",
-      "name": "Transmission",
-      "version": "4.1.4",
-      "tagline": "Lightweight BitTorrent client with a web interface",
-      "description": "Transmission downloads and shares files over BitTorrent and needs little\nmemory and processor time. Its web interface adds torrents by file or\nmagnet link, picks individual files within a torrent, sets speed limits\nand seeding ratios and shows the progress of every transfer. It supports\nDHT, peer exchange and encrypted connections. Desktop and mobile\nremote apps can control it over its RPC interface. Finished downloads land\nin the folder complete of the chosen share, unfinished ones in incomplete.\n",
+      "id": "seerr",
+      "name": "Seerr",
+      "tagline": "Lets your household request films and series",
+      "description": "Seerr is a request portal for Jellyfin, Plex and Emby. Members of the\nhousehold sign in with their media server account, browse what is popular\nor coming soon and request films and series; Seerr passes approved\nrequests to Radarr and Sonarr and tells people when their request is ready\nto watch. Seerr continues Overseerr and Jellyseerr.\n",
       "categories": [
-        "downloads"
+        "media"
       ],
-      "developer": "Transmission project",
-      "website": "https://transmissionbt.com",
-      "source": "https://github.com/transmission/transmission",
-      "license": "GPL-2.0-only OR GPL-3.0-only",
+      "developer": "Seerr team",
+      "website": "https://docs.seerr.dev",
+      "source": "https://github.com/seerr-team/seerr",
+      "license": "MIT",
       "maintainers": [
         "mavnezz"
       ],
@@ -642,6 +1161,7 @@
         "amd64",
         "arm64"
       ],
+      "notes": "In the setup wizard, sign in with your Jellyfin or Plex account and enter\nthe media server by the NAS's address; connect Radarr and Sonarr the same\nway.\n",
       "web": {
         "port": "web",
         "path": "/",
@@ -651,51 +1171,195 @@
         {
           "id": "web",
           "label": "Web interface",
-          "default": 9091
-        },
+          "default": 5055
+        }
+      ],
+      "translations": {
+        "de": {
+          "tagline": "Filme und Serien im Haushalt wünschen lassen",
+          "description": "Seerr ist ein Anfrageportal für Jellyfin, Plex und Emby. Mitglieder\ndes Haushalts melden sich mit ihrem Konto des Medienservers an,\nstöbern in beliebten und kommenden Titeln und wünschen sich Filme und\nSerien; genehmigte Anfragen gibt Seerr an Radarr und Sonarr weiter und\nmeldet, wenn etwas bereitsteht. Seerr führt Overseerr und Jellyseerr\nfort.\n",
+          "notes": "Melde dich im Einrichtungsassistenten mit deinem Jellyfin- oder\nPlex-Konto an und gib den Medienserver mit der Adresse des NAS an; Radarr\nund Sonarr verbindest du genauso.\n"
+        }
+      },
+      "compose": "services:\n  seerr:\n    image: ghcr.io/seerr-team/seerr:latest\n    restart: unless-stopped\n    user: \"${PUID}:${PGID}\"\n    init: true\n    environment:\n      TZ: ${TZ}\n    ports:\n      - ${PORT_WEB}:5055\n    volumes:\n      - ${APP_DATA}/config:/app/config\n    healthcheck:\n      test: wget --no-verbose --tries=1 --spider http://localhost:5055/api/v1/status || exit 1\n      interval: 15s\n      timeout: 3s\n      retries: 3\n      start_period: 20s\n",
+      "icon": "icons/seerr.png",
+      "digest": "sha256:11aedb2a39b74d5b26aea6254ff4cf4098e5213ec00dec5de69752ade3d3c379"
+    },
+    {
+      "id": "sonarr",
+      "name": "Sonarr",
+      "tagline": "Finds, downloads and sorts series automatically",
+      "description": "Sonarr follows the series you want. It finds new episodes on your indexers\nas soon as they are released, hands them to a download client such as\nqBittorrent and files them into your library by series and season. It\nfills in missing episodes, swaps in better releases and keeps a calendar\nof what airs next.\n",
+      "categories": [
+        "downloads"
+      ],
+      "developer": "Sonarr team",
+      "website": "https://sonarr.tv",
+      "source": "https://github.com/Sonarr/Sonarr",
+      "license": "GPL-3.0-only",
+      "maintainers": [
+        "mavnezz"
+      ],
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "notes": "Connect qBittorrent and Prowlarr with the NAS's address and their ports,\nfor example http://192.168.1.10:8080. Keep downloads and series in the\nsame share, such as /data/torrents and /data/media/tv: then Sonarr\nhard-links finished downloads instead of copying them.\n",
+      "web": {
+        "port": "web",
+        "path": "/",
+        "scheme": "http"
+      },
+      "ports": [
         {
-          "id": "peer",
-          "label": "Peer connections (TCP and UDP)",
-          "default": 51413
+          "id": "web",
+          "label": "Web interface",
+          "default": 8989
         }
       ],
       "shares": [
         {
-          "id": "downloads",
-          "label": "Downloads",
-          "description": "The share in which Transmission stores downloads.",
+          "id": "data",
+          "label": "Media and downloads",
+          "description": "One share for downloads and library, the same in every app of the media stack: then files are moved and hard-linked instead of copied.",
+          "access": "read-write"
+        }
+      ],
+      "translations": {
+        "de": {
+          "tagline": "Serien automatisch finden, herunterladen und einsortieren",
+          "description": "Sonarr verfolgt die Serien, die du sehen möchtest. Neue Folgen findet\nes über deine Indexer, sobald sie erscheinen, übergibt sie an einen\nDownload-Client wie qBittorrent und sortiert sie nach Serie und\nStaffel in deine Bibliothek. Fehlende Folgen holt es nach, bessere\nVersionen tauscht es aus, und ein Kalender zeigt, was als Nächstes\nläuft.\n",
+          "notes": "Verbinde qBittorrent und Prowlarr über die Adresse des NAS und ihre\nPorts, zum Beispiel http://192.168.1.10:8080. Lege Downloads und\nSerien in dieselbe Freigabe, etwa nach /data/torrents und\n/data/media/tv: Dann verlinkt Sonarr fertige Downloads, statt sie zu\nkopieren.\n"
+        }
+      },
+      "compose": "services:\n  sonarr:\n    image: lscr.io/linuxserver/sonarr:latest\n    restart: unless-stopped\n    environment:\n      PUID: ${PUID}\n      PGID: ${PGID}\n      TZ: ${TZ}\n    ports:\n      - ${PORT_WEB}:8989\n    volumes:\n      - ${APP_DATA}/config:/config\n      - ${SHARE_DATA}:/data\n",
+      "icon": "icons/sonarr.png",
+      "digest": "sha256:ca878384c4c1b8bf106e6641c494facc98d230cad00b52f2e73f603bd54e04b1"
+    },
+    {
+      "id": "tdarr",
+      "name": "Tdarr",
+      "tagline": "Converts and cleans up the video files in your library",
+      "description": "Tdarr works through your film and series library by rules you set for\neach library: re-encode everything to H.265 (HEVC) to save space, remux\ninto MKV or MP4, drop audio and subtitle tracks you do not need, or check\nfiles for damage. The rules are a stack of plugins that workers run on the\nCPU or the GPU, on a schedule and as new files arrive, and statistics show\nwhat the library holds. The server comes with a node that does the work on\nthe NAS; nodes on other computers can share the load. Tdarr is closed\nsource and free for personal use; a subscription adds features.\n",
+      "categories": [
+        "media"
+      ],
+      "developer": "HaveAGitGat",
+      "website": "https://tdarr.io",
+      "source": "https://github.com/HaveAGitGat/Tdarr",
+      "license": "LicenseRef-Proprietary",
+      "maintainers": [
+        "mavnezz"
+      ],
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "notes": "Choose the API key yourself when installing: tapi_ followed by at least\n9 letters, digits or underscores. Sign in as admin with the key as\npassword; the built-in node and nodes on other computers connect with it.\nAdd libraries from /data and set /temp as their transcode cache. Try a new\nplugin stack on a few files first: the processed file replaces the\noriginal.\n",
+      "web": {
+        "port": "web",
+        "path": "/",
+        "scheme": "http"
+      },
+      "ports": [
+        {
+          "id": "web",
+          "label": "Web interface",
+          "default": 8265
+        },
+        {
+          "id": "server",
+          "label": "Server port for nodes on other computers",
+          "default": 8266
+        }
+      ],
+      "shares": [
+        {
+          "id": "data",
+          "label": "Media and downloads",
+          "description": "One share for downloads and library, the same in every app of the media stack: then files are moved and hard-linked instead of copied.",
           "access": "read-write"
         }
       ],
       "settings": [
         {
-          "id": "WEB_USER",
-          "label": "User name for the web interface",
-          "type": "text",
-          "default": "admin",
-          "required": true
-        },
-        {
-          "id": "WEB_PASSWORD",
-          "label": "Password for the web interface",
+          "id": "API_KEY",
+          "label": "API key",
+          "description": "tapi_ followed by at least 9 letters, digits or underscores. Nodes connect with it, and it is the password of the account admin.",
           "type": "password",
           "required": true
         }
       ],
+      "permissions": {
+        "devices": [
+          "/dev/dri"
+        ]
+      },
       "translations": {
         "de": {
-          "tagline": "Schlanker BitTorrent-Client mit Weboberfläche",
-          "description": "Transmission lädt Dateien über BitTorrent herunter und teilt sie und\nbraucht dabei wenig Speicher und Rechenzeit. Über die Weboberfläche\nfügst du Torrents per Datei oder Magnet-Link hinzu, wählst einzelne\nDateien eines Torrents aus, setzt Geschwindigkeitsgrenzen und\nSeed-Verhältnisse und siehst den Fortschritt jeder Übertragung. Es\nunterstützt DHT, Peer Exchange und verschlüsselte Verbindungen.\nFernsteuer-Apps für Desktop und Handy greifen über die RPC-Schnittstelle\ndarauf zu. Fertige Downloads landen im Ordner complete der gewählten\nFreigabe, unfertige in incomplete.\n"
+          "tagline": "Videodateien der Bibliothek umwandeln und aufräumen",
+          "description": "Tdarr arbeitet deine Film- und Serienbibliothek nach Regeln ab, die du\nfür jede Bibliothek festlegst: alles nach H.265 (HEVC) umkodieren, um\nPlatz zu sparen, in MKV oder MP4 umverpacken, unnötige Tonspuren und\nUntertitel entfernen oder Dateien auf Schäden prüfen. Die Regeln sind\nein Stapel von Plugins, die Worker auf der CPU oder der GPU ausführen,\nnach Zeitplan und sobald neue Dateien ankommen; Statistiken zeigen, was\nin der Bibliothek steckt. Zum Server gehört ein Node, der die Arbeit auf\ndem NAS erledigt; Nodes auf anderen Rechnern können mithelfen. Tdarr\nist nicht quelloffen und für den privaten Gebrauch kostenlos; ein Abo\nschaltet weitere Funktionen frei.\n",
+          "notes": "Den API-Schlüssel legst du bei der Installation selbst fest: tapi_\ngefolgt von mindestens 9 Buchstaben, Ziffern oder Unterstrichen. Melde\ndich als admin mit dem Schlüssel als Passwort an; der eingebaute Node\nund Nodes auf anderen Rechnern verbinden sich damit. Füge Bibliotheken\naus /data hinzu und trage /temp als ihren Transcode-Cache ein. Probiere\neinen neuen Plugin-Stapel zuerst an wenigen Dateien aus: Die\nbearbeitete Datei ersetzt das Original.\n"
         }
       },
-      "compose": "services:\n  transmission:\n    image: lscr.io/linuxserver/transmission:4.1.4-r0-ls368@sha256:fb8fe625941cf15eb69aba4e5c0a678e035ddb11605fd85af4516a4e641f2687\n    restart: unless-stopped\n    user: ${PUID}:${PGID}\n    environment:\n      TZ: ${TZ}\n      USER: ${WEB_USER}\n      PASS: ${WEB_PASSWORD}\n      PEERPORT: ${PORT_PEER}\n    ports:\n      - ${PORT_WEB}:9091\n      - ${PORT_PEER}:${PORT_PEER}\n      - ${PORT_PEER}:${PORT_PEER}/udp\n    volumes:\n      - ${APP_DATA}/config:/config\n      - ${SHARE_DOWNLOADS}:/downloads\n",
-      "icon": "icons/transmission.png",
-      "digest": "sha256:85cf80b74e451ce7ba48dffa641476cee31570f45377bb9747af6cde7e7ec80b"
+      "compose": "services:\n  tdarr:\n    image: ghcr.io/haveagitgat/tdarr:latest\n    restart: unless-stopped\n    environment:\n      PUID: ${PUID}\n      PGID: ${PGID}\n      UMASK: \"002\"\n      TZ: ${TZ}\n      serverIP: 0.0.0.0\n      serverPort: 8266\n      webUIPort: 8265\n      internalNode: \"true\"\n      inContainer: \"true\"\n      nodeName: InternalNode\n      ffmpegVersion: 7\n      auth: \"true\"\n      seededApiKey: ${API_KEY}\n      apiKey: ${API_KEY}\n    ports:\n      - ${PORT_WEB}:8265\n      - ${PORT_SERVER}:8266\n    volumes:\n      - ${APP_DATA}/server:/app/server\n      - ${APP_DATA}/configs:/app/configs\n      - ${APP_DATA}/logs:/app/logs\n      - ${APP_DATA}/transcode_cache:/temp\n      - ${SHARE_DATA}:/data\n    devices:\n      - /dev/dri:/dev/dri\n",
+      "icon": "icons/tdarr.png",
+      "digest": "sha256:2ffde2a4f7b52df3fbfd24627642a9cad4f36955228e639fdb102dea7b309e16"
+    },
+    {
+      "id": "unpackerr",
+      "name": "Unpackerr",
+      "tagline": "Extracts packed downloads so Radarr and Sonarr can import them",
+      "description": "Unpackerr watches the queues of Sonarr, Radarr, Lidarr and Readarr for\nfinished downloads that arrive as archives: RAR, ZIP, 7-Zip, TAR, ISO and\nmore, also archives inside archives. It extracts them in the download\nfolder so the app can import the files, and deletes the extracted copies\nonce the import is done; the archives stay in place for seeding. It can\nalso extract everything that lands in a watch folder. A web interface\nshows the queue, history and logs and holds the settings.\n",
+      "categories": [
+        "downloads"
+      ],
+      "developer": "Go Lift",
+      "website": "https://unpackerr.zip",
+      "source": "https://github.com/Unpackerr/unpackerr",
+      "license": "MIT",
+      "maintainers": [
+        "mavnezz"
+      ],
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "notes": "Sign in as `admin` with the temporary password that Unpackerr writes to\nthe app's log at its first start, and change it under Settings → Web\nserver. If it gets lost, empty ui_password in config/unpackerr.conf of the\napp's data and restart the app. Add Sonarr and Radarr under Settings →\nStarr with the addresses http://host.docker.internal:8989 and\nhttp://host.docker.internal:7878 and their API keys. Unpackerr finds the\ndownloads under /data, where qBittorrent saves them.\n",
+      "web": {
+        "port": "web",
+        "path": "/",
+        "scheme": "http"
+      },
+      "ports": [
+        {
+          "id": "web",
+          "label": "Web interface",
+          "default": 5657
+        }
+      ],
+      "shares": [
+        {
+          "id": "data",
+          "label": "Media and downloads",
+          "description": "One share for downloads and library, the same in every app of the media stack: then files are moved and hard-linked instead of copied.",
+          "access": "read-write"
+        }
+      ],
+      "translations": {
+        "de": {
+          "tagline": "Gepackte Downloads entpacken, damit Radarr und Sonarr sie importieren",
+          "description": "Unpackerr beobachtet die Warteschlangen von Sonarr, Radarr, Lidarr und\nReadarr auf fertige Downloads, die als Archiv kommen: RAR, ZIP, 7-Zip,\nTAR, ISO und mehr, auch Archive in Archiven. Es entpackt sie im\nDownload-Ordner, damit die App die Dateien importieren kann, und\nlöscht die entpackten Kopien nach dem Import wieder; die Archive\nbleiben zum Seeden liegen. Außerdem kann es alles entpacken, was in\neinem überwachten Ordner landet. Eine Weboberfläche zeigt\nWarteschlange, Verlauf und Protokoll und enthält die Einstellungen.\n",
+          "notes": "Melde dich als `admin` mit dem vorläufigen Passwort an, das Unpackerr\nbeim ersten Start ins Protokoll der App schreibt, und ändere es unter\nSettings → Web server. Geht es verloren, leere ui_password in\nconfig/unpackerr.conf der App-Daten und starte die App neu. Füge unter\nSettings → Starr Sonarr und Radarr mit den Adressen\nhttp://host.docker.internal:8989 und http://host.docker.internal:7878\nund ihren API-Schlüsseln hinzu. Unpackerr findet die Downloads unter\n/data, wo qBittorrent sie speichert.\n"
+        }
+      },
+      "compose": "services:\n  unpackerr:\n    image: golift/unpackerr:latest\n    restart: unless-stopped\n    user: \"${PUID}:${PGID}\"\n    environment:\n      TZ: ${TZ}\n    ports:\n      - ${PORT_WEB}:5656\n    extra_hosts:\n      - host.docker.internal:host-gateway\n    volumes:\n      - ${APP_DATA}/config:/config\n      - ${SHARE_DATA}:/data\n",
+      "icon": "icons/unpackerr.png",
+      "digest": "sha256:13511ef6955e79e691ec078e9b341a5db8ebb192fe7094fbc9a1cd3c6570ed31"
     },
     {
       "id": "uptime-kuma",
       "name": "Uptime Kuma",
-      "version": "2.5.9",
       "tagline": "Monitor websites and services and get notified when they go down",
       "description": "Uptime Kuma checks at regular intervals whether websites, servers and\nservices respond: web pages over HTTP(S), including a keyword or a JSON\nvalue, TCP ports, ping, DNS records, databases, MQTT brokers and more. It\nrecords response times and uptime, shows them on a dashboard and sends a\nnotification by e-mail, Telegram, Discord, Slack, Matrix, ntfy or one of\nmany other services when a check fails or recovers. Status pages show the\nstate of chosen monitors to others.\n",
       "categories": [
@@ -732,9 +1396,52 @@
           "notes": "Wähle beim ersten Aufruf die Datenbank (das eingebaute SQLite reicht\nfür die meisten Zwecke) und lege das Administratorkonto an. Die App hat\nkeinen Zugriff auf Docker, deshalb funktioniert der Monitortyp für\nDocker-Container nicht.\n"
         }
       },
-      "compose": "services:\n  uptime-kuma:\n    image: louislam/uptime-kuma:2.5.9@sha256:e88415a90dd2f7efecdbc18de0490aff292764a3ac471531bf1d0481725591bd\n    restart: unless-stopped\n    environment:\n      TZ: ${TZ}\n    ports:\n      - ${PORT_WEB}:3001\n    volumes:\n      - ${APP_DATA}/data:/app/data\n",
+      "compose": "services:\n  uptime-kuma:\n    image: louislam/uptime-kuma:2\n    restart: unless-stopped\n    environment:\n      TZ: ${TZ}\n    ports:\n      - ${PORT_WEB}:3001\n    volumes:\n      - ${APP_DATA}/data:/app/data\n",
       "icon": "icons/uptime-kuma.png",
-      "digest": "sha256:c124140a2c10dd296cab11cddaf5844c88c252ae79e553b24c26a04ca57127f7"
+      "digest": "sha256:2cbf42f705a743b98a7c563720a8b5f8349bf6539b3f1985aa55ed73f5251fbf"
+    },
+    {
+      "id": "wizarr",
+      "name": "Wizarr",
+      "tagline": "Invite people to your media server with a link",
+      "description": "Wizarr invites people to Jellyfin, Plex, Emby, Audiobookshelf, Navidrome,\nKomga, Kavita and RomM. You create an invitation and choose which\nlibraries it opens, whether it can be used more than once and when the\nlink and the account expire; the person opens the link, creates an account\nand is added to the media server. A wizard then shows them which apps to\ninstall and how to request films and series in Seerr or Ombi or join a\nDiscord server; its steps can be edited and extended. Wizarr lists the\nusers of the connected servers and disables or deletes accounts when they\nexpire.\n",
+      "categories": [
+        "media"
+      ],
+      "developer": "Wizarr contributors",
+      "website": "https://docs.wizarr.dev",
+      "source": "https://github.com/wizarrrr/wizarr",
+      "license": "MIT",
+      "maintainers": [
+        "mavnezz"
+      ],
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "notes": "On the first visit, create the administrator account, then add your media\nserver with the NAS's address and its port, for example\nhttp://192.168.1.10:8096, and its API key (for Plex, a token). Invitation\nlinks point to the address you have Wizarr open at: to invite people\noutside your home network, open Wizarr through an address they can reach,\nsuch as a domain on your reverse proxy, and enter the media server's public\naddress as its external URL.\n",
+      "web": {
+        "port": "web",
+        "path": "/",
+        "scheme": "http"
+      },
+      "ports": [
+        {
+          "id": "web",
+          "label": "Web interface",
+          "default": 5690
+        }
+      ],
+      "translations": {
+        "de": {
+          "tagline": "Leute per Link zu deinem Medienserver einladen",
+          "description": "Wizarr lädt Leute zu Jellyfin, Plex, Emby, Audiobookshelf, Navidrome,\nKomga, Kavita und RomM ein. Du erstellst eine Einladung und legst fest,\nwelche Bibliotheken sie freigibt, ob sie mehrfach nutzbar ist und wann\nLink und Konto ablaufen; die eingeladene Person öffnet den Link, legt\nein Konto an und wird zum Medienserver hinzugefügt. Ein Assistent zeigt\nihr danach, welche Apps sie installieren soll und wie sie in Seerr oder\nOmbi Filme und Serien wünscht oder einem Discord-Server beitritt; seine\nSchritte lassen sich bearbeiten und ergänzen. Wizarr listet die\nBenutzer der verbundenen Server auf und deaktiviert oder löscht Konten,\nwenn sie ablaufen.\n",
+          "notes": "Lege beim ersten Aufruf das Administratorkonto an und füge dann deinen\nMedienserver mit der Adresse des NAS und seinem Port hinzu, zum\nBeispiel http://192.168.1.10:8096, dazu seinen API-Schlüssel (bei Plex\nein Token). Einladungslinks zeigen auf die Adresse, unter der du Wizarr\ngeöffnet hast: Um Leute außerhalb deines Heimnetzes einzuladen, öffne\nWizarr über eine Adresse, die sie erreichen, etwa eine Domain auf\ndeinem Reverse Proxy, und trage die öffentliche Adresse des\nMedienservers als externe URL ein.\n"
+        }
+      },
+      "compose": "services:\n  wizarr:\n    image: ghcr.io/wizarrrr/wizarr:latest\n    restart: unless-stopped\n    environment:\n      PUID: ${PUID}\n      PGID: ${PGID}\n      TZ: ${TZ}\n    ports:\n      - ${PORT_WEB}:5690\n    volumes:\n      - ${APP_DATA}/data:/data\n",
+      "icon": "icons/wizarr.png",
+      "digest": "sha256:6864d4597943a378a08edb3cf115d8d0055e98e8aa8f3302c4863ad7ed60ac7e"
     }
   ]
 }

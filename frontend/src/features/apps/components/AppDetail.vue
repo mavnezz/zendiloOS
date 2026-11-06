@@ -11,8 +11,9 @@ import { ConfirmDialog } from '@/shared/ui/confirm-dialog'
 
 import { iconUrl, useCatalogApp, useDocker, useInstalled, useSources, webUrl } from '../api'
 import { useAppUpdates } from '../lib/update'
-import { appText, paragraphs } from '../texts'
+import { appText, asksForMore, paragraphs } from '../texts'
 import InstallDialog from './InstallDialog.vue'
+import PermissionList from './PermissionList.vue'
 
 /** `install`: begin the installation as soon as the app is known. */
 const props = defineProps<{ source: number; id: string; install?: boolean }>()
@@ -45,13 +46,7 @@ const notes = computed(() =>
 )
 const asked = computed(() => (app.value?.settings ?? []).filter((setting) => !setting.generate))
 const generated = computed(() => (app.value?.settings ?? []).filter((setting) => setting.generate))
-const asksMore = computed(
-  () =>
-    Boolean(app.value) &&
-    (app.value!.permissions.devices.length > 0 ||
-      app.value!.permissions.capabilities.length > 0 ||
-      app.value!.permissions.host_network),
-)
+const asksMore = computed(() => Boolean(app.value) && asksForMore(app.value!.permissions))
 
 watch(
   [app, dockerReady],
@@ -164,7 +159,7 @@ const heading = 'text-base font-semibold'
         </div>
         <div :class="fact">
           <dt class="text-xs text-muted-foreground">{{ t('appStore.version') }}</dt>
-          <dd class="font-medium">{{ app.version }}</dd>
+          <dd class="font-medium">{{ app.version ?? t('appStore.rolling') }}</dd>
         </div>
         <div :class="fact">
           <dt class="text-xs text-muted-foreground">{{ t('appStore.license') }}</dt>
@@ -212,12 +207,16 @@ const heading = 'text-base font-semibold'
       <section class="grid gap-2 border-b pb-6">
         <h3 :class="heading">{{ t('appStore.latest') }}</h3>
         <p class="flex flex-wrap gap-x-5 gap-y-1 text-sm">
-          <span>{{ t('appStore.versionIs', { version: app.version }) }}</span>
+          <span v-if="app.version">{{ t('appStore.versionIs', { version: app.version }) }}</span>
+          <span v-else>{{ t('appStore.rollingHint') }}</span>
           <span class="text-muted-foreground">{{
             t('appStore.runsOn', { architectures: app.architectures.join(', ') })
           }}</span>
         </p>
-        <p v-if="present && present.version !== app.version" class="text-sm text-muted-foreground">
+        <p
+          v-if="present?.version && app.version && present.version !== app.version"
+          class="text-sm text-muted-foreground"
+        >
           {{ t('appStore.installedVersion', { version: present.version }) }}
         </p>
       </section>
@@ -251,15 +250,7 @@ const heading = 'text-base font-semibold'
         </ul>
         <div v-if="asksMore" class="mt-2 grid gap-1.5 rounded-xl border border-amber-500/60 p-3">
           <p class="font-medium">{{ t('appStore.permissionsTitle') }}</p>
-          <ul class="grid gap-1 text-muted-foreground">
-            <li v-for="device in app.permissions.devices" :key="device">
-              {{ t('appStore.deviceExplained', { device }) }}
-            </li>
-            <li v-for="capability in app.permissions.capabilities" :key="capability">
-              {{ t('appStore.capabilityExplained', { capability }) }}
-            </li>
-            <li v-if="app.permissions.host_network">{{ t('appStore.hostNetworkExplained') }}</li>
-          </ul>
+          <div class="text-muted-foreground"><PermissionList :permissions="app.permissions" /></div>
         </div>
       </section>
 

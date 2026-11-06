@@ -184,6 +184,7 @@ fn host(erasable: Erasable) -> Host {
             app_shares: root.join("app-shares"),
             agent: root.join("zendiloos-agent"),
             packages: root.join("packages"),
+            docker_socket: root.join("docker.sock"),
             update_spool: root.join("updates"),
             release_keys: vec![root.join("release-signing.pub")],
         },

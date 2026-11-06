@@ -2475,6 +2475,8 @@ export interface components {
         AppPermissions: {
             capabilities: string[];
             devices: string[];
+            /** @description The Docker socket: control over every container, so over the NAS. */
+            docker_socket: boolean;
             host_network: boolean;
         };
         AppPort: {
@@ -2493,6 +2495,11 @@ export interface components {
             /** @description `text`, `password`, `number` or `boolean`. */
             kind: string;
             label: string;
+            /**
+             * Format: int32
+             * @description How many characters a generated value has.
+             */
+            length?: number | null;
             required: boolean;
         };
         AppShare: {
@@ -2533,6 +2540,11 @@ export interface components {
             name?: string | null;
             notes?: string | null;
             tagline?: string | null;
+        };
+        /** @description A newer state of an installed app. */
+        AppUpdate: {
+            /** @description The version its catalog names, if it names one. */
+            version?: string | null;
         };
         /** @description A pool apps can keep Docker's data on. */
         AppVolume: {
@@ -2659,7 +2671,8 @@ export interface components {
             translations: {
                 [key: string]: components["schemas"]["AppTexts"];
             };
-            version: string;
+            /** @description The app's own version, if its catalog names one. */
+            version?: string | null;
         };
         /** @description Everything about an app before installing it. */
         CatalogAppDetail: components["schemas"]["CatalogApp"] & {
@@ -3300,11 +3313,10 @@ export interface components {
             translations: {
                 [key: string]: components["schemas"]["AppTexts"];
             };
-            /** @description The version its catalog offers now, if it is another. */
-            update?: string | null;
+            update?: components["schemas"]["AppUpdate"] | null;
             /** Format: int64 */
             updated_at: number;
-            version: string;
+            version?: string | null;
             web?: components["schemas"]["AppWebAddress"] | null;
         };
         Installing: {

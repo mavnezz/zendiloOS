@@ -1,28 +1,90 @@
-# Zendiloos
+<div align="center">
 
-Zendiloos is a NAS operating system based on Debian 13. It is managed
-through a web desktop (Vue 3) backed by a Rust server.
+<img src="docs/images/logo.svg" width="72" alt="">
 
-> **Status:** early development (milestone M0). Not for real data.
+# zendiloOS
 
-## Installation
+_A NAS operating system on Debian, run from a desktop in the browser._
 
-Download the installation ISO of the newest stable release,
-[zendiloos-amd64-netinst.iso](https://github.com/mavnezz/zendiloOS/releases/latest/download/zendiloos-amd64-netinst.iso),
-write it to a USB stick and start the NAS from it, then choose
-"Install zendiloOS". The installer asks for the language, the keyboard, the
-machine's name, root's password and the disk for the system; it needs the
-network. The console then shows the address of the web interface and the
-code for the first administrator. Afterwards the NAS updates itself
-(Settings → Update & restore). On an existing Debian 13, install the package
-of a release instead (`apt install ./zendiloos_….deb`, with `contrib`
-enabled for ZFS).
+[![CI](https://github.com/mavnezz/zendiloOS/actions/workflows/ci.yml/badge.svg)](https://github.com/mavnezz/zendiloOS/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![Debian 13](https://img.shields.io/badge/Debian-13%20trixie-a80030)](https://www.debian.org/releases/trixie/)
 
-## Documentation
+[Download](https://github.com/mavnezz/zendiloOS/releases/latest/download/zendiloos-amd64-netinst.iso) ·
+[Releases](https://github.com/mavnezz/zendiloOS/releases) ·
+[Architecture](docs/architecture.md) ·
+[Roadmap](docs/roadmap.md)
 
-- [Architecture](docs/architecture.md): target architecture, modules, security model, decisions
-- [Roadmap](docs/roadmap.md): MVP, milestones, next steps
-- [Releases](docs/releases.md): channels, signing, the installation ISO
+<img src="docs/images/desktop.jpg" alt="The zendiloOS desktop: the storage manager with two pools, widgets with the system's state">
+
+</div>
+
+> [!WARNING]
+> zendiloOS is young. Try it on hardware whose disks hold nothing you would miss.
+
+## Why zendiloOS
+
+Your files, photos and media belong on a machine you own, and keeping it
+should not take a weekend of shell sessions. zendiloOS turns a plain Debian 13
+into a NAS you run from the browser: ZFS for the data, shares for every
+device in the house, apps from a store, updates with a click. Underneath it
+stays Debian, and what it does to the system goes through one small,
+hardened service that checks every request.
+
+## Features
+
+- **Storage on ZFS**: pools from mirrors to RAIDZ3 with guard rails, SMART and self-tests, scrubs, notifications before trouble grows
+- **Shared folders**: SMB and NFS, permissions per person and group, snapshots that Windows shows as previous versions, a recycle bin
+- **Files in the browser**: upload, download whole folders, previews, restore from snapshots
+- **App Store**: apps from the [community catalog](https://github.com/mavnezz/zendiloOS.community.applications) and others you add, each checked against one policy before it runs; folders of shares handed over safely
+- **Docker**: containers, images, networks and your own Compose projects, with consent for whatever reaches beyond the container
+- **Updates**: Debian and zendiloOS in one place, signed releases from three channels (stable, test, development)
+- **Security**: limits on failed logins, blocked addresses, sessions to end, SSH that switches itself off
+
+<div align="center">
+<img src="docs/images/apps.jpg" width="85%" alt="The App Store with the apps of the community catalog">
+</div>
+
+## Getting started
+
+### Hardware
+
+An x86-64 machine (amd64) with a disk for the system and one or more for
+data, and a network connection. arm64 is planned.
+
+### Install from the ISO
+
+1. Download the [installation ISO](https://github.com/mavnezz/zendiloOS/releases/latest/download/zendiloos-amd64-netinst.iso) of the newest stable release and write it to a USB stick.
+2. Start the NAS from it and choose **Install zendiloOS**.
+3. Answer what the installer asks: language, keyboard, the machine's name, root's password and the disk for the system. Everything else is set up for you; the installer needs the network.
+4. After the restart the console shows the address of the web interface and a setup code. Open the address and create the first administrator with it.
+
+### Install on an existing Debian 13
+
+```sh
+sudo sed -i 's/^Components: main$/Components: main contrib/' /etc/apt/sources.list.d/debian.sources
+sudo apt update && sudo apt install linux-headers-$(uname -r)
+sudo apt install ./zendiloos_<version>_amd64.deb   # from a release
+```
+
+ZFS comes from Debian's `contrib` and is built for your kernel. The setup code
+is on the console and in `/var/lib/zendiloos/setup-code`.
+
+### Update
+
+Settings → **Update & restore** looks for updates daily: Debian's packages
+and new releases of zendiloOS on the chosen channel. Installing is a click,
+and a restart only happens when you ask for it.
+
+### Uninstall
+
+```sh
+sudo apt purge zendiloos
+```
+
+Pools, shares and their data stay where they are; so do Docker and its
+apps. The database in `/var/lib/zendiloos` is kept as well; remove it to
+start over.
 
 ## Development
 
@@ -40,48 +102,27 @@ just api-types     # after API changes: regenerate the TypeScript types
 just sqlx-prepare  # after changing SQL or migrations
 ```
 
-For the interface, run `just dev` and `just web-dev` side by side and open
-http://localhost:5173. On a workstation the privileged agent is simulated:
-nothing is rebooted for real.
-
-### Package and test VM
+On a workstation the privileged agent is simulated: nothing is changed for
+real. The setup code is in `dev/state/setup-code`.
 
 ```sh
 just deb           # build dist/zendiloos_*.deb in a debian:trixie container
-just vm create     # download Debian 13, create a VM with 4 SATA and 1 NVMe disk
-just vm start      # boot it; console output in dev/vm/console.log
+just iso           # the installation ISO for it
+just vm create     # a Debian 13 test VM with 4 SATA and 1 NVMe disk
 just vm install    # install the newest package from dist/
-just vm ssh        # log in (user debian)
-just vm stop
 ```
 
-The installed system answers on https://127.0.0.1:8443 (self-signed
-certificate); the setup code is on the VM's console and in
-`/var/lib/zendiloos/setup-code`.
-
-On first start the server logs a setup code (also in
-`dev/state/setup-code`); the initial setup needs it to create the first
-administrator.
-
-```sh
-curl http://127.0.0.1:8780/api/v1/health
-curl http://127.0.0.1:8780/api/v1/setup
-```
-
-Every push to `main` and every pull request runs `just check` and
-`just deb` on GitHub Actions; the package is attached to the run.
-
-## Layout
+The test VM answers on https://127.0.0.1:8443. How releases are made and
+signed: [docs/releases.md](docs/releases.md).
 
 ```text
 backend/    Cargo workspace (crates/zendiloos-*, zendiloosd, zendiloos-agent)
 frontend/   Vue 3 interface; openapi.json and the TypeScript types are generated
 debian/     Debian packaging
-packaging/  systemd units, nginx configuration, default configuration, build image
-scripts/    test VM
-docs/       architecture and roadmap
+packaging/  systemd units, nginx, default configuration, build image, ISO answers
+scripts/    test VM, VM tests, release and ISO tools
+docs/       architecture, roadmap, releases
 ```
-
 
 ## License
 

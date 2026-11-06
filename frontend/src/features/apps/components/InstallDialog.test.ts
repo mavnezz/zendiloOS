@@ -43,7 +43,12 @@ const immich: CatalogAppDetail = {
   version: '2.0',
   tagline: 'Photos from your phone',
   categories: ['photos'],
-  permissions: { devices: ['/dev/dri'], capabilities: [], host_network: false },
+  permissions: {
+    devices: ['/dev/dri'],
+    capabilities: [],
+    host_network: false,
+    docker_socket: false,
+  },
   translations: {},
   digest: 'sha256:immich',
   description: 'Backs up photos.',

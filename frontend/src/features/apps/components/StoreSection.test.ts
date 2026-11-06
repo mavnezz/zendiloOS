@@ -18,7 +18,7 @@ function app(id: string, name: string, extra: Partial<CatalogApp> = {}): Catalog
     version: '1.0',
     tagline: `${name} on the NAS`,
     categories: ['media'],
-    permissions: { devices: [], capabilities: [], host_network: false },
+    permissions: { devices: [], capabilities: [], host_network: false, docker_socket: false },
     translations: {},
     digest: `sha256:${id}`,
     ...extra,
@@ -59,7 +59,7 @@ beforeEach(() => {
       translations: {},
       state: 'installed',
       run_state: 'running',
-      update: '2.1',
+      update: { version: '2.1' },
       web: null,
     },
     {
@@ -72,7 +72,12 @@ beforeEach(() => {
   ]
   apps.value = [
     app('jellyfin', 'Jellyfin', {
-      permissions: { devices: ['/dev/dri'], capabilities: [], host_network: false },
+      permissions: {
+        devices: ['/dev/dri'],
+        capabilities: [],
+        host_network: false,
+        docker_socket: false,
+      },
     }),
     app('immich', 'Immich', {
       categories: ['photos', 'backup'],
@@ -130,11 +135,21 @@ describe('app texts', () => {
   it('name each kind of permission once', () => {
     const asks = app('x', 'X', {
       permissions: {
-        devices: ['/dev/dri', '/dev/dri/renderD128'],
-        capabilities: ['NET_ADMIN'],
+        devices: ['/dev/dri', '/dev/dri/renderD128', '/dev/ttyUSB0', '/dev/video0', '/dev/mystery'],
+        capabilities: ['NET_ADMIN', 'SYS_NICE'],
         host_network: true,
+        docker_socket: true,
       },
     })
-    expect(permissionKeys(asks)).toEqual(['gpu', 'device', 'netAdmin', 'hostNetwork'])
+    expect(permissionKeys(asks)).toEqual([
+      'gpu',
+      'serial',
+      'camera',
+      'device',
+      'netAdmin',
+      'sysNice',
+      'hostNetwork',
+      'dockerSocket',
+    ])
   })
 })

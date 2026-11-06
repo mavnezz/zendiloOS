@@ -459,7 +459,13 @@ impl Apps {
             let shares: Vec<&String> = placement.shares.values().collect();
             root.insert(
                 EXTENSION.to_owned(),
-                serde_json::json!({ "app_data": placement.app_data, "shares": shares, "pins": pins }),
+                serde_json::json!({
+                    "app_data": placement.app_data,
+                    "shares": shares,
+                    "pins": pins,
+                    // Checked against the manifest by check_normalized.
+                    "docker_socket": manifest.permissions.docker_socket,
+                }),
             );
         }
         self.keep(app, &normalized)?;
@@ -628,6 +634,8 @@ impl Apps {
             return Err(refused("the kept compose file does not say where the app's data is"));
         }
         let pins = app_shares::pins_of(normalized)?;
+        let docker_socket =
+            extension.and_then(|e| e.get("docker_socket")).and_then(Value::as_bool).unwrap_or(false);
         let root = open_mounted(Path::new(app_data))?;
         for source in bind_sources(normalized) {
             if let Some(folder) = below(&source, app_data) {
@@ -638,11 +646,31 @@ impl Apps {
                 app_shares::is_pinned(Path::new(&pin.at), Path::new(&pin.share), &pin.folder)?;
             } else if shares.contains(&source.as_str()) {
                 open_mounted(Path::new(&source))?;
+            } else if DOCKER_SOCKETS.contains(&source.as_str()) {
+                if !docker_socket {
+                    return Err(refused(format!("{source}: the app was not given the Docker socket")));
+                }
+                is_socket(&self.paths.docker_socket)?;
             } else {
                 return Err(refused(format!("{source} is neither the app's data nor one of its shares")));
             }
         }
         Ok(())
+    }
+}
+
+/// Where compose files name Docker's socket; `/var/run` is a link to `/run`.
+const DOCKER_SOCKETS: [&str; 2] = ["/var/run/docker.sock", "/run/docker.sock"];
+
+/// Docker's socket is there, a socket, root's.
+fn is_socket(path: &Path) -> Result<(), OperationError> {
+    use std::os::unix::fs::FileTypeExt;
+    let metadata =
+        fs::symlink_metadata(path).map_err(|_| refused(format!("{} is missing", path.display())))?;
+    if metadata.file_type().is_socket() && metadata.uid() == 0 {
+        Ok(())
+    } else {
+        Err(refused(format!("{} is not Docker's socket", path.display())))
     }
 }
 

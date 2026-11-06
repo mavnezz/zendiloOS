@@ -12,7 +12,8 @@ use async_trait::async_trait;
 use serde_json::Value;
 use zendiloos_apps::application::ports::{CatalogError, CatalogReader, ReadIndex, Skipped};
 use zendiloos_apps::domain::{
-    Access, CatalogApp, Permissions, Port, Setting, SettingKind, Share, Translation, Web, WebScheme,
+    Access, CatalogApp, Permissions, Port, SECRET_LENGTH, SecretAlphabet, Setting, SettingKind, Share,
+    Translation, Web, WebScheme,
 };
 use zendiloos_catalog as catalog;
 
@@ -196,12 +197,18 @@ fn domain_app(
                 default: s.default.as_ref().map(text),
                 required: s.required,
                 generate: s.generate,
+                length: s.length.unwrap_or(SECRET_LENGTH),
+                alphabet: match s.alphabet {
+                    Some(catalog::Alphabet::Hex) => SecretAlphabet::Hex,
+                    Some(catalog::Alphabet::Alphanumeric) | None => SecretAlphabet::Alphanumeric,
+                },
             })
             .collect(),
         permissions: Permissions {
             devices: m.permissions.devices,
             capabilities: m.permissions.capabilities,
             host_network: m.permissions.host_network,
+            docker_socket: m.permissions.docker_socket,
         },
         translations: m
             .translations
@@ -239,23 +246,30 @@ fn domain_app(
 mod tests {
     use super::*;
 
-    /// The community catalog's index as published on 2026-11-06.
+    /// The community catalog's index as published on 2026-11-06, evening.
     const COMMUNITY: &str = include_str!("fixtures/community-index.json");
 
     #[test]
     fn reads_the_community_catalog() {
         let read = read_index(COMMUNITY).unwrap();
         assert_eq!(read.skipped, [], "every app passes");
-        assert_eq!(read.apps.len(), 13);
-        let jellyfin = read.apps.iter().find(|a| a.id == "jellyfin").unwrap();
+        assert_eq!(read.apps.len(), 28);
+        let app = |id: &str| read.apps.iter().find(|a| a.id == id).unwrap();
+        let jellyfin = app("jellyfin");
         assert_eq!(jellyfin.permissions.devices, ["/dev/dri"]);
+        assert_eq!(jellyfin.version, None, "images follow a moving tag");
         assert_eq!(jellyfin.icon, "icons/jellyfin.png");
-        assert!(jellyfin.compose.contains("${SHARE_MEDIA}"));
-        let immich = read.apps.iter().find(|a| a.id == "immich").unwrap();
-        assert!(immich.settings.iter().any(|s| s.id == "DB_PASSWORD" && s.generate));
-        assert!(immich.translations["de"].tagline.is_some());
-        let home = read.apps.iter().find(|a| a.id == "home-assistant").unwrap();
+        assert!(jellyfin.compose.contains("${SHARE_DATA}"));
+        let immich = app("immich");
+        let password = immich.settings.iter().find(|s| s.id == "DB_PASSWORD").unwrap();
+        assert!(password.generate && password.length == SECRET_LENGTH);
+        let homarr = app("homarr");
+        assert!(homarr.permissions.docker_socket);
+        let key = homarr.settings.iter().find(|s| s.id == "SECRET_ENCRYPTION_KEY").unwrap();
+        assert_eq!((key.length, key.alphabet), (64, SecretAlphabet::Hex));
+        let home = app("home-assistant");
         assert!(home.permissions.host_network && home.ports[0].fixed);
+        assert!(home.permissions.devices.contains(&"/dev/ttyUSB0".to_owned()));
     }
 
     #[test]
@@ -276,7 +290,7 @@ mod tests {
 
         let read = read_index(&index.to_string()).unwrap();
 
-        assert_eq!(read.apps.len(), 10);
+        assert_eq!(read.apps.len(), 25);
         let skipped: Vec<&str> = read.skipped.iter().map(|s| s.app.as_str()).collect();
         assert_eq!(skipped, [a.as_str(), b.as_str(), c.as_str()], "{:?}", read.skipped);
     }

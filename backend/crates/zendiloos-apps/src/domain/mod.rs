@@ -6,7 +6,8 @@ mod installed;
 mod source;
 
 pub use app::{
-    Access, CatalogApp, Permissions, Port, Setting, SettingKind, Share, Translation, Web, WebScheme,
+    Access, CatalogApp, Permissions, Port, SECRET_LENGTH, SecretAlphabet, Setting, SettingKind, Share,
+    Translation, Web, WebScheme,
 };
 pub use docker::{AppVolume, DockerHostState, docker_volume};
 pub use installed::{

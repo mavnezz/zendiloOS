@@ -34,7 +34,7 @@ zendiloos-system = { path = "crates/zendiloos-system" }
 
 # The app format and its policy, from the community catalog, pinned: a
 # change to the checks reaches zendiloOS only when this commit is moved.
-zendiloos-catalog = { git = "https://github.com/mavnezz/zendiloOS.community.applications", rev = "9b2b46fe088806c0b6821cfe40738e302744376d" }
+zendiloos-catalog = { git = "https://github.com/mavnezz/zendiloOS.community.applications", rev = "0e2a26040b440294c3ec5c80140e6eecc1bcd9a1" }
 
 anyhow = "1"
 argon2 = "0.6"

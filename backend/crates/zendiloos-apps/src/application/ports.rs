@@ -5,7 +5,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use async_trait::async_trait;
 use zendiloos_kernel::{PortError, RequestContext, Timestamp};
 
-use crate::domain::{AppVolume, CatalogApp, Containers, DockerHostState, InstalledApp, Refresh, Source};
+use crate::domain::{
+    AppVolume, CatalogApp, Containers, DockerHostState, InstalledApp, Refresh, SecretAlphabet, Source,
+};
 
 /// An app an index offered that failed the format or the policy.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -227,6 +229,6 @@ pub trait ListeningPorts: Send + Sync {
 
 /// New secrets for settings zendiloOS generates.
 pub trait Secrets: Send + Sync {
-    /// 32 letters and digits.
-    fn generate(&self) -> String;
+    /// `length` characters of `alphabet`.
+    fn generate(&self, length: u8, alphabet: SecretAlphabet) -> String;
 }

@@ -16,7 +16,7 @@ pub fn app(id: &str, name: &str) -> CatalogApp {
     CatalogApp {
         id: id.into(),
         name: name.into(),
-        version: "1.0".into(),
+        version: Some("1.0".into()),
         tagline: format!("{name} on the NAS"),
         description: format!("{name} does what it does."),
         categories: vec!["media".into()],
@@ -464,7 +464,7 @@ impl crate::application::ports::ListeningPorts for FakeListening {
 pub struct CountingSecrets(AtomicUsize);
 
 impl crate::application::ports::Secrets for CountingSecrets {
-    fn generate(&self) -> String {
+    fn generate(&self, _: u8, _: crate::domain::SecretAlphabet) -> String {
         format!("secret-{}", self.0.fetch_add(1, Ordering::Relaxed) + 1)
     }
 }

@@ -173,7 +173,11 @@ const count =
         <li v-for="app in updatable" :key="app.id" class="border-b pb-3">
           <AppRow
             :name="appText(app, 'name', locale)"
-            :subtitle="t('appStore.installed.newVersion', { version: app.update })"
+            :subtitle="
+              app.update?.version
+                ? t('appStore.installed.newVersion', { version: app.update.version })
+                : t('appStore.installed.newRelease')
+            "
             :icon="iconUrl(app)"
             plain
             @open="emit('open', app)"
@@ -187,8 +191,8 @@ const count =
               >{{ t('appStore.installed.update') }}</Button
             >
           </AppRow>
-          <p class="text-sm">
-            <span class="font-medium">{{ app.update }}</span>
+          <p v-if="app.update?.version && app.version" class="text-sm">
+            <span class="font-medium">{{ app.update.version }}</span>
             <span class="ml-2 text-muted-foreground">{{
               t('appStore.installed.fromVersion', { version: app.version })
             }}</span>

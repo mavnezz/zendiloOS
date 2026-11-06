@@ -116,6 +116,8 @@ pub struct HostPaths {
     pub agent: PathBuf,
     /// Where the runs of apt are recorded.
     pub packages: PathBuf,
+    /// Docker's socket, which an app may be given.
+    pub docker_socket: PathBuf,
     /// Where zendiloosd downloads a release of zendiloOS to.
     pub update_spool: PathBuf,
     /// The keys a release may be signed with, the first that exists counts:
@@ -142,6 +144,7 @@ impl Default for HostPaths {
             app_shares: PathBuf::from("/run/zendiloos-app-shares"),
             agent: PathBuf::from("/usr/libexec/zendiloos/zendiloos-agent"),
             packages: PathBuf::from("/var/lib/zendiloos-packages"),
+            docker_socket: PathBuf::from("/run/docker.sock"),
             update_spool: PathBuf::from("/var/lib/zendiloos/updates"),
             release_keys: vec![
                 PathBuf::from("/etc/zendiloos/release-signing.pub"),

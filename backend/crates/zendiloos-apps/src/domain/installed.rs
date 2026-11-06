@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use zendiloos_kernel::Timestamp;
 
-use super::{CatalogApp, SettingKind, WebScheme};
+use super::{CatalogApp, Setting, SettingKind, WebScheme};
 
 /// The longest app id zendiloOS installs: the app's account, `app-<id>`,
 /// has at most 32 characters.
@@ -227,7 +227,7 @@ pub struct ValueRequest<'a> {
 pub fn install_values(
     app: &CatalogApp,
     request: &ValueRequest<'_>,
-    mut generate: impl FnMut() -> String,
+    mut generate: impl FnMut(&Setting) -> String,
 ) -> Result<InstallValues, InvalidValue> {
     let declared_shares: BTreeSet<&str> = app.shares.iter().map(|s| s.id.as_str()).collect();
     if let Some(unknown) = request.shares.keys().find(|id| !declared_shares.contains(id.as_str())) {
@@ -281,7 +281,7 @@ pub fn install_values(
         let field = format!("settings.{}", setting.id);
         let kept = request.before.and_then(|b| b.settings.get(&setting.id));
         let value = if setting.generate {
-            kept.cloned().unwrap_or_else(&mut generate)
+            kept.cloned().unwrap_or_else(|| generate(setting))
         } else {
             match request.settings.get(&setting.id) {
                 Some(given) => given.trim().to_owned(),
@@ -330,6 +330,8 @@ mod tests {
             default: default.map(str::to_owned),
             required,
             generate,
+            length: crate::domain::SECRET_LENGTH,
+            alphabet: crate::domain::SecretAlphabet::Alphanumeric,
         };
         app.settings = vec![
             setting("DB_PASSWORD", SettingKind::Password, true, true, None),
@@ -370,7 +372,7 @@ mod tests {
                 other_apps: &self.others,
                 busy: &self.busy,
             };
-            install_values(&app(), &request, || "generated".into())
+            install_values(&app(), &request, |_| "generated".into())
         }
     }
 
