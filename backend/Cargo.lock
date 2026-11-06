@@ -2996,6 +2996,7 @@ dependencies = [
  "listenfd",
  "rustix",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
  "tokio",

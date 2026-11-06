@@ -3,6 +3,7 @@
 //! the agent's socket or the simulation.
 
 mod accounts;
+mod docker;
 mod files;
 mod network;
 mod sharing;

@@ -15,7 +15,7 @@ use tokio::signal::unix::{SignalKind, signal};
 use tokio::task::JoinHandle;
 use zendiloos_agent_proto::{AgentTransport, ConsoleSetupCode, Request, Response, UnixTransport};
 use zendiloos_api::{ApiState, UseCases};
-use zendiloos_apps::application::Catalogs;
+use zendiloos_apps::application::{Catalogs, Docker};
 use zendiloos_identity::application::commands::PurgeExpiredSessions;
 use zendiloos_identity::application::{IdentityConfig, IdentityPorts, IdentityUseCases};
 use zendiloos_infra::SystemClock;
@@ -138,6 +138,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     let network_agent = agent.clone();
     let agent_storage = Arc::new(AgentStorage::new(agent));
     let agent_storage_for_sharing = agent_storage.clone();
+    let docker = Docker::new(agent_storage.clone(), audit.clone(), Arc::new(SystemClock));
     let storage = StorageUseCases::new(StoragePorts {
         devices: agent_storage.clone(),
         smart: agent_storage.clone(),
@@ -185,8 +186,19 @@ async fn serve(config: Config) -> anyhow::Result<()> {
 
     let snapshots = spawn_snapshot_schedules(sharing.clone());
     let self_tests = spawn_self_test_schedule(storage.self_test_schedule.clone());
-    let use_cases =
-        UseCases { system, identity, storage, sharing, files, network, jobs, notifier, channels, apps };
+    let use_cases = UseCases {
+        system,
+        identity,
+        storage,
+        sharing,
+        files,
+        network,
+        jobs,
+        notifier,
+        channels,
+        apps,
+        docker,
+    };
     let state = ApiState::new(use_cases, config.secure_cookies);
     let app = zendiloos_api::router(state);
 

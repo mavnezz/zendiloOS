@@ -298,6 +298,11 @@ impl Harness {
             ),
             jobs: jobs.clone(),
             notifier: notifier.clone(),
+            docker: zendiloos_apps::application::Docker::new(
+                Arc::new(zendiloos_apps::testing::FakeDocker::default()),
+                identity.audit.clone(),
+                identity.clock.clone(),
+            ),
             apps: zendiloos_apps::application::Catalogs::new(
                 Arc::new(zendiloos_apps::testing::MemorySources::default()),
                 catalogs.clone(),
@@ -841,6 +846,7 @@ fn openapi_documents_every_route() {
             "/api/v1/apps/catalog",
             "/api/v1/apps/catalog/{source}/{app}",
             "/api/v1/apps/catalog/{source}/{app}/icon",
+            "/api/v1/apps/docker",
             "/api/v1/apps/sources",
             "/api/v1/apps/sources/refresh",
             "/api/v1/apps/sources/{id}",
@@ -2148,4 +2154,23 @@ async fn administrators_browse_catalogs_and_add_their_own() {
     assert_problem(&official, StatusCode::CONFLICT, "official_source");
     let removed = send(Method::DELETE, &format!("/api/v1/apps/sources/{}", added.body["id"]), None).await;
     assert_eq!(removed.status, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn administrators_put_dockers_data_on_a_pool() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let before = h.send(empty(with_cookie(get("/api/v1/apps/docker"), &admin))).await;
+    assert_eq!((before.body["installed"].clone(), before.body["volume"].clone()), (json!(true), Value::Null));
+    assert_eq!(before.body["volumes"][0]["pool"], "tank");
+
+    let enable =
+        |pool: &str| h.send(json(with_csrf(post("/api/v1/apps/docker"), &admin), json!({ "pool": pool })));
+    assert_problem(&enable("nowhere").await, StatusCode::NOT_FOUND, "not_found");
+    let after = enable("tank").await;
+    assert_eq!(after.status, StatusCode::OK);
+    assert_eq!(
+        (after.body["running"].clone(), after.body["volume"]["number"].clone()),
+        (json!(true), json!(1))
+    );
 }

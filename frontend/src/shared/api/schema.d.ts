@@ -120,6 +120,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/apps/docker": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Whether apps can run: Docker installed, its data on a pool. Needs
+         *     `containers.manage`.
+         */
+        get: operations["docker"];
+        put?: never;
+        /**
+         * Puts Docker's data (images, containers) on a pool; Docker restarts.
+         *     Needs `containers.manage`.
+         */
+        post: operations["enable_docker"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/apps/sources": {
         parameters: {
             query?: never;
@@ -1463,6 +1487,12 @@ export interface components {
             notes?: string | null;
             tagline?: string | null;
         };
+        /** @description A pool apps can keep Docker's data on. */
+        AppVolume: {
+            /** Format: int32 */
+            number: number;
+            pool: string;
+        };
         AppWeb: {
             https: boolean;
             path: string;
@@ -1704,6 +1734,19 @@ export interface components {
          * @enum {string}
          */
         DiskUsage: "system" | "array_member" | "pool_member" | "volume" | "foreign" | "unused";
+        /** @description Whether apps can run on this NAS. */
+        DockerSetup: {
+            /** @description Debian's `docker.io` is installed. */
+            installed: boolean;
+            running: boolean;
+            volume?: components["schemas"]["AppVolume"] | null;
+            /** @description Pools it could go to. */
+            volumes: components["schemas"]["AppVolume"][];
+        };
+        EnableDockerRequest: {
+            /** @description A pool zendiloOS created. */
+            pool: string;
+        };
         /** @description A folder kept at hand. */
         Favourite: {
             /** @description Relative to the share's root; empty for the share itself. */
@@ -3097,6 +3140,66 @@ export interface operations {
             };
             /** @description `catalog_unreachable` */
             502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    docker: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DockerSetup"];
+                };
+            };
+        };
+    };
+    enable_docker: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EnableDockerRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DockerSetup"];
+                };
+            };
+            /** @description `not_found`: no such pool */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `refused`: Docker missing, or its data on another pool */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

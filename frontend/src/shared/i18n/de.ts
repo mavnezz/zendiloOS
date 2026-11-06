@@ -71,6 +71,17 @@ const de: Messages = {
     website: 'Website',
     sourceCode: 'Quellcode',
     compose: 'Compose-Datei',
+    docker: {
+      title: 'Apps legen ihre Images auf einem Pool ab',
+      hint: 'Vor der ersten App legt zendiloOS die Daten von Docker (Images und Container, bei manchen Apps mehrere Gigabyte) auf einen Pool statt auf die Systemplatte. Docker startet dafür einmal neu.',
+      pool: 'Pool',
+      volume: '{pool} (Volume {number})',
+      enable: 'Docker auf diesen Pool legen',
+      missing:
+        'Apps brauchen Docker. Installieren Sie auf dem NAS die Debian-Pakete docker.io und docker-compose.',
+      noPool:
+        'Apps brauchen einen Pool für die Daten von Docker. Legen Sie unter Speicher einen an.',
+    },
     sources: {
       hint: 'Apps stammen aus dem zendiloOS-Community-Katalog und aus Katalogen, die Sie hinzufügen, wie bei HACS.',
       refresh: 'Alle neu lesen',

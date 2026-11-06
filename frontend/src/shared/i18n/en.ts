@@ -70,6 +70,16 @@ const en = {
     website: 'Website',
     sourceCode: 'Source code',
     compose: 'Compose file',
+    docker: {
+      title: 'Apps keep their images on a pool',
+      hint: "Before the first app, zendiloOS puts Docker's data (images and containers, several gigabytes for some apps) on a pool instead of the system disk. Docker restarts once.",
+      pool: 'Pool',
+      volume: '{pool} (volume {number})',
+      enable: 'Put Docker on this pool',
+      missing:
+        "Apps need Docker. Install Debian's packages docker.io and docker-compose on the NAS.",
+      noPool: "Apps need a pool for Docker's data. Create one under Storage.",
+    },
     sources: {
       hint: 'Apps come from the zendiloOS community catalog and the catalogs you add, as with HACS.',
       refresh: 'Read all again',

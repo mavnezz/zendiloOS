@@ -26,6 +26,8 @@ Depends: acl,
          ${misc:Depends},
          ${shlibs:Depends}
 Recommends: avahi-daemon,
+            docker-compose,
+            docker.io,
             nfs-kernel-server,
             wsdd2
 Description: web-managed NAS operating system

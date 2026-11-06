@@ -20,6 +20,10 @@ pub struct AgentStorage {
 }
 
 impl AgentStorage {
+    pub(super) fn transport(&self) -> &dyn AgentTransport {
+        self.transport.as_ref()
+    }
+
     pub fn new(transport: Arc<dyn AgentTransport>) -> Self {
         Self { transport }
     }

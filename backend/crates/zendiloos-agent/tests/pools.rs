@@ -139,6 +139,7 @@ fn host(erasable: Erasable) -> Host {
         exportfs: script("exportfs", ""),
         setfacl: script("setfacl", ""),
         busctl: script("busctl", ""),
+        docker: script("docker", ""),
         ..Tools::default()
     };
     let paths = Paths {
@@ -155,6 +156,7 @@ fn host(erasable: Erasable) -> Host {
             samba_config: root.join("samba/zendiloos.conf"),
             nfs_exports: root.join("exports.d/zendiloos.exports"),
             console_issue: root.join("zendiloos.issue"),
+            docker_config: root.join("etc-docker/daemon.json"),
         },
     };
     let operations = Operations::with_paths(Role::System, &tools, erasable, paths).unwrap();
@@ -504,4 +506,38 @@ async fn share_properties_go_to_the_share_dataset_only() {
     assert_refused(host.run(set("photos", "foreign", None)).await, ErrorCode::Forbidden, "not managed");
 
     assert!(matches!(host.run(Request::ShareUsage {}).await, Response::ShareUsage { .. }));
+}
+
+#[tokio::test]
+async fn docker_moves_onto_a_pool_zendiloos_made() {
+    let host = host(Erasable::Policy(ErasePolicy::Unused));
+    fs::create_dir_all(host.path("etc-docker")).unwrap();
+    fs::write(host.path("etc-docker/daemon.json"), r#"{"log-driver": "local"}"#).unwrap();
+    let enable = |pool: &str| Request::EnableDocker {
+        pool: PoolName::parse(pool).unwrap(),
+        volume: VolumeNumber::new(1).unwrap(),
+    };
+
+    assert_eq!(host.run(enable("tank")).await, Response::Done);
+
+    let calls = host.calls();
+    assert!(calls.contains(&"zfs create -o mountpoint=legacy tank/zendiloos.docker".to_owned()), "{calls:?}");
+    assert!(calls.contains(&"systemctl enable --now volume1-\\x40docker.mount".to_owned()), "{calls:?}");
+    assert_eq!(calls.last().unwrap(), "systemctl restart docker");
+    let unit = fs::read_to_string(host.path("units/volume1-\\x40docker.mount")).unwrap();
+    assert!(unit.contains("What=tank/zendiloos.docker\nWhere=/volume1/@docker\n"), "{unit}");
+    let drop_in = fs::read_to_string(host.path("units/docker.service.d/zendiloos.conf")).unwrap();
+    assert!(drop_in.contains("RequiresMountsFor=/volume1/@docker"), "{drop_in}");
+    let config: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(host.path("etc-docker/daemon.json")).unwrap()).unwrap();
+    assert_eq!(config["data-root"], "/volume1/@docker");
+    assert_eq!(config["storage-driver"], "overlay2");
+    assert_eq!(config["log-driver"], "local", "other settings stay");
+    let Response::DockerState { installed, data_root, .. } = host.run(Request::DockerState {}).await else {
+        panic!("no state")
+    };
+    assert!(installed);
+    assert_eq!(data_root.as_deref(), Some("/volume1/@docker"));
+
+    assert_refused(host.run(enable("foreign")).await, ErrorCode::Forbidden, "not managed");
 }

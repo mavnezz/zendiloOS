@@ -12,6 +12,7 @@ import { Input } from '@/shared/ui/input'
 
 import { iconUrl, useCatalog } from '../api'
 import { appText, permissionKeys } from '../texts'
+import DockerPanel from './DockerPanel.vue'
 
 defineEmits<{ open: [app: CatalogApp] }>()
 
@@ -46,6 +47,7 @@ const chip = (selected: boolean) =>
 <!-- The apps of every catalog. -->
 <template>
   <div class="grid gap-4">
+    <DockerPanel />
     <div class="relative">
       <Search class="absolute top-2.5 left-3 size-4 text-muted-foreground" />
       <Input

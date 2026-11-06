@@ -65,6 +65,8 @@ pub struct Tools {
     pub gpasswd: PathBuf,
     pub smbpasswd: PathBuf,
     pub busctl: PathBuf,
+    /// May be missing: then Docker is not installed.
+    pub docker: PathBuf,
 }
 
 impl Default for Tools {
@@ -88,6 +90,7 @@ impl Default for Tools {
             gpasswd: PathBuf::from("/usr/bin/gpasswd"),
             smbpasswd: PathBuf::from("/usr/bin/smbpasswd"),
             busctl: PathBuf::from("/usr/bin/busctl"),
+            docker: PathBuf::from("/usr/bin/docker"),
         }
     }
 }

@@ -56,7 +56,8 @@ impl Host {
             groupadd: any.clone(),
             groupdel: any.clone(),
             gpasswd: any.clone(),
-            smbpasswd: any,
+            smbpasswd: any.clone(),
+            docker: any,
         };
         Self { _dir: dir, root, tools }
     }

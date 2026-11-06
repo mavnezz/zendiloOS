@@ -1,4 +1,4 @@
-use zendiloos_apps::application::Catalogs;
+use zendiloos_apps::application::{Catalogs, Docker};
 use zendiloos_identity::application::IdentityUseCases;
 use zendiloos_jobs::Jobs;
 use zendiloos_network::application::NetworkUseCases;
@@ -22,6 +22,7 @@ pub struct ApiState {
     pub(crate) notifier: Notifier,
     pub(crate) channels: Channels,
     pub(crate) apps: Catalogs,
+    pub(crate) docker: Docker,
     /// Session cookies get `Secure` and the `__Host-` prefix. Only turn
     /// this off where the interface is reached over plain HTTP.
     pub(crate) secure_cookies: bool,
@@ -39,12 +40,24 @@ pub struct UseCases {
     pub notifier: Notifier,
     pub channels: Channels,
     pub apps: Catalogs,
+    pub docker: Docker,
 }
 
 impl ApiState {
     pub fn new(use_cases: UseCases, secure_cookies: bool) -> Self {
-        let UseCases { system, identity, storage, sharing, files, network, jobs, notifier, channels, apps } =
-            use_cases;
+        let UseCases {
+            system,
+            identity,
+            storage,
+            sharing,
+            files,
+            network,
+            jobs,
+            notifier,
+            channels,
+            apps,
+            docker,
+        } = use_cases;
         Self {
             system,
             identity,
@@ -56,6 +69,7 @@ impl ApiState {
             notifier,
             channels,
             apps,
+            docker,
             secure_cookies,
         }
     }

@@ -138,6 +138,17 @@ pub enum Request {
         share: ShareName,
         label: SnapshotLabel,
     },
+    /// Whether Docker is installed and running, and where its data is.
+    /// Answers [`Response::DockerState`].
+    DockerState {},
+    /// Puts Docker's data on a pool zendiloos created: the dataset
+    /// `<pool>/zendiloos.docker`, mounted at `/volume<N>/@docker`, as
+    /// `data-root` with the `overlay2` driver; Docker starts only with it
+    /// mounted.
+    EnableDocker {
+        pool: PoolName,
+        volume: VolumeNumber,
+    },
     /// Whether systemd-networkd manages the network, and a change that
     /// waits to be confirmed. Answers [`Response::NetworkState`].
     NetworkState {},
@@ -334,6 +345,8 @@ impl Request {
             Request::CreateSnapshot { .. } => "create_snapshot",
             Request::DestroySnapshot { .. } => "destroy_snapshot",
             Request::RollbackSnapshot { .. } => "rollback_snapshot",
+            Request::DockerState {} => "docker_state",
+            Request::EnableDocker { .. } => "enable_docker",
             Request::NetworkState {} => "network_state",
             Request::ApplyNetwork { .. } => "apply_network",
             Request::ConfirmNetwork {} => "confirm_network",
@@ -407,6 +420,13 @@ pub enum Response {
     },
     Copied {
         path: SharePath,
+    },
+    DockerState {
+        /// The `docker` program is there.
+        installed: bool,
+        running: bool,
+        /// Its `data-root`, if `/etc/docker/daemon.json` sets one.
+        data_root: Option<String>,
     },
     NetworkState {
         /// systemd-networkd manages the network: it can be changed here.

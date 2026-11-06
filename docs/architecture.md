@@ -734,9 +734,17 @@ PID, IPC and user namespaces, devices and capabilities beyond the
 grantable ones.
 
 **Docker's own data** (images, layers, containers) lives on a pool, not on
-the system disk: turning apps on creates the dataset `<pool>/docker`, and
-the agent writes `/etc/docker/daemon.json` with it as `data-root`. Docker
-comes from Debian (`docker.io`, `docker-compose`).
+the system disk: turning apps on creates the dataset
+`<pool>/zendiloos.docker` (the dot keeps it from ever being a share),
+mounted by its own unit at `/volume<N>/@docker`; a drop-in
+(`RequiresMountsFor`) keeps Docker from starting without it, so it never
+writes into the empty folder beneath; and the agent sets `data-root` and
+the `overlay2` driver in `/etc/docker/daemon.json`, keeping whatever else is
+there. `overlay2` runs on OpenZFS 2.3 with native overlay diffs, without
+the dataset per image layer of Docker's `zfs` driver. Docker comes from
+Debian (`docker.io`, `docker-compose`, recommended by the package); its
+data from before stays where it was, unused. Verified in the second test
+VM, across a restart.
 
 **Installing** (a job): every app gets a system account `app-<id>`
 (`PUID`/`PGID`) that owns its data folder `/volume<N>/@apps/<id>` and gets

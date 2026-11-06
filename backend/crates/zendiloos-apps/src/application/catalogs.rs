@@ -31,6 +31,11 @@ pub enum AppsError {
     NotACatalog(String),
     #[error("cannot reach the catalog: {0}")]
     Unreachable(String),
+    #[error("there is no such pool")]
+    PoolNotFound,
+    /// The agent's checks refused, with its reason.
+    #[error("refused by the host: {0}")]
+    Refused(String),
     #[error(transparent)]
     Port(#[from] PortError),
 }

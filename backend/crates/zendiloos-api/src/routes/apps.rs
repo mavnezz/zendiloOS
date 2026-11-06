@@ -27,6 +27,7 @@ pub(super) fn routes() -> OpenApiRouter<ApiState> {
         .routes(routes!(catalog))
         .routes(routes!(catalog_app))
         .routes(routes!(catalog_icon))
+        .routes(routes!(docker, enable_docker))
 }
 
 impl From<AppsError> for ApiError {
@@ -43,6 +44,8 @@ impl From<AppsError> for ApiError {
             AppsError::Unreachable(detail) => {
                 rejected(StatusCode::BAD_GATEWAY, "catalog_unreachable", Some(detail))
             }
+            AppsError::PoolNotFound => ApiError::NotFound,
+            AppsError::Refused(detail) => rejected(StatusCode::CONFLICT, "refused", Some(detail)),
             AppsError::Port(e) => ApiError::internal(e),
         }
     }
@@ -389,4 +392,76 @@ async fn catalog_icon(
         (header::CONTENT_SECURITY_POLICY, HeaderValue::from_static("sandbox; default-src 'none'")),
     ];
     Ok((headers, png).into_response())
+}
+
+/// A pool apps can keep Docker's data on.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AppVolume {
+    pub pool: String,
+    pub number: u16,
+}
+
+/// Whether apps can run on this NAS.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DockerSetup {
+    /// Debian's `docker.io` is installed.
+    pub installed: bool,
+    pub running: bool,
+    /// Where Docker's data is, if zendiloOS put it on a pool.
+    pub volume: Option<AppVolume>,
+    /// Pools it could go to.
+    pub volumes: Vec<AppVolume>,
+}
+
+fn docker_dto(setup: zendiloos_apps::application::DockerSetup) -> DockerSetup {
+    let volume = |v: apps::AppVolume| AppVolume { pool: v.pool, number: v.number };
+    DockerSetup {
+        installed: setup.installed,
+        running: setup.running,
+        volume: setup.volume.map(volume),
+        volumes: setup.volumes.into_iter().map(volume).collect(),
+    }
+}
+
+/// Whether apps can run: Docker installed, its data on a pool. Needs
+/// `containers.manage`.
+#[utoipa::path(get, path = "/apps/docker", tag = "apps", security(("session" = [])), responses((status = OK, body = DockerSetup)))]
+async fn docker(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+) -> Result<Json<DockerSetup>, ApiError> {
+    auth.require(Permission::ContainersManage)?;
+    Ok(Json(docker_dto(state.docker.setup(&client).await?)))
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EnableDockerRequest {
+    /// A pool zendiloOS created.
+    pub pool: String,
+}
+
+/// Puts Docker's data (images, containers) on a pool; Docker restarts.
+/// Needs `containers.manage`.
+#[utoipa::path(
+    post,
+    path = "/apps/docker",
+    tag = "apps",
+    security(("session" = [])),
+    request_body = EnableDockerRequest,
+    responses(
+        (status = OK, body = DockerSetup),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`: no such pool"),
+        (status = CONFLICT, body = Problem, description = "`refused`: Docker missing, or its data on another pool"),
+    )
+)]
+async fn enable_docker(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    ApiJson(request): ApiJson<EnableDockerRequest>,
+) -> Result<Json<DockerSetup>, ApiError> {
+    auth.require(Permission::ContainersManage)?;
+    Ok(Json(docker_dto(state.docker.enable(&request.pool, &auth.0.actor(), &client).await?)))
 }

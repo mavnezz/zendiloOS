@@ -19,6 +19,7 @@ clap.workspace = true
 listenfd.workspace = true
 rustix = { workspace = true, features = ["thread", "process", "fs", "event"] }
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "sync"] }
 toml.workspace = true

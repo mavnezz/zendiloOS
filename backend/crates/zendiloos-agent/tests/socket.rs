@@ -59,6 +59,7 @@ impl Agent {
             zfs: script("zfs", "echo '{\"datasets\": {}}'"),
             sgdisk: script("sgdisk", ""),
             busctl: script("busctl", ""),
+            docker: script("docker", ""),
             wipefs: script("wipefs", ""),
             udevadm: script("udevadm", ""),
             testparm: script("testparm", ""),

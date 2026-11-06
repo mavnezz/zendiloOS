@@ -29,6 +29,8 @@ const apps = ref<CatalogApp[]>([])
 vi.mock('../api', () => ({
   useCatalog: () => ({ data: apps, error: ref(null), isPending: ref(false) }),
   iconUrl: (a: CatalogApp) => `/icon/${a.id}`,
+  useDocker: () => ({ data: ref(undefined) }),
+  useEnableDocker: () => () => Promise.resolve(),
 }))
 
 beforeEach(() => {

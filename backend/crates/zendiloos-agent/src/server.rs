@@ -32,6 +32,8 @@ fn is_long(request: &Request) -> bool {
         | Request::RemoveEntry { .. }
         // Planning walks the whole folder.
         | Request::ArchiveFolder { .. }
+        // Restarts Docker.
+        | Request::EnableDocker { .. }
         | Request::CreatePool { .. }
         | Request::DestroyPool { .. }
         | Request::ReplaceDisk { .. }

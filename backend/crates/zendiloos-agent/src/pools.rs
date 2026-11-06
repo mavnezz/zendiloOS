@@ -103,6 +103,8 @@ pub struct HostPaths {
     pub nfs_exports: PathBuf,
     /// The console login prompt's text (agetty's issue.d).
     pub console_issue: PathBuf,
+    /// Docker's configuration, `/etc/docker/daemon.json`.
+    pub docker_config: PathBuf,
 }
 
 impl Default for HostPaths {
@@ -118,6 +120,7 @@ impl Default for HostPaths {
             samba_config: PathBuf::from("/etc/samba/zendiloos.conf"),
             nfs_exports: PathBuf::from("/etc/exports.d/zendiloos.exports"),
             console_issue: PathBuf::from("/run/issue.d/zendiloos.issue"),
+            docker_config: PathBuf::from("/etc/docker/daemon.json"),
         }
     }
 }
@@ -132,6 +135,7 @@ pub(crate) struct Pools {
     wipefs: Program,
     udevadm: Program,
     systemctl: Program,
+    docker: Program,
     exportfs: Program,
     /// One change to disks and pools at a time.
     serial: tokio::sync::Mutex<()>,
@@ -171,6 +175,7 @@ impl Pools {
             wipefs: Program::new(&tools.wipefs)?,
             udevadm: Program::new(&tools.udevadm)?,
             systemctl: Program::new(&tools.systemctl)?,
+            docker: Program::new(&tools.docker)?,
             exportfs: Program::new(&tools.exportfs)?,
             serial: tokio::sync::Mutex::new(()),
         })
@@ -487,6 +492,85 @@ impl Pools {
         Ok(())
     }
 
+    /// Whether Docker is there and running, and where its data is.
+    pub(crate) async fn docker_state(&self) -> Result<Response, OperationError> {
+        let installed = self.docker.path().exists();
+        let running = installed
+            && zendiloos_exec::run(&self.systemctl, &["is-active", "--quiet", "docker"], LIMITS)
+                .await
+                .is_ok_and(|output| output.status.success());
+        let data_root = docker_config(&self.paths.docker_config)?
+            .get("data-root")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        Ok(Response::DockerState { installed, running, data_root })
+    }
+
+    /// Puts Docker's data on the pool: dataset, mount unit, a drop-in so
+    /// Docker starts only with it mounted, and `data-root` with `overlay2`
+    /// in `daemon.json` (other settings there stay). Docker's data from
+    /// before stays where it was, unused.
+    pub(crate) async fn enable_docker(
+        &self,
+        pool: &PoolName,
+        volume: VolumeNumber,
+    ) -> Result<Response, OperationError> {
+        let _serial = self.serial.lock().await;
+        if !self.docker.path().exists() {
+            return Err(refused("Docker is not installed: apt install docker.io docker-compose".into()));
+        }
+        self.require_managed(pool, Some(volume)).await?;
+        let root = format!("/volume{}/{DOCKER_DIRECTORY}", volume.get());
+        let mut config = docker_config(&self.paths.docker_config)?;
+        if let Some(other) = config.get("data-root").and_then(serde_json::Value::as_str)
+            && other != root
+            && other.ends_with(&format!("/{DOCKER_DIRECTORY}"))
+        {
+            return Err(refused(format!("Docker's data is on another pool already ({other})")));
+        }
+        let dataset = format!("{}/{DOCKER_DATASET}", pool.as_str());
+        let existing = output(&self.zfs, &["list", "-H", "-o", "name", "-d", "1", pool.as_str()]).await?;
+        if !existing.lines().any(|line| line == dataset) {
+            run(&self.zfs, &["create", "-o", "mountpoint=legacy", &dataset]).await?;
+        }
+        let unit = docker_unit_name(volume);
+        let content = format!(
+            "# Created by zendiloOS: Docker's data (images, containers) on pool {pool}.\n\
+             [Unit]\n\
+             Description=zendiloOS: Docker's data (ZFS dataset {dataset})\n\
+             Requires=zfs-import.target\n\
+             After=zfs-import.target\n\
+             Before=docker.service\n\
+             \n\
+             [Mount]\n\
+             What={dataset}\n\
+             Where={root}\n\
+             Type=zfs\n\
+             \n\
+             [Install]\n\
+             WantedBy=multi-user.target\n",
+            pool = pool.as_str(),
+        );
+        self.install_unit(&unit, &content).await?;
+        let drop_in = self.paths.units.join("docker.service.d");
+        fs::create_dir_all(&drop_in).map_err(|e| OperationError::Write(drop_in.clone(), e))?;
+        let drop_in = drop_in.join("zendiloos.conf");
+        let requires = format!(
+            "# Written by zendiloOS: Docker's data is on a pool; without it, Docker waits.\n[Unit]\nRequiresMountsFor={root}\n"
+        );
+        write_file(&drop_in, &requires)?;
+        config.insert("data-root".to_owned(), root.clone().into());
+        config.insert("storage-driver".to_owned(), "overlay2".into());
+        let text = serde_json::to_string_pretty(&config).unwrap_or_default();
+        if let Some(parent) = self.paths.docker_config.parent() {
+            fs::create_dir_all(parent).map_err(|e| OperationError::Write(parent.to_owned(), e))?;
+        }
+        write_file(&self.paths.docker_config, &format!("{text}\n"))?;
+        run(&self.systemctl, &["daemon-reload"]).await?;
+        run(&self.systemctl, &["restart", "docker"]).await?;
+        Ok(Response::Done)
+    }
+
     /// Only pools zendiloos created, like every change to a pool.
     pub(crate) async fn scrub(&self, pool: &PoolName) -> Result<Response, OperationError> {
         self.require_managed(pool, None).await?;
@@ -698,6 +782,36 @@ fn unit_name(volume: VolumeNumber) -> String {
 }
 
 /// The mount unit of `/volume<N>/<share>`; systemd escapes `-` in paths.
+/// Docker's dataset below a pool: the dot keeps it from ever being a share.
+pub(crate) const DOCKER_DATASET: &str = "zendiloos.docker";
+/// Where it is mounted on the volume.
+pub(crate) const DOCKER_DIRECTORY: &str = "@docker";
+
+/// `volume<N>-\x40docker.mount`.
+pub(crate) fn docker_unit_name(volume: VolumeNumber) -> String {
+    format!("volume{}-\\x40docker.mount", volume.get())
+}
+
+/// `/etc/docker/daemon.json` as an object; empty if it is not there.
+fn docker_config(
+    path: &std::path::Path,
+) -> Result<serde_json::Map<String, serde_json::Value>, OperationError> {
+    match fs::read_to_string(path) {
+        Ok(text) => match serde_json::from_str(&text) {
+            Ok(serde_json::Value::Object(map)) => Ok(map),
+            _ => Err(refused(format!("{} is not a JSON object; fix or remove it first", path.display()))),
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(serde_json::Map::new()),
+        Err(error) => Err(OperationError::Read(path.to_owned(), error)),
+    }
+}
+
+fn write_file(path: &std::path::Path, content: &str) -> Result<(), OperationError> {
+    let temporary = path.with_extension("zendiloos-new");
+    fs::write(&temporary, content).map_err(|e| OperationError::Write(temporary.clone(), e))?;
+    fs::rename(&temporary, path).map_err(|e| OperationError::Write(path.to_owned(), e))
+}
+
 pub(crate) fn share_unit_name(volume: VolumeNumber, share: &ShareName) -> String {
     format!("volume{}-{}.mount", volume.get(), share.as_str().replace('-', "\\x2d"))
 }

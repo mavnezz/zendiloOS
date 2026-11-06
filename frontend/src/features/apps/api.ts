@@ -57,3 +57,21 @@ export function useSourceActions() {
     refreshAll: () => refreshing(unwrap(api.POST('/api/v1/apps/sources/refresh'))),
   }
 }
+
+/** Whether apps can run: Docker installed, its data on a pool. */
+export function useDocker() {
+  return useQuery({
+    queryKey: ['apps', 'docker'],
+    queryFn: () => unwrap(api.GET('/api/v1/apps/docker')),
+  })
+}
+
+/** Puts Docker's data on `pool`; Docker restarts. */
+export function useEnableDocker() {
+  const client = useQueryClient()
+  return async (pool: string) => {
+    const setup = await unwrap(api.POST('/api/v1/apps/docker', { body: { pool } }))
+    client.setQueryData(['apps', 'docker'], setup)
+    return setup
+  }
+}

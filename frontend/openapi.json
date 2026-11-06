@@ -456,6 +456,84 @@
         ]
       }
     },
+    "/api/v1/apps/docker": {
+      "get": {
+        "tags": [
+          "apps"
+        ],
+        "summary": "Whether apps can run: Docker installed, its data on a pool. Needs\n`containers.manage`.",
+        "operationId": "docker",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DockerSetup"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "apps"
+        ],
+        "summary": "Puts Docker's data (images, containers) on a pool; Docker restarts.\nNeeds `containers.manage`.",
+        "operationId": "enable_docker",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnableDockerRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DockerSetup"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no such pool",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`refused`: Docker missing, or its data on another pool",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/apps/sources": {
       "get": {
         "tags": [
@@ -4605,6 +4683,24 @@
           }
         }
       },
+      "AppVolume": {
+        "type": "object",
+        "description": "A pool apps can keep Docker's data on.",
+        "required": [
+          "pool",
+          "number"
+        ],
+        "properties": {
+          "number": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "pool": {
+            "type": "string"
+          }
+        }
+      },
       "AppWeb": {
         "type": "object",
         "required": [
@@ -5407,6 +5503,55 @@
           "foreign",
           "unused"
         ]
+      },
+      "DockerSetup": {
+        "type": "object",
+        "description": "Whether apps can run on this NAS.",
+        "required": [
+          "installed",
+          "running",
+          "volumes"
+        ],
+        "properties": {
+          "installed": {
+            "type": "boolean",
+            "description": "Debian's `docker.io` is installed."
+          },
+          "running": {
+            "type": "boolean"
+          },
+          "volume": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AppVolume",
+                "description": "Where Docker's data is, if zendiloOS put it on a pool."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "volumes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AppVolume"
+            },
+            "description": "Pools it could go to."
+          }
+        }
+      },
+      "EnableDockerRequest": {
+        "type": "object",
+        "required": [
+          "pool"
+        ],
+        "properties": {
+          "pool": {
+            "type": "string",
+            "description": "A pool zendiloOS created."
+          }
+        },
+        "additionalProperties": false
       },
       "Favourite": {
         "type": "object",

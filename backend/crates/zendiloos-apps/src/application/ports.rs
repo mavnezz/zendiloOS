@@ -1,9 +1,9 @@
 //! What this context needs from the outside world.
 
 use async_trait::async_trait;
-use zendiloos_kernel::{PortError, Timestamp};
+use zendiloos_kernel::{PortError, RequestContext, Timestamp};
 
-use crate::domain::{CatalogApp, Refresh, Source};
+use crate::domain::{AppVolume, CatalogApp, DockerHostState, Refresh, Source};
 
 /// An app an index offered that failed the format or the policy.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,4 +65,25 @@ pub trait SourceRepository: Send + Sync {
     async fn icon(&self, id: i64, app: &str, digest: &str) -> Result<Option<Vec<u8>>, PortError>;
 
     async fn store_icon(&self, id: i64, app: &str, digest: &str, png: &[u8]) -> Result<(), PortError>;
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum DockerError {
+    /// The agent's checks refused, with its reason.
+    #[error("refused: {0}")]
+    Refused(String),
+    #[error(transparent)]
+    Port(#[from] PortError),
+}
+
+/// Docker on the host, through the agent.
+#[async_trait]
+pub trait DockerHost: Send + Sync {
+    async fn state(&self, context: &RequestContext) -> Result<DockerHostState, PortError>;
+
+    /// Puts Docker's data on the volume; Docker restarts.
+    async fn enable(&self, volume: &AppVolume, context: &RequestContext) -> Result<(), DockerError>;
+
+    /// The pools zendiloos created.
+    async fn volumes(&self, context: &RequestContext) -> Result<Vec<AppVolume>, PortError>;
 }

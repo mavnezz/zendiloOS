@@ -129,6 +129,8 @@ impl Operations {
             Request::DestroySnapshot { pool, volume, share, label } => {
                 self.pools.destroy_snapshot(pool, *volume, share, label).await
             }
+            Request::DockerState {} => self.pools.docker_state().await,
+            Request::EnableDocker { pool, volume } => self.pools.enable_docker(pool, *volume).await,
             Request::NetworkState {} => self.network.state().await,
             Request::ApplyNetwork { config, confirm_within } => {
                 self.network.apply(config, *confirm_within).await

@@ -158,3 +158,36 @@ impl CatalogReader for FakeReader {
         Ok([b"\x89PNG\r\n\x1a\n".as_slice(), icon.as_bytes()].concat())
     }
 }
+
+/// Docker installed, its data nowhere yet; pool `tank` as volume 1.
+#[derive(Default)]
+pub struct FakeDocker {
+    data_root: Mutex<Option<String>>,
+}
+
+#[async_trait]
+impl crate::application::ports::DockerHost for FakeDocker {
+    async fn state(
+        &self,
+        _: &zendiloos_kernel::RequestContext,
+    ) -> Result<crate::domain::DockerHostState, PortError> {
+        let data_root = self.data_root.lock().unwrap().clone();
+        Ok(crate::domain::DockerHostState { installed: true, running: data_root.is_some(), data_root })
+    }
+
+    async fn enable(
+        &self,
+        volume: &crate::domain::AppVolume,
+        _: &zendiloos_kernel::RequestContext,
+    ) -> Result<(), crate::application::ports::DockerError> {
+        *self.data_root.lock().unwrap() = Some(format!("/volume{}/@docker", volume.number));
+        Ok(())
+    }
+
+    async fn volumes(
+        &self,
+        _: &zendiloos_kernel::RequestContext,
+    ) -> Result<Vec<crate::domain::AppVolume>, PortError> {
+        Ok(vec![crate::domain::AppVolume { pool: "tank".into(), number: 1 }])
+    }
+}

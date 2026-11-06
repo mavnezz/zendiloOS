@@ -57,6 +57,8 @@ pub struct SimulatedAgent {
     files: Option<PathBuf>,
     /// A network change waiting to be confirmed; nothing is changed.
     network: Mutex<Option<zendiloos_agent_proto::PendingNetwork>>,
+    /// Docker's data root, once put on a pool.
+    docker: Mutex<Option<String>>,
 }
 
 impl std::fmt::Debug for SimulatedAgent {
@@ -111,6 +113,7 @@ impl SimulatedAgent {
             clock,
             files: None,
             network: Mutex::default(),
+            docker: Mutex::default(),
         }
     }
 
@@ -252,6 +255,16 @@ impl AgentTransport for SimulatedAgent {
             }
             Request::ListBlockDevices {} => Response::BlockDevices { lsblk_json: self.host().lsblk() },
             Request::SmartData { device } => smart(device),
+            // Docker is installed; it runs once its data is on a pool.
+            Request::DockerState {} => {
+                let data_root = self.docker.lock().unwrap_or_else(PoisonError::into_inner).clone();
+                Response::DockerState { installed: true, running: data_root.is_some(), data_root }
+            }
+            Request::EnableDocker { volume, .. } => {
+                *self.docker.lock().unwrap_or_else(PoisonError::into_inner) =
+                    Some(format!("/volume{}/@docker", volume.get()));
+                Response::Done
+            }
             // The simulated host is managed by systemd-networkd; a change
             // waits for confirmation and lapses at its time.
             Request::NetworkState {} => {
