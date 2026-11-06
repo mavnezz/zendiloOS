@@ -6,6 +6,7 @@
 //! of being guessed at.
 
 mod accounts;
+mod app_sources;
 mod audit;
 mod backup;
 mod channels;
@@ -32,6 +33,7 @@ use sqlx::sqlite::{
 };
 
 pub use accounts::SqliteAccounts;
+pub use app_sources::SqliteAppSources;
 pub use audit::SqliteAuditLog;
 pub use channels::SqliteChannels;
 pub use groups::SqliteGroups;

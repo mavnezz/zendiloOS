@@ -37,3 +37,5 @@ allow-wildcard-paths = true
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+# The app format and its policy (zendiloos-catalog), pinned by commit.
+allow-git = ["https://github.com/mavnezz/zendiloOS.community.applications"]

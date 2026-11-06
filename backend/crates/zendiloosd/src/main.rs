@@ -15,6 +15,7 @@ use tokio::signal::unix::{SignalKind, signal};
 use tokio::task::JoinHandle;
 use zendiloos_agent_proto::{AgentTransport, ConsoleSetupCode, Request, Response, UnixTransport};
 use zendiloos_api::{ApiState, UseCases};
+use zendiloos_apps::application::Catalogs;
 use zendiloos_identity::application::commands::PurgeExpiredSessions;
 use zendiloos_identity::application::{IdentityConfig, IdentityPorts, IdentityUseCases};
 use zendiloos_infra::SystemClock;
@@ -22,12 +23,13 @@ use zendiloos_infra::agent::{
     AgentFiles, AgentNetwork, AgentPowerControl, AgentSharing, AgentStorage, AgentSystemAccounts,
     RandomPlanTokens, agent_version,
 };
+use zendiloos_infra::apps::HttpsCatalogs;
 use zendiloos_infra::host::{HostSystemInfo, IpNetworkReader, JournalctlReader, MetricsHub};
 use zendiloos_infra::identity::{Argon2PasswordHasher, FileSetupCodes, RandomSessionTokens};
 use zendiloos_infra::notify::NetworkChannels;
 use zendiloos_infra::sqlite::{
-    Database, SqliteAccounts, SqliteAuditLog, SqliteChannels, SqliteGroups, SqliteJobs, SqliteNotifications,
-    SqlitePreferences, SqliteSelfTestPlans, SqliteSessions, SqliteShares,
+    Database, SqliteAccounts, SqliteAppSources, SqliteAuditLog, SqliteChannels, SqliteGroups, SqliteJobs,
+    SqliteNotifications, SqlitePreferences, SqliteSelfTestPlans, SqliteSessions, SqliteShares,
 };
 use zendiloos_jobs::Jobs;
 use zendiloos_kernel::{AuditLog, RequestContext};
@@ -124,6 +126,13 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         host_name,
     );
     let channel_delivery = channels.clone().spawn(&notifier);
+    let apps = Catalogs::new(
+        Arc::new(SqliteAppSources::new(database.clone())),
+        Arc::new(HttpsCatalogs::new()),
+        audit.clone(),
+        Arc::new(SystemClock),
+    );
+    let catalog_refresh = spawn_catalog_refresh(apps.clone());
     let agent_for_sharing = agent.clone();
     let console_agent = agent.clone();
     let network_agent = agent.clone();
@@ -176,7 +185,8 @@ async fn serve(config: Config) -> anyhow::Result<()> {
 
     let snapshots = spawn_snapshot_schedules(sharing.clone());
     let self_tests = spawn_self_test_schedule(storage.self_test_schedule.clone());
-    let use_cases = UseCases { system, identity, storage, sharing, files, network, jobs, notifier, channels };
+    let use_cases =
+        UseCases { system, identity, storage, sharing, files, network, jobs, notifier, channels, apps };
     let state = ApiState::new(use_cases, config.secure_cookies);
     let app = zendiloos_api::router(state);
 
@@ -209,6 +219,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     snapshots.abort();
     self_tests.abort();
     channel_delivery.abort();
+    catalog_refresh.abort();
     database.close().await;
     tracing::info!("zendiloosd stopped");
     Ok(())
@@ -321,6 +332,20 @@ fn spawn_self_test_schedule(schedule: SelfTestSchedule) -> JoinHandle<()> {
         loop {
             every_five_minutes.tick().await;
             schedule.run_due().await;
+        }
+    })
+}
+
+/// Reads the app catalogs at startup and every six hours; a catalog that
+/// cannot be reached keeps the apps read before.
+fn spawn_catalog_refresh(apps: Catalogs) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut every_six_hours = tokio::time::interval(Duration::from_secs(6 * 3600));
+        loop {
+            every_six_hours.tick().await;
+            if let Err(error) = apps.refresh().await {
+                tracing::warn!(%error, "apps: cannot read the catalogs");
+            }
         }
     })
 }

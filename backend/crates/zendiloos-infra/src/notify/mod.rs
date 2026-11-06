@@ -28,21 +28,7 @@ impl NetworkChannels {
     /// Reads the system's certificate authorities once; without any, TLS
     /// fails with a message that says so.
     pub fn new() -> Self {
-        let mut roots = rustls::RootCertStore::empty();
-        let found = rustls_native_certs::load_native_certs();
-        for error in &found.errors {
-            tracing::warn!(%error, "channels: cannot read a certificate authority");
-        }
-        let (added, _) = roots.add_parsable_certificates(found.certs);
-        if added == 0 {
-            tracing::warn!("channels: no certificate authorities found; is ca-certificates installed?");
-        }
-        let provider = Arc::new(rustls::crypto::ring::default_provider());
-        let tls = rustls::ClientConfig::builder_with_provider(provider)
-            .with_safe_default_protocol_versions()
-            .map(|builder| builder.with_root_certificates(roots).with_no_client_auth())
-            .unwrap_or_else(|_| unreachable!("ring supports the default protocol versions"));
-        Self { tls: Arc::new(tls) }
+        Self { tls: crate::https::client_config() }
     }
 }
 

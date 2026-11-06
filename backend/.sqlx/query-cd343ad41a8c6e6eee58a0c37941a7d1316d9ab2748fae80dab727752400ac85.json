@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO app_sources (index_address, added_at) VALUES (?, ?) ON CONFLICT (index_address) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "cd343ad41a8c6e6eee58a0c37941a7d1316d9ab2748fae80dab727752400ac85"
+}

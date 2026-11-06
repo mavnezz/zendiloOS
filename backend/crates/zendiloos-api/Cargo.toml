@@ -10,6 +10,7 @@ publish.workspace = true
 # Primary adapter: calls the contexts' use cases, never secondary adapters
 # (no dependency on zendiloos-infra). See docs/architecture.md, 2.1.
 [dependencies]
+zendiloos-apps.workspace = true
 zendiloos-identity.workspace = true
 zendiloos-jobs.workspace = true
 zendiloos-notify.workspace = true
@@ -31,6 +32,7 @@ utoipa-axum.workspace = true
 tokio = { workspace = true, features = ["time", "fs", "io-util", "rt"] }
 
 [dev-dependencies]
+zendiloos-apps = { workspace = true, features = ["testing"] }
 tokio-tungstenite = "0.29"
 zendiloos-identity = { workspace = true, features = ["testing"] }
 zendiloos-storage = { workspace = true, features = ["testing"] }

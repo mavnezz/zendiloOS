@@ -63,6 +63,125 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/apps/catalog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every app of every catalog, by name. Needs `containers.manage`. */
+        get: operations["catalog"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/apps/catalog/{source}/{app}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One app of a catalog, with what it needs from the NAS. Needs
+         *     `containers.manage`.
+         */
+        get: operations["catalog_app"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/apps/catalog/{source}/{app}/icon": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The app's icon, a PNG checked when it was fetched. Needs
+         *     `containers.manage`.
+         */
+        get: operations["catalog_icon"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/apps/sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The catalogs apps come from: the community catalog first. Needs
+         *     `containers.manage`.
+         */
+        get: operations["sources"];
+        put?: never;
+        /**
+         * Adds a catalog. It must answer with an index this version reads; its
+         *     apps are not reviewed by the community catalog. Needs
+         *     `containers.manage`.
+         */
+        post: operations["add_source"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/apps/sources/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Fetches every catalog again. Needs `containers.manage`. */
+        post: operations["refresh_sources"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/apps/sources/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Removes a catalog; the community catalog stays. Needs
+         *     `containers.manage`.
+         */
+        delete: operations["remove_source"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/login": {
         parameters: {
             query?: never;
@@ -1273,8 +1392,82 @@ export interface components {
         };
         /** @enum {string} */
         AccountRole: "admin" | "user" | "readonly";
+        AddSourceRequest: {
+            /**
+             * @description A GitHub repository (`github.com/owner/repository`) or the https
+             *     address of an `index.json`.
+             */
+            address: string;
+        };
         /** @enum {string} */
         AddressScope: "global" | "site" | "link" | "host";
+        AppPermissions: {
+            capabilities: string[];
+            devices: string[];
+            host_network: boolean;
+        };
+        AppPort: {
+            /** Format: int32 */
+            default: number;
+            fixed: boolean;
+            id: string;
+            label: string;
+        };
+        AppSetting: {
+            default?: string | null;
+            description?: string | null;
+            /** @description zendiloOS makes it up; nobody is asked. */
+            generate: boolean;
+            id: string;
+            /** @description `text`, `password`, `number` or `boolean`. */
+            kind: string;
+            label: string;
+            required: boolean;
+        };
+        AppShare: {
+            description?: string | null;
+            id: string;
+            label: string;
+            read_write: boolean;
+        };
+        /** @description A catalog apps come from. */
+        AppSource: {
+            /**
+             * Format: int64
+             * @description Unix seconds.
+             */
+            added_at: number;
+            /** @description Where its index lies. */
+            address: string;
+            /** Format: int64 */
+            id: number;
+            /**
+             * @description The community catalog: built in. Apps of other catalogs are not
+             *     reviewed by it.
+             */
+            official: boolean;
+            /** @description Why that fetch failed; the apps read before stay listed. */
+            refresh_error?: string | null;
+            /**
+             * Format: int64
+             * @description The last time its index was fetched, in Unix seconds.
+             */
+            refreshed_at?: number | null;
+            /** @description Apps left out because they fail the format or the policy. */
+            skipped: number;
+        };
+        /** @description Name and tagline in another language. */
+        AppTexts: {
+            description?: string | null;
+            name?: string | null;
+            notes?: string | null;
+            tagline?: string | null;
+        };
+        AppWeb: {
+            https: boolean;
+            path: string;
+            port: string;
+        };
         /** @enum {string} */
         ArrayHealth: "healthy" | "degraded" | "rebuilding" | "inactive";
         ArrayMember: {
@@ -1310,6 +1503,42 @@ export interface components {
             reason?: string | null;
             request_id?: string | null;
             target?: string | null;
+        };
+        /** @description An app as the store lists it. */
+        CatalogApp: {
+            categories: string[];
+            /** @description Changes with every new version. */
+            digest: string;
+            id: string;
+            name: string;
+            /** @description From the community catalog. */
+            official: boolean;
+            /** @description Exceptions from the policy, confirmed when installing. */
+            permissions: components["schemas"]["AppPermissions"];
+            /** Format: int64 */
+            source_id: number;
+            tagline: string;
+            /** @description By ISO 639-1 language; English is the default. */
+            translations: {
+                [key: string]: components["schemas"]["AppTexts"];
+            };
+            version: string;
+        };
+        /** @description Everything about an app before installing it. */
+        CatalogAppDetail: components["schemas"]["CatalogApp"] & {
+            architectures: string[];
+            /** @description The Compose file as written; zendiloOS fills in the variables. */
+            compose: string;
+            description: string;
+            developer: string;
+            license: string;
+            notes?: string | null;
+            ports: components["schemas"]["AppPort"][];
+            settings: components["schemas"]["AppSetting"][];
+            shares: components["schemas"]["AppShare"][];
+            source_code: string;
+            web?: components["schemas"]["AppWeb"] | null;
+            website: string;
         };
         ChangePasswordRequest: {
             /** Format: password */
@@ -2778,6 +3007,222 @@ export interface operations {
             };
             /** @description `invalid_input` */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    catalog: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogApp"][];
+                };
+            };
+        };
+    };
+    catalog_app: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source: number;
+                app: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogAppDetail"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    catalog_icon: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source: number;
+                app: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/png": number[];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `catalog_unreachable` */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    sources: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppSource"][];
+                };
+            };
+        };
+    };
+    add_source: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddSourceRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppSource"];
+                };
+            };
+            /** @description `source_exists` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input`, `not_a_catalog` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `catalog_unreachable` */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    refresh_sources: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppSource"][];
+                };
+            };
+        };
+    };
+    remove_source: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `official_source` */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

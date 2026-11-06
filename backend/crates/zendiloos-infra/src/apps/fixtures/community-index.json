@@ -1,0 +1,740 @@
+{
+  "format": 1,
+  "apps": [
+    {
+      "id": "adguard-home",
+      "name": "AdGuard Home",
+      "version": "0.107.80",
+      "tagline": "Block ads and trackers for every device on your network",
+      "description": "AdGuard Home is a DNS server that filters ads, trackers and malicious\ndomains for the whole network. Once the router or the devices use it as\ntheir DNS server, blocked domains are no longer resolved, without any\nsoftware on the devices themselves. It keeps a query log and statistics,\nsupports filter lists, custom rules, per-client settings and parental\ncontrols, and can forward queries to upstream servers over encrypted DNS\n(DNS-over-HTTPS, DNS-over-TLS, DNS-over-QUIC).\n",
+      "categories": [
+        "network",
+        "security"
+      ],
+      "developer": "AdGuard",
+      "website": "https://adguard.com/adguard-home/overview.html",
+      "source": "https://github.com/AdguardTeam/AdGuardHome",
+      "license": "GPL-3.0-only",
+      "maintainers": [
+        "mavnezz"
+      ],
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "notes": "The setup wizard opens in the web interface. Keep the admin web interface\non port 3000 there (the wizard proposes it): zendiloOS forwards only this\nport, so with any other port the interface is no longer reachable. Leave\nthe DNS server on port 53. Afterwards, enter the NAS's address as the DNS\nserver in your router. The DHCP server of AdGuard Home is not available.\n",
+      "web": {
+        "port": "web",
+        "path": "/",
+        "scheme": "http"
+      },
+      "ports": [
+        {
+          "id": "web",
+          "label": "Web interface",
+          "default": 3000
+        },
+        {
+          "id": "dns",
+          "label": "DNS (TCP and UDP)",
+          "default": 53
+        }
+      ],
+      "translations": {
+        "de": {
+          "tagline": "Werbung und Tracker für alle Geräte im Netzwerk blockieren",
+          "description": "AdGuard Home ist ein DNS-Server, der Werbung, Tracker und schädliche\nDomains für das ganze Netzwerk filtert. Sobald der Router oder die\nGeräte ihn als DNS-Server verwenden, werden gesperrte Domains nicht mehr\naufgelöst, ohne Software auf den Geräten selbst. Er führt ein\nAnfrageprotokoll und Statistiken, unterstützt Filterlisten, eigene\nRegeln, Einstellungen pro Gerät und Jugendschutz und kann Anfragen über\nverschlüsseltes DNS (DNS-over-HTTPS, DNS-over-TLS, DNS-over-QUIC) an\nvorgelagerte Server weiterleiten.\n",
+          "notes": "Der Einrichtungsassistent öffnet sich in der Weboberfläche. Belasse die\nAdmin-Weboberfläche dort auf Port 3000 (der Assistent schlägt ihn vor):\nzendiloOS leitet nur diesen Port weiter, mit einem anderen Port ist die\nOberfläche nicht mehr erreichbar. Belasse den DNS-Server auf Port 53.\nTrage danach die Adresse des NAS im Router als DNS-Server ein. Der\nDHCP-Server von AdGuard Home steht nicht zur Verfügung.\n"
+        }
+      },
+      "compose": "services:\n  adguard-home:\n    image: adguard/adguardhome:v0.107.80@sha256:e2e1b48c832f7705be915873f95de0d5114de573736441d7f2923a8a6293027c\n    restart: unless-stopped\n    environment:\n      TZ: ${TZ}\n      ADGUARD_HOME_DEFAULT_WEB_PORT: \"3000\"\n    ports:\n      - ${PORT_WEB}:3000\n      - ${PORT_DNS}:53\n      - ${PORT_DNS}:53/udp\n    volumes:\n      - ${APP_DATA}/work:/opt/adguardhome/work\n      - ${APP_DATA}/conf:/opt/adguardhome/conf\n",
+      "icon": "icons/adguard-home.png",
+      "digest": "sha256:4edf69f719c72d9f6329f50c658dd23af1ea21922f8334b75e7e5b57b5a3b80c"
+    },
+    {
+      "id": "audiobookshelf",
+      "name": "Audiobookshelf",
+      "version": "2.37.2",
+      "tagline": "Listen to your audiobooks and podcasts in the browser and on your phone",
+      "description": "Audiobookshelf is a server for audiobooks and podcasts. It sorts your\naudiobook files into a library with covers, authors, series and chapters,\nand plays them in the browser and in the mobile apps, which remember where\neach listener stopped and can download books for offline listening. It\nfetches metadata and covers from online sources, subscribes to podcasts\nand downloads new episodes on its own. Every member of the household gets\ntheir own account with their own progress.\n",
+      "categories": [
+        "media"
+      ],
+      "developer": "Audiobookshelf contributors",
+      "website": "https://www.audiobookshelf.org",
+      "source": "https://github.com/advplyr/audiobookshelf",
+      "license": "GPL-3.0-only",
+      "maintainers": [
+        "mavnezz"
+      ],
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "notes": "Open the web interface and create the root account, the administrator.\nThen add an audiobook library from the folder /audiobooks and a podcast\nlibrary from the folder /podcasts.\n",
+      "web": {
+        "port": "web",
+        "path": "/",
+        "scheme": "http"
+      },
+      "ports": [
+        {
+          "id": "web",
+          "label": "Web interface",
+          "default": 13378
+        }
+      ],
+      "shares": [
+        {
+          "id": "audiobooks",
+          "label": "Audiobooks",
+          "description": "The share with your audiobooks. Audiobookshelf writes to it when you upload books or save metadata and covers into the book folders.",
+          "access": "read-write"
+        },
+        {
+          "id": "podcasts",
+          "label": "Podcasts",
+          "description": "The share where Audiobookshelf stores downloaded podcast episodes.",
+          "access": "read-write"
+        }
+      ],
+      "translations": {
+        "de": {
+          "tagline": "Hörbücher und Podcasts im Browser und auf dem Handy hören",
+          "description": "Audiobookshelf ist ein Server für Hörbücher und Podcasts. Er ordnet\nHörbuch-Dateien in eine Bibliothek mit Covern, Autoren, Reihen und\nKapiteln und spielt sie im Browser und in den Handy-Apps ab. Die Apps\nmerken sich, wo jeder Hörer aufgehört hat, und laden Bücher zum\nOffline-Hören herunter. Metadaten und Cover holt Audiobookshelf aus\nOnline-Quellen, Podcasts abonniert es und lädt neue Folgen selbst\nherunter. Jedes Mitglied des Haushalts bekommt ein eigenes Konto mit\neigenem Fortschritt.\n",
+          "notes": "Öffne die Weboberfläche und lege das root-Konto an, den Administrator.\nFüge dann eine Hörbuch-Bibliothek aus dem Ordner /audiobooks und eine\nPodcast-Bibliothek aus dem Ordner /podcasts hinzu.\n"
+        }
+      },
+      "compose": "services:\n  audiobookshelf:\n    image: ghcr.io/advplyr/audiobookshelf:2.37.2@sha256:b897c33f05972fb1bf484f7487bc878fa91ec8691335c1db6e2929c3a7658efa\n    restart: unless-stopped\n    user: \"${PUID}:${PGID}\"\n    environment:\n      TZ: ${TZ}\n    ports:\n      - ${PORT_WEB}:80\n    volumes:\n      - ${APP_DATA}/config:/config\n      - ${APP_DATA}/metadata:/metadata\n      - ${SHARE_AUDIOBOOKS}:/audiobooks\n      - ${SHARE_PODCASTS}:/podcasts\n",
+      "icon": "icons/audiobookshelf.png",
+      "digest": "sha256:569086a2909eacf7465a3788fb8e38e79fa7caea8490c74cd74c7c97129a0768"
+    },
+    {
+      "id": "home-assistant",
+      "name": "Home Assistant",
+      "version": "2026.11.0",
+      "tagline": "Control and automate the devices in your home",
+      "description": "Home Assistant is a home automation platform that runs on your own\nhardware. Through integrations it connects lights, switches, sensors,\nthermostats, media players and thousands of other devices and services,\nand finds many of them on the home network by itself. Dashboards show the\nstate of the home and control it; automations react to the time of day,\npresence and sensor values. Data stays local, and no cloud account is\nneeded.\n",
+      "categories": [
+        "home-automation"
+      ],
+      "developer": "Home Assistant contributors",
+      "website": "https://www.home-assistant.io",
+      "source": "https://github.com/home-assistant/core",
+      "license": "Apache-2.0",
+      "maintainers": [
+        "mavnezz"
+      ],
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "notes": "Create the first account in the onboarding wizard. The app uses the host\nnetwork so that it can find devices on the home network; its web interface\nis always on port 8123. Bluetooth and USB adapters (Zigbee, Z-Wave) are not\navailable to the app; use adapters or bridges that connect over the network\ninstead. The add-on store of Home Assistant OS is not part of this\ninstallation.\n",
+      "web": {
+        "port": "web",
+        "path": "/",
+        "scheme": "http"
+      },
+      "ports": [
+        {
+          "id": "web",
+          "label": "Web interface",
+          "default": 8123,
+          "fixed": true
+        }
+      ],
+      "permissions": {
+        "host_network": true
+      },
+      "translations": {
+        "de": {
+          "tagline": "Geräte im Haus steuern und automatisieren",
+          "description": "Home Assistant ist eine Plattform für die Hausautomation, die auf\neigener Hardware läuft. Über Integrationen bindet sie Lampen,\nSchalter, Sensoren, Thermostate, Mediaplayer und Tausende weitere\nGeräte und Dienste an und findet viele davon selbst im Heimnetz.\nDashboards zeigen den Zustand des Hauses und steuern es;\nAutomatisierungen reagieren auf Tageszeit, Anwesenheit und Messwerte.\nDie Daten bleiben lokal, ein Cloud-Konto ist nicht nötig.\n",
+          "notes": "Lege im Einrichtungsassistenten das erste Konto an. Die App nutzt das\nNetzwerk des Hosts, damit sie Geräte im Heimnetz findet; ihre\nWeboberfläche liegt deshalb immer auf Port 8123. Bluetooth und\nUSB-Adapter (Zigbee, Z-Wave) stehen der App nicht zur Verfügung;\nverwende stattdessen Adapter oder Bridges, die über das Netzwerk\nangebunden werden. Den Add-on-Store von Home Assistant OS gibt es in\ndieser Installation nicht.\n"
+        }
+      },
+      "compose": "services:\n  home-assistant:\n    image: ghcr.io/home-assistant/home-assistant:2026.11.0@sha256:c6c1ca9931036bf3a2c4cc088d8db25dfea3b33935a5ecc83c40349462e2f69e\n    restart: unless-stopped\n    network_mode: host\n    stop_grace_period: 60s\n    environment:\n      TZ: ${TZ}\n    volumes:\n      - ${APP_DATA}/config:/config\n",
+      "icon": "icons/home-assistant.png",
+      "digest": "sha256:8155b3adfa7ad93ed86c6d4799ef75c136b8138aff9a33e228c6d88b1de06207"
+    },
+    {
+      "id": "immich",
+      "name": "Immich",
+      "version": "3.3.6",
+      "tagline": "Back up and browse the photos and videos from your phones",
+      "description": "Immich backs up the photos and videos from your phones to the NAS. The\nmobile apps upload new pictures in the background; the web interface and\nthe apps show them on a timeline, on a map and in albums. Immich\nrecognises faces, finds pictures by what they show (\"dog on the beach\"),\nreads their metadata and lets you share albums with other accounts or by\nlink. Every member of the household gets their own account and storage.\nFace recognition and search run on the NAS itself.\n",
+      "categories": [
+        "photos",
+        "backup"
+      ],
+      "developer": "Immich contributors",
+      "website": "https://immich.app",
+      "source": "https://github.com/immich-app/immich",
+      "license": "AGPL-3.0-only",
+      "maintainers": [
+        "mavnezz"
+      ],
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "notes": "Open the web interface and create the first account; it becomes the\nadministrator. Immich keeps its own folder structure in the photos share\n(library, upload, thumbs and others): add and delete pictures through\nImmich, not by changing the files in the share.\n",
+      "web": {
+        "port": "web",
+        "path": "/",
+        "scheme": "http"
+      },
+      "ports": [
+        {
+          "id": "web",
+          "label": "Web interface",
+          "default": 2283
+        }
+      ],
+      "shares": [
+        {
+          "id": "photos",
+          "label": "Photos",
+          "description": "The share where Immich stores uploaded photos and videos, thumbnails and converted videos.",
+          "access": "read-write"
+        }
+      ],
+      "settings": [
+        {
+          "id": "DB_PASSWORD",
+          "label": "Database password",
+          "type": "password",
+          "generate": true
+        }
+      ],
+      "translations": {
+        "de": {
+          "tagline": "Fotos und Videos vom Handy sichern und ansehen",
+          "description": "Immich sichert die Fotos und Videos vom Handy auf dem NAS. Die\nApps laden neue Bilder im Hintergrund hoch; Weboberfläche und Apps\nzeigen sie auf einer Zeitleiste, auf einer Karte und in Alben. Immich\nerkennt Gesichter, findet Bilder nach ihrem Inhalt („Hund am Strand“),\nliest ihre Metadaten und teilt Alben mit anderen Konten oder per Link.\nJedes Mitglied des Haushalts bekommt ein eigenes Konto mit eigenem\nSpeicher. Gesichtserkennung und Suche laufen auf dem NAS selbst.\n",
+          "notes": "Öffne die Weboberfläche und lege das erste Konto an; es wird\nAdministrator. Immich legt in der Foto-Freigabe eine eigene\nOrdnerstruktur an (library, upload, thumbs und weitere): Füge Bilder\nüber Immich hinzu und lösche sie dort, nicht durch Ändern der Dateien in\nder Freigabe.\n"
+        }
+      },
+      "compose": "services:\n  immich-server:\n    image: ghcr.io/immich-app/immich-server:v3.3.6@sha256:e1981983b1c13f6024b57d72e7ecae3342eed1581201ab09fb248932d86c593a\n    restart: unless-stopped\n    user: \"${PUID}:${PGID}\"\n    security_opt:\n      - no-new-privileges:true\n    cap_drop:\n      - NET_RAW\n    environment:\n      TZ: ${TZ}\n      DB_USERNAME: postgres\n      DB_PASSWORD: ${DB_PASSWORD}\n      DB_DATABASE_NAME: immich\n    ports:\n      - ${PORT_WEB}:2283\n    volumes:\n      - ${SHARE_PHOTOS}:/data\n    depends_on:\n      - redis\n      - database\n\n  immich-machine-learning:\n    image: ghcr.io/immich-app/immich-machine-learning:v3.3.6@sha256:14367bfb374b8576ddf49abd67c5ca0190a4c7fcf6303cdad65d7f7bf1a50bc2\n    restart: unless-stopped\n    user: \"${PUID}:${PGID}\"\n    security_opt:\n      - no-new-privileges:true\n    cap_drop:\n      - NET_RAW\n    environment:\n      TZ: ${TZ}\n    volumes:\n      - ${APP_DATA}/model-cache:/cache\n\n  redis:\n    image: docker.io/valkey/valkey:9@sha256:c123e3715db63d06d4ad6964884037aa0d5d4d703939b9929954112889708e1d\n    restart: unless-stopped\n    user: \"${PUID}:${PGID}\"\n    security_opt:\n      - no-new-privileges:true\n    cap_drop:\n      - NET_RAW\n    volumes:\n      - ${APP_DATA}/redis:/data\n    healthcheck:\n      test: redis-cli ping | grep -q PONG || exit 1\n\n  database:\n    image: ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0@sha256:bcf63357191b76a916ae5eb93464d65c07511da41e3bf7a8416db519b40b1c23\n    restart: unless-stopped\n    user: \"${PUID}:${PGID}\"\n    security_opt:\n      - no-new-privileges:true\n    cap_drop:\n      - NET_RAW\n    environment:\n      POSTGRES_USER: postgres\n      POSTGRES_PASSWORD: ${DB_PASSWORD}\n      POSTGRES_DB: immich\n      POSTGRES_INITDB_ARGS: --data-checksums\n    volumes:\n      - ${APP_DATA}/postgres:/var/lib/postgresql/data\n    shm_size: 128mb\n",
+      "icon": "icons/immich.png",
+      "digest": "sha256:39d4cad6459948691c810b45bc01bfec7f36dd333199bc3e2028232518f670cf"
+    },
+    {
+      "id": "jellyfin",
+      "name": "Jellyfin",
+      "version": "12.4",
+      "tagline": "Stream your films, series and music to every device",
+      "description": "Jellyfin is a free media server. It sorts your films, series, music and\nphotos into a library with posters and descriptions, and streams them to\nbrowsers, phones, TVs and media players. It converts video on the fly when\na device cannot play the original, and gives every member of the household\ntheir own account, watch history and parental controls. No subscription,\nno cloud account.\n",
+      "categories": [
+        "media"
+      ],
+      "developer": "Jellyfin contributors",
+      "website": "https://jellyfin.org",
+      "source": "https://github.com/jellyfin/jellyfin",
+      "license": "GPL-2.0-only",
+      "maintainers": [
+        "mavnezz"
+      ],
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "notes": "Create the first account in the setup wizard, then add libraries from the\nfolder /media. With a GPU in the NAS, turn on hardware acceleration under\nDashboard → Playback → Transcoding.\n",
+      "web": {
+        "port": "web",
+        "path": "/",
+        "scheme": "http"
+      },
+      "ports": [
+        {
+          "id": "web",
+          "label": "Web interface",
+          "default": 8096
+        }
+      ],
+      "shares": [
+        {
+          "id": "media",
+          "label": "Media library",
+          "description": "The share with your films, series and music.",
+          "access": "read-only"
+        }
+      ],
+      "permissions": {
+        "devices": [
+          "/dev/dri"
+        ]
+      },
+      "translations": {
+        "de": {
+          "tagline": "Filme, Serien und Musik auf jedes Gerät streamen",
+          "description": "Jellyfin ist ein freier Medienserver. Er ordnet Filme, Serien, Musik\nund Fotos in eine Bibliothek mit Covern und Beschreibungen und streamt\nsie in den Browser, aufs Handy, auf Fernseher und Mediaplayer. Kann ein\nGerät das Original nicht abspielen, wandelt Jellyfin das Video beim\nAbspielen um. Jedes Mitglied des Haushalts bekommt ein eigenes Konto mit\neigenem Verlauf und Jugendschutz. Ohne Abo, ohne Cloud-Konto.\n",
+          "notes": "Lege im Einrichtungsassistenten das erste Konto an und füge dann\nBibliotheken aus dem Ordner /media hinzu. Hat das NAS eine GPU, schalte\nunter Dashboard → Wiedergabe → Transkodierung die Hardwarebeschleunigung\nein.\n"
+        }
+      },
+      "compose": "services:\n  jellyfin:\n    image: lscr.io/linuxserver/jellyfin:12.4ubu2604-ls58@sha256:b7eabe1f098f4e850bfd63d6721369117195410a471db1a41748ab768b81a639\n    restart: unless-stopped\n    environment:\n      PUID: ${PUID}\n      PGID: ${PGID}\n      TZ: ${TZ}\n    ports:\n      - ${PORT_WEB}:8096\n    volumes:\n      - ${APP_DATA}/config:/config\n      - ${SHARE_MEDIA}:/media:ro\n    devices:\n      - /dev/dri:/dev/dri\n",
+      "icon": "icons/jellyfin.png",
+      "digest": "sha256:f5f845edf760ec889c7044a26286168c6903aaf7a8fd54b0d56d3b99d2436517"
+    },
+    {
+      "id": "navidrome",
+      "name": "Navidrome",
+      "version": "0.64.2",
+      "tagline": "Stream your music collection to the browser and to Subsonic apps",
+      "description": "Navidrome is a music server. It reads your music collection with its tags\nand cover art and streams it to the browser. It speaks the Subsonic API,\nso it also works with the many Subsonic apps for phones and desktops, and\ncan convert music on the fly to a smaller format for mobile connections.\nPlaylists, favourites, ratings and play counts are kept per account, and\nevery member of the household gets their own. New and changed files in\nthe music share are picked up on their own.\n",
+      "categories": [
+        "media"
+      ],
+      "developer": "Navidrome contributors",
+      "website": "https://www.navidrome.org",
+      "source": "https://github.com/navidrome/navidrome",
+      "license": "GPL-3.0-only",
+      "maintainers": [
+        "mavnezz"
+      ],
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "notes": "Open the web interface and create the first account; it becomes the\nadministrator.\n",
+      "web": {
+        "port": "web",
+        "path": "/",
+        "scheme": "http"
+      },
+      "ports": [
+        {
+          "id": "web",
+          "label": "Web interface and Subsonic API",
+          "default": 4533
+        }
+      ],
+      "shares": [
+        {
+          "id": "music",
+          "label": "Music library",
+          "description": "The share with your music.",
+          "access": "read-only"
+        }
+      ],
+      "translations": {
+        "de": {
+          "tagline": "Die eigene Musiksammlung im Browser und in Subsonic-Apps hören",
+          "description": "Navidrome ist ein Musikserver. Er liest die Musiksammlung mit Tags und\nCovern ein und streamt sie in den Browser. Weil er die Subsonic-API\nspricht, funktioniert er auch mit den vielen Subsonic-Apps für Handy und\nDesktop, und er wandelt Musik bei Bedarf in ein kleineres Format für\nmobile Verbindungen um. Playlists, Favoriten, Bewertungen und\nWiedergabezähler gelten je Konto, und jedes Mitglied des Haushalts\nbekommt ein eigenes. Neue und geänderte Dateien in der Musik-Freigabe\nfindet Navidrome von selbst.\n",
+          "notes": "Öffne die Weboberfläche und lege das erste Konto an; es wird\nAdministrator.\n"
+        }
+      },
+      "compose": "services:\n  navidrome:\n    image: deluan/navidrome:0.64.2@sha256:38dc2727bfcfd5ede290f8ada114fc90368146f265ae4701ddddbcbe2a44ee52\n    restart: unless-stopped\n    user: \"${PUID}:${PGID}\"\n    environment:\n      TZ: ${TZ}\n    ports:\n      - ${PORT_WEB}:4533\n    volumes:\n      - ${APP_DATA}/data:/data\n      - ${SHARE_MUSIC}:/music:ro\n",
+      "icon": "icons/navidrome.png",
+      "digest": "sha256:8d213e2011c0d2dc1557019550e53885341555f5ebe36c1d5c8ddf3c2f0512b7"
+    },
+    {
+      "id": "nextcloud",
+      "name": "Nextcloud",
+      "version": "34.0.5",
+      "tagline": "Files, calendars and contacts on your own server",
+      "description": "Nextcloud keeps your files on the NAS and makes them available in the\nbrowser, in the desktop sync clients for Windows, macOS and Linux and in the\napps for Android and iOS. You can share files and folders with other users\nor by link, and keep earlier versions of a file. Calendars and contacts sync\nwith phones and computers over CalDAV and CardDAV. Further apps for notes,\ntasks, photos, chat or office documents can be added from the built-in app\nstore. This installation uses PostgreSQL as database and Redis for caching\nand file locking, and runs background jobs every five minutes.\n",
+      "categories": [
+        "files",
+        "productivity"
+      ],
+      "developer": "Nextcloud GmbH",
+      "website": "https://nextcloud.com",
+      "source": "https://github.com/nextcloud/server",
+      "license": "AGPL-3.0-or-later",
+      "maintainers": [
+        "mavnezz"
+      ],
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "notes": "The database is already set up; the setup wizard only asks for the\nadministrator account. The address you open the wizard with becomes the\nonly trusted domain. To reach Nextcloud under another name later, for\nexample through a reverse proxy, add it to `trusted_domains` in\nnextcloud/config/config.php in the app's data folder.\n",
+      "web": {
+        "port": "web",
+        "path": "/",
+        "scheme": "http"
+      },
+      "ports": [
+        {
+          "id": "web",
+          "label": "Web interface",
+          "default": 8081
+        }
+      ],
+      "settings": [
+        {
+          "id": "DB_PASSWORD",
+          "label": "Database password",
+          "type": "password",
+          "generate": true
+        }
+      ],
+      "translations": {
+        "de": {
+          "tagline": "Dateien, Kalender und Kontakte auf dem eigenen Server",
+          "description": "Nextcloud speichert deine Dateien auf dem NAS und macht sie im Browser,\nin den Sync-Programmen für Windows, macOS und Linux und in den Apps für\nAndroid und iOS verfügbar. Dateien und Ordner lassen sich mit anderen\nBenutzern oder per Link teilen, ältere Versionen einer Datei bleiben\nerhalten. Kalender und Kontakte werden über CalDAV und CardDAV mit\nHandys und Computern abgeglichen. Weitere Apps für Notizen, Aufgaben,\nFotos, Chat oder Office-Dokumente lassen sich aus dem eingebauten\nApp-Store hinzufügen. Diese Installation nutzt PostgreSQL als Datenbank\nund Redis als Cache und für Dateisperren und führt Hintergrundaufgaben\nalle fünf Minuten aus.\n",
+          "notes": "Die Datenbank ist bereits eingerichtet; der Einrichtungsassistent fragt\nnur noch nach dem Administratorkonto. Die Adresse, unter der du den\nAssistenten öffnest, wird zur einzigen vertrauenswürdigen Domain. Soll\nNextcloud später unter einem anderen Namen erreichbar sein, etwa über\neinen Reverse Proxy, trage ihn unter `trusted_domains` in\nnextcloud/config/config.php im Datenordner der App ein.\n"
+        }
+      },
+      "compose": "services:\n  nextcloud:\n    image: nextcloud:34.0.5-apache@sha256:7db1a3d4a72fabefe9aab8acac1b5d29b0fee74c3c325add5b6aa7f26c053e90\n    restart: unless-stopped\n    environment:\n      TZ: ${TZ}\n      POSTGRES_HOST: db\n      POSTGRES_DB: nextcloud\n      POSTGRES_USER: nextcloud\n      POSTGRES_PASSWORD: ${DB_PASSWORD}\n      REDIS_HOST: redis\n    ports:\n      - ${PORT_WEB}:80\n    volumes:\n      - ${APP_DATA}/nextcloud:/var/www/html\n    depends_on:\n      db:\n        condition: service_healthy\n      redis:\n        condition: service_started\n\n  cron:\n    image: nextcloud:34.0.5-apache@sha256:7db1a3d4a72fabefe9aab8acac1b5d29b0fee74c3c325add5b6aa7f26c053e90\n    restart: unless-stopped\n    entrypoint: /cron.sh\n    init: true\n    environment:\n      TZ: ${TZ}\n      REDIS_HOST: redis\n    volumes:\n      - ${APP_DATA}/nextcloud:/var/www/html\n    depends_on:\n      - nextcloud\n\n  db:\n    image: postgres:18.6-alpine@sha256:8a334ab9502c8ccb8d7dec4e83b36b5ce8ed7b396e585f1c86b0e69c416f4fca\n    restart: unless-stopped\n    user: ${PUID}:${PGID}\n    environment:\n      TZ: ${TZ}\n      POSTGRES_DB: nextcloud\n      POSTGRES_USER: nextcloud\n      POSTGRES_PASSWORD: ${DB_PASSWORD}\n    volumes:\n      - ${APP_DATA}/postgres:/var/lib/postgresql\n    healthcheck:\n      test: [CMD, pg_isready, -U, nextcloud, -d, nextcloud]\n      interval: 10s\n      timeout: 5s\n      retries: 6\n\n  redis:\n    image: redis:8.10.3-alpine@sha256:21090af93f8324db2f0f0f4f38a7c60369d47d917e000c3423d89d2ae2883537\n    restart: unless-stopped\n    command: [redis-server, --save, '', --appendonly, 'no']\n    tmpfs:\n      - /data\n",
+      "icon": "icons/nextcloud.png",
+      "digest": "sha256:56501904333116872fb80cf8d131d5d58026bad83fbc813e0875133cf022449a"
+    },
+    {
+      "id": "pihole",
+      "name": "Pi-hole",
+      "version": "2026.10.1",
+      "tagline": "Block ads and trackers network-wide with your own DNS server",
+      "description": "Pi-hole is a DNS server that blocks ads, trackers and malicious domains\nfor the whole network. Once the router or the devices use it as their DNS\nserver, requests for domains on its block lists are not resolved, without\nany software on the devices themselves. The web interface shows which\ndevices asked for which domains and how many requests were blocked, and\nmanages block lists, allow lists, groups of clients and local DNS records.\n",
+      "categories": [
+        "network",
+        "security"
+      ],
+      "developer": "Pi-hole contributors",
+      "website": "https://pi-hole.net",
+      "source": "https://github.com/pi-hole/pi-hole",
+      "license": "EUPL-1.2",
+      "maintainers": [
+        "mavnezz"
+      ],
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "notes": "Sign in to the web interface with the password you enter here. zendiloOS\nsets it, so it cannot be changed in Pi-hole itself. Afterwards, enter the\nNAS's address as the DNS server in your router. Pi-hole's DHCP server is\nnot available: it would need the host network and additional privileges.\n",
+      "web": {
+        "port": "web",
+        "path": "/admin",
+        "scheme": "http"
+      },
+      "ports": [
+        {
+          "id": "web",
+          "label": "Web interface",
+          "default": 8800
+        },
+        {
+          "id": "dns",
+          "label": "DNS (TCP and UDP)",
+          "default": 53
+        }
+      ],
+      "settings": [
+        {
+          "id": "WEB_PASSWORD",
+          "label": "Web interface password",
+          "type": "password",
+          "required": true
+        }
+      ],
+      "translations": {
+        "de": {
+          "tagline": "Werbung und Tracker netzweit mit eigenem DNS-Server blockieren",
+          "description": "Pi-hole ist ein DNS-Server, der Werbung, Tracker und schädliche Domains\nfür das ganze Netzwerk blockiert. Sobald der Router oder die Geräte ihn\nals DNS-Server verwenden, werden Domains aus seinen Sperrlisten nicht\nmehr aufgelöst, ohne Software auf den Geräten selbst. Die Weboberfläche\nzeigt, welches Gerät welche Domains angefragt hat und wie viele Anfragen\nblockiert wurden, und verwaltet Sperr- und Erlaubnislisten, Gruppen von\nGeräten und lokale DNS-Einträge.\n",
+          "notes": "Melde dich an der Weboberfläche mit dem Passwort an, das du hier\neingibst. zendiloOS setzt es, deshalb lässt es sich in Pi-hole selbst\nnicht ändern. Trage danach die Adresse des NAS im Router als DNS-Server\nein. Der DHCP-Server von Pi-hole steht nicht zur Verfügung: Er bräuchte\ndas Netzwerk des Hosts und zusätzliche Rechte.\n"
+        }
+      },
+      "compose": "services:\n  pihole:\n    image: pihole/pihole:2026.10.1@sha256:30f803ad5dd60ff96cc0a63008a2e9271af481c1b0399a182192b2e91152c1f9\n    restart: unless-stopped\n    environment:\n      TZ: ${TZ}\n      PIHOLE_UID: ${PUID}\n      PIHOLE_GID: ${PGID}\n      FTLCONF_webserver_api_password: ${WEB_PASSWORD}\n      FTLCONF_dns_listeningMode: ALL\n      FTLCONF_ntp_sync_active: \"false\"\n    ports:\n      - ${PORT_WEB}:80\n      - ${PORT_DNS}:53\n      - ${PORT_DNS}:53/udp\n    volumes:\n      - ${APP_DATA}/etc-pihole:/etc/pihole\n",
+      "icon": "icons/pihole.png",
+      "digest": "sha256:13ce37ccb74e766b5fc60c9cc6b79a3d810cbe70bdc5d397c944e5f8dc258f5e"
+    },
+    {
+      "id": "plex",
+      "name": "Plex Media Server",
+      "version": "1.43.5",
+      "tagline": "Stream your films, series and music to the Plex apps",
+      "description": "Plex Media Server sorts your films, series, music and photos into\nlibraries with posters and descriptions, and streams them to the Plex apps\non phones, TVs, game consoles and streaming sticks, and to the browser. It\nconverts video on the fly when a device cannot play the original, and\nevery member of the household can have their own profile and watch\nhistory. Plex is closed source and needs a free Plex account; some\nfeatures, such as hardware transcoding and streaming outside the home in\nthe mobile and TV apps, need a paid subscription.\n",
+      "categories": [
+        "media"
+      ],
+      "developer": "Plex, Inc.",
+      "website": "https://www.plex.tv",
+      "source": "https://github.com/linuxserver/docker-plex",
+      "license": "LicenseRef-Proprietary",
+      "maintainers": [
+        "mavnezz"
+      ],
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "notes": "Get a claim token at https://www.plex.tv/claim right before installing and\nenter it as \"Plex claim token\": on its first start the server links itself\nto your Plex account. The token is valid for four minutes. Then add\nlibraries from the folder /media. So that devices at home connect\ndirectly, enter http://<NAS address>:<port> under Settings → Network →\nCustom server access URLs. Hardware transcoding needs a Plex Pass.\n",
+      "web": {
+        "port": "web",
+        "path": "/web",
+        "scheme": "http"
+      },
+      "ports": [
+        {
+          "id": "web",
+          "label": "Web interface and apps",
+          "default": 32400
+        }
+      ],
+      "shares": [
+        {
+          "id": "media",
+          "label": "Media library",
+          "description": "The share with your films, series and music.",
+          "access": "read-only"
+        }
+      ],
+      "settings": [
+        {
+          "id": "PLEX_CLAIM",
+          "label": "Plex claim token",
+          "description": "From https://www.plex.tv/claim, valid for four minutes. Only used on the first start.",
+          "type": "text"
+        }
+      ],
+      "permissions": {
+        "devices": [
+          "/dev/dri"
+        ]
+      },
+      "translations": {
+        "de": {
+          "tagline": "Filme, Serien und Musik an die Plex-Apps streamen",
+          "description": "Plex Media Server ordnet Filme, Serien, Musik und Fotos in Bibliotheken\nmit Covern und Beschreibungen und streamt sie an die Plex-Apps auf\nHandys, Fernsehern, Spielkonsolen und Streaming-Sticks sowie in den\nBrowser. Kann ein Gerät das Original nicht abspielen, wandelt Plex das\nVideo beim Abspielen um. Jedes Mitglied des Haushalts kann ein eigenes\nProfil mit eigenem Verlauf haben. Plex ist nicht quelloffen und braucht\nein kostenloses Plex-Konto; einige Funktionen, etwa\nHardware-Transkodierung und das Streamen außer Haus in den Handy- und\nTV-Apps, brauchen ein kostenpflichtiges Abo.\n",
+          "notes": "Hol dir direkt vor der Installation unter https://www.plex.tv/claim\neinen Claim-Token und trage ihn bei „Plex claim token“ ein: Beim ersten\nStart verknüpft sich der Server damit mit deinem Plex-Konto. Der Token\ngilt vier Minuten. Füge dann Bibliotheken aus dem Ordner /media hinzu.\nDamit Geräte im Heimnetz sich direkt verbinden, trage unter\nEinstellungen → Netzwerk bei den benutzerdefinierten\nServer-Zugriffs-URLs http://<NAS-Adresse>:<Port> ein.\nHardware-Transkodierung braucht einen Plex Pass.\n"
+        }
+      },
+      "compose": "services:\n  plex:\n    image: lscr.io/linuxserver/plex:1.43.5.11079-b3b13e506-ls331@sha256:0c2f1122a4275efeea953a9882359f3809b27279d3c3022392e8e610a2eccc67\n    restart: unless-stopped\n    environment:\n      PUID: ${PUID}\n      PGID: ${PGID}\n      TZ: ${TZ}\n      VERSION: docker\n      PLEX_CLAIM: ${PLEX_CLAIM}\n    ports:\n      - ${PORT_WEB}:32400\n    volumes:\n      - ${APP_DATA}/config:/config\n      - ${SHARE_MEDIA}:/media:ro\n    devices:\n      - /dev/dri:/dev/dri\n",
+      "icon": "icons/plex.png",
+      "digest": "sha256:ea25056c615803d827b7739d135c009a4e99b2031270766608d71939b06011b4"
+    },
+    {
+      "id": "qbittorrent",
+      "name": "qBittorrent",
+      "version": "5.3.0",
+      "tagline": "BitTorrent client with a web interface",
+      "description": "qBittorrent downloads and shares files over BitTorrent. It is operated\nthrough a web interface: add torrents by file or magnet link, set\ncategories and tags, limit bandwidth by schedule, choose individual files\nwithin a torrent and search across torrent sites with search plugins. It\nsupports DHT, peer exchange, encrypted connections and RSS feeds that\ndownload new items automatically. Downloads land in the chosen share.\n",
+      "categories": [
+        "downloads"
+      ],
+      "developer": "qBittorrent project",
+      "website": "https://www.qbittorrent.org",
+      "source": "https://github.com/qbittorrent/qBittorrent",
+      "license": "GPL-2.0-or-later",
+      "maintainers": [
+        "mavnezz"
+      ],
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "notes": "Sign in as `admin` with the temporary password that qBittorrent prints to\nthe app's log when it starts, then set your own password under Tools →\nOptions → WebUI; until then, every start creates a new one. Change the\nports in zendiloOS, not in qBittorrent's options.\n",
+      "web": {
+        "port": "web",
+        "path": "/",
+        "scheme": "http"
+      },
+      "ports": [
+        {
+          "id": "web",
+          "label": "Web interface",
+          "default": 8080
+        },
+        {
+          "id": "peer",
+          "label": "Peer connections (TCP and UDP)",
+          "default": 6881
+        }
+      ],
+      "shares": [
+        {
+          "id": "downloads",
+          "label": "Downloads",
+          "description": "The share in which qBittorrent stores downloads.",
+          "access": "read-write"
+        }
+      ],
+      "translations": {
+        "de": {
+          "tagline": "BitTorrent-Client mit Weboberfläche",
+          "description": "qBittorrent lädt Dateien über BitTorrent herunter und teilt sie. Bedient\nwird es über eine Weboberfläche: Torrents per Datei oder Magnet-Link\nhinzufügen, Kategorien und Tags vergeben, die Bandbreite nach Zeitplan\nbegrenzen, einzelne Dateien eines Torrents auswählen und mit\nSuch-Plugins auf Torrent-Seiten suchen. Es unterstützt DHT, Peer\nExchange, verschlüsselte Verbindungen und RSS-Feeds, die neue Einträge\nautomatisch herunterladen. Downloads landen in der gewählten Freigabe.\n",
+          "notes": "Melde dich als `admin` mit dem vorläufigen Passwort an, das qBittorrent\nbeim Start ins Protokoll der App schreibt, und lege dann unter Werkzeuge →\nOptionen → Webinterface ein eigenes Passwort fest; bis dahin entsteht bei\njedem Start ein neues. Ändere die Ports in zendiloOS, nicht in den\nOptionen von qBittorrent.\n"
+        }
+      },
+      "compose": "services:\n  qbittorrent:\n    image: lscr.io/linuxserver/qbittorrent:5.3.0_v2.1.2-ls486@sha256:05c1454f9a32967affc1f34f67f8cc0cc57dd805dca45489fe797095a6286556\n    restart: unless-stopped\n    user: ${PUID}:${PGID}\n    environment:\n      TZ: ${TZ}\n      WEBUI_PORT: ${PORT_WEB}\n      TORRENTING_PORT: ${PORT_PEER}\n    ports:\n      - ${PORT_WEB}:${PORT_WEB}\n      - ${PORT_PEER}:${PORT_PEER}\n      - ${PORT_PEER}:${PORT_PEER}/udp\n    volumes:\n      - ${APP_DATA}/config:/config\n      - ${SHARE_DOWNLOADS}:/downloads\n",
+      "icon": "icons/qbittorrent.png",
+      "digest": "sha256:a7562b04e26fb0eea6cebffbfca06f7a0d0fe8793e2e9f817246f81725fa84fc"
+    },
+    {
+      "id": "syncthing",
+      "name": "Syncthing",
+      "version": "2.1.7",
+      "tagline": "Keep folders in sync between your devices, without a cloud",
+      "description": "Syncthing synchronises folders between computers, phones and the NAS. The\ndevices connect to each other directly and encrypt everything they send;\nno account and no central server hold your files. You choose per folder\nwhich devices take part and whether a device only sends, only receives or\nboth. Deleted and changed files can be kept as older versions. Syncthing\nruns on Windows, macOS and Linux; third-party apps bring it to Android and\niOS.\n",
+      "categories": [
+        "files"
+      ],
+      "developer": "Syncthing contributors",
+      "website": "https://syncthing.net",
+      "source": "https://github.com/syncthing/syncthing",
+      "license": "MPL-2.0",
+      "maintainers": [
+        "mavnezz"
+      ],
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "notes": "Set a user name and password for the web interface under Actions →\nSettings → GUI first. New folders are created in the chosen share.\nSyncthing runs in its own network here and may not find devices on the home\nnetwork by itself. If transfers are slow or go through a relay, enter the\nNAS's address on the other devices under Edit Device → Advanced →\nAddresses, for example tcp://192.168.1.10:22000 (with the sync port you\nchose).\n",
+      "web": {
+        "port": "web",
+        "path": "/",
+        "scheme": "http"
+      },
+      "ports": [
+        {
+          "id": "web",
+          "label": "Web interface",
+          "default": 8384
+        },
+        {
+          "id": "sync",
+          "label": "File transfers (TCP and QUIC)",
+          "default": 22000
+        },
+        {
+          "id": "discovery",
+          "label": "Local discovery (UDP)",
+          "default": 21027
+        }
+      ],
+      "shares": [
+        {
+          "id": "sync",
+          "label": "Synced folders",
+          "description": "The share in which Syncthing keeps the folders it synchronises.",
+          "access": "read-write"
+        }
+      ],
+      "translations": {
+        "de": {
+          "tagline": "Ordner zwischen deinen Geräten abgleichen, ohne Cloud",
+          "description": "Syncthing gleicht Ordner zwischen Computern, Handys und dem NAS ab. Die\nGeräte verbinden sich direkt miteinander und verschlüsseln alles, was\nsie übertragen; kein Konto und kein zentraler Server verwahrt deine\nDateien. Für jeden Ordner legst du fest, welche Geräte teilnehmen und ob\nein Gerät nur sendet, nur empfängt oder beides. Gelöschte und geänderte\nDateien können als ältere Versionen erhalten bleiben. Syncthing läuft\nunter Windows, macOS und Linux; Apps von Drittanbietern bringen es auf\nAndroid und iOS.\n",
+          "notes": "Lege zuerst unter Aktionen → Einstellungen → GUI einen Benutzernamen und\nein Passwort für die Weboberfläche fest. Neue Ordner entstehen in der\ngewählten Freigabe. Syncthing läuft hier in einem eigenen Netz und\nfindet Geräte im Heimnetz womöglich nicht von selbst. Sind Übertragungen\nlangsam oder laufen sie über ein Relay, trage auf den anderen Geräten\nunter Gerät bearbeiten → Erweitert → Adressen die Adresse des NAS ein,\nzum Beispiel tcp://192.168.1.10:22000 (mit dem gewählten Sync-Port).\n"
+        }
+      },
+      "compose": "services:\n  syncthing:\n    image: syncthing/syncthing:2.1.7@sha256:2b71da7c0d0a91a6ae5285ad079226fecc0a365d08b27720e1f7037b018f7546\n    restart: unless-stopped\n    user: ${PUID}:${PGID}\n    environment:\n      TZ: ${TZ}\n      STHOMEDIR: /config\n    ports:\n      - ${PORT_WEB}:8384\n      - ${PORT_SYNC}:22000\n      - ${PORT_SYNC}:22000/udp\n      - ${PORT_DISCOVERY}:21027/udp\n    volumes:\n      - ${APP_DATA}/config:/config\n      - ${SHARE_SYNC}:/var/syncthing\n",
+      "icon": "icons/syncthing.png",
+      "digest": "sha256:28d65c058a79c0d9a5422cf55ced26455c51310f88a74af401e2dbd19f0118e0"
+    },
+    {
+      "id": "transmission",
+      "name": "Transmission",
+      "version": "4.1.4",
+      "tagline": "Lightweight BitTorrent client with a web interface",
+      "description": "Transmission downloads and shares files over BitTorrent and needs little\nmemory and processor time. Its web interface adds torrents by file or\nmagnet link, picks individual files within a torrent, sets speed limits\nand seeding ratios and shows the progress of every transfer. It supports\nDHT, peer exchange and encrypted connections. Desktop and mobile\nremote apps can control it over its RPC interface. Finished downloads land\nin the folder complete of the chosen share, unfinished ones in incomplete.\n",
+      "categories": [
+        "downloads"
+      ],
+      "developer": "Transmission project",
+      "website": "https://transmissionbt.com",
+      "source": "https://github.com/transmission/transmission",
+      "license": "GPL-2.0-only OR GPL-3.0-only",
+      "maintainers": [
+        "mavnezz"
+      ],
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "web": {
+        "port": "web",
+        "path": "/",
+        "scheme": "http"
+      },
+      "ports": [
+        {
+          "id": "web",
+          "label": "Web interface",
+          "default": 9091
+        },
+        {
+          "id": "peer",
+          "label": "Peer connections (TCP and UDP)",
+          "default": 51413
+        }
+      ],
+      "shares": [
+        {
+          "id": "downloads",
+          "label": "Downloads",
+          "description": "The share in which Transmission stores downloads.",
+          "access": "read-write"
+        }
+      ],
+      "settings": [
+        {
+          "id": "WEB_USER",
+          "label": "User name for the web interface",
+          "type": "text",
+          "default": "admin",
+          "required": true
+        },
+        {
+          "id": "WEB_PASSWORD",
+          "label": "Password for the web interface",
+          "type": "password",
+          "required": true
+        }
+      ],
+      "translations": {
+        "de": {
+          "tagline": "Schlanker BitTorrent-Client mit Weboberfläche",
+          "description": "Transmission lädt Dateien über BitTorrent herunter und teilt sie und\nbraucht dabei wenig Speicher und Rechenzeit. Über die Weboberfläche\nfügst du Torrents per Datei oder Magnet-Link hinzu, wählst einzelne\nDateien eines Torrents aus, setzt Geschwindigkeitsgrenzen und\nSeed-Verhältnisse und siehst den Fortschritt jeder Übertragung. Es\nunterstützt DHT, Peer Exchange und verschlüsselte Verbindungen.\nFernsteuer-Apps für Desktop und Handy greifen über die RPC-Schnittstelle\ndarauf zu. Fertige Downloads landen im Ordner complete der gewählten\nFreigabe, unfertige in incomplete.\n"
+        }
+      },
+      "compose": "services:\n  transmission:\n    image: lscr.io/linuxserver/transmission:4.1.4-r0-ls368@sha256:fb8fe625941cf15eb69aba4e5c0a678e035ddb11605fd85af4516a4e641f2687\n    restart: unless-stopped\n    user: ${PUID}:${PGID}\n    environment:\n      TZ: ${TZ}\n      USER: ${WEB_USER}\n      PASS: ${WEB_PASSWORD}\n      PEERPORT: ${PORT_PEER}\n    ports:\n      - ${PORT_WEB}:9091\n      - ${PORT_PEER}:${PORT_PEER}\n      - ${PORT_PEER}:${PORT_PEER}/udp\n    volumes:\n      - ${APP_DATA}/config:/config\n      - ${SHARE_DOWNLOADS}:/downloads\n",
+      "icon": "icons/transmission.png",
+      "digest": "sha256:85cf80b74e451ce7ba48dffa641476cee31570f45377bb9747af6cde7e7ec80b"
+    },
+    {
+      "id": "uptime-kuma",
+      "name": "Uptime Kuma",
+      "version": "2.5.9",
+      "tagline": "Monitor websites and services and get notified when they go down",
+      "description": "Uptime Kuma checks at regular intervals whether websites, servers and\nservices respond: web pages over HTTP(S), including a keyword or a JSON\nvalue, TCP ports, ping, DNS records, databases, MQTT brokers and more. It\nrecords response times and uptime, shows them on a dashboard and sends a\nnotification by e-mail, Telegram, Discord, Slack, Matrix, ntfy or one of\nmany other services when a check fails or recovers. Status pages show the\nstate of chosen monitors to others.\n",
+      "categories": [
+        "monitoring"
+      ],
+      "developer": "Louis Lam and contributors",
+      "website": "https://uptime.kuma.pet",
+      "source": "https://github.com/louislam/uptime-kuma",
+      "license": "MIT",
+      "maintainers": [
+        "mavnezz"
+      ],
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "notes": "On the first visit, choose the database (the built-in SQLite is enough for\nmost uses) and create the administrator account. The app has no access to\nDocker, so the Docker container monitor type does not work.\n",
+      "web": {
+        "port": "web",
+        "path": "/",
+        "scheme": "http"
+      },
+      "ports": [
+        {
+          "id": "web",
+          "label": "Web interface",
+          "default": 3001
+        }
+      ],
+      "translations": {
+        "de": {
+          "tagline": "Websites und Dienste überwachen und bei Ausfällen benachrichtigt werden",
+          "description": "Uptime Kuma prüft in festen Abständen, ob Websites, Server und Dienste\nantworten: Webseiten über HTTP(S), auch auf ein Stichwort oder einen\nJSON-Wert, TCP-Ports, Ping, DNS-Einträge, Datenbanken, MQTT-Broker und\nmehr. Es zeichnet Antwortzeiten und Verfügbarkeit auf, zeigt sie in\neinem Dashboard und benachrichtigt per E-Mail, Telegram, Discord,\nSlack, Matrix, ntfy oder über einen von vielen weiteren Diensten, wenn\neine Prüfung fehlschlägt oder wieder klappt. Statusseiten zeigen\nanderen den Zustand ausgewählter Monitore.\n",
+          "notes": "Wähle beim ersten Aufruf die Datenbank (das eingebaute SQLite reicht\nfür die meisten Zwecke) und lege das Administratorkonto an. Die App hat\nkeinen Zugriff auf Docker, deshalb funktioniert der Monitortyp für\nDocker-Container nicht.\n"
+        }
+      },
+      "compose": "services:\n  uptime-kuma:\n    image: louislam/uptime-kuma:2.5.9@sha256:e88415a90dd2f7efecdbc18de0490aff292764a3ac471531bf1d0481725591bd\n    restart: unless-stopped\n    environment:\n      TZ: ${TZ}\n    ports:\n      - ${PORT_WEB}:3001\n    volumes:\n      - ${APP_DATA}/data:/app/data\n",
+      "icon": "icons/uptime-kuma.png",
+      "digest": "sha256:c124140a2c10dd296cab11cddaf5844c88c252ae79e553b24c26a04ca57127f7"
+    }
+  ]
+}

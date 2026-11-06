@@ -305,6 +305,326 @@
         ]
       }
     },
+    "/api/v1/apps/catalog": {
+      "get": {
+        "tags": [
+          "apps"
+        ],
+        "summary": "Every app of every catalog, by name. Needs `containers.manage`.",
+        "operationId": "catalog",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CatalogApp"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/apps/catalog/{source}/{app}": {
+      "get": {
+        "tags": [
+          "apps"
+        ],
+        "summary": "One app of a catalog, with what it needs from the NAS. Needs\n`containers.manage`.",
+        "operationId": "catalog_app",
+        "parameters": [
+          {
+            "name": "source",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "app",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogAppDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/apps/catalog/{source}/{app}/icon": {
+      "get": {
+        "tags": [
+          "apps"
+        ],
+        "summary": "The app's icon, a PNG checked when it was fetched. Needs\n`containers.manage`.",
+        "operationId": "catalog_icon",
+        "parameters": [
+          {
+            "name": "source",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "app",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "image/png": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`catalog_unreachable`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/apps/sources": {
+      "get": {
+        "tags": [
+          "apps"
+        ],
+        "summary": "The catalogs apps come from: the community catalog first. Needs\n`containers.manage`.",
+        "operationId": "sources",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AppSource"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "apps"
+        ],
+        "summary": "Adds a catalog. It must answer with an index this version reads; its\napps are not reviewed by the community catalog. Needs\n`containers.manage`.",
+        "operationId": "add_source",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddSourceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppSource"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`source_exists`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`, `not_a_catalog`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`catalog_unreachable`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/apps/sources/refresh": {
+      "post": {
+        "tags": [
+          "apps"
+        ],
+        "summary": "Fetches every catalog again. Needs `containers.manage`.",
+        "operationId": "refresh_sources",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AppSource"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/apps/sources/{id}": {
+      "delete": {
+        "tags": [
+          "apps"
+        ],
+        "summary": "Removes a catalog; the community catalog stays. Needs\n`containers.manage`.",
+        "operationId": "remove_source",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed."
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`official_source`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/auth/login": {
       "post": {
         "tags": [
@@ -4067,6 +4387,19 @@
           "readonly"
         ]
       },
+      "AddSourceRequest": {
+        "type": "object",
+        "required": [
+          "address"
+        ],
+        "properties": {
+          "address": {
+            "type": "string",
+            "description": "A GitHub repository (`github.com/owner/repository`) or the https\naddress of an `index.json`."
+          }
+        },
+        "additionalProperties": false
+      },
       "AddressScope": {
         "type": "string",
         "enum": [
@@ -4075,6 +4408,221 @@
           "link",
           "host"
         ]
+      },
+      "AppPermissions": {
+        "type": "object",
+        "required": [
+          "devices",
+          "capabilities",
+          "host_network"
+        ],
+        "properties": {
+          "capabilities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "devices": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "host_network": {
+            "type": "boolean"
+          }
+        }
+      },
+      "AppPort": {
+        "type": "object",
+        "required": [
+          "id",
+          "label",
+          "default",
+          "fixed"
+        ],
+        "properties": {
+          "default": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "fixed": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          }
+        }
+      },
+      "AppSetting": {
+        "type": "object",
+        "required": [
+          "id",
+          "label",
+          "kind",
+          "required",
+          "generate"
+        ],
+        "properties": {
+          "default": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "generate": {
+            "type": "boolean",
+            "description": "zendiloOS makes it up; nobody is asked."
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "description": "`text`, `password`, `number` or `boolean`."
+          },
+          "label": {
+            "type": "string"
+          },
+          "required": {
+            "type": "boolean"
+          }
+        }
+      },
+      "AppShare": {
+        "type": "object",
+        "required": [
+          "id",
+          "label",
+          "read_write"
+        ],
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "read_write": {
+            "type": "boolean"
+          }
+        }
+      },
+      "AppSource": {
+        "type": "object",
+        "description": "A catalog apps come from.",
+        "required": [
+          "id",
+          "address",
+          "official",
+          "added_at",
+          "skipped"
+        ],
+        "properties": {
+          "added_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix seconds."
+          },
+          "address": {
+            "type": "string",
+            "description": "Where its index lies."
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "official": {
+            "type": "boolean",
+            "description": "The community catalog: built in. Apps of other catalogs are not\nreviewed by it."
+          },
+          "refresh_error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why that fetch failed; the apps read before stay listed."
+          },
+          "refreshed_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The last time its index was fetched, in Unix seconds."
+          },
+          "skipped": {
+            "type": "integer",
+            "description": "Apps left out because they fail the format or the policy.",
+            "minimum": 0
+          }
+        }
+      },
+      "AppTexts": {
+        "type": "object",
+        "description": "Name and tagline in another language.",
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tagline": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "AppWeb": {
+        "type": "object",
+        "required": [
+          "port",
+          "path",
+          "https"
+        ],
+        "properties": {
+          "https": {
+            "type": "boolean"
+          },
+          "path": {
+            "type": "string"
+          },
+          "port": {
+            "type": "string"
+          }
+        }
       },
       "ArrayHealth": {
         "type": "string",
@@ -4187,6 +4735,152 @@
             ]
           }
         }
+      },
+      "CatalogApp": {
+        "type": "object",
+        "description": "An app as the store lists it.",
+        "required": [
+          "source_id",
+          "official",
+          "id",
+          "name",
+          "version",
+          "tagline",
+          "categories",
+          "permissions",
+          "translations",
+          "digest"
+        ],
+        "properties": {
+          "categories": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "digest": {
+            "type": "string",
+            "description": "Changes with every new version."
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "official": {
+            "type": "boolean",
+            "description": "From the community catalog."
+          },
+          "permissions": {
+            "$ref": "#/components/schemas/AppPermissions",
+            "description": "Exceptions from the policy, confirmed when installing."
+          },
+          "source_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "tagline": {
+            "type": "string"
+          },
+          "translations": {
+            "type": "object",
+            "description": "By ISO 639-1 language; English is the default.",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/AppTexts"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "CatalogAppDetail": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/CatalogApp"
+          },
+          {
+            "type": "object",
+            "required": [
+              "description",
+              "developer",
+              "website",
+              "source_code",
+              "license",
+              "architectures",
+              "ports",
+              "shares",
+              "settings",
+              "compose"
+            ],
+            "properties": {
+              "architectures": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "compose": {
+                "type": "string",
+                "description": "The Compose file as written; zendiloOS fills in the variables."
+              },
+              "description": {
+                "type": "string"
+              },
+              "developer": {
+                "type": "string"
+              },
+              "license": {
+                "type": "string"
+              },
+              "notes": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "ports": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/AppPort"
+                }
+              },
+              "settings": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/AppSetting"
+                }
+              },
+              "shares": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/AppShare"
+                }
+              },
+              "source_code": {
+                "type": "string"
+              },
+              "web": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/AppWeb"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "website": {
+                "type": "string"
+              }
+            }
+          }
+        ],
+        "description": "Everything about an app before installing it."
       },
       "ChangePasswordRequest": {
         "type": "object",

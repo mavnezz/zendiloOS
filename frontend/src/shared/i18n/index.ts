@@ -74,6 +74,10 @@ const KNOWN_PROBLEMS = [
   'not_testing',
   'delivery_failed',
   'change_pending',
+  'source_exists',
+  'official_source',
+  'not_a_catalog',
+  'catalog_unreachable',
   'snapshot_taken',
   'volume_not_found',
   'unknown_subject',
@@ -105,6 +109,8 @@ export function problemMessage(error: unknown): string {
     'disk_count',
     'invalid_operation',
     'delivery_failed',
+    'not_a_catalog',
+    'catalog_unreachable',
   ]
   if (isKnown(error.code)) {
     const message = t(`errors.${error.code}`)

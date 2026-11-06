@@ -71,8 +71,8 @@ async fn creates_a_private_database_and_applies_all_migrations() {
         OpenReport {
             created: true,
             schema_before: None,
-            schema_after: 12,
-            applied: vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+            schema_after: 13,
+            applied: vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
             backup: None
         }
     );
@@ -93,6 +93,8 @@ async fn creates_a_private_database_and_applies_all_migrations() {
         [
             "account_preferences",
             "accounts",
+            "app_icons",
+            "app_sources",
             "audit_log",
             "file_favourites",
             "group_members",
@@ -124,8 +126,8 @@ async fn reopening_an_up_to_date_database_changes_nothing() {
         report,
         OpenReport {
             created: false,
-            schema_before: Some(12),
-            schema_after: 12,
+            schema_before: Some(13),
+            schema_after: 13,
             applied: vec![],
             backup: None
         }

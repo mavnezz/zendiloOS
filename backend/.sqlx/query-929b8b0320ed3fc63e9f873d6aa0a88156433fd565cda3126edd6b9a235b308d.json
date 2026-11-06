@@ -1,0 +1,98 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", index_address, official AS \"official: bool\", added_at, refreshed_at,\n                      refresh_error, skipped\n               FROM app_sources ORDER BY official DESC, added_at, id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "app_sources",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "index_address",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "app_sources",
+            "name": "index_address"
+          }
+        }
+      },
+      {
+        "name": "official: bool",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "app_sources",
+            "name": "official"
+          }
+        }
+      },
+      {
+        "name": "added_at",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "app_sources",
+            "name": "added_at"
+          }
+        }
+      },
+      {
+        "name": "refreshed_at",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "app_sources",
+            "name": "refreshed_at"
+          }
+        }
+      },
+      {
+        "name": "refresh_error",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "app_sources",
+            "name": "refresh_error"
+          }
+        }
+      },
+      {
+        "name": "skipped",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "app_sources",
+            "name": "skipped"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "929b8b0320ed3fc63e9f873d6aa0a88156433fd565cda3126edd6b9a235b308d"
+}

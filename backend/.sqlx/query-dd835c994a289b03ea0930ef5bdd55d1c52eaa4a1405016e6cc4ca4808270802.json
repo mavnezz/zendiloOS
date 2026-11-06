@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE app_sources SET refreshed_at = ?, refresh_error = ?, skipped = ?,\n                                    index_text = COALESCE(?, index_text)\n             WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "dd835c994a289b03ea0930ef5bdd55d1c52eaa4a1405016e6cc4ca4808270802"
+}

@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT index_text FROM app_sources WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "index_text",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "app_sources",
+            "name": "index_text"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "08d588a02bf06a7cc28c80e4bca265ecfdde9f16098273bdfa0e29892a4a715c"
+}

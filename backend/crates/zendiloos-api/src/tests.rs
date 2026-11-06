@@ -185,6 +185,7 @@ struct Harness {
     notifier: Notifier,
     share_host: Arc<zendiloos_sharing::testing::Host>,
     file_host: Arc<zendiloos_sharing::testing::Files>,
+    catalogs: Arc<zendiloos_apps::testing::FakeReader>,
 }
 
 /// Account and group names from the identity fakes.
@@ -275,6 +276,14 @@ impl Harness {
         };
         let sharing = SharingUseCases::new(sharing_ports.clone());
         let files = FilesUseCases::new(sharing_ports);
+        let catalogs = Arc::new(zendiloos_apps::testing::FakeReader::default());
+        catalogs.serve(
+            zendiloos_apps::domain::OFFICIAL_INDEX,
+            vec![
+                zendiloos_apps::testing::app("jellyfin", "Jellyfin"),
+                zendiloos_apps::testing::app("immich", "Immich"),
+            ],
+        );
         let use_cases = UseCases {
             system,
             identity: identity.use_cases.clone(),
@@ -289,6 +298,12 @@ impl Harness {
             ),
             jobs: jobs.clone(),
             notifier: notifier.clone(),
+            apps: zendiloos_apps::application::Catalogs::new(
+                Arc::new(zendiloos_apps::testing::MemorySources::default()),
+                catalogs.clone(),
+                identity.audit.clone(),
+                identity.clock.clone(),
+            ),
             channels: zendiloos_notify::channels::Channels::new(
                 Arc::new(zendiloos_notify::testing::MemoryChannels::default()),
                 Arc::new(zendiloos_notify::testing::RecordingSender::default()),
@@ -308,6 +323,7 @@ impl Harness {
             notifier,
             share_host,
             file_host,
+            catalogs,
         }
     }
 
@@ -822,6 +838,12 @@ fn openapi_documents_every_route() {
             "/api/v1/accounts",
             "/api/v1/accounts/{id}",
             "/api/v1/accounts/{id}/password",
+            "/api/v1/apps/catalog",
+            "/api/v1/apps/catalog/{source}/{app}",
+            "/api/v1/apps/catalog/{source}/{app}/icon",
+            "/api/v1/apps/sources",
+            "/api/v1/apps/sources/refresh",
+            "/api/v1/apps/sources/{id}",
             "/api/v1/auth/login",
             "/api/v1/auth/logout",
             "/api/v1/auth/password",
@@ -2053,4 +2075,77 @@ async fn administrators_change_an_interface_and_confirm_it() {
     assert_problem(&confirm(&viewer).await, StatusCode::FORBIDDEN, "forbidden");
     assert_eq!(confirm(&admin).await.status, StatusCode::NO_CONTENT);
     assert_problem(&confirm(&admin).await, StatusCode::CONFLICT, "refused");
+}
+
+#[tokio::test]
+async fn administrators_browse_catalogs_and_add_their_own() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let user = h.sign_in("bob", Role::User).await;
+    let send = |method: Method, uri: &str, body: Option<Value>| {
+        let request = with_csrf(changing(method, uri), &admin);
+        h.send(match body {
+            Some(body) => json(request, body),
+            None => empty(request),
+        })
+    };
+
+    let refreshed = send(Method::POST, "/api/v1/apps/sources/refresh", None).await;
+    assert_eq!(refreshed.body[0]["official"], true);
+    let listed = h.send(empty(with_cookie(get("/api/v1/apps/catalog"), &admin))).await;
+    let names: Vec<&str> =
+        listed.body.as_array().unwrap().iter().map(|a| a["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["Immich", "Jellyfin"]);
+    let source = listed.body[0]["source_id"].as_i64().unwrap();
+    let forbidden = h.send(empty(with_cookie(get("/api/v1/apps/catalog"), &user))).await;
+    assert_problem(&forbidden, StatusCode::FORBIDDEN, "forbidden");
+
+    let one =
+        h.send(empty(with_cookie(get(&format!("/api/v1/apps/catalog/{source}/jellyfin")), &admin))).await;
+    assert_eq!(
+        (one.body["id"].clone(), one.body["ports"][0]["default"].clone()),
+        (json!("jellyfin"), json!(8096))
+    );
+    let icon = h
+        .send(empty(with_cookie(get(&format!("/api/v1/apps/catalog/{source}/jellyfin/icon")), &admin)))
+        .await;
+    assert_eq!(icon.header(header::CONTENT_TYPE), "image/png");
+    let missing =
+        h.send(empty(with_cookie(get(&format!("/api/v1/apps/catalog/{source}/nothing")), &admin))).await;
+    assert_problem(&missing, StatusCode::NOT_FOUND, "not_found");
+
+    h.catalogs.serve(
+        "https://friend.github.io/apps/v1/index.json",
+        vec![zendiloos_apps::testing::app("paperless", "Paperless")],
+    );
+    let added =
+        send(Method::POST, "/api/v1/apps/sources", Some(json!({ "address": "github.com/friend/apps" })))
+            .await;
+    assert_eq!(added.status, StatusCode::CREATED, "{:?}", added.body);
+    assert_eq!(
+        (added.body["official"].clone(), added.body["address"].clone()),
+        (json!(false), json!("https://friend.github.io/apps/v1/index.json"))
+    );
+    let twice =
+        send(Method::POST, "/api/v1/apps/sources", Some(json!({ "address": "github.com/friend/apps" })))
+            .await;
+    assert_problem(&twice, StatusCode::CONFLICT, "source_exists");
+    let unreachable = send(
+        Method::POST,
+        "/api/v1/apps/sources",
+        Some(json!({ "address": "https://nowhere.example/index.json" })),
+    )
+    .await;
+    assert_problem(&unreachable, StatusCode::BAD_GATEWAY, "catalog_unreachable");
+    let plain = send(
+        Method::POST,
+        "/api/v1/apps/sources",
+        Some(json!({ "address": "http://nowhere.example/index.json" })),
+    )
+    .await;
+    assert_problem(&plain, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
+    let official = send(Method::DELETE, &format!("/api/v1/apps/sources/{source}"), None).await;
+    assert_problem(&official, StatusCode::CONFLICT, "official_source");
+    let removed = send(Method::DELETE, &format!("/api/v1/apps/sources/{}", added.body["id"]), None).await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT);
 }

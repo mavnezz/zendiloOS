@@ -9,6 +9,8 @@ publish.workspace = true
 
 [dependencies]
 zendiloos-agent-proto.workspace = true
+zendiloos-apps.workspace = true
+zendiloos-catalog.workspace = true
 zendiloos-exec.workspace = true
 zendiloos-identity.workspace = true
 zendiloos-jobs.workspace = true

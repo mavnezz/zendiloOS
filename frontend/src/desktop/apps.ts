@@ -1,4 +1,5 @@
 import {
+  Blocks,
   Files,
   FolderOpen,
   Gauge,
@@ -11,7 +12,8 @@ import { type Component, defineAsyncComponent } from 'vue'
 
 import type { Size } from './windowManager'
 
-export type AppId = 'dashboard' | 'files' | 'storage' | 'shares' | 'users' | 'logs' | 'settings'
+export type AppId =
+  'dashboard' | 'files' | 'storage' | 'shares' | 'apps' | 'users' | 'logs' | 'settings'
 
 export interface AppDefinition {
   id: AppId
@@ -58,6 +60,14 @@ export const APPS: AppDefinition[] = [
     size: { width: 860, height: 620 },
     minimum: { width: 360, height: 320 },
     component: defineAsyncComponent(() => import('@/features/shares/components/SharesManager.vue')),
+  },
+  {
+    id: 'apps',
+    icon: Blocks,
+    permission: 'containers.manage',
+    size: { width: 980, height: 680 },
+    minimum: { width: 360, height: 320 },
+    component: defineAsyncComponent(() => import('@/features/apps/components/AppsApp.vue')),
   },
   {
     id: 'users',

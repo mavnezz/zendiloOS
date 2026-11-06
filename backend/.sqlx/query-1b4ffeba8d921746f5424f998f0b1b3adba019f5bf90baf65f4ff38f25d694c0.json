@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT png FROM app_icons WHERE source_id = ? AND app_id = ? AND digest = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "png",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "app_icons",
+            "name": "png"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "1b4ffeba8d921746f5424f998f0b1b3adba019f5bf90baf65f4ff38f25d694c0"
+}

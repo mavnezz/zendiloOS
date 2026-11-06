@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM app_sources WHERE id = ? AND official = 0",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "f49d3878b318be0943c9f355ae195c409662b722508036a13617ecd2fdaa3c03"
+}

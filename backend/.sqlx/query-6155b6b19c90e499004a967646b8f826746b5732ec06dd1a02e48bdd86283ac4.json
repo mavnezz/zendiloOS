@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO app_icons (source_id, app_id, digest, png) VALUES (?, ?, ?, ?)\n             ON CONFLICT (source_id, app_id) DO UPDATE SET digest = excluded.digest, png = excluded.png",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "6155b6b19c90e499004a967646b8f826746b5732ec06dd1a02e48bdd86283ac4"
+}
