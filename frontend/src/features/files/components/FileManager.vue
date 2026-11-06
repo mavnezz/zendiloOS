@@ -414,12 +414,17 @@ function icon(entry: FileEntry) {
 <template>
   <div class="flex h-full min-h-0 flex-col @3xl:flex-row">
     <nav
-      class="flex shrink-0 gap-2 border-b p-2 @3xl:w-52 @3xl:flex-col @3xl:border-r @3xl:border-b-0"
+      class="flex shrink-0 gap-px overflow-y-auto px-1.5 pb-1.5 @3xl:w-52 @3xl:flex-col @3xl:px-2 @3xl:pt-0.5 @3xl:pb-2"
       :aria-label="t('files.shares')"
     >
+      <p
+        class="hidden px-2.5 pb-1 text-[11px] font-medium tracking-wide text-muted-foreground uppercase @3xl:block"
+      >
+        {{ t('files.shares') }}
+      </p>
       <select
         v-if="shares?.length"
-        class="h-9 w-full rounded-md border bg-background px-3 text-sm @3xl:hidden"
+        class="h-8 w-full rounded-md border bg-card px-2.5 text-sm @3xl:hidden"
         :aria-label="t('files.shares')"
         :value="shareId ?? undefined"
         @change="choose(Number(($event.target as HTMLSelectElement).value))"
@@ -430,23 +435,29 @@ function icon(entry: FileEntry) {
         v-for="item in shares"
         :key="item.id"
         type="button"
-        class="hidden items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent @3xl:flex"
-        :class="item.id === shareId ? 'bg-accent font-medium' : ''"
+        class="hidden h-8 items-center gap-2.5 rounded-md px-2.5 text-left text-sm @3xl:flex"
+        :class="
+          item.id === shareId
+            ? 'bg-card font-medium text-primary shadow-xs'
+            : 'text-foreground/85 hover:bg-chrome-hover'
+        "
         :aria-current="item.id === shareId ? 'true' : undefined"
         @click="choose(item.id)"
       >
-        <Folder class="size-4 shrink-0 text-primary" />
+        <Folder class="size-4 shrink-0 fill-amber-400/30 text-amber-500" />
         <span class="truncate">{{ item.name }}</span>
       </button>
       <template v-if="favourites?.length">
-        <p class="mt-3 hidden px-2 text-xs font-medium text-muted-foreground @3xl:block">
+        <p
+          class="mt-3 hidden px-2.5 pb-1 text-[11px] font-medium tracking-wide text-muted-foreground uppercase @3xl:block"
+        >
           {{ t('files.favourites') }}
         </p>
         <button
           v-for="favourite in favourites"
           :key="`${favourite.share_id}:${favourite.path}`"
           type="button"
-          class="hidden items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent @3xl:flex"
+          class="hidden h-8 items-center gap-2.5 rounded-md px-2.5 text-left text-sm text-foreground/85 hover:bg-chrome-hover @3xl:flex"
           :title="`${favourite.share_name}/${favourite.path}`"
           @click="goTo(favourite)"
         >
@@ -457,7 +468,7 @@ function icon(entry: FileEntry) {
     </nav>
 
     <div
-      class="relative flex min-h-0 min-w-0 flex-1 flex-col"
+      class="relative mx-1.5 mb-1.5 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border border-black/[0.06] bg-card shadow-xs @3xl:ml-0 dark:border-white/[0.06]"
       @dragover.prevent="dragging = writable"
       @dragleave="dragging = false"
       @drop.prevent="dropped"
@@ -470,7 +481,7 @@ function icon(entry: FileEntry) {
       </p>
 
       <template v-else-if="share">
-        <div class="flex flex-wrap items-center gap-1 border-b p-2">
+        <div class="flex flex-wrap items-center gap-1 border-b px-2 py-1.5">
           <Button
             variant="ghost"
             size="icon"

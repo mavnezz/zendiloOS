@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import { cn } from '@/shared/lib/utils'
+import { IconTile } from '@/shared/ui/icon-tile'
 
 import { type AppDefinition, findApp } from './apps'
 import AppLauncher from './AppLauncher.vue'
@@ -43,11 +44,11 @@ const clock = computed(() =>
 
 <template>
   <footer
-    class="relative z-[800] flex shrink-0 items-center gap-1 border-t bg-background/85 px-2 backdrop-blur"
+    class="relative z-[800] flex shrink-0 items-center gap-1 border-t border-white/10 bg-background/80 px-2 backdrop-blur-xl backdrop-saturate-150"
     :style="{ height: `${TASKBAR_HEIGHT}px` }"
   >
     <AppLauncher :apps="apps" @open="emit('open', $event)" />
-    <div class="mx-1 h-6 w-px bg-border" />
+    <div class="mx-1 h-5 w-px bg-border" />
     <nav v-if="!compact" class="flex min-w-0 flex-1 gap-1 overflow-x-auto">
       <button
         v-for="{ window, app } in running"
@@ -55,21 +56,22 @@ const clock = computed(() =>
         type="button"
         :class="
           cn(
-            'flex h-9 max-w-44 shrink-0 items-center gap-2 rounded-md px-3 text-sm hover:bg-accent',
-            windows.active === app.id && 'bg-accent font-medium',
+            'relative flex h-8 max-w-44 shrink-0 items-center gap-2 rounded-md px-2.5 text-sm hover:bg-foreground/[0.06]',
+            windows.active === app.id &&
+              'bg-foreground/[0.08] font-medium after:absolute after:inset-x-3 after:bottom-0.5 after:h-0.5 after:rounded-full after:bg-primary',
             window.minimized && 'text-muted-foreground',
           )
         "
         :aria-pressed="windows.active === app.id"
         @click="toggle(app.id)"
       >
-        <component :is="app.icon" class="size-4 shrink-0 text-primary" />
+        <IconTile :icon="app.icon" :tone="app.tone" size="sm" />
         <span class="truncate">{{ t(`apps.${app.id}`) }}</span>
       </button>
     </nav>
     <span v-else class="flex-1" />
     <NotificationCenter />
-    <time class="hidden px-2 text-sm tabular-nums sm:block">{{ clock }}</time>
+    <time class="hidden px-2 text-xs font-medium tabular-nums sm:block">{{ clock }}</time>
     <UserMenu @open-settings="openSettings" @sign-out="emit('signOut')" />
   </footer>
 </template>

@@ -11,6 +11,7 @@ import { useNotifications } from '@/shared/lib/notifications'
 import { useServerNotices } from '@/shared/notices/store'
 import { usePreferences } from '@/shared/preferences/store'
 import { cn } from '@/shared/lib/utils'
+import { IconTile } from '@/shared/ui/icon-tile'
 
 import { APPS, findApp } from './apps'
 import AppWindow from './AppWindow.vue'
@@ -83,22 +84,25 @@ async function signOut(): Promise<void> {
           cn(
             compact
               ? 'grid grid-cols-4 gap-2 p-4'
-              : 'absolute top-4 left-4 flex max-h-[calc(100%-2rem)] flex-col flex-wrap gap-1',
+              : 'absolute top-3 left-3 flex max-h-[calc(100%-1.5rem)] flex-col flex-wrap gap-0.5',
           )
         "
       >
         <li v-for="app in apps" :key="app.id">
           <button
             type="button"
-            class="flex w-20 flex-col items-center gap-1.5 rounded-lg p-2 text-xs font-medium outline-none hover:bg-foreground/5 focus-visible:ring-2 focus-visible:ring-ring"
+            class="group flex w-[84px] flex-col items-center gap-1.5 rounded-lg px-1 py-2 text-xs font-medium text-white outline-none hover:bg-white/10 focus-visible:ring-2 focus-visible:ring-white/60"
             @click="windows.open(app)"
           >
-            <span
-              class="grid size-12 place-items-center rounded-xl border bg-card/90 text-primary shadow-sm"
-            >
-              <component :is="app.icon" class="size-6" />
+            <IconTile
+              :icon="app.icon"
+              :tone="app.tone"
+              size="xl"
+              class="transition-transform group-active:scale-95"
+            />
+            <span class="text-center leading-tight [text-shadow:0_1px_3px_rgb(0_0_0/0.6)]">
+              {{ t(`apps.${app.id}`) }}
             </span>
-            <span class="text-center">{{ t(`apps.${app.id}`) }}</span>
           </button>
         </li>
       </ul>

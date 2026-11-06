@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { Metrics, MetricsHistoryData } from '@/shared/api/types'
 
-import { HISTORY, seeded } from './metrics'
+import { appendDevices, HISTORY, seeded } from './metrics'
 
 function sample(at: number, cpu: number): Metrics {
   return {
@@ -42,5 +42,21 @@ describe('the metrics history', () => {
     const at = Array.from({ length: HISTORY + 20 }, (_, i) => i)
 
     expect(seeded(server(at, at), []).cpu).toHaveLength(HISTORY)
+  })
+})
+
+describe('the history per device', () => {
+  it('grows per name and lets devices that are gone drop out', () => {
+    let devices = appendDevices({}, [
+      { name: 'eth0', values: [1, 2] },
+      { name: 'wg0', values: [3, 4] },
+    ])
+    devices = appendDevices(devices, [{ name: 'eth0', values: [5, 6] }])
+    expect(devices).toEqual({
+      eth0: [
+        [1, 5],
+        [2, 6],
+      ],
+    })
   })
 })

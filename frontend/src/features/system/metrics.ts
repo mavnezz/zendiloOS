@@ -54,9 +54,30 @@ export function seeded(server: MetricsHistoryData, early: Metrics[]): MetricsHis
   return history
 }
 
+/** Two series per device, by its name: an interface's or a disk's. */
+export type DeviceHistory = Record<string, [number[], number[]]>
+
+/**
+ * `devices` with one more sample of each device in `sample`; devices that
+ * are gone drop out. The server keeps only totals, so these start empty.
+ */
+export function appendDevices(
+  devices: DeviceHistory,
+  sample: { name: string; values: [number, number] }[],
+): DeviceHistory {
+  const next: DeviceHistory = {}
+  for (const { name, values } of sample) {
+    const [first, second] = devices[name] ?? [[], []]
+    next[name] = [keep([...first, values[0]]), keep([...second, values[1]])]
+  }
+  return next
+}
+
 /** Live metrics while the calling component exists, starting with the last minutes. */
 export function useLiveMetrics() {
   const latest = shallowRef<Metrics | null>(null)
+  const interfaces = shallowRef<DeviceHistory>({})
+  const disks = shallowRef<DeviceHistory>({})
   const history = ref<MetricsHistory>({
     cpu: [],
     memory: [],
@@ -71,6 +92,20 @@ export function useLiveMetrics() {
     latest.value = sample
     early?.push(sample)
     history.value = append(history.value, sample)
+    interfaces.value = appendDevices(
+      interfaces.value,
+      sample.network.map((n) => ({
+        name: n.name,
+        values: [n.received_bytes_per_second, n.sent_bytes_per_second],
+      })),
+    )
+    disks.value = appendDevices(
+      disks.value,
+      sample.disks.map((d) => ({
+        name: d.name,
+        values: [d.read_bytes_per_second, d.written_bytes_per_second],
+      })),
+    )
   })
   onScopeDispose(stop)
 
@@ -85,5 +120,5 @@ export function useLiveMetrics() {
       early = null
     })
 
-  return { latest, history }
+  return { latest, history, interfaces, disks }
 }

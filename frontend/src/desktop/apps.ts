@@ -1,14 +1,16 @@
 import {
+  Activity,
   Blocks,
-  Files,
   FolderOpen,
-  Gauge,
   HardDrive,
   ScrollText,
   Settings,
+  Share2,
   UsersRound,
 } from 'lucide-vue-next'
 import { type Component, defineAsyncComponent } from 'vue'
+
+import type { TileTone } from '@/shared/ui/icon-tile'
 
 import type { Size } from './windowManager'
 
@@ -18,6 +20,8 @@ export type AppId =
 export interface AppDefinition {
   id: AppId
   icon: Component
+  /** Colour of its tile on the desktop, in the taskbar and the title bar. */
+  tone: TileTone
   /** Accounts without it do not see the app. The server checks anyway. */
   permission: string
   /** Size of a newly opened window. */
@@ -31,7 +35,8 @@ export interface AppDefinition {
 export const APPS: AppDefinition[] = [
   {
     id: 'dashboard',
-    icon: Gauge,
+    icon: Activity,
+    tone: 'indigo',
     permission: 'system.view',
     size: { width: 920, height: 640 },
     minimum: { width: 360, height: 280 },
@@ -39,7 +44,8 @@ export const APPS: AppDefinition[] = [
   },
   {
     id: 'files',
-    icon: Files,
+    icon: FolderOpen,
+    tone: 'amber',
     permission: 'files.read',
     size: { width: 900, height: 620 },
     minimum: { width: 360, height: 320 },
@@ -48,6 +54,7 @@ export const APPS: AppDefinition[] = [
   {
     id: 'storage',
     icon: HardDrive,
+    tone: 'graphite',
     permission: 'storage.view',
     size: { width: 960, height: 660 },
     minimum: { width: 360, height: 320 },
@@ -55,7 +62,8 @@ export const APPS: AppDefinition[] = [
   },
   {
     id: 'shares',
-    icon: FolderOpen,
+    icon: Share2,
+    tone: 'teal',
     permission: 'shares.manage',
     size: { width: 860, height: 620 },
     minimum: { width: 360, height: 320 },
@@ -64,6 +72,7 @@ export const APPS: AppDefinition[] = [
   {
     id: 'apps',
     icon: Blocks,
+    tone: 'violet',
     permission: 'containers.manage',
     size: { width: 980, height: 680 },
     minimum: { width: 360, height: 320 },
@@ -72,6 +81,7 @@ export const APPS: AppDefinition[] = [
   {
     id: 'users',
     icon: UsersRound,
+    tone: 'blue',
     permission: 'users.manage',
     size: { width: 860, height: 600 },
     minimum: { width: 360, height: 320 },
@@ -80,6 +90,7 @@ export const APPS: AppDefinition[] = [
   {
     id: 'logs',
     icon: ScrollText,
+    tone: 'green',
     permission: 'logs.view',
     size: { width: 980, height: 640 },
     minimum: { width: 360, height: 320 },
@@ -88,6 +99,7 @@ export const APPS: AppDefinition[] = [
   {
     id: 'settings',
     icon: Settings,
+    tone: 'slate',
     permission: 'account.self',
     size: { width: 760, height: 560 },
     minimum: { width: 360, height: 320 },

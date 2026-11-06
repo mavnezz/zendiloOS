@@ -11,119 +11,114 @@ import AboutSection from '@/features/system/components/AboutSection.vue'
 import { LANGUAGES } from '@/shared/i18n'
 import type { ThemePreference } from '@/shared/lib/theme'
 import { cn } from '@/shared/lib/utils'
+import { AppFrame, type NavGroup } from '@/shared/ui/frame'
+import { PanelSection } from '@/shared/ui/section'
 import { usePreferences } from '@/shared/preferences/store'
-
-type Section = 'account' | 'appearance' | 'network' | 'notifications' | 'about'
 
 const { t, locale } = useI18n()
 const session = useSessionStore()
 const preferences = usePreferences()
 
-const ALL_SECTIONS = [
-  { id: 'account', icon: UserRound },
-  { id: 'appearance', icon: Palette },
-  { id: 'network', icon: Network },
-  { id: 'notifications', icon: BellRing },
-  { id: 'about', icon: Info },
-] as const
-/** Notification channels are for administrators (`system.manage`). */
-const sections = computed(() =>
-  ALL_SECTIONS.filter((item) => item.id !== 'notifications' || session.can('system.manage')),
-)
-const section = ref<Section>('account')
+const groups = computed<NavGroup[]>(() => [
+  {
+    id: 'personal',
+    label: t('settings.groups.personal'),
+    items: [
+      { id: 'account', label: t('settings.account'), icon: UserRound, tone: 'blue' },
+      { id: 'appearance', label: t('settings.appearance'), icon: Palette, tone: 'violet' },
+    ],
+  },
+  {
+    id: 'system',
+    label: t('settings.groups.system'),
+    items: [
+      { id: 'network', label: t('settings.network'), icon: Network, tone: 'sky' },
+      // Notification channels are for administrators (`system.manage`).
+      ...(session.can('system.manage')
+        ? [
+            {
+              id: 'notifications',
+              label: t('settings.notifications'),
+              icon: BellRing,
+              tone: 'amber' as const,
+            },
+          ]
+        : []),
+      { id: 'about', label: t('settings.about'), icon: Info, tone: 'slate' },
+    ],
+  },
+])
+const section = ref('account')
 
 const themes: ThemePreference[] = ['light', 'dark', 'system']
 
 const choice = (selected: boolean) =>
   cn(
-    'rounded-md px-3 py-1.5 text-sm transition-colors',
-    selected ? 'bg-card font-medium shadow-sm' : 'text-muted-foreground hover:text-foreground',
+    'rounded-[5px] px-3 py-1 text-sm transition-colors',
+    selected ? 'bg-card font-medium shadow-xs' : 'text-muted-foreground hover:text-foreground',
   )
 </script>
 
 <!-- Settings of the signed-in account and of this browser. -->
 <template>
-  <div class="flex h-full flex-col @xl:flex-row">
-    <nav class="flex shrink-0 gap-1 border-b p-2 @xl:w-48 @xl:flex-col @xl:border-r @xl:border-b-0">
-      <button
-        v-for="item in sections"
-        :key="item.id"
-        type="button"
-        :class="
-          cn(
-            'flex items-center gap-2 rounded-md px-3 py-2 text-sm',
-            section === item.id ? 'bg-accent font-medium' : 'hover:bg-accent/60',
-          )
-        "
-        :aria-current="section === item.id ? 'page' : undefined"
-        @click="section = item.id"
-      >
-        <component :is="item.icon" class="size-4" />
-        {{ t(`settings.${item.id}`) }}
-      </button>
-    </nav>
-
-    <div class="min-w-0 flex-1 overflow-auto p-6">
-      <section v-if="section === 'account' && session.info" class="grid gap-6">
-        <div>
-          <h3 class="text-lg font-semibold">
+  <AppFrame v-model:section="section" :groups="groups">
+    <div v-if="section === 'account' && session.info" class="grid max-w-xl gap-6">
+      <div class="flex items-center gap-3">
+        <span
+          class="grid size-11 place-items-center rounded-full bg-primary/10 text-base font-semibold text-primary uppercase"
+        >
+          {{ session.info.account.name.slice(0, 2) }}
+        </span>
+        <div class="grid">
+          <h3 class="text-base font-semibold">
             {{ t('settings.signedInAs', { name: session.info.account.name }) }}
           </h3>
-          <p class="text-sm text-muted-foreground">
+          <p class="text-xs text-muted-foreground">
             {{ t('settings.role') }}: {{ t(`settings.roles.${session.info.account.role}`) }}
           </p>
         </div>
-        <div class="grid gap-3">
-          <h4 class="font-medium">{{ t('settings.changePassword') }}</h4>
-          <ChangePasswordForm />
-        </div>
-      </section>
-
-      <section v-else-if="section === 'appearance'" class="grid gap-6">
-        <div class="grid gap-2">
-          <h3 class="font-medium">{{ t('settings.theme') }}</h3>
-          <div class="inline-flex w-fit gap-1 rounded-lg bg-muted p-1" role="radiogroup">
-            <button
-              v-for="option in themes"
-              :key="option"
-              type="button"
-              role="radio"
-              :aria-checked="preferences.theme === option"
-              :class="choice(preferences.theme === option)"
-              @click="preferences.chooseTheme(option)"
-            >
-              {{ t(`settings.themes.${option}`) }}
-            </button>
-          </div>
-        </div>
-        <div class="grid gap-2">
-          <h3 class="font-medium">{{ t('settings.language') }}</h3>
-          <div class="inline-flex w-fit gap-1 rounded-lg bg-muted p-1" role="radiogroup">
-            <button
-              v-for="language in LANGUAGES"
-              :key="language.locale"
-              type="button"
-              role="radio"
-              :lang="language.locale"
-              :aria-checked="locale === language.locale"
-              :class="choice(locale === language.locale)"
-              @click="preferences.chooseLanguage(language.locale)"
-            >
-              {{ language.name }}
-            </button>
-          </div>
-        </div>
-      </section>
-
-      <section v-else-if="section === 'network'">
-        <NetworkSection :can-manage="session.can('system.manage')" />
-      </section>
-      <section v-else-if="section === 'notifications'">
-        <ChannelsSection />
-      </section>
-      <section v-else-if="section === 'about'">
-        <AboutSection />
-      </section>
+      </div>
+      <PanelSection :title="t('settings.changePassword')">
+        <ChangePasswordForm />
+      </PanelSection>
     </div>
-  </div>
+
+    <div v-else-if="section === 'appearance'" class="grid gap-6">
+      <PanelSection :title="t('settings.theme')">
+        <div class="inline-flex w-fit gap-0.5 rounded-md bg-muted p-0.5" role="radiogroup">
+          <button
+            v-for="option in themes"
+            :key="option"
+            type="button"
+            role="radio"
+            :aria-checked="preferences.theme === option"
+            :class="choice(preferences.theme === option)"
+            @click="preferences.chooseTheme(option)"
+          >
+            {{ t(`settings.themes.${option}`) }}
+          </button>
+        </div>
+      </PanelSection>
+      <PanelSection :title="t('settings.language')">
+        <div class="inline-flex w-fit gap-0.5 rounded-md bg-muted p-0.5" role="radiogroup">
+          <button
+            v-for="language in LANGUAGES"
+            :key="language.locale"
+            type="button"
+            role="radio"
+            :lang="language.locale"
+            :aria-checked="locale === language.locale"
+            :class="choice(locale === language.locale)"
+            @click="preferences.chooseLanguage(language.locale)"
+          >
+            {{ language.name }}
+          </button>
+        </div>
+      </PanelSection>
+    </div>
+
+    <NetworkSection v-else-if="section === 'network'" :can-manage="session.can('system.manage')" />
+    <ChannelsSection v-else-if="section === 'notifications'" />
+    <AboutSection v-else-if="section === 'about'" />
+  </AppFrame>
 </template>

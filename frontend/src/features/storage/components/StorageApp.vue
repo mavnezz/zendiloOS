@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { Activity, Database, HardDrive, Layers, RefreshCw } from 'lucide-vue-next'
-import { ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import { cn } from '@/shared/lib/utils'
 import { Button } from '@/shared/ui/button'
+import { AppFrame, type NavGroup } from '@/shared/ui/frame'
 
 import { useRefreshStorage } from '../api'
 import DiskDetail from './DiskDetail.vue'
@@ -13,74 +13,53 @@ import OverviewSection from './OverviewSection.vue'
 import PoolsSection from './PoolsSection.vue'
 import VolumesSection from './VolumesSection.vue'
 
-type Section = 'overview' | 'volumes' | 'pools' | 'disks'
-
 /** Whether the signed-in account may change pools (`storage.manage`). */
 defineProps<{ canManage: boolean }>()
 
 const { t } = useI18n()
 const refresh = useRefreshStorage()
 
-const sections = [
-  { id: 'overview', icon: Activity },
-  { id: 'volumes', icon: Database },
-  { id: 'pools', icon: Layers },
-  { id: 'disks', icon: HardDrive },
-] as const
-const section = ref<Section>('overview')
+const groups = computed<NavGroup[]>(() => [
+  {
+    id: 'storage',
+    items: [
+      { id: 'overview', label: t('storage.overview'), icon: Activity },
+      { id: 'volumes', label: t('storage.volumes'), icon: Database },
+      { id: 'pools', label: t('storage.pools'), icon: Layers },
+      { id: 'disks', label: t('storage.disks'), icon: HardDrive },
+    ],
+  },
+])
+const section = ref('overview')
 const selectedDisk = ref<string | null>(null)
-
-function open(next: Section): void {
-  section.value = next
-  selectedDisk.value = null
-}
+watch(section, () => (selectedDisk.value = null))
 </script>
 
 <!-- What the system stores data on, and what is wrong with it. -->
 <template>
-  <div class="flex h-full flex-col @xl:flex-row">
-    <nav class="flex shrink-0 gap-1 border-b p-2 @xl:w-48 @xl:flex-col @xl:border-r @xl:border-b-0">
-      <button
-        v-for="item in sections"
-        :key="item.id"
-        type="button"
-        :class="
-          cn(
-            'flex items-center gap-2 rounded-md px-3 py-2 text-sm',
-            section === item.id ? 'bg-accent font-medium' : 'hover:bg-accent/60',
-          )
-        "
-        :aria-current="section === item.id ? 'page' : undefined"
-        @click="open(item.id)"
-      >
-        <component :is="item.icon" class="size-4" />
-        {{ t(`storage.${item.id}`) }}
-      </button>
+  <AppFrame v-model:section="section" :groups="groups">
+    <template #sidebar-bottom>
       <Button
         variant="ghost"
         size="sm"
-        class="ml-auto justify-start @xl:mt-auto @xl:ml-0"
-        :title="t('storage.refresh')"
+        class="w-full justify-start text-muted-foreground"
         @click="refresh"
       >
         <RefreshCw />
-        <span class="hidden @xl:inline">{{ t('storage.refresh') }}</span>
+        {{ t('storage.refresh') }}
       </Button>
-    </nav>
-
-    <div class="min-w-0 flex-1 overflow-auto p-4 @xl:p-6">
-      <OverviewSection v-if="section === 'overview'" />
-      <VolumesSection v-else-if="section === 'volumes'" />
-      <PoolsSection v-else-if="section === 'pools'" :can-manage="canManage" />
-      <template v-else>
-        <DiskDetail
-          v-if="selectedDisk"
-          :name="selectedDisk"
-          :can-manage="canManage"
-          @back="selectedDisk = null"
-        />
-        <DisksSection v-else :can-manage="canManage" @select="selectedDisk = $event" />
-      </template>
-    </div>
-  </div>
+    </template>
+    <OverviewSection v-if="section === 'overview'" />
+    <VolumesSection v-else-if="section === 'volumes'" />
+    <PoolsSection v-else-if="section === 'pools'" :can-manage="canManage" />
+    <template v-else>
+      <DiskDetail
+        v-if="selectedDisk"
+        :name="selectedDisk"
+        :can-manage="canManage"
+        @back="selectedDisk = null"
+      />
+      <DisksSection v-else :can-manage="canManage" @select="selectedDisk = $event" />
+    </template>
+  </AppFrame>
 </template>

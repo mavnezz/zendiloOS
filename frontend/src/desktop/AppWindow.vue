@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { ChevronLeft, Maximize2, Minimize2, Minus, X } from 'lucide-vue-next'
+import { ChevronLeft, Copy, Minus, Square, X } from 'lucide-vue-next'
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import { cn } from '@/shared/lib/utils'
+import { IconTile } from '@/shared/ui/icon-tile'
 
 import type { AppDefinition } from './apps'
 import { type Geometry, shownGeometry, type WindowState } from './windowManager'
@@ -56,6 +57,9 @@ function dragTo(event: PointerEvent): void {
 function endDrag(): void {
   drag = null
 }
+
+const control =
+  'grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-chrome-hover hover:text-foreground'
 </script>
 
 <template>
@@ -65,16 +69,16 @@ function endDrag(): void {
     :aria-label="title"
     :class="
       cn(
-        'absolute flex flex-col overflow-hidden border bg-card text-card-foreground shadow-xl',
-        fills ? 'inset-0 rounded-none border-0' : 'rounded-xl',
-        active ? 'shadow-2xl ring-1 ring-primary/20' : 'opacity-[0.97]',
+        'absolute flex flex-col overflow-hidden bg-chrome text-card-foreground',
+        fills ? 'inset-0 rounded-none' : 'window-shadow rounded-xl',
+        !active && 'shadow-md',
       )
     "
     :style="style"
     @pointerdown="windows.focus(app.id)"
   >
     <header
-      class="flex h-10 shrink-0 touch-none items-center gap-2 border-b bg-muted/40 pr-1 pl-3 select-none"
+      class="relative flex h-10 shrink-0 touch-none items-center px-1.5 select-none"
       @pointerdown="startDrag($event, 'move')"
       @pointermove="dragTo"
       @pointerup="endDrag"
@@ -84,52 +88,54 @@ function endDrag(): void {
       <button
         v-if="compact"
         type="button"
-        class="-ml-1 rounded-md p-1 hover:bg-accent"
+        class="relative z-10 grid size-7 place-items-center rounded-md hover:bg-chrome-hover"
         :aria-label="t('desktop.back')"
+        @pointerdown.stop
         @click="windows.minimize(app.id)"
       >
-        <ChevronLeft class="size-5" />
+        <ChevronLeft class="size-4" />
       </button>
-      <component :is="app.icon" class="size-4 text-primary" />
-      <h2 class="flex-1 truncate text-sm font-medium">{{ title }}</h2>
-      <div v-if="!compact" class="flex" @pointerdown.stop>
-        <button
-          type="button"
-          class="rounded-md p-1.5 hover:bg-accent"
-          :aria-label="t('desktop.minimize')"
-          @click="windows.minimize(app.id)"
+      <div class="pointer-events-none absolute inset-x-24 flex items-center justify-center gap-2">
+        <IconTile :icon="app.icon" :tone="app.tone" size="xs" />
+        <h2
+          :class="
+            cn('truncate text-[13px] font-semibold', !active && 'font-medium text-muted-foreground')
+          "
         >
-          <Minus class="size-4" />
-        </button>
+          {{ title }}
+        </h2>
+      </div>
+      <div class="relative z-10 ml-auto flex items-center gap-0.5" @pointerdown.stop>
+        <template v-if="!compact">
+          <button
+            type="button"
+            :class="control"
+            :aria-label="t('desktop.minimize')"
+            @click="windows.minimize(app.id)"
+          >
+            <Minus class="size-3.5" />
+          </button>
+          <button
+            type="button"
+            :class="control"
+            :aria-label="window.maximized ? t('desktop.restore') : t('desktop.maximize')"
+            @click="windows.toggleMaximized(app.id)"
+          >
+            <Copy v-if="window.maximized" class="size-3" />
+            <Square v-else class="size-3" />
+          </button>
+        </template>
         <button
           type="button"
-          class="rounded-md p-1.5 hover:bg-accent"
-          :aria-label="window.maximized ? t('desktop.restore') : t('desktop.maximize')"
-          @click="windows.toggleMaximized(app.id)"
-        >
-          <Minimize2 v-if="window.maximized" class="size-4" />
-          <Maximize2 v-else class="size-4" />
-        </button>
-        <button
-          type="button"
-          class="rounded-md p-1.5 hover:bg-destructive hover:text-white"
+          :class="cn(control, 'hover:bg-destructive hover:text-white')"
           :aria-label="t('desktop.close')"
           @click="windows.close(app.id)"
         >
-          <X class="size-4" />
+          <X class="size-3.5" />
         </button>
       </div>
-      <button
-        v-else
-        type="button"
-        class="rounded-md p-1.5 hover:bg-accent"
-        :aria-label="t('desktop.close')"
-        @click="windows.close(app.id)"
-      >
-        <X class="size-4" />
-      </button>
     </header>
-    <div class="@container min-h-0 flex-1 overflow-auto">
+    <div class="@container min-h-0 flex-1 overflow-hidden">
       <component :is="app.component" />
     </div>
     <div
