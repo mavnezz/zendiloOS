@@ -119,7 +119,7 @@ review comment.
 
 | Concept | In Zendiloos |
 |---|---|
-| Bounded context | one core crate each: `identity`, `system`, `storage`, `sharing`, `containers`, `network` |
+| Bounded context | one core crate each: `identity`, `system`, `storage`, `sharing`, `apps`, `network` |
 | Domain layer | entities, value objects, aggregates, domain rules and errors; pure Rust, no I/O |
 | Application layer | use cases (commands and queries) and the **ports** they need, as traits |
 | Primary (driving) adapter | `zendiloos-api`: HTTP and WebSocket |
@@ -134,7 +134,7 @@ review comment.
 | `zendiloos-system` | system information, metrics, power, logs | kernel |
 | `zendiloos-storage` | disks, SMART, ZFS pools and volumes, plans for erasing disks, monitoring; mdadm arrays read-only | kernel, jobs, notify |
 | `zendiloos-sharing` | SMB and NFS shares, share permissions, and the file manager (share contents as the signed-in user) | kernel, jobs |
-| `zendiloos-containers` | containers, images, volumes, networks, apps | kernel |
+| `zendiloos-apps` | app catalogs and their sources, installed apps (Docker Compose projects under the policy of 4.9) | kernel, jobs |
 | `zendiloos-network` | interfaces, addresses, default routes, name servers (read-only until M6); later IP configuration, DNS, hostname | kernel |
 | `zendiloos-infra` | all secondary adapters, SQLite migrations | kernel, contexts, agent-proto |
 | `zendiloos-api` | primary adapter: axum routes, DTOs, OpenAPI, auth middleware, WebSocket | kernel, contexts |
@@ -161,7 +161,7 @@ placeholder crates.
                v         v            v           v
       bounded contexts (core)      zendiloos-agent-proto <── zendiloos-agent ──> zendiloos-exec
       identity · system · storage          │                  (root)
-      sharing · containers                 │
+      sharing · apps                       │
       network                              │
                │                           │
                └─────────────┬─────────────┘
@@ -694,14 +694,62 @@ directory) and virtual disks in the Debian VM (`just vm-storage-test`).
   carries its syslog priority (`<4>` for warnings and so on), so the log
   viewer can filter by priority.
 
-### 4.9 Containers **[Phase 4]**
+### 4.9 Apps (Docker)
 
-Access to the Docker socket is equivalent to root. Recommendation:
-`zendiloosd` does not talk to Docker directly but through agent operations
-(bollard in the agent) that enforce a policy: no `privileged` containers, no
-host PID/network, bind mounts only below shared paths; exceptions only
-explicitly per app by an admin. Logs and statistics arrive as a frame
-stream. Final decision in phase 4.
+Access to the Docker socket is equivalent to root. `zendiloosd` never
+reaches it; the agent does, and only to run apps that pass a policy.
+
+**Catalogs.** Apps come from catalogs in the format of the
+[community catalog](https://github.com/mavnezz/zendiloOS.community.applications)
+(`docs/format.md` there): per app a manifest (`app.yaml`), a Compose file
+and an icon, published as one `index.json`. The community catalog
+(`https://mavnezz.github.io/zendiloOS.community.applications/v1/index.json`)
+is built in and cannot be removed. Administrators add more, as with HACS:
+a GitHub repository (`github.com/<owner>/<repo>`, read as
+`https://<owner>.github.io/<repo>/v1/index.json`) or the https address of
+an index in the same format. Adding one is confirmed after a warning, and
+its apps carry "not from the zendiloOS catalog". `zendiloosd` fetches
+indexes over https (redirects only to https, a size limit, a timeout) and
+checks every entry with the catalog's own checks before showing it; an
+entry that fails is left out, not repaired. Icons are cached, checked to be
+PNG and served as `image/png`.
+
+**One policy, in one crate.** The format and the policy live in the
+catalog's crate `zendiloos-catalog` (pure: text in, problems out). The
+agent and `zendiloos-infra` use it as a git dependency pinned to one
+commit, so a change to the catalog's checks reaches zendiloOS only when
+the pin is moved deliberately. The policy allows by name: images pinned by
+digest, bind mounts only from the app's data folder and the shares the
+administrator picks, published ports from variables, no Docker volumes, no
+`privileged`, no host namespaces, no Docker socket; devices, extra
+capabilities and the host network only as permissions the app declares
+and the administrator confirms.
+
+**Own Compose files.** Administrators may also paste a Compose file. It
+goes through the same checks with a wider policy: images by tag (pinned to
+the digest pulled at installation), and bind mounts of any folder below a
+volume (`/volume<N>/…`), each listed and confirmed. What stays refused for
+every app: `privileged`, the Docker socket and other system paths, host
+PID, IPC and user namespaces, devices and capabilities beyond the
+grantable ones.
+
+**Docker's own data** (images, layers, containers) lives on a pool, not on
+the system disk: turning apps on creates the dataset `<pool>/docker`, and
+the agent writes `/etc/docker/daemon.json` with it as `data-root`. Docker
+comes from Debian (`docker.io`, `docker-compose`).
+
+**Installing** (a job): every app gets a system account `app-<id>`
+(`PUID`/`PGID`) that owns its data folder `/volume<N>/@apps/<id>` and gets
+the declared access to the chosen shares through the shares' ACLs.
+Generated settings are 32 letters and digits, made once and kept across
+updates. The agent then does what `docs/format.md` section 8 of the
+catalog requires: checks the file as written, normalizes it twice with
+`docker compose config` (stand-in values for where each variable ends up,
+real values for the policy) with a cleared environment and an empty
+project directory, creates the bind-mount sources below the data folder
+without following links, and starts exactly the normalized form it
+checked. An update is offered when the app's `digest` in the index
+changes; it keeps the data folder, shares, ports and settings.
 
 ---
 
