@@ -12,8 +12,8 @@ use zendiloos_kernel::{Actor, AuditEntry, Outcome, PortError, RequestContext};
 use super::SharingPorts;
 use super::ports::{HostError, Names};
 use crate::domain::{
-    Access, AccessRule, InvalidNetwork, InvalidShareName, NewShare, NfsClient, NfsSpec, Principal, Share,
-    ShareId, ShareName, ShareSettings, ShareUsage, SharingConfig, SmbSpec, Subject, network,
+    Access, AccessRule, AppAccess, InvalidNetwork, InvalidShareName, NewShare, NfsClient, NfsSpec, Principal,
+    Share, ShareId, ShareName, ShareSettings, ShareUsage, SharingConfig, SmbSpec, Subject, network,
 };
 
 pub const MAX_DESCRIPTION_CHARS: usize = 200;
@@ -38,6 +38,9 @@ pub enum SharingError {
     Duplicate,
     #[error("the confirmation does not match the share's name")]
     ConfirmationMismatch,
+    /// Apps mount the share; they are named.
+    #[error("apps use this share: {0}")]
+    UsedByApps(String),
     #[error("refused by the host: {0}")]
     Refused(String),
     #[error(transparent)]
@@ -136,6 +139,18 @@ fn principals(rules: &[AccessRule], names: &Names) -> Vec<(Principal, Access)> {
             Some((principal, rule.access))
         })
         .collect()
+}
+
+/// What the share's directory should allow: the people's rules, then the
+/// apps'. Samba never learns of the apps.
+fn acl(rules: &[AccessRule], names: &Names, share: ShareId, apps: &[AppAccess]) -> Vec<(Principal, Access)> {
+    let mut acl = principals(rules, names);
+    acl.extend(
+        apps.iter()
+            .filter(|app| app.share == share)
+            .map(|app| (Principal::User(app.account.clone()), app.access)),
+    );
+    acl
 }
 
 /// What the servers should offer for `shares`.
@@ -320,8 +335,9 @@ impl SharingUseCases {
             && access != share.access
         {
             check_rules(&access, &names)?;
-            let now = principals(&access, &names);
-            let before = principals(&share.access, &names);
+            let apps = self.ports.shares.app_access().await?;
+            let now = acl(&access, &names, share.id, &apps);
+            let before = acl(&share.access, &names, share.id, &apps);
             let removed: Vec<Principal> =
                 before.into_iter().map(|(p, _)| p).filter(|p| !now.iter().any(|(q, _)| q == p)).collect();
             self.ports.host.set_access(share.volume, &share.name, &now, &removed, false, request).await?;
@@ -386,6 +402,52 @@ impl SharingUseCases {
         Ok((share, job))
     }
 
+    /// Gives an app's `account` exactly `grants` (share by name), on the
+    /// share's directory at once and then on everything in it; shares it
+    /// had before and has no more lose the account's entries. Runs to the
+    /// end: the caller is the app's own job.
+    pub async fn set_app_access(
+        &self,
+        account: &str,
+        grants: &[(ShareName, Access)],
+        request: &RequestContext,
+    ) -> Result<(), SharingError> {
+        let mut follow_up = Vec::new();
+        {
+            let _changes = self.changes.lock().await;
+            let shares = self.ports.shares.list().await?;
+            let mut wanted = Vec::new();
+            for (name, access) in grants {
+                let share = shares.iter().find(|s| &s.name == name).ok_or(SharingError::ShareNotFound)?;
+                wanted.push((share.id, *access));
+            }
+            let before = self.ports.shares.app_access().await?;
+            self.ports.shares.set_app_access(account, &wanted).await?;
+            let after = self.ports.shares.app_access().await?;
+            let names = self.ports.directory.names().await?;
+            let touched: HashSet<ShareId> = before
+                .iter()
+                .filter(|app| app.account == account)
+                .map(|app| app.share)
+                .chain(wanted.iter().map(|(id, _)| *id))
+                .collect();
+            for share in shares.iter().filter(|share| touched.contains(&share.id)) {
+                let now = acl(&share.access, &names, share.id, &after);
+                let removed: Vec<Principal> = if wanted.iter().any(|(id, _)| *id == share.id) {
+                    Vec::new()
+                } else {
+                    vec![Principal::User(account.to_owned())]
+                };
+                self.ports.host.set_access(share.volume, &share.name, &now, &removed, false, request).await?;
+                follow_up.push((share.volume, share.name.clone(), now, removed));
+            }
+        }
+        for (volume, name, now, removed) in follow_up {
+            self.ports.host.set_access(volume, &name, &now, &removed, true, request).await?;
+        }
+        Ok(())
+    }
+
     /// Stops offering a share and destroys its dataset with all files, as
     /// a job. `confirm` must repeat the share's name.
     pub async fn delete(
@@ -399,6 +461,18 @@ impl SharingUseCases {
         let share = self.ports.shares.find(id).await?.ok_or(SharingError::ShareNotFound)?;
         if confirm.trim() != share.name.as_str() {
             return Err(SharingError::ConfirmationMismatch);
+        }
+        let users: Vec<String> = self
+            .ports
+            .shares
+            .app_access()
+            .await?
+            .into_iter()
+            .filter(|app| app.share == share.id)
+            .map(|app| app.account.strip_prefix("app-").unwrap_or(&app.account).to_owned())
+            .collect();
+        if !users.is_empty() {
+            return Err(SharingError::UsedByApps(users.join(", ")));
         }
         // Not offered any more before its data goes.
         self.ports.shares.delete(id).await?;

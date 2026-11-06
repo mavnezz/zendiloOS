@@ -33,6 +33,29 @@ pub enum AppsError {
     Unreachable(String),
     #[error("there is no such pool")]
     PoolNotFound,
+    #[error("the app is installed already")]
+    AlreadyInstalled,
+    #[error("the app is not installed")]
+    NotInstalled,
+    /// Its account name, `app-<id>`, would be too long.
+    #[error("the app's id is too long to install it")]
+    IdTooLong,
+    #[error("Docker is not set up and running on a pool")]
+    DockerNotReady,
+    #[error("the app's permissions were not confirmed")]
+    PermissionsNotConfirmed,
+    #[error(transparent)]
+    InvalidValue(#[from] crate::domain::InvalidValue),
+    /// A job is working on the app, or it is not in a state for this.
+    #[error("the app is busy or not ready for this")]
+    Busy,
+    #[error("the confirmation does not match the app's id")]
+    ConfirmationMismatch,
+    #[error("the app is up to date")]
+    UpToDate,
+    /// Docker or another program on the host failed, in its words.
+    #[error("{0}")]
+    HostFailed(String),
     /// The agent's checks refused, with its reason.
     #[error("refused by the host: {0}")]
     Refused(String),

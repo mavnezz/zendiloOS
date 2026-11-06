@@ -384,3 +384,26 @@ fn deep_trees_archive_with_one_name_per_entry() {
     assert_eq!((bottom.0.len(), bottom.2.as_str()), ("top/".len() + deep.len() + "bottom.txt".len(), "deep"));
     assert_eq!(entries.last().unwrap(), &("top/z.txt".to_owned(), '0', "after the deep folder".to_owned()));
 }
+
+#[test]
+fn app_folders_are_made_name_by_name_and_never_through_a_link() {
+    let v = Volumes::new();
+    let root = v.share("photos");
+    root.make_folders(&AppFolder::parse("config/cache").unwrap()).unwrap();
+    root.make_folders(&AppFolder::parse("config").unwrap()).unwrap();
+    assert!(v.share_path("photos").join("config/cache").is_dir());
+
+    symlink("/etc", v.share_path("photos").join("evil")).unwrap();
+    let refused = root.make_folders(&AppFolder::parse("evil/inside").unwrap());
+    assert!(matches!(refused, Err(FileError::Invalid(_))), "{refused:?}");
+    assert!(!Path::new("/etc/inside").exists());
+}
+
+#[test]
+fn app_data_needs_its_own_dataset() {
+    let v = Volumes::new();
+    fs::create_dir_all(v.directory.path().join("volume1/@apps/demo")).unwrap();
+    let app = AppName::parse("demo").unwrap();
+    let refused = ShareRoot::open_app_data(v.directory.path(), VolumeNumber::new(1).unwrap(), &app);
+    assert!(matches!(refused, Err(FileError::Invalid(_))), "{refused:?}");
+}

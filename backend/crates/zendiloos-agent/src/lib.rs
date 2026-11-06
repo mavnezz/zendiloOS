@@ -6,6 +6,7 @@
 //! parsing happens unprivileged, so parser bugs never run as root.
 
 mod accounts;
+mod apps;
 pub mod config;
 mod console;
 mod files;

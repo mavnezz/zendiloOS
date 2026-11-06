@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO installed_apps (id, source_id, manifest, compose, icon, digest, pool, volume, shares,\n                                         ports, settings, state, installed_at, updated_at)\n             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 14
+    },
+    "nullable": []
+  },
+  "hash": "5fcdc06de22d54d9510cee51fd34ddc1df50d8cddb8a8a7ef7f04b2e4a5852d3"
+}

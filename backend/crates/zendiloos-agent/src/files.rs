@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 use rustix::process::{Gid, Uid, getegid, geteuid, getgid, getuid};
 use rustix::thread::{capabilities, set_thread_groups, set_thread_res_gid, set_thread_res_uid};
-use zendiloos_agent_proto::{FileLocation, Request, Response, UserName};
+use zendiloos_agent_proto::{AppFolder, FileLocation, Request, Response, UserName};
 use zendiloos_fileops::{FileError, ShareRoot};
 
 use crate::accounts::{AccountFiles, ID_MAX, ID_MIN, USERS_GROUP};
@@ -268,6 +268,24 @@ impl Files {
                     }
                 });
                 Ok((Response::Archive { size }, Some(OwnedFd::from(reader))))
+            }
+            Request::MakeAppFolders { app, volume, folders } => {
+                if folders.len() > AppFolder::MAX_COUNT {
+                    return Err(OperationError::Refused("too many folders".to_owned()));
+                }
+                let (passwd, group) = (read(&self.accounts.passwd)?, read(&self.accounts.group)?);
+                let (uid, gid) = crate::accounts::app_account(&passwd, &group, app)
+                    .ok_or_else(|| OperationError::NotManaged(app.account()))?;
+                let root =
+                    ShareRoot::open_app_data(&self.volumes, *volume, app).map_err(OperationError::File)?;
+                root.set_root_owner(uid, gid, 0o750).map_err(OperationError::File)?;
+                // As the app's account, so what is made is the app's.
+                let folders = folders.clone();
+                as_user(Identity { uid, gid, groups: vec![gid] }, move || {
+                    folders.iter().try_for_each(|folder| root.make_folders(folder))
+                })
+                .await?;
+                Ok((Response::Done, None))
             }
             other => Err(OperationError::Refused(format!("{} is not a file operation", other.name()))),
         }

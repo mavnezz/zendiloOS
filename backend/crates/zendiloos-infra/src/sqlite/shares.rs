@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use zendiloos_kernel::{PortError, Timestamp};
 use zendiloos_sharing::application::ports::{Directory, Names, ShareRepository};
 use zendiloos_sharing::domain::{
-    Access, AccessRule, Compression, Favourite, FilePath, Frequency, NewShare, NfsClient, RecordSize, Share,
-    ShareId, ShareName, ShareSettings, SnapshotSchedule, Subject,
+    Access, AccessRule, AppAccess, Compression, Favourite, FilePath, Frequency, NewShare, NfsClient,
+    RecordSize, Share, ShareId, ShareName, ShareSettings, SnapshotSchedule, Subject,
 };
 
 use super::Database;
@@ -292,6 +292,49 @@ impl ShareRepository for SqliteShares {
                 id,
                 frequency,
                 keep
+            )
+            .execute(&mut *transaction)
+            .await
+            .map_err(db_error)?;
+        }
+        transaction.commit().await.map_err(db_error)
+    }
+
+    async fn app_access(&self) -> Result<Vec<AppAccess>, PortError> {
+        let rows =
+            sqlx::query!("SELECT share_id, account, access FROM share_app_access ORDER BY share_id, account")
+                .fetch_all(self.db.pool())
+                .await
+                .map_err(db_error)?;
+        rows.into_iter()
+            .map(|row| {
+                let access = match row.access.as_str() {
+                    "read" => Access::Read,
+                    "read_write" => Access::ReadWrite,
+                    other => return Err(stored(format!("access {other:?}"))),
+                };
+                Ok(AppAccess { share: ShareId::new(row.share_id), account: row.account, access })
+            })
+            .collect()
+    }
+
+    async fn set_app_access(&self, account: &str, access: &[(ShareId, Access)]) -> Result<(), PortError> {
+        let mut transaction = self.db.pool().begin().await.map_err(db_error)?;
+        sqlx::query!("DELETE FROM share_app_access WHERE account = ?", account)
+            .execute(&mut *transaction)
+            .await
+            .map_err(db_error)?;
+        for (share, level) in access {
+            let share = share.get();
+            let level = match level {
+                Access::Read => "read",
+                Access::ReadWrite => "read_write",
+            };
+            sqlx::query!(
+                "INSERT INTO share_app_access (share_id, account, access) VALUES (?, ?, ?)",
+                share,
+                account,
+                level
             )
             .execute(&mut *transaction)
             .await

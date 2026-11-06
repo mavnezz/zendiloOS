@@ -48,6 +48,9 @@ impl From<SharingError> for ApiError {
                 rejected(StatusCode::UNPROCESSABLE_ENTITY, "confirmation_mismatch", None)
             }
             SharingError::Refused(reason) => rejected(StatusCode::CONFLICT, "refused", Some(reason)),
+            SharingError::UsedByApps(apps) => {
+                rejected(StatusCode::CONFLICT, "share_used_by_apps", Some(apps))
+            }
             SharingError::InvalidSettings(e) => ApiError::InvalidInput(e.to_string()),
             SharingError::InvalidSchedule(e) => ApiError::InvalidInput(e.to_string()),
             SharingError::InvalidNote(e) => ApiError::InvalidInput(e.to_string()),

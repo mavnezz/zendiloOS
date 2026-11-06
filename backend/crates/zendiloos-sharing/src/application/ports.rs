@@ -6,8 +6,8 @@ use async_trait::async_trait;
 use zendiloos_kernel::{PortError, RequestContext};
 
 use crate::domain::{
-    Access, Favourite, FileLocation, FilePath, Frequency, Listing, NewShare, Principal, Share, ShareId,
-    ShareName, ShareSettings, ShareUsage, SharingConfig, Snapshot, SnapshotSchedule,
+    Access, AppAccess, Favourite, FileLocation, FilePath, Frequency, Listing, NewShare, Principal, Share,
+    ShareId, ShareName, ShareSettings, ShareUsage, SharingConfig, Snapshot, SnapshotSchedule,
 };
 
 #[async_trait]
@@ -37,6 +37,12 @@ pub trait ShareRepository: Send + Sync {
     ) -> Result<(), PortError>;
 
     /// The account's favourite folders, in its order.
+    /// What the accounts of apps may do, on all shares.
+    async fn app_access(&self) -> Result<Vec<AppAccess>, PortError>;
+
+    /// Replaces what `account` (an app's) may do: exactly `access`.
+    async fn set_app_access(&self, account: &str, access: &[(ShareId, Access)]) -> Result<(), PortError>;
+
     async fn favourites(&self, account: i64) -> Result<Vec<Favourite>, PortError>;
 
     /// Replaces the account's favourites.

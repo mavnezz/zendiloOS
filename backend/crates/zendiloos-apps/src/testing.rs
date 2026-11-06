@@ -32,6 +32,7 @@ pub fn app(id: &str, name: &str) -> CatalogApp {
         settings: vec![],
         permissions: Permissions::default(),
         translations: BTreeMap::new(),
+        manifest: format!(r#"{{"id":"{id}"}}"#),
         compose: format!("services:\n  {id}:\n    image: example/{id}:1@sha256:00\n"),
         icon: format!("icons/{id}.png"),
         digest: format!("sha256:{id}"),
@@ -189,5 +190,249 @@ impl crate::application::ports::DockerHost for FakeDocker {
         _: &zendiloos_kernel::RequestContext,
     ) -> Result<Vec<crate::domain::AppVolume>, PortError> {
         Ok(vec![crate::domain::AppVolume { pool: "tank".into(), number: 1 }])
+    }
+}
+
+impl FakeDocker {
+    /// Docker runs with its data on `tank`.
+    pub fn enabled() -> Self {
+        Self { data_root: Mutex::new(Some("/volume1/@docker".into())) }
+    }
+}
+
+/// Installed apps in memory.
+#[derive(Default)]
+pub struct MemoryInstalled(Mutex<BTreeMap<String, crate::domain::InstalledApp>>);
+
+#[async_trait]
+impl crate::application::ports::InstalledRepository for MemoryInstalled {
+    async fn list(&self) -> Result<Vec<crate::domain::InstalledApp>, PortError> {
+        Ok(self.0.lock().unwrap().values().cloned().collect())
+    }
+
+    async fn find(&self, id: &str) -> Result<Option<crate::domain::InstalledApp>, PortError> {
+        Ok(self.0.lock().unwrap().get(id).cloned())
+    }
+
+    async fn create(&self, app: &crate::domain::InstalledApp) -> Result<bool, PortError> {
+        let mut apps = self.0.lock().unwrap();
+        if apps.contains_key(&app.id) {
+            return Ok(false);
+        }
+        apps.insert(app.id.clone(), app.clone());
+        Ok(true)
+    }
+
+    async fn update(&self, app: &crate::domain::InstalledApp) -> Result<(), PortError> {
+        self.0.lock().unwrap().insert(app.id.clone(), app.clone());
+        Ok(())
+    }
+
+    async fn delete(&self, id: &str) -> Result<(), PortError> {
+        self.0.lock().unwrap().remove(id);
+        Ok(())
+    }
+}
+
+/// Records each step on the host; [`FakeAppHost::fail_at`] makes one fail.
+#[derive(Default)]
+pub struct FakeAppHost {
+    calls: Mutex<Vec<String>>,
+    failing: Mutex<Option<&'static str>>,
+    running: Mutex<BTreeMap<String, bool>>,
+}
+
+impl FakeAppHost {
+    pub fn calls(&self) -> Vec<String> {
+        self.calls.lock().unwrap().clone()
+    }
+
+    /// The step named `step` (`prepare`, `pull`, `start`, …) fails from now on;
+    /// `None` lets every step work again.
+    pub fn fail_at(&self, step: Option<&'static str>) {
+        *self.failing.lock().unwrap() = step;
+    }
+
+    fn step(
+        &self,
+        step: &'static str,
+        detail: String,
+    ) -> Result<(), crate::application::ports::AppHostError> {
+        self.calls.lock().unwrap().push(format!("{step} {detail}").trim_end().to_owned());
+        if *self.failing.lock().unwrap() == Some(step) {
+            return Err(crate::application::ports::AppHostError::Failed(format!("{step} went wrong")));
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl crate::application::ports::AppHost for FakeAppHost {
+    async fn prepare(
+        &self,
+        app: &str,
+        volume: &crate::domain::AppVolume,
+        _: &zendiloos_kernel::RequestContext,
+    ) -> Result<(), crate::application::ports::AppHostError> {
+        self.step("prepare", format!("{app} {}/{}", volume.pool, volume.number))
+    }
+
+    async fn configure(
+        &self,
+        app: &str,
+        volume: u16,
+        _manifest: &str,
+        _compose: &str,
+        values: &crate::application::ports::HostValues,
+        _: &zendiloos_kernel::RequestContext,
+    ) -> Result<Vec<String>, crate::application::ports::AppHostError> {
+        let shares: Vec<String> =
+            values.shares.iter().map(|(id, s)| format!("{id}=/volume{}/{}", s.volume, s.name)).collect();
+        let ports: Vec<String> = values.ports.iter().map(|(id, p)| format!("{id}={p}")).collect();
+        self.step("configure", format!("{app} {volume} [{}] [{}]", shares.join(","), ports.join(",")))?;
+        Ok(vec!["config".into()])
+    }
+
+    async fn make_folders(
+        &self,
+        app: &str,
+        _: u16,
+        folders: &[String],
+        _: &zendiloos_kernel::RequestContext,
+    ) -> Result<(), crate::application::ports::AppHostError> {
+        self.step("folders", format!("{app} {}", folders.join(",")))
+    }
+
+    async fn pull(
+        &self,
+        app: &str,
+        _: &zendiloos_kernel::RequestContext,
+    ) -> Result<(), crate::application::ports::AppHostError> {
+        self.step("pull", app.to_owned())
+    }
+
+    async fn start(
+        &self,
+        app: &str,
+        _: &zendiloos_kernel::RequestContext,
+    ) -> Result<(), crate::application::ports::AppHostError> {
+        self.step("start", app.to_owned())?;
+        self.running.lock().unwrap().insert(app.to_owned(), true);
+        Ok(())
+    }
+
+    async fn stop(
+        &self,
+        app: &str,
+        _: &zendiloos_kernel::RequestContext,
+    ) -> Result<(), crate::application::ports::AppHostError> {
+        self.step("stop", app.to_owned())?;
+        self.running.lock().unwrap().insert(app.to_owned(), false);
+        Ok(())
+    }
+
+    async fn remove(
+        &self,
+        app: &str,
+        _: &crate::domain::AppVolume,
+        _: &zendiloos_kernel::RequestContext,
+    ) -> Result<(), crate::application::ports::AppHostError> {
+        self.step("remove", app.to_owned())?;
+        self.running.lock().unwrap().remove(app);
+        Ok(())
+    }
+
+    async fn delete_account(
+        &self,
+        app: &str,
+        _: &zendiloos_kernel::RequestContext,
+    ) -> Result<(), crate::application::ports::AppHostError> {
+        self.step("delete_account", app.to_owned())
+    }
+
+    async fn status(
+        &self,
+        _: &zendiloos_kernel::RequestContext,
+    ) -> Result<BTreeMap<String, crate::domain::Containers>, crate::application::ports::AppHostError> {
+        Ok(self
+            .running
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(app, running)| {
+                let containers = if *running {
+                    crate::domain::Containers { running: 1, ..Default::default() }
+                } else {
+                    crate::domain::Containers { other: 1, ..Default::default() }
+                };
+                (app.clone(), containers)
+            })
+            .collect())
+    }
+
+    async fn logs(
+        &self,
+        app: &str,
+        lines: u32,
+        _: &zendiloos_kernel::RequestContext,
+    ) -> Result<String, crate::application::ports::AppHostError> {
+        Ok(format!("{app}: {lines} lines\n"))
+    }
+}
+
+/// Shares `family` and `media` on volume 1; records what apps were given.
+#[derive(Default)]
+pub struct FakeShares {
+    grants: Mutex<BTreeMap<String, Vec<(String, bool)>>>,
+}
+
+impl FakeShares {
+    /// What `account` may use now.
+    pub fn granted(&self, account: &str) -> Vec<(String, bool)> {
+        self.grants.lock().unwrap().get(account).cloned().unwrap_or_default()
+    }
+}
+
+#[async_trait]
+impl crate::application::ports::AppShares for FakeShares {
+    async fn shares(&self) -> Result<Vec<crate::application::ports::ShareChoice>, PortError> {
+        Ok(["family", "media"]
+            .map(|name| crate::application::ports::ShareChoice { name: name.into(), volume: 1 })
+            .to_vec())
+    }
+
+    async fn grant(
+        &self,
+        account: &str,
+        grants: &[(String, bool)],
+        _: &zendiloos_kernel::RequestContext,
+    ) -> Result<(), crate::application::ports::AppHostError> {
+        let mut all = self.grants.lock().unwrap();
+        if grants.is_empty() {
+            all.remove(account);
+        } else {
+            all.insert(account.to_owned(), grants.to_vec());
+        }
+        Ok(())
+    }
+}
+
+/// Port 9000 is in use.
+pub struct FakeListening;
+
+#[async_trait]
+impl crate::application::ports::ListeningPorts for FakeListening {
+    async fn listening(&self) -> Result<std::collections::BTreeSet<u16>, PortError> {
+        Ok(std::collections::BTreeSet::from([9000]))
+    }
+}
+
+/// Counts up: `secret-1`, `secret-2`, …
+#[derive(Default)]
+pub struct CountingSecrets(AtomicUsize);
+
+impl crate::application::ports::Secrets for CountingSecrets {
+    fn generate(&self) -> String {
+        format!("secret-{}", self.0.fetch_add(1, Ordering::Relaxed) + 1)
     }
 }

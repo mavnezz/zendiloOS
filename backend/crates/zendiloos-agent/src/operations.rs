@@ -12,6 +12,7 @@ use zendiloos_exec::{ExecError, Limits, Output, Program};
 use zendiloos_fileops::FileError;
 
 use crate::accounts::{AccountFiles, Accounts};
+use crate::apps::Apps;
 use crate::config::Tools;
 use crate::files::Files;
 use crate::network::{Network, NetworkPaths};
@@ -42,6 +43,7 @@ pub struct Operations {
     zpool: Program,
     zfs: Program,
     accounts: Accounts,
+    apps: Apps,
     pools: Pools,
     sharing: Sharing,
     files: Files,
@@ -72,6 +74,7 @@ impl Operations {
             network: std::sync::Arc::new(Network::new(tools, paths.network)?),
             console_issue: paths.host.console_issue.clone(),
             sharing: Sharing::new(tools, paths.host.clone(), paths.accounts.clone())?,
+            apps: Apps::new(Program::new(&tools.docker)?, paths.host.clone(), paths.accounts.clone()),
             accounts: Accounts::new(tools, paths.accounts)?,
             pools: Pools::new(tools, erasable, paths.host)?,
             role,
@@ -131,6 +134,25 @@ impl Operations {
             }
             Request::DockerState {} => self.pools.docker_state().await,
             Request::EnableDocker { pool, volume } => self.pools.enable_docker(pool, *volume).await,
+            Request::PrepareApp { app, pool, volume } => {
+                match self.pools.prepare_app_dataset(pool, *volume, app).await {
+                    Ok(()) => self.accounts.create_app_account(app).await.map(|()| Response::Done),
+                    Err(error) => Err(error),
+                }
+            }
+            Request::ConfigureApp { app, volume, manifest, compose, values } => {
+                self.apps.configure(app, *volume, manifest, compose, values).await
+            }
+            Request::PullApp { app } => self.apps.pull(app).await,
+            Request::StartApp { app } => self.apps.start(app).await,
+            Request::StopApp { app } => self.apps.stop(app).await,
+            Request::RemoveApp { app, pool, volume } => match self.apps.remove(app).await {
+                Ok(()) => self.pools.destroy_app_dataset(pool, *volume, app).await.map(|()| Response::Done),
+                Err(error) => Err(error),
+            },
+            Request::DeleteAppAccount { app } => self.accounts.delete_app_account(app).await,
+            Request::AppsStatus {} => self.apps.status().await,
+            Request::AppLogs { app, lines } => self.apps.logs(app, *lines).await,
             Request::NetworkState {} => self.network.state().await,
             Request::ApplyNetwork { config, confirm_within } => {
                 self.network.apply(config, *confirm_within).await
@@ -176,7 +198,8 @@ impl Operations {
             | Request::CopyEntry { .. }
             | Request::RemoveEntry { .. }
             | Request::RestoreEntry { .. }
-            | Request::ArchiveFolder { .. } => {
+            | Request::ArchiveFolder { .. }
+            | Request::MakeAppFolders { .. } => {
                 return self.files.execute(request).await.unwrap_or_else(|error| (failure(&error), None));
             }
         };
@@ -296,6 +319,9 @@ pub(crate) enum OperationError {
     Credentials(#[source] io::Error),
     #[error(transparent)]
     File(zendiloos_fileops::FileError),
+    /// A program did not do what was asked, in its words.
+    #[error("{0}")]
+    Failed(String),
 }
 
 impl OperationError {

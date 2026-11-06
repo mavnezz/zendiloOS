@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM share_app_access WHERE account = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "8e289c966379380ff2419532dc5f1b5e201ed75e87dad0f49740c8edcbf6a74f"
+}

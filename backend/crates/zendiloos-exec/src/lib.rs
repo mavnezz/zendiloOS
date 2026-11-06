@@ -7,7 +7,8 @@
 //! - absolute paths only, so a manipulated `PATH` cannot substitute another
 //!   binary;
 //! - an empty environment (so also the C locale and stable tool output) and
-//!   `/` as working directory;
+//!   `/` as working directory, unless the caller names variables and a
+//!   directory ([`run_with`]: Docker Compose reads its values from there);
 //! - stdin is closed unless the caller passes input, which is how secrets
 //!   reach a program: never on the command line, where `/proc` shows them;
 //! - a timeout, after which the program is killed, and a limit on the
@@ -108,7 +109,31 @@ where
     I: IntoIterator<Item = A>,
     A: AsRef<OsStr>,
 {
-    run_inner(program, args, Stdin::Null, limits).await
+    run_inner(program, args, Stdin::Null, &Surroundings::default(), limits).await
+}
+
+/// Variables and a working directory for [`run_with`]; nothing else of the
+/// caller's environment reaches the program.
+#[derive(Debug, Default)]
+pub struct Surroundings<'a> {
+    pub variables: Vec<(String, String)>,
+    pub directory: Option<&'a Path>,
+}
+
+/// Like [`run_with_input`] (or [`run`] without `input`), with `surroundings`.
+pub async fn run_with<I, A>(
+    program: &Program,
+    args: I,
+    input: Option<&[u8]>,
+    surroundings: &Surroundings<'_>,
+    limits: Limits,
+) -> Result<Output, ExecError>
+where
+    I: IntoIterator<Item = A>,
+    A: AsRef<OsStr>,
+{
+    let input = input.map_or(Stdin::Null, Stdin::Bytes);
+    run_inner(program, args, input, surroundings, limits).await
 }
 
 /// Like [`run`], but writes `input` to the program's stdin and closes it.
@@ -122,7 +147,7 @@ where
     I: IntoIterator<Item = A>,
     A: AsRef<OsStr>,
 {
-    run_inner(program, args, Stdin::Bytes(input), limits).await
+    run_inner(program, args, Stdin::Bytes(input), &Surroundings::default(), limits).await
 }
 
 /// Like [`run`], with an opened file as the program's stdin. The program
@@ -138,7 +163,7 @@ where
     I: IntoIterator<Item = A>,
     A: AsRef<OsStr>,
 {
-    run_inner(program, args, Stdin::File(file), limits).await
+    run_inner(program, args, Stdin::File(file), &Surroundings::default(), limits).await
 }
 
 enum Stdin<'a> {
@@ -168,6 +193,7 @@ async fn run_inner<I, A>(
     program: &Program,
     args: I,
     input: Stdin<'_>,
+    surroundings: &Surroundings<'_>,
     limits: Limits,
 ) -> Result<Output, ExecError>
 where
@@ -181,7 +207,8 @@ where
     command
         .args(args)
         .env_clear()
-        .current_dir("/")
+        .envs(surroundings.variables.iter().map(|(name, value)| (name, value)))
+        .current_dir(surroundings.directory.unwrap_or(Path::new("/")))
         .stdin(match &input {
             Stdin::Null => Stdio::null(),
             Stdin::Bytes(_) => Stdio::piped(),
@@ -274,6 +301,18 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(String::from_utf8(output.stdout).unwrap(), "unset:unset:/\n");
+    }
+
+    #[tokio::test]
+    async fn passes_only_the_variables_and_directory_named() {
+        let surroundings = Surroundings {
+            variables: vec![("APP_DATA".into(), "/volume1/@apps/demo".into())],
+            directory: Some(Path::new("/tmp")),
+        };
+        let script = "echo \"$APP_DATA:${HOME-unset}:$(pwd):$(cat)\"";
+        let output =
+            run_with(&sh(), ["-c", script], Some(b"in"), &surroundings, Limits::default()).await.unwrap();
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), "/volume1/@apps/demo:unset:/tmp:in\n");
     }
 
     #[tokio::test]

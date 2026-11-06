@@ -1,0 +1,182 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", source_id, manifest, compose, icon, digest, pool, volume, shares, ports,\n                      settings, state, installed_at, updated_at\n               FROM installed_apps WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "installed_apps",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "source_id",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "installed_apps",
+            "name": "source_id"
+          }
+        }
+      },
+      {
+        "name": "manifest",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "installed_apps",
+            "name": "manifest"
+          }
+        }
+      },
+      {
+        "name": "compose",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "installed_apps",
+            "name": "compose"
+          }
+        }
+      },
+      {
+        "name": "icon",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "installed_apps",
+            "name": "icon"
+          }
+        }
+      },
+      {
+        "name": "digest",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "installed_apps",
+            "name": "digest"
+          }
+        }
+      },
+      {
+        "name": "pool",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "installed_apps",
+            "name": "pool"
+          }
+        }
+      },
+      {
+        "name": "volume",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "installed_apps",
+            "name": "volume"
+          }
+        }
+      },
+      {
+        "name": "shares",
+        "ordinal": 8,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "installed_apps",
+            "name": "shares"
+          }
+        }
+      },
+      {
+        "name": "ports",
+        "ordinal": 9,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "installed_apps",
+            "name": "ports"
+          }
+        }
+      },
+      {
+        "name": "settings",
+        "ordinal": 10,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "installed_apps",
+            "name": "settings"
+          }
+        }
+      },
+      {
+        "name": "state",
+        "ordinal": 11,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "installed_apps",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "name": "installed_at",
+        "ordinal": 12,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "installed_apps",
+            "name": "installed_at"
+          }
+        }
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 13,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "installed_apps",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "da42bc4b945a2971b1d34f77ab3c97a54503b7f206dbbb79a9c67a08926116c3"
+}

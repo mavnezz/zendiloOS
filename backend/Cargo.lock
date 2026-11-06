@@ -3004,6 +3004,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "zendiloos-agent-proto",
+ "zendiloos-catalog",
  "zendiloos-exec",
  "zendiloos-fileops",
  "zendiloos-logging",
@@ -3060,6 +3061,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "zendiloos-jobs",
  "zendiloos-kernel",
 ]
 

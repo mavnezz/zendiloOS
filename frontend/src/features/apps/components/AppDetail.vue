@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ArrowLeft, ExternalLink, ShieldAlert } from 'lucide-vue-next'
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import { problemMessage } from '@/shared/i18n'
@@ -8,15 +8,24 @@ import { Alert } from '@/shared/ui/alert'
 import { Badge } from '@/shared/ui/badge'
 import { Button } from '@/shared/ui/button'
 
-import { iconUrl, useCatalogApp } from '../api'
+import { iconUrl, useCatalogApp, useDocker, useInstalled } from '../api'
 import { appText } from '../texts'
+import InstallDialog from './InstallDialog.vue'
 
 const props = defineProps<{ source: number; id: string }>()
-defineEmits<{ back: [] }>()
+const emit = defineEmits<{ back: []; installed: [] }>()
 
 const { t, locale } = useI18n()
 const which = computed(() => ({ source: props.source, id: props.id }))
 const { data: app, error } = useCatalogApp(which)
+
+const { data: installed } = useInstalled()
+const { data: docker } = useDocker()
+const installing = ref(false)
+
+/** The app installed from any catalog: one app per id on the NAS. */
+const present = computed(() => installed.value?.find((other) => other.id === props.id))
+const dockerReady = computed(() => Boolean(docker.value?.volume && docker.value.running))
 
 const asked = computed(() => (app.value?.settings ?? []).filter((setting) => !setting.generate))
 const generated = computed(() => (app.value?.settings ?? []).filter((setting) => setting.generate))
@@ -25,7 +34,7 @@ const generated = computed(() => (app.value?.settings ?? []).filter((setting) =>
 <!-- One app: what it is, and what it needs from the NAS. -->
 <template>
   <div class="grid gap-5">
-    <Button variant="ghost" size="sm" class="w-fit" @click="$emit('back')">
+    <Button variant="ghost" size="sm" class="w-fit" @click="emit('back')">
       <ArrowLeft />
       {{ t('appStore.back') }}
     </Button>
@@ -40,7 +49,17 @@ const generated = computed(() => (app.value?.settings ?? []).filter((setting) =>
             {{ t('appStore.by', { developer: app.developer, version: app.version }) }}
           </p>
         </div>
-        <Button disabled :title="t('appStore.installSoon')">{{ t('appStore.install') }}</Button>
+        <Button v-if="present" variant="outline" @click="emit('installed')">
+          {{ t('appStore.isInstalled') }}
+        </Button>
+        <Button
+          v-else
+          :disabled="!dockerReady"
+          :title="dockerReady ? undefined : t('appStore.dockerFirst')"
+          @click="installing = true"
+        >
+          {{ t('appStore.install') }}
+        </Button>
       </header>
 
       <Alert v-if="!app.official" class="border-amber-500/60">
@@ -129,6 +148,8 @@ const generated = computed(() => (app.value?.settings ?? []).filter((setting) =>
           </a>
         </dd>
       </dl>
+
+      <InstallDialog v-model:open="installing" :app="app" @installed="emit('installed')" />
 
       <details class="text-sm">
         <summary class="cursor-pointer text-muted-foreground">{{ t('appStore.compose') }}</summary>

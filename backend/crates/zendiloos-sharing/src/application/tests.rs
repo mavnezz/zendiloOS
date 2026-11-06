@@ -253,6 +253,44 @@ async fn deleting_needs_the_name_and_stops_offering_first() {
     assert_eq!(&s.host.calls()[4..], ["apply 0", "destroy tank 1 photos"]);
 }
 
+#[tokio::test]
+async fn apps_get_access_beside_the_people_and_keep_it_when_rules_change() {
+    let s = setup();
+    let request = RequestContext::default();
+    let share = s.sharing.create(input("photos", "tank"), &alice(), &request).await.unwrap();
+    let photos = share.name.clone();
+
+    s.sharing.set_app_access("app-immich", &[(photos.clone(), Access::ReadWrite)], &request).await.unwrap();
+    assert_eq!(
+        &s.host.calls()[4..],
+        [
+            "access 1 photos [@family:rw,bob:r,app-immich:rw] -[]",
+            "access 1 photos [@family:rw,bob:r,app-immich:rw] -[] recursive",
+        ]
+    );
+
+    // The people's rules change; the app's entry stays.
+    let changes = ShareChanges {
+        access: Some(vec![rule(Subject::Account(1), Access::ReadWrite)]),
+        ..ShareChanges::default()
+    };
+    let (_, job) = s.sharing.update(share.id, changes, &alice(), &request).await.unwrap();
+    finished(&s.jobs, job.unwrap()).await;
+    assert!(s.host.calls().contains(&"access 1 photos [alice:rw,app-immich:rw] -[@family,bob]".to_owned()));
+    // While the app mounts it, the share stays.
+    let deleted = s.sharing.delete(share.id, "photos", &alice(), &request).await;
+    assert!(matches!(deleted, Err(SharingError::UsedByApps(ref apps)) if apps == "immich"), "{deleted:?}");
+
+    // Uninstalled: the entries go, and the share can go too.
+    s.sharing.set_app_access("app-immich", &[], &request).await.unwrap();
+    assert!(s.host.calls().contains(&"access 1 photos [alice:rw] -[app-immich] recursive".to_owned()));
+    let job = s.sharing.delete(share.id, "photos", &alice(), &request).await.unwrap();
+    assert_eq!(finished(&s.jobs, job).await.state, JobState::Succeeded);
+
+    let unknown = s.sharing.set_app_access("app-immich", &[(photos, Access::Read)], &request).await;
+    assert!(matches!(unknown, Err(SharingError::ShareNotFound)));
+}
+
 fn bob() -> Actor {
     Actor { account_id: 2, name: "bob".into() }
 }

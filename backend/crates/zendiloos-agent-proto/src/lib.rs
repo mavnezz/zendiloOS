@@ -9,6 +9,7 @@
 //!
 //! See docs/architecture.md, section 3.2.
 
+mod apps;
 mod client;
 mod descriptor;
 mod files;
@@ -19,6 +20,11 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+pub use apps::{
+    AppCompose, AppFolder, AppManifest, AppName, AppSettingValue, AppShareChoice, AppValues,
+    InvalidAppCompose, InvalidAppFolder, InvalidAppManifest, InvalidAppName, InvalidAppSettingValue,
+    MAX_LOG_LINES,
+};
 pub use client::{AgentTransport, TransportError, UnixTransport};
 pub use descriptor::{read_message_with_file, write_message_with_file};
 pub use files::{
@@ -33,7 +39,7 @@ pub use network::{
 /// Agent and API come from the same release; any difference is refused.
 pub const PROTOCOL_VERSION: u32 = 1;
 /// Largest request the agent reads.
-pub const MAX_REQUEST_BYTES: usize = 64 * 1024;
+pub const MAX_REQUEST_BYTES: usize = 512 * 1024;
 /// Largest response the client reads.
 pub const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 
@@ -148,6 +154,58 @@ pub enum Request {
     EnableDocker {
         pool: PoolName,
         volume: VolumeNumber,
+    },
+    /// Makes what an app needs before its compose file is read: its data
+    /// folder, the dataset `<pool>/zendiloos.apps/<app>` mounted at
+    /// `/volume<N>/@apps/<app>`, and its Linux user and group `app-<app>`.
+    /// What exists already stays.
+    PrepareApp {
+        app: AppName,
+        pool: PoolName,
+        volume: VolumeNumber,
+    },
+    /// Checks the app against the catalog's format and policy with the
+    /// values given, and keeps the normalized compose file the agent runs
+    /// from then on. Answers [`Response::AppFolders`]: the folders below
+    /// the data folder its containers mount, to be made by the files agent.
+    ConfigureApp {
+        app: AppName,
+        volume: VolumeNumber,
+        manifest: AppManifest,
+        compose: AppCompose,
+        values: AppValues,
+    },
+    /// Fetches the app's images.
+    PullApp {
+        app: AppName,
+    },
+    /// Starts (or updates) the app's containers, after checking that no
+    /// folder it mounts has become a link.
+    StartApp {
+        app: AppName,
+    },
+    StopApp {
+        app: AppName,
+    },
+    /// Removes the app's containers, images and compose file, and destroys
+    /// its dataset with all its data. The account stays until
+    /// [`Request::DeleteAppAccount`]: share permissions name it.
+    RemoveApp {
+        app: AppName,
+        pool: PoolName,
+        volume: VolumeNumber,
+    },
+    DeleteAppAccount {
+        app: AppName,
+    },
+    /// The Compose projects and their containers' states. Answers
+    /// [`Response::Apps`].
+    AppsStatus {},
+    /// The last `lines` lines of the app's containers' output. Answers
+    /// [`Response::AppLogs`].
+    AppLogs {
+        app: AppName,
+        lines: u32,
     },
     /// Whether systemd-networkd manages the network, and a change that
     /// waits to be confirmed. Answers [`Response::NetworkState`].
@@ -309,6 +367,13 @@ pub enum Request {
         user: UserName,
         location: FileLocation,
     },
+    /// Makes `folders` below the app's data folder, without following a
+    /// link, owned by the app's account.
+    MakeAppFolders {
+        app: AppName,
+        volume: VolumeNumber,
+        folders: Vec<AppFolder>,
+    },
     /// Plans a tar archive of the folder `location` as the user, then
     /// writes it, as the user, into a pipe whose reading end comes along
     /// with [`Response::Archive`]. Refused if anything inside cannot be
@@ -347,6 +412,16 @@ impl Request {
             Request::RollbackSnapshot { .. } => "rollback_snapshot",
             Request::DockerState {} => "docker_state",
             Request::EnableDocker { .. } => "enable_docker",
+            Request::PrepareApp { .. } => "prepare_app",
+            Request::ConfigureApp { .. } => "configure_app",
+            Request::PullApp { .. } => "pull_app",
+            Request::StartApp { .. } => "start_app",
+            Request::StopApp { .. } => "stop_app",
+            Request::RemoveApp { .. } => "remove_app",
+            Request::DeleteAppAccount { .. } => "delete_app_account",
+            Request::AppsStatus {} => "apps_status",
+            Request::AppLogs { .. } => "app_logs",
+            Request::MakeAppFolders { .. } => "make_app_folders",
             Request::NetworkState {} => "network_state",
             Request::ApplyNetwork { .. } => "apply_network",
             Request::ConfirmNetwork {} => "confirm_network",
@@ -427,6 +502,19 @@ pub enum Response {
         running: bool,
         /// Its `data-root`, if `/etc/docker/daemon.json` sets one.
         data_root: Option<String>,
+    },
+    /// Folders below an app's data folder its containers mount.
+    AppFolders {
+        folders: Vec<AppFolder>,
+    },
+    Apps {
+        /// `docker compose ls --all --format json`: every Compose project,
+        /// the apps' among them.
+        compose_ls: String,
+    },
+    AppLogs {
+        /// With timestamps, oldest first; cut at the response's limit.
+        text: String,
     },
     NetworkState {
         /// systemd-networkd manages the network: it can be changed here.
@@ -622,7 +710,8 @@ impl Request {
             | Request::CopyEntry { .. }
             | Request::RemoveEntry { .. }
             | Request::RestoreEntry { .. }
-            | Request::ArchiveFolder { .. } => Role::Files,
+            | Request::ArchiveFolder { .. }
+            | Request::MakeAppFolders { .. } => Role::Files,
             // The handshake works with both.
             _ => Role::System,
         }

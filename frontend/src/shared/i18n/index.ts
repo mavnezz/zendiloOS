@@ -78,6 +78,15 @@ const KNOWN_PROBLEMS = [
   'official_source',
   'not_a_catalog',
   'catalog_unreachable',
+  'app_installed',
+  'app_id_too_long',
+  'docker_not_ready',
+  'permissions_not_confirmed',
+  'invalid_app_value',
+  'app_busy',
+  'up_to_date',
+  'host_failed',
+  'share_used_by_apps',
   'snapshot_taken',
   'volume_not_found',
   'unknown_subject',
@@ -111,6 +120,9 @@ export function problemMessage(error: unknown): string {
     'delivery_failed',
     'not_a_catalog',
     'catalog_unreachable',
+    'invalid_app_value',
+    'host_failed',
+    'share_used_by_apps',
   ]
   if (isKnown(error.code)) {
     const message = t(`errors.${error.code}`)

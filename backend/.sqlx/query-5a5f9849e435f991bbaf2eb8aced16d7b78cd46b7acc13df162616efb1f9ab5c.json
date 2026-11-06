@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT share_id, account, access FROM share_app_access ORDER BY share_id, account",
+  "describe": {
+    "columns": [
+      {
+        "name": "share_id",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "share_app_access",
+            "name": "share_id"
+          }
+        }
+      },
+      {
+        "name": "account",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "share_app_access",
+            "name": "account"
+          }
+        }
+      },
+      {
+        "name": "access",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "share_app_access",
+            "name": "access"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "5a5f9849e435f991bbaf2eb8aced16d7b78cd46b7acc13df162616efb1f9ab5c"
+}

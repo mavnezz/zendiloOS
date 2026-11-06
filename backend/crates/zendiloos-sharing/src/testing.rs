@@ -36,6 +36,7 @@ pub struct Shares(
     Mutex<Vec<Share>>,
     Mutex<std::collections::HashMap<ShareId, Vec<SnapshotSchedule>>>,
     Mutex<std::collections::HashMap<i64, Vec<crate::domain::Favourite>>>,
+    Mutex<Vec<crate::domain::AppAccess>>,
 );
 
 #[async_trait]
@@ -90,6 +91,21 @@ impl ShareRepository for Shares {
         schedules: &[SnapshotSchedule],
     ) -> Result<(), PortError> {
         self.1.lock().unwrap().insert(id, schedules.to_vec());
+        Ok(())
+    }
+
+    async fn app_access(&self) -> Result<Vec<crate::domain::AppAccess>, PortError> {
+        Ok(self.3.lock().unwrap().clone())
+    }
+
+    async fn set_app_access(&self, account: &str, access: &[(ShareId, Access)]) -> Result<(), PortError> {
+        let mut all = self.3.lock().unwrap();
+        all.retain(|app| app.account != account);
+        all.extend(access.iter().map(|(share, access)| crate::domain::AppAccess {
+            share: *share,
+            account: account.to_owned(),
+            access: *access,
+        }));
         Ok(())
     }
 

@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import { computed, type Ref } from 'vue'
 
 import { api, unwrap } from '@/shared/api/client'
-import type { CatalogApp } from '@/shared/api/types'
+import type { CatalogApp, InstallAppRequest } from '@/shared/api/types'
 
 export function useCatalog() {
   return useQuery({
@@ -74,4 +74,74 @@ export function useEnableDocker() {
     client.setQueryData(['apps', 'docker'], setup)
     return setup
   }
+}
+
+/** The installed apps, with what Docker makes of them. */
+export function useInstalled() {
+  return useQuery({
+    queryKey: ['apps', 'installed'],
+    queryFn: () => unwrap(api.GET('/api/v1/apps/installed')),
+  })
+}
+
+/** Where the app's web interface is, on the address the NAS was reached at. */
+export function webUrl(
+  app: { web?: { port: number; path: string; https: boolean } | null },
+  host = window.location.hostname,
+): string | null {
+  if (!app.web) return null
+  const scheme = app.web.https ? 'https' : 'http'
+  const bracketed = host.includes(':') ? `[${host}]` : host
+  return `${scheme}://${bracketed}:${app.web.port}${app.web.path}`
+}
+
+/** Installing, running and removing apps; each reads the list again. */
+export function useInstallActions() {
+  const client = useQueryClient()
+  const refresh = () => client.invalidateQueries({ queryKey: ['apps', 'installed'] })
+  async function refreshing<T>(request: Promise<T>): Promise<T> {
+    try {
+      return await request
+    } finally {
+      await refresh()
+    }
+  }
+  const path = (id: string) => ({ params: { path: { id } } })
+  return {
+    install: (request: InstallAppRequest) =>
+      refreshing(unwrap(api.POST('/api/v1/apps/installed', { body: request }))),
+    retry: (id: string) =>
+      refreshing(unwrap(api.POST('/api/v1/apps/installed/{id}/retry', path(id)))),
+    update: (id: string, confirmPermissions: boolean) =>
+      refreshing(
+        unwrap(
+          api.POST('/api/v1/apps/installed/{id}/update', {
+            ...path(id),
+            body: { confirm_permissions: confirmPermissions },
+          }),
+        ),
+      ),
+    start: (id: string) =>
+      refreshing(unwrap(api.POST('/api/v1/apps/installed/{id}/start', path(id)))),
+    stop: (id: string) =>
+      refreshing(unwrap(api.POST('/api/v1/apps/installed/{id}/stop', path(id)))),
+    uninstall: (id: string, confirm: string) =>
+      refreshing(
+        unwrap(api.DELETE('/api/v1/apps/installed/{id}', { ...path(id), body: { confirm } })),
+      ),
+    logs: (id: string, lines = 500) =>
+      unwrap(
+        api.GET('/api/v1/apps/installed/{id}/logs', { params: { path: { id }, query: { lines } } }),
+      ),
+    refresh,
+  }
+}
+
+/** The shares an app can be given (the same list the Shares window shows). */
+export function useShareNames() {
+  return useQuery({
+    queryKey: ['shares'],
+    queryFn: () => unwrap(api.GET('/api/v1/shares')),
+    select: (shares) => shares.map((share) => share.name),
+  })
 }

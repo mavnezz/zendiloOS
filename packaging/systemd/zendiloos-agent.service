@@ -19,10 +19,16 @@ ExecStart=/usr/libexec/zendiloos/zendiloos-agent
 # - the shadow tools and smbpasswd write /etc and Samba's databases and
 #   set the group of /etc/shadow (CAP_CHOWN);
 # - shares: datasets and mount units as for pools; Samba and NFS
-#   configuration in /etc, NFS state in /var/lib/nfs.
+#   configuration in /etc, NFS state in /var/lib/nfs;
+# - apps: Docker's data and each app's on datasets as for shares, the
+#   apps' accounts as for people, their checked compose files in
+#   /etc/zendiloos/apps; `docker compose` talks to dockerd over its socket
+#   (AF_UNIX), and dockerd, outside this sandbox, fetches and runs. Before
+#   every start the agent walks the folders an app mounts, which belong to
+#   the app's account (CAP_DAC_READ_SEARCH).
 # The contents of volumes are the files agent's (zendiloos-files.service).
 NoNewPrivileges=yes
-CapabilityBoundingSet=CAP_SYS_RAWIO CAP_SYS_ADMIN CAP_CHOWN
+CapabilityBoundingSet=CAP_SYS_RAWIO CAP_SYS_ADMIN CAP_CHOWN CAP_DAC_READ_SEARCH
 PrivateNetwork=yes
 ProtectSystem=strict
 ReadWritePaths=/etc -/var/lib/samba -/var/cache/samba -/run/samba -/var/lib/nfs -/run/issue.d

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO share_app_access (share_id, account, access) VALUES (?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "7642f355d5237163baeec6c312869311f08938ea42a86b2f2d0b4dee7dd047c0"
+}

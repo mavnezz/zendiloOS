@@ -746,18 +746,50 @@ Debian (`docker.io`, `docker-compose`, recommended by the package); its
 data from before stays where it was, unused. Verified in the second test
 VM, across a restart.
 
-**Installing** (a job): every app gets a system account `app-<id>`
-(`PUID`/`PGID`) that owns its data folder `/volume<N>/@apps/<id>` and gets
-the declared access to the chosen shares through the shares' ACLs.
-Generated settings are 32 letters and digits, made once and kept across
-updates. The agent then does what `docs/format.md` section 8 of the
-catalog requires: checks the file as written, normalizes it twice with
-`docker compose config` (stand-in values for where each variable ends up,
-real values for the policy) with a cleared environment and an empty
-project directory, creates the bind-mount sources below the data folder
-without following links, and starts exactly the normalized form it
-checked. An update is offered when the app's `digest` in the index
-changes; it keeps the data folder, shares, ports and settings.
+**Installing** is recorded with the app's values, then a job takes the
+steps, each through an agent:
+
+1. *Prepare* (system agent): the dataset `<pool>/zendiloos.apps/<id>` on
+   the pool Docker's data is on, mounted by its own unit at
+   `/volume<N>/@apps/<id>` before Docker starts (a parent
+   `zendiloos.apps` that is never mounted holds them); and the app's
+   account `app-<id>`, a user with a group of its own and IDs never handed
+   out before, told from people's accounts by its comment, so no request
+   for people or groups touches it. App ids have at most 28 characters
+   for that.
+2. *Shares*: the Sharing context keeps what each app's account may do on
+   which share (`share_app_access`) and writes it into the share's ACL
+   beside the people's rules, on everything in the share too; Samba never
+   learns of it, and a share an app uses cannot be deleted.
+3. *Check* (system agent): it reads the manifest and the Compose file
+   itself and does what `docs/format.md` section 8 of the catalog
+   requires: `check_source` first, then `docker compose config` twice,
+   from stdin, with nothing in the environment but the values (setting
+   names Docker, Compose, Go or the C library read are refused),
+   `--env-file /dev/null` and an empty project folder; `check_variables`
+   and the policy on the stand-in form, the policy again on the real one.
+   Devices the machine lacks are left out. Only this normalized form is
+   kept, readable by root only (`/etc/zendiloos/apps/<id>.json`), and
+   ever started.
+4. *Folders* (files agent): the bind-mount sources below the data folder,
+   made name by name without following a link, as the app's account.
+5. *Pull* and *start* (system agent, with a timeout of 30 minutes for
+   images): before every start the agent walks each folder an app mounts
+   again, refusing links and other file systems on the way.
+
+The account, `PUID`/`PGID`, the time zone and the data folder come from
+the agent, not from `zendiloosd`. Ports are checked against zendiloOS's
+own, the other apps' and those something listens on now
+(`/proc/net/{tcp,udp}*`). Generated settings are 32 letters and digits,
+made once and kept across updates. A failed step leaves the app *failed*:
+it is tried again with the same values, or removed. Removing takes the
+containers, images and kept file, destroys the dataset with the data, then
+takes the account's share access and finally the account. An update is
+offered when the app's `digest` in its catalog changes; it keeps the
+values, gives new ports their default and new generated settings a value,
+and asks again only for permissions beyond the old version's. Verified in
+the second test VM (an app with and one without a share, removal, a
+restart).
 
 ---
 

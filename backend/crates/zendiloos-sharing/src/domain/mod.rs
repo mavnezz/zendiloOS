@@ -7,9 +7,9 @@ pub use files::{
     MAX_FAVOURITES, RECYCLE_DIRECTORY, favourites, is_file_name, is_new_file_name,
 };
 pub use share::{
-    Access, AccessRule, Compression, InvalidNetwork, InvalidSettings, InvalidShareName, MIN_QUOTA_BYTES,
-    NewShare, NfsClient, NfsSpec, Principal, RecordSize, Share, ShareId, ShareName, ShareSettings,
-    ShareUsage, SharingConfig, SmbSpec, Subject, network,
+    Access, AccessRule, AppAccess, Compression, InvalidNetwork, InvalidSettings, InvalidShareName,
+    MIN_QUOTA_BYTES, NewShare, NfsClient, NfsSpec, Principal, RecordSize, Share, ShareId, ShareName,
+    ShareSettings, ShareUsage, SharingConfig, SmbSpec, Subject, network,
 };
 pub use snapshot::{
     Frequency, InvalidNote, InvalidSchedule, LABEL_FORMAT, MAX_KEEP, MAX_NOTE_CHARS, Snapshot,

@@ -59,6 +59,8 @@ pub struct SimulatedAgent {
     network: Mutex<Option<zendiloos_agent_proto::PendingNetwork>>,
     /// Docker's data root, once put on a pool.
     docker: Mutex<Option<String>>,
+    /// Installed apps: whether they run; absent until configured.
+    apps: Mutex<std::collections::BTreeMap<String, bool>>,
 }
 
 impl std::fmt::Debug for SimulatedAgent {
@@ -114,6 +116,7 @@ impl SimulatedAgent {
             files: None,
             network: Mutex::default(),
             docker: Mutex::default(),
+            apps: Mutex::default(),
         }
     }
 
@@ -178,6 +181,13 @@ impl SimulatedAgent {
                     let path = share(location)?.restore(&location.path, user.as_str())?;
                     (Response::Restored { path }, None)
                 }
+                Request::MakeAppFolders { app, volume, folders } => {
+                    let data = root.join(format!("volume{}", volume.get())).join("@apps").join(app.as_str());
+                    for folder in folders {
+                        std::fs::create_dir_all(data.join(folder.as_str())).map_err(FileError::Io)?;
+                    }
+                    (Response::Done, None)
+                }
                 Request::ArchiveFolder { location, .. } => {
                     let (share, path) = (share(location)?, location.path.clone());
                     let name = path.file_name().unwrap_or(location.share.as_str()).to_owned();
@@ -206,6 +216,10 @@ impl SimulatedAgent {
             };
             (error(code, &failure.to_string()), None)
         })
+    }
+
+    fn apps(&self) -> std::sync::MutexGuard<'_, std::collections::BTreeMap<String, bool>> {
+        self.apps.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     fn host(&self) -> std::sync::MutexGuard<'_, host::Host> {
@@ -267,6 +281,57 @@ impl AgentTransport for SimulatedAgent {
             }
             // The simulated host is managed by systemd-networkd; a change
             // waits for confirmation and lapses at its time.
+            // Apps are checked by nothing but their id; they run nowhere.
+            Request::PrepareApp { .. } | Request::DeleteAppAccount { .. } => Response::Done,
+            Request::ConfigureApp { app, manifest, .. } => {
+                let id = serde_json::from_str::<serde_json::Value>(manifest.as_str())
+                    .ok()
+                    .and_then(|m| m.get("id").and_then(serde_json::Value::as_str).map(str::to_owned));
+                if id.as_deref() == Some(app.as_str()) {
+                    self.apps().entry(app.as_str().to_owned()).or_insert(false);
+                    Response::AppFolders { folders: Vec::new() }
+                } else {
+                    error(ErrorCode::Forbidden, "refused: the manifest is another app's")
+                }
+            }
+            Request::PullApp { app } | Request::StartApp { app } | Request::StopApp { app } => {
+                let mut apps = self.apps();
+                match apps.get_mut(app.as_str()) {
+                    Some(running) => {
+                        if !matches!(request, Request::PullApp { .. }) {
+                            *running = matches!(request, Request::StartApp { .. });
+                        }
+                        Response::Done
+                    }
+                    None => {
+                        error(ErrorCode::Forbidden, &format!("refused: {} is not installed", app.as_str()))
+                    }
+                }
+            }
+            Request::RemoveApp { app, .. } => {
+                self.apps().remove(app.as_str());
+                Response::Done
+            }
+            Request::AppsStatus {} => {
+                let projects: Vec<serde_json::Value> = self
+                    .apps()
+                    .iter()
+                    .map(|(app, running)| {
+                        serde_json::json!({
+                            "Name": app,
+                            "Status": if *running { "running(1)" } else { "exited(1)" },
+                            "ConfigFiles": format!("/etc/zendiloos/apps/{app}.json"),
+                        })
+                    })
+                    .collect();
+                Response::Apps { compose_ls: serde_json::Value::from(projects).to_string() }
+            }
+            Request::AppLogs { app, .. } => Response::AppLogs {
+                text: format!(
+                    "2026-11-06T12:00:00.000000000Z {}-app-1  | simulated: started\n",
+                    app.as_str()
+                ),
+            },
             Request::NetworkState {} => {
                 let now = i64::try_from((self.clock)()).unwrap_or(i64::MAX);
                 let mut pending = self.network.lock().unwrap_or_else(PoisonError::into_inner);
@@ -410,6 +475,9 @@ impl AgentTransport for SimulatedAgent {
             | Request::RemoveEntry { .. }
             | Request::RestoreEntry { .. }
             | Request::ArchiveFolder { .. } => self.file_operation(&request).0,
+            // Without files kept, an app's folders are nowhere to be made.
+            Request::MakeAppFolders { .. } if self.files.is_none() => Response::Done,
+            Request::MakeAppFolders { .. } => self.file_operation(&request).0,
         };
         self.received.lock().unwrap_or_else(PoisonError::into_inner).push(request);
         Ok(response)

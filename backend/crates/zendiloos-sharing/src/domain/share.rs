@@ -258,6 +258,17 @@ pub struct NewShare {
     pub created_at: Timestamp,
 }
 
+/// Access the account of an installed app has to a share: given when the
+/// app was installed with the share, and written into the share's
+/// permissions beside the people's (never into Samba's).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppAccess {
+    pub share: ShareId,
+    /// The Linux account the app runs as, `app-<id>`.
+    pub account: String,
+    pub access: Access,
+}
+
 /// A user or group by name, as the host knows them.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Principal {

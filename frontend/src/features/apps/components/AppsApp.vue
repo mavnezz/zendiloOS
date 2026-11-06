@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { LibraryBig, Store } from 'lucide-vue-next'
+import { LayoutGrid, LibraryBig, Store } from 'lucide-vue-next'
 import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
@@ -7,14 +7,16 @@ import type { CatalogApp } from '@/shared/api/types'
 import { cn } from '@/shared/lib/utils'
 
 import AppDetail from './AppDetail.vue'
+import InstalledSection from './InstalledSection.vue'
 import SourcesSection from './SourcesSection.vue'
 import StoreSection from './StoreSection.vue'
 
-type Section = 'store' | 'sources'
+type Section = 'store' | 'installed' | 'sources'
 
 const { t } = useI18n()
 const sections = [
   { id: 'store', icon: Store },
+  { id: 'installed', icon: LayoutGrid },
   { id: 'sources', icon: LibraryBig },
 ] as const
 const section = ref<Section>('store')
@@ -53,9 +55,16 @@ function open(app: CatalogApp): void {
     </nav>
     <div class="min-w-0 flex-1 overflow-auto p-4 @xl:p-6">
       <template v-if="section === 'store'">
-        <AppDetail v-if="opened" :id="opened.id" :source="opened.source" @back="opened = null" />
+        <AppDetail
+          v-if="opened"
+          :id="opened.id"
+          :source="opened.source"
+          @back="opened = null"
+          @installed="choose('installed')"
+        />
         <StoreSection v-else @open="open" />
       </template>
+      <InstalledSection v-else-if="section === 'installed'" @store="choose('store')" />
       <SourcesSection v-else />
     </div>
   </div>

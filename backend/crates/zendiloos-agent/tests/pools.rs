@@ -10,9 +10,9 @@ use tempfile::TempDir;
 use zendiloos_agent::config::Tools;
 use zendiloos_agent::{AccountFiles, Erasable, ErasePolicy, HostPaths, Operations, Paths};
 use zendiloos_agent_proto::{
-    DiskId, ErrorCode, GroupName, Layout, Network, NfsClient, NfsExport, PoolName, Principal, Request,
-    Response, Role, ShareAccess, ShareCompression, ShareName, ShareRecordSize, SmbShare, SnapshotFrequency,
-    SnapshotLabel, SnapshotNote, VolumeNumber,
+    AppName, DiskId, ErrorCode, GroupName, Layout, Network, NfsClient, NfsExport, PoolName, Principal,
+    Request, Response, Role, ShareAccess, ShareCompression, ShareName, ShareRecordSize, SmbShare,
+    SnapshotFrequency, SnapshotLabel, SnapshotNote, VolumeNumber,
 };
 
 /// 8 GiB in 512-byte sectors.
@@ -102,6 +102,12 @@ fn host(erasable: Erasable) -> Host {
     fs::write(root.join("units/volume1.mount"), "[Mount]\n").unwrap();
     fs::write(root.join("units/volume1-old\\x2dshare.mount"), "[Mount]\n").unwrap();
     fs::create_dir_all(root.join("volume1/photos")).unwrap();
+    fs::write(
+        root.join("passwd"),
+        "root:x:0:0::/root:/bin/bash\nanna:x:2000:990::/nonexistent:/usr/sbin/nologin\n",
+    )
+    .unwrap();
+    fs::write(root.join("group"), "root:x:0:\nzendiloos-users:x:990:\n").unwrap();
 
     let log = root.join("calls.log");
     let by_id = root.join("dev/disk/by-id");
@@ -140,11 +146,19 @@ fn host(erasable: Erasable) -> Host {
         setfacl: script("setfacl", ""),
         busctl: script("busctl", ""),
         docker: script("docker", ""),
+        useradd: script("useradd", ""),
+        groupadd: script("groupadd", ""),
+        userdel: script("userdel", ""),
+        groupdel: script("groupdel", ""),
         ..Tools::default()
     };
     let paths = Paths {
         network: Default::default(),
-        accounts: AccountFiles::default(),
+        accounts: AccountFiles {
+            passwd: root.join("passwd"),
+            group: root.join("group"),
+            high_water: root.join("id-high-water"),
+        },
         host: HostPaths {
             dev: root.join("dev"),
             by_id,
@@ -157,6 +171,8 @@ fn host(erasable: Erasable) -> Host {
             nfs_exports: root.join("exports.d/zendiloos.exports"),
             console_issue: root.join("zendiloos.issue"),
             docker_config: root.join("etc-docker/daemon.json"),
+            apps: root.join("etc-apps"),
+            localtime: root.join("localtime"),
         },
     };
     let operations = Operations::with_paths(Role::System, &tools, erasable, paths).unwrap();
@@ -540,4 +556,52 @@ async fn docker_moves_onto_a_pool_zendiloos_made() {
     assert_eq!(data_root.as_deref(), Some("/volume1/@docker"));
 
     assert_refused(host.run(enable("foreign")).await, ErrorCode::Forbidden, "not managed");
+}
+
+#[tokio::test]
+async fn an_app_gets_a_dataset_and_an_account_of_its_own() {
+    let host = host(Erasable::Policy(ErasePolicy::Unused));
+    let prepare = |app: &str| Request::PrepareApp {
+        app: AppName::parse(app).unwrap(),
+        pool: PoolName::parse("tank").unwrap(),
+        volume: VolumeNumber::new(1).unwrap(),
+    };
+
+    assert_eq!(host.run(prepare("uptime-kuma")).await, Response::Done);
+
+    let calls = host.calls();
+    assert!(
+        calls.contains(&"zfs create -o mountpoint=legacy -o canmount=off tank/zendiloos.apps".to_owned()),
+        "{calls:?}"
+    );
+    assert!(
+        calls.contains(
+            &"zfs create -o mountpoint=legacy -o setuid=off -o devices=off tank/zendiloos.apps/uptime-kuma"
+                .to_owned()
+        ),
+        "{calls:?}"
+    );
+    let unit_name = "volume1-\\x40apps-uptime\\x2dkuma.mount";
+    assert!(calls.contains(&format!("systemctl enable --now {unit_name}")), "{calls:?}");
+    let unit = fs::read_to_string(host.path("units").join(unit_name)).unwrap();
+    assert!(unit.contains("Before=docker.service\n"), "{unit}");
+    assert!(
+        unit.contains("What=tank/zendiloos.apps/uptime-kuma\nWhere=/volume1/@apps/uptime-kuma\n"),
+        "{unit}"
+    );
+    // IDs above everything handed out, a group of its own first.
+    assert!(calls.contains(&"groupadd --gid 2000 -- app-uptime-kuma".to_owned()), "{calls:?}");
+    let useradd = calls.iter().find(|call| call.starts_with("useradd")).unwrap();
+    assert!(
+        useradd.contains("--comment zendiloOS app --gid app-uptime-kuma --uid 2001 -- app-uptime-kuma"),
+        "{useradd}"
+    );
+
+    // The name of a person's account is not taken over.
+    fs::write(
+        host.path("passwd"),
+        "root:x:0:0::/root:/bin/bash\napp-paperless:x:2003:990::/nonexistent:/usr/sbin/nologin\n",
+    )
+    .unwrap();
+    assert_refused(host.run(prepare("paperless")).await, ErrorCode::Conflict, "taken");
 }

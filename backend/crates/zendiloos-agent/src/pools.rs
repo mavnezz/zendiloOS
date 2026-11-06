@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use zendiloos_agent_proto::{
-    DiskId, DiskName, Layout, PoolName, Response, ShareCompression, ShareName, ShareRecordSize,
+    AppName, DiskId, DiskName, Layout, PoolName, Response, ShareCompression, ShareName, ShareRecordSize,
     SnapshotFrequency, SnapshotLabel, SnapshotNote, VolumeNumber,
 };
 use zendiloos_exec::{Limits, Program};
@@ -105,6 +105,10 @@ pub struct HostPaths {
     pub console_issue: PathBuf,
     /// Docker's configuration, `/etc/docker/daemon.json`.
     pub docker_config: PathBuf,
+    /// The normalized compose files of the installed apps.
+    pub apps: PathBuf,
+    /// Its link names the time zone apps get.
+    pub localtime: PathBuf,
 }
 
 impl Default for HostPaths {
@@ -121,6 +125,8 @@ impl Default for HostPaths {
             nfs_exports: PathBuf::from("/etc/exports.d/zendiloos.exports"),
             console_issue: PathBuf::from("/run/issue.d/zendiloos.issue"),
             docker_config: PathBuf::from("/etc/docker/daemon.json"),
+            apps: PathBuf::from("/etc/zendiloos/apps"),
+            localtime: PathBuf::from("/etc/localtime"),
         }
     }
 }
@@ -571,6 +577,67 @@ impl Pools {
         Ok(Response::Done)
     }
 
+    /// The dataset of an app's data, `<pool>/zendiloos.apps/<app>`, mounted
+    /// by its own unit at `/volume<N>/@apps/<app>` before Docker starts.
+    /// What exists already stays.
+    pub(crate) async fn prepare_app_dataset(
+        &self,
+        pool: &PoolName,
+        volume: VolumeNumber,
+        app: &AppName,
+    ) -> Result<(), OperationError> {
+        let _serial = self.serial.lock().await;
+        self.require_managed(pool, Some(volume)).await?;
+        let parent = format!("{}/{APPS_DATASET}", pool.as_str());
+        let dataset = format!("{parent}/{}", app.as_str());
+        let existing = output(&self.zfs, &["list", "-H", "-o", "name", "-d", "2", pool.as_str()]).await?;
+        if !existing.lines().any(|line| line == parent) {
+            // Never mounted itself; it only holds the apps' datasets.
+            run(&self.zfs, &["create", "-o", "mountpoint=legacy", "-o", "canmount=off", &parent]).await?;
+        }
+        if !existing.lines().any(|line| line == dataset) {
+            let options = ["create", "-o", "mountpoint=legacy", "-o", "setuid=off", "-o", "devices=off"];
+            run(&self.zfs, &[&options[..], &[dataset.as_str()]].concat()).await?;
+        }
+        let content = format!(
+            "# Created by zendiloOS for the app {app}; removed with the app.\n\
+             [Unit]\n\
+             Description=zendiloOS app {app}: its data (ZFS dataset {dataset})\n\
+             Requires=zfs-import.target\n\
+             After=zfs-import.target\n\
+             Before=docker.service\n\
+             \n\
+             [Mount]\n\
+             What={dataset}\n\
+             Where=/volume{number}/{APPS_DIRECTORY}/{app}\n\
+             Type=zfs\n\
+             \n\
+             [Install]\n\
+             WantedBy=multi-user.target\n",
+            app = app.as_str(),
+            number = volume.get(),
+        );
+        self.install_unit(&app_unit_name(volume, app), &content).await
+    }
+
+    /// Unmounts an app's dataset and destroys it with all its data.
+    pub(crate) async fn destroy_app_dataset(
+        &self,
+        pool: &PoolName,
+        volume: VolumeNumber,
+        app: &AppName,
+    ) -> Result<(), OperationError> {
+        let _serial = self.serial.lock().await;
+        self.require_managed(pool, Some(volume)).await?;
+        self.remove_unit(&app_unit_name(volume, app)).await?;
+        let dataset = format!("{}/{APPS_DATASET}/{}", pool.as_str(), app.as_str());
+        let existing = output(&self.zfs, &["list", "-H", "-o", "name", "-d", "2", pool.as_str()]).await?;
+        if existing.lines().any(|line| line == dataset) {
+            run(&self.zfs, &["destroy", "-r", &dataset]).await?;
+        }
+        Ok(())
+    }
+
     /// Only pools zendiloos created, like every change to a pool.
     pub(crate) async fn scrub(&self, pool: &PoolName) -> Result<Response, OperationError> {
         self.require_managed(pool, None).await?;
@@ -786,6 +853,15 @@ fn unit_name(volume: VolumeNumber) -> String {
 pub(crate) const DOCKER_DATASET: &str = "zendiloos.docker";
 /// Where it is mounted on the volume.
 pub(crate) const DOCKER_DIRECTORY: &str = "@docker";
+
+/// The apps' datasets below a pool: `<pool>/zendiloos.apps/<app>`.
+pub(crate) const APPS_DATASET: &str = "zendiloos.apps";
+pub(crate) use zendiloos_fileops::APPS_DIRECTORY;
+
+/// `volume<N>-\x40apps-<app>.mount`; systemd escapes `-` in paths.
+pub(crate) fn app_unit_name(volume: VolumeNumber, app: &AppName) -> String {
+    format!("volume{}-\\x40apps-{}.mount", volume.get(), app.as_str().replace('-', "\\x2d"))
+}
 
 /// `volume<N>-\x40docker.mount`.
 pub(crate) fn docker_unit_name(volume: VolumeNumber) -> String {

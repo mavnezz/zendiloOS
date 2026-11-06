@@ -4,6 +4,8 @@
 //! policy proper is checked on the normalized file, which needs Docker: by
 //! the agent, when installing.
 
+mod installs;
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -13,6 +15,8 @@ use zendiloos_apps::domain::{
     Access, CatalogApp, Permissions, Port, Setting, SettingKind, Share, Translation, Web, WebScheme,
 };
 use zendiloos_catalog as catalog;
+
+pub use installs::{ProcListening, RandomSecrets, SharingForApps};
 
 /// The most an index may be; the community catalog's is a few dozen KiB.
 const MAX_INDEX_BYTES: usize = 8 * 1024 * 1024;
@@ -101,6 +105,7 @@ fn app(mut entry: Value) -> Result<CatalogApp, String> {
         object.remove(key).and_then(|v| v.as_str().map(str::to_owned)).ok_or(format!("no `{key}`"))
     };
     let (compose, icon, digest) = (take("compose")?, take("icon")?, take("digest")?);
+    let manifest_text = entry.to_string();
     let manifest: catalog::Manifest = serde_json::from_value(entry).map_err(|e| format!("manifest: {e}"))?;
     if let Some(problem) = manifest.check(&manifest.id).first() {
         return Err(problem.to_string());
@@ -114,10 +119,28 @@ fn app(mut entry: Value) -> Result<CatalogApp, String> {
     if !is_digest(&digest) {
         return Err("not a sha256 digest".into());
     }
-    Ok(domain_app(manifest, compose, icon, digest))
+    Ok(domain_app(manifest, manifest_text, compose, icon, digest))
 }
 
-fn domain_app(m: catalog::Manifest, compose: String, icon: String, digest: String) -> CatalogApp {
+/// An app as kept when it was installed: its manifest text read again.
+pub(crate) fn kept_app(
+    manifest_text: &str,
+    compose: String,
+    icon: String,
+    digest: String,
+) -> Result<CatalogApp, String> {
+    let manifest: catalog::Manifest =
+        serde_json::from_str(manifest_text).map_err(|e| format!("manifest: {e}"))?;
+    Ok(domain_app(manifest, manifest_text.to_owned(), compose, icon, digest))
+}
+
+fn domain_app(
+    m: catalog::Manifest,
+    manifest_text: String,
+    compose: String,
+    icon: String,
+    digest: String,
+) -> CatalogApp {
     let text = |value: &Value| match value {
         Value::String(text) => text.clone(),
         other => other.to_string(),
@@ -205,6 +228,7 @@ fn domain_app(m: catalog::Manifest, compose: String, icon: String, digest: Strin
         source_code: m.source,
         license: m.license,
         notes: m.notes,
+        manifest: manifest_text,
         compose,
         icon,
         digest,

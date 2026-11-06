@@ -186,6 +186,7 @@ struct Harness {
     share_host: Arc<zendiloos_sharing::testing::Host>,
     file_host: Arc<zendiloos_sharing::testing::Files>,
     catalogs: Arc<zendiloos_apps::testing::FakeReader>,
+    app_host: Arc<zendiloos_apps::testing::FakeAppHost>,
 }
 
 /// Account and group names from the identity fakes.
@@ -284,6 +285,27 @@ impl Harness {
                 zendiloos_apps::testing::app("immich", "Immich"),
             ],
         );
+        let docker_host = Arc::new(zendiloos_apps::testing::FakeDocker::default());
+        let catalog_use_cases = zendiloos_apps::application::Catalogs::new(
+            Arc::new(zendiloos_apps::testing::MemorySources::default()),
+            catalogs.clone(),
+            identity.audit.clone(),
+            identity.clock.clone(),
+        );
+        let app_host = Arc::new(zendiloos_apps::testing::FakeAppHost::default());
+        let installs =
+            zendiloos_apps::application::Installs::new(zendiloos_apps::application::InstallPorts {
+                catalogs: catalog_use_cases.clone(),
+                installed: Arc::new(zendiloos_apps::testing::MemoryInstalled::default()),
+                host: app_host.clone(),
+                docker: docker_host.clone(),
+                shares: Arc::new(zendiloos_apps::testing::FakeShares::default()),
+                listening: Arc::new(zendiloos_apps::testing::FakeListening),
+                secrets: Arc::new(zendiloos_apps::testing::CountingSecrets::default()),
+                jobs: jobs.clone(),
+                audit: identity.audit.clone(),
+                clock: identity.clock.clone(),
+            });
         let use_cases = UseCases {
             system,
             identity: identity.use_cases.clone(),
@@ -299,16 +321,12 @@ impl Harness {
             jobs: jobs.clone(),
             notifier: notifier.clone(),
             docker: zendiloos_apps::application::Docker::new(
-                Arc::new(zendiloos_apps::testing::FakeDocker::default()),
+                docker_host,
                 identity.audit.clone(),
                 identity.clock.clone(),
             ),
-            apps: zendiloos_apps::application::Catalogs::new(
-                Arc::new(zendiloos_apps::testing::MemorySources::default()),
-                catalogs.clone(),
-                identity.audit.clone(),
-                identity.clock.clone(),
-            ),
+            apps: catalog_use_cases,
+            installs,
             channels: zendiloos_notify::channels::Channels::new(
                 Arc::new(zendiloos_notify::testing::MemoryChannels::default()),
                 Arc::new(zendiloos_notify::testing::RecordingSender::default()),
@@ -329,6 +347,7 @@ impl Harness {
             share_host,
             file_host,
             catalogs,
+            app_host,
         }
     }
 
@@ -847,6 +866,13 @@ fn openapi_documents_every_route() {
             "/api/v1/apps/catalog/{source}/{app}",
             "/api/v1/apps/catalog/{source}/{app}/icon",
             "/api/v1/apps/docker",
+            "/api/v1/apps/installed",
+            "/api/v1/apps/installed/{id}",
+            "/api/v1/apps/installed/{id}/logs",
+            "/api/v1/apps/installed/{id}/retry",
+            "/api/v1/apps/installed/{id}/start",
+            "/api/v1/apps/installed/{id}/stop",
+            "/api/v1/apps/installed/{id}/update",
             "/api/v1/apps/sources",
             "/api/v1/apps/sources/refresh",
             "/api/v1/apps/sources/{id}",
@@ -2173,4 +2199,70 @@ async fn administrators_put_dockers_data_on_a_pool() {
         (after.body["running"].clone(), after.body["volume"]["number"].clone()),
         (json!(true), json!(1))
     );
+}
+
+#[tokio::test]
+async fn administrators_install_apps_and_run_them() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let user = h.sign_in("bob", Role::User).await;
+    let send = |method: Method, uri: &str, body: Option<Value>| {
+        let request = with_csrf(Request::builder().method(method).uri(uri), &admin);
+        h.send(match body {
+            Some(body) => json(request, body),
+            None => empty(request),
+        })
+    };
+    send(Method::POST, "/api/v1/apps/sources/refresh", None).await;
+    let install = json!({ "source": 1, "app": "jellyfin", "ports": { "web": 8200 } });
+
+    let not_ready = send(Method::POST, "/api/v1/apps/installed", Some(install.clone())).await;
+    assert_problem(&not_ready, StatusCode::CONFLICT, "docker_not_ready");
+    send(Method::POST, "/api/v1/apps/docker", Some(json!({ "pool": "tank" }))).await;
+    let reserved = send(
+        Method::POST,
+        "/api/v1/apps/installed",
+        Some(json!({ "source": 1, "app": "jellyfin", "ports": { "web": 445 } })),
+    )
+    .await;
+    assert_problem(&reserved, StatusCode::UNPROCESSABLE_ENTITY, "invalid_app_value");
+    assert_eq!(reserved.body["detail"], "ports.web: port 445 is used by zendiloOS");
+
+    let accepted = send(Method::POST, "/api/v1/apps/installed", Some(install.clone())).await;
+    assert_eq!(accepted.status, StatusCode::ACCEPTED, "{:?}", accepted.body);
+    assert_eq!(accepted.body["app"]["state"], "installing");
+    let job = job_done(&h, accepted.body["job"]["id"].as_i64().unwrap()).await;
+    assert_eq!(job.state, zendiloos_jobs::JobState::Succeeded);
+    assert_eq!(h.app_host.calls().last().unwrap(), "start jellyfin");
+
+    let listed = h.send(empty(with_cookie(get("/api/v1/apps/installed"), &admin))).await;
+    assert_eq!(listed.body[0]["id"], "jellyfin");
+    assert_eq!(listed.body[0]["state"], "installed");
+    assert_eq!(listed.body[0]["run_state"], "running");
+    assert_eq!(listed.body[0]["ports"]["web"], 8200);
+    let forbidden = h.send(empty(with_cookie(get("/api/v1/apps/installed"), &user))).await;
+    assert_eq!(forbidden.status, StatusCode::FORBIDDEN);
+    let twice = send(Method::POST, "/api/v1/apps/installed", Some(install)).await;
+    assert_problem(&twice, StatusCode::CONFLICT, "app_installed");
+
+    assert_eq!(
+        send(Method::POST, "/api/v1/apps/installed/jellyfin/stop", None).await.status,
+        StatusCode::NO_CONTENT
+    );
+    let stopped = h.send(empty(with_cookie(get("/api/v1/apps/installed/jellyfin"), &admin))).await;
+    assert_eq!(stopped.body["run_state"], "stopped");
+    let logs = h.send(empty(with_cookie(get("/api/v1/apps/installed/jellyfin/logs?lines=50"), &admin))).await;
+    assert_eq!(logs.body["text"], "jellyfin: 50 lines\n");
+    let up_to_date = send(Method::POST, "/api/v1/apps/installed/jellyfin/update", Some(json!({}))).await;
+    assert_problem(&up_to_date, StatusCode::CONFLICT, "up_to_date");
+
+    let wrong =
+        send(Method::DELETE, "/api/v1/apps/installed/jellyfin", Some(json!({ "confirm": "Jellyfin" }))).await;
+    assert_problem(&wrong, StatusCode::UNPROCESSABLE_ENTITY, "confirmation_mismatch");
+    let removing =
+        send(Method::DELETE, "/api/v1/apps/installed/jellyfin", Some(json!({ "confirm": "jellyfin" }))).await;
+    assert_eq!(removing.status, StatusCode::ACCEPTED);
+    job_done(&h, removing.body["id"].as_i64().unwrap()).await;
+    let gone = h.send(empty(with_cookie(get("/api/v1/apps/installed/jellyfin"), &admin))).await;
+    assert_eq!(gone.status, StatusCode::NOT_FOUND);
 }

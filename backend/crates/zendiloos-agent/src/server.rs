@@ -24,7 +24,8 @@ const MAX_CONCURRENT: usize = 4;
 const MAX_CONCURRENT_LONG: usize = 2;
 
 /// Whether `request` may take long: copying, moving or deleting trees,
-/// permissions of a whole share, preparing or destroying pools.
+/// permissions of a whole share, preparing or destroying pools, fetching
+/// and running apps.
 fn is_long(request: &Request) -> bool {
     match request {
         Request::CopyEntry { .. }
@@ -34,6 +35,12 @@ fn is_long(request: &Request) -> bool {
         | Request::ArchiveFolder { .. }
         // Restarts Docker.
         | Request::EnableDocker { .. }
+        // Fetch images, start or stop containers.
+        | Request::PrepareApp { .. }
+        | Request::PullApp { .. }
+        | Request::StartApp { .. }
+        | Request::StopApp { .. }
+        | Request::RemoveApp { .. }
         | Request::CreatePool { .. }
         | Request::DestroyPool { .. }
         | Request::ReplaceDisk { .. }

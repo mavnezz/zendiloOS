@@ -1,15 +1,18 @@
-//! Linux users and groups for zendiloos accounts, and their Samba entries.
+//! Linux users and groups for zendiloos accounts, and their Samba entries;
+//! and the account each app runs as.
 //!
 //! The agent changes only what zendiloos manages: users with a UID from
 //! [`ID_MIN`] whose primary group is [`USERS_GROUP`], and groups with a GID
 //! from [`ID_MIN`]. System accounts and the owner's own user (UID 1000) stay
-//! untouched, whatever zendiloosd asks for.
+//! untouched, whatever zendiloosd asks for. An app's account (`app-<id>`,
+//! with [`APP_COMMENT`] and a primary group of the same name) is neither a
+//! managed user nor a managed group: only the app requests touch it.
 
 use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use zendiloos_agent_proto::{GroupName, Password, Response, UserName};
+use zendiloos_agent_proto::{AppName, GroupName, Password, Response, UserName};
 use zendiloos_exec::{Limits, Program};
 
 use crate::config::Tools;
@@ -22,6 +25,30 @@ pub const ID_MIN: u32 = 2000;
 pub const ID_MAX: u32 = 59999;
 const MANAGED_IDS: RangeInclusive<u32> = ID_MIN..=ID_MAX;
 const NOLOGIN: &str = "/usr/sbin/nologin";
+/// The comment of every app's account: how the agent tells them apart.
+pub const APP_COMMENT: &str = "zendiloOS app";
+
+/// UID and GID of `app`'s account, if zendiloos made it: user `app-<id>`
+/// with a managed UID and [`APP_COMMENT`], whose primary group has the same
+/// name and a managed GID.
+pub(crate) fn app_account(passwd: &str, group: &str, app: &AppName) -> Option<(u32, u32)> {
+    let name = app.account();
+    let fields: Vec<&str> =
+        passwd.lines().find(|line| line.split(':').next() == Some(name.as_str()))?.split(':').collect();
+    let (uid, gid) = (fields.get(2)?.parse::<u32>().ok()?, fields.get(3)?.parse::<u32>().ok()?);
+    let ours = MANAGED_IDS.contains(&uid)
+        && MANAGED_IDS.contains(&gid)
+        && fields.get(4) == Some(&APP_COMMENT)
+        && passwd::group_id(group, &name) == Some(gid);
+    ours.then_some((uid, gid))
+}
+
+/// Whether `name` is the group of an app's account.
+fn is_app_group(passwd: &str, group: &str, name: &str) -> bool {
+    name.strip_prefix(AppName::ACCOUNT_PREFIX)
+        .and_then(|app| AppName::parse(app).ok())
+        .is_some_and(|app| app_account(passwd, group, &app).is_some())
+}
 
 /// Where the account databases are; other than `/etc` only in tests.
 #[derive(Debug, Clone)]
@@ -204,8 +231,8 @@ impl Accounts {
 
     pub(crate) async fn delete_group(&self, name: &GroupName) -> Result<Response, OperationError> {
         let _serial = self.serial.lock().await;
-        let (_, group) = self.read_files().await?;
-        require_managed_group(&group, name)?;
+        let (passwd, group) = self.read_files().await?;
+        require_managed_group(&passwd, &group, name)?;
         run(&self.groupdel, &["--", name.as_str()]).await?;
         Ok(Response::Done)
     }
@@ -217,12 +244,76 @@ impl Accounts {
     ) -> Result<Response, OperationError> {
         let _serial = self.serial.lock().await;
         let (passwd, group) = self.read_files().await?;
-        require_managed_group(&group, name)?;
+        require_managed_group(&passwd, &group, name)?;
         for member in members {
             require_managed(&passwd, &group, member)?;
         }
         let list = members.iter().map(UserName::as_str).collect::<Vec<_>>().join(",");
         run(&self.gpasswd, &["--members", &list, "--", name.as_str()]).await?;
+        Ok(Response::Done)
+    }
+
+    /// Makes `app`'s account, `app-<id>`, unless it is there: a group of its
+    /// own, then the user in it, both with IDs never handed out before.
+    /// `conflict` if the name belongs to somebody else.
+    pub(crate) async fn create_app_account(&self, app: &AppName) -> Result<(), OperationError> {
+        let _serial = self.serial.lock().await;
+        let (passwd, group) = self.read_files().await?;
+        if app_account(&passwd, &group, app).is_some() {
+            return Ok(());
+        }
+        let name = app.account();
+        if passwd::lookup(&passwd, &name).is_some() || passwd::group_id(&group, &name).is_some() {
+            return Err(OperationError::Conflict);
+        }
+        let marks = self.read_high_water()?;
+        let gid = next_id(&group, &marks, IdKind::Group)
+            .ok_or_else(|| OperationError::Setup("no group IDs left".to_owned()))?;
+        let marks = set_high_water(&marks, IdKind::Group, gid);
+        let uid = next_id(&passwd, &marks, IdKind::User)
+            .ok_or_else(|| OperationError::Setup("no user IDs left".to_owned()))?;
+        self.write_high_water(&set_high_water(&marks, IdKind::User, uid))?;
+        run(&self.groupadd, &["--gid", &gid.to_string(), "--", &name]).await?;
+        let args = [
+            "--no-log-init",
+            "--no-create-home",
+            "--home-dir",
+            "/nonexistent",
+            "--shell",
+            NOLOGIN,
+            "--comment",
+            APP_COMMENT,
+            "--gid",
+            &name,
+            "--uid",
+            &uid.to_string(),
+            "--",
+            &name,
+        ];
+        if let Err(error) = run(&self.useradd, &args).await {
+            let _ = run(&self.groupdel, &["--", &name]).await;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Deletes `app`'s account and its group; nothing if it is gone.
+    pub(crate) async fn delete_app_account(&self, app: &AppName) -> Result<Response, OperationError> {
+        let _serial = self.serial.lock().await;
+        let (passwd, group) = self.read_files().await?;
+        let name = app.account();
+        if app_account(&passwd, &group, app).is_none() {
+            return match passwd::lookup(&passwd, &name) {
+                Some(_) => Err(OperationError::NotManaged(format!("user {name}"))),
+                None => Ok(Response::Done),
+            };
+        }
+        run(&self.userdel, &["--", &name]).await?;
+        // userdel removes the group itself where USERGROUPS_ENAB is set.
+        let (_, group) = self.read_files().await?;
+        if passwd::group_id(&group, &name).is_some() {
+            run(&self.groupdel, &["--", &name]).await?;
+        }
         Ok(Response::Done)
     }
 
@@ -269,9 +360,15 @@ fn require_managed(passwd: &str, group: &str, name: &UserName) -> Result<(), Ope
     }
 }
 
-fn require_managed_group(group: &str, name: &GroupName) -> Result<(), OperationError> {
+fn require_managed_group(passwd: &str, group: &str, name: &GroupName) -> Result<(), OperationError> {
     match passwd::group_id(group, name.as_str()) {
-        Some(gid) if MANAGED_IDS.contains(&gid) && name.as_str() != USERS_GROUP => Ok(()),
+        Some(gid)
+            if MANAGED_IDS.contains(&gid)
+                && name.as_str() != USERS_GROUP
+                && !is_app_group(passwd, group, name.as_str()) =>
+        {
+            Ok(())
+        }
         _ => Err(OperationError::NotManaged(format!("group {}", name.as_str()))),
     }
 }
@@ -296,6 +393,28 @@ mod tests {
         assert_eq!(next_id(PASSWD, "uid=2005\ngid=2100\n", IdKind::User), Some(2006));
         assert_eq!(next_id(PASSWD, "gid=2100\n", IdKind::Group), Some(2101));
         assert_eq!(next_id(PASSWD, &format!("uid={ID_MAX}"), IdKind::User), None, "range exhausted");
+    }
+
+    #[test]
+    fn app_accounts_are_told_apart_from_people_and_groups() {
+        let passwd = format!(
+            "{PASSWD}app-jellyfin:x:2010:2011:{APP_COMMENT}:/nonexistent:/usr/sbin/nologin\n\
+             app-paperless:x:2012:990::/nonexistent:/usr/sbin/nologin\n"
+        );
+        let group = "zendiloos-users:x:990:\napp-jellyfin:x:2011:\nfamily:x:2002:alice\n";
+        let jellyfin = AppName::parse("jellyfin").unwrap();
+        assert_eq!(app_account(&passwd, group, &jellyfin), Some((2010, 2011)));
+        // A person called app-paperless is no app's account.
+        assert_eq!(app_account(&passwd, group, &AppName::parse("paperless").unwrap()), None);
+
+        let app_group = GroupName::parse("app-jellyfin").unwrap();
+        assert!(
+            require_managed_group(&passwd, group, &app_group).is_err(),
+            "only the app requests change it"
+        );
+        assert!(require_managed_group(&passwd, group, &GroupName::parse("family").unwrap()).is_ok());
+        let user = UserName::parse("app-jellyfin").unwrap();
+        assert!(require_managed(&passwd, group, &user).is_err(), "not a person's account");
     }
 
     #[test]

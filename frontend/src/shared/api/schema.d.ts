@@ -144,6 +144,144 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/apps/installed": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The installed apps, with what Docker makes of them. Needs
+         *     `containers.manage`.
+         */
+        get: operations["installed"];
+        put?: never;
+        /**
+         * Installs an app from a catalog: its data and Docker's on the same pool,
+         *     an account of its own, access to the shares picked; the agent checks it
+         *     against the catalog's policy before anything runs. Needs
+         *     `containers.manage`.
+         */
+        post: operations["install"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/apps/installed/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One installed app. Needs `containers.manage`. */
+        get: operations["installed_app"];
+        put?: never;
+        post?: never;
+        /**
+         * Removes an app with its containers, images and data, then its access
+         *     to shares and its account, as a job. Needs `containers.manage`.
+         */
+        delete: operations["uninstall"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/apps/installed/{id}/logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The last lines its containers wrote. Needs `containers.manage`. */
+        get: operations["app_logs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/apps/installed/{id}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Installs a failed app again, with its values. Needs
+         *     `containers.manage`.
+         */
+        post: operations["retry_app"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/apps/installed/{id}/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Starts an installed app's containers. Needs `containers.manage`. */
+        post: operations["start_app"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/apps/installed/{id}/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Stops an installed app's containers. Needs `containers.manage`. */
+        post: operations["stop_app"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/apps/installed/{id}/update": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Brings an app to the version its catalog offers now, keeping its
+         *     values. Needs `containers.manage`.
+         */
+        post: operations["update_app"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/apps/sources": {
         parameters: {
             query?: never;
@@ -1425,6 +1563,10 @@ export interface components {
         };
         /** @enum {string} */
         AddressScope: "global" | "site" | "link" | "host";
+        AppLogs: {
+            /** @description Each line with the container's name and a timestamp, oldest first. */
+            text: string;
+        };
         AppPermissions: {
             capabilities: string[];
             devices: string[];
@@ -1497,6 +1639,13 @@ export interface components {
             https: boolean;
             path: string;
             port: string;
+        };
+        /** @description Where the app's web interface is, on the NAS's own address. */
+        AppWebAddress: {
+            https: boolean;
+            path: string;
+            /** Format: int32 */
+            port: number;
         };
         /** @enum {string} */
         ArrayHealth: "healthy" | "degraded" | "rebuilding" | "inactive";
@@ -1845,6 +1994,70 @@ export interface components {
         };
         /** @enum {string} */
         HookFormat: "json" | "text";
+        InstallAppRequest: {
+            app: string;
+            /** @description The administrator confirmed the app's permissions. */
+            confirm_permissions?: boolean;
+            /** @description Port id → host port; missing ones get their default. */
+            ports?: {
+                [key: string]: number;
+            };
+            /**
+             * @description Setting id → value; missing ones get their default. Generated
+             *     settings are made by zendiloOS.
+             */
+            settings?: {
+                [key: string]: string;
+            };
+            /** @description Share id → the name of the share picked for it. */
+            shares?: {
+                [key: string]: string;
+            };
+            /** Format: int64 */
+            source: number;
+        };
+        /** @description An installed app. */
+        InstalledApp: {
+            /** @description Of the version installed; for its icon. */
+            digest: string;
+            id: string;
+            /** Format: int64 */
+            installed_at: number;
+            name: string;
+            permissions: components["schemas"]["AppPermissions"];
+            /** @description The pool its data and Docker's are on. */
+            pool: string;
+            /** @description Port id → host port. */
+            ports: {
+                [key: string]: number;
+            };
+            run_state?: components["schemas"]["RunState"] | null;
+            /** @description Share id → share name. */
+            shares: {
+                [key: string]: string;
+            };
+            /**
+             * Format: int64
+             * @description The catalog it came from; it may be gone since.
+             */
+            source_id: number;
+            /** @description `installing`, `installed`, `failed` or `removing`. */
+            state: string;
+            tagline: string;
+            translations: {
+                [key: string]: components["schemas"]["AppTexts"];
+            };
+            /** @description The version its catalog offers now, if it is another. */
+            update?: string | null;
+            /** Format: int64 */
+            updated_at: number;
+            version: string;
+            web?: components["schemas"]["AppWebAddress"] | null;
+        };
+        Installing: {
+            app: components["schemas"]["InstalledApp"];
+            job: components["schemas"]["Job"];
+        };
         InterfaceAddress: {
             /** @description E.g. `192.168.1.20` or `2001:db8::20`. */
             address: string;
@@ -2413,6 +2626,11 @@ export interface components {
             /** @description Labels of the later snapshots that went with the rollback. */
             destroyed: string[];
         };
+        /**
+         * @description What Docker makes of an installed app.
+         * @enum {string}
+         */
+        RunState: "running" | "partly" | "restarting" | "stopped";
         RunningSelfTest: {
             /**
              * Format: int32
@@ -2772,12 +2990,23 @@ export interface components {
         };
         /** @enum {string} */
         Transport: "sata" | "sas" | "nvme" | "usb" | "virtio" | "other";
+        UninstallRequest: {
+            /** @description The app's id, repeated: its data goes with it. */
+            confirm: string;
+        };
         /** @description Absent fields stay as they are. */
         UpdateAccountRequest: {
             disabled?: boolean | null;
             /** @description An empty string removes the full name. */
             full_name?: string | null;
             role?: components["schemas"]["AccountRole"] | null;
+        };
+        UpdateAppRequest: {
+            /**
+             * @description The administrator confirmed what the new version may do beyond the
+             *     old one.
+             */
+            confirm_permissions?: boolean;
         };
         /** @description Absent fields stay as they are. */
         UpdateGroupRequest: {
@@ -3200,6 +3429,384 @@ export interface operations {
             };
             /** @description `refused`: Docker missing, or its data on another pool */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    installed: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InstalledApp"][];
+                };
+            };
+        };
+    };
+    install: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InstallAppRequest"];
+            };
+        };
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Installing"];
+                };
+            };
+            /** @description `not_found`: no such app */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `app_installed`, `docker_not_ready`, `permissions_not_confirmed` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_app_value`, `app_id_too_long` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    installed_app: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InstalledApp"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    uninstall: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UninstallRequest"];
+            };
+        };
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `app_busy` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `confirmation_mismatch` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    app_logs: {
+        parameters: {
+            query?: {
+                /** @description The last this many lines, 1 to 5000; 200 if left out. */
+                lines?: number;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppLogs"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `host_failed`: Docker's words */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    retry_app: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `app_busy`: not failed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    start_app: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Started. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `app_busy`, `refused` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `host_failed`: Docker's words */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    stop_app: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Stopped. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `app_busy` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `host_failed`: Docker's words */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    update_app: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateAppRequest"];
+            };
+        };
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description `not_found`: the app or its catalog entry */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `up_to_date`, `app_busy`, `permissions_not_confirmed` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_app_value`: the new version needs a value */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

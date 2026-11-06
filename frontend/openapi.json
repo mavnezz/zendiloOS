@@ -534,6 +534,529 @@
         ]
       }
     },
+    "/api/v1/apps/installed": {
+      "get": {
+        "tags": [
+          "apps"
+        ],
+        "summary": "The installed apps, with what Docker makes of them. Needs\n`containers.manage`.",
+        "operationId": "installed",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/InstalledApp"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "apps"
+        ],
+        "summary": "Installs an app from a catalog: its data and Docker's on the same pool,\nan account of its own, access to the shares picked; the agent checks it\nagainst the catalog's policy before anything runs. Needs\n`containers.manage`.",
+        "operationId": "install",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InstallAppRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Installing"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no such app",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`app_installed`, `docker_not_ready`, `permissions_not_confirmed`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_app_value`, `app_id_too_long`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/apps/installed/{id}": {
+      "get": {
+        "tags": [
+          "apps"
+        ],
+        "summary": "One installed app. Needs `containers.manage`.",
+        "operationId": "installed_app",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InstalledApp"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "apps"
+        ],
+        "summary": "Removes an app with its containers, images and data, then its access\nto shares and its account, as a job. Needs `containers.manage`.",
+        "operationId": "uninstall",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UninstallRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`app_busy`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`confirmation_mismatch`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/apps/installed/{id}/logs": {
+      "get": {
+        "tags": [
+          "apps"
+        ],
+        "summary": "The last lines its containers wrote. Needs `containers.manage`.",
+        "operationId": "app_logs",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "lines",
+            "in": "query",
+            "description": "The last this many lines, 1 to 5000; 200 if left out.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppLogs"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`host_failed`: Docker's words",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/apps/installed/{id}/retry": {
+      "post": {
+        "tags": [
+          "apps"
+        ],
+        "summary": "Installs a failed app again, with its values. Needs\n`containers.manage`.",
+        "operationId": "retry_app",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`app_busy`: not failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/apps/installed/{id}/start": {
+      "post": {
+        "tags": [
+          "apps"
+        ],
+        "summary": "Starts an installed app's containers. Needs `containers.manage`.",
+        "operationId": "start_app",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Started."
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`app_busy`, `refused`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`host_failed`: Docker's words",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/apps/installed/{id}/stop": {
+      "post": {
+        "tags": [
+          "apps"
+        ],
+        "summary": "Stops an installed app's containers. Needs `containers.manage`.",
+        "operationId": "stop_app",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Stopped."
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`app_busy`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`host_failed`: Docker's words",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/apps/installed/{id}/update": {
+      "post": {
+        "tags": [
+          "apps"
+        ],
+        "summary": "Brings an app to the version its catalog offers now, keeping its\nvalues. Needs `containers.manage`.",
+        "operationId": "update_app",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateAppRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the app or its catalog entry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`up_to_date`, `app_busy`, `permissions_not_confirmed`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_app_value`: the new version needs a value",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/apps/sources": {
       "get": {
         "tags": [
@@ -4487,6 +5010,18 @@
           "host"
         ]
       },
+      "AppLogs": {
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "Each line with the container's name and a timestamp, oldest first."
+          }
+        }
+      },
       "AppPermissions": {
         "type": "object",
         "required": [
@@ -4717,6 +5252,28 @@
           },
           "port": {
             "type": "string"
+          }
+        }
+      },
+      "AppWebAddress": {
+        "type": "object",
+        "description": "Where the app's web interface is, on the NAS's own address.",
+        "required": [
+          "port",
+          "path",
+          "https"
+        ],
+        "properties": {
+          "https": {
+            "type": "boolean"
+          },
+          "path": {
+            "type": "string"
+          },
+          "port": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
           }
         }
       },
@@ -5839,6 +6396,195 @@
           "json",
           "text"
         ]
+      },
+      "InstallAppRequest": {
+        "type": "object",
+        "required": [
+          "source",
+          "app"
+        ],
+        "properties": {
+          "app": {
+            "type": "string"
+          },
+          "confirm_permissions": {
+            "type": "boolean",
+            "description": "The administrator confirmed the app's permissions."
+          },
+          "ports": {
+            "type": "object",
+            "description": "Port id → host port; missing ones get their default.",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "settings": {
+            "type": "object",
+            "description": "Setting id → value; missing ones get their default. Generated\nsettings are made by zendiloOS.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "shares": {
+            "type": "object",
+            "description": "Share id → the name of the share picked for it.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "source": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "additionalProperties": false
+      },
+      "InstalledApp": {
+        "type": "object",
+        "description": "An installed app.",
+        "required": [
+          "id",
+          "source_id",
+          "name",
+          "version",
+          "tagline",
+          "translations",
+          "digest",
+          "state",
+          "ports",
+          "shares",
+          "permissions",
+          "pool",
+          "installed_at",
+          "updated_at"
+        ],
+        "properties": {
+          "digest": {
+            "type": "string",
+            "description": "Of the version installed; for its icon."
+          },
+          "id": {
+            "type": "string"
+          },
+          "installed_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "name": {
+            "type": "string"
+          },
+          "permissions": {
+            "$ref": "#/components/schemas/AppPermissions"
+          },
+          "pool": {
+            "type": "string",
+            "description": "The pool its data and Docker's are on."
+          },
+          "ports": {
+            "type": "object",
+            "description": "Port id → host port.",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "run_state": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RunState",
+                "description": "`None` while Docker cannot be asked."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "shares": {
+            "type": "object",
+            "description": "Share id → share name.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "source_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The catalog it came from; it may be gone since."
+          },
+          "state": {
+            "type": "string",
+            "description": "`installing`, `installed`, `failed` or `removing`."
+          },
+          "tagline": {
+            "type": "string"
+          },
+          "translations": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/AppTexts"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "update": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The version its catalog offers now, if it is another."
+          },
+          "updated_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "version": {
+            "type": "string"
+          },
+          "web": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AppWebAddress"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "Installing": {
+        "type": "object",
+        "required": [
+          "app",
+          "job"
+        ],
+        "properties": {
+          "app": {
+            "$ref": "#/components/schemas/InstalledApp"
+          },
+          "job": {
+            "$ref": "#/components/schemas/Job"
+          }
+        }
       },
       "InterfaceAddress": {
         "type": "object",
@@ -7608,6 +8354,16 @@
           }
         }
       },
+      "RunState": {
+        "type": "string",
+        "description": "What Docker makes of an installed app.",
+        "enum": [
+          "running",
+          "partly",
+          "restarting",
+          "stopped"
+        ]
+      },
       "RunningSelfTest": {
         "type": "object",
         "properties": {
@@ -8654,6 +9410,19 @@
           "other"
         ]
       },
+      "UninstallRequest": {
+        "type": "object",
+        "required": [
+          "confirm"
+        ],
+        "properties": {
+          "confirm": {
+            "type": "string",
+            "description": "The app's id, repeated: its data goes with it."
+          }
+        },
+        "additionalProperties": false
+      },
       "UpdateAccountRequest": {
         "type": "object",
         "description": "Absent fields stay as they are.",
@@ -8680,6 +9449,16 @@
                 "type": "null"
               }
             ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "UpdateAppRequest": {
+        "type": "object",
+        "properties": {
+          "confirm_permissions": {
+            "type": "boolean",
+            "description": "The administrator confirmed what the new version may do beyond the\nold one."
           }
         },
         "additionalProperties": false

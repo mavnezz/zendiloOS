@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE installed_apps SET source_id = ?, manifest = ?, compose = ?, icon = ?, digest = ?, pool = ?,\n                                       volume = ?, shares = ?, ports = ?, settings = ?, state = ?, updated_at = ?\n             WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 13
+    },
+    "nullable": []
+  },
+  "hash": "4c2d3f23d01f3a9cf716c371e2b038f81f6f48057497c08b400a155788f4ee77"
+}

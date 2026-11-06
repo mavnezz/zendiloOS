@@ -12,11 +12,14 @@ publish.workspace = true
 # zendiloos-infra. See docs/architecture.md, 2.1 and 4.9.
 [dependencies]
 zendiloos-kernel.workspace = true
+zendiloos-jobs.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true
 
 [dev-dependencies]
+zendiloos-jobs = { workspace = true, features = ["testing"] }
 tokio.workspace = true
 
 [features]

@@ -3,6 +3,7 @@
 //! the agent's socket or the simulation.
 
 mod accounts;
+mod apps;
 mod docker;
 mod files;
 mod network;
@@ -18,6 +19,7 @@ use zendiloos_system::application::ports::PowerControl;
 use zendiloos_system::domain::PowerAction;
 
 pub use accounts::AgentSystemAccounts;
+pub use apps::AgentApps;
 pub use files::AgentFiles;
 pub use network::AgentNetwork;
 pub use sharing::AgentSharing;

@@ -112,6 +112,9 @@ pub struct CatalogApp {
     pub permissions: Permissions,
     /// By ISO 639-1 language.
     pub translations: BTreeMap<String, Translation>,
+    /// The manifest as the index has it, as JSON: the agent reads and
+    /// checks it again itself.
+    pub manifest: String,
     /// The Compose file as written; filled in on the NAS.
     pub compose: String,
     /// The icon, relative to the index.

@@ -3,20 +3,21 @@
 use std::collections::BTreeMap;
 
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
+use utoipa::{IntoParams, ToSchema};
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
-use zendiloos_apps::application::{AppsError, ListedApp};
+use zendiloos_apps::application::{AppsError, InstallRequest, InstalledView, ListedApp};
 use zendiloos_apps::domain as apps;
 use zendiloos_identity::domain::Permission;
 
 use crate::auth::Auth;
 use crate::error::{ApiError, Problem};
 use crate::extract::{ApiJson, Client};
+use crate::routes::jobs::Job;
 use crate::state::ApiState;
 
 pub(super) fn routes() -> OpenApiRouter<ApiState> {
@@ -28,6 +29,13 @@ pub(super) fn routes() -> OpenApiRouter<ApiState> {
         .routes(routes!(catalog_app))
         .routes(routes!(catalog_icon))
         .routes(routes!(docker, enable_docker))
+        .routes(routes!(installed, install))
+        .routes(routes!(installed_app, uninstall))
+        .routes(routes!(retry_app))
+        .routes(routes!(update_app))
+        .routes(routes!(start_app))
+        .routes(routes!(stop_app))
+        .routes(routes!(app_logs))
 }
 
 impl From<AppsError> for ApiError {
@@ -46,6 +54,22 @@ impl From<AppsError> for ApiError {
             }
             AppsError::PoolNotFound => ApiError::NotFound,
             AppsError::Refused(detail) => rejected(StatusCode::CONFLICT, "refused", Some(detail)),
+            AppsError::NotInstalled => ApiError::NotFound,
+            AppsError::AlreadyInstalled => rejected(StatusCode::CONFLICT, "app_installed", None),
+            AppsError::IdTooLong => rejected(StatusCode::UNPROCESSABLE_ENTITY, "app_id_too_long", None),
+            AppsError::DockerNotReady => rejected(StatusCode::CONFLICT, "docker_not_ready", None),
+            AppsError::PermissionsNotConfirmed => {
+                rejected(StatusCode::CONFLICT, "permissions_not_confirmed", None)
+            }
+            AppsError::InvalidValue(e) => {
+                rejected(StatusCode::UNPROCESSABLE_ENTITY, "invalid_app_value", Some(e.to_string()))
+            }
+            AppsError::Busy => rejected(StatusCode::CONFLICT, "app_busy", None),
+            AppsError::ConfirmationMismatch => {
+                rejected(StatusCode::UNPROCESSABLE_ENTITY, "confirmation_mismatch", None)
+            }
+            AppsError::UpToDate => rejected(StatusCode::CONFLICT, "up_to_date", None),
+            AppsError::HostFailed(detail) => rejected(StatusCode::BAD_GATEWAY, "host_failed", Some(detail)),
             AppsError::Port(e) => ApiError::internal(e),
         }
     }
@@ -464,4 +488,380 @@ async fn enable_docker(
 ) -> Result<Json<DockerSetup>, ApiError> {
     auth.require(Permission::ContainersManage)?;
     Ok(Json(docker_dto(state.docker.enable(&request.pool, &auth.0.actor(), &client).await?)))
+}
+
+/// What Docker makes of an installed app.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RunState {
+    Running,
+    /// Some of its containers run, others do not.
+    Partly,
+    /// A container keeps restarting: usually the app fails.
+    Restarting,
+    Stopped,
+}
+
+/// Where the app's web interface is, on the NAS's own address.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AppWebAddress {
+    pub port: u16,
+    pub path: String,
+    pub https: bool,
+}
+
+/// An installed app.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct InstalledApp {
+    pub id: String,
+    /// The catalog it came from; it may be gone since.
+    pub source_id: i64,
+    pub name: String,
+    pub version: String,
+    pub tagline: String,
+    pub translations: BTreeMap<String, AppTexts>,
+    /// Of the version installed; for its icon.
+    pub digest: String,
+    /// `installing`, `installed`, `failed` or `removing`.
+    pub state: String,
+    /// `None` while Docker cannot be asked.
+    pub run_state: Option<RunState>,
+    pub web: Option<AppWebAddress>,
+    /// Port id → host port.
+    pub ports: BTreeMap<String, u16>,
+    /// Share id → share name.
+    pub shares: BTreeMap<String, String>,
+    pub permissions: AppPermissions,
+    /// The version its catalog offers now, if it is another.
+    pub update: Option<String>,
+    /// The pool its data and Docker's are on.
+    pub pool: String,
+    pub installed_at: i64,
+    pub updated_at: i64,
+}
+
+fn installed_dto(view: InstalledView) -> InstalledApp {
+    let InstalledView { app, containers, update } = view;
+    let web = app.web().map(|web| AppWebAddress {
+        port: web.port,
+        path: web.path,
+        https: web.scheme == apps::WebScheme::Https,
+    });
+    let run_state = containers.map(|containers| match containers.state() {
+        apps::RunState::Running => RunState::Running,
+        apps::RunState::Partly => RunState::Partly,
+        apps::RunState::Restarting => RunState::Restarting,
+        apps::RunState::Stopped => RunState::Stopped,
+    });
+    let catalog = app.app;
+    InstalledApp {
+        id: app.id,
+        source_id: app.source_id,
+        name: catalog.name,
+        version: catalog.version,
+        tagline: catalog.tagline,
+        translations: catalog
+            .translations
+            .into_iter()
+            .map(|(language, t)| {
+                let texts =
+                    AppTexts { name: t.name, tagline: t.tagline, description: t.description, notes: t.notes };
+                (language, texts)
+            })
+            .collect(),
+        digest: catalog.digest,
+        state: app.state.as_str().to_owned(),
+        run_state,
+        web,
+        ports: app.values.ports,
+        shares: app.values.shares,
+        permissions: AppPermissions {
+            devices: catalog.permissions.devices,
+            capabilities: catalog.permissions.capabilities,
+            host_network: catalog.permissions.host_network,
+        },
+        update,
+        pool: app.pool,
+        installed_at: app.installed_at.unix_seconds(),
+        updated_at: app.updated_at.unix_seconds(),
+    }
+}
+
+/// The installed apps, with what Docker makes of them. Needs
+/// `containers.manage`.
+#[utoipa::path(get, path = "/apps/installed", tag = "apps", security(("session" = [])), responses((status = OK, body = Vec<InstalledApp>)))]
+async fn installed(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+) -> Result<Json<Vec<InstalledApp>>, ApiError> {
+    auth.require(Permission::ContainersManage)?;
+    Ok(Json(state.installs.list(&client).await?.into_iter().map(installed_dto).collect()))
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct InstallAppRequest {
+    pub source: i64,
+    pub app: String,
+    /// Share id → the name of the share picked for it.
+    #[serde(default)]
+    pub shares: BTreeMap<String, String>,
+    /// Port id → host port; missing ones get their default.
+    #[serde(default)]
+    pub ports: BTreeMap<String, u16>,
+    /// Setting id → value; missing ones get their default. Generated
+    /// settings are made by zendiloOS.
+    #[serde(default)]
+    pub settings: BTreeMap<String, String>,
+    /// The administrator confirmed the app's permissions.
+    #[serde(default)]
+    pub confirm_permissions: bool,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct Installing {
+    pub app: InstalledApp,
+    pub job: Job,
+}
+
+/// Installs an app from a catalog: its data and Docker's on the same pool,
+/// an account of its own, access to the shares picked; the agent checks it
+/// against the catalog's policy before anything runs. Needs
+/// `containers.manage`.
+#[utoipa::path(
+    post,
+    path = "/apps/installed",
+    tag = "apps",
+    security(("session" = [])),
+    request_body = InstallAppRequest,
+    responses(
+        (status = ACCEPTED, body = Installing),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`: no such app"),
+        (status = CONFLICT, body = Problem, description = "`app_installed`, `docker_not_ready`, `permissions_not_confirmed`"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_app_value`, `app_id_too_long`"),
+    )
+)]
+async fn install(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    ApiJson(request): ApiJson<InstallAppRequest>,
+) -> Result<(StatusCode, Json<Installing>), ApiError> {
+    auth.require(Permission::ContainersManage)?;
+    let request = InstallRequest {
+        source: request.source,
+        app: request.app,
+        shares: request.shares,
+        ports: request.ports,
+        settings: request.settings,
+        permissions_confirmed: request.confirm_permissions,
+    };
+    let (app, job) = state.installs.install(request, &auth.0.actor(), &client).await?;
+    let view = InstalledView { app, containers: None, update: None };
+    Ok((StatusCode::ACCEPTED, Json(Installing { app: installed_dto(view), job: job.into() })))
+}
+
+/// One installed app. Needs `containers.manage`.
+#[utoipa::path(
+    get,
+    path = "/apps/installed/{id}",
+    tag = "apps",
+    security(("session" = [])),
+    params(("id" = String, Path)),
+    responses((status = OK, body = InstalledApp), (status = NOT_FOUND, body = Problem, description = "`not_found`"))
+)]
+async fn installed_app(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(id): Path<String>,
+) -> Result<Json<InstalledApp>, ApiError> {
+    auth.require(Permission::ContainersManage)?;
+    Ok(Json(installed_dto(state.installs.get(&id, &client).await?)))
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UninstallRequest {
+    /// The app's id, repeated: its data goes with it.
+    pub confirm: String,
+}
+
+/// Removes an app with its containers, images and data, then its access
+/// to shares and its account, as a job. Needs `containers.manage`.
+#[utoipa::path(
+    delete,
+    path = "/apps/installed/{id}",
+    tag = "apps",
+    security(("session" = [])),
+    params(("id" = String, Path)),
+    request_body = UninstallRequest,
+    responses(
+        (status = ACCEPTED, body = Job),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`"),
+        (status = CONFLICT, body = Problem, description = "`app_busy`"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`confirmation_mismatch`"),
+    )
+)]
+async fn uninstall(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(id): Path<String>,
+    ApiJson(request): ApiJson<UninstallRequest>,
+) -> Result<(StatusCode, Json<Job>), ApiError> {
+    auth.require(Permission::ContainersManage)?;
+    let job = state.installs.uninstall(&id, &request.confirm, &auth.0.actor(), &client).await?;
+    Ok((StatusCode::ACCEPTED, Json(job.into())))
+}
+
+/// Installs a failed app again, with its values. Needs
+/// `containers.manage`.
+#[utoipa::path(
+    post,
+    path = "/apps/installed/{id}/retry",
+    tag = "apps",
+    security(("session" = [])),
+    params(("id" = String, Path)),
+    responses(
+        (status = ACCEPTED, body = Job),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`"),
+        (status = CONFLICT, body = Problem, description = "`app_busy`: not failed"),
+    )
+)]
+async fn retry_app(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(id): Path<String>,
+) -> Result<(StatusCode, Json<Job>), ApiError> {
+    auth.require(Permission::ContainersManage)?;
+    let job = state.installs.retry(&id, &auth.0.actor(), &client).await?;
+    Ok((StatusCode::ACCEPTED, Json(job.into())))
+}
+
+#[derive(Debug, Default, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateAppRequest {
+    /// The administrator confirmed what the new version may do beyond the
+    /// old one.
+    #[serde(default)]
+    pub confirm_permissions: bool,
+}
+
+/// Brings an app to the version its catalog offers now, keeping its
+/// values. Needs `containers.manage`.
+#[utoipa::path(
+    post,
+    path = "/apps/installed/{id}/update",
+    tag = "apps",
+    security(("session" = [])),
+    params(("id" = String, Path)),
+    request_body = UpdateAppRequest,
+    responses(
+        (status = ACCEPTED, body = Job),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`: the app or its catalog entry"),
+        (status = CONFLICT, body = Problem, description = "`up_to_date`, `app_busy`, `permissions_not_confirmed`"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_app_value`: the new version needs a value"),
+    )
+)]
+async fn update_app(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(id): Path<String>,
+    ApiJson(request): ApiJson<UpdateAppRequest>,
+) -> Result<(StatusCode, Json<Job>), ApiError> {
+    auth.require(Permission::ContainersManage)?;
+    let job = state.installs.update(&id, request.confirm_permissions, &auth.0.actor(), &client).await?;
+    Ok((StatusCode::ACCEPTED, Json(job.into())))
+}
+
+/// Starts an installed app's containers. Needs `containers.manage`.
+#[utoipa::path(
+    post,
+    path = "/apps/installed/{id}/start",
+    tag = "apps",
+    security(("session" = [])),
+    params(("id" = String, Path)),
+    responses(
+        (status = NO_CONTENT, description = "Started."),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`"),
+        (status = CONFLICT, body = Problem, description = "`app_busy`, `refused`"),
+        (status = BAD_GATEWAY, body = Problem, description = "`host_failed`: Docker's words"),
+    )
+)]
+async fn start_app(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    auth.require(Permission::ContainersManage)?;
+    state.installs.start(&id, &auth.0.actor(), &client).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Stops an installed app's containers. Needs `containers.manage`.
+#[utoipa::path(
+    post,
+    path = "/apps/installed/{id}/stop",
+    tag = "apps",
+    security(("session" = [])),
+    params(("id" = String, Path)),
+    responses(
+        (status = NO_CONTENT, description = "Stopped."),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`"),
+        (status = CONFLICT, body = Problem, description = "`app_busy`"),
+        (status = BAD_GATEWAY, body = Problem, description = "`host_failed`: Docker's words"),
+    )
+)]
+async fn stop_app(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    auth.require(Permission::ContainersManage)?;
+    state.installs.stop(&id, &auth.0.actor(), &client).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct LogsQuery {
+    /// The last this many lines, 1 to 5000; 200 if left out.
+    pub lines: Option<u32>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AppLogs {
+    /// Each line with the container's name and a timestamp, oldest first.
+    pub text: String,
+}
+
+/// The last lines its containers wrote. Needs `containers.manage`.
+#[utoipa::path(
+    get,
+    path = "/apps/installed/{id}/logs",
+    tag = "apps",
+    security(("session" = [])),
+    params(("id" = String, Path), LogsQuery),
+    responses(
+        (status = OK, body = AppLogs),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`"),
+        (status = BAD_GATEWAY, body = Problem, description = "`host_failed`: Docker's words"),
+    )
+)]
+async fn app_logs(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(id): Path<String>,
+    Query(query): Query<LogsQuery>,
+) -> Result<Json<AppLogs>, ApiError> {
+    auth.require(Permission::ContainersManage)?;
+    let lines = query.lines.unwrap_or(200).clamp(1, 5000);
+    Ok(Json(AppLogs { text: state.installs.logs(&id, lines, &client).await? }))
 }

@@ -15,21 +15,22 @@ use tokio::signal::unix::{SignalKind, signal};
 use tokio::task::JoinHandle;
 use zendiloos_agent_proto::{AgentTransport, ConsoleSetupCode, Request, Response, UnixTransport};
 use zendiloos_api::{ApiState, UseCases};
-use zendiloos_apps::application::{Catalogs, Docker};
+use zendiloos_apps::application::{Catalogs, Docker, InstallPorts, Installs};
 use zendiloos_identity::application::commands::PurgeExpiredSessions;
 use zendiloos_identity::application::{IdentityConfig, IdentityPorts, IdentityUseCases};
 use zendiloos_infra::SystemClock;
 use zendiloos_infra::agent::{
-    AgentFiles, AgentNetwork, AgentPowerControl, AgentSharing, AgentStorage, AgentSystemAccounts,
+    AgentApps, AgentFiles, AgentNetwork, AgentPowerControl, AgentSharing, AgentStorage, AgentSystemAccounts,
     RandomPlanTokens, agent_version,
 };
-use zendiloos_infra::apps::HttpsCatalogs;
+use zendiloos_infra::apps::{HttpsCatalogs, ProcListening, RandomSecrets, SharingForApps};
 use zendiloos_infra::host::{HostSystemInfo, IpNetworkReader, JournalctlReader, MetricsHub};
 use zendiloos_infra::identity::{Argon2PasswordHasher, FileSetupCodes, RandomSessionTokens};
 use zendiloos_infra::notify::NetworkChannels;
 use zendiloos_infra::sqlite::{
-    Database, SqliteAccounts, SqliteAppSources, SqliteAuditLog, SqliteChannels, SqliteGroups, SqliteJobs,
-    SqliteNotifications, SqlitePreferences, SqliteSelfTestPlans, SqliteSessions, SqliteShares,
+    Database, SqliteAccounts, SqliteAppSources, SqliteAuditLog, SqliteChannels, SqliteGroups,
+    SqliteInstalledApps, SqliteJobs, SqliteNotifications, SqlitePreferences, SqliteSelfTestPlans,
+    SqliteSessions, SqliteShares,
 };
 use zendiloos_jobs::Jobs;
 use zendiloos_kernel::{AuditLog, RequestContext};
@@ -89,7 +90,7 @@ async fn main() -> anyhow::Result<()> {
 async fn serve(config: Config) -> anyhow::Result<()> {
     let database = open_database(&config).await?;
     let audit: Arc<dyn AuditLog> = Arc::new(SqliteAuditLog::new(database.clone()));
-    let (agent, files_agent) = agent_transports(&config).await;
+    let (agent, files_agent, patient_agent) = agent_transports(&config).await;
     let identity = identity(&config, &database, audit.clone(), agent.clone())?;
     let setup_code = announce_setup(&config, &identity).await?;
     let purge = spawn_session_purge(identity.purge_expired_sessions.clone());
@@ -139,6 +140,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     let agent_storage = Arc::new(AgentStorage::new(agent));
     let agent_storage_for_sharing = agent_storage.clone();
     let docker = Docker::new(agent_storage.clone(), audit.clone(), Arc::new(SystemClock));
+    let docker_host = agent_storage.clone();
     let storage = StorageUseCases::new(StoragePorts {
         devices: agent_storage.clone(),
         smart: agent_storage.clone(),
@@ -159,7 +161,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         directory: sharing_store,
         volumes: agent_storage_for_sharing,
         host: Arc::new(AgentSharing::new(agent_for_sharing, files_agent.clone())),
-        files: Arc::new(AgentFiles::new(files_agent)),
+        files: Arc::new(AgentFiles::new(files_agent.clone())),
         jobs: jobs.clone(),
         audit: audit.clone(),
         clock: Arc::new(SystemClock),
@@ -167,6 +169,25 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     };
     let sharing = SharingUseCases::new(sharing_ports.clone());
     let files = FilesUseCases::new(sharing_ports);
+    let installs = Installs::new(InstallPorts {
+        catalogs: apps.clone(),
+        installed: Arc::new(SqliteInstalledApps::new(database.clone())),
+        host: Arc::new(AgentApps::new(patient_agent, files_agent.clone())),
+        docker: docker_host,
+        shares: Arc::new(SharingForApps::new(sharing.clone())),
+        listening: Arc::new(ProcListening::default()),
+        secrets: Arc::new(RandomSecrets),
+        jobs: jobs.clone(),
+        audit: audit.clone(),
+        clock: Arc::new(SystemClock),
+    });
+    match installs.recover().await {
+        Ok(0) => {}
+        Ok(failed) => {
+            tracing::warn!(failed, "apps being installed or removed when zendiloosd stopped are failed")
+        }
+        Err(error) => tracing::warn!(error = %error_chain(&error), "cannot look at the installed apps"),
+    }
     // The servers offer what the database says, whatever happened since.
     if let Err(error) = sharing.apply(&RequestContext::default()).await {
         tracing::warn!(error = %error_chain(&error), "cannot apply the sharing configuration");
@@ -198,6 +219,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         channels,
         apps,
         docker,
+        installs,
     };
     let state = ApiState::new(use_cases, config.secure_cookies);
     let app = zendiloos_api::router(state);
@@ -240,20 +262,26 @@ async fn serve(config: Config) -> anyhow::Result<()> {
 /// The way to the privileged agent. An unreachable agent is not fatal:
 /// systemd starts it on the first connection, and only privileged
 /// operations need it.
-/// The system and the files agent. The simulation serves both.
-async fn agent_transports(config: &Config) -> (Arc<dyn AgentTransport>, Arc<dyn AgentTransport>) {
-    let (system, files): (Arc<dyn AgentTransport>, Arc<dyn AgentTransport>) = match config.agent.transport {
+/// The system and the files agent, and the system agent once more with
+/// the patience apps need. The simulation serves all.
+async fn agent_transports(
+    config: &Config,
+) -> (Arc<dyn AgentTransport>, Arc<dyn AgentTransport>, Arc<dyn AgentTransport>) {
+    type Transport = Arc<dyn AgentTransport>;
+    let (system, files, patient): (Transport, Transport, Transport) = match config.agent.transport {
         AgentTransportKind::Unix => (
             Arc::new(UnixTransport::new(&config.agent.socket, Duration::from_secs(30))),
             // Applying permissions to a large share takes a while.
             Arc::new(UnixTransport::new(&config.agent.files_socket, Duration::from_secs(3600))),
+            // Fetching an app's images too; the agent gives up after 30 minutes.
+            Arc::new(UnixTransport::new(&config.agent.socket, Duration::from_secs(31 * 60))),
         ),
         AgentTransportKind::Simulated => {
             tracing::warn!("using the simulated agent: privileged operations are not carried out");
             // Share contents are real files, kept with the state.
             let simulated =
                 Arc::new(SimulatedAgent::new().with_files(config.state_dir.join("simulated-volumes")));
-            (simulated.clone(), simulated)
+            (simulated.clone(), simulated.clone(), simulated)
         }
     };
     for (role, transport) in [("system", &system), ("files", &files)] {
@@ -262,7 +290,7 @@ async fn agent_transports(config: &Config) -> (Arc<dyn AgentTransport>, Arc<dyn 
             Err(error) => tracing::warn!(role, error = %error_chain(&error), "agent not reachable"),
         }
     }
-    (system, files)
+    (system, files, patient)
 }
 
 /// `outer: inner: innermost`, so the log shows the root cause.
