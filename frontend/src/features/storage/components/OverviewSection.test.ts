@@ -11,6 +11,7 @@ const overview = ref<StorageOverview | undefined>()
 
 vi.mock('../api', () => ({
   useStorageOverview: () => ({ data: overview, error: ref(null) }),
+  usePools: () => ({ data: ref([]) }),
 }))
 
 function base(): StorageOverview {

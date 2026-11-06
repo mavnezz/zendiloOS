@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { Database } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 
 import { problemMessage } from '@/shared/i18n'
-import { formatBytes } from '@/shared/lib/format'
+import { formatBytes, formatPercent } from '@/shared/lib/format'
 import { Alert } from '@/shared/ui/alert'
 import { Meter } from '@/shared/ui/meter'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/shared/ui/table'
 
 import { useVolumes } from '../api'
 
@@ -21,49 +21,60 @@ const share = (used: number, size: number) => (size > 0 ? used / size : 0)
     <p v-else-if="!isPending && !volumes?.length" class="text-sm text-muted-foreground">
       {{ t('storage.noVolumes') }}
     </p>
-    <div class="grid gap-3 @3xl:grid-cols-2">
-      <section
-        v-for="volume in volumes"
-        :key="volume.id"
-        class="grid gap-3 rounded-xl border bg-card p-4"
-      >
-        <header class="flex items-start gap-3">
-          <Database class="mt-0.5 size-5 shrink-0 text-primary" />
-          <div class="min-w-0 flex-1">
-            <h3 class="truncate font-medium">{{ volume.label ?? volume.devices.join(', ') }}</h3>
-            <p class="truncate text-xs text-muted-foreground">
-              {{ volume.filesystem }} ·
-              {{
-                volume.mount_points.length
-                  ? volume.mount_points.join(', ')
-                  : t('storage.notMounted')
-              }}
-            </p>
-          </div>
-        </header>
-        <template v-if="volume.size_bytes != null && volume.used_bytes != null">
-          <Meter
-            :value="share(volume.used_bytes, volume.size_bytes)"
-            :label="t('storage.usedSpace')"
-          />
-          <p class="text-xs text-muted-foreground">
+    <Table v-else>
+      <TableHeader>
+        <TableRow>
+          <TableHead>{{ t('storage.columns.volume') }}</TableHead>
+          <TableHead>{{ t('storage.columns.mount') }}</TableHead>
+          <TableHead class="hidden @2xl/panel:table-cell">{{
+            t('storage.columns.filesystem')
+          }}</TableHead>
+          <TableHead class="w-48">{{ t('storage.columns.used') }}</TableHead>
+          <TableHead class="text-right">{{ t('storage.columns.size') }}</TableHead>
+          <TableHead class="text-right">{{ t('storage.columns.free') }}</TableHead>
+          <TableHead class="hidden @3xl/panel:table-cell">{{
+            t('storage.columns.disks')
+          }}</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        <TableRow v-for="volume in volumes" :key="volume.id">
+          <TableCell class="font-mono text-xs font-medium">
+            {{ volume.label ?? volume.devices.join(', ') }}
+          </TableCell>
+          <TableCell class="font-mono text-xs">
             {{
-              t('storage.spaceUsed', {
-                used: formatBytes(volume.used_bytes),
-                size: formatBytes(volume.size_bytes),
-                available: formatBytes(volume.available_bytes ?? 0),
-              })
+              volume.mount_points.length ? volume.mount_points.join(', ') : t('storage.notMounted')
             }}
-          </p>
-        </template>
-        <p class="text-xs text-muted-foreground">
-          {{
-            volume.array
-              ? t('storage.onArray', { array: volume.array, disks: volume.disks.join(', ') })
-              : t('storage.onDisks', { disks: volume.disks.join(', ') })
-          }}
-        </p>
-      </section>
-    </div>
+          </TableCell>
+          <TableCell class="hidden text-muted-foreground @2xl/panel:table-cell">
+            {{ volume.filesystem }}{{ volume.array ? ` · ${volume.array}` : '' }}
+          </TableCell>
+          <TableCell>
+            <span
+              v-if="volume.size_bytes != null && volume.used_bytes != null"
+              class="flex items-center gap-2"
+            >
+              <Meter
+                :value="share(volume.used_bytes, volume.size_bytes)"
+                :label="t('storage.usedSpace')"
+              />
+              <span class="w-10 text-right text-xs tabular-nums">
+                {{ formatPercent(share(volume.used_bytes, volume.size_bytes) * 100) }}
+              </span>
+            </span>
+          </TableCell>
+          <TableCell class="text-right tabular-nums">
+            {{ volume.size_bytes != null ? formatBytes(volume.size_bytes) : '–' }}
+          </TableCell>
+          <TableCell class="text-right tabular-nums">
+            {{ volume.available_bytes != null ? formatBytes(volume.available_bytes) : '–' }}
+          </TableCell>
+          <TableCell class="hidden font-mono text-xs text-muted-foreground @3xl/panel:table-cell">
+            {{ volume.disks.join(', ') }}
+          </TableCell>
+        </TableRow>
+      </TableBody>
+    </Table>
   </div>
 </template>

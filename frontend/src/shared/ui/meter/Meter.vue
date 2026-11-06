@@ -15,11 +15,7 @@ const props = defineProps<{
 const percent = computed(() => Math.round(Math.min(Math.max(props.value, 0), 1) * 100))
 const tone = computed(() => {
   if (props.kind === 'progress') return 'bg-primary'
-  return percent.value >= 90
-    ? 'bg-destructive'
-    : percent.value >= 75
-      ? 'bg-amber-500'
-      : 'bg-primary'
+  return percent.value >= 90 ? 'bg-destructive' : percent.value >= 75 ? 'bg-warning' : 'bg-primary'
 })
 </script>
 
@@ -30,7 +26,7 @@ const tone = computed(() => {
     aria-valuemin="0"
     aria-valuemax="100"
     :aria-valuenow="percent"
-    :class="cn('h-2 w-full overflow-hidden rounded-full bg-muted', props.class)"
+    :class="cn('h-1.5 w-full overflow-hidden rounded-full bg-muted', props.class)"
   >
     <div
       :class="cn('h-full rounded-full transition-[width]', tone)"

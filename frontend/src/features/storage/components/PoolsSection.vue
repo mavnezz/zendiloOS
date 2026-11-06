@@ -1,13 +1,5 @@
 <script setup lang="ts">
-import {
-  CircleStop,
-  Database,
-  Plus,
-  RefreshCw,
-  Replace,
-  ShieldCheck,
-  Trash2,
-} from 'lucide-vue-next'
+import { CircleStop, Database, Plus, Replace, ShieldCheck, Trash2 } from 'lucide-vue-next'
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
@@ -25,6 +17,7 @@ import { Alert } from '@/shared/ui/alert'
 import { Badge, type BadgeVariants } from '@/shared/ui/badge'
 import { Button } from '@/shared/ui/button'
 import { Meter } from '@/shared/ui/meter'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/shared/ui/table'
 
 import { scrubPool, stopScrub, useArrays, useDisks, usePools, useRefreshStorage } from '../api'
 import { formatPoolLayout } from '../format'
@@ -111,13 +104,12 @@ function scanLine(pool: Pool): string | null {
 </script>
 
 <template>
-  <div class="grid gap-3">
-    <div v-if="canManage" class="flex justify-end gap-2">
-      <Button variant="outline" size="sm" @click="refresh()">
-        <RefreshCw />
-        {{ t('storage.refresh') }}
-      </Button>
-      <Button size="sm" @click="creating = true">
+  <div class="grid gap-4">
+    <div class="flex items-center gap-2">
+      <p class="flex-1 text-xs text-muted-foreground">
+        {{ t('storage.poolCount', { count: pools?.length ?? 0 }, pools?.length ?? 0) }}
+      </p>
+      <Button v-if="canManage" size="sm" @click="creating = true">
         <Plus />
         {{ t('storage.create.button') }}
       </Button>
@@ -129,29 +121,54 @@ function scanLine(pool: Pool): string | null {
     <p v-else-if="!isPending && !pools?.length" class="text-sm text-muted-foreground">
       {{ t('storage.noPools') }}
     </p>
-    <section
-      v-for="pool in pools"
-      :key="pool.guid"
-      class="grid gap-3 rounded-xl border bg-card p-4"
-    >
-      <header class="flex flex-wrap items-center gap-3">
-        <Database class="size-5 shrink-0 text-primary" />
-        <div class="min-w-0 flex-1">
-          <h3 class="font-medium">{{ pool.name }} · {{ formatPoolLayout(pool) }}</h3>
-          <p class="text-xs text-muted-foreground">
-            {{ pool.mount_point ?? t('storage.notMounted') }} ·
-            {{ t('storage.redundancy', pool.redundancy) }}
-          </p>
-        </div>
+    <section v-for="pool in pools" :key="pool.guid" class="grid gap-3 rounded-lg border p-4">
+      <header class="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <Database class="size-4 shrink-0 text-muted-foreground" />
+        <h3 class="font-mono text-sm font-semibold">{{ pool.name }}</h3>
+        <span class="text-xs text-muted-foreground">
+          {{ formatPoolLayout(pool) }} · {{ pool.mount_point ?? t('storage.notMounted') }} ·
+          {{ t('storage.redundancy', pool.redundancy) }}
+        </span>
+        <span class="flex-1" />
         <Badge v-if="pool.volume === null || pool.volume === undefined" variant="outline">
           {{ t('storage.notManaged') }}
         </Badge>
         <Badge :variant="STATE[pool.state]">{{ t(`storage.vdevState.${pool.state}`) }}</Badge>
+        <template v-if="managed(pool)">
+          <Button v-if="stoppable(pool)" variant="ghost" size="sm" @click="scrub(pool, stopScrub)">
+            <CircleStop />
+            {{ t('storage.stopScrub') }}
+          </Button>
+          <Button
+            v-else
+            variant="ghost"
+            size="sm"
+            :disabled="pool.scan?.state === 'running'"
+            @click="scrub(pool, scrubPool)"
+          >
+            <ShieldCheck />
+            {{ t('storage.scrubNow') }}
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            class="text-muted-foreground hover:text-destructive"
+            :title="t('storage.destroy.button')"
+            :aria-label="t('storage.destroy.button')"
+            @click="destroying = pool"
+          >
+            <Trash2 />
+          </Button>
+        </template>
       </header>
 
-      <div v-if="pool.used_bytes !== null && pool.used_bytes !== undefined" class="grid gap-1.5">
+      <div
+        v-if="pool.used_bytes !== null && pool.used_bytes !== undefined"
+        class="grid grid-cols-[1fr_auto] items-center gap-x-4 gap-y-1"
+      >
         <Meter :value="usage(pool)" :label="t('storage.usedSpace')" />
-        <p class="text-xs text-muted-foreground">
+        <span class="text-xs font-medium tabular-nums">{{ formatPercent(usage(pool) * 100) }}</span>
+        <p class="text-xs text-muted-foreground tabular-nums">
           {{
             t('storage.spaceUsed', {
               used: formatBytes(pool.used_bytes),
@@ -162,8 +179,8 @@ function scanLine(pool: Pool): string | null {
         </p>
       </div>
 
-      <div v-if="pool.scan" class="grid gap-1.5">
-        <p class="text-sm">{{ scanLine(pool) }}</p>
+      <div v-if="pool.scan" class="grid gap-1.5 rounded-md bg-muted/50 px-3 py-2">
+        <p class="text-xs">{{ scanLine(pool) }}</p>
         <Meter
           v-if="pool.scan.state === 'running'"
           :value="pool.scan.percent / 100"
@@ -176,65 +193,74 @@ function scanLine(pool: Pool): string | null {
         {{ t('storage.dataErrors', pool.data_errors) }}
       </Alert>
 
-      <ul class="grid gap-1.5" :aria-label="t('storage.devices')">
-        <li
-          v-for="device in pool.devices"
-          :key="device.guid"
-          class="flex flex-wrap items-center gap-2 rounded-lg border px-3 py-1.5 text-sm"
-        >
-          <span class="font-medium">{{ device.disk ?? t('storage.missingDisk') }}</span>
-          <span class="min-w-0 flex-1 truncate text-xs text-muted-foreground" :title="device.name">
-            {{ (device.disk && models.get(device.disk)) ?? device.name }}
-          </span>
-          <span
-            v-if="device.read_errors + device.write_errors + device.checksum_errors > 0"
-            class="text-xs text-destructive tabular-nums"
-          >
-            {{
-              t('storage.deviceErrors', {
-                read: device.read_errors,
-                write: device.write_errors,
-                checksum: device.checksum_errors,
-              })
-            }}
-          </span>
-          <Badge v-if="device.replacing" variant="default">
-            {{ t(`storage.replacing.${device.replacing}`) }}
-          </Badge>
-          <Badge :variant="STATE[device.state]">{{ t(`storage.vdevState.${device.state}`) }}</Badge>
-          <Button
-            v-if="managed(pool) && !device.replacing && pool.layout !== 'single'"
-            variant="ghost"
-            size="icon"
-            :title="t('storage.replaceDisk.button')"
-            :aria-label="t('storage.replaceDisk.button')"
-            @click="replacing = { pool: pool.name, device }"
-          >
-            <Replace />
-          </Button>
-        </li>
-      </ul>
-
-      <div v-if="managed(pool)" class="flex flex-wrap justify-end gap-2">
-        <Button v-if="stoppable(pool)" variant="outline" size="sm" @click="scrub(pool, stopScrub)">
-          <CircleStop />
-          {{ t('storage.stopScrub') }}
-        </Button>
-        <Button
-          v-else
-          variant="outline"
-          size="sm"
-          :disabled="pool.scan?.state === 'running'"
-          @click="scrub(pool, scrubPool)"
-        >
-          <ShieldCheck />
-          {{ t('storage.scrubNow') }}
-        </Button>
-        <Button variant="outline" size="sm" @click="destroying = pool">
-          <Trash2 />
-          {{ t('storage.destroy.button') }}
-        </Button>
-      </div>
+      <Table :aria-label="t('storage.devices')">
+        <TableHeader>
+          <TableRow>
+            <TableHead>{{ t('storage.columns.device') }}</TableHead>
+            <TableHead>{{ t('storage.columns.model') }}</TableHead>
+            <TableHead class="hidden @3xl/panel:table-cell">{{
+              t('storage.columns.member')
+            }}</TableHead>
+            <TableHead class="text-right">{{ t('storage.columns.readErrors') }}</TableHead>
+            <TableHead class="text-right">{{ t('storage.columns.writeErrors') }}</TableHead>
+            <TableHead class="text-right">{{ t('storage.columns.checksumErrors') }}</TableHead>
+            <TableHead>{{ t('storage.columns.state') }}</TableHead>
+            <TableHead class="w-8" />
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          <TableRow v-for="device in pool.devices" :key="device.guid">
+            <TableCell class="font-mono text-xs font-medium">
+              {{ device.disk ?? t('storage.missingDisk') }}
+            </TableCell>
+            <TableCell class="max-w-48 truncate">
+              {{ (device.disk && models.get(device.disk)) ?? '–' }}
+            </TableCell>
+            <TableCell
+              class="hidden max-w-72 truncate font-mono text-[11px] text-muted-foreground @3xl/panel:table-cell"
+              :title="device.name"
+            >
+              {{ device.name }}
+            </TableCell>
+            <TableCell
+              v-for="(count, kind) in [
+                device.read_errors,
+                device.write_errors,
+                device.checksum_errors,
+              ]"
+              :key="kind"
+              :class="[
+                'text-right tabular-nums',
+                count > 0 ? 'font-medium text-destructive' : 'text-muted-foreground',
+              ]"
+            >
+              {{ count }}
+            </TableCell>
+            <TableCell>
+              <span class="flex items-center gap-1">
+                <Badge v-if="device.replacing" variant="default">
+                  {{ t(`storage.replacing.${device.replacing}`) }}
+                </Badge>
+                <Badge :variant="STATE[device.state]">{{
+                  t(`storage.vdevState.${device.state}`)
+                }}</Badge>
+              </span>
+            </TableCell>
+            <TableCell>
+              <Button
+                v-if="managed(pool) && !device.replacing && pool.layout !== 'single'"
+                variant="ghost"
+                size="icon-sm"
+                :title="t('storage.replaceDisk.button')"
+                :aria-label="t('storage.replaceDisk.button')"
+                @click="replacing = { pool: pool.name, device }"
+              >
+                <Replace />
+              </Button>
+            </TableCell>
+          </TableRow>
+        </TableBody>
+      </Table>
     </section>
 
     <CreatePoolDialog v-model:open="creating" />
@@ -253,7 +279,7 @@ function scanLine(pool: Pool): string | null {
     />
 
     <template v-if="arrays?.length">
-      <h3 class="mt-2 text-sm font-medium text-muted-foreground">{{ t('storage.otherArrays') }}</h3>
+      <h3 class="mt-2 text-sm font-semibold">{{ t('storage.otherArrays') }}</h3>
       <ArraysSection />
     </template>
   </div>

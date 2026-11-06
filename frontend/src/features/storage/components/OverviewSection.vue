@@ -3,18 +3,23 @@ import { CircleAlert, CircleCheck, Info, TriangleAlert } from 'lucide-vue-next'
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import type { StorageConcern, StorageSeverity } from '@/shared/api/types'
+import type { Pool, StorageConcern, StorageSeverity } from '@/shared/api/types'
 import { problemMessage } from '@/shared/i18n'
-import { formatBytes } from '@/shared/lib/format'
+import { formatBytes, formatPercent } from '@/shared/lib/format'
 import { cn } from '@/shared/lib/utils'
 import { Alert } from '@/shared/ui/alert'
+import { Badge } from '@/shared/ui/badge'
 import { Meter } from '@/shared/ui/meter'
+import { PanelSection } from '@/shared/ui/section'
+import { StatTile } from '@/shared/ui/stat'
 
-import { useStorageOverview } from '../api'
+import { usePools, useStorageOverview } from '../api'
+import { formatPoolLayout } from '../format'
 
 const i18n = useI18n()
 const { t } = i18n
 const { data: overview, error } = useStorageOverview()
+const { data: pools } = usePools()
 
 const icons: Record<StorageSeverity, unknown> = {
   notice: Info,
@@ -22,9 +27,14 @@ const icons: Record<StorageSeverity, unknown> = {
   critical: CircleAlert,
 }
 const tones: Record<StorageSeverity, string> = {
-  notice: 'text-primary',
-  warning: 'text-amber-600 dark:text-amber-400',
+  notice: 'text-info',
+  warning: 'text-warning',
   critical: 'text-destructive',
+}
+
+function used(pool: Pool): number {
+  const total = (pool.used_bytes ?? 0) + (pool.available_bytes ?? 0)
+  return total > 0 ? (pool.used_bytes ?? 0) / total : 0
 }
 
 const verdict = computed(() => overview.value?.verdict ?? null)
@@ -45,77 +55,117 @@ function wording(concern: StorageConcern): string {
 
 <!-- What the storage is and what is wrong with it, the worst first. -->
 <template>
-  <div class="grid gap-4">
+  <div class="grid gap-6">
     <Alert v-if="error" variant="destructive">{{ problemMessage(error) }}</Alert>
     <template v-else-if="overview">
       <section
         :class="
           cn(
-            'flex items-start gap-3 rounded-xl border p-4',
-            verdict === 'critical' && 'border-destructive/50 bg-destructive/5',
-            verdict === 'warning' && 'border-amber-500/50 bg-amber-500/5',
+            'flex items-center gap-3 rounded-lg border-l-[3px] px-4 py-3',
+            verdict === 'critical' && 'border-destructive bg-destructive/[0.06]',
+            verdict === 'warning' && 'border-warning bg-warning/[0.08]',
+            verdict === 'notice' && 'border-info bg-info/[0.06]',
+            !verdict && 'border-success bg-success/[0.07]',
           )
         "
         role="status"
       >
         <component
           :is="verdict ? icons[verdict] : CircleCheck"
-          :class="
-            cn(
-              'mt-0.5 size-6 shrink-0',
-              verdict ? tones[verdict] : 'text-emerald-600 dark:text-emerald-400',
-            )
-          "
+          :class="cn('size-5 shrink-0', verdict ? tones[verdict] : 'text-success')"
         />
-        <div>
-          <h3 class="font-semibold">{{ t(`storage.verdict.${verdict ?? 'good'}`) }}</h3>
-          <p v-if="!verdict" class="text-sm text-muted-foreground">
-            {{ t('storage.verdict.goodDetail') }}
+        <div class="grid">
+          <h3 class="text-sm font-semibold">{{ t(`storage.verdict.${verdict ?? 'good'}`) }}</h3>
+          <p class="text-xs text-muted-foreground">
+            {{
+              verdict
+                ? t('storage.concernCount', overview.concerns.length)
+                : t('storage.verdict.goodDetail')
+            }}
           </p>
         </div>
       </section>
 
-      <ul v-if="overview.concerns.length" class="divide-y rounded-xl border bg-card">
-        <li
-          v-for="(concern, index) in overview.concerns"
-          :key="index"
-          class="flex items-start gap-3 px-4 py-3"
-        >
-          <component
-            :is="icons[concern.severity]"
-            :class="['mt-0.5 size-4 shrink-0', tones[concern.severity]]"
-          />
-          <p class="text-sm">{{ wording(concern) }}</p>
-        </li>
-      </ul>
+      <div class="grid grid-cols-2 gap-4 @2xl/panel:grid-cols-4">
+        <StatTile
+          :label="t('storage.summary.pools')"
+          :value="String(overview.pools)"
+          tone="primary"
+        />
+        <StatTile
+          :label="t('storage.summary.disks')"
+          :value="String(overview.disks)"
+          tone="chart-5"
+        />
+        <StatTile
+          :label="t('storage.summary.used')"
+          :value="formatBytes(overview.used_bytes)"
+          :hint="total > 0 ? formatPercent((overview.used_bytes / total) * 100) : undefined"
+          tone="chart-3"
+        />
+        <StatTile
+          :label="t('storage.summary.available')"
+          :value="formatBytes(overview.available_bytes)"
+          :hint="total > 0 ? t('storage.ofTotal', { total: formatBytes(total) }) : undefined"
+          tone="chart-2"
+        />
+      </div>
 
-      <dl class="grid grid-cols-2 gap-3 @2xl:grid-cols-4">
-        <div class="rounded-xl border bg-card p-4">
-          <dt class="text-xs text-muted-foreground">{{ t('storage.summary.pools') }}</dt>
-          <dd class="text-2xl font-semibold tabular-nums">{{ overview.pools }}</dd>
-        </div>
-        <div class="rounded-xl border bg-card p-4">
-          <dt class="text-xs text-muted-foreground">{{ t('storage.summary.disks') }}</dt>
-          <dd class="text-2xl font-semibold tabular-nums">{{ overview.disks }}</dd>
-        </div>
-        <div class="rounded-xl border bg-card p-4">
-          <dt class="text-xs text-muted-foreground">{{ t('storage.summary.used') }}</dt>
-          <dd class="text-2xl font-semibold tabular-nums">
-            {{ formatBytes(overview.used_bytes) }}
-          </dd>
-        </div>
-        <div class="rounded-xl border bg-card p-4">
-          <dt class="text-xs text-muted-foreground">{{ t('storage.summary.available') }}</dt>
-          <dd class="text-2xl font-semibold tabular-nums">
-            {{ formatBytes(overview.available_bytes) }}
-          </dd>
-        </div>
-      </dl>
-      <Meter
-        v-if="total > 0"
-        :value="overview.used_bytes / total"
-        :label="t('storage.usedSpace')"
-      />
+      <PanelSection v-if="overview.concerns.length" :title="t('storage.concernsTitle')">
+        <ul class="divide-y rounded-lg border">
+          <li
+            v-for="(concern, index) in overview.concerns"
+            :key="index"
+            class="flex items-center gap-3 px-3 py-2"
+          >
+            <component
+              :is="icons[concern.severity]"
+              :class="['size-4 shrink-0', tones[concern.severity]]"
+            />
+            <p class="text-sm">{{ wording(concern) }}</p>
+          </li>
+        </ul>
+      </PanelSection>
+
+      <PanelSection v-if="pools?.length" :title="t('storage.pools')">
+        <ul class="grid gap-3 @3xl/panel:grid-cols-2">
+          <li
+            v-for="pool in pools"
+            :key="pool.guid"
+            class="grid gap-2 rounded-lg border px-3 py-2.5"
+          >
+            <div class="flex items-center gap-2">
+              <span class="font-mono text-sm font-semibold">{{ pool.name }}</span>
+              <span class="truncate text-xs text-muted-foreground">
+                {{ formatPoolLayout(pool) }} · {{ pool.mount_point ?? '–' }}
+              </span>
+              <span class="flex-1" />
+              <Badge
+                :variant="
+                  pool.state === 'online'
+                    ? 'success'
+                    : pool.state === 'degraded'
+                      ? 'warning'
+                      : 'destructive'
+                "
+              >
+                {{ t(`storage.vdevState.${pool.state}`) }}
+              </Badge>
+            </div>
+            <div class="flex items-center gap-2">
+              <Meter :value="used(pool)" :label="t('storage.usedSpace')" />
+              <span class="w-10 text-right text-xs tabular-nums">{{
+                formatPercent(used(pool) * 100)
+              }}</span>
+            </div>
+            <p class="text-xs text-muted-foreground tabular-nums">
+              {{ formatBytes(pool.used_bytes ?? 0) }} /
+              {{ formatBytes((pool.used_bytes ?? 0) + (pool.available_bytes ?? 0)) }} ·
+              {{ t('storage.diskCount', pool.devices.length) }}
+            </p>
+          </li>
+        </ul>
+      </PanelSection>
     </template>
   </div>
 </template>
