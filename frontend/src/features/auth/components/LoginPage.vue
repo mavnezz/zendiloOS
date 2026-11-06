@@ -6,7 +6,7 @@ import { useRouter } from 'vue-router'
 import { problemMessage } from '@/shared/i18n'
 import { Alert } from '@/shared/ui/alert'
 import { Button } from '@/shared/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/shared/ui/card'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/shared/ui/card'
 import { Input } from '@/shared/ui/input'
 import { Label } from '@/shared/ui/label'
 
@@ -41,8 +41,9 @@ async function submit(): Promise<void> {
 <template>
   <AuthFrame>
     <Card>
-      <CardHeader>
-        <CardTitle class="text-xl">{{ t('login.title') }}</CardTitle>
+      <CardHeader class="text-center">
+        <CardTitle class="text-xl">{{ t('login.welcome') }}</CardTitle>
+        <CardDescription>{{ t('login.subtitle') }}</CardDescription>
       </CardHeader>
       <CardContent>
         <form class="grid gap-5" @submit.prevent="submit">
@@ -70,6 +71,7 @@ async function submit(): Promise<void> {
             />
           </div>
           <Button type="submit" class="w-full" :disabled="pending">{{ t('login.submit') }}</Button>
+          <p class="text-center text-sm text-muted-foreground">{{ t('login.firstTime') }}</p>
         </form>
       </CardContent>
     </Card>

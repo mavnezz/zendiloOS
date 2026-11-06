@@ -168,7 +168,7 @@ mod tests {
                 ("sdc".into(), Transport::Sata, DiskUsage::ArrayMember { array: "md0".into() }),
                 ("sdd".into(), Transport::Sata, DiskUsage::Unused),
                 ("vda".into(), Transport::Virtio, DiskUsage::System),
-                ("vdb".into(), Transport::Virtio, DiskUsage::Foreign),
+                // vdb, cloud-init's 370 KiB seed, is too small to be a disk.
                 ("nvme0n1".into(), Transport::Nvme, DiskUsage::Unused),
             ]
         );

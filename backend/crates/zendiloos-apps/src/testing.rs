@@ -160,10 +160,17 @@ impl CatalogReader for FakeReader {
     }
 }
 
-/// Docker installed, its data nowhere yet; pool `tank` as volume 1.
-#[derive(Default)]
+/// Docker installed (unless [`FakeDocker::missing`]), its data nowhere
+/// yet; pool `tank` as volume 1.
 pub struct FakeDocker {
     data_root: Mutex<Option<String>>,
+    installed: std::sync::atomic::AtomicBool,
+}
+
+impl Default for FakeDocker {
+    fn default() -> Self {
+        Self { data_root: Mutex::default(), installed: std::sync::atomic::AtomicBool::new(true) }
+    }
 }
 
 #[async_trait]
@@ -173,7 +180,18 @@ impl crate::application::ports::DockerHost for FakeDocker {
         _: &zendiloos_kernel::RequestContext,
     ) -> Result<crate::domain::DockerHostState, PortError> {
         let data_root = self.data_root.lock().unwrap().clone();
-        Ok(crate::domain::DockerHostState { installed: true, running: data_root.is_some(), data_root })
+        let installed = self.installed.load(Ordering::Relaxed);
+        let running = installed && data_root.is_some();
+        let version = running.then(|| "26.1.5".to_owned());
+        Ok(crate::domain::DockerHostState { installed, running, data_root, version })
+    }
+
+    async fn install(
+        &self,
+        _: &zendiloos_kernel::RequestContext,
+    ) -> Result<(), crate::application::ports::DockerError> {
+        self.installed.store(true, Ordering::Relaxed);
+        Ok(())
     }
 
     async fn enable(
@@ -189,14 +207,22 @@ impl crate::application::ports::DockerHost for FakeDocker {
         &self,
         _: &zendiloos_kernel::RequestContext,
     ) -> Result<Vec<crate::domain::AppVolume>, PortError> {
-        Ok(vec![crate::domain::AppVolume { pool: "tank".into(), number: 1 }])
+        Ok(vec![
+            crate::domain::AppVolume { pool: "tank".into(), number: 1 },
+            crate::domain::AppVolume { pool: "backup".into(), number: 2 },
+        ])
     }
 }
 
 impl FakeDocker {
+    /// Docker not installed yet.
+    pub fn missing() -> Self {
+        Self { data_root: Mutex::default(), installed: std::sync::atomic::AtomicBool::new(false) }
+    }
+
     /// Docker runs with its data on `tank`.
     pub fn enabled() -> Self {
-        Self { data_root: Mutex::new(Some("/volume1/@docker".into())) }
+        Self { data_root: Mutex::new(Some("/volume1/@docker".into())), ..Self::default() }
     }
 }
 
@@ -286,8 +312,14 @@ impl crate::application::ports::AppHost for FakeAppHost {
         values: &crate::application::ports::HostValues,
         _: &zendiloos_kernel::RequestContext,
     ) -> Result<Vec<String>, crate::application::ports::AppHostError> {
-        let shares: Vec<String> =
-            values.shares.iter().map(|(id, s)| format!("{id}=/volume{}/{}", s.volume, s.name)).collect();
+        let shares: Vec<String> = values
+            .shares
+            .iter()
+            .map(|(id, s)| {
+                let folder = if s.folder.is_empty() { String::new() } else { format!(" in {}", s.folder) };
+                format!("{id}=/volume{}/{}{folder}", s.volume, s.name)
+            })
+            .collect();
         let ports: Vec<String> = values.ports.iter().map(|(id, p)| format!("{id}={p}")).collect();
         self.step("configure", format!("{app} {volume} [{}] [{}]", shares.join(","), ports.join(",")))?;
         Ok(vec!["config".into()])

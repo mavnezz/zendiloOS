@@ -71,8 +71,8 @@ async fn creates_a_private_database_and_applies_all_migrations() {
         OpenReport {
             created: true,
             schema_before: None,
-            schema_after: 14,
-            applied: vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+            schema_after: 24,
+            applied: (1..=24).collect(),
             backup: None
         }
     );
@@ -93,17 +93,26 @@ async fn creates_a_private_database_and_applies_all_migrations() {
         [
             "account_preferences",
             "accounts",
+            "allowed_addresses",
             "app_icons",
             "app_sources",
             "audit_log",
+            "blocked_addresses",
+            "docker_projects",
+            "docker_update_settings",
             "file_favourites",
+            "file_services",
             "group_members",
             "groups",
+            "homes",
+            "homes_location",
             "installed_apps",
             "jobs",
             "notification_channels",
             "notification_marks",
             "notifications",
+            "password_policy",
+            "security_settings",
             "self_test_plan_disks",
             "self_test_plans",
             "sessions",
@@ -111,7 +120,9 @@ async fn creates_a_private_database_and_applies_all_migrations() {
             "share_app_access",
             "share_nfs_clients",
             "share_snapshot_schedules",
-            "shares"
+            "shares",
+            "system_update_settings",
+            "system_update_state"
         ]
     );
     db.close().await;
@@ -128,8 +139,8 @@ async fn reopening_an_up_to_date_database_changes_nothing() {
         report,
         OpenReport {
             created: false,
-            schema_before: Some(14),
-            schema_after: 14,
+            schema_before: Some(24),
+            schema_after: 24,
             applied: vec![],
             backup: None
         }

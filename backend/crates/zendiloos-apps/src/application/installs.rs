@@ -20,7 +20,7 @@ use super::ports::{
 use super::{AppsError, Catalogs};
 use crate::domain::{
     Access, AppVolume, CatalogApp, Containers, InstallState, InstallValues, InstalledApp, MAX_APP_ID,
-    ValueRequest, docker_volume, install_values,
+    ValueRequest, docker_volume, install_values, share_and_folder,
 };
 
 /// What installing an app takes from the administrator.
@@ -37,6 +37,8 @@ pub struct InstallRequest {
     /// The administrator confirmed what the app may do beyond the policy:
     /// devices, capabilities, the host network.
     pub permissions_confirmed: bool,
+    /// The pool its data goes on; Docker's if none.
+    pub pool: Option<String>,
 }
 
 /// An installed app with what Docker makes of it.
@@ -177,6 +179,19 @@ impl Installs {
         self.list(request).await?.into_iter().find(|view| view.app.id == id).ok_or(AppsError::NotInstalled)
     }
 
+    /// Where a new app's data goes: `pool`, one zendiloOS made, or the pool
+    /// Docker's data is on. Docker runs either way.
+    async fn install_volume(
+        &self,
+        pool: Option<&str>,
+        request: &RequestContext,
+    ) -> Result<AppVolume, AppsError> {
+        let docker = self.apps_volume(request).await?;
+        let Some(pool) = pool.filter(|p| *p != docker.pool) else { return Ok(docker) };
+        let volumes = self.ports.docker.volumes(request).await?;
+        volumes.into_iter().find(|v| v.pool == pool).ok_or(AppsError::PoolNotFound)
+    }
+
     /// The volume Docker's data is on: where apps go.
     async fn apps_volume(&self, request: &RequestContext) -> Result<AppVolume, AppsError> {
         let state = self.ports.docker.state(request).await?;
@@ -244,7 +259,7 @@ impl Installs {
         if self.ports.installed.find(&app.id).await?.is_some() {
             return Err(AppsError::AlreadyInstalled);
         }
-        let volume = self.apps_volume(context).await?;
+        let volume = self.install_volume(request.pool.as_deref(), context).await?;
         let values = self.values(&app, &request, None).await?;
         let now = self.ports.clock.now();
         let installed = InstalledApp {
@@ -377,8 +392,8 @@ impl Installs {
             .shares
             .iter()
             .filter_map(|share| {
-                let name = app.values.shares.get(&share.id)?;
-                Some((name.clone(), share.access == Access::ReadWrite))
+                let (name, _) = share_and_folder(app.values.shares.get(&share.id)?);
+                Some((name.to_owned(), share.access == Access::ReadWrite))
             })
             .collect();
         self.ports.shares.grant(&app.account(), &grants, context).await?;
@@ -390,12 +405,15 @@ impl Installs {
             ports: app.values.ports.clone(),
             settings: app.values.settings.clone(),
         };
-        for (id, name) in &app.values.shares {
+        for (id, picked) in &app.values.shares {
+            let (name, folder) = share_and_folder(picked);
             let share = shares
                 .iter()
-                .find(|share| &share.name == name)
+                .find(|share| share.name == name)
                 .ok_or_else(|| AppHostError::Refused(format!("the share {name} is gone")))?;
-            values.shares.insert(id.clone(), HostShare { volume: share.volume, name: share.name.clone() });
+            let host =
+                HostShare { volume: share.volume, name: share.name.clone(), folder: folder.to_owned() };
+            values.shares.insert(id.clone(), host);
         }
         let folders = host
             .configure(&app.id, app.volume, &app.app.manifest, &app.app.compose, &values, context)
@@ -610,6 +628,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_app_goes_on_the_pool_chosen() {
+        let s = setup(FakeDocker::enabled());
+        let context = RequestContext::default();
+        s.catalogs.refresh().await.unwrap();
+
+        let mut given = InstallRequest { pool: Some("backup".into()), ..request("immich") };
+        given.shares.insert("photos".into(), "family".into());
+        let (app, job) = s.installs.install(given, &alice(), &context).await.unwrap();
+
+        assert_eq!((app.pool.as_str(), app.volume), ("backup", 2));
+        assert_eq!(finished(&s.jobs, job).await.state, JobState::Succeeded);
+        assert_eq!(s.host.calls()[0], "prepare immich backup/2");
+    }
+
+    #[tokio::test]
+    async fn an_app_may_get_a_folder_in_a_share() {
+        let s = setup(FakeDocker::enabled());
+        let context = RequestContext::default();
+        s.catalogs.refresh().await.unwrap();
+
+        let mut given = request("immich");
+        given.shares.insert("photos".into(), "family/Photos/2024".into());
+        let (app, job) = s.installs.install(given, &alice(), &context).await.unwrap();
+
+        assert_eq!(app.values.shares["photos"], "family/Photos/2024");
+        assert_eq!(finished(&s.jobs, job).await.state, JobState::Succeeded);
+        assert_eq!(
+            s.host.calls()[1],
+            "configure immich 1 [photos=/volume1/family in Photos/2024] [web=8096]"
+        );
+        // The account may use the share; the container sees the folder only.
+        assert_eq!(s.shares.granted("app-immich"), [("family".to_owned(), true)]);
+    }
+
+    #[tokio::test]
     async fn installing_takes_every_step_on_the_host() {
         let s = setup(FakeDocker::enabled());
         let context = RequestContext::default();
@@ -640,6 +693,9 @@ mod tests {
 
         let again = s.installs.install(request("immich"), &alice(), &context).await;
         assert!(matches!(again, Err(AppsError::AlreadyInstalled)), "{again:?}");
+        let nowhere = InstallRequest { pool: Some("elsewhere".into()), ..request("jellyfin") };
+        let nowhere = s.installs.install(nowhere, &alice(), &context).await;
+        assert!(matches!(nowhere, Err(AppsError::PoolNotFound)), "{nowhere:?}");
         // Jellyfin wants 8096 too.
         let taken = s.installs.install(request("jellyfin"), &alice(), &context).await;
         assert!(

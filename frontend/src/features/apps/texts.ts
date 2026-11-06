@@ -11,6 +11,17 @@ export function appText(
   return app.translations[locale]?.[field] ?? app[field] ?? ''
 }
 
+/**
+ * A catalog text as paragraphs: catalogs wrap their lines, so a single line
+ * break joins; an empty line or a list item (`- `, `1. `) starts anew.
+ */
+export function paragraphs(text: string): string[] {
+  return text
+    .split(/\n\s*\n|\n(?=\s*(?:[-*•]|\d+[.)]) )/)
+    .map((part) => part.replace(/\s*\n\s*/g, ' ').trim())
+    .filter(Boolean)
+}
+
 /** The permissions an app asks for, as short labels' keys. */
 export function permissionKeys(app: Pick<CatalogApp, 'permissions'>): string[] {
   const keys: string[] = []

@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO accounts\n                   (name, full_name, description, email, role, password_hash, password_change_required,\n                    password_locked, password_changed_at, created_at, updated_at)\n               SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?9\n               WHERE NOT EXISTS (SELECT 1 FROM accounts WHERE role = 'admin')\n               RETURNING id AS \"id!\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "accounts",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 9
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "4f5eff49b1cc79c02e4d0a84b99d7c4fa3476788789f910c9a34210cb365d779"
+}

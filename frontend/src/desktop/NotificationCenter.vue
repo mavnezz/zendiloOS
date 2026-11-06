@@ -42,23 +42,23 @@ function clear(): void {
 <template>
   <PopoverRoot @update:open="opened">
     <PopoverTrigger
-      class="relative grid size-9 place-items-center rounded-md hover:bg-accent data-[state=open]:bg-accent"
+      class="relative flex size-11 items-center justify-center rounded-tile text-foreground/75 outline-none transition hover:bg-foreground/10 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:bg-foreground/10"
       :aria-label="t('desktop.notifications')"
     >
-      <Bell class="size-4" />
+      <Bell class="size-5" />
       <span
         v-if="notifications.unread"
-        class="absolute top-1 right-1 grid min-w-4 place-items-center rounded-full bg-destructive px-1 text-[10px] font-semibold text-white"
+        class="absolute top-1.5 right-1.5 flex min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] leading-4 font-medium text-white tabular-nums"
       >
         {{ notifications.unread }}
       </span>
     </PopoverTrigger>
     <PopoverPortal>
       <PopoverContent
-        side="top"
+        side="right"
         align="end"
-        :side-offset="8"
-        class="z-[900] flex max-h-[70vh] w-80 flex-col rounded-xl border bg-card shadow-xl"
+        :side-offset="12"
+        class="glass glass-strong z-[900] flex max-h-[70vh] w-80 flex-col rounded-panel"
       >
         <div class="flex items-center justify-between border-b px-4 py-2.5">
           <h2 class="text-sm font-semibold">{{ t('desktop.notifications') }}</h2>

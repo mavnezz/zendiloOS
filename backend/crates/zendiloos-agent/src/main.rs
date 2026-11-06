@@ -7,8 +7,8 @@ use listenfd::ListenFd;
 use tokio::net::UnixListener;
 use tokio::signal::unix::{SignalKind, signal};
 use zendiloos_agent::config::Config;
-use zendiloos_agent::{Operations, Server, passwd, serve};
-use zendiloos_agent_proto::Role;
+use zendiloos_agent::{HostPaths, Operations, Server, passwd, pin_shares, run_packages, serve, unpin_shares};
+use zendiloos_agent_proto::{AppName, Role};
 
 #[derive(Parser)]
 #[command(version, about = "The privileged zendiloos agent")]
@@ -20,6 +20,20 @@ struct Cli {
     /// configuration) or `files` (the contents of volumes)
     #[arg(long, default_value = "system")]
     role: RoleArg,
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+/// Run once instead of serving, by an app's unit
+/// (`zendiloos-app-<app>-shares.service`), outside the agent's sandbox.
+#[derive(clap::Subcommand)]
+enum Command {
+    /// Mount the folders of shares the app was given at their places
+    PinShares { app: String },
+    /// Unmount them again
+    UnpinShares { app: String },
+    /// Run apt on a task (in zendiloos-packages.service), recording each step
+    RunPackages { id: String, task: String, release: Option<String> },
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -31,6 +45,27 @@ enum RoleArg {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    if let Some(Command::RunPackages { id, task, release }) = &cli.command {
+        return run_packages(&HostPaths::default(), id, task, release.as_deref())
+            .map_err(|error| anyhow::anyhow!("{error}"));
+    }
+    if let Some(command) = cli.command {
+        let paths = HostPaths::default();
+        let (app, done) = match &command {
+            Command::PinShares { app } => (app, "pinned"),
+            Command::UnpinShares { app } => (app, "unpinned"),
+            Command::RunPackages { .. } => unreachable!("handled above"),
+        };
+        let app = AppName::parse(app).map_err(|_| anyhow::anyhow!("{app:?} is no app"))?;
+        match command {
+            Command::PinShares { .. } => pin_shares(&paths, &app),
+            Command::UnpinShares { .. } => unpin_shares(&paths, &app),
+            Command::RunPackages { .. } => unreachable!("handled above"),
+        }
+        .map_err(|error| anyhow::anyhow!("{}: {error}", app.as_str()))?;
+        println!("{}: folders of shares {done}", app.as_str());
+        return Ok(());
+    }
     let config = Config::load(cli.config.as_deref())?;
     init_logging(&config.log_filter)?;
 

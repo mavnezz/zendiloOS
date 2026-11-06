@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT pool, volume FROM homes_location WHERE id = 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "pool",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "homes_location",
+            "name": "pool"
+          }
+        }
+      },
+      {
+        "name": "volume",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "homes_location",
+            "name": "volume"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "1b2034a2cf0b0606c2de79cb5fd770ad6b2b87b46126c667cc6ed6377590f38c"
+}

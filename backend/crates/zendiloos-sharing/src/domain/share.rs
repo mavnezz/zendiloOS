@@ -34,7 +34,8 @@ pub enum InvalidShareName {
 }
 
 impl ShareName {
-    const RESERVED: [&str; 5] = ["global", "homes", "printers", "print", "ipc"];
+    /// Samba's own sections, and `home`, the share of the personal folders.
+    const RESERVED: [&str; 6] = ["global", "homes", "home", "printers", "print", "ipc"];
 
     pub fn parse(name: &str) -> Result<Self, InvalidShareName> {
         if name.is_empty() || name.len() > 32 {
@@ -62,10 +63,47 @@ impl std::fmt::Display for ShareName {
     }
 }
 
+/// What is granted: reading, or reading and writing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Access {
     Read,
     ReadWrite,
+}
+
+impl Access {
+    /// The broader of the two.
+    pub fn max(self, other: Access) -> Access {
+        if self == Access::ReadWrite || other == Access::ReadWrite { Access::ReadWrite } else { Access::Read }
+    }
+}
+
+/// What a rule says: no access at all, which wins over every other rule,
+/// or a grant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Permission {
+    Deny,
+    Read,
+    ReadWrite,
+}
+
+impl Permission {
+    /// What it grants; nothing for a denial.
+    pub fn grant(self) -> Option<Access> {
+        match self {
+            Permission::Deny => None,
+            Permission::Read => Some(Access::Read),
+            Permission::ReadWrite => Some(Access::ReadWrite),
+        }
+    }
+}
+
+impl From<Access> for Permission {
+    fn from(access: Access) -> Self {
+        match access {
+            Access::Read => Permission::Read,
+            Access::ReadWrite => Permission::ReadWrite,
+        }
+    }
 }
 
 /// Who a rule is for: an account or a group, by ID.
@@ -78,7 +116,29 @@ pub enum Subject {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccessRule {
     pub subject: Subject,
-    pub access: Access,
+    pub permission: Permission,
+}
+
+/// What `account`, a member of `groups`, may do where `rules` apply.
+///
+/// A denial wins, whether for the account or one of its groups; then the
+/// account's own rule, more specific than its groups'; then the broadest
+/// grant of its groups. This is what the share's POSIX ACL says too: a
+/// named user entry comes before the group entries, and denied members of
+/// groups get one of their own.
+pub fn effective(rules: &[AccessRule], account: i64, groups: &[i64]) -> Option<Access> {
+    let applies = |rule: &&AccessRule| match rule.subject {
+        Subject::Account(id) => id == account,
+        Subject::Group(id) => groups.contains(&id),
+    };
+    if rules.iter().filter(applies).any(|rule| rule.permission == Permission::Deny) {
+        return None;
+    }
+    let own = rules.iter().find(|rule| rule.subject == Subject::Account(account));
+    if let Some(own) = own {
+        return own.permission.grant();
+    }
+    rules.iter().filter(applies).filter_map(|rule| rule.permission.grant()).reduce(Access::max)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -239,9 +299,9 @@ impl Share {
         format!("/volume{}/{}", self.volume, self.name)
     }
 
-    /// The level `subject` has, if any.
-    pub fn access_of(&self, subject: Subject) -> Option<Access> {
-        self.access.iter().find(|rule| rule.subject == subject).map(|rule| rule.access)
+    /// The rule for `subject`, if there is one.
+    pub fn rule_of(&self, subject: Subject) -> Option<Permission> {
+        self.access.iter().find(|rule| rule.subject == subject).map(|rule| rule.permission)
     }
 }
 
@@ -281,10 +341,13 @@ pub enum Principal {
 pub struct SmbSpec {
     pub name: ShareName,
     pub volume: u16,
-    pub access: Vec<(Principal, Access)>,
+    /// Groups as groups: Samba follows their members itself.
+    pub access: Vec<(Principal, Permission)>,
     pub recycle_bin: bool,
     /// The share's description, shown by clients.
     pub comment: Option<String>,
+    /// Macs back up to it; `Some(None)`: without a limit of its own.
+    pub time_machine: Option<Option<u64>>,
 }
 
 /// One NFS export as the host should offer it.
@@ -300,6 +363,9 @@ pub struct NfsSpec {
 pub struct SharingConfig {
     pub smb: Vec<SmbSpec>,
     pub nfs: Vec<NfsSpec>,
+    pub services: super::FileServices,
+    /// The share `home`, while personal folders are on.
+    pub homes: Option<super::HomesSpec>,
 }
 
 #[cfg(test)]
@@ -323,6 +389,40 @@ mod tests {
     }
 
     #[test]
+    fn a_denial_wins_then_the_own_rule_then_the_broadest_group() {
+        let rule = |subject, permission| AccessRule { subject, permission };
+        let (alice, family, guests) = (1, 10, 20);
+        let family_writes = rule(Subject::Group(family), Permission::ReadWrite);
+        let guests_read = rule(Subject::Group(guests), Permission::Read);
+
+        let rules = [family_writes.clone(), guests_read.clone()];
+        assert_eq!(effective(&rules, alice, &[family, guests]), Some(Access::ReadWrite));
+        assert_eq!(effective(&rules, alice, &[guests]), Some(Access::Read));
+        assert_eq!(effective(&rules, alice, &[]), None);
+
+        let own_read = [family_writes.clone(), rule(Subject::Account(alice), Permission::Read)];
+        assert_eq!(
+            effective(&own_read, alice, &[family]),
+            Some(Access::Read),
+            "the own rule is more specific"
+        );
+
+        let guests_denied = [
+            rule(Subject::Account(alice), Permission::ReadWrite),
+            rule(Subject::Group(guests), Permission::Deny),
+        ];
+        assert_eq!(
+            effective(&guests_denied, alice, &[guests]),
+            None,
+            "a group's denial wins over the own rule"
+        );
+        assert_eq!(effective(&guests_denied, alice, &[]), Some(Access::ReadWrite));
+
+        let alice_denied = [family_writes, rule(Subject::Account(alice), Permission::Deny)];
+        assert_eq!(effective(&alice_denied, alice, &[family]), None);
+    }
+
+    #[test]
     fn share_names() {
         for good in ["photos", "a", "home-videos", "x_1"] {
             assert!(ShareName::parse(good).is_ok(), "{good}");
@@ -331,6 +431,7 @@ mod tests {
             assert!(ShareName::parse(bad).is_err(), "{bad:?}");
         }
         assert!(matches!(ShareName::parse("homes"), Err(InvalidShareName::Reserved(_))));
+        assert!(matches!(ShareName::parse("home"), Err(InvalidShareName::Reserved(_))));
     }
 
     #[test]

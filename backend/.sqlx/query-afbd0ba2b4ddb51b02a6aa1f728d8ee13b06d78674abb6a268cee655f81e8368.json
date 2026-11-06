@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT account_id AS \"account_id!\", quota_bytes FROM homes ORDER BY account_id",
+  "describe": {
+    "columns": [
+      {
+        "name": "account_id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "homes",
+            "name": "account_id"
+          }
+        }
+      },
+      {
+        "name": "quota_bytes",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "homes",
+            "name": "quota_bytes"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "afbd0ba2b4ddb51b02a6aa1f728d8ee13b06d78674abb6a268cee655f81e8368"
+}

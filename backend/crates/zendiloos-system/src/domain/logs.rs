@@ -131,6 +131,10 @@ pub struct AuditQuery {
     pub limit: u16,
     /// Records with a smaller ID; the newest if absent.
     pub before: Option<i64>,
+    /// Only records of this action, such as `identity.login`.
+    pub action: Option<String>,
+    /// Only records whose action starts so, such as `containers.`.
+    pub prefix: Option<String>,
 }
 
 impl AuditQuery {

@@ -10,8 +10,8 @@ use crate::application::ports::{
     self, FileHost, FileHostError, HostError, ShareHost, ShareRepository, Volume,
 };
 use crate::domain::{
-    Access, Entry, EntryKind, FileLocation, FilePath, Frequency, Listing, NewShare, Principal, Share,
-    ShareId, ShareName, ShareSettings, ShareUsage, SharingConfig, Snapshot, SnapshotSchedule,
+    Access, Entry, EntryKind, FileLocation, FilePath, Frequency, Listing, NewShare, Permission, Principal,
+    Share, ShareId, ShareName, ShareSettings, ShareUsage, SharingConfig, Snapshot, SnapshotSchedule,
 };
 use zendiloos_kernel::Timestamp;
 
@@ -37,6 +37,8 @@ pub struct Shares(
     Mutex<std::collections::HashMap<ShareId, Vec<SnapshotSchedule>>>,
     Mutex<std::collections::HashMap<i64, Vec<crate::domain::Favourite>>>,
     Mutex<Vec<crate::domain::AppAccess>>,
+    Mutex<Option<crate::domain::FileServices>>,
+    Mutex<(Option<crate::domain::HomesLocation>, Vec<crate::domain::Home>)>,
 );
 
 #[async_trait]
@@ -121,6 +123,43 @@ impl ShareRepository for Shares {
         self.2.lock().unwrap().insert(account, favourites.to_vec());
         Ok(())
     }
+
+    async fn file_services(&self) -> Result<crate::domain::FileServices, PortError> {
+        Ok(self.4.lock().unwrap().clone().unwrap_or_default())
+    }
+
+    async fn set_file_services(&self, services: &crate::domain::FileServices) -> Result<(), PortError> {
+        *self.4.lock().unwrap() = Some(services.clone());
+        Ok(())
+    }
+
+    async fn homes_location(&self) -> Result<Option<crate::domain::HomesLocation>, PortError> {
+        Ok(self.5.lock().unwrap().0.clone())
+    }
+
+    async fn set_homes_location(
+        &self,
+        location: Option<&crate::domain::HomesLocation>,
+    ) -> Result<(), PortError> {
+        self.5.lock().unwrap().0 = location.cloned();
+        Ok(())
+    }
+
+    async fn homes(&self) -> Result<Vec<crate::domain::Home>, PortError> {
+        Ok(self.5.lock().unwrap().1.clone())
+    }
+
+    async fn set_home(&self, home: &crate::domain::Home) -> Result<(), PortError> {
+        let mut homes = self.5.lock().unwrap();
+        homes.1.retain(|h| h.account != home.account);
+        homes.1.push(home.clone());
+        Ok(())
+    }
+
+    async fn remove_home(&self, account: i64) -> Result<(), PortError> {
+        self.5.lock().unwrap().1.retain(|h| h.account != account);
+        Ok(())
+    }
 }
 
 #[derive(Default)]
@@ -134,6 +173,9 @@ pub struct Host {
     pub refuse_snapshots: std::sync::atomic::AtomicBool,
     /// What every share dataset holds, in bytes.
     pub used_bytes: std::sync::atomic::AtomicU64,
+    /// The servers refuse a configuration where SMB and NFS are both off,
+    /// standing for any configuration `testparm` rejects.
+    pub refuse_all_off: std::sync::atomic::AtomicBool,
 }
 
 impl Host {
@@ -174,8 +216,31 @@ impl ShareHost for Host {
     }
 
     async fn apply(&self, config: &SharingConfig, _: &RequestContext) -> Result<(), HostError> {
+        if self.refuse_all_off.load(std::sync::atomic::Ordering::Relaxed)
+            && !config.services.smb
+            && !config.services.nfs
+        {
+            return Err(HostError::Refused("testparm: no".into()));
+        }
         self.calls.lock().unwrap().push(format!("apply {}", config.smb.len()));
         self.configs.lock().unwrap().push(config.clone());
+        Ok(())
+    }
+
+    async fn prepare_homes(&self, pool: &str, volume: u16, _: &RequestContext) -> Result<(), HostError> {
+        self.calls.lock().unwrap().push(format!("prepare_homes {pool} {volume}"));
+        Ok(())
+    }
+
+    async fn set_home(
+        &self,
+        pool: &str,
+        volume: u16,
+        user: &str,
+        quota_bytes: Option<u64>,
+        _: &RequestContext,
+    ) -> Result<(), HostError> {
+        self.calls.lock().unwrap().push(format!("set_home {pool} {volume} {user} {quota_bytes:?}"));
         Ok(())
     }
 
@@ -283,7 +348,7 @@ impl ShareHost for Host {
         &self,
         volume: u16,
         name: &ShareName,
-        access: &[(Principal, Access)],
+        access: &[(Principal, Permission)],
         removed: &[Principal],
         recursive: bool,
         _: &RequestContext,
@@ -293,7 +358,14 @@ impl ShareHost for Host {
         }
         let access: Vec<String> = access
             .iter()
-            .map(|(p, a)| format!("{}:{}", shown(p), if *a == Access::ReadWrite { "rw" } else { "r" }))
+            .map(|(p, a)| {
+                let level = match a {
+                    Permission::Deny => "-",
+                    Permission::Read => "r",
+                    Permission::ReadWrite => "rw",
+                };
+                format!("{}:{level}", shown(p))
+            })
             .collect();
         let removed: Vec<String> = removed.iter().map(shown).collect();
         self.calls.lock().unwrap().push(format!(
@@ -331,7 +403,7 @@ impl Files {
 /// `share:path`, or `share@label:path` in a snapshot.
 fn place(at: &FileLocation) -> String {
     let snapshot = at.snapshot.as_ref().map(|label| format!("@{label}")).unwrap_or_default();
-    format!("{}{snapshot}:{}", at.share.as_str(), at.path.as_str())
+    format!("{}{snapshot}:{}", at.root, at.path.as_str())
 }
 
 #[async_trait]

@@ -11,11 +11,13 @@ pub mod agent;
 pub mod apps;
 mod blocking;
 mod clock;
+pub mod containers;
 pub mod host;
 mod https;
 pub mod identity;
 pub mod notify;
 pub mod sqlite;
 mod storage;
+pub mod updates;
 
 pub use clock::SystemClock;

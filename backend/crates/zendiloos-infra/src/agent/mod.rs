@@ -5,10 +5,16 @@
 mod accounts;
 mod apps;
 mod docker;
+mod docker_data;
+mod engine;
 mod files;
 mod network;
 mod sharing;
+mod ssh;
 mod storage;
+mod time;
+mod updates;
+mod web;
 
 use std::sync::Arc;
 
@@ -20,10 +26,16 @@ use zendiloos_system::domain::PowerAction;
 
 pub use accounts::AgentSystemAccounts;
 pub use apps::AgentApps;
+pub use docker_data::AgentDockerData;
+pub use engine::AgentDockerEngine;
 pub use files::AgentFiles;
 pub use network::AgentNetwork;
 pub use sharing::AgentSharing;
+pub use ssh::AgentSsh;
 pub use storage::{AgentStorage, RandomPlanTokens};
+pub use time::AgentTime;
+pub use updates::AgentUpdates;
+pub use web::AgentWebTls;
 
 const WHAT: &str = "privileged agent";
 

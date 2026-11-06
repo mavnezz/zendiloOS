@@ -17,8 +17,8 @@ use crate::domain::{AccountId, AccountName, Permission, Role, SessionId, Session
 use context::Context;
 pub use error::IdentityError;
 use ports::{
-    AccountRepository, GroupRepository, PasswordHasher, PreferenceRepository, SessionRepository,
-    SessionTokens, SetupCodes, SystemAccounts,
+    AccountRepository, GroupObserver, GroupRepository, PasswordHasher, PreferenceRepository,
+    SecurityRepository, SessionRepository, SessionTokens, SetupCodes, SystemAccounts,
 };
 
 /// Adapters for every port of this context, plugged in by the composition
@@ -27,7 +27,10 @@ use ports::{
 pub struct IdentityPorts {
     pub accounts: Arc<dyn AccountRepository>,
     pub groups: Arc<dyn GroupRepository>,
+    /// Others following groups' members, e.g. shares that deny a group.
+    pub group_observer: Arc<dyn GroupObserver>,
     pub sessions: Arc<dyn SessionRepository>,
+    pub security: Arc<dyn SecurityRepository>,
     pub preferences: Arc<dyn PreferenceRepository>,
     pub system: Arc<dyn SystemAccounts>,
     pub hasher: Arc<dyn PasswordHasher>,
@@ -39,7 +42,9 @@ pub struct IdentityPorts {
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct IdentityConfig {
+    /// The idle time is a setting; this one is the default's stand-in.
     pub sessions: SessionPolicy,
+    /// The fixed limit per address; accounts lock as set.
     pub throttle: ThrottlePolicy,
 }
 
@@ -61,11 +66,21 @@ pub struct IdentityUseCases {
     pub update_group: commands::UpdateGroup,
     pub delete_group: commands::DeleteGroup,
     pub save_preferences: commands::SavePreferences,
+    pub set_password_policy: commands::SetPasswordPolicy,
+    pub password_policy: queries::GetPasswordPolicy,
     pub setup_status: queries::GetSetupStatus,
     pub authenticate: queries::Authenticate,
     pub list_accounts: queries::ListAccounts,
     pub list_groups: queries::ListGroups,
     pub preferences: queries::GetPreferences,
+    pub security: queries::GetSecurity,
+    pub set_security: commands::SetSecurity,
+    pub blocked_addresses: queries::ListBlockedAddresses,
+    pub block_address: commands::BlockAddress,
+    pub unblock_address: commands::UnblockAddress,
+    pub check_address: queries::CheckAddress,
+    pub sessions: queries::ListSessions,
+    pub end_session: commands::EndSession,
 }
 
 impl IdentityUseCases {
@@ -86,10 +101,20 @@ impl IdentityUseCases {
             update_group: commands::UpdateGroup::new(Arc::clone(&context)),
             delete_group: commands::DeleteGroup::new(Arc::clone(&context)),
             save_preferences: commands::SavePreferences::new(Arc::clone(&context)),
+            set_password_policy: commands::SetPasswordPolicy::new(Arc::clone(&context)),
+            password_policy: queries::GetPasswordPolicy::new(Arc::clone(&context)),
             setup_status: queries::GetSetupStatus::new(Arc::clone(&context)),
             list_accounts: queries::ListAccounts::new(Arc::clone(&context)),
             list_groups: queries::ListGroups::new(Arc::clone(&context)),
             preferences: queries::GetPreferences::new(Arc::clone(&context)),
+            security: queries::GetSecurity::new(Arc::clone(&context)),
+            set_security: commands::SetSecurity::new(Arc::clone(&context)),
+            blocked_addresses: queries::ListBlockedAddresses::new(Arc::clone(&context)),
+            block_address: commands::BlockAddress::new(Arc::clone(&context)),
+            unblock_address: commands::UnblockAddress::new(Arc::clone(&context)),
+            check_address: queries::CheckAddress::new(Arc::clone(&context)),
+            sessions: queries::ListSessions::new(Arc::clone(&context)),
+            end_session: commands::EndSession::new(Arc::clone(&context)),
             authenticate: queries::Authenticate::new(context),
         }
     }
@@ -103,6 +128,7 @@ pub struct AccountSummary {
     pub full_name: Option<String>,
     pub role: Role,
     pub password_change_required: bool,
+    pub password_locked: bool,
 }
 
 /// A session that was just started. The token goes into the cookie and is

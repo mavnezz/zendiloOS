@@ -34,8 +34,7 @@ impl Login {
         let typed = input.name.trim();
         // Account names are lowercase; accept them as people type them.
         let name = AccountName::parse(&typed.to_lowercase()).ok();
-        c.check_throttle(&Context::throttle_keys(request, name.as_ref()), now)
-            .map_err(|retry_after| IdentityError::TooManyAttempts { retry_after })?;
+        c.check_throttle(&Context::throttle_keys(request, name.as_ref()), request, now).await?;
 
         let account = match &name {
             Some(name) => c.ports.accounts.find_by_name(name).await?,
@@ -49,7 +48,7 @@ impl Login {
         let account = match account {
             Some(account) if verified => account,
             Some(account) => {
-                c.record_failure(Context::throttle_keys(request, Some(&account.name)), now);
+                c.record_failure(Context::throttle_keys(request, Some(&account.name)), request, now).await?;
                 let entry = audit(Outcome::Failure).by(&account.actor());
                 c.audit(entry.reason("wrong_password")).await?;
                 return Err(IdentityError::InvalidCredentials);
@@ -57,7 +56,7 @@ impl Login {
             None => {
                 // Counted against the address only: made-up names must not
                 // fill the throttle with fake accounts.
-                c.record_failure(Context::throttle_keys(request, None), now);
+                c.record_failure(Context::throttle_keys(request, None), request, now).await?;
                 c.audit(audit(Outcome::Failure).actor(typed).reason("unknown_account")).await?;
                 return Err(IdentityError::InvalidCredentials);
             }
@@ -70,6 +69,18 @@ impl Login {
         }
 
         c.clear_throttle(&ThrottleKey::Account(account.name.clone()));
+        let mut account = account;
+        if !account.password_locked && !account.password_change_required {
+            let policy = c.ports.accounts.password_policy().await?;
+            let expired = policy.max_age_days.is_some_and(|days| {
+                now.duration_since(account.password_changed_at)
+                    > std::time::Duration::from_secs(u64::from(days) * 86_400)
+            });
+            if expired {
+                c.ports.accounts.require_password_change(account.id).await?;
+                account.password_change_required = true;
+            }
+        }
         let signed_in = c.start_session(&account, request, now).await?;
         c.audit(audit(Outcome::Success).by(&account.actor())).await?;
         Ok(signed_in)

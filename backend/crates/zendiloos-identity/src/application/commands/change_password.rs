@@ -33,19 +33,23 @@ impl ChangePassword {
         let c = &self.context;
         let now = c.now();
         let keys = Context::throttle_keys(request, Some(&auth.account.name));
-        c.check_throttle(&keys, now).map_err(|retry_after| IdentityError::TooManyAttempts { retry_after })?;
+        c.check_throttle(&keys, request, now).await?;
 
         let account =
             c.ports.accounts.find_by_id(auth.account.id).await?.ok_or(IdentityError::Unauthenticated)?;
+        if account.password_locked {
+            return Err(IdentityError::PasswordLocked);
+        }
         let audit = |outcome| {
             AuditEntry::new(now, AuditAction::PasswordChange.as_str(), outcome, request).by(&account.actor())
         };
 
         // Checked first: refusing a new password costs nothing, verifying
         // the current one costs an Argon2 run.
-        let password = NewPassword::parse(input.new_password, &account.name)?;
+        let policy = c.ports.accounts.password_policy().await?;
+        let password = NewPassword::parse(input.new_password, &account.name, &policy)?;
         if !c.ports.hasher.verify(&input.current_password, Some(&account.password_hash)).await? {
-            c.record_failure(keys, now);
+            c.record_failure(keys, request, now).await?;
             c.audit(audit(Outcome::Failure).reason("wrong_password")).await?;
             return Err(IdentityError::WrongPassword);
         }

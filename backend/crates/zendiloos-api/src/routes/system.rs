@@ -7,7 +7,11 @@ use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
 use zendiloos_identity::domain::Permission;
-use zendiloos_system::domain::PowerAction;
+use zendiloos_kernel::Timestamp;
+use zendiloos_system::application::commands::{SetSshError, SetTimeError};
+use zendiloos_system::domain::{
+    PowerAction, RootLogin, SshSettings, SshStatus, TimeSettings, TimeStatus, TlsMinimum,
+};
 
 use crate::auth::Auth;
 use crate::error::{ApiError, Problem};
@@ -20,6 +24,9 @@ pub(super) fn routes() -> OpenApiRouter<ApiState> {
         .routes(routes!(info))
         .routes(routes!(power))
         .routes(routes!(metrics_history))
+        .routes(routes!(time, set_time))
+        .routes(routes!(ssh, set_ssh))
+        .routes(routes!(tls, set_tls))
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -79,7 +86,7 @@ impl From<zendiloos_system::domain::SystemInfo> for SystemInfo {
             memory_total_bytes: info.memory_total_bytes,
             swap_total_bytes: info.swap_total_bytes,
             uptime_seconds: info.uptime_seconds,
-            version: env!("CARGO_PKG_VERSION").to_owned(),
+            version: zendiloos_kernel::VERSION.to_owned(),
             vendor: info.hardware.vendor,
             product: info.hardware.product,
             board: info.hardware.board,
@@ -188,4 +195,338 @@ async fn metrics_history(
         read_bytes_per_second: history.read_bytes_per_second,
         written_bytes_per_second: history.written_bytes_per_second,
     }))
+}
+
+impl From<SetTimeError> for ApiError {
+    fn from(error: SetTimeError) -> Self {
+        match error {
+            SetTimeError::Invalid(e) => ApiError::InvalidInput(e.to_string()),
+            SetTimeError::Port(e) => ApiError::internal(e),
+        }
+    }
+}
+
+/// The machine's clock: its time zone and how it is kept.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TimeState {
+    /// A zone of the tz database: `Europe/Berlin`.
+    pub zone: String,
+    /// Time servers keep the clock.
+    pub network_time: bool,
+    /// A time service is installed: network time can be turned on.
+    pub can_network_time: bool,
+    /// The clock agrees with a time server.
+    pub synchronized: bool,
+    /// The servers set here; empty: Debian's pool.
+    pub servers: Vec<String>,
+    /// The server the clock comes from now.
+    pub server_in_use: Option<String>,
+    /// Every zone the system has, sorted.
+    pub zones: Vec<String>,
+    /// The machine's time, in Unix seconds, when this was read.
+    pub now: i64,
+}
+
+impl From<TimeStatus> for TimeState {
+    fn from(status: TimeStatus) -> Self {
+        Self {
+            zone: status.zone,
+            network_time: status.network_time,
+            can_network_time: status.can_network_time,
+            synchronized: status.synchronized,
+            servers: status.servers,
+            server_in_use: status.server_in_use,
+            zones: status.zones,
+            now: status.now.unix_seconds(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TimeRequest {
+    pub zone: String,
+    pub network_time: bool,
+    /// At most four host names or IP addresses; empty: Debian's pool.
+    #[serde(default)]
+    pub servers: Vec<String>,
+    /// Only without network time: sets the clock, in Unix seconds.
+    #[serde(default)]
+    pub clock: Option<i64>,
+}
+
+/// The time zone and how the clock is kept. Needs `system.view`.
+#[utoipa::path(
+    get,
+    path = "/system/time",
+    tag = "system",
+    security(("session" = [])),
+    responses(
+        (status = OK, body = TimeState),
+        (status = FORBIDDEN, body = Problem, description = "`forbidden`"),
+    )
+)]
+async fn time(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+) -> Result<Json<TimeState>, ApiError> {
+    auth.require(Permission::SystemView)?;
+    let status = state.system.get_time.execute(&client).await?;
+    Ok(Json(status.into()))
+}
+
+/// Sets the time zone and the time servers, or the time itself when none
+/// keep it. Needs `system.manage`.
+#[utoipa::path(
+    put,
+    path = "/system/time",
+    tag = "system",
+    security(("session" = [])),
+    request_body = TimeRequest,
+    responses(
+        (status = OK, body = TimeState, description = "The clock afterwards."),
+        (status = FORBIDDEN, body = Problem, description = "`forbidden`, `csrf_rejected`"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_input`: an unknown zone, a bad server, a time with servers on"),
+    )
+)]
+async fn set_time(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    ApiJson(request): ApiJson<TimeRequest>,
+) -> Result<Json<TimeState>, ApiError> {
+    auth.require(Permission::SystemManage)?;
+    let settings = TimeSettings {
+        zone: request.zone,
+        network_time: request.network_time,
+        servers: request.servers,
+        clock: request.clock.map(Timestamp::from_unix_seconds),
+    };
+    let status = state.system.set_time.execute(settings, &auth.0.actor(), &client).await?;
+    Ok(Json(status.into()))
+}
+
+impl From<SetSshError> for ApiError {
+    fn from(error: SetSshError) -> Self {
+        match error {
+            SetSshError::Invalid(e) => ApiError::InvalidInput(e.to_string()),
+            SetSshError::NotInstalled => ApiError::Rejected {
+                status: StatusCode::CONFLICT,
+                code: "not_installed",
+                detail: Some("the SSH server is not installed: apt install openssh-server".to_owned()),
+            },
+            SetSshError::PortInUse(port) => ApiError::Rejected {
+                status: StatusCode::CONFLICT,
+                code: "port_in_use",
+                detail: Some(format!("another program listens on port {port}")),
+            },
+            SetSshError::Port(e) => ApiError::internal(e),
+        }
+    }
+}
+
+/// Whether root may log in over SSH.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RootLoginMode {
+    No,
+    /// With a key only.
+    KeyOnly,
+    Yes,
+}
+
+impl From<RootLogin> for RootLoginMode {
+    fn from(root: RootLogin) -> Self {
+        match root {
+            RootLogin::No => Self::No,
+            RootLogin::KeyOnly => Self::KeyOnly,
+            RootLogin::Yes => Self::Yes,
+        }
+    }
+}
+
+impl From<RootLoginMode> for RootLogin {
+    fn from(root: RootLoginMode) -> Self {
+        match root {
+            RootLoginMode::No => Self::No,
+            RootLoginMode::KeyOnly => Self::KeyOnly,
+            RootLoginMode::Yes => Self::Yes,
+        }
+    }
+}
+
+/// The SSH server: on or off, its port and two of its rules. Who may log
+/// in otherwise stays as the system has it.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SshState {
+    /// The server is installed; without it, nothing can be turned on.
+    pub installed: bool,
+    /// Starts with the machine.
+    pub enabled: bool,
+    pub running: bool,
+    pub port: u16,
+    /// `null`: as the system's configuration has it.
+    pub root_login: Option<RootLoginMode>,
+    /// `null`: as the system's configuration has it.
+    pub password_login: Option<bool>,
+    /// When it turns itself off, in Unix seconds.
+    pub off_at: Option<i64>,
+}
+
+impl From<SshStatus> for SshState {
+    fn from(status: SshStatus) -> Self {
+        Self {
+            installed: status.installed,
+            enabled: status.enabled,
+            running: status.running,
+            port: status.port,
+            root_login: status.root_login.map(Into::into),
+            password_login: status.password_login,
+            off_at: status.off_at.map(Timestamp::unix_seconds),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SshRequest {
+    pub enabled: bool,
+    /// 22, or a port from 1024 that no service of the NAS uses.
+    pub port: u16,
+    /// `null`: as the system's configuration has it.
+    #[serde(default)]
+    pub root_login: Option<RootLoginMode>,
+    /// `null`: as the system's configuration has it.
+    #[serde(default)]
+    pub password_login: Option<bool>,
+    /// Turns SSH off again after 1 to 1440 minutes; `null`: never.
+    #[serde(default)]
+    pub off_after_minutes: Option<u16>,
+}
+
+/// The SSH server. Needs `system.view`.
+#[utoipa::path(
+    get,
+    path = "/system/ssh",
+    tag = "system",
+    security(("session" = [])),
+    responses(
+        (status = OK, body = SshState),
+        (status = FORBIDDEN, body = Problem, description = "`forbidden`"),
+    )
+)]
+async fn ssh(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+) -> Result<Json<SshState>, ApiError> {
+    auth.require(Permission::SystemView)?;
+    let status = state.system.get_ssh.execute(&client).await?;
+    Ok(Json(status.into()))
+}
+
+/// Turns the SSH server on or off and sets its port and rules; open
+/// sessions stay. Needs `system.manage`.
+#[utoipa::path(
+    put,
+    path = "/system/ssh",
+    tag = "system",
+    security(("session" = [])),
+    request_body = SshRequest,
+    responses(
+        (status = OK, body = SshState, description = "The server afterwards."),
+        (status = FORBIDDEN, body = Problem, description = "`forbidden`, `csrf_rejected`"),
+        (status = CONFLICT, body = Problem, description = "`not_installed`: there is no SSH server; `port_in_use`: another program listens on the port"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_input`: a port below 1024 or in use, a time to turn off out of range"),
+    )
+)]
+async fn set_ssh(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    ApiJson(request): ApiJson<SshRequest>,
+) -> Result<Json<SshState>, ApiError> {
+    auth.require(Permission::SystemManage)?;
+    let settings = SshSettings {
+        enabled: request.enabled,
+        port: request.port,
+        root_login: request.root_login.map(Into::into),
+        password_login: request.password_login,
+        off_after_minutes: request.off_after_minutes,
+    };
+    let status = state.system.set_ssh.execute(settings, &auth.0.actor(), &client).await?;
+    Ok(Json(status.into()))
+}
+
+/// The oldest TLS version the web interface accepts.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema)]
+pub enum TlsVersion {
+    #[serde(rename = "tls1_2")]
+    Tls12,
+    #[serde(rename = "tls1_3")]
+    Tls13,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WebTls {
+    /// TLS 1.2 serves older clients too; 1.3 alone refuses them.
+    pub minimum: TlsVersion,
+}
+
+impl From<TlsMinimum> for WebTls {
+    fn from(minimum: TlsMinimum) -> Self {
+        let minimum = match minimum {
+            TlsMinimum::Tls12 => TlsVersion::Tls12,
+            TlsMinimum::Tls13 => TlsVersion::Tls13,
+        };
+        Self { minimum }
+    }
+}
+
+/// The oldest TLS version the web interface accepts. Needs `system.manage`.
+#[utoipa::path(
+    get,
+    path = "/system/tls",
+    tag = "system",
+    security(("session" = [])),
+    responses(
+        (status = OK, body = WebTls),
+        (status = FORBIDDEN, body = Problem, description = "`forbidden`"),
+    )
+)]
+async fn tls(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+) -> Result<Json<WebTls>, ApiError> {
+    auth.require(Permission::SystemManage)?;
+    Ok(Json(state.system.get_tls.execute(&client).await?.into()))
+}
+
+/// Sets it; connections already open stay. Needs `system.manage`.
+#[utoipa::path(
+    put,
+    path = "/system/tls",
+    tag = "system",
+    security(("session" = [])),
+    request_body = WebTls,
+    responses(
+        (status = OK, body = WebTls),
+        (status = FORBIDDEN, body = Problem, description = "`forbidden`, `csrf_rejected`"),
+    )
+)]
+async fn set_tls(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    ApiJson(request): ApiJson<WebTls>,
+) -> Result<Json<WebTls>, ApiError> {
+    auth.require(Permission::SystemManage)?;
+    let minimum = match request.minimum {
+        TlsVersion::Tls12 => TlsMinimum::Tls12,
+        TlsVersion::Tls13 => TlsMinimum::Tls13,
+    };
+    Ok(Json(state.system.set_tls.execute(minimum, &auth.0.actor(), &client).await?.into()))
 }

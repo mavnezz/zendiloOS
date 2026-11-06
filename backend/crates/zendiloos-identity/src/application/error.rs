@@ -28,6 +28,8 @@ pub enum IdentityError {
     Unauthenticated,
     #[error(transparent)]
     InvalidText(#[from] InvalidText),
+    #[error(transparent)]
+    InvalidEmail(#[from] crate::domain::text::InvalidEmail),
     #[error("the account may not do this")]
     Forbidden,
     #[error("there is no such account")]
@@ -41,6 +43,27 @@ pub enum IdentityError {
     LastAdmin,
     #[error("use your own settings to change your own account")]
     OwnAccount,
+    #[error("an administrator sets this account's password")]
+    PasswordLocked,
+    #[error(transparent)]
+    InvalidPolicy(#[from] crate::domain::InvalidPolicy),
+    #[error(transparent)]
+    InvalidSecurity(#[from] crate::domain::InvalidSecuritySettings),
+    #[error(transparent)]
+    InvalidAddressRange(#[from] crate::domain::InvalidAddressRange),
+    /// Requests from the caller's address are refused.
+    #[error("this address is blocked")]
+    AddressBlocked,
+    /// The block would lock the caller out.
+    #[error("the address you are using would be blocked")]
+    OwnAddress,
+    /// Allowed addresses are never blocked.
+    #[error("the address is allowed and is never blocked")]
+    AddressAllowed,
+    #[error("the address is not blocked")]
+    BlockNotFound,
+    #[error("there is no such session")]
+    SessionNotFound,
     #[error(transparent)]
     Port(#[from] PortError),
 }

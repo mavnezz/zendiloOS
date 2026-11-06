@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use zendiloos_identity::application::ports::SessionRepository;
-use zendiloos_identity::domain::{AccountId, NewSession, Session, SessionId, TokenHash};
+use zendiloos_identity::domain::{AccountId, NewSession, Session, SessionDetails, SessionId, TokenHash};
 use zendiloos_kernel::{PortError, Secret, Timestamp};
 
 use super::Database;
@@ -150,6 +150,29 @@ impl SessionRepository for SqliteSessions {
             .map(affected)
             .map_err(db_error)
     }
+
+    async fn list(&self) -> Result<Vec<SessionDetails>, PortError> {
+        let rows = sqlx::query!(
+            "SELECT id, account_id, client_ip, user_agent, created_at, last_seen_at, expires_at
+             FROM sessions ORDER BY created_at DESC, id DESC"
+        )
+        .fetch_all(self.db.pool())
+        .await
+        .map_err(db_error)?;
+        Ok(rows
+            .into_iter()
+            .map(|row| SessionDetails {
+                id: SessionId::new(row.id),
+                account_id: AccountId::new(row.account_id),
+                // Written from an `IpAddr`; anything else would be a stray row.
+                client_ip: row.client_ip.and_then(|ip| ip.parse().ok()),
+                user_agent: row.user_agent,
+                created_at: Timestamp::from_unix_seconds(row.created_at),
+                last_seen_at: Timestamp::from_unix_seconds(row.last_seen_at),
+                expires_at: Timestamp::from_unix_seconds(row.expires_at),
+            })
+            .collect())
+    }
 }
 
 #[cfg(test)]
@@ -165,9 +188,12 @@ mod tests {
         let new = NewAccount {
             name: AccountName::parse("alice").unwrap(),
             full_name: None,
+            description: None,
+            email: None,
             role: Role::Admin,
             password_hash: PasswordHash::new("hash"),
             password_change_required: false,
+            password_locked: false,
             created_at: Timestamp::from_unix_seconds(0),
         };
         SqliteAccounts::new(db.clone()).create_first_admin(new).await.unwrap().unwrap().id
@@ -224,5 +250,21 @@ mod tests {
         assert_eq!(sessions.delete_inactive(Timestamp::from_unix_seconds(3800), idle).await.unwrap(), 1);
         sessions.delete(first).await.unwrap();
         db.close().await;
+    }
+
+    #[tokio::test]
+    async fn lists_every_session_with_its_client_newest_first() {
+        let (_dir, db) = temporary_database().await;
+        let sessions = SqliteSessions::new(db.clone());
+        let alice = account(&db).await;
+        let first = sessions.create(new_session(alice, 1, 1000)).await.unwrap();
+        let second = sessions.create(new_session(alice, 2, 2000)).await.unwrap();
+
+        let listed = sessions.list().await.unwrap();
+
+        assert_eq!(listed.iter().map(|s| s.id).collect::<Vec<_>>(), [second, first]);
+        assert_eq!(listed[0].client_ip, Some("192.0.2.1".parse().unwrap()));
+        assert_eq!(listed[0].user_agent.as_ref().map(String::len), Some(256), "bounded");
+        assert_eq!(listed[0].expires_at, Timestamp::from_unix_seconds(5600));
     }
 }

@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT channel, check_daily AS \"check_daily: bool\" FROM system_update_settings WHERE id = 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "channel",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "system_update_settings",
+            "name": "channel"
+          }
+        }
+      },
+      {
+        "name": "check_daily: bool",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "system_update_settings",
+            "name": "check_daily"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "de5e79638e0e1906397a95c4b4b1a967d05f2d9da44083255ba201f6343e6d8e"
+}

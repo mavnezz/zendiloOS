@@ -1,8 +1,9 @@
-import { flushPromises, mount } from '@vue/test-utils'
+import { mount } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ref } from 'vue'
 
-import type { CatalogApp } from '@/shared/api/types'
+import type { CatalogApp, InstalledApp } from '@/shared/api/types'
 import { i18n } from '@/shared/i18n'
 
 import { appText, permissionKeys } from '../texts'
@@ -25,16 +26,50 @@ function app(id: string, name: string, extra: Partial<CatalogApp> = {}): Catalog
 }
 
 const apps = ref<CatalogApp[]>([])
+const installed = ref<Partial<InstalledApp>[]>([])
+const update = vi.fn(() => Promise.resolve())
 
-vi.mock('../api', () => ({
+vi.mock('../api', async (original) => ({
+  webUrl: (await original<typeof import('../api')>()).webUrl,
   useCatalog: () => ({ data: apps, error: ref(null), isPending: ref(false) }),
+  useInstalled: () => ({ data: installed }),
+  useInstallActions: () => ({ update }),
   iconUrl: (a: CatalogApp) => `/icon/${a.id}`,
-  useDocker: () => ({ data: ref(undefined) }),
+  useDocker: () => ({
+    data: ref({ installed: true, running: true, volume: { pool: 'tank', number: 1 }, volumes: [] }),
+  }),
   useEnableDocker: () => () => Promise.resolve(),
 }))
 
+function store(props: { category?: string | null; search?: string } = {}) {
+  return mount(StoreSection, {
+    props: { category: null, search: '', ...props },
+    global: { plugins: [i18n] },
+  })
+}
+
 beforeEach(() => {
+  setActivePinia(createPinia())
   i18n.global.locale.value = 'en'
+  update.mockClear()
+  installed.value = [
+    {
+      id: 'immich',
+      name: 'Immich',
+      translations: {},
+      state: 'installed',
+      run_state: 'running',
+      update: '2.1',
+      web: null,
+    },
+    {
+      id: 'paperless',
+      state: 'installed',
+      run_state: 'running',
+      update: null,
+      web: { port: 8000, path: '/', https: false },
+    },
+  ]
   apps.value = [
     app('jellyfin', 'Jellyfin', {
       permissions: { devices: ['/dev/dri'], capabilities: [], host_network: false },
@@ -50,26 +85,37 @@ beforeEach(() => {
 })
 
 describe('the app store', () => {
-  it('shows every app with what sets it apart', () => {
-    const text = mount(StoreSection, { global: { plugins: [i18n] } }).text()
+  it('lists every app by name with its kind and what can be done', async () => {
+    const wrapper = store()
 
-    expect(text).toContain('Jellyfin')
-    expect(text).toContain('Graphics card')
-    expect(text).toContain('Other catalog')
+    const rows = wrapper.findAll('li').map((li) => li.text())
+    expect(rows).toHaveLength(3)
+    expect(rows[0]).toContain('Immich')
+    expect(rows[0]).toContain('Photos · Backup')
+    expect(rows[0]).toContain('Update')
+    expect(rows[1]).toContain('Jellyfin')
+    expect(rows[1]).toContain('Install')
+    expect(wrapper.findAll('li')[2]!.find('a').attributes('href')).toContain(':8000/')
+
+    await wrapper
+      .findAll('li')[1]!
+      .findAll('button')
+      .find((b) => b.text() === 'Install')!
+      .trigger('click')
+    expect(wrapper.emitted('install')?.[0]?.[0]).toMatchObject({ id: 'jellyfin' })
+    await wrapper
+      .findAll('li')[0]!
+      .findAll('button')
+      .find((b) => b.text() === 'Update')!
+      .trigger('click')
+    expect(update).toHaveBeenCalledWith('immich', false)
   })
 
-  it('finds apps by name or tagline and by category', async () => {
-    const wrapper = mount(StoreSection, { global: { plugins: [i18n] } })
-
-    await wrapper.find('input').setValue('paper')
-    expect(wrapper.findAll('li').map((li) => li.text())).toHaveLength(1)
-    await wrapper.find('input').setValue('')
-    const photos = wrapper.findAll('button').find((b) => b.text() === 'Photos')
-    await photos?.trigger('click')
-    await flushPromises()
-    const names = wrapper.findAll('li').map((li) => li.text())
-    expect(names).toHaveLength(1)
-    expect(names[0]).toContain('Immich')
+  it('shows one category, or what the search finds', () => {
+    expect(store({ search: 'paper' }).findAll('li')).toHaveLength(1)
+    const photos = store({ category: 'photos' })
+    expect(photos.findAll('li').map((li) => li.text())).toEqual([expect.stringContaining('Immich')])
+    expect(photos.text()).toContain('Photos')
   })
 })
 

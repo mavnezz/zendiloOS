@@ -12,6 +12,11 @@ pub enum AuditAction {
     GroupCreate,
     GroupUpdate,
     GroupDelete,
+    PasswordPolicyUpdate,
+    SecurityUpdate,
+    AddressBlock,
+    AddressUnblock,
+    SessionEnd,
 }
 
 impl AuditAction {
@@ -28,6 +33,11 @@ impl AuditAction {
             AuditAction::GroupCreate => "identity.group_create",
             AuditAction::GroupUpdate => "identity.group_update",
             AuditAction::GroupDelete => "identity.group_delete",
+            AuditAction::PasswordPolicyUpdate => "identity.password_policy_update",
+            AuditAction::SecurityUpdate => "identity.security_update",
+            AuditAction::AddressBlock => "identity.address_block",
+            AuditAction::AddressUnblock => "identity.address_unblock",
+            AuditAction::SessionEnd => "identity.session_end",
         }
     }
 }

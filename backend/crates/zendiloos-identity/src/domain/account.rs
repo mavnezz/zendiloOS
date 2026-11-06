@@ -83,10 +83,18 @@ pub struct Account {
     pub id: AccountId,
     pub name: AccountName,
     pub full_name: Option<String>,
+    /// What the account is for, as administrators note it.
+    pub description: Option<String>,
+    /// Where to reach its owner.
+    pub email: Option<String>,
     pub role: Role,
     pub password_hash: PasswordHash,
-    /// Set for accounts an administrator created with an initial password.
+    /// Set for accounts an administrator created with an initial password,
+    /// and when the password is older than the policy allows.
     pub password_change_required: bool,
+    /// Only administrators set its password; it never has to change it.
+    pub password_locked: bool,
+    pub password_changed_at: Timestamp,
     pub disabled: bool,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
@@ -104,10 +112,34 @@ impl Account {
 pub struct NewAccount {
     pub name: AccountName,
     pub full_name: Option<String>,
+    pub description: Option<String>,
+    pub email: Option<String>,
     pub role: Role,
     pub password_hash: PasswordHash,
     pub password_change_required: bool,
+    pub password_locked: bool,
     pub created_at: Timestamp,
+}
+
+impl NewAccount {
+    /// The account as stored with `id`.
+    pub fn stored(self, id: AccountId) -> Account {
+        Account {
+            id,
+            name: self.name,
+            full_name: self.full_name,
+            description: self.description,
+            email: self.email,
+            role: self.role,
+            password_hash: self.password_hash,
+            password_change_required: self.password_change_required,
+            password_locked: self.password_locked,
+            password_changed_at: self.created_at,
+            disabled: false,
+            created_at: self.created_at,
+            updated_at: self.created_at,
+        }
+    }
 }
 
 #[cfg(test)]

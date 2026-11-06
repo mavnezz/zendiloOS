@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO password_policy (id, min_length, mixed_case, digit, symbol, max_age_days)\n             VALUES (1, ?, ?, ?, ?, ?)\n             ON CONFLICT (id) DO UPDATE SET min_length = excluded.min_length, mixed_case = excluded.mixed_case,\n                 digit = excluded.digit, symbol = excluded.symbol, max_age_days = excluded.max_age_days",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "eb9b19665810125d71799654ef147e067ca9645b0c3350a62efb2a460cdcf9a2"
+}

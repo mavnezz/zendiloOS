@@ -14,3 +14,11 @@ pub use error::PortError;
 pub use request::RequestContext;
 pub use secret::{Secret, constant_time_eq};
 pub use time::{Clock, Timestamp, UtcTime};
+
+/// The version of zendiloOS that runs: the package's, which its build takes
+/// from `debian/changelog` (`ZENDILOOS_VERSION`), or the crates' in a build
+/// without one.
+pub const VERSION: &str = match option_env!("ZENDILOOS_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};

@@ -1,11 +1,18 @@
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
+import { computed, type MaybeRefOrGetter, toValue } from 'vue'
 
 import { api, unwrap } from '@/shared/api/client'
 import type {
   Account,
+  AccountHome,
   CreateAccountRequest,
   CreateGroupRequest,
   Group,
+  Homes,
+  Job,
+  PasswordPolicy,
+  ShareRuleLevel,
+  SubjectKind,
   UpdateAccountRequest,
   UpdateGroupRequest,
 } from '@/shared/api/types'
@@ -56,6 +63,84 @@ export function useAccountActions() {
       refreshing(unwrap(api.PATCH('/api/v1/groups/{id}', { ...path(id), body }))),
     deleteGroup: async (id: number): Promise<void> => {
       await refreshing(unwrap(api.DELETE('/api/v1/groups/{id}', path(id))))
+    },
+  }
+}
+
+/** Every share with its rules, to show and change who may use what. */
+export function useShareRules(enabled: MaybeRefOrGetter<boolean> = true) {
+  return useQuery({
+    queryKey: ['shares'],
+    queryFn: () => unwrap(api.GET('/api/v1/shares')),
+    enabled: computed(() => toValue(enabled)),
+  })
+}
+
+/** The rules a new password must follow; every account may read them. */
+export function usePasswordPolicy() {
+  return useQuery({
+    queryKey: ['password-policy'],
+    queryFn: () => unwrap(api.GET('/api/v1/password-policy')),
+  })
+}
+
+/** Where the personal folders are and who has one. */
+export function useHomes(enabled: MaybeRefOrGetter<boolean> = true) {
+  return useQuery({
+    queryKey: ['homes'],
+    queryFn: () => unwrap(api.GET('/api/v1/homes')),
+    enabled: computed(() => toValue(enabled)),
+  })
+}
+
+/** Settings around accounts; each refreshes what it changed. */
+export function useAccountSettings() {
+  const client = useQueryClient()
+  return {
+    setPasswordPolicy: async (body: PasswordPolicy): Promise<PasswordPolicy> => {
+      const policy = await unwrap(api.PUT('/api/v1/password-policy', { body }))
+      client.setQueryData(['password-policy'], policy)
+      return policy
+    },
+    setHomes: async (pool: string | null): Promise<Homes> => {
+      const homes = await unwrap(api.PUT('/api/v1/homes', { body: { pool } }))
+      client.setQueryData(['homes'], homes)
+      return homes
+    },
+    setAccountHome: async (
+      account: number,
+      enabled: boolean,
+      quotaBytes: number | null,
+    ): Promise<AccountHome | null> => {
+      try {
+        return await unwrap(
+          api.PUT('/api/v1/homes/{account_id}', {
+            params: { path: { account_id: account } },
+            body: { enabled, quota_bytes: quotaBytes },
+          }),
+        )
+      } finally {
+        await client.invalidateQueries({ queryKey: ['homes'] })
+      }
+    },
+    /** Sets the rules of one account or group on the shares listed. */
+    setSubjectAccess: async (
+      kind: SubjectKind,
+      id: number,
+      rules: { share_id: number; rule: ShareRuleLevel | null }[],
+    ): Promise<Job[]> => {
+      if (!rules.length) return []
+      try {
+        const { jobs } = await unwrap(
+          api.PUT('/api/v1/shares/access/{kind}/{id}', {
+            params: { path: { kind, id } },
+            body: { rules },
+          }),
+        )
+        return jobs
+      } finally {
+        await client.invalidateQueries({ queryKey: ['shares'] })
+      }
     },
   }
 }

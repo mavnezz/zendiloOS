@@ -15,9 +15,13 @@ mod installed_apps;
 mod jobs;
 mod notifications;
 mod preferences;
+mod projects;
+mod security;
 mod self_tests;
 mod sessions;
 mod shares;
+mod system_updates;
+mod update_settings;
 
 #[cfg(test)]
 mod tests;
@@ -42,9 +46,13 @@ pub use installed_apps::SqliteInstalledApps;
 pub use jobs::SqliteJobs;
 pub use notifications::SqliteNotifications;
 pub use preferences::SqlitePreferences;
+pub use projects::SqliteProjects;
+pub use security::SqliteSecurity;
 pub use self_tests::SqliteSelfTestPlans;
 pub use sessions::SqliteSessions;
 pub use shares::SqliteShares;
+pub use system_updates::SqliteSystemUpdates;
+pub use update_settings::SqliteUpdateSettings;
 
 static MIGRATOR: Migrator = sqlx::migrate!();
 

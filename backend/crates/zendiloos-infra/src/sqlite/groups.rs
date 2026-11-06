@@ -175,9 +175,12 @@ mod tests {
         let new = NewAccount {
             name: AccountName::parse(name).unwrap(),
             full_name: None,
+            description: None,
+            email: None,
             role: Role::User,
             password_hash: PasswordHash::new("$argon2id$hash"),
             password_change_required: false,
+            password_locked: false,
             created_at: Timestamp::from_unix_seconds(1000),
         };
         accounts.create(new).await.unwrap().unwrap().id

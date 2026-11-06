@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM homes_location",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "ca7f95e44d2265ed4fe69c5d663c953edc22365808a34e07a9cf9f323bd032ad"
+}

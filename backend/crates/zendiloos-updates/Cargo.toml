@@ -1,0 +1,29 @@
+[package]
+name = "zendiloos-updates"
+description = "Bounded context Updates: Debian's packages and zendiloOS's releases, checked and installed"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Core crate of a bounded context: no I/O, no frameworks. Adapters live in
+# zendiloos-infra and zendiloos-api. See docs/architecture.md, 2.1.
+[dependencies]
+zendiloos-kernel.workspace = true
+zendiloos-notify.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio = { workspace = true, features = ["sync", "rt"] }
+
+[dev-dependencies]
+tokio.workspace = true
+zendiloos-notify = { workspace = true, features = ["testing"] }
+
+[features]
+# In-memory adapters, for tests here and in the API crate.
+testing = []
+
+[lints]
+workspace = true

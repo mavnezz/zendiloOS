@@ -13,7 +13,9 @@
 //!   environment, `--env-file /dev/null` and an empty project folder;
 //! - only that normalized form is kept and ever started;
 //! - before every start, each folder a container mounts is opened name by
-//!   name without following a link.
+//!   name without following a link;
+//! - a folder in a share (rather than the whole share) is mounted pinned
+//!   (`app_shares`), never by its path.
 //!
 //! The account (`app-<id>`), the time zone and the data folder
 //! (`/volume<N>/@apps/<id>`) the agent fills in itself.
@@ -25,7 +27,7 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use rustix::fs::{Mode, OFlags, fstat, open, openat};
+use rustix::fs::{Mode, OFlags, fstat, openat};
 use serde_json::Value;
 use zendiloos_agent_proto::{
     AppCompose, AppFolder, AppManifest, AppName, AppShareChoice, AppValues, MAX_LOG_LINES, Response,
@@ -36,16 +38,17 @@ use zendiloos_catalog::{Manifest, Placement, Problem, RESERVED_HOST_PORTS, Setti
 use zendiloos_exec::{Limits, Output, Program, Surroundings};
 
 use crate::accounts::{AccountFiles, app_account};
+use crate::app_shares::{self, Pin, open_mounted};
 use crate::operations::OperationError;
 use crate::pools::{APPS_DIRECTORY, HostPaths};
 
 /// What zendiloos keeps in an app's normalized compose file besides what
 /// Compose reads: where the app's data is and which shares it mounts.
-const EXTENSION: &str = "x-zendiloos";
+pub(crate) const EXTENSION: &str = "x-zendiloos";
 
 /// The environment Docker itself needs; the app's values come on top.
 /// `DOCKER_CONFIG` points nowhere, so no configuration of root's is read.
-const DOCKER_ENVIRONMENT: [(&str, &str); 2] =
+pub(crate) const DOCKER_ENVIRONMENT: [(&str, &str); 2] =
     [("PATH", "/usr/sbin:/usr/bin:/sbin:/bin"), ("DOCKER_CONFIG", "/nonexistent")];
 
 /// Names a setting must not have: Docker, Compose, the Go runtime or the C
@@ -164,6 +167,7 @@ use std::os::unix::fs::DirBuilderExt;
 #[derive(Debug)]
 pub(crate) struct Apps {
     docker: Program,
+    systemctl: Program,
     paths: HostPaths,
     accounts: AccountFiles,
     /// One change to the kept compose files at a time.
@@ -171,8 +175,8 @@ pub(crate) struct Apps {
 }
 
 impl Apps {
-    pub(crate) fn new(docker: Program, paths: HostPaths, accounts: AccountFiles) -> Self {
-        Self { docker, paths, accounts, serial: tokio::sync::Mutex::new(()) }
+    pub(crate) fn new(docker: Program, systemctl: Program, paths: HostPaths, accounts: AccountFiles) -> Self {
+        Self { docker, systemctl, paths, accounts, serial: tokio::sync::Mutex::new(()) }
     }
 
     fn config_path(&self, app: &AppName) -> PathBuf {
@@ -191,7 +195,7 @@ impl Apps {
     }
 
     /// `/volume<N>/<share>`, with the share's dataset mounted there.
-    fn share_path(&self, choice: &AppShareChoice) -> Result<PathBuf, OperationError> {
+    fn share_root(&self, choice: &AppShareChoice) -> Result<PathBuf, OperationError> {
         let volume = self.paths.volumes.join(format!("volume{}", choice.volume.get()));
         let path = volume.join(choice.name.as_str());
         let mounted = match (fs::symlink_metadata(&path), fs::metadata(&volume)) {
@@ -202,6 +206,64 @@ impl Apps {
             Ok(path)
         } else {
             Err(refused(format!("the share {} is not mounted", choice.name.as_str())))
+        }
+    }
+
+    /// What the app mounts for the share `id`: the share's root, or the pin
+    /// of the folder picked in it, which must be reachable now.
+    fn share_mount(
+        &self,
+        app: &AppName,
+        id: &str,
+        choice: &AppShareChoice,
+    ) -> Result<(String, Option<Pin>), OperationError> {
+        let root = self.share_root(choice)?;
+        if choice.folder.is_whole() {
+            return Ok((root.to_string_lossy().into_owned(), None));
+        }
+        app_shares::walk(&root, &choice.folder)?;
+        let at = app_shares::pin_path(&self.paths, app, id)?.to_string_lossy().into_owned();
+        let pin =
+            Pin { share: root.to_string_lossy().into_owned(), folder: choice.folder.clone(), at: at.clone() };
+        Ok((at, Some(pin)))
+    }
+
+    /// The unit pinning the app's folders: written and enabled when there
+    /// are any, stopped and removed when there are none.
+    async fn place_pin_unit(&self, app: &AppName, pins: &[Pin]) -> Result<(), OperationError> {
+        let unit = app_shares::unit_name(app);
+        let path = self.paths.units.join(&unit);
+        if pins.is_empty() {
+            return self.remove_pin_unit(app).await;
+        }
+        let mut shares: Vec<&str> = pins.iter().map(|pin| pin.share.as_str()).collect();
+        shares.sort_unstable();
+        shares.dedup();
+        let content = app_shares::unit(&self.paths.agent, app, &shares);
+        let temporary = path.with_extension("service.new");
+        fs::write(&temporary, content).map_err(|e| OperationError::Write(temporary.clone(), e))?;
+        fs::rename(&temporary, &path).map_err(|e| OperationError::Write(path.clone(), e))?;
+        self.systemctl(&["daemon-reload"]).await?;
+        self.systemctl(&["enable", &unit]).await
+    }
+
+    async fn remove_pin_unit(&self, app: &AppName) -> Result<(), OperationError> {
+        let unit = app_shares::unit_name(app);
+        let path = self.paths.units.join(&unit);
+        if path.exists() {
+            self.systemctl(&["disable", "--now", &unit]).await?;
+            fs::remove_file(&path).map_err(|e| OperationError::Write(path.clone(), e))?;
+            self.systemctl(&["daemon-reload"]).await?;
+        }
+        Ok(())
+    }
+
+    async fn systemctl(&self, args: &[&str]) -> Result<(), OperationError> {
+        let output = zendiloos_exec::run(&self.systemctl, args, LIMITS).await?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(OperationError::Failed(format!("systemctl {}: {}", args.join(" "), complaint(&output))))
         }
     }
 
@@ -220,14 +282,15 @@ impl Apps {
     }
 
     /// The values for `manifest`: exactly the shares, ports and settings it
-    /// declares, each checked.
+    /// declares, each checked; and the folders of shares to pin.
     fn placement(
         &self,
+        app: &AppName,
         manifest: &Manifest,
         app_data: &Path,
         account: (u32, u32),
         values: &AppValues,
-    ) -> Result<Placement, OperationError> {
+    ) -> Result<(Placement, Vec<Pin>), OperationError> {
         let same_ids = |declared: BTreeSet<&str>, given: BTreeSet<&str>, what: &str| {
             if declared == given {
                 Ok(())
@@ -252,8 +315,11 @@ impl Apps {
         )?;
 
         let mut shares = BTreeMap::new();
+        let mut pins = Vec::new();
         for (id, choice) in &values.shares {
-            shares.insert(id.clone(), self.share_path(choice)?.to_string_lossy().into_owned());
+            let (mounted, pin) = self.share_mount(app, id, choice)?;
+            shares.insert(id.clone(), mounted);
+            pins.extend(pin);
         }
 
         let mut taken = BTreeSet::new();
@@ -292,7 +358,7 @@ impl Apps {
             }
         }
 
-        Ok(Placement {
+        let placement = Placement {
             project: manifest.id.clone(),
             app_data: app_data.to_string_lossy().into_owned(),
             puid: account.0.to_string(),
@@ -305,7 +371,8 @@ impl Apps {
                 .iter()
                 .map(|(id, value)| (id.clone(), value.expose().to_owned()))
                 .collect(),
-        })
+        };
+        Ok((placement, pins))
     }
 
     /// `docker compose config --format json` of `compose` with `variables`
@@ -374,7 +441,7 @@ impl Apps {
         let account = app_account(&passwd, &group, app)
             .ok_or_else(|| refused(format!("the account {} is missing", app.account())))?;
         let app_data = self.app_data(volume, app)?;
-        let placement = self.placement(&manifest, &app_data, account, values)?;
+        let (placement, pins) = self.placement(app, &manifest, &app_data, account, values)?;
 
         let stand_in = Placement::stand_in(&manifest);
         let checked = self.normalize(app, compose.as_str(), stand_in.variables()).await?;
@@ -386,14 +453,17 @@ impl Apps {
         require_none(check_normalized(&normalized, &manifest, &placement))?;
         leave_out_missing_devices(&mut normalized, &self.paths.dev);
         let folders = folders(&normalized, &placement.app_data)?;
+        let pinned: Vec<&str> = pins.iter().map(|pin| pin.at.as_str()).collect();
+        refuse_to_create(&mut normalized, &pinned);
         if let Some(root) = normalized.as_object_mut() {
             let shares: Vec<&String> = placement.shares.values().collect();
             root.insert(
                 EXTENSION.to_owned(),
-                serde_json::json!({ "app_data": placement.app_data, "shares": shares }),
+                serde_json::json!({ "app_data": placement.app_data, "shares": shares, "pins": pins }),
             );
         }
         self.keep(app, &normalized)?;
+        self.place_pin_unit(app, &pins).await?;
         Ok(Response::AppFolders { folders })
     }
 
@@ -481,6 +551,15 @@ impl Apps {
 
     pub(crate) async fn start(&self, app: &AppName) -> Result<Response, OperationError> {
         let (_, normalized) = self.kept(app)?;
+        let pins = app_shares::pins_of(&normalized)?;
+        if !pins.is_empty() {
+            // Walked here first, for a refusal that names the folder.
+            for pin in &pins {
+                app_shares::walk(Path::new(&pin.share), &pin.folder)?;
+            }
+            // Pinned again: a folder that was missing at boot may be back.
+            self.systemctl(&["restart", &app_shares::unit_name(app)]).await?;
+        }
         self.check_mounts(&normalized)?;
         self.compose_done(app, &["up", "--detach", "--remove-orphans", "--quiet-pull"], LONG).await
     }
@@ -503,6 +582,7 @@ impl Apps {
         if !output.status.success() {
             return Err(OperationError::Failed(format!("Docker Compose: {}", complaint(&output))));
         }
+        self.remove_pin_unit(app).await?;
         fs::remove_file(&path).map_err(|e| OperationError::Write(path, e))
     }
 
@@ -547,12 +627,15 @@ impl Apps {
         if app_data.is_empty() {
             return Err(refused("the kept compose file does not say where the app's data is"));
         }
+        let pins = app_shares::pins_of(normalized)?;
         let root = open_mounted(Path::new(app_data))?;
         for source in bind_sources(normalized) {
             if let Some(folder) = below(&source, app_data) {
                 let folder =
                     AppFolder::parse(folder).map_err(|_| refused(format!("{source} is no plain path")))?;
                 reach(&root, &folder).map_err(|reason| refused(format!("{source}: {reason}")))?;
+            } else if let Some(pin) = pins.iter().find(|pin| pin.at == source) {
+                app_shares::is_pinned(Path::new(&pin.at), Path::new(&pin.share), &pin.folder)?;
             } else if shares.contains(&source.as_str()) {
                 open_mounted(Path::new(&source))?;
             } else {
@@ -583,6 +666,24 @@ fn bind_sources(normalized: &Value) -> Vec<String> {
         .filter(|mount| mount.get("type").and_then(Value::as_str) == Some("bind"))
         .filter_map(|mount| mount.get("source").and_then(Value::as_str).map(str::to_owned))
         .collect()
+}
+
+/// Binds of `sources` fail when the source is missing, rather than Docker
+/// making an empty folder there: a pin that could not be made.
+fn refuse_to_create(normalized: &mut Value, sources: &[&str]) {
+    let Some(services) = normalized.get_mut("services").and_then(Value::as_object_mut) else {
+        return;
+    };
+    for service in services.values_mut() {
+        let Some(mounts) = service.get_mut("volumes").and_then(Value::as_array_mut) else { continue };
+        for mount in mounts {
+            let pinned = mount.get("type").and_then(Value::as_str) == Some("bind")
+                && mount.get("source").and_then(Value::as_str).is_some_and(|s| sources.contains(&s));
+            if let (true, Some(mount)) = (pinned, mount.as_object_mut()) {
+                mount.insert("bind".to_owned(), serde_json::json!({ "create_host_path": false }));
+            }
+        }
+    }
 }
 
 /// The folders below `app_data` the containers mount, for the files agent
@@ -618,22 +719,6 @@ fn leave_out_missing_devices(normalized: &mut Value, dev: &Path) {
             service.remove("devices");
         }
     }
-}
-
-/// Opens a directory that is a file system's root (a dataset mounted
-/// there), without following a link to it.
-fn open_mounted(path: &Path) -> Result<OwnedFd, OperationError> {
-    let flags = OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-    let not_mounted = || refused(format!("{} is not mounted", path.display()));
-    let directory = open(path, flags, Mode::empty()).map_err(|_| not_mounted())?;
-    let parent =
-        open(path.parent().unwrap_or(Path::new("/")), flags, Mode::empty()).map_err(|_| not_mounted())?;
-    let (own, above) =
-        (fstat(&directory).map_err(|_| not_mounted())?, fstat(&parent).map_err(|_| not_mounted())?);
-    if own.st_dev == above.st_dev {
-        return Err(not_mounted());
-    }
-    Ok(directory)
 }
 
 /// Walks `folder` from `root` name by name: each must be a folder on the
@@ -695,6 +780,15 @@ mod tests {
     }
 
     #[test]
+    fn pinned_folders_are_never_made_by_docker() {
+        let mut normalized = normalized();
+        refuse_to_create(&mut normalized, &["/volume1/media"]);
+        let volumes = &normalized["services"]["app"]["volumes"];
+        assert_eq!(volumes[2]["bind"], json!({ "create_host_path": false }));
+        assert!(volumes[0].get("bind").is_none());
+    }
+
+    #[test]
     fn folders_are_the_mounts_below_the_data_folder() {
         let made = folders(&normalized(), "/volume1/@apps/demo").unwrap();
         let names: Vec<&str> = made.iter().map(AppFolder::as_str).collect();
@@ -722,6 +816,7 @@ mod tests {
 
     #[test]
     fn a_folder_that_became_a_link_is_not_reached() {
+        use rustix::fs::open;
         let data = tempfile::tempdir().unwrap();
         fs::create_dir_all(data.path().join("config/cache")).unwrap();
         std::os::unix::fs::symlink("/etc", data.path().join("evil")).unwrap();

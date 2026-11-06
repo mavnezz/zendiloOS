@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO docker_update_settings (id, check_images, weekdays, minute) VALUES (1, ?, ?, ?)\n             ON CONFLICT (id) DO UPDATE SET check_images = excluded.check_images, weekdays = excluded.weekdays,\n                 minute = excluded.minute",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "15e94a86488e39935989aca8763c63afd025f94a97ca0cc5f15d00b81194a1da"
+}

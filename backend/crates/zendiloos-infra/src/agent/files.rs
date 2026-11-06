@@ -7,7 +7,7 @@ use zendiloos_agent_proto::{
 };
 use zendiloos_kernel::{PortError, RequestContext, Timestamp};
 use zendiloos_sharing::application::ports::{FileHost, FileHostError};
-use zendiloos_sharing::domain::{Entry, EntryKind, FileLocation, FilePath, Listing};
+use zendiloos_sharing::domain::{Entry, EntryKind, FileLocation, FilePath, FileRoot, Listing};
 
 use super::{WHAT, agent_error, unexpected};
 
@@ -61,7 +61,12 @@ fn user(name: &str) -> Result<UserName, FileHostError> {
 fn location(at: &FileLocation) -> Result<proto::FileLocation, FileHostError> {
     Ok(proto::FileLocation {
         volume: proto::VolumeNumber::new(at.volume).map_err(|_| invalid("volume number"))?,
-        share: proto::ShareName::parse(at.share.as_str()).map_err(|_| invalid("share name"))?,
+        root: match &at.root {
+            FileRoot::Share(share) => proto::FileRoot::Share(
+                proto::ShareName::parse(share.as_str()).map_err(|_| invalid("share name"))?,
+            ),
+            FileRoot::Home => proto::FileRoot::Home,
+        },
         path: proto::SharePath::parse(at.path.as_str()).map_err(|_| invalid("path"))?,
         snapshot: match &at.snapshot {
             Some(label) => Some(proto::SnapshotLabel::parse(label).map_err(|_| invalid("snapshot"))?),
@@ -230,7 +235,7 @@ mod tests {
         let context = RequestContext::default();
         let at = |path: &str| FileLocation {
             volume: 1,
-            share: ShareName::parse("docs").unwrap(),
+            root: FileRoot::Share(ShareName::parse("docs").unwrap()),
             path: FilePath::parse(path).unwrap(),
             snapshot: None,
         };

@@ -14,7 +14,10 @@ mod state;
 mod tests;
 
 use axum::Router;
+use axum::extract::{FromRequestParts, State};
 use axum::http::Request;
+use axum::middleware::{Next, from_fn_with_state};
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::trace::TraceLayer;
@@ -87,6 +90,7 @@ pub fn router(state: ApiState) -> Router {
         .merge(routes::live::router())
         .fallback(|| async { ApiError::NotFound })
         .method_not_allowed_fallback(|| async { ApiError::MethodNotAllowed })
+        .layer(from_fn_with_state(state.clone(), refuse_blocked))
         .with_state(state)
         // Layers wrap everything added before them: the request ID is set
         // first, then the request is traced, and the ID is copied to the
@@ -99,4 +103,26 @@ pub fn router(state: ApiState) -> Router {
             tracing::info_span!("request", method = %request.method(), path = %request.uri().path(), request_id)
         }))
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
+}
+
+/// Refuses every request from an address the web interface blocks; the
+/// health check stays open for monitoring.
+async fn refuse_blocked(
+    State(state): State<ApiState>,
+    request: axum::extract::Request,
+    next: Next,
+) -> Response {
+    if request.uri().path() == format!("{API_V1}/health") {
+        return next.run(request).await;
+    }
+    let (mut parts, body) = request.into_parts();
+    let client = match extract::Client::from_request_parts(&mut parts, &state).await {
+        Ok(extract::Client(client)) => client,
+        Err(never) => match never {},
+    };
+    match state.identity.check_address.is_blocked(client.client_ip).await {
+        Ok(false) => next.run(axum::extract::Request::from_parts(parts, body)).await,
+        Ok(true) => ApiError::address_blocked().into_response(),
+        Err(error) => ApiError::internal(error).into_response(),
+    }
 }

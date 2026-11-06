@@ -25,6 +25,9 @@
 #groupdel = "/usr/sbin/groupdel"
 #gpasswd = "/usr/bin/gpasswd"
 #smbpasswd = "/usr/bin/smbpasswd"
+#timedatectl = "/usr/bin/timedatectl"
+#sshd = "/usr/sbin/sshd"
+#systemd_run = "/usr/bin/systemd-run"
 
 #[storage]
 # Which disks may be erased to create a pool or replace a disk: "unused"

@@ -8,8 +8,10 @@ import {
   type DesktopState,
   emptyDesktop,
   focusWindow,
+  minimizeAll,
   minimizeWindow,
   moveWindow,
+  navigateWindow,
   openWindow,
   resizeWindow,
   restoreDesktop,
@@ -17,11 +19,12 @@ import {
   toggleMaximized,
 } from './windowManager'
 
-/** Height of the taskbar below the desktop area. */
-export const TASKBAR_HEIGHT = 48
-
+/** Until the desktop has measured its area: the window less the bar and margins. */
 function currentViewport(): Size {
-  return { width: window.innerWidth, height: Math.max(window.innerHeight - TASKBAR_HEIGHT, 0) }
+  return {
+    width: Math.max(window.innerWidth - 120, 0),
+    height: Math.max(window.innerHeight - 24, 0),
+  }
 }
 
 /** The open windows, remembered per account in this browser. */
@@ -63,9 +66,12 @@ export const useWindows = defineStore('windows', () => {
     { deep: true },
   )
 
-  /** The windows follow on screen; what is stored stays as the user left it. */
-  function resized(): void {
-    viewport.value = currentViewport()
+  /**
+   * The area windows live in, as the desktop measured it. The windows
+   * follow on screen; what is stored stays as the user left it.
+   */
+  function resized(size?: Size): void {
+    viewport.value = size ?? currentViewport()
   }
 
   return {
@@ -75,8 +81,11 @@ export const useWindows = defineStore('windows', () => {
     restore,
     forget,
     resized,
-    open: (app: AppDefinition) =>
-      (state.value = openWindow(state.value, app.id, app.size, viewport.value)),
+    open: (app: AppDefinition, section?: string) =>
+      (state.value = openWindow(state.value, app.id, app.size, viewport.value, section)),
+    navigate: (appId: string, section: string) =>
+      (state.value = navigateWindow(state.value, appId, section)),
+    minimizeAll: () => (state.value = minimizeAll(state.value)),
     close: (appId: string) => (state.value = closeWindow(state.value, appId)),
     focus: (appId: string) => (state.value = focusWindow(state.value, appId)),
     minimize: (appId: string) => (state.value = minimizeWindow(state.value, appId)),

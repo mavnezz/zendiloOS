@@ -99,8 +99,27 @@ deb:
         -v zendiloos-build-cargo:/opt/cargo/registry \
         -v zendiloos-build-target:/build/zendiloos/backend/target \
         -v zendiloos-build-npm:/root/.npm \
-        -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+        -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" -e ZENDILOOS_VERSION="${ZENDILOOS_VERSION:-}" \
         zendiloos-build /src/packaging/build-deb.sh
+
+# The installation ISO for the newest package in dist/: Debian 13's netinst
+# image with an entry "Install zendiloOS" (docs/releases.md)
+iso:
+    scripts/build-iso.sh "$(ls -t dist/zendiloos_*_amd64.deb | head -1)" dist
+
+# Installs from the newest ISO in dist/ into a fresh QEMU machine, unattended
+iso-test:
+    scripts/iso-test.sh
+
+# Makes the key pair releases are signed with (docs/releases.md): the public
+# key goes into the repository, the secret one into a GitHub secret
+release-key secret="~/.minisign/zendiloos-release.key":
+    minisign -G -p packaging/release-signing.pub -s {{ secret }}
+
+# Signs the package in dist/: SHA256SUMS and SHA256SUMS.minisig beside it
+sign-release secret="~/.minisign/zendiloos-release.key":
+    cd dist && sha256sum zendiloos_*.deb > SHA256SUMS
+    minisign -S -s {{ secret }} -m dist/SHA256SUMS -t "zendiloos $(ls dist/zendiloos_*.deb | sed 's/.*zendiloos_\(.*\)_.*/\1/')"
 
 # Package of an earlier commit or tag into dist/<ref>/, e.g. for the upgrade test
 deb-at ref:
@@ -136,6 +155,30 @@ vm-storage-test:
 # Shares over SMB and NFS with their permissions, in the test VM
 vm-sharing-test:
     scripts/vm-sharing-test.sh
+
+# Accounts, groups and personal folders in the VM: password rules, denied groups, homes
+vm-accounts-test:
+    scripts/vm-accounts-test.sh
+
+# File services in the VM: SMB options, Time Machine, discovery, encryption
+vm-services-test:
+    scripts/vm-services-test.sh
+
+# SSH as a service in the second VM: port, rules, off with open sessions, timer
+vm-ssh-test:
+    scripts/vm-ssh-test.sh
+
+# The web interface's defences in the second VM: TLS, blocked addresses, account lock, sessions
+vm-security-test:
+    scripts/vm-security-test.sh
+
+# The Docker app in the second VM: projects with consent, networks, updates, moving Docker's data
+vm-docker-test:
+    scripts/vm-docker-test.sh
+
+# An app given a folder in a share: pinned, safe from links, across a reboot
+vm-app-folders-test:
+    scripts/vm-app-folders-test.sh
 
 # Notification channels (a webhook in the VM, an email channel without server)
 vm-notify-test:

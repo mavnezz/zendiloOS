@@ -29,6 +29,7 @@ pub(super) fn routes() -> OpenApiRouter<ApiState> {
         .routes(routes!(catalog_app))
         .routes(routes!(catalog_icon))
         .routes(routes!(docker, enable_docker))
+        .routes(routes!(install_docker))
         .routes(routes!(installed, install))
         .routes(routes!(installed_app, uninstall))
         .routes(routes!(retry_app))
@@ -58,6 +59,7 @@ impl From<AppsError> for ApiError {
             AppsError::AlreadyInstalled => rejected(StatusCode::CONFLICT, "app_installed", None),
             AppsError::IdTooLong => rejected(StatusCode::UNPROCESSABLE_ENTITY, "app_id_too_long", None),
             AppsError::DockerNotReady => rejected(StatusCode::CONFLICT, "docker_not_ready", None),
+            AppsError::DockerInstalled => rejected(StatusCode::CONFLICT, "docker_installed", None),
             AppsError::PermissionsNotConfirmed => {
                 rejected(StatusCode::CONFLICT, "permissions_not_confirmed", None)
             }
@@ -431,6 +433,8 @@ pub struct DockerSetup {
     /// Debian's `docker.io` is installed.
     pub installed: bool,
     pub running: bool,
+    /// The engine's version, while it runs.
+    pub version: Option<String>,
     /// Where Docker's data is, if zendiloOS put it on a pool.
     pub volume: Option<AppVolume>,
     /// Pools it could go to.
@@ -442,6 +446,7 @@ fn docker_dto(setup: zendiloos_apps::application::DockerSetup) -> DockerSetup {
     DockerSetup {
         installed: setup.installed,
         running: setup.running,
+        version: setup.version,
         volume: setup.volume.map(volume),
         volumes: setup.volumes.into_iter().map(volume).collect(),
     }
@@ -490,6 +495,32 @@ async fn enable_docker(
     Ok(Json(docker_dto(state.docker.enable(&request.pool, &auth.0.actor(), &client).await?)))
 }
 
+/// Installs Docker from Debian (`docker.io`, `docker-compose`) and puts
+/// its data on a pool, as a job; apps can be installed afterwards. Needs
+/// `containers.manage`.
+#[utoipa::path(
+    post,
+    path = "/apps/docker/install",
+    tag = "apps",
+    security(("session" = [])),
+    request_body = EnableDockerRequest,
+    responses(
+        (status = ACCEPTED, body = Job),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`: no such pool"),
+        (status = CONFLICT, body = Problem, description = "`docker_installed`"),
+    )
+)]
+async fn install_docker(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    ApiJson(request): ApiJson<EnableDockerRequest>,
+) -> Result<(StatusCode, Json<Job>), ApiError> {
+    auth.require(Permission::ContainersManage)?;
+    let job = state.docker.install(&request.pool, &auth.0.actor(), &client).await?;
+    Ok((StatusCode::ACCEPTED, Json(job.into())))
+}
+
 /// What Docker makes of an installed app.
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -529,7 +560,8 @@ pub struct InstalledApp {
     pub web: Option<AppWebAddress>,
     /// Port id → host port.
     pub ports: BTreeMap<String, u16>,
-    /// Share id → share name.
+    /// Share id → the share it got: its name, or a folder in it
+    /// (`media/Films`).
     pub shares: BTreeMap<String, String>,
     pub permissions: AppPermissions,
     /// The version its catalog offers now, if it is another.
@@ -604,7 +636,9 @@ async fn installed(
 pub struct InstallAppRequest {
     pub source: i64,
     pub app: String,
-    /// Share id → the name of the share picked for it.
+    /// Share id → the share picked for it: its name, or a folder in it
+    /// (`media/Films`), which the app then mounts instead of the whole
+    /// share.
     #[serde(default)]
     pub shares: BTreeMap<String, String>,
     /// Port id → host port; missing ones get their default.
@@ -617,6 +651,10 @@ pub struct InstallAppRequest {
     /// The administrator confirmed the app's permissions.
     #[serde(default)]
     pub confirm_permissions: bool,
+    /// The pool the app's data goes on, one of `volumes` of `/apps/docker`;
+    /// the one Docker's data is on if absent.
+    #[serde(default)]
+    pub pool: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -656,6 +694,7 @@ async fn install(
         ports: request.ports,
         settings: request.settings,
         permissions_confirmed: request.confirm_permissions,
+        pool: request.pool,
     };
     let (app, job) = state.installs.install(request, &auth.0.actor(), &client).await?;
     let view = InstalledView { app, containers: None, update: None };

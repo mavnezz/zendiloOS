@@ -26,10 +26,10 @@ Depends: acl,
          ${misc:Depends},
          ${shlibs:Depends}
 Recommends: avahi-daemon,
-            docker-compose,
-            docker.io,
             nfs-kernel-server,
             wsdd2
+Suggests: docker-compose,
+          docker.io
 Description: web-managed NAS operating system
  zendiloOS turns a Debian system into a NAS that is managed through a
  desktop in the web browser.

@@ -79,12 +79,29 @@ impl FilePath {
     }
 }
 
-/// A file or folder: `/volume<volume>/<share>/<path>`, or the same in one
-/// of the share's snapshots (read only), by its label.
+/// Where a file location starts: a share's folder, or the personal folder
+/// of the user acting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileRoot {
+    Share(ShareName),
+    Home,
+}
+
+impl std::fmt::Display for FileRoot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FileRoot::Share(share) => f.write_str(share.as_str()),
+            FileRoot::Home => f.write_str("home"),
+        }
+    }
+}
+
+/// A file or folder: `<root>/<path>` on volume `volume`, or the same in
+/// one of a share's snapshots (read only), by its label.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileLocation {
     pub volume: u16,
-    pub share: ShareName,
+    pub root: FileRoot,
     pub path: FilePath,
     pub snapshot: Option<String>,
 }

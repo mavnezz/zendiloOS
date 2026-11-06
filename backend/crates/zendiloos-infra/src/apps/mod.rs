@@ -16,7 +16,7 @@ use zendiloos_apps::domain::{
 };
 use zendiloos_catalog as catalog;
 
-pub use installs::{ProcListening, RandomSecrets, SharingForApps};
+pub use installs::{RandomSecrets, SharingForApps};
 
 /// The most an index may be; the community catalog's is a few dozen KiB.
 const MAX_INDEX_BYTES: usize = 8 * 1024 * 1024;

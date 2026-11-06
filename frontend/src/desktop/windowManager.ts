@@ -19,6 +19,8 @@ export interface WindowState {
   maximized: boolean
   /** Stacking order: higher is in front. */
   z: number
+  /** The page an app with a navigation shows; none for its first. */
+  section?: string
 }
 
 export interface DesktopState {
@@ -27,7 +29,7 @@ export interface DesktopState {
 }
 
 /** Height of a window's title bar, which must stay reachable. */
-export const TITLE_BAR = 40
+export const TITLE_BAR = 44
 /** Width of a window that must stay on screen when moved aside. */
 export const MIN_VISIBLE = 96
 
@@ -70,14 +72,21 @@ export function focusWindow(state: DesktopState, appId: string): DesktopState {
   }
 }
 
-/** Opens `appId`, or brings it to the front if it is open already. */
+/**
+ * Opens `appId`, or brings it to the front if it is open already; on
+ * `section`, if one is given.
+ */
 export function openWindow(
   state: DesktopState,
   appId: string,
   size: Size,
   viewport: Size,
+  section?: string,
 ): DesktopState {
-  if (state.windows.some((window) => window.appId === appId)) return focusWindow(state, appId)
+  if (state.windows.some((window) => window.appId === appId)) {
+    const focused = focusWindow(state, appId)
+    return section ? navigateWindow(focused, appId, section) : focused
+  }
   const step = (state.windows.length % 8) * CASCADE
   const geometry = clampGeometry({ x: ORIGIN.x + step, y: ORIGIN.y + step, ...size }, viewport)
   // Placed so the whole window fits, if it can.
@@ -89,8 +98,19 @@ export function openWindow(
     minimized: false,
     maximized: false,
     z: state.nextZ,
+    ...(section ? { section } : {}),
   }
   return { windows: [...state.windows, window], nextZ: state.nextZ + 1 }
+}
+
+/** Shows `section` in the window of `appId`. */
+export function navigateWindow(state: DesktopState, appId: string, section: string): DesktopState {
+  return update(state, appId, (window) => ({ ...window, section }))
+}
+
+/** Every window out of the way: the desktop shows. */
+export function minimizeAll(state: DesktopState): DesktopState {
+  return { ...state, windows: state.windows.map((window) => ({ ...window, minimized: true })) }
 }
 
 export function closeWindow(state: DesktopState, appId: string): DesktopState {
@@ -173,6 +193,7 @@ export function restoreDesktop(stored: unknown, knownApps: Set<string>): Desktop
       knownApps.has(window.appId) &&
       typeof window.minimized === 'boolean' &&
       typeof window.maximized === 'boolean' &&
+      (window.section === undefined || typeof window.section === 'string') &&
       isNumber(window.z) &&
       typeof window.geometry === 'object' &&
       window.geometry !== null &&

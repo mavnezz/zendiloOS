@@ -1,14 +1,14 @@
 //! A small https client over hyper and rustls with the system's
 //! certificate authorities (`ca-certificates`), for what zendiloosd fetches
-//! itself: app catalogs and their icons.
+//! itself: app catalogs and their icons, and image digests from registries.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use http_body_util::{BodyExt, Empty, Limited};
 use hyper::body::Bytes;
-use hyper::header::{HOST, LOCATION, USER_AGENT};
-use hyper::{Request, Uri};
+use hyper::header::{AUTHORIZATION, HOST, HeaderMap, HeaderName, LOCATION, USER_AGENT};
+use hyper::{Method, Request, StatusCode, Uri};
 use hyper_util::rt::TokioIo;
 use rustls::pki_types::ServerName;
 use tokio::net::TcpStream;
@@ -45,13 +45,56 @@ pub async fn get(
     address: &str,
     max_bytes: usize,
 ) -> Result<Vec<u8>, String> {
-    tokio::time::timeout(TIMEOUT, follow(tls, address, max_bytes))
-        .await
-        .unwrap_or_else(|_| Err(format!("no answer within {} seconds", TIMEOUT.as_secs())))
+    let answer = send(tls, Method::GET, address, &[], max_bytes).await?;
+    if !answer.status.is_success() {
+        return Err(format!("the server answered {}", answer.status));
+    }
+    Ok(answer.body)
 }
 
-async fn follow(tls: &Arc<rustls::ClientConfig>, address: &str, max_bytes: usize) -> Result<Vec<u8>, String> {
+/// What a server answered.
+pub struct Answer {
+    pub status: StatusCode,
+    pub headers: HeaderMap,
+    pub body: Vec<u8>,
+}
+
+/// Sends `method` to `address` (https only) with `headers`, following a few
+/// redirects to https; an `Authorization` goes along only on the same host.
+/// At most `max_bytes` of the body; more is an error.
+pub async fn send(
+    tls: &Arc<rustls::ClientConfig>,
+    method: Method,
+    address: &str,
+    headers: &[(HeaderName, String)],
+    max_bytes: usize,
+) -> Result<Answer, String> {
+    send_within(tls, method, address, headers, max_bytes, TIMEOUT).await
+}
+
+/// As [`send`], taking up to `within` for all of it: for large files.
+pub async fn send_within(
+    tls: &Arc<rustls::ClientConfig>,
+    method: Method,
+    address: &str,
+    headers: &[(HeaderName, String)],
+    max_bytes: usize,
+    within: Duration,
+) -> Result<Answer, String> {
+    tokio::time::timeout(within, follow(tls, method, address, headers, max_bytes))
+        .await
+        .unwrap_or_else(|_| Err(format!("no answer within {} seconds", within.as_secs())))
+}
+
+async fn follow(
+    tls: &Arc<rustls::ClientConfig>,
+    method: Method,
+    address: &str,
+    headers: &[(HeaderName, String)],
+    max_bytes: usize,
+) -> Result<Answer, String> {
     let mut address = address.to_owned();
+    let mut first_host: Option<String> = None;
     for _ in 0..=MAX_REDIRECTS {
         let uri: Uri = address.parse().map_err(|e| format!("the address: {e}"))?;
         if uri.scheme_str() != Some("https") {
@@ -62,6 +105,7 @@ async fn follow(tls: &Arc<rustls::ClientConfig>, address: &str, max_bytes: usize
             return Err("an address with a user is not fetched".into());
         }
         let host = authority.host().trim_start_matches('[').trim_end_matches(']').to_owned();
+        let same_host = first_host.get_or_insert_with(|| host.clone()) == &host;
         let port = authority.port_u16().unwrap_or(443);
         let tcp = TcpStream::connect((host.as_str(), port))
             .await
@@ -79,11 +123,18 @@ async fn follow(tls: &Arc<rustls::ClientConfig>, address: &str, max_bytes: usize
             None => host.clone(),
         };
         let path = uri.path_and_query().map_or("/", |p| p.as_str());
-        let request = Request::get(path)
+        let mut request = Request::builder()
+            .method(method.clone())
+            .uri(path)
             .header(HOST, host_header)
-            .header(USER_AGENT, concat!("zendiloOS/", env!("CARGO_PKG_VERSION")))
-            .body(Empty::<Bytes>::new())
-            .map_err(|e| e.to_string())?;
+            .header(USER_AGENT, concat!("zendiloOS/", env!("CARGO_PKG_VERSION")));
+        for (name, value) in headers {
+            if *name == AUTHORIZATION && !same_host {
+                continue;
+            }
+            request = request.header(name, value);
+        }
+        let request = request.body(Empty::<Bytes>::new()).map_err(|e| e.to_string())?;
         let response = sender.send_request(request).await.map_err(|e| e.to_string())?;
         let status = response.status();
         if status.is_redirection() {
@@ -99,14 +150,12 @@ async fn follow(tls: &Arc<rustls::ClientConfig>, address: &str, max_bytes: usize
             };
             continue;
         }
-        if !status.is_success() {
-            return Err(format!("the server answered {status}"));
-        }
+        let headers = response.headers().clone();
         let body = Limited::new(response.into_body(), max_bytes)
             .collect()
             .await
             .map_err(|_| format!("larger than {} KiB", max_bytes / 1024))?;
-        return Ok(body.to_bytes().to_vec());
+        return Ok(Answer { status, headers, body: body.to_bytes().to_vec() });
     }
     Err("too many redirects".into())
 }

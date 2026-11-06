@@ -103,22 +103,36 @@ impl From<SharePath> for String {
     }
 }
 
-/// A file or directory: `/volume<volume>/<share>/<path>`, or the same in
-/// one of the share's snapshots, read only.
+/// Where a location's path starts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileRoot {
+    /// The share's directory, `/volume<volume>/<share>`.
+    Share(ShareName),
+    /// The personal folder of the user the request is for,
+    /// `/volume<volume>/@homes/<user>`; never anybody else's.
+    Home,
+}
+
+/// The directory below a volume where the personal folders are.
+pub const HOMES_DIRECTORY: &str = "@homes";
+
+/// A file or directory: `<root>/<path>`, or the same in one of the
+/// share's snapshots, read only.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FileLocation {
     pub volume: VolumeNumber,
-    pub share: ShareName,
+    pub root: FileRoot,
     pub path: SharePath,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot: Option<crate::SnapshotLabel>,
 }
 
 impl FileLocation {
-    /// Whether both lie in the same share, or the same snapshot of it.
+    /// Whether both lie below the same root, or the same snapshot of it.
     pub fn same_share(&self, other: &FileLocation) -> bool {
-        self.volume == other.volume && self.share == other.share && self.snapshot == other.snapshot
+        self.volume == other.volume && self.root == other.root && self.snapshot == other.snapshot
     }
 }
 

@@ -135,6 +135,8 @@ review comment.
 | `zendiloos-storage` | disks, SMART, ZFS pools and volumes, plans for erasing disks, monitoring; mdadm arrays read-only | kernel, jobs, notify |
 | `zendiloos-sharing` | SMB and NFS shares, share permissions, and the file manager (share contents as the signed-in user) | kernel, jobs |
 | `zendiloos-apps` | app catalogs and their sources, installed apps (Docker Compose projects under the policy of 4.9) | kernel, jobs |
+| `zendiloos-containers` | the Docker engine as administrators see it: containers, images, networks, Compose projects (administrators' own with their file in a share), use over time, newer images on a schedule, moving Docker's data (4.9) | kernel, jobs |
+| `zendiloos-updates` | updates of the NAS: Debian's packages and zendiloOS's releases from GitHub by channel, checked daily, installed on request (4.10) | kernel, notify |
 | `zendiloos-network` | interfaces, addresses, default routes, name servers (read-only until M6); later IP configuration, DNS, hostname | kernel |
 | `zendiloos-infra` | all secondary adapters, SQLite migrations | kernel, contexts, agent-proto |
 | `zendiloos-api` | primary adapter: axum routes, DTOs, OpenAPI, auth middleware, WebSocket | kernel, contexts |
@@ -424,7 +426,15 @@ separate account.
   be raced.
 - Accounts an administrator creates, or whose password an administrator
   sets, must choose their own password at the next login; until then the
-  API answers everything else with `password_change_required`.
+  API answers everything else with `password_change_required`. Accounts
+  whose password only administrators set (`password_locked`) are exempt
+  and cannot change it themselves.
+- **Password policy:** always at least 10 characters (up to 64 can be
+  required), never containing the account name, never one of the most used
+  passwords (an embedded list from Mark Burnett's public-domain ten
+  million, those of at least 10 characters); composition rules (cases,
+  digit, symbol) and a maximum age (30 to 730 days, checked at login) can
+  be added, and are off by default, as NIST SP 800-63B advises.
 
 Alternative: separate web accounts and share accounts. Simpler to build, but
 unexpected for users, and the file manager would still need a mapping from
@@ -475,14 +485,32 @@ rustls with ring and the system's certificate authorities
 
 ### 4.4 Share and File Permissions
 
-- Share permissions (per account or group: no access, read, read and
+- Share permissions (per account or group: no rule, deny, read, read and
   write) live in the database and are applied twice: in the Samba
-  configuration (`valid users`, `read only = yes`, `write list`) and as
-  POSIX ACLs on the share's directory (owner root, mode 0770, an entry and
-  a default entry per account or group). The same rules therefore hold for
-  SMB, NFS and the file manager. A share nobody may use is not offered at
-  all: Samba would read an empty `valid users` as "everybody".
-  Administrators need a rule like everyone else.
+  configuration (`valid users`, `invalid users`, `read only = yes`,
+  `write list`) and as POSIX ACLs on the share's directory (owner root,
+  mode 0770, an entry and a default entry per account or group). The same
+  rules therefore hold for SMB, NFS and the file manager. A share nobody
+  may use is not offered at all: Samba would read an empty `valid users` as
+  "everybody". Administrators need a rule like everyone else.
+- **Which rule wins:** a denial, the account's own or one of its groups';
+  then the account's own rule, as it is more specific; then the broadest
+  grant of its groups. POSIX ACLs say the same for accounts (a named user
+  entry comes before the group entries), but cannot deny a group: its
+  members get a named entry without permissions of their own instead, so a
+  member's own grant is replaced. Samba keeps the group itself in
+  `invalid users` and follows its members. When a denied group's members
+  change, or the group is deleted, the Sharing context hears it from the
+  Identity context (`GroupObserver`, bridged in infrastructure) and
+  rewrites the entries of the shares that deny it, existing files in a job.
+- **Personal folders:** one dataset `<pool>/zendiloos.homes` on one pool,
+  mounted at `/volume<N>/@homes` (root, 0711); each account given one has
+  `@homes/<name>` (its own, 0700) and a ZFS `userquota`. Samba offers them
+  as one share `home` (`path = …/@homes/%U`, `valid users` the accounts
+  given one), with a recycle bin like the shares; the name `home` is
+  therefore no longer free for shares. In the file manager it is share 0,
+  which the files agent resolves to the folder of the user it acts as and
+  nobody else's. Turning them off, or taking one away, leaves the files.
 - Changed rules apply to the share's directory at once and to existing
   files in a job (`setfacl -R -P`), except the users' recycle bins. Access
   is taken away before any is given, so a revocation holds even if adding
@@ -569,17 +597,32 @@ rustls with ring and the system's certificate authorities
   `Path=/`; with secure cookies also `Secure` and the `__Host-` prefix). The
   cookie has no `Max-Age` and ends with the browser session. The database
   stores only the token's SHA-256 hash. Sessions end after 30 minutes idle
-  and 12 hours at most; a password change ends all other sessions.
-  **[Later]** users list and end their sessions.
+  (set from 5 to 1440 under Security) and 12 hours at most; a password
+  change ends all other sessions. Administrators see every account's
+  sessions with address and browser, and end any of them; the latest
+  logins come from the audit log.
 - CSRF: per-session token in the `X-CSRF-Token` header on every
   state-changing request, compared in constant time. In addition,
   `Sec-Fetch-Site` must be `same-origin` and `Origin` must match `Host` when
   the browser sends them; login and setup check this too, so a foreign page
   cannot sign a victim into an attacker's account. The WebSocket upgrade
   will get the same checks.
-- Throttling in the backend, in memory: 5 failures per account and 20 per
-  address within 15 minutes, for passwords and setup codes alike. Plus
-  `limit_req` in nginx for login, setup and password changes. At most two
+- Throttling in the backend, in memory: 20 failures per address within 15
+  minutes, and the account lock as set under Security (5 failures within 15
+  minutes by default, or off), for passwords and setup codes alike. Plus
+  `limit_req` in nginx for login, setup and password changes.
+- **Blocked addresses:** an address with too many failed logins (10 within
+  5 minutes by default) is blocked from the whole API for a day, or until
+  lifted; administrators block addresses and networks by hand too. Every
+  request is checked in memory before it reaches a handler; only the health
+  check stays open. Allowed addresses and networks, and this machine
+  itself, are never blocked, and an administrator cannot block the address
+  they use. Blocks are stored (`blocked_addresses`) and survive restarts;
+  they apply to the web interface only, not to SSH or SMB.
+- **TLS:** nginx accepts TLS 1.2 and 1.3, or 1.3 alone, as set under
+  Security; the agent writes `/etc/zendiloos/nginx/tls.conf`, which the
+  site includes, and reloads nginx. CSRF protection, the
+  Content-Security-Policy and the rate limits are always on. At most two
   Argon2 runs at once (19 MiB each); the rest wait, so a flood of requests
   costs time, not all memory. A new password is checked before the
   current one is verified.
@@ -725,13 +768,51 @@ administrator picks, published ports from variables, no Docker volumes, no
 capabilities and the host network only as permissions the app declares
 and the administrator confirms.
 
-**Own Compose files.** Administrators may also paste a Compose file. It
-goes through the same checks with a wider policy: images by tag (pinned to
-the digest pulled at installation), and bind mounts of any folder below a
-volume (`/volume<N>/…`), each listed and confirmed. What stays refused for
-every app: `privileged`, the Docker socket and other system paths, host
-PID, IPC and user namespaces, devices and capabilities beyond the
-grantable ones.
+**The Docker app** (context `zendiloos-containers`) shows the engine as
+it is: every container, image, network and Compose project, whoever made
+them; containers and projects made elsewhere are started, stopped,
+restarted, updated and removed here, an app of a catalog only started,
+stopped and restarted (the App Center changes it, and its Compose file
+holds generated settings, so the agent shows it to no one). The agent
+runs `docker` with fixed arguments and checked names (`ContainerId`,
+`ImageReference`, `ProjectName`, …) and hands back what it printed;
+zendiloosd reads it. Container logs are both streams in the order they
+were written.
+
+**Administrators' own projects** have no policy: an administrator may run
+any Compose file, which makes an administrator's account as good as root
+on the machine. The file lives in a share (`compose.yaml` in a folder such
+as `docker/teslamate`), written and read through the file manager's use
+cases with the administrator's permissions, so it is backed up and
+snapshotted with the share; relative paths start there. Before a file is
+deployed, `docker compose config` reads it (from stdin, in that folder),
+and what reaches beyond the containers is named: `privileged`, the Docker
+socket, folders outside the volumes, the host's network, PID, IPC or user
+namespace, devices, extra capabilities, no seccomp or AppArmor. Each must
+be confirmed, then and on every change; the audit log records
+`risks_accepted`. Deploying (pull, then `up --detach --remove-orphans`)
+and removing (`down`; images, data and the folder stay) are jobs.
+
+**Use over time:** zendiloosd samples `docker stats` every 20 seconds and
+keeps twelve hours in memory, by container name, with the network's rates
+from its counters.
+
+**Newer images:** every six hours (if wanted) zendiloosd asks the
+registries for the digest under each tag the containers run, with a
+`HEAD` of the manifest (anonymous tokens where a registry wants one; no
+pull counted), and compares it with the image's digests. On a schedule
+(days of the week and a time, the machine's local time) or by hand,
+projects with a newer image are pulled and brought up again; containers
+outside a project are only pulled for, apps of catalogs left to the App
+Center, images pinned by digest never looked at.
+
+**Moving Docker's data** to another pool zendiloOS made: Docker stops, the
+dataset is copied with `zfs send -R | zfs receive -u` (up to six hours,
+over a transport that waits as long), the mount unit, the drop-in and
+`data-root` follow, Docker starts from the copy, and only then is the old
+dataset destroyed; if the copy fails, Docker starts as it was. Containers
+that restart by themselves start again. The apps' datasets stay where they
+are.
 
 **Docker's own data** (images, layers, containers) lives on a pool, not on
 the system disk: turning apps on creates the dataset
@@ -750,7 +831,9 @@ VM, across a restart.
 steps, each through an agent:
 
 1. *Prepare* (system agent): the dataset `<pool>/zendiloos.apps/<id>` on
-   the pool Docker's data is on, mounted by its own unit at
+   the pool chosen in the store's "choose a location" step (Docker's pool
+   unless another is picked; a browser can keep the choice for every
+   install), mounted by its own unit at
    `/volume<N>/@apps/<id>` before Docker starts (a parent
    `zendiloos.apps` that is never mounted holds them); and the app's
    account `app-<id>`, a user with a group of its own and IDs never handed
@@ -760,7 +843,10 @@ steps, each through an agent:
 2. *Shares*: the Sharing context keeps what each app's account may do on
    which share (`share_app_access`) and writes it into the share's ACL
    beside the people's rules, on everything in the share too; Samba never
-   learns of it, and a share an app uses cannot be deleted.
+   learns of it, and a share an app uses cannot be deleted. Instead of a
+   whole share, the administrator may pick a folder in it (`media/Films`,
+   from a folder tree in the install dialog); the account's access is
+   still the share's, but the container sees the folder only.
 3. *Check* (system agent): it reads the manifest and the Compose file
    itself and does what `docs/format.md` section 8 of the catalog
    requires: `check_source` first, then `docker compose config` twice,
@@ -777,6 +863,30 @@ steps, each through an agent:
    images): before every start the agent walks each folder an app mounts
    again, refusing links and other file systems on the way.
 
+**Folders in shares are pinned.** A share's root is a dataset's mount
+point, which only root can move; a folder in it can be swapped for a link
+by anyone who may write to the share (an NFS client, another app), and
+Docker follows links in a bind mount's source every time it starts a
+container, also when it restarts one by itself. (Debian's Compose 2.26
+ignores `volume.subpath` without a word, so Docker's own safe sub-paths
+are no way out.) So the agent never hands Docker such a folder by its
+path: it walks to it from the share's root with `O_PATH | O_NOFOLLOW`,
+staying on the share's file system, and mounts the very directory it
+opened (`open_tree` and `move_mount` on the file descriptor) at
+`/run/zendiloos-app-shares/<app>/<share id>`, a folder only root may
+change; `SHARE_<ID>` points there, and the bind refuses to start rather
+than let Docker make an empty folder when the pin is missing. The mounts
+belong in the host's mount namespace, outside the agent's sandbox: a unit
+per app, `zendiloos-app-<app>-shares.service` (`RequiresMountsFor=` the
+shares, `Before=docker.service`, no namespace of its own, only
+`CAP_SYS_ADMIN` and `CAP_DAC_READ_SEARCH`), runs the agent's binary as
+`pin-shares <app>` at boot and before every start, and unmounts when
+stopped; it goes with the app. Before a start the agent also checks that
+the pin is the folder the walk reaches now (same device and inode). A
+folder swapped for a link keeps the running app on the folder it had and
+makes the next start fail with the folder named. Verified in the second
+test VM, across a reboot (`just vm-app-folders-test`).
+
 The account, `PUID`/`PGID`, the time zone and the data folder come from
 the agent, not from `zendiloosd`. Ports are checked against zendiloOS's
 own, the other apps' and those something listens on now
@@ -790,6 +900,63 @@ values, gives new ports their default and new generated settings a value,
 and asks again only for permissions beyond the old version's. Verified in
 the second test VM (an app with and one without a share, removal, a
 restart).
+
+### 4.10 Updates and Debian's packages
+
+On an existing Debian the NAS keeps itself current like OPNsense does:
+whatever needs no restart first, the kernel last, a restart only when the
+administrator asks. One update is one run: apt's lists, Debian's upgrades
+(`apt-get --with-new-pkgs upgrade`, keeping changed configuration files,
+never removing a package), then zendiloOS from a release, then a look at
+the kernel modules.
+
+**apt never runs in the agent's sandbox.** It writes all over the system
+and fetches over the network, and the agent has neither (`ProtectSystem`,
+`PrivateNetwork`). The agent starts a transient unit,
+`zendiloos-packages.service` (one at a time), which runs the agent's own
+binary as `run-packages <id> <task>` outside the sandbox; the runner records
+each step in `/var/lib/zendiloos-packages/run.json`, which the agent reads
+back. A run outlives a restart of the agent and of zendiloosd, which matters
+when it installs zendiloOS: the package's maintainer scripts restart both,
+and the page follows the run from its record once zendiloosd is back. Tasks
+are fixed: install Docker (`docker.io`, `docker-compose`, for the App
+Store's own item), check (lists fetched, then `apt-get --simulate upgrade`
+parsed into packages, security updates marked by Debian's security archive)
+and update.
+
+**Releases.** zendiloosd reads the repository's releases from GitHub's API
+(`[updates]` in `zendiloosd.toml`): the package for this machine
+(`zendiloos_<version>_<arch>.deb`), `SHA256SUMS` and its minisign signature
+`SHA256SUMS.minisig`. A release's channel comes from GitHub: stable for a
+release, test for a pre-release (`v1.2.0-rc.1`), development for the rolling
+release `dev` built from every commit on main. Each channel takes the
+steadier ones too; only a version newer than the running one, in dpkg's
+order, is offered, so coming back from test to stable waits for a newer
+stable release. Before an update zendiloosd downloads the three files to
+`/var/lib/zendiloos/updates`. The runner trusts none of it: it copies them
+out (never through a link, size-limited), checks the signature with the key
+the package brought along (`/usr/share/zendiloos/release-signing.pub`, or
+one an administrator put in `/etc/zendiloos`), the package's checksum, its
+name, architecture and version, and installs only a version newer than the
+installed one, so an old signed release cannot be brought back. A build
+without a key takes no updates of zendiloOS. How releases are made and
+signed: `docs/releases.md`.
+
+**The kernel and ZFS.** ZFS is built by DKMS for each kernel. After an
+update the runner looks for `zfs.ko` below the newest kernel's modules; if
+it is missing the run fails with what to do, and the interface warns not to
+restart, as the pools would not import. A newer kernel than the running one
+is reported as waiting for a restart, which the administrator starts.
+
+**Checks and notifications.** With the daily check on (the default), the
+NAS looks once a day and says what it found as a notification, each finding
+once; installing stays a click. A finished run is announced once as well.
+Settings, the last check and what was said live in the database
+(`system_update_settings`, `system_update_state`). Verified in the second
+test VM (`scripts/vm-update-test.sh`): a check, zendiloOS updating itself to
+a release signed with a test key and coming back with the new version, a
+changed package and an older release refused; Docker installed from the
+store (`scripts/vm-docker-install-test.sh`).
 
 ---
 
@@ -834,12 +1001,17 @@ the interface and the agent deal with a single tool chain (`zpool`, `zfs`).
 | System metrics | `sysinfo` for CPU, memory, processes, sensors; an own parser for `/proc/diskstats` | sysinfo does not cover storage specifics |
 | Network | systemd-networkd + systemd-resolved; on an existing Debian with ifupdown/NetworkManager display only. Per interface: IPv4 by DHCP or fixed (address, prefix, gateway), IPv6 from router advertisements or off, up to three name servers. The agent writes `/etc/systemd/network/05-zendiloos-<interface>.network` (before netplan's files), keeps the file it replaces as `….previous`, and has systemd-networkd reload and reconfigure the link over D-Bus (`busctl`: the agent's own network namespace has neither the host's links nor a working `networkctl`). A change is kept only if confirmed within two minutes, from the new address if it changed; otherwise the previous file returns, by a timer in the agent, and at the agent's start should it or the machine restart first. One change at a time | declarative files the agent writes atomically; verified in the second test VM (`just vm-network-test`): a setting that cuts the VM off goes back by itself |
 | Network discovery | Windows finds the NAS through WS-Discovery (`wsdd2`), macOS through Bonjour (Samba announces `_smb._tcp` through `avahi-daemon`); both recommended by the package. NetBIOS stays off | without them, clients only reach the NAS by address; `wsdd` itself is not in Debian 13 |
-| Docker | Debian packages `docker.io` and `docker-compose`, apps as Compose projects **[Phase 4]** | security updates through Debian; Docker CE optional |
+| File services | SMB (Samba, with `wsdd2`) and NFS (`nfs-kernel-server`) are switched on and off in the control panel; off means stopped and disabled, so it stays off after a restart, while shares, exports and permissions stay. The workgroup and the oldest SMB version answered (2.0, 2.1 or 3; SMB1 never) are written as global settings at the top of `/etc/samba/zendiloos.conf`, which `smb.conf` includes at the end of `[global]`; both are applied with the shares in one agent request, and if the host refuses, the previous settings return | per-share protocols would multiply what can go wrong for little gain; FTP, rsync and WebDAV are not offered until there is a reason |
+| SSH | the SSH server as a service in the control panel (Terminal): on or off (off means stopped and disabled; open sessions stay, as `KillMode=process`), its port (22, or a free one from 1024; zendiloosd refuses a port another program listens on, read from `/proc/net/tcp`), and whether root and passwords may log in, each either set or left as the system has it. The settings go to `/etc/ssh/sshd_config.d/00-zendiloos.conf`, read before the other drop-ins, so they win; `sshd -t` checks them first and the previous file returns if it fails. On request a transient systemd timer turns SSH off again after up to a day. Who may log in is Debian's: the accounts of the interface have no shell | keys, users allowed to log in and a web terminal belong to Debian's configuration or later |
+| Time | time zone, network time on or off, up to four time servers (a drop-in of systemd-timesyncd; none: Debian's pool) or the clock set by hand, all through systemd-timedated (`timedatectl`); shown and set in the NAS's zone, not the browser's. Schedules follow a new zone within five minutes (`jiff` keeps the system zone that long), apps when they next start (they get `/etc/localtime`) | the agent may not set the clock itself (`ProtectClock`); timedated is what `timedatectl` and every desktop use |
+| Docker | Debian packages `docker.io` and `docker-compose`, installed from the App Store's own item (the package only suggests them) by apt in a unit of its own (4.10), apps as Compose projects **[Phase 4]** | security updates through Debian; Docker CE optional |
 | Packaging | `debian/` with debhelper (compat 13 plus `dh-sequence-installsysusers`), built in a `debian:trixie` container with Rust from `rustup` and Node.js 24 pinned by checksum | native maintainer scripts, `sysusers.d`, `tmpfiles.d`, `dh_installsystemd`; works on any host with Docker |
 | Test VM | `scripts/vm.sh` (`just vm …`): Debian 13 cloud image verified by SHA512, cloud-init, 4 SATA disks with emulated SMART and 1 NVMe disk, ports on 127.0.0.1 only | the cloud kernel lacks some drivers; storage work (M3) may need `linux-image-amd64` in the VM **[Assumption]** |
 | Reproducibility | `rust-toolchain.toml`, `Cargo.lock`, `package-lock.json`, `SOURCE_DATE_EPOCH`, pinned build container; system images built with mmdebstrap against a fixed snapshot.debian.org state, failing on any error | |
 | Licensing | Zendiloos code under Apache-2.0; the ISO build produces a package manifest/SBOM and ships the copyright files | required when distributing a Debian-based image |
 | Quality | rustfmt, Clippy (`-D warnings` in CI), `unsafe_code = "forbid"` outside clearly bounded exceptions, `cargo deny`, ESLint, `vue-tsc --strict`, Vitest | |
+| Installation (phases 1–4) | an installation ISO per stable release: Debian 13's netinst image with an entry "Install zendiloOS", answers by preseeding (only language, keyboard, name, root's password and the system's disk are asked) and the release's package installed at the end; ZFS built by DKMS on the machine (`docs/releases.md`) | Debian's own installer, nothing to maintain but the answers; the appliance's image (phase 5) can follow |
+| Updates (phases 1–4) | Debian's packages through apt and zendiloOS's `.deb` from GitHub Releases, by channel (stable, test, development), checked daily, installed on request (4.10, `docs/releases.md`) | the appliance's image updates below build on the same releases and channels |
 | Installation and updates | **[Phase 5]** recommendation: root image built with mmdebstrap as a signed image, A/B partitions, updates with systemd-sysupdate, automatic rollback via systemd-boot boot counting, data and `/var` on separate partitions | alternatives: Debian installer with preseeding (apt based, not atomic), live-build with Calamares, mkosi. Decided in phase 5; the ground rule in 1.2 keeps all options open |
 
 ---

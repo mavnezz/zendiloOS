@@ -21,12 +21,14 @@ use zendiloos_sharing::application::{FilesUseCases, SharingPorts, SharingUseCase
 use zendiloos_storage::application::StorageUseCases;
 use zendiloos_storage::testing::FakeStorage;
 use zendiloos_system::application::ports::{
-    AuditReader, JournalReader, LiveMetrics, MetricsSubscription, PowerControl, SystemInfoProvider,
+    AuditReader, JournalReader, ListeningPorts, LiveMetrics, MetricsSubscription, PowerControl, SshControl,
+    SystemInfoProvider, TimeControl, WebTlsControl,
 };
 use zendiloos_system::application::{SystemPorts, SystemUseCases};
 use zendiloos_system::domain::{
     AuditQuery, AuditRecord, Hardware, JournalCursor, JournalEntry, JournalPage, JournalQuery, LogPriority,
-    MemoryUsage, MetricsSample, PowerAction, SystemInfo,
+    MemoryUsage, MetricsSample, PowerAction, SshSettings, SshStatus, SystemInfo, TimeSettings, TimeStatus,
+    TlsMinimum,
 };
 
 use crate::{ApiState, CSRF_HEADER, UseCases, openapi, router};
@@ -78,6 +80,85 @@ struct RecordingPower(Mutex<Vec<PowerAction>>);
 impl PowerControl for RecordingPower {
     async fn request(&self, action: PowerAction, _: &RequestContext) -> Result<(), PortError> {
         self.0.lock().unwrap().push(action);
+        Ok(())
+    }
+}
+
+/// An SSH server on port 22, off; remembers what was set.
+#[derive(Default)]
+struct FakeSsh(Mutex<Option<SshSettings>>);
+
+#[async_trait]
+impl SshControl for FakeSsh {
+    async fn status(&self, _: &RequestContext) -> Result<SshStatus, PortError> {
+        let set = *self.0.lock().unwrap();
+        Ok(SshStatus {
+            installed: true,
+            enabled: set.is_some_and(|s| s.enabled),
+            running: set.is_some_and(|s| s.enabled),
+            port: set.map_or(22, |s| s.port),
+            root_login: set.and_then(|s| s.root_login),
+            password_login: set.and_then(|s| s.password_login),
+            off_at: set.and_then(|s| s.off_after_minutes).map(|minutes| {
+                zendiloos_kernel::Timestamp::from_unix_seconds(1_800_000_000 + i64::from(minutes) * 60)
+            }),
+        })
+    }
+
+    async fn apply(&self, settings: &SshSettings, _: &RequestContext) -> Result<(), PortError> {
+        *self.0.lock().unwrap() = Some(*settings);
+        Ok(())
+    }
+}
+
+/// nginx's TLS: 1.2 and newer until set.
+#[derive(Default)]
+struct FakeTls(Mutex<TlsMinimum>);
+
+#[async_trait]
+impl WebTlsControl for FakeTls {
+    async fn minimum(&self, _: &RequestContext) -> Result<TlsMinimum, PortError> {
+        Ok(*self.0.lock().unwrap())
+    }
+
+    async fn apply(&self, minimum: TlsMinimum, _: &RequestContext) -> Result<(), PortError> {
+        *self.0.lock().unwrap() = minimum;
+        Ok(())
+    }
+}
+
+/// Something listens on 8080.
+struct FakeListening;
+
+#[async_trait]
+impl ListeningPorts for FakeListening {
+    async fn is_listening(&self, port: u16) -> Result<bool, PortError> {
+        Ok(port == 8080)
+    }
+}
+
+/// A clock in Etc/UTC kept by Debian's pool; remembers what was set.
+#[derive(Default)]
+struct FakeTime(Mutex<Option<TimeSettings>>);
+
+#[async_trait]
+impl TimeControl for FakeTime {
+    async fn status(&self, _: &RequestContext) -> Result<TimeStatus, PortError> {
+        let set = self.0.lock().unwrap().clone();
+        Ok(TimeStatus {
+            zone: set.as_ref().map_or("Etc/UTC".into(), |s| s.zone.clone()),
+            network_time: set.as_ref().is_none_or(|s| s.network_time),
+            can_network_time: true,
+            synchronized: true,
+            servers: set.as_ref().map(|s| s.servers.clone()).unwrap_or_default(),
+            server_in_use: Some("2.debian.pool.ntp.org".into()),
+            zones: vec!["Etc/UTC".into(), "Europe/Berlin".into()],
+            now: zendiloos_kernel::Timestamp::from_unix_seconds(1_800_000_000),
+        })
+    }
+
+    async fn apply(&self, settings: &TimeSettings, _: &RequestContext) -> Result<(), PortError> {
+        *self.0.lock().unwrap() = Some(settings.clone());
         Ok(())
     }
 }
@@ -187,6 +268,7 @@ struct Harness {
     file_host: Arc<zendiloos_sharing::testing::Files>,
     catalogs: Arc<zendiloos_apps::testing::FakeReader>,
     app_host: Arc<zendiloos_apps::testing::FakeAppHost>,
+    engine: Arc<zendiloos_containers::testing::FakeEngine>,
 }
 
 /// Account and group names from the identity fakes.
@@ -201,6 +283,12 @@ impl zendiloos_sharing::application::ports::Directory for IdentityDirectory {
         Ok(zendiloos_sharing::application::ports::Names {
             accounts: self.0.all().into_iter().map(|a| (a.id.get(), a.name.to_string())).collect(),
             groups: self.1.all().into_iter().map(|g| (g.id.get(), g.name.to_string())).collect(),
+            members: self
+                .1
+                .all()
+                .into_iter()
+                .map(|g| (g.id.get(), g.members.iter().map(|m| m.get()).collect()))
+                .collect(),
         })
     }
 
@@ -252,6 +340,10 @@ impl Harness {
             info: Arc::new(provider),
             metrics: Arc::new(FakeLive),
             power: power.clone(),
+            time: Arc::new(FakeTime::default()),
+            ssh: Arc::new(FakeSsh::default()),
+            listening: Arc::new(FakeListening),
+            tls: Arc::new(FakeTls::default()),
             journal: journal.clone(),
             audit: identity.audit.clone(),
             audit_reader: Arc::new(FakeAuditReader(identity.audit.clone())),
@@ -306,7 +398,16 @@ impl Harness {
                 audit: identity.audit.clone(),
                 clock: identity.clock.clone(),
             });
+        let docker_test = zendiloos_containers::testing::TestContainers::new(
+            identity.audit.clone(),
+            identity.clock.clone(),
+        );
+        let engine = docker_test.engine.clone();
+        let update_releases = Arc::new(zendiloos_updates::testing::FakeReleases::default());
+        *update_releases.releases.lock().unwrap() =
+            vec![zendiloos_updates::testing::release("v0.2.0", "0.2.0", false)];
         let use_cases = UseCases {
+            containers: docker_test.containers,
             system,
             identity: identity.use_cases.clone(),
             storage,
@@ -324,6 +425,7 @@ impl Harness {
                 docker_host,
                 identity.audit.clone(),
                 identity.clock.clone(),
+                jobs.clone(),
             ),
             apps: catalog_use_cases,
             installs,
@@ -333,6 +435,17 @@ impl Harness {
                 identity.audit.clone(),
                 identity.clock.clone(),
                 "nas".into(),
+            ),
+            updates: zendiloos_updates::application::Updates::new(
+                zendiloos_updates::application::UpdatesPorts {
+                    releases: update_releases.clone(),
+                    host: Arc::new(zendiloos_updates::testing::FakeHost::default()),
+                    store: Arc::new(zendiloos_updates::testing::MemoryStore::default()),
+                    notifier: notifier.clone(),
+                    audit: identity.audit.clone(),
+                    clock: identity.clock.clone(),
+                },
+                "0.1.0",
             ),
         };
         let state = ApiState::new(use_cases, secure_cookies);
@@ -347,6 +460,7 @@ impl Harness {
             share_host,
             file_host,
             catalogs,
+            engine,
             app_host,
         }
     }
@@ -543,6 +657,396 @@ async fn power_actions_need_the_csrf_token() {
 
     assert_problem(&reply, StatusCode::FORBIDDEN, "csrf_rejected");
     assert!(h.power.0.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn docker_is_for_those_who_manage_containers() {
+    let h = Harness::new();
+    let viewer = h.sign_in("bob", Role::ReadOnly).await;
+    let admin = h.sign_in("alice", Role::Admin).await;
+
+    assert_problem(
+        &h.send(empty(with_cookie(get("/api/v1/docker/overview"), &viewer))).await,
+        StatusCode::FORBIDDEN,
+        "forbidden",
+    );
+    let overview = h.send(empty(with_cookie(get("/api/v1/docker/overview"), &admin))).await;
+    assert_eq!(overview.status, StatusCode::OK, "{:?}", overview.body);
+    assert_eq!(
+        (overview.body["containers_running"].clone(), overview.body["containers"].clone()),
+        (json!(2), json!(4))
+    );
+
+    let started = h.send(empty(with_csrf(post("/api/v1/docker/containers/lonely-id/start"), &admin))).await;
+    assert_eq!(started.status, StatusCode::NO_CONTENT);
+    let running = h
+        .send(empty(with_csrf(changing(Method::DELETE, "/api/v1/docker/containers/stack-web-id"), &admin)))
+        .await;
+    assert_problem(&running, StatusCode::BAD_GATEWAY, "host_failed");
+    let images = h.send(empty(with_cookie(get("/api/v1/docker/images"), &admin))).await;
+    let nginx = images.body.as_array().unwrap().iter().find(|i| i["id"] == "sha256:nginx").unwrap();
+    assert_eq!(nginx["used_by"], json!(["stack-web"]));
+    let bridge =
+        h.send(empty(with_csrf(changing(Method::DELETE, "/api/v1/docker/networks/bridge"), &admin))).await;
+    assert_problem(&bridge, StatusCode::CONFLICT, "refused");
+    let created = h
+        .send(json(
+            with_csrf(post("/api/v1/docker/networks"), &admin),
+            json!({ "name": "proxy_net", "subnet": "172.30.0.0/24", "gateway": "" }),
+        ))
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED);
+    assert!(h.engine.calls().contains(&"network create proxy_net Some(\"172.30.0.0/24\") None".to_owned()));
+}
+
+#[tokio::test]
+async fn newer_images_are_looked_for_and_taken_on_a_schedule() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+
+    assert_eq!(h.send(empty(with_cookie(get("/api/v1/docker/updates"), &admin))).await.body, Value::Null);
+    let checked = h.send(empty(with_csrf(post("/api/v1/docker/updates/check"), &admin))).await;
+    let nginx = checked.body["images"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["reference"] == "nginx")
+        .cloned()
+        .unwrap();
+    assert_eq!(
+        (nginx["state"].clone(), nginx["containers"].clone()),
+        (json!("available"), json!(["stack-web"]))
+    );
+
+    let put = |body: Value| {
+        h.send(json(with_csrf(changing(Method::PUT, "/api/v1/docker/updates/settings"), &admin), body))
+    };
+    let weekly = json!({ "check": true, "schedule": { "days": [0, 6], "time": "05:40" } });
+    assert_eq!(put(weekly.clone()).await.body, weekly);
+    assert_problem(
+        &put(json!({ "check": true, "schedule": { "days": [7], "time": "05:40" } })).await,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "invalid_input",
+    );
+    assert_problem(
+        &put(json!({ "check": true, "schedule": { "days": [1], "time": "25:00" } })).await,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "invalid_input",
+    );
+    assert_problem(
+        &put(json!({ "check": false, "schedule": { "days": [1], "time": "05:00" } })).await,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "invalid_input",
+    );
+
+    let applied = h.send(empty(with_csrf(post("/api/v1/docker/updates/apply"), &admin))).await;
+    assert_eq!(applied.status, StatusCode::ACCEPTED);
+    assert_eq!(applied.body["job"]["kind"], "containers.update");
+}
+
+#[tokio::test]
+async fn dockers_data_moves_to_another_pool() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+
+    let location = h.send(empty(with_cookie(get("/api/v1/docker/data"), &admin))).await;
+    assert_eq!(location.body["current"]["pool"], "tank");
+    let targets: Vec<_> =
+        location.body["targets"].as_array().unwrap().iter().map(|t| t["pool"].clone()).collect();
+    assert_eq!(targets, [json!("backup"), json!("tiny")]);
+    let tiny =
+        h.send(json(with_csrf(post("/api/v1/docker/data/move"), &admin), json!({ "pool": "tiny" }))).await;
+    assert_problem(&tiny, StatusCode::CONFLICT, "refused");
+    let moved =
+        h.send(json(with_csrf(post("/api/v1/docker/data/move"), &admin), json!({ "pool": "backup" }))).await;
+    assert_eq!(
+        (moved.status, moved.body["kind"].clone()),
+        (StatusCode::ACCEPTED, json!("containers.data_move"))
+    );
+}
+
+#[tokio::test]
+async fn a_project_is_checked_shown_and_made_with_consent() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let compose = "services:\n  app:\n    image: nginx\n    privileged: true\n";
+
+    let places = h.send(empty(with_cookie(get("/api/v1/docker/places"), &admin))).await;
+    assert_eq!(places.body, json!([{ "share_id": 1, "share": "docker" }]));
+    let check = h
+        .send(json(
+            with_csrf(post("/api/v1/docker/compose/check"), &admin),
+            json!({ "name": "tesla", "share_id": 1, "folder": "docker/tesla", "compose": compose }),
+        ))
+        .await;
+    assert_eq!(check.body, json!({ "risks": [{ "service": "app", "kind": "privileged", "detail": null }] }));
+
+    let new = |accept: bool| json!({ "name": "tesla", "share_id": 1, "folder": "docker/tesla", "compose": compose, "start": true, "accept_risks": accept });
+    let refused = h.send(json(with_csrf(post("/api/v1/docker/projects"), &admin), new(false))).await;
+    assert_problem(&refused, StatusCode::CONFLICT, "compose_risks");
+    let made = h.send(json(with_csrf(post("/api/v1/docker/projects"), &admin), new(true))).await;
+    assert_eq!(made.status, StatusCode::CREATED, "{:?}", made.body);
+    assert_eq!(made.body["job"]["kind"], "containers.project_deploy");
+
+    let projects = h.send(empty(with_cookie(get("/api/v1/docker/projects"), &admin))).await;
+    let kinds: Vec<_> =
+        projects.body.as_array().unwrap().iter().map(|p| (p["name"].clone(), p["kind"].clone())).collect();
+    assert_eq!(
+        kinds,
+        [(json!("kuma"), json!("app")), (json!("stack"), json!("foreign")), (json!("tesla"), json!("own"))]
+    );
+    let app = h.send(empty(with_cookie(get("/api/v1/docker/projects/kuma/compose"), &admin))).await;
+    assert_problem(&app, StatusCode::CONFLICT, "app_project");
+    let foreign = h.send(empty(with_cookie(get("/api/v1/docker/projects/stack/compose"), &admin))).await;
+    assert_eq!(
+        (foreign.body["editable"].clone(), foreign.body["files"][0]["path"].clone()),
+        (json!(false), json!("/opt/stack/compose.yml"))
+    );
+    let own = h.send(empty(with_cookie(get("/api/v1/docker/projects/tesla/compose"), &admin))).await;
+    assert_eq!(
+        (own.body["editable"].clone(), own.body["files"][0]["content"].clone()),
+        (json!(true), json!(compose))
+    );
+    let taken = h.send(json(with_csrf(post("/api/v1/docker/projects"), &admin), new(true))).await;
+    assert_problem(&taken, StatusCode::CONFLICT, "project_exists");
+}
+
+fn from_address(builder: request::Builder, address: &str) -> request::Builder {
+    builder.header("x-real-ip", address)
+}
+
+#[tokio::test]
+async fn admins_set_the_defences_of_the_web_interface() {
+    let h = Harness::new();
+    let viewer = h.sign_in("bob", Role::ReadOnly).await;
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let put = |session: &Session, body: Value| {
+        h.send(json(with_csrf(changing(Method::PUT, "/api/v1/security/settings"), session), body))
+    };
+
+    let state = h.send(empty(with_cookie(get("/api/v1/security/settings"), &admin))).await;
+    assert_eq!(state.status, StatusCode::OK);
+    assert_eq!(state.body["idle_minutes"], 30);
+    assert_eq!(
+        state.body["auto_block"],
+        json!({ "failures": 10, "window_minutes": 5, "release_after_days": 1 })
+    );
+    assert_problem(
+        &h.send(empty(with_cookie(get("/api/v1/security/settings"), &viewer))).await,
+        StatusCode::FORBIDDEN,
+        "forbidden",
+    );
+
+    let settings = json!({
+        "idle_minutes": 60,
+        "account_lock": null,
+        "auto_block": { "failures": 5, "window_minutes": 10, "release_after_days": null },
+        "allowed": [" 192.168.1.7/24 "]
+    });
+    let reply = put(&admin, settings).await;
+    assert_eq!(reply.status, StatusCode::OK, "{:?}", reply.body);
+    assert_eq!(
+        (reply.body["idle_minutes"].clone(), reply.body["allowed"].clone()),
+        (json!(60), json!(["192.168.1.0/24"]))
+    );
+    assert_eq!(reply.body["account_lock"], Value::Null);
+    for bad in [
+        json!({ "idle_minutes": 2, "account_lock": null, "auto_block": null }),
+        json!({ "idle_minutes": 30, "account_lock": null, "auto_block": null, "allowed": ["nas.local"] }),
+        json!({ "idle_minutes": 30, "account_lock": { "failures": 1, "window_minutes": 5 }, "auto_block": null }),
+    ] {
+        assert_problem(&put(&admin, bad).await, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
+    }
+    let entry = h.identity.audit.entries().last().cloned().unwrap();
+    assert_eq!(entry.action, "identity.security_update");
+}
+
+#[tokio::test]
+async fn blocked_addresses_are_refused_everywhere_but_the_health_check() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let block = |address: &str| {
+        h.send(json(with_csrf(post("/api/v1/security/blocked"), &admin), json!({ "address": address })))
+    };
+
+    let reply = block("203.0.113.9/24").await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.body);
+    assert_eq!(
+        (reply.body["address"].clone(), reply.body["automatic"].clone()),
+        (json!("203.0.113.0/24"), json!(false))
+    );
+    assert_problem(&block("127.0.0.1").await, StatusCode::CONFLICT, "address_allowed");
+    assert_problem(&block("10.0.0.300").await, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
+
+    let refused = h.send(empty(from_address(get("/api/v1/setup"), "203.0.113.5"))).await;
+    assert_problem(&refused, StatusCode::FORBIDDEN, "address_blocked");
+    let health = h.send(empty(from_address(get("/api/v1/health"), "203.0.113.5"))).await;
+    assert_eq!(health.status, StatusCode::OK);
+    let own = h
+        .send(json(
+            from_address(with_csrf(post("/api/v1/security/blocked"), &admin), "198.51.100.4"),
+            json!({ "address": "198.51.100.0/24" }),
+        ))
+        .await;
+    assert_problem(&own, StatusCode::CONFLICT, "own_address");
+    let listed = h.send(empty(with_cookie(get("/api/v1/security/blocked"), &admin))).await;
+    assert_eq!(listed.body.as_array().map(Vec::len), Some(1));
+
+    let unblock = |address: &str| {
+        h.send(json(with_csrf(post("/api/v1/security/unblock"), &admin), json!({ "address": address })))
+    };
+    assert_eq!(unblock("203.0.113.0/24").await.status, StatusCode::NO_CONTENT);
+    assert_problem(&unblock("203.0.113.0/24").await, StatusCode::NOT_FOUND, "not_found");
+    let open = h.send(empty(from_address(get("/api/v1/setup"), "203.0.113.5"))).await;
+    assert_eq!(open.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn an_address_guessing_passwords_is_blocked() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+    for _ in 0..10 {
+        let guess = json(
+            from_address(post("/api/v1/auth/login"), "198.51.100.9"),
+            json!({ "name": "root", "password": "123456" }),
+        );
+        h.send(guess).await;
+    }
+
+    let next = h
+        .send(json(
+            from_address(post("/api/v1/auth/login"), "198.51.100.9"),
+            json!({ "name": "alice", "password": PASSWORD }),
+        ))
+        .await;
+
+    assert_problem(&next, StatusCode::FORBIDDEN, "address_blocked");
+    let listed = h.send(empty(with_cookie(get("/api/v1/security/blocked"), &admin))).await;
+    assert_eq!(listed.body[0]["address"], "198.51.100.9");
+    assert_eq!(listed.body[0]["automatic"], true);
+    assert!(listed.body[0]["until"].is_i64(), "lifted after a day");
+}
+
+#[tokio::test]
+async fn admins_see_every_session_and_end_one() {
+    let h = Harness::new();
+    let bob = h.sign_in("bob", Role::User).await;
+    let admin = h.sign_in("alice", Role::Admin).await;
+
+    let sessions = h.send(empty(with_cookie(get("/api/v1/security/sessions"), &admin))).await;
+
+    assert_eq!(sessions.status, StatusCode::OK);
+    let list = sessions.body.as_array().unwrap();
+    assert_eq!(list.len(), 2);
+    let current: Vec<_> = list.iter().map(|s| (s["account"].clone(), s["current"].clone())).collect();
+    assert!(
+        current.contains(&(json!("alice"), json!(true))) && current.contains(&(json!("bob"), json!(false)))
+    );
+    let id = list.iter().find(|s| s["account"] == "bob").unwrap()["id"].as_i64().unwrap();
+    let ended = h
+        .send(empty(with_csrf(changing(Method::DELETE, &format!("/api/v1/security/sessions/{id}")), &admin)))
+        .await;
+    assert_eq!(ended.status, StatusCode::NO_CONTENT);
+    let signed_out = h.send(empty(with_cookie(get("/api/v1/system/info"), &bob))).await;
+    assert_problem(&signed_out, StatusCode::UNAUTHORIZED, "unauthenticated");
+}
+
+#[tokio::test]
+async fn admins_choose_the_oldest_tls_version() {
+    let h = Harness::new();
+    let viewer = h.sign_in("bob", Role::ReadOnly).await;
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let put = |session: &Session, body: Value| {
+        h.send(json(with_csrf(changing(Method::PUT, "/api/v1/system/tls"), session), body))
+    };
+
+    let state = h.send(empty(with_cookie(get("/api/v1/system/tls"), &admin))).await;
+    assert_eq!(state.body, json!({ "minimum": "tls1_2" }));
+    assert_problem(&put(&viewer, json!({ "minimum": "tls1_3" })).await, StatusCode::FORBIDDEN, "forbidden");
+    let reply = put(&admin, json!({ "minimum": "tls1_3" })).await;
+    assert_eq!(reply.body, json!({ "minimum": "tls1_3" }));
+    let entry = h.identity.audit.entries().last().cloned().unwrap();
+    assert_eq!((entry.action, entry.target.as_deref()), ("system.tls_update", Some("TLS 1.3")));
+    assert_eq!(put(&admin, json!({ "minimum": "tls1_0" })).await.status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn admins_turn_ssh_on_and_off() {
+    let h = Harness::new();
+    let viewer = h.sign_in("bob", Role::ReadOnly).await;
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let put = |session: &Session, body: Value| {
+        h.send(json(with_csrf(changing(Method::PUT, "/api/v1/system/ssh"), session), body))
+    };
+
+    let state = h.send(empty(with_cookie(get("/api/v1/system/ssh"), &viewer))).await;
+    assert_eq!(state.status, StatusCode::OK);
+    assert_eq!((state.body["running"].clone(), state.body["port"].clone()), (json!(false), json!(22)));
+
+    let on = json!({ "enabled": true, "port": 2222, "root_login": "key_only", "off_after_minutes": 30 });
+    assert_problem(&put(&viewer, on.clone()).await, StatusCode::FORBIDDEN, "forbidden");
+    let reply = put(&admin, on).await;
+    assert_eq!(reply.status, StatusCode::OK, "{:?}", reply.body);
+    assert_eq!(
+        (reply.body["running"].clone(), reply.body["root_login"].clone(), reply.body["off_at"].clone()),
+        (json!(true), json!("key_only"), json!(1_800_001_800))
+    );
+    assert_eq!(reply.body["password_login"], Value::Null, "as the system has it");
+    let entry = h.identity.audit.entries().last().cloned().unwrap();
+    assert_eq!((entry.action, entry.target.as_deref()), ("system.ssh_update", Some("on, port 2222")));
+
+    for bad in [
+        json!({ "enabled": true, "port": 23 }),
+        json!({ "enabled": true, "port": 2049 }),
+        json!({ "enabled": true, "port": 22, "off_after_minutes": 0 }),
+    ] {
+        assert_problem(&put(&admin, bad).await, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
+    }
+    let taken = put(&admin, json!({ "enabled": true, "port": 8080 })).await;
+    assert_problem(&taken, StatusCode::CONFLICT, "port_in_use");
+    let unknown = put(&admin, json!({ "enabled": true, "port": 22, "banner": "hello" })).await;
+    assert_eq!(unknown.status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn admins_set_the_time_zone_and_servers() {
+    let h = Harness::new();
+    let viewer = h.sign_in("bob", Role::ReadOnly).await;
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let put = |session: &Session, body: Value| {
+        h.send(json(with_csrf(changing(Method::PUT, "/api/v1/system/time"), session), body))
+    };
+
+    let state = h.send(empty(with_cookie(get("/api/v1/system/time"), &viewer))).await;
+    assert_eq!(state.status, StatusCode::OK);
+    assert_eq!(state.body["zone"], "Etc/UTC");
+    assert_eq!(state.body["zones"], json!(["Etc/UTC", "Europe/Berlin"]));
+    assert_eq!(state.body["now"], 1_800_000_000);
+
+    let berlin = json!({ "zone": "Europe/Berlin", "network_time": true, "servers": [" PTB.de ", ""] });
+    assert_problem(&put(&viewer, berlin.clone()).await, StatusCode::FORBIDDEN, "forbidden");
+    let reply = put(&admin, berlin).await;
+    assert_eq!(reply.status, StatusCode::OK, "{:?}", reply.body);
+    assert_eq!(
+        (reply.body["zone"].clone(), reply.body["servers"].clone()),
+        (json!("Europe/Berlin"), json!(["ptb.de"]))
+    );
+    let entry = h.identity.audit.entries().last().cloned().unwrap();
+    assert_eq!((entry.action, entry.target.as_deref()), ("system.time_update", Some("Europe/Berlin")));
+
+    for bad in [
+        json!({ "zone": "Mars/Olympus", "network_time": true }),
+        json!({ "zone": "../etc/passwd", "network_time": true }),
+        json!({ "zone": "Etc/UTC", "network_time": true, "servers": ["a b"] }),
+        json!({ "zone": "Etc/UTC", "network_time": true, "clock": 1_800_000_000 }),
+        json!({ "zone": "Etc/UTC", "network_time": false, "clock": 0 }),
+    ] {
+        assert_problem(&put(&admin, bad.clone()).await, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
+    }
+    let by_hand =
+        put(&admin, json!({ "zone": "Etc/UTC", "network_time": false, "clock": 1_800_000_000 })).await;
+    assert_eq!(by_hand.status, StatusCode::OK, "{:?}", by_hand.body);
+    assert_eq!(by_hand.body["network_time"], false);
 }
 
 // Live updates
@@ -866,6 +1370,7 @@ fn openapi_documents_every_route() {
             "/api/v1/apps/catalog/{source}/{app}",
             "/api/v1/apps/catalog/{source}/{app}/icon",
             "/api/v1/apps/docker",
+            "/api/v1/apps/docker/install",
             "/api/v1/apps/installed",
             "/api/v1/apps/installed/{id}",
             "/api/v1/apps/installed/{id}/logs",
@@ -880,6 +1385,33 @@ fn openapi_documents_every_route() {
             "/api/v1/auth/logout",
             "/api/v1/auth/password",
             "/api/v1/auth/session",
+            "/api/v1/docker/compose/check",
+            "/api/v1/docker/containers",
+            "/api/v1/docker/containers/{id}",
+            "/api/v1/docker/containers/{id}/logs",
+            "/api/v1/docker/containers/{id}/{action}",
+            "/api/v1/docker/data",
+            "/api/v1/docker/data/move",
+            "/api/v1/docker/images",
+            "/api/v1/docker/images/prune",
+            "/api/v1/docker/images/pull",
+            "/api/v1/docker/images/{id}",
+            "/api/v1/docker/networks",
+            "/api/v1/docker/networks/{name}",
+            "/api/v1/docker/overview",
+            "/api/v1/docker/places",
+            "/api/v1/docker/projects",
+            "/api/v1/docker/projects/{name}",
+            "/api/v1/docker/projects/{name}/compose",
+            "/api/v1/docker/projects/{name}/logs",
+            "/api/v1/docker/projects/{name}/redeploy",
+            "/api/v1/docker/projects/{name}/{action}",
+            "/api/v1/docker/updates",
+            "/api/v1/docker/updates/apply",
+            "/api/v1/docker/updates/check",
+            "/api/v1/docker/updates/settings",
+            "/api/v1/docker/usage",
+            "/api/v1/file-services",
             "/api/v1/files/favourites",
             "/api/v1/files/shares",
             "/api/v1/files/shares/{id}/archive",
@@ -896,6 +1428,8 @@ fn openapi_documents_every_route() {
             "/api/v1/groups",
             "/api/v1/groups/{id}",
             "/api/v1/health",
+            "/api/v1/homes",
+            "/api/v1/homes/{account_id}",
             "/api/v1/jobs",
             "/api/v1/jobs/{id}",
             "/api/v1/logs/audit",
@@ -910,9 +1444,16 @@ fn openapi_documents_every_route() {
             "/api/v1/notifications",
             "/api/v1/notifications/clear",
             "/api/v1/notifications/read",
+            "/api/v1/password-policy",
             "/api/v1/preferences",
+            "/api/v1/security/blocked",
+            "/api/v1/security/sessions",
+            "/api/v1/security/sessions/{id}",
+            "/api/v1/security/settings",
+            "/api/v1/security/unblock",
             "/api/v1/setup",
             "/api/v1/shares",
+            "/api/v1/shares/access/{kind}/{id}",
             "/api/v1/shares/{id}",
             "/api/v1/shares/{id}/delete",
             "/api/v1/shares/{id}/snapshots",
@@ -937,6 +1478,13 @@ fn openapi_documents_every_route() {
             "/api/v1/system/info",
             "/api/v1/system/metrics/history",
             "/api/v1/system/power",
+            "/api/v1/system/ssh",
+            "/api/v1/system/time",
+            "/api/v1/system/tls",
+            "/api/v1/system/updates",
+            "/api/v1/system/updates/apply",
+            "/api/v1/system/updates/check",
+            "/api/v1/system/updates/settings",
         ]
     );
 }
@@ -1096,6 +1644,71 @@ async fn admins_manage_accounts_that_must_change_their_password() {
     let bob = Session::from(&h.send(json(post("/api/v1/auth/login"), login)).await);
     let blocked = h.send(empty(with_cookie(get("/api/v1/system/info"), &bob))).await;
     assert_problem(&blocked, StatusCode::FORBIDDEN, "password_change_required");
+}
+
+#[tokio::test]
+async fn accounts_carry_details_and_follow_the_password_policy() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let user = h.sign_in("bob", Role::User).await;
+    let put_policy = |session: &Session, body: Value| {
+        h.send(json(with_csrf(changing(Method::PUT, "/api/v1/password-policy"), session), body))
+    };
+
+    let policy = h.send(empty(with_cookie(get("/api/v1/password-policy"), &user))).await;
+    assert_eq!(
+        policy.body,
+        json!({ "min_length": 10, "mixed_case": false, "digit": false, "symbol": false, "max_age_days": null })
+    );
+    let strict =
+        json!({ "min_length": 12, "mixed_case": true, "digit": false, "symbol": false, "max_age_days": 90 });
+    assert_problem(&put_policy(&user, strict.clone()).await, StatusCode::FORBIDDEN, "forbidden");
+    assert_eq!(put_policy(&admin, strict.clone()).await.body, strict);
+    let lax = json!({ "min_length": 6, "mixed_case": false, "digit": false, "symbol": false, "max_age_days": null });
+    assert_problem(&put_policy(&admin, lax).await, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
+
+    let create = |body: Value| h.send(json(with_csrf(post("/api/v1/accounts"), &admin), body));
+    let common = create(json!({ "name": "carol", "role": "user", "password": "Qwertyuiop12" })).await;
+    assert_problem(&common, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
+    let kiosk = create(json!({
+        "name": "kiosk",
+        "role": "user",
+        "password": "Kitchen tablet one",
+        "description": "Tablet in the kitchen",
+        "email": "family@example.org",
+        "password_locked": true,
+    }))
+    .await;
+    assert_eq!(kiosk.status, StatusCode::CREATED, "{:?}", kiosk.body);
+    assert_eq!(
+        (
+            &kiosk.body["description"],
+            &kiosk.body["email"],
+            &kiosk.body["password_locked"],
+            &kiosk.body["password_change_required"]
+        ),
+        (&json!("Tablet in the kitchen"), &json!("family@example.org"), &json!(true), &json!(false))
+    );
+
+    let login = json!({ "name": "kiosk", "password": "Kitchen tablet one" });
+    let session = Session::from(&h.send(json(post("/api/v1/auth/login"), login)).await);
+    let change =
+        json!({ "current_password": "Kitchen tablet one", "new_password": "Another Kitchen Tablet" });
+    let refused = h.send(json(with_csrf(post("/api/v1/auth/password"), &session), change)).await;
+    assert_problem(&refused, StatusCode::FORBIDDEN, "password_locked");
+
+    let id = kiosk.body["id"].as_i64().unwrap();
+    let uri = format!("/api/v1/accounts/{id}");
+    let bad =
+        h.send(json(with_csrf(changing(Method::PATCH, &uri), &admin), json!({ "email": "kitchen" }))).await;
+    assert_problem(&bad, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
+    let cleared = h
+        .send(json(
+            with_csrf(changing(Method::PATCH, &uri), &admin),
+            json!({ "email": "", "password_locked": false }),
+        ))
+        .await;
+    assert_eq!((&cleared.body["email"], &cleared.body["password_locked"]), (&Value::Null, &json!(false)));
 }
 
 #[tokio::test]
@@ -1411,6 +2024,156 @@ async fn each_account_reads_and_clears_its_notifications_in_every_browser() {
 }
 
 #[tokio::test]
+async fn admins_switch_file_services_and_set_the_workgroup() {
+    let h = Harness::new();
+    let viewer = h.sign_in("bob", Role::ReadOnly).await;
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let put = |session: &Session, body: Value| {
+        h.send(json(with_csrf(changing(Method::PUT, "/api/v1/file-services"), session), body))
+    };
+
+    let current = h.send(empty(with_cookie(get("/api/v1/file-services"), &viewer))).await;
+    assert_eq!(current.status, StatusCode::OK);
+    assert_eq!(
+        current.body,
+        json!({
+            "smb": true, "nfs": true, "workgroup": "WORKGROUP", "smb_min_protocol": "smb2_1",
+            "smb_encryption": "default", "smb_signing": "default", "hide_unreadable": true, "multichannel": true,
+            "oplocks": true, "leases": true, "durable_handles": false, "mac_compat": true, "follow_symlinks": true,
+            "veto_files": null, "delete_veto_files": false, "wsdd": true, "bonjour": true, "time_machine": null,
+        })
+    );
+
+    let wanted = json!({ "smb": true, "nfs": false, "workgroup": " home ", "smb_min_protocol": "smb3" });
+    assert_problem(&put(&viewer, wanted.clone()).await, StatusCode::FORBIDDEN, "forbidden");
+    let stored = put(&admin, wanted).await;
+    assert_eq!(stored.status, StatusCode::OK, "{:?}", stored.body);
+    assert_eq!((stored.body["workgroup"].clone(), stored.body["nfs"].clone()), (json!("HOME"), json!(false)));
+    let applied = h.share_host.configs.lock().unwrap().last().unwrap().services.clone();
+    assert_eq!((applied.workgroup.as_str(), applied.nfs), ("HOME", false));
+    let entry = h.identity.audit.entries().last().cloned().unwrap();
+    assert_eq!(entry.action, "sharing.services_update");
+
+    for bad in [
+        json!({ "smb": true, "nfs": true, "workgroup": "MY WORKGROUP", "smb_min_protocol": "smb3" }),
+        json!({ "smb": true, "nfs": true, "workgroup": "", "smb_min_protocol": "smb3" }),
+    ] {
+        assert_problem(&put(&admin, bad).await, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
+    }
+    let smb1 = json!({ "smb": true, "nfs": true, "workgroup": "HOME", "smb_min_protocol": "smb1" });
+    assert_eq!(put(&admin, smb1).await.status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    let base = json!({ "smb": true, "nfs": true, "workgroup": "HOME", "smb_min_protocol": "smb3" });
+    let with = |extra: Value| {
+        let mut body = base.clone();
+        body.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        body
+    };
+    let options =
+        put(&admin, with(json!({ "smb_signing": "mandatory", "veto_files": " /*.tmp/ ", "oplocks": false })))
+            .await;
+    assert_eq!(options.status, StatusCode::OK, "{:?}", options.body);
+    assert_eq!(
+        (&options.body["smb_signing"], &options.body["veto_files"], &options.body["leases"]),
+        (&json!("mandatory"), &json!("/*.tmp/"), &json!(false)),
+        "tidied: no leases without oplocks"
+    );
+    let applied = h.share_host.configs.lock().unwrap().last().unwrap().services.clone();
+    assert_eq!(applied.smb_signing, zendiloos_sharing::domain::SmbSigning::Mandatory);
+    let bad_pattern = put(&admin, with(json!({ "veto_files": "*.tmp" }))).await;
+    assert_problem(&bad_pattern, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
+    let no_share = put(&admin, with(json!({ "time_machine": { "share_id": 99 } }))).await;
+    assert_problem(&no_share, StatusCode::NOT_FOUND, "not_found");
+}
+
+#[tokio::test]
+async fn a_group_can_be_denied_a_share_and_its_members_see_it() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let bob = h.identity.add_account("bob", PASSWORD, Role::User).id.get();
+    let kids = json(with_csrf(post("/api/v1/groups"), &admin), json!({ "name": "kids", "members": [bob] }));
+    let kids = h.send(kids).await.body["id"].as_i64().unwrap();
+    let body = json!({
+        "name": "photos",
+        "pool": "tank",
+        "access": [{ "kind": "account", "id": bob, "access": "read_write" }],
+    });
+    let photos =
+        h.send(json(with_csrf(post("/api/v1/shares"), &admin), body)).await.body["id"].as_i64().unwrap();
+    let put = |uri: String, body: Value| h.send(json(with_csrf(changing(Method::PUT, &uri), &admin), body));
+
+    let denied = put(
+        format!("/api/v1/shares/access/group/{kids}"),
+        json!({ "rules": [{ "share_id": photos, "rule": "deny" }] }),
+    )
+    .await;
+    assert_eq!(denied.status, StatusCode::OK, "{:?}", denied.body);
+    assert_eq!(denied.body["jobs"][0]["kind"], "sharing.apply_access");
+
+    let seen = h.send(empty(with_cookie(get(&format!("/api/v1/shares/access/account/{bob}")), &admin))).await;
+    assert_eq!(seen.status, StatusCode::OK);
+    assert_eq!(
+        seen.body,
+        json!([{ "share_id": photos, "share": "photos", "rule": "read_write", "effective": null }]),
+        "the group's denial wins over bob's own rule"
+    );
+    let calls = h.share_host.calls();
+    assert!(calls.contains(&"access 1 photos [bob:-] -[]".to_owned()), "{calls:?}");
+
+    let unknown = h.send(empty(with_cookie(get("/api/v1/shares/access/group/999"), &admin))).await;
+    assert_problem(&unknown, StatusCode::UNPROCESSABLE_ENTITY, "unknown_subject");
+    let twice = put(
+        format!("/api/v1/shares/access/account/{bob}"),
+        json!({ "rules": [{ "share_id": photos, "rule": "read" }, { "share_id": photos }] }),
+    )
+    .await;
+    assert_problem(&twice, StatusCode::UNPROCESSABLE_ENTITY, "duplicate_rule");
+    let cleared =
+        put(format!("/api/v1/shares/access/group/{kids}"), json!({ "rules": [{ "share_id": photos }] }))
+            .await;
+    assert_eq!(cleared.status, StatusCode::OK);
+    let seen = h.send(empty(with_cookie(get(&format!("/api/v1/shares/access/account/{bob}")), &admin))).await;
+    assert_eq!(seen.body[0]["effective"], "read_write");
+}
+
+#[tokio::test]
+async fn personal_folders_are_switched_on_and_given_to_accounts() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let bob_session = h.sign_in("bob", Role::User).await;
+    let bob = h.identity.accounts.all().into_iter().find(|a| a.name.as_str() == "bob").unwrap().id.get();
+    let put = |uri: String, body: Value| h.send(json(with_csrf(changing(Method::PUT, &uri), &admin), body));
+
+    let off = put(format!("/api/v1/homes/{bob}"), json!({ "enabled": true })).await;
+    assert_problem(&off, StatusCode::CONFLICT, "refused");
+    let on = put("/api/v1/homes".into(), json!({ "pool": "tank" })).await;
+    assert_eq!(on.status, StatusCode::OK, "{:?}", on.body);
+    assert_eq!(on.body["location"], json!({ "pool": "tank", "volume": 1 }));
+    let given =
+        put(format!("/api/v1/homes/{bob}"), json!({ "enabled": true, "quota_bytes": 10_737_418_240_u64 }))
+            .await;
+    assert_eq!(given.body, json!({ "account_id": bob, "quota_bytes": 10_737_418_240_u64 }));
+    let small = put(format!("/api/v1/homes/{bob}"), json!({ "enabled": true, "quota_bytes": 1024 })).await;
+    assert_problem(&small, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
+
+    let mine = h.send(empty(with_cookie(get("/api/v1/files/shares"), &bob_session))).await;
+    assert_eq!(mine.body[0]["id"], 0);
+    assert_eq!((&mine.body[0]["name"], &mine.body[0]["home"]), (&json!("home"), &json!(true)));
+    let admins = h.send(empty(with_cookie(get("/api/v1/files/shares"), &admin))).await;
+    assert!(admins.body.as_array().unwrap().iter().all(|s| s["home"] == false), "alice has none");
+    let calls = h.share_host.calls();
+    assert!(calls.contains(&"prepare_homes tank 1".to_owned()), "{calls:?}");
+    assert!(calls.contains(&"set_home tank 1 bob Some(10737418240)".to_owned()), "{calls:?}");
+
+    let listed = h.send(empty(with_cookie(get("/api/v1/homes"), &admin))).await;
+    assert_eq!(listed.body["homes"], json!([{ "account_id": bob, "quota_bytes": 10_737_418_240_u64 }]));
+    let refused = h.send(empty(with_cookie(get("/api/v1/homes"), &bob_session))).await;
+    assert_problem(&refused, StatusCode::FORBIDDEN, "forbidden");
+    let off = put("/api/v1/homes".into(), json!({ "pool": null })).await;
+    assert_eq!(off.body["location"], Value::Null);
+}
+
+#[tokio::test]
 async fn admins_create_change_and_delete_shares() {
     let h = Harness::new();
     let admin = h.sign_in("alice", Role::Admin).await;
@@ -1620,10 +2383,19 @@ async fn each_account_keeps_its_interface_preferences() {
     let none = h.send(empty(with_cookie(get("/api/v1/preferences"), &alice))).await;
     assert_eq!(
         (none.status, none.body.clone()),
-        (StatusCode::OK, json!({ "language": null, "theme": null }))
+        (
+            StatusCode::OK,
+            json!({ "language": null, "theme": null, "wallpaper": null, "widgets": null, "desktop_icons": null })
+        )
     );
 
-    let chosen = json!({ "language": "de", "theme": "dark" });
+    let chosen = json!({
+        "language": "de",
+        "theme": "dark",
+        "wallpaper": "nebula",
+        "widgets": ["status", "storage"],
+        "desktop_icons": ["files", "storage"]
+    });
     let saved =
         h.send(json(with_csrf(changing(Method::PUT, "/api/v1/preferences"), &alice), chosen.clone())).await;
     assert_eq!(saved.status, StatusCode::NO_CONTENT, "{:?}", saved.body);
@@ -1635,6 +2407,11 @@ async fn each_account_keeps_its_interface_preferences() {
     let refused =
         h.send(json(with_csrf(changing(Method::PUT, "/api/v1/preferences"), &alice), unknown)).await;
     assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    for bad in [json!({ "wallpaper": "../etc" }), json!({ "widgets": ["status", "status"] })] {
+        let refused =
+            h.send(json(with_csrf(changing(Method::PUT, "/api/v1/preferences"), &alice), bad)).await;
+        assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    }
 }
 
 #[tokio::test]
@@ -2218,6 +2995,8 @@ async fn administrators_install_apps_and_run_them() {
 
     let not_ready = send(Method::POST, "/api/v1/apps/installed", Some(install.clone())).await;
     assert_problem(&not_ready, StatusCode::CONFLICT, "docker_not_ready");
+    let installed = send(Method::POST, "/api/v1/apps/docker/install", Some(json!({ "pool": "tank" }))).await;
+    assert_problem(&installed, StatusCode::CONFLICT, "docker_installed");
     send(Method::POST, "/api/v1/apps/docker", Some(json!({ "pool": "tank" }))).await;
     let reserved = send(
         Method::POST,
@@ -2265,4 +3044,68 @@ async fn administrators_install_apps_and_run_them() {
     job_done(&h, removing.body["id"].as_i64().unwrap()).await;
     let gone = h.send(empty(with_cookie(get("/api/v1/apps/installed/jellyfin"), &admin))).await;
     assert_eq!(gone.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn administrators_look_for_updates_and_install_them() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let user = h.sign_in("bob", Role::User).await;
+    let send = |method: Method, uri: &str, body: Option<Value>, session: &Session| {
+        let request = with_csrf(Request::builder().method(method).uri(uri), session);
+        h.send(match body {
+            Some(body) => json(request, body),
+            None => empty(request),
+        })
+    };
+    let denied = send(Method::GET, "/api/v1/system/updates", None, &user).await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN);
+
+    let before = send(Method::GET, "/api/v1/system/updates", None, &admin).await;
+    assert_eq!(before.status, StatusCode::OK, "{:?}", before.body);
+    assert_eq!(before.body["current"], "0.1.0");
+    assert_eq!(before.body["settings"]["channel"], "stable");
+    assert_eq!(before.body["checked_at"], Value::Null);
+    let early = send(Method::POST, "/api/v1/system/updates/apply", None, &admin).await;
+    assert_problem(&early, StatusCode::CONFLICT, "not_checked");
+
+    let check = send(Method::POST, "/api/v1/system/updates/check", None, &admin).await;
+    assert_eq!(check.status, StatusCode::ACCEPTED);
+    let mut found = before;
+    for _ in 0..100 {
+        found = send(Method::GET, "/api/v1/system/updates", None, &admin).await;
+        if found.body["phase"] == "idle" && found.body["checked_at"] != Value::Null {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    assert_eq!(found.body["release"]["version"], "0.2.0");
+    assert_eq!(found.body["packages"].as_array().unwrap().len(), 2);
+    assert_eq!(found.body["packages"][0]["security"], true);
+
+    let apply = send(Method::POST, "/api/v1/system/updates/apply", None, &admin).await;
+    assert_eq!(apply.status, StatusCode::ACCEPTED, "{:?}", apply.body);
+    let mut after = found;
+    for _ in 0..100 {
+        after = send(Method::GET, "/api/v1/system/updates", None, &admin).await;
+        if after.body["run"] != Value::Null {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    assert_eq!(after.body["run"]["state"], "succeeded");
+    assert_eq!(after.body["run"]["zendiloos"], "0.2.0");
+    assert_eq!(after.body["run"]["restart_needed"], true);
+
+    let settings = send(
+        Method::PUT,
+        "/api/v1/system/updates/settings",
+        Some(json!({ "channel": "development", "check_daily": false })),
+        &admin,
+    )
+    .await;
+    assert_eq!(settings.status, StatusCode::OK, "{:?}", settings.body);
+    let saved = send(Method::GET, "/api/v1/system/updates", None, &admin).await;
+    assert_eq!(saved.body["settings"]["channel"], "development");
+    assert_eq!(saved.body["release"], Value::Null, "what was found was for the other channel");
 }

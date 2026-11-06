@@ -1,7 +1,5 @@
 import type { Component } from 'vue'
 
-import type { TileTone } from '../icon-tile'
-
 export { default as AppFrame } from './AppFrame.vue'
 export { default as PanelTabs } from './PanelTabs.vue'
 
@@ -10,8 +8,6 @@ export interface NavItem {
   id: string
   label: string
   icon?: Component
-  /** Shown as a coloured tile; without it the icon is plain. */
-  tone?: TileTone
   /** A number beside the label, e.g. how many are installed. */
   count?: number
   /** Something needs attention there. */

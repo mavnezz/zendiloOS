@@ -1,9 +1,10 @@
-import { useQuery, useQueryClient } from '@tanstack/vue-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import { type MaybeRefOrGetter, toValue } from 'vue'
 
 import { api, unwrap } from '@/shared/api/client'
 import type {
   CreateShareRequest,
+  FileServices,
   Job,
   Share,
   ShareSnapshot,
@@ -119,4 +120,20 @@ export function useSnapshotActions() {
         ),
       ),
   }
+}
+
+/** Which file services run, and Samba's settings for all shares. */
+export function useFileServices() {
+  return useQuery({
+    queryKey: ['file-services'],
+    queryFn: () => unwrap(api.GET('/api/v1/file-services')),
+  })
+}
+
+export function useSetFileServices() {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: (body: FileServices) => unwrap(api.PUT('/api/v1/file-services', { body })),
+    onSuccess: (stored) => client.setQueryData(['file-services'], stored),
+  })
 }

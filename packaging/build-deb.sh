@@ -10,6 +10,12 @@ rsync -a --delete \
     /src/ /build/zendiloos/
 
 cd /build/zendiloos
+# A release build carries its version (scripts/release-version.sh); others
+# keep the changelog's.
+if [[ -n ${ZENDILOOS_VERSION:-} ]]; then
+    [[ $ZENDILOOS_VERSION =~ ^[0-9][0-9A-Za-z.+~]*$ ]] || { echo "not a version: $ZENDILOOS_VERSION" >&2; exit 1; }
+    sed -i "1s/^zendiloos ([^)]*)/zendiloos ($ZENDILOOS_VERSION)/" debian/changelog
+fi
 dpkg-buildpackage --build=binary --no-sign
 
 install -m 0644 /build/*.deb /build/*.buildinfo /build/*.changes /out/

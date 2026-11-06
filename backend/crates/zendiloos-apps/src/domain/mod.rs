@@ -10,7 +10,8 @@ pub use app::{
 };
 pub use docker::{AppVolume, DockerHostState, docker_volume};
 pub use installed::{
-    Containers, InstallState, InstallValues, InstalledApp, InvalidValue, MAX_APP_ID, MAX_SETTING_BYTES,
-    RESERVED_PORTS, RunState, ValueProblem, ValueRequest, WebAddress, account, install_values,
+    Containers, InstallState, InstallValues, InstalledApp, InvalidValue, MAX_APP_ID, MAX_FOLDER_BYTES,
+    MAX_SETTING_BYTES, RESERVED_PORTS, RunState, ValueProblem, ValueRequest, WebAddress, account,
+    install_values, share_and_folder,
 };
 pub use source::{InvalidSource, OFFICIAL_INDEX, Refresh, Source, index_address};

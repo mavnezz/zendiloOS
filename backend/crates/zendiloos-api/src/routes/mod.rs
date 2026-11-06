@@ -1,15 +1,18 @@
 mod accounts;
 mod apps;
 mod channels;
+mod docker;
 mod files;
 mod identity;
 pub(crate) mod jobs;
 pub(crate) mod live;
 pub(crate) mod logs;
 mod network;
+mod security;
 mod shares;
 mod storage;
 mod system;
+mod updates;
 
 use utoipa_axum::router::OpenApiRouter;
 
@@ -29,4 +32,7 @@ pub(crate) fn v1() -> OpenApiRouter<ApiState> {
         .merge(network::routes())
         .merge(channels::routes())
         .merge(apps::routes())
+        .merge(security::routes())
+        .merge(docker::routes())
+        .merge(updates::routes())
 }

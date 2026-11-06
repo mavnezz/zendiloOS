@@ -6,8 +6,9 @@ use async_trait::async_trait;
 use zendiloos_kernel::{PortError, RequestContext};
 
 use crate::domain::{
-    Access, AppAccess, Favourite, FileLocation, FilePath, Frequency, Listing, NewShare, Principal, Share,
-    ShareId, ShareName, ShareSettings, ShareUsage, SharingConfig, Snapshot, SnapshotSchedule,
+    Access, AppAccess, Favourite, FileLocation, FilePath, FileServices, Frequency, Home, HomesLocation,
+    Listing, NewShare, Permission, Principal, Share, ShareId, ShareName, ShareSettings, ShareUsage,
+    SharingConfig, Snapshot, SnapshotSchedule,
 };
 
 #[async_trait]
@@ -45,6 +46,25 @@ pub trait ShareRepository: Send + Sync {
 
     async fn favourites(&self, account: i64) -> Result<Vec<Favourite>, PortError>;
 
+    /// The file services as set; the defaults until someone sets them.
+    async fn file_services(&self) -> Result<FileServices, PortError>;
+
+    async fn set_file_services(&self, services: &FileServices) -> Result<(), PortError>;
+
+    /// Where the personal folders are; `None` while they are off.
+    async fn homes_location(&self) -> Result<Option<HomesLocation>, PortError>;
+
+    async fn set_homes_location(&self, location: Option<&HomesLocation>) -> Result<(), PortError>;
+
+    /// The accounts with a personal folder.
+    async fn homes(&self) -> Result<Vec<Home>, PortError>;
+
+    /// Gives `home.account` a personal folder, or changes its quota.
+    async fn set_home(&self, home: &Home) -> Result<(), PortError>;
+
+    /// The account keeps its folder on disk but no longer reaches it.
+    async fn remove_home(&self, account: i64) -> Result<(), PortError>;
+
     /// Replaces the account's favourites.
     async fn set_favourites(&self, account: i64, favourites: &[Favourite]) -> Result<(), PortError>;
 }
@@ -54,6 +74,8 @@ pub trait ShareRepository: Send + Sync {
 pub struct Names {
     pub accounts: HashMap<i64, String>,
     pub groups: HashMap<i64, String>,
+    /// The accounts in each group, by ID.
+    pub members: HashMap<i64, Vec<i64>>,
 }
 
 #[async_trait]
@@ -112,6 +134,21 @@ pub trait ShareHost: Send + Sync {
     /// Replaces what the SMB and NFS servers offer.
     async fn apply(&self, config: &SharingConfig, context: &RequestContext) -> Result<(), HostError>;
 
+    /// The personal folders' dataset on `pool`, mounted at
+    /// `/volume<volume>/@homes`.
+    async fn prepare_homes(&self, pool: &str, volume: u16, context: &RequestContext)
+    -> Result<(), HostError>;
+
+    /// `user`'s personal folder, made if missing, and how much it may hold.
+    async fn set_home(
+        &self,
+        pool: &str,
+        volume: u16,
+        user: &str,
+        quota_bytes: Option<u64>,
+        context: &RequestContext,
+    ) -> Result<(), HostError>;
+
     /// Quota, compression and record size of the share's dataset.
     async fn set_properties(
         &self,
@@ -167,7 +204,7 @@ pub trait ShareHost: Send + Sync {
         &self,
         volume: u16,
         name: &ShareName,
-        access: &[(Principal, Access)],
+        access: &[(Principal, Permission)],
         removed: &[Principal],
         recursive: bool,
         context: &RequestContext,

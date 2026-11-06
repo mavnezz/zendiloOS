@@ -76,6 +76,11 @@ export function useEnableDocker() {
   }
 }
 
+/** Installs Docker and puts its data on `pool`, as a job. */
+export async function installDocker(pool: string) {
+  return unwrap(api.POST('/api/v1/apps/docker/install', { body: { pool } }))
+}
+
 /** The installed apps, with what Docker makes of them. */
 export function useInstalled() {
   return useQuery({
@@ -138,10 +143,40 @@ export function useInstallActions() {
 }
 
 /** The shares an app can be given (the same list the Shares window shows). */
-export function useShareNames() {
+export function useShareList() {
   return useQuery({
     queryKey: ['shares'],
     queryFn: () => unwrap(api.GET('/api/v1/shares')),
-    select: (shares) => shares.map((share) => share.name),
+    select: (shares) =>
+      shares
+        .map((share) => ({ id: share.id, name: share.name }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
   })
+}
+
+/** The folders in one folder of a share, as the signed-in administrator sees them. */
+export async function listFolders(
+  share: number,
+  path: string,
+): Promise<{ names: string[]; writable: boolean }> {
+  const folder = await unwrap(
+    api.GET('/api/v1/files/shares/{id}/folder', {
+      params: { path: { id: share }, query: { path } },
+    }),
+  )
+  const names = folder.entries
+    .filter((entry) => entry.kind === 'directory')
+    .map((entry) => entry.name)
+    .sort((a, b) => a.localeCompare(b))
+  return { names, writable: folder.writable }
+}
+
+/** Makes the folder `path` in a share. */
+export async function makeFolder(share: number, path: string): Promise<void> {
+  await unwrap(
+    api.POST('/api/v1/files/shares/{id}/folders', {
+      params: { path: { id: share } },
+      body: { path },
+    }),
+  )
 }

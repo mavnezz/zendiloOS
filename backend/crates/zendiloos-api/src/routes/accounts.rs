@@ -24,6 +24,7 @@ pub(super) fn routes() -> OpenApiRouter<ApiState> {
         .routes(routes!(list_accounts, create_account))
         .routes(routes!(update_account, delete_account))
         .routes(routes!(reset_password))
+        .routes(routes!(password_policy, set_password_policy))
         .routes(routes!(list_groups, create_group))
         .routes(routes!(update_group, delete_group))
 }
@@ -44,10 +45,16 @@ pub struct Account {
     /// Login name, also the Linux and SMB user name.
     pub name: String,
     pub full_name: Option<String>,
+    pub description: Option<String>,
+    pub email: Option<String>,
     pub role: AccountRole,
     pub disabled: bool,
     /// The account must choose a new password at its next login.
     pub password_change_required: bool,
+    /// Only administrators set its password.
+    pub password_locked: bool,
+    /// When its password was last set, in Unix seconds.
+    pub password_changed_at: i64,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -58,9 +65,13 @@ impl From<identity::Account> for Account {
             id: account.id.get(),
             name: account.name.to_string(),
             full_name: account.full_name,
+            description: account.description,
+            email: account.email,
             role: account.role.into(),
             disabled: account.disabled,
             password_change_required: account.password_change_required,
+            password_locked: account.password_locked,
+            password_changed_at: account.password_changed_at.unix_seconds(),
             created_at: account.created_at.unix_seconds(),
             updated_at: account.updated_at.unix_seconds(),
         }
@@ -88,10 +99,18 @@ async fn list_accounts(auth: Auth, State(state): State<ApiState>) -> Result<Json
 pub struct CreateAccountRequest {
     pub name: String,
     pub full_name: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub email: Option<String>,
     pub role: AccountRole,
-    /// Initial password; the account must change it at its first login.
+    /// Initial password; the account must change it at its first login,
+    /// unless `password_locked`.
     #[schema(format = Password)]
     pub password: String,
+    /// Only administrators set its password.
+    #[serde(default)]
+    pub password_locked: bool,
 }
 
 /// Creates an account with its Linux user and SMB password.
@@ -117,8 +136,11 @@ async fn create_account(
     let input = NewAccountInput {
         name: request.name,
         full_name: request.full_name,
+        description: request.description,
+        email: request.email,
         role: request.role.into(),
         password: Secret::new(request.password),
+        password_locked: request.password_locked,
     };
     let account = state.identity.create_account.execute(&auth.0, input, &client).await?;
     Ok((StatusCode::CREATED, Json(account.into())))
@@ -130,8 +152,13 @@ async fn create_account(
 pub struct UpdateAccountRequest {
     /// An empty string removes the full name.
     pub full_name: Option<String>,
+    /// An empty string removes it.
+    pub description: Option<String>,
+    /// An empty string removes it.
+    pub email: Option<String>,
     pub role: Option<AccountRole>,
     pub disabled: Option<bool>,
+    pub password_locked: Option<bool>,
 }
 
 /// Changes another account's full name, role or whether it is enabled.
@@ -159,8 +186,11 @@ async fn update_account(
 ) -> Result<Json<Account>, ApiError> {
     let changes = AccountChanges {
         full_name: request.full_name.map(Some),
+        description: request.description.map(Some),
+        email: request.email.map(Some),
         role: request.role.map(Role::from),
         disabled: request.disabled,
+        password_locked: request.password_locked,
     };
     let account =
         state.identity.update_account.execute(&auth.0, AccountId::new(id), changes, &client).await?;
@@ -363,4 +393,77 @@ async fn delete_group(
 ) -> Result<StatusCode, ApiError> {
     state.identity.delete_group.execute(&auth.0, GroupId::new(id), &client).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// The rules a new password must follow.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PasswordPolicy {
+    /// From 10 to 64 characters.
+    pub min_length: u8,
+    /// Upper and lower case letters.
+    pub mixed_case: bool,
+    pub digit: bool,
+    /// A character that is neither a letter nor a digit; a space counts.
+    pub symbol: bool,
+    /// From 30 to 730 days; absent: passwords do not expire.
+    pub max_age_days: Option<u16>,
+}
+
+impl From<identity::PasswordPolicy> for PasswordPolicy {
+    fn from(policy: identity::PasswordPolicy) -> Self {
+        Self {
+            min_length: policy.min_length,
+            mixed_case: policy.mixed_case,
+            digit: policy.digit,
+            symbol: policy.symbol,
+            max_age_days: policy.max_age_days,
+        }
+    }
+}
+
+/// The rules for new passwords; every account may read them. Never
+/// common passwords or ones containing the account name, whatever is set.
+#[utoipa::path(
+    get,
+    path = "/password-policy",
+    tag = "accounts",
+    security(("session" = [])),
+    responses((status = OK, body = PasswordPolicy))
+)]
+async fn password_policy(
+    auth: Auth,
+    State(state): State<ApiState>,
+) -> Result<Json<PasswordPolicy>, ApiError> {
+    Ok(Json(state.identity.password_policy.execute(&auth.0).await?.into()))
+}
+
+/// Sets the rules for new passwords; passwords already set stay. Needs
+/// `users.manage`.
+#[utoipa::path(
+    put,
+    path = "/password-policy",
+    tag = "accounts",
+    security(("session" = [])),
+    request_body = PasswordPolicy,
+    responses(
+        (status = OK, body = PasswordPolicy),
+        (status = FORBIDDEN, body = Problem, description = "`forbidden`, `csrf_rejected`"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_input`"),
+    )
+)]
+async fn set_password_policy(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    ApiJson(request): ApiJson<PasswordPolicy>,
+) -> Result<Json<PasswordPolicy>, ApiError> {
+    let policy = identity::PasswordPolicy {
+        min_length: request.min_length,
+        mixed_case: request.mixed_case,
+        digit: request.digit,
+        symbol: request.symbol,
+        max_age_days: request.max_age_days,
+    };
+    Ok(Json(state.identity.set_password_policy.execute(&auth.0, policy, &client).await?.into()))
 }

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO security_settings (id, idle_minutes, lock_failures, lock_window_minutes, block_failures,\n                 block_window_minutes, block_release_days)\n             VALUES (1, ?, ?, ?, ?, ?, ?)\n             ON CONFLICT (id) DO UPDATE SET idle_minutes = excluded.idle_minutes,\n                 lock_failures = excluded.lock_failures, lock_window_minutes = excluded.lock_window_minutes,\n                 block_failures = excluded.block_failures, block_window_minutes = excluded.block_window_minutes,\n                 block_release_days = excluded.block_release_days",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "b6333629f978829a3991803d1f8c3d2922ac900723f74a25bae16b5870a84bb6"
+}

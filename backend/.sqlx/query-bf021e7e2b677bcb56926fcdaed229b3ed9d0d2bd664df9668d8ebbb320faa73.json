@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO allowed_addresses (address) VALUES (?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "bf021e7e2b677bcb56926fcdaed229b3ed9d0d2bd664df9668d8ebbb320faa73"
+}

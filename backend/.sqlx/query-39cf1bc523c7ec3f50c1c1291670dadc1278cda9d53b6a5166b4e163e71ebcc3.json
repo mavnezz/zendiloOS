@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM allowed_addresses",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "39cf1bc523c7ec3f50c1c1291670dadc1278cda9d53b6a5166b4e163e71ebcc3"
+}

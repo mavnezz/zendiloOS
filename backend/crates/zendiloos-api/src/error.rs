@@ -73,6 +73,11 @@ impl ApiError {
     pub fn internal(error: impl Into<Box<dyn Error + Send + Sync>>) -> Self {
         Self::Internal(error.into())
     }
+
+    /// The web interface refuses the address the request comes from.
+    pub fn address_blocked() -> Self {
+        Self::Rejected { status: StatusCode::FORBIDDEN, code: "address_blocked", detail: None }
+    }
 }
 
 impl From<zendiloos_kernel::PortError> for ApiError {
@@ -99,6 +104,21 @@ impl From<IdentityError> for ApiError {
             IdentityError::NameTaken => ApiError::NameTaken,
             IdentityError::LastAdmin => ApiError::LastAdmin,
             IdentityError::OwnAccount => ApiError::OwnAccount,
+            IdentityError::PasswordLocked => {
+                ApiError::Rejected { status: StatusCode::FORBIDDEN, code: "password_locked", detail: None }
+            }
+            IdentityError::InvalidPolicy(e) => ApiError::InvalidInput(e.to_string()),
+            IdentityError::InvalidSecurity(e) => ApiError::InvalidInput(e.to_string()),
+            IdentityError::InvalidAddressRange(e) => ApiError::InvalidInput(e.to_string()),
+            IdentityError::AddressBlocked => ApiError::address_blocked(),
+            IdentityError::OwnAddress => {
+                ApiError::Rejected { status: StatusCode::CONFLICT, code: "own_address", detail: None }
+            }
+            IdentityError::AddressAllowed => {
+                ApiError::Rejected { status: StatusCode::CONFLICT, code: "address_allowed", detail: None }
+            }
+            IdentityError::BlockNotFound | IdentityError::SessionNotFound => ApiError::NotFound,
+            IdentityError::InvalidEmail(e) => ApiError::InvalidInput(e.to_string()),
             IdentityError::Port(e) => ApiError::internal(e),
         }
     }

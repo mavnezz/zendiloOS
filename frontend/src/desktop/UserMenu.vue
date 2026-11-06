@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { LogOut, Power, RotateCcw, Settings, UserRound } from 'lucide-vue-next'
+import { LogOut, Power, RotateCcw, Settings } from 'lucide-vue-next'
 import {
   DropdownMenuContent,
   DropdownMenuItem,
@@ -54,18 +54,21 @@ async function confirmed(): Promise<void> {
 <template>
   <DropdownMenuRoot>
     <DropdownMenuTrigger
-      class="flex h-9 items-center gap-2 rounded-md px-2 text-sm hover:bg-accent data-[state=open]:bg-accent"
+      class="flex size-11 items-center justify-center rounded-tile outline-none transition hover:bg-foreground/10 focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:bg-foreground/10"
       :aria-label="t('desktop.account')"
     >
-      <UserRound class="size-4" />
-      <span class="hidden max-w-32 truncate sm:inline">{{ account?.name }}</span>
+      <span
+        class="flex size-8 items-center justify-center rounded-full bg-primary/15 text-xs font-semibold text-primary uppercase ring-1 ring-primary/30"
+      >
+        {{ account?.name.slice(0, 2) ?? '?' }}
+      </span>
     </DropdownMenuTrigger>
     <DropdownMenuPortal>
       <DropdownMenuContent
-        side="top"
+        side="right"
         align="end"
-        :side-offset="8"
-        class="z-[900] min-w-52 rounded-xl border bg-card p-1 shadow-xl"
+        :side-offset="12"
+        class="glass glass-strong z-[900] min-w-52 rounded-xl p-1"
       >
         <DropdownMenuLabel class="px-2 py-1.5">
           <p class="text-sm font-medium">{{ account?.name }}</p>

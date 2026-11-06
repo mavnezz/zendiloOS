@@ -74,6 +74,9 @@ pub enum DockerError {
     /// The agent's checks refused, with its reason.
     #[error("refused: {0}")]
     Refused(String),
+    /// A program on the host failed, in its words (apt's last lines).
+    #[error("{0}")]
+    Failed(String),
     #[error(transparent)]
     Port(#[from] PortError),
 }
@@ -82,6 +85,10 @@ pub enum DockerError {
 #[async_trait]
 pub trait DockerHost: Send + Sync {
     async fn state(&self, context: &RequestContext) -> Result<DockerHostState, PortError>;
+
+    /// Installs Docker from Debian (`docker.io`, `docker-compose`) and
+    /// returns once apt is done; it may take minutes.
+    async fn install(&self, context: &RequestContext) -> Result<(), DockerError>;
 
     /// Puts Docker's data on the volume; Docker restarts.
     async fn enable(&self, volume: &AppVolume, context: &RequestContext) -> Result<(), DockerError>;
@@ -123,6 +130,8 @@ pub enum AppHostError {
 pub struct HostShare {
     pub volume: u16,
     pub name: String,
+    /// The folder in it the app gets; empty for the whole share.
+    pub folder: String,
 }
 
 /// The values for the agent: shares with where they are.

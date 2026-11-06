@@ -58,6 +58,8 @@
               sqlx-cli
               sqlite
               cargo-deny
+              # Signing releases (just release-key, just sign-release)
+              minisign
               # Test VM (scripts/vm.sh, scripts/vm-storage-test.sh)
               qemu_kvm
               xorriso

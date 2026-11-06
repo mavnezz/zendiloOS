@@ -10,9 +10,10 @@ use tempfile::TempDir;
 use zendiloos_agent::config::Tools;
 use zendiloos_agent::{AccountFiles, Erasable, ErasePolicy, HostPaths, Operations, Paths};
 use zendiloos_agent_proto::{
-    AppName, DiskId, ErrorCode, GroupName, Layout, Network, NfsClient, NfsExport, PoolName, Principal,
-    Request, Response, Role, ShareAccess, ShareCompression, ShareName, ShareRecordSize, SmbShare,
-    SnapshotFrequency, SnapshotLabel, SnapshotNote, VolumeNumber,
+    AppName, DiskId, ErrorCode, FileServices, GroupName, Layout, Network, NfsClient, NfsExport, PoolName,
+    Principal, Request, Response, Role, ShareAccess, ShareCompression, ShareName, SharePermission,
+    ShareRecordSize, SmbProtocol, SmbShare, SnapshotFrequency, SnapshotLabel, SnapshotNote, VolumeNumber,
+    Workgroup,
 };
 
 /// 8 GiB in 512-byte sectors.
@@ -145,7 +146,11 @@ fn host(erasable: Erasable) -> Host {
         exportfs: script("exportfs", ""),
         setfacl: script("setfacl", ""),
         busctl: script("busctl", ""),
+        timedatectl: script("timedatectl", ""),
+        sshd: script("sshd", ""),
+        systemd_run: script("systemd-run", ""),
         docker: script("docker", ""),
+        dockerd: script("dockerd", ""),
         useradd: script("useradd", ""),
         groupadd: script("groupadd", ""),
         userdel: script("userdel", ""),
@@ -154,6 +159,9 @@ fn host(erasable: Erasable) -> Host {
     };
     let paths = Paths {
         network: Default::default(),
+        time: Default::default(),
+        ssh: Default::default(),
+        web: Default::default(),
         accounts: AccountFiles {
             passwd: root.join("passwd"),
             group: root.join("group"),
@@ -173,6 +181,11 @@ fn host(erasable: Erasable) -> Host {
             docker_config: root.join("etc-docker/daemon.json"),
             apps: root.join("etc-apps"),
             localtime: root.join("localtime"),
+            app_shares: root.join("app-shares"),
+            agent: root.join("zendiloos-agent"),
+            packages: root.join("packages"),
+            update_spool: root.join("updates"),
+            release_keys: vec![root.join("release-signing.pub")],
         },
     };
     let operations = Operations::with_paths(Role::System, &tools, erasable, paths).unwrap();
@@ -399,10 +412,11 @@ async fn writes_samba_and_nfs_configuration_after_checking_it() {
         volume: VolumeNumber::new(1).unwrap(),
         access: vec![ShareAccess {
             principal: Principal::Group(GroupName::parse("family").unwrap()),
-            write: true,
+            permission: SharePermission::ReadWrite,
         }],
         recycle_bin: false,
         comment: None,
+        time_machine: None,
     }];
     let nfs = vec![NfsExport {
         name: share("photos"),
@@ -410,7 +424,8 @@ async fn writes_samba_and_nfs_configuration_after_checking_it() {
         clients: vec![NfsClient { network: Network::parse("192.168.1.0/24").unwrap(), write: false }],
     }];
 
-    assert_eq!(host.run(Request::ApplySharing { smb, nfs }).await, Response::Done);
+    let request = Request::ApplySharing { smb, nfs, services: services(true), homes: None };
+    assert_eq!(host.run(request.clone()).await, Response::Done);
 
     let samba = fs::read_to_string(host.path("samba/zendiloos.conf")).unwrap();
     assert!(samba.contains("[photos]\n   path = /volume1/photos\n   valid users = @family\n"), "{samba}");
@@ -420,8 +435,59 @@ async fn writes_samba_and_nfs_configuration_after_checking_it() {
         host.calls(),
         [
             "testparm --suppress-prompt /samba/zendiloos.check",
-            "systemctl try-reload-or-restart smbd.service",
+            "systemctl enable --now smbd.service",
+            // The first announcement over Bonjour: smbd makes it as it starts.
+            "systemctl try-restart smbd.service",
+            "systemctl enable --now wsdd2.service",
+            "systemctl enable --now avahi-daemon.socket avahi-daemon.service",
+            "systemctl enable --now nfs-server.service",
             "systemctl reload-or-restart nfs-server.service",
+        ]
+    );
+    let first = host.calls().len();
+    assert_eq!(host.run(request).await, Response::Done);
+    assert!(
+        host.calls()[first..].contains(&"systemctl try-reload-or-restart smbd.service".to_owned()),
+        "the same announcements again: only a reload, open connections stay"
+    );
+}
+
+fn services(on: bool) -> FileServices {
+    FileServices {
+        smb: on,
+        nfs: on,
+        workgroup: Workgroup::parse("WORKGROUP").unwrap(),
+        smb_min_protocol: SmbProtocol::Smb2_1,
+        bonjour: on,
+        ..base_services()
+    }
+}
+
+#[tokio::test]
+async fn servers_that_are_off_stop_and_stay_off_with_their_configuration_kept() {
+    let host = host(Erasable::Policy(ErasePolicy::Unused));
+    let nfs = vec![NfsExport {
+        name: share("photos"),
+        volume: VolumeNumber::new(1).unwrap(),
+        clients: vec![NfsClient { network: Network::parse("192.168.1.0/24").unwrap(), write: false }],
+    }];
+
+    let request = Request::ApplySharing { smb: vec![], nfs, services: services(false), homes: None };
+    assert_eq!(host.run(request).await, Response::Done);
+
+    let samba = fs::read_to_string(host.path("samba/zendiloos.conf")).unwrap();
+    assert!(samba.contains("workgroup = WORKGROUP\nserver min protocol = SMB2_10\n"), "{samba}");
+    assert!(
+        fs::read_to_string(host.path("exports.d/zendiloos.exports")).unwrap().contains("/volume1/photos")
+    );
+    assert_eq!(
+        host.calls(),
+        [
+            "testparm --suppress-prompt /samba/zendiloos.check",
+            "systemctl disable --now smbd.service",
+            "systemctl disable --now wsdd2.service",
+            "systemctl disable --now avahi-daemon.service avahi-daemon.socket",
+            "systemctl disable --now nfs-server.service",
         ]
     );
 }
@@ -559,6 +625,23 @@ async fn docker_moves_onto_a_pool_zendiloos_made() {
 }
 
 #[tokio::test]
+async fn dockers_data_moves_only_between_pools_zendiloos_made() {
+    let host = host(Erasable::Policy(ErasePolicy::Unused));
+    fs::create_dir_all(host.path("etc-docker")).unwrap();
+    fs::write(host.path("etc-docker/daemon.json"), r#"{"data-root": "/volume1/@docker"}"#).unwrap();
+    let move_to = |to: &str, volume: u16| Request::MoveDocker {
+        from_pool: PoolName::parse("tank").unwrap(),
+        from_volume: VolumeNumber::new(1).unwrap(),
+        to_pool: PoolName::parse(to).unwrap(),
+        to_volume: VolumeNumber::new(volume).unwrap(),
+    };
+
+    assert_refused(host.run(move_to("tank", 1)).await, ErrorCode::Forbidden, "already");
+    assert_refused(host.run(move_to("foreign", 2)).await, ErrorCode::Forbidden, "not managed");
+    assert!(!host.calls().iter().any(|call| call.contains("stop docker")), "Docker kept running");
+}
+
+#[tokio::test]
 async fn an_app_gets_a_dataset_and_an_account_of_its_own() {
     let host = host(Erasable::Policy(ErasePolicy::Unused));
     let prepare = |app: &str| Request::PrepareApp {
@@ -604,4 +687,27 @@ async fn an_app_gets_a_dataset_and_an_account_of_its_own() {
     )
     .unwrap();
     assert_refused(host.run(prepare("paperless")).await, ErrorCode::Conflict, "taken");
+}
+
+/// SMB on, NFS off, everything else as a fresh install has it.
+fn base_services() -> FileServices {
+    FileServices {
+        smb: true,
+        nfs: false,
+        workgroup: Workgroup::parse("WORKGROUP").unwrap(),
+        smb_min_protocol: SmbProtocol::Smb2_1,
+        smb_encryption: zendiloos_agent_proto::SmbEncryption::Default,
+        smb_signing: zendiloos_agent_proto::SmbSigning::Default,
+        hide_unreadable: true,
+        multichannel: true,
+        oplocks: true,
+        leases: true,
+        durable_handles: false,
+        mac_compat: true,
+        follow_symlinks: true,
+        veto_files: None,
+        delete_veto_files: false,
+        wsdd: true,
+        bonjour: true,
+    }
 }

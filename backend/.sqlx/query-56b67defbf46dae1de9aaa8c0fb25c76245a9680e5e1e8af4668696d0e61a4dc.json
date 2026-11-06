@@ -1,0 +1,98 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT name, share_id, folder, directory, file, created_at, created_by FROM docker_projects ORDER BY name",
+  "describe": {
+    "columns": [
+      {
+        "name": "name",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "docker_projects",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "share_id",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "docker_projects",
+            "name": "share_id"
+          }
+        }
+      },
+      {
+        "name": "folder",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "docker_projects",
+            "name": "folder"
+          }
+        }
+      },
+      {
+        "name": "directory",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "docker_projects",
+            "name": "directory"
+          }
+        }
+      },
+      {
+        "name": "file",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "docker_projects",
+            "name": "file"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "docker_projects",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "name": "created_by",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "docker_projects",
+            "name": "created_by"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "56b67defbf46dae1de9aaa8c0fb25c76245a9680e5e1e8af4668696d0e61a4dc"
+}

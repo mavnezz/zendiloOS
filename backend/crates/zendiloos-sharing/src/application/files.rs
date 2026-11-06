@@ -13,8 +13,8 @@ use zendiloos_kernel::{Actor, PortError, RequestContext};
 use super::SharingPorts;
 use super::ports::FileHostError;
 use crate::domain::{
-    self, Access, Favourite, FileLocation, FilePath, InvalidFilePath, Listing, MAX_FAVOURITES, Share,
-    ShareId, ShareName, Subject, is_new_file_name,
+    self, Access, Favourite, FileLocation, FilePath, FileRoot, HOME_SHARE, InvalidFilePath, Listing,
+    MAX_FAVOURITES, Share, ShareId, ShareName, is_new_file_name,
 };
 
 /// Most entries one copy, move or delete takes.
@@ -73,31 +73,67 @@ pub struct UsableShare {
     pub access: Access,
 }
 
-/// The broadest access the rules give `account`, directly or by a group.
+/// What the rules give `account`, directly or by a group.
 fn access_of(share: &Share, account: i64, groups: &[i64]) -> Option<Access> {
-    share
-        .access
-        .iter()
-        .filter(|rule| match rule.subject {
-            Subject::Account(id) => id == account,
-            Subject::Group(id) => groups.contains(&id),
-        })
-        .map(|rule| rule.access)
-        .max_by_key(|access| *access == Access::ReadWrite)
+    domain::effective(&share.access, account, groups)
 }
 
-fn at(share: &Share, path: FilePath) -> FileLocation {
-    FileLocation { volume: share.volume, share: share.name.clone(), path, snapshot: None }
+/// Where file operations happen: a share, or the user's own personal
+/// folder on the volume where those are.
+#[derive(Debug, Clone)]
+enum Place {
+    Share(Share),
+    Home { volume: u16 },
 }
 
-/// `path` in the share, or in its snapshot `label`.
-fn at_snapshot(share: &Share, path: FilePath, label: Option<&str>) -> Result<FileLocation, FilesError> {
-    let snapshot = match label {
-        Some(label) if domain::is_label(label) => Some(label.to_owned()),
-        Some(_) => return Err(FilesError::Invalid("not a snapshot of this share".into())),
-        None => None,
+impl Place {
+    fn id(&self) -> ShareId {
+        match self {
+            Place::Share(share) => share.id,
+            Place::Home { .. } => HOME_SHARE,
+        }
+    }
+
+    /// Its name for people: the share's, or `home`.
+    fn name(&self) -> &str {
+        match self {
+            Place::Share(share) => share.name.as_str(),
+            Place::Home { .. } => "home",
+        }
+    }
+}
+
+/// A place the user may use, and how.
+struct Usable {
+    place: Place,
+    access: Access,
+}
+
+fn at(place: &Place, path: FilePath) -> FileLocation {
+    match place {
+        Place::Share(share) => FileLocation {
+            volume: share.volume,
+            root: FileRoot::Share(share.name.clone()),
+            path,
+            snapshot: None,
+        },
+        Place::Home { volume } => {
+            FileLocation { volume: *volume, root: FileRoot::Home, path, snapshot: None }
+        }
+    }
+}
+
+/// `path` in the place, or in a share's snapshot `label`.
+fn at_snapshot(place: &Place, path: FilePath, label: Option<&str>) -> Result<FileLocation, FilesError> {
+    let snapshot = match (label, place) {
+        (None, _) => None,
+        (Some(_), Place::Home { .. }) => {
+            return Err(FilesError::Invalid("personal folders have no snapshots".into()));
+        }
+        (Some(label), Place::Share(_)) if domain::is_label(label) => Some(label.to_owned()),
+        (Some(_), Place::Share(_)) => return Err(FilesError::Invalid("not a snapshot of this share".into())),
     };
-    Ok(FileLocation { snapshot, ..at(share, path) })
+    Ok(FileLocation { snapshot, ..at(place, path) })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,20 +181,31 @@ impl FilesUseCases {
             .collect())
     }
 
-    async fn share(&self, actor: &Actor, id: ShareId) -> Result<UsableShare, FilesError> {
+    /// The volume of the user's personal folder, if they have one.
+    pub async fn home(&self, actor: &Actor) -> Result<Option<u16>, FilesError> {
+        let Some(location) = self.ports.shares.homes_location().await? else { return Ok(None) };
+        let homes = self.ports.shares.homes().await?;
+        Ok(homes.iter().any(|home| home.account == actor.account_id).then_some(location.volume))
+    }
+
+    async fn share(&self, actor: &Actor, id: ShareId) -> Result<Usable, FilesError> {
+        if id == HOME_SHARE {
+            let volume = self.home(actor).await?.ok_or(FilesError::ShareNotFound)?;
+            return Ok(Usable { place: Place::Home { volume }, access: Access::ReadWrite });
+        }
         let share = self.ports.shares.find(id).await?.ok_or(FilesError::ShareNotFound)?;
         let groups = self.ports.directory.memberships(actor.account_id).await?;
         let access = access_of(&share, actor.account_id, &groups).ok_or(FilesError::ShareNotFound)?;
-        Ok(UsableShare { share, access })
+        Ok(Usable { place: Place::Share(share), access })
     }
 
-    /// The share, if the user may change things in it.
-    async fn writable_share(&self, actor: &Actor, id: ShareId) -> Result<Share, FilesError> {
+    /// The place, if the user may change things in it.
+    async fn writable_share(&self, actor: &Actor, id: ShareId) -> Result<Place, FilesError> {
         let usable = self.share(actor, id).await?;
         if usable.access != Access::ReadWrite {
             return Err(FilesError::Denied);
         }
-        Ok(usable.share)
+        Ok(usable.place)
     }
 
     /// A folder of the share, or of its snapshot `snapshot`.
@@ -170,7 +217,7 @@ impl FilesUseCases {
         snapshot: Option<&str>,
         context: &RequestContext,
     ) -> Result<Listing, FilesError> {
-        let share = self.share(actor, id).await?.share;
+        let share = self.share(actor, id).await?.place;
         Ok(self.ports.files.list(&actor.name, &at_snapshot(&share, path, snapshot)?, context).await?)
     }
 
@@ -183,7 +230,7 @@ impl FilesUseCases {
         snapshot: Option<&str>,
         context: &RequestContext,
     ) -> Result<(tokio::fs::File, u64), FilesError> {
-        let share = self.share(actor, id).await?.share;
+        let share = self.share(actor, id).await?.place;
         Ok(self.ports.files.open(&actor.name, &at_snapshot(&share, path, snapshot)?, context).await?)
     }
 
@@ -194,7 +241,7 @@ impl FilesUseCases {
         id: ShareId,
         context: &RequestContext,
     ) -> Result<Vec<domain::Snapshot>, FilesError> {
-        let share = self.share(actor, id).await?.share;
+        let Place::Share(share) = self.share(actor, id).await?.place else { return Ok(Vec::new()) };
         let mut mine: Vec<domain::Snapshot> = self
             .ports
             .host
@@ -237,7 +284,7 @@ impl FilesUseCases {
             .jobs
             .start(
                 "files.restore_snapshot",
-                Some(share.name.to_string()),
+                Some(share.name().to_owned()),
                 Some(actor),
                 move |progress| async move {
                     let total = copies.len();
@@ -306,8 +353,8 @@ impl FilesUseCases {
         snapshot: Option<&str>,
         context: &RequestContext,
     ) -> Result<(tokio::fs::File, u64, String), FilesError> {
-        let share = self.share(actor, id).await?.share;
-        let name = path.name().unwrap_or(share.name.as_str()).to_owned();
+        let share = self.share(actor, id).await?.place;
+        let name = path.name().unwrap_or(share.name()).to_owned();
         let location = at_snapshot(&share, path, snapshot)?;
         let (file, size) = self.ports.files.archive(&actor.name, &location, context).await?;
         Ok((file, size, name))
@@ -347,7 +394,7 @@ impl FilesUseCases {
         match files.move_entry(&actor.name, &ticket.temporary, &ticket.target, ticket.replace, context).await
         {
             Ok(()) => {
-                tracing::info!(user = actor.name, share = ticket.target.share.as_str(), "files: uploaded");
+                tracing::info!(user = actor.name, share = %ticket.target.root, "files: uploaded");
                 Ok(ticket.target.path)
             }
             Err(error) => {
@@ -359,7 +406,7 @@ impl FilesUseCases {
 
     pub async fn abort_upload(&self, actor: &Actor, ticket: UploadTicket, context: &RequestContext) {
         if let Err(error) = self.ports.files.remove(&actor.name, &ticket.temporary, false, context).await {
-            tracing::warn!(%error, share = ticket.temporary.share.as_str(), "cannot remove an aborted upload");
+            tracing::warn!(%error, share = %ticket.temporary.root, "cannot remove an aborted upload");
         }
     }
 
@@ -414,13 +461,13 @@ impl FilesUseCases {
             return Err(FilesError::Invalid(format!("between 1 and {MAX_TRANSFER_ENTRIES} entries")));
         }
         let source = match mode {
-            Transfer::Copy => self.share(actor, id).await?.share,
+            Transfer::Copy => self.share(actor, id).await?.place,
             Transfer::Move => self.writable_share(actor, id).await?,
         };
         let destination = self.writable_share(actor, target).await?;
         let mut moves = Vec::with_capacity(paths.len());
         for path in paths {
-            if source.id == destination.id && directory.starts_with(&path) {
+            if source.id() == destination.id() && directory.starts_with(&path) {
                 return Err(FilesError::Invalid("a folder cannot go into itself".into()));
             }
             let name = path.name().unwrap_or_default().to_owned();
@@ -436,7 +483,7 @@ impl FilesUseCases {
         let job = self
             .ports
             .jobs
-            .start(kind, Some(destination.name.to_string()), Some(actor), move |progress| async move {
+            .start(kind, Some(destination.name().to_owned()), Some(actor), move |progress| async move {
                 let total = moves.len();
                 for (done, (from, to)) in moves.iter().enumerate() {
                     #[allow(clippy::cast_precision_loss)]
@@ -489,14 +536,18 @@ impl FilesUseCases {
             return Err(FilesError::Invalid(format!("between 1 and {MAX_TRANSFER_ENTRIES} entries")));
         }
         let share = self.writable_share(actor, id).await?;
-        let recycle = share.recycle_bin;
+        // Personal folders always have a bin, as over SMB.
+        let recycle = match &share {
+            Place::Share(share) => share.recycle_bin,
+            Place::Home { .. } => true,
+        };
         let locations: Vec<FileLocation> = paths.into_iter().map(|path| at(&share, path)).collect();
         let files = Arc::clone(&self.ports.files);
         let (user, context) = (actor.name.clone(), context.clone());
         let job = self
             .ports
             .jobs
-            .start("files.delete", Some(share.name.to_string()), Some(actor), move |progress| async move {
+            .start("files.delete", Some(share.name().to_owned()), Some(actor), move |progress| async move {
                 let total = locations.len();
                 for (done, location) in locations.iter().enumerate() {
                     #[allow(clippy::cast_precision_loss)]

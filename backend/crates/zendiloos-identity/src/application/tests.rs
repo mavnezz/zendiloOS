@@ -9,7 +9,8 @@ use super::commands::{
 };
 use zendiloos_kernel::Outcome;
 
-use crate::domain::{AuditAction, Role};
+use crate::application::ports::SecurityRepository;
+use crate::domain::{AddressRange, AuditAction, FailureLimit, Role, SecuritySettings};
 use crate::testing::{FakeHasher, SETUP_CODE, TestIdentity};
 
 const PASSWORD: &str = "correct horse battery";
@@ -97,6 +98,9 @@ async fn setup_without_an_issued_code_is_refused() {
 #[tokio::test]
 async fn setup_guessing_is_throttled_per_address() {
     let t = TestIdentity::new();
+    // Not blocked: the fixed limit of attempts per address applies.
+    let settings = SecuritySettings { auto_block: None, ..SecuritySettings::default() };
+    t.security.save_settings(&settings).await.unwrap();
     t.use_cases.prepare_setup.execute().await.unwrap();
     for _ in 0..20 {
         let _ = t
@@ -298,6 +302,66 @@ async fn purge_removes_ended_sessions() {
 // Password change
 
 #[tokio::test]
+async fn a_locked_password_is_only_set_by_administrators_and_never_expires() {
+    let t = TestIdentity::new();
+    let admin = signed_in(&t, "alice", Role::Admin).await;
+    let input = NewAccountInput { password_locked: true, ..new_account("kiosk", Role::User) };
+    let kiosk = t.use_cases.create_account.execute(&admin, input, &from(1)).await.unwrap();
+    assert!(kiosk.password_locked && !kiosk.password_change_required, "nobody could follow the request");
+
+    let policy = crate::domain::PasswordPolicy { max_age_days: Some(30), ..Default::default() };
+    t.use_cases.set_password_policy.execute(&admin, policy, &from(1)).await.unwrap();
+    t.clock.advance(std::time::Duration::from_secs(31 * 86_400));
+    let signed_in =
+        t.use_cases.login.execute(login_input("kiosk", "initial password"), &from(2)).await.unwrap();
+    assert!(!t.accounts.all().iter().find(|a| a.id == kiosk.id).unwrap().password_change_required);
+
+    let change = ChangePasswordInput {
+        current_password: Secret::new("initial password"),
+        new_password: Secret::new("a much better passphrase"),
+    };
+    let refused = t.use_cases.change_password.execute(&signed_in.session, change, &from(2)).await;
+    assert!(matches!(refused, Err(IdentityError::PasswordLocked)), "{refused:?}");
+}
+
+#[tokio::test]
+async fn an_old_password_must_be_changed_at_the_next_login() {
+    let t = TestIdentity::new();
+    let admin = signed_in(&t, "alice", Role::Admin).await;
+    let bob = t.add_account("bob", PASSWORD, Role::User);
+    let policy = crate::domain::PasswordPolicy { max_age_days: Some(90), ..Default::default() };
+    t.use_cases.set_password_policy.execute(&admin, policy, &from(1)).await.unwrap();
+
+    t.clock.advance(std::time::Duration::from_secs(89 * 86_400));
+    t.use_cases.login.execute(login_input("bob", PASSWORD), &from(2)).await.unwrap();
+    assert!(!t.accounts.all().iter().find(|a| a.id == bob.id).unwrap().password_change_required);
+    t.clock.advance(std::time::Duration::from_secs(2 * 86_400));
+    t.use_cases.login.execute(login_input("bob", PASSWORD), &from(2)).await.unwrap();
+    assert!(t.accounts.all().iter().find(|a| a.id == bob.id).unwrap().password_change_required);
+}
+
+#[tokio::test]
+async fn only_administrators_set_the_password_policy_and_it_applies_to_new_passwords() {
+    let t = TestIdentity::new();
+    let admin = signed_in(&t, "alice", Role::Admin).await;
+    let bob = signed_in(&t, "bob", Role::User).await;
+    let strict = crate::domain::PasswordPolicy { min_length: 16, digit: true, ..Default::default() };
+
+    let refused = t.use_cases.set_password_policy.execute(&bob, strict, &from(1)).await;
+    assert!(matches!(refused, Err(IdentityError::Forbidden)), "{refused:?}");
+    let too_lax = crate::domain::PasswordPolicy { min_length: 8, ..Default::default() };
+    let refused = t.use_cases.set_password_policy.execute(&admin, too_lax, &from(1)).await;
+    assert!(matches!(refused, Err(IdentityError::InvalidPolicy(_))), "{refused:?}");
+    t.use_cases.set_password_policy.execute(&admin, strict, &from(1)).await.unwrap();
+    assert_eq!(t.use_cases.password_policy.execute(&bob).await.unwrap(), strict);
+
+    let input =
+        NewAccountInput { password: Secret::new("sixteen characters"), ..new_account("carol", Role::User) };
+    let rejected = t.use_cases.create_account.execute(&admin, input, &from(1)).await;
+    assert!(matches!(rejected, Err(IdentityError::PasswordRejected(_))), "no digit: {rejected:?}");
+}
+
+#[tokio::test]
 async fn changing_the_password_ends_all_other_sessions() {
     let t = TestIdentity::new();
     let alice = t.add_account("alice", PASSWORD, Role::User);
@@ -351,8 +415,11 @@ fn new_account(name: &str, role: Role) -> NewAccountInput {
     NewAccountInput {
         name: name.to_owned(),
         full_name: Some(" Bob Builder ".to_owned()),
+        description: None,
+        email: None,
         role,
         password: Secret::new("initial password"),
+        password_locked: false,
     }
 }
 
@@ -388,6 +455,26 @@ async fn changing_the_password_also_changes_it_for_smb() {
     };
     t.use_cases.change_password.execute(&alice, input, &from(1)).await.unwrap();
     assert_eq!(t.system.calls(), ["set_password alice"]);
+}
+
+#[tokio::test]
+async fn accounts_keep_a_description_and_an_email_address() {
+    let t = TestIdentity::new();
+    let admin = signed_in(&t, "alice", Role::Admin).await;
+    let input = NewAccountInput {
+        description: Some(" Laptop in the kitchen ".into()),
+        email: Some("bob@example.org".into()),
+        ..new_account("bob", Role::User)
+    };
+    let bob = t.use_cases.create_account.execute(&admin, input, &from(1)).await.unwrap();
+    assert_eq!(bob.description.as_deref(), Some("Laptop in the kitchen"));
+
+    let changes = AccountChanges { email: Some(Some("not an address".into())), ..Default::default() };
+    let refused = t.use_cases.update_account.execute(&admin, bob.id, changes, &from(1)).await;
+    assert!(matches!(refused, Err(IdentityError::InvalidEmail(_))), "{refused:?}");
+    let changes = AccountChanges { description: Some(None), email: Some(None), ..Default::default() };
+    let bob = t.use_cases.update_account.execute(&admin, bob.id, changes, &from(1)).await.unwrap();
+    assert_eq!((bob.description, bob.email), (None, None));
 }
 
 #[tokio::test]
@@ -569,6 +656,31 @@ async fn groups_are_linux_groups_with_the_same_members() {
 }
 
 #[tokio::test]
+async fn others_hear_of_new_members_and_of_a_group_before_it_goes() {
+    let t = TestIdentity::new();
+    let admin = signed_in(&t, "alice", Role::Admin).await;
+    let bob = t.add_account("bob", PASSWORD, Role::User);
+    let input = NewGroupInput { name: "kids".into(), description: None, members: vec![bob.id] };
+    let kids = t.use_cases.create_group.execute(&admin, input, &from(1)).await.unwrap();
+
+    let same = GroupChanges { members: Some(vec![bob.id]), description: None };
+    t.use_cases.update_group.execute(&admin, kids.id, same, &from(1)).await.unwrap();
+    let more = GroupChanges { members: Some(vec![bob.id, admin.account.id]), description: None };
+    t.use_cases.update_group.execute(&admin, kids.id, more, &from(1)).await.unwrap();
+
+    t.group_observer.refuse.store(true, std::sync::atomic::Ordering::Relaxed);
+    let refused = t.use_cases.delete_group.execute(&admin, kids.id, &from(1)).await;
+    assert!(refused.is_err(), "the group stays while shares cannot let go of it");
+    assert_eq!(t.groups.all().len(), 1);
+    t.group_observer.refuse.store(false, std::sync::atomic::Ordering::Relaxed);
+    t.use_cases.delete_group.execute(&admin, kids.id, &from(1)).await.unwrap();
+
+    let id = kids.id.get();
+    let events = t.group_observer.events.lock().unwrap().clone();
+    assert_eq!(events, [format!("members {id} [{}]", bob.id.get()), format!("deleting {id}")]);
+}
+
+#[tokio::test]
 async fn groups_need_free_names_and_existing_members() {
     let t = TestIdentity::new();
     let admin = signed_in(&t, "alice", Role::Admin).await;
@@ -594,9 +706,145 @@ async fn each_account_keeps_its_own_preferences() {
     let bob = signed_in(&t, "bob", Role::User).await;
     assert_eq!(t.use_cases.preferences.execute(&alice).await.unwrap(), Preferences::default());
 
-    let chosen = Preferences { language: Some(Language::German), theme: Some(Theme::Dark) };
-    t.use_cases.save_preferences.execute(&alice, chosen).await.unwrap();
+    let chosen =
+        Preferences { language: Some(Language::German), theme: Some(Theme::Dark), ..Preferences::default() };
+    t.use_cases.save_preferences.execute(&alice, chosen.clone()).await.unwrap();
 
     assert_eq!(t.use_cases.preferences.execute(&alice).await.unwrap(), chosen);
     assert_eq!(t.use_cases.preferences.execute(&bob).await.unwrap(), Preferences::default());
+}
+
+// Security: idle time, account lock, blocked addresses, sessions
+
+#[tokio::test]
+async fn an_address_that_fails_too_often_is_blocked_for_a_day() {
+    let t = TestIdentity::new();
+    t.add_account("alice", PASSWORD, Role::User);
+    for _ in 0..10 {
+        let _ = t.use_cases.login.execute(login_input("nobody", PASSWORD), &from(1)).await;
+    }
+
+    let blocked = t.use_cases.login.execute(login_input("alice", PASSWORD), &from(1)).await;
+
+    assert!(matches!(blocked, Err(IdentityError::AddressBlocked)), "{blocked:?}");
+    assert!(t.use_cases.check_address.is_blocked(from(1).client_ip).await.unwrap());
+    assert!(t.use_cases.login.execute(login_input("alice", PASSWORD), &from(2)).await.is_ok());
+    let entry = t.audit.entries().into_iter().find(|e| e.action == "identity.address_block").unwrap();
+    assert_eq!((entry.target.as_deref(), entry.reason), (Some("192.0.2.1"), Some("automatic")));
+    t.clock.advance(Duration::from_secs(86_400));
+    assert!(!t.use_cases.check_address.is_blocked(from(1).client_ip).await.unwrap(), "lifted after a day");
+    t.use_cases.purge_expired_sessions.execute().await.unwrap();
+    assert!(t.security.blocked().is_empty(), "and removed");
+}
+
+#[tokio::test]
+async fn allowed_addresses_are_never_blocked() {
+    let t = TestIdentity::new();
+    let admin = signed_in(&t, "admin", Role::Admin).await;
+    let settings = SecuritySettings {
+        allowed: vec![AddressRange::parse("192.0.2.0/28").unwrap()],
+        ..SecuritySettings::default()
+    };
+    t.use_cases.set_security.execute(&admin, settings, &from(9)).await.unwrap();
+    for _ in 0..12 {
+        let _ = t.use_cases.login.execute(login_input("nobody", PASSWORD), &from(1)).await;
+    }
+
+    assert!(!t.use_cases.check_address.is_blocked(from(1).client_ip).await.unwrap());
+    assert!(t.security.blocked().is_empty());
+}
+
+#[tokio::test]
+async fn accounts_lock_as_set_or_not_at_all() {
+    let t = TestIdentity::new();
+    let admin = signed_in(&t, "admin", Role::Admin).await;
+    t.add_account("alice", PASSWORD, Role::User);
+    let set =
+        |account_lock| SecuritySettings { account_lock, auto_block: None, ..SecuritySettings::default() };
+    let three = Some(FailureLimit { failures: 3, window_minutes: 1 });
+    t.use_cases.set_security.execute(&admin, set(three), &from(9)).await.unwrap();
+    for address in 1..=3 {
+        let _ = t.use_cases.login.execute(login_input("alice", "wrong password"), &from(address)).await;
+    }
+
+    let locked = t.use_cases.login.execute(login_input("alice", PASSWORD), &from(4)).await;
+
+    assert!(matches!(locked, Err(IdentityError::TooManyAttempts { .. })), "{locked:?}");
+    t.clock.advance(Duration::from_secs(60));
+    assert!(t.use_cases.login.execute(login_input("alice", PASSWORD), &from(4)).await.is_ok());
+
+    t.use_cases.set_security.execute(&admin, set(None), &from(9)).await.unwrap();
+    for address in 1..=6 {
+        let _ = t.use_cases.login.execute(login_input("alice", "wrong password"), &from(address)).await;
+    }
+    assert!(t.use_cases.login.execute(login_input("alice", PASSWORD), &from(7)).await.is_ok(), "never locks");
+}
+
+#[tokio::test]
+async fn sessions_end_after_the_idle_time_set() {
+    let t = TestIdentity::new();
+    let admin = signed_in(&t, "admin", Role::Admin).await;
+    let settings = SecuritySettings { idle_minutes: 5, ..SecuritySettings::default() };
+    let stored = t.use_cases.set_security.execute(&admin, settings, &from(9)).await.unwrap();
+    assert_eq!(stored.idle_minutes, 5);
+    t.add_account("alice", PASSWORD, Role::User);
+    let signed_in = t.use_cases.login.execute(login_input("alice", PASSWORD), &from(1)).await.unwrap();
+
+    t.clock.advance(Duration::from_secs(5 * 60));
+
+    let ended = t.use_cases.authenticate.execute(&signed_in.token).await;
+    assert!(matches!(ended, Err(IdentityError::Unauthenticated)), "{ended:?}");
+    let bad = SecuritySettings { idle_minutes: 1, ..SecuritySettings::default() };
+    let refused = t.use_cases.set_security.execute(&admin, bad, &from(9)).await;
+    assert!(matches!(refused, Err(IdentityError::InvalidSecurity(_))), "{refused:?}");
+}
+
+#[tokio::test]
+async fn admins_block_and_lift_by_hand_but_never_their_own_address() {
+    let t = TestIdentity::new();
+    let admin = signed_in(&t, "admin", Role::Admin).await;
+    let user = signed_in(&t, "bob", Role::User).await;
+    let me = from(9);
+    let block = |range: &'static str| t.use_cases.block_address.execute(&admin, range, &me);
+
+    assert!(matches!(block("192.0.2.0/24").await, Err(IdentityError::OwnAddress)));
+    assert!(matches!(block("localhost").await, Err(IdentityError::InvalidAddressRange(_))));
+    assert!(matches!(block("127.0.0.1").await, Err(IdentityError::AddressAllowed)));
+    let blocked = block("198.51.100.7/24").await.unwrap();
+    assert_eq!(
+        (blocked.range.to_string(), blocked.until, blocked.automatic),
+        ("198.51.100.0/24".into(), None, false)
+    );
+    let list = t.use_cases.blocked_addresses.execute(&admin).await.unwrap();
+    assert_eq!(list.len(), 1);
+    assert!(t.use_cases.check_address.is_blocked(Some(IpAddr::from([198, 51, 100, 20]))).await.unwrap());
+    let forbidden = t.use_cases.block_address.execute(&user, "203.0.113.1", &from(9)).await;
+    assert!(matches!(forbidden, Err(IdentityError::Forbidden)), "{forbidden:?}");
+
+    t.use_cases.unblock_address.execute(&admin, "198.51.100.0/24", &from(9)).await.unwrap();
+    assert!(!t.use_cases.check_address.is_blocked(Some(IpAddr::from([198, 51, 100, 20]))).await.unwrap());
+    let again = t.use_cases.unblock_address.execute(&admin, "198.51.100.0/24", &from(9)).await;
+    assert!(matches!(again, Err(IdentityError::BlockNotFound)), "{again:?}");
+}
+
+#[tokio::test]
+async fn admins_see_every_session_and_end_one() {
+    let t = TestIdentity::new();
+    let admin = signed_in(&t, "admin", Role::Admin).await;
+    t.add_account("bob", PASSWORD, Role::User);
+    t.clock.advance(Duration::from_secs(5));
+    let bob = t.use_cases.login.execute(login_input("bob", PASSWORD), &from(3)).await.unwrap();
+
+    let sessions = t.use_cases.sessions.execute(&admin).await.unwrap();
+
+    let seen: Vec<_> = sessions.iter().map(|s| (s.account.as_str(), s.client_ip, s.current)).collect();
+    assert_eq!(seen, [("bob", from(3).client_ip, false), ("admin", from(9).client_ip, true)]);
+    t.use_cases.end_session.execute(&admin, bob.session.session_id, &from(9)).await.unwrap();
+    let ended = t.use_cases.authenticate.execute(&bob.token).await;
+    assert!(matches!(ended, Err(IdentityError::Unauthenticated)), "{ended:?}");
+    let entry = t.audit.entries().last().cloned().unwrap();
+    assert_eq!((entry.action, entry.target.as_deref()), ("identity.session_end", Some("bob")));
+    let bob_again = t.use_cases.login.execute(login_input("bob", PASSWORD), &from(3)).await.unwrap();
+    let forbidden = t.use_cases.sessions.execute(&bob_again.session).await;
+    assert!(matches!(forbidden, Err(IdentityError::Forbidden)), "{forbidden:?}");
 }

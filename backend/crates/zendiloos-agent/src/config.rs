@@ -65,8 +65,15 @@ pub struct Tools {
     pub gpasswd: PathBuf,
     pub smbpasswd: PathBuf,
     pub busctl: PathBuf,
+    pub timedatectl: PathBuf,
+    /// May be missing: then the SSH server is not installed.
+    pub sshd: PathBuf,
+    pub systemd_run: PathBuf,
     /// May be missing: then Docker is not installed.
     pub docker: PathBuf,
+    /// Docker's daemon, from the `docker.io` package; the client above
+    /// comes in a package of its own (`docker-cli`) and may stay without it.
+    pub dockerd: PathBuf,
 }
 
 impl Default for Tools {
@@ -90,7 +97,11 @@ impl Default for Tools {
             gpasswd: PathBuf::from("/usr/bin/gpasswd"),
             smbpasswd: PathBuf::from("/usr/bin/smbpasswd"),
             busctl: PathBuf::from("/usr/bin/busctl"),
+            timedatectl: PathBuf::from("/usr/bin/timedatectl"),
+            sshd: PathBuf::from("/usr/sbin/sshd"),
+            systemd_run: PathBuf::from("/usr/bin/systemd-run"),
             docker: PathBuf::from("/usr/bin/docker"),
+            dockerd: PathBuf::from("/usr/sbin/dockerd"),
         }
     }
 }

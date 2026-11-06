@@ -1,0 +1,145 @@
+//! In-memory adapters for tests.
+
+use std::sync::Mutex;
+
+use async_trait::async_trait;
+use zendiloos_kernel::{PortError, RequestContext, Timestamp};
+
+use crate::application::ports::{HostError, HostPackages, ReleaseSource, UpdateStore};
+use crate::domain::{
+    Asset, CheckResult, HostReport, PackageUpdate, Release, RunState, UpdateRun, UpdateSettings, channel_of,
+};
+
+/// A release as GitHub would list it.
+pub fn release(tag: &str, version: &str, prerelease: bool) -> Release {
+    let asset =
+        |name: &str| Asset { name: name.into(), address: format!("https://example.org/{name}"), size: 10 };
+    Release {
+        tag: tag.into(),
+        version: version.into(),
+        channel: channel_of(tag, prerelease),
+        published_at: None,
+        notes: format!("What is new in {version}"),
+        package: asset(&format!("zendiloos_{version}_amd64.deb")),
+        sums: asset("SHA256SUMS"),
+        signature: asset("SHA256SUMS.minisig"),
+    }
+}
+
+#[derive(Default)]
+pub struct FakeReleases {
+    pub releases: Mutex<Vec<Release>>,
+    pub downloaded: Mutex<Vec<String>>,
+}
+
+#[async_trait]
+impl ReleaseSource for FakeReleases {
+    async fn releases(&self) -> Result<Vec<Release>, String> {
+        Ok(self.releases.lock().unwrap().clone())
+    }
+
+    async fn download(&self, release: &Release) -> Result<(), String> {
+        self.downloaded.lock().unwrap().push(release.version.clone());
+        Ok(())
+    }
+}
+
+/// apt on a NAS with `packages` to upgrade; an update finishes at once.
+pub struct FakeHost {
+    pub packages: Mutex<Vec<PackageUpdate>>,
+    pub run: Mutex<Option<UpdateRun>>,
+    pub started: Mutex<Vec<Option<String>>>,
+}
+
+impl Default for FakeHost {
+    fn default() -> Self {
+        let package = |name: &str, security| PackageUpdate {
+            name: name.into(),
+            from: Some("1.0".into()),
+            to: "1.1".into(),
+            security,
+        };
+        Self {
+            packages: Mutex::new(vec![package("openssl", true), package("tzdata", false)]),
+            run: Mutex::default(),
+            started: Mutex::default(),
+        }
+    }
+}
+
+impl FakeHost {
+    fn report(&self) -> HostReport {
+        HostReport {
+            packages: self.packages.lock().unwrap().clone(),
+            running_kernel: "6.12.48+deb13-amd64".into(),
+            newest_kernel: Some("6.12.48+deb13-amd64".into()),
+            zfs_ready: true,
+        }
+    }
+}
+
+#[async_trait]
+impl HostPackages for FakeHost {
+    async fn check(&self, _: &RequestContext) -> Result<HostReport, HostError> {
+        Ok(self.report())
+    }
+
+    async fn start(&self, release: Option<&Release>, _: &RequestContext) -> Result<String, HostError> {
+        self.started.lock().unwrap().push(release.map(|release| release.version.clone()));
+        self.packages.lock().unwrap().clear();
+        let id = format!("run{}", self.started.lock().unwrap().len());
+        *self.run.lock().unwrap() = Some(UpdateRun {
+            id: id.clone(),
+            installs: true,
+            state: RunState::Succeeded,
+            step: "modules".into(),
+            started_at: Timestamp::from_unix_seconds(100),
+            finished_at: Some(Timestamp::from_unix_seconds(200)),
+            error: None,
+            zendiloos: release.map(|release| release.version.clone()),
+            report: Some(HostReport { newest_kernel: Some("6.12.57+deb13-amd64".into()), ..self.report() }),
+        });
+        Ok(id)
+    }
+
+    async fn latest(&self, _: &RequestContext) -> Result<Option<UpdateRun>, HostError> {
+        Ok(self.run.lock().unwrap().clone())
+    }
+}
+
+#[derive(Default)]
+pub struct MemoryStore {
+    pub settings: Mutex<UpdateSettings>,
+    pub check: Mutex<Option<CheckResult>>,
+    pub said: Mutex<std::collections::BTreeMap<String, String>>,
+}
+
+#[async_trait]
+impl UpdateStore for MemoryStore {
+    async fn settings(&self) -> Result<UpdateSettings, PortError> {
+        Ok(*self.settings.lock().unwrap())
+    }
+
+    async fn save_settings(&self, settings: &UpdateSettings) -> Result<(), PortError> {
+        *self.settings.lock().unwrap() = *settings;
+        Ok(())
+    }
+
+    async fn last_check(&self) -> Result<Option<CheckResult>, PortError> {
+        Ok(self.check.lock().unwrap().clone())
+    }
+
+    async fn save_check(&self, check: &CheckResult) -> Result<(), PortError> {
+        *self.check.lock().unwrap() = Some(check.clone());
+        Ok(())
+    }
+
+    async fn said(&self, topic: &str) -> Result<Option<String>, PortError> {
+        Ok(self.said.lock().unwrap().get(topic).cloned())
+    }
+
+    async fn save_said(&self, topic: &str, key: &str) -> Result<(), PortError> {
+        self.said.lock().unwrap().insert(topic.into(), key.into());
+        Ok(())
+    }
+}

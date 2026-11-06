@@ -12,9 +12,15 @@
 mod apps;
 mod client;
 mod descriptor;
+mod docker;
 mod files;
 mod framing;
 mod network;
+mod packages;
+mod services;
+mod ssh;
+mod time;
+mod web;
 
 use std::fmt;
 
@@ -27,14 +33,33 @@ pub use apps::{
 };
 pub use client::{AgentTransport, TransportError, UnixTransport};
 pub use descriptor::{read_message_with_file, write_message_with_file};
+pub use docker::{
+    ComposeText, ContainerAction, ContainerId, ImageId, ImageReference, InvalidDockerName, NetworkName,
+    ProjectAction, ProjectDirectory, ProjectFile, ProjectName, Subnet,
+};
 pub use files::{
-    DirectoryEntry, EntryKind, FileLocation, InvalidSharePath, MAX_DIRECTORY_ENTRIES, SharePath, is_file_name,
+    DirectoryEntry, EntryKind, FileLocation, FileRoot, HOMES_DIRECTORY, InvalidSharePath,
+    MAX_DIRECTORY_ENTRIES, SharePath, is_file_name,
 };
 pub use framing::{FrameError, read_message, write_message};
 pub use network::{
     ConfirmWithin, InterfaceName, InvalidConfirmWithin, InvalidInterfaceName, InvalidNameServers,
     InvalidPrefix, Ipv4Config, Ipv6Config, NameServers, NetworkConfig, PendingNetwork, Prefix,
 };
+pub use packages::{
+    InvalidReleasePackage, PackageReport, PackageRun, PackageRunState, PackageTask, ReleasePackage,
+    UpgradablePackage,
+};
+pub use services::{
+    FileServices, InvalidVetoFiles, InvalidWorkgroup, SmbEncryption, SmbProtocol, SmbSigning, VetoFiles,
+    Workgroup,
+};
+pub use ssh::{InvalidOffAfter, InvalidSshPort, OffAfter, RootLogin, SshConfig, SshPort};
+pub use time::{
+    ClockTime, InvalidClockTime, InvalidTimeServer, InvalidTimeServers, InvalidTimeZone, MAX_TIME_SERVERS,
+    TimeServer, TimeServers, TimeZone,
+};
+pub use web::TlsMinimum;
 
 /// Agent and API come from the same release; any difference is refused.
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -147,6 +172,17 @@ pub enum Request {
     /// Whether Docker is installed and running, and where its data is.
     /// Answers [`Response::DockerState`].
     DockerState {},
+    /// Starts apt on a task in a unit of its own; refused while a run is
+    /// going on. Answers [`Response::PackagesStarted`].
+    StartPackages {
+        task: PackageTask,
+        /// For [`PackageTask::Update`] only: zendiloOS from this release.
+        #[serde(default)]
+        release: Option<ReleasePackage>,
+    },
+    /// The latest run of apt: [`Response::Packages`]. A run whose unit is
+    /// gone without finishing counts as failed.
+    PackagesState {},
     /// Puts Docker's data on a pool zendiloos created: the dataset
     /// `<pool>/zendiloos.docker`, mounted at `/volume<N>/@docker`, as
     /// `data-root` with the `overlay2` driver; Docker starts only with it
@@ -154,6 +190,16 @@ pub enum Request {
     EnableDocker {
         pool: PoolName,
         volume: VolumeNumber,
+    },
+    /// Moves Docker's data to another pool zendiloos created: Docker stops,
+    /// the dataset is copied (`zfs send | zfs receive`), Docker starts from
+    /// the copy, and only then is the old dataset destroyed. Containers
+    /// that restart by themselves start again; apps' data stays where it is.
+    MoveDocker {
+        from_pool: PoolName,
+        from_volume: VolumeNumber,
+        to_pool: PoolName,
+        to_volume: VolumeNumber,
     },
     /// Makes what an app needs before its compose file is read: its data
     /// folder, the dataset `<pool>/zendiloos.apps/<app>` mounted at
@@ -207,6 +253,73 @@ pub enum Request {
         app: AppName,
         lines: u32,
     },
+    // The Docker engine, whoever started what runs on it. Each answers
+    // [`Response::DockerOutput`] with what `docker` printed, or
+    // [`Response::Done`].
+    /// `docker container inspect` of every container: a JSON array.
+    DockerContainers {},
+    /// One sample of every container's use, `docker stats --no-stream`:
+    /// JSON lines.
+    DockerStats {},
+    /// `docker image ls --digests`: JSON lines.
+    DockerImages {},
+    /// `docker network inspect` of every network: a JSON array.
+    DockerNetworks {},
+    /// `docker system df`: JSON lines.
+    DockerDiskUsage {},
+    ControlContainer {
+        container: ContainerId,
+        action: ContainerAction,
+    },
+    /// The last `lines` lines a container wrote, both streams in order,
+    /// with timestamps.
+    ContainerLogs {
+        container: ContainerId,
+        lines: u32,
+    },
+    RemoveImage {
+        image: ImageId,
+    },
+    PullImage {
+        reference: ImageReference,
+    },
+    /// Removes the images no container uses; prints what was freed.
+    PruneImages {},
+    /// A bridge network, with the subnet and gateway given or Docker's.
+    CreateNetwork {
+        name: NetworkName,
+        subnet: Option<Subnet>,
+        gateway: Option<std::net::IpAddr>,
+    },
+    RemoveNetwork {
+        name: NetworkName,
+    },
+    /// `docker compose config` of `compose` as if it were in `directory`:
+    /// the file as Compose understands it, as JSON, or refused with why
+    /// not.
+    CheckCompose {
+        project: ProjectName,
+        directory: ProjectDirectory,
+        compose: ComposeText,
+    },
+    /// Acts on a Compose project. `Up` and `Pull` need its file: `file`
+    /// for an administrator's project, otherwise the one Compose reports
+    /// for it; never for an app of a catalog, which the App Center keeps.
+    ControlProject {
+        project: ProjectName,
+        action: ProjectAction,
+        file: Option<ProjectFile>,
+    },
+    /// The last `lines` lines of the project's containers, with timestamps.
+    ProjectLogs {
+        project: ProjectName,
+        lines: u32,
+    },
+    /// The Compose files Compose reports for a project that is not an app
+    /// of a catalog's: a JSON object of path and content.
+    ProjectFiles {
+        project: ProjectName,
+    },
     /// Whether systemd-networkd manages the network, and a change that
     /// waits to be confirmed. Answers [`Response::NetworkState`].
     NetworkState {},
@@ -219,6 +332,36 @@ pub enum Request {
     },
     /// Keeps the change that waits to be confirmed.
     ConfirmNetwork {},
+    /// Whether the SSH server is installed and runs, the settings
+    /// zendiloOS wrote, and when it turns itself off. Answers
+    /// [`Response::SshState`].
+    SshState {},
+    /// Writes the SSH server's settings, checks them (`sshd -t`), starts and
+    /// enables it or stops and disables it; open sessions stay. With
+    /// `off_after`, a timer turns it off again.
+    SetSsh {
+        config: SshConfig,
+    },
+    /// The web interface's TLS settings zendiloOS wrote. Answers
+    /// [`Response::WebTlsState`].
+    WebTlsState {},
+    /// Sets the oldest TLS version the web interface accepts and reloads
+    /// nginx; connections already open stay.
+    SetWebTls {
+        minimum: TlsMinimum,
+    },
+    /// The clock's settings and state, and the time zones there are.
+    /// Answers [`Response::TimeState`].
+    TimeState {},
+    /// Sets the time zone, the time servers and whether they keep the
+    /// clock. Without them, `clock` sets the time; with them it is refused.
+    SetTime {
+        zone: TimeZone,
+        network_time: bool,
+        servers: TimeServers,
+        #[serde(default)]
+        clock: Option<ClockTime>,
+    },
     /// Returns a share to one of its snapshots (`zfs rollback -r`): what
     /// changed since is gone, and so are the snapshots taken after it.
     RollbackSnapshot {
@@ -264,10 +407,39 @@ pub enum Request {
         name: ShareName,
     },
     /// Writes the Samba shares and NFS exports zendiloos manages, checks
-    /// them and makes the servers load them. Replaces what was there.
+    /// them and makes the servers load them; starts and enables the
+    /// servers that are on, stops and disables those that are off.
+    /// Replaces what was there.
     ApplySharing {
         smb: Vec<SmbShare>,
         nfs: Vec<NfsExport>,
+        /// Which servers run, and Samba's settings for all shares.
+        services: FileServices,
+        /// The share `home`, each user's own folder; absent while personal
+        /// folders are off.
+        #[serde(default)]
+        homes: Option<HomesShare>,
+    },
+    /// Makes the dataset of the personal folders, `<pool>/zendiloos.homes`,
+    /// mounted at `/volume<N>/@homes`. What exists stays.
+    PrepareHomes {
+        pool: PoolName,
+        volume: VolumeNumber,
+    },
+    /// How much the user may store in the personal folders' dataset
+    /// (`userquota`); `None` for no limit.
+    SetHomeQuota {
+        pool: PoolName,
+        volume: VolumeNumber,
+        user: UserName,
+        quota_bytes: Option<u64>,
+    },
+    /// Makes the user's personal folder if missing, owner the user, mode
+    /// 0700, in `/volume<N>/@homes` (role `files`: only that agent writes
+    /// to the volumes).
+    MakeHome {
+        volume: VolumeNumber,
+        user: UserName,
     },
     /// Sets owner, mode and POSIX ACLs of a share's directory: `access`
     /// gets read (and write); `removed` loses its entries. With
@@ -412,6 +584,7 @@ impl Request {
             Request::RollbackSnapshot { .. } => "rollback_snapshot",
             Request::DockerState {} => "docker_state",
             Request::EnableDocker { .. } => "enable_docker",
+            Request::MoveDocker { .. } => "move_docker",
             Request::PrepareApp { .. } => "prepare_app",
             Request::ConfigureApp { .. } => "configure_app",
             Request::PullApp { .. } => "pull_app",
@@ -422,9 +595,33 @@ impl Request {
             Request::AppsStatus {} => "apps_status",
             Request::AppLogs { .. } => "app_logs",
             Request::MakeAppFolders { .. } => "make_app_folders",
+            Request::DockerContainers {} => "docker_containers",
+            Request::DockerStats {} => "docker_stats",
+            Request::DockerImages {} => "docker_images",
+            Request::DockerNetworks {} => "docker_networks",
+            Request::DockerDiskUsage {} => "docker_disk_usage",
+            Request::ControlContainer { .. } => "control_container",
+            Request::ContainerLogs { .. } => "container_logs",
+            Request::RemoveImage { .. } => "remove_image",
+            Request::PullImage { .. } => "pull_image",
+            Request::PruneImages {} => "prune_images",
+            Request::CreateNetwork { .. } => "create_network",
+            Request::RemoveNetwork { .. } => "remove_network",
+            Request::CheckCompose { .. } => "check_compose",
+            Request::ControlProject { .. } => "control_project",
+            Request::ProjectLogs { .. } => "project_logs",
+            Request::ProjectFiles { .. } => "project_files",
             Request::NetworkState {} => "network_state",
             Request::ApplyNetwork { .. } => "apply_network",
             Request::ConfirmNetwork {} => "confirm_network",
+            Request::SshState {} => "ssh_state",
+            Request::StartPackages { .. } => "start_packages",
+            Request::PackagesState {} => "packages_state",
+            Request::SetSsh { .. } => "set_ssh",
+            Request::WebTlsState {} => "web_tls_state",
+            Request::SetWebTls { .. } => "set_web_tls",
+            Request::TimeState {} => "time_state",
+            Request::SetTime { .. } => "set_time",
             Request::ListSnapshots {} => "list_snapshots",
             Request::ShowOnConsole { .. } => "show_on_console",
             Request::SetShareProperties { .. } => "set_share_properties",
@@ -432,6 +629,9 @@ impl Request {
             Request::CreateShare { .. } => "create_share",
             Request::DestroyShare { .. } => "destroy_share",
             Request::ApplySharing { .. } => "apply_sharing",
+            Request::PrepareHomes { .. } => "prepare_homes",
+            Request::SetHomeQuota { .. } => "set_home_quota",
+            Request::MakeHome { .. } => "make_home",
             Request::SetShareAccess { .. } => "set_share_access",
             Request::CreateUser { .. } => "create_user",
             Request::DeleteUser { .. } => "delete_user",
@@ -502,6 +702,15 @@ pub enum Response {
         running: bool,
         /// Its `data-root`, if `/etc/docker/daemon.json` sets one.
         data_root: Option<String>,
+        /// The engine's version, while it runs.
+        #[serde(default)]
+        version: Option<String>,
+    },
+    PackagesStarted {
+        id: String,
+    },
+    Packages {
+        run: Option<PackageRun>,
     },
     /// Folders below an app's data folder its containers mount.
     AppFolders {
@@ -520,6 +729,38 @@ pub enum Response {
         /// systemd-networkd manages the network: it can be changed here.
         managed: bool,
         pending: Option<PendingNetwork>,
+    },
+    /// What `docker` printed, for zendiloosd to read.
+    DockerOutput {
+        text: String,
+    },
+    WebTlsState {
+        /// The settings file zendiloOS wrote; empty if none.
+        config: String,
+    },
+    SshState {
+        /// The server is installed.
+        installed: bool,
+        /// `systemctl is-enabled` and `is-active` of `ssh.service`.
+        enabled: String,
+        active: String,
+        /// The settings file zendiloOS wrote; empty if none.
+        config: String,
+        /// When the timer turns it off, Unix seconds.
+        off_at: Option<i64>,
+    },
+    TimeState {
+        /// `timedatectl show`: zone, whether network time is on and
+        /// whether the clock is synchronized.
+        timedatectl: String,
+        /// `timedatectl show-timesync`: the server in use; empty while
+        /// timesyncd is not running.
+        timesync: String,
+        /// `timedatectl list-timezones`, one per line.
+        zones: String,
+        /// The time servers zendiloos set, in timesyncd's drop-in; empty if
+        /// none.
+        servers_conf: String,
     },
     /// Where a restored entry went.
     Restored {
@@ -702,6 +943,7 @@ impl Request {
     pub fn role(&self) -> Role {
         match self {
             Request::SetShareAccess { .. }
+            | Request::MakeHome { .. }
             | Request::ListDirectory { .. }
             | Request::OpenFile { .. }
             | Request::CreateUpload { .. }
@@ -771,8 +1013,38 @@ pub enum Principal {
 #[serde(deny_unknown_fields)]
 pub struct ShareAccess {
     pub principal: Principal,
-    /// Read and write; otherwise read only.
-    pub write: bool,
+    pub permission: SharePermission,
+}
+
+impl ShareAccess {
+    pub fn writes(&self) -> bool {
+        self.permission == SharePermission::ReadWrite
+    }
+
+    pub fn denied(&self) -> bool {
+        self.permission == SharePermission::Deny
+    }
+}
+
+/// What a user or group may do on a share. A denied user gets an ACL entry
+/// without permissions, which comes before every group entry; a denied
+/// group is kept out by Samba (`invalid users`), its members in the file
+/// system by entries of their own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SharePermission {
+    Deny,
+    Read,
+    ReadWrite,
+}
+
+/// The share `home`: `/volume<volume>/@homes/<user>` for each user who
+/// connects, if among `users`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HomesShare {
+    pub volume: VolumeNumber,
+    pub users: Vec<UserName>,
 }
 
 /// A Samba share at `/volume<volume>/<name>`.
@@ -787,6 +1059,10 @@ pub struct SmbShare {
     /// Shown by clients beside the share's name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comment: Option<ShareComment>,
+    /// Macs back up to it with Time Machine; `Some(None)` without a limit
+    /// of its own, `Some(Some(bytes))` up to that much.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_machine: Option<Option<u64>>,
 }
 
 /// A setup code as the console shows it: `ABCD-EFGH-JKLM`, from the setup
@@ -1496,12 +1772,27 @@ mod tests {
         }
         let request = json!({ "version": 1, "request": { "op": "apply_sharing",
             "smb": [{ "name": "photos", "volume": 1, "recycle_bin": true,
-                      "access": [{ "principal": { "group": "family" }, "write": true }] }],
-            "nfs": [{ "name": "photos", "volume": 1, "clients": [{ "network": "192.168.1.0/24", "write": false }] }] } });
-        assert!(serde_json::from_value::<Envelope>(request).is_ok());
+                      "access": [{ "principal": { "group": "family" }, "permission": "read_write" },
+                                 { "principal": { "user": "guest-bob" }, "permission": "deny" }] }],
+            "nfs": [{ "name": "photos", "volume": 1, "clients": [{ "network": "192.168.1.0/24", "write": false }] }],
+            "services": { "smb": true, "nfs": true, "workgroup": "WORKGROUP", "smb_min_protocol": "smb2_1",
+                "smb_encryption": "default", "smb_signing": "default", "hide_unreadable": true, "multichannel": true,
+                "oplocks": true, "leases": true, "durable_handles": false, "mac_compat": true, "follow_symlinks": true,
+                "veto_files": null, "delete_veto_files": false, "wsdd": true, "bonjour": true } } });
+        assert!(serde_json::from_value::<Envelope>(request.clone()).is_ok());
         let injected = json!({ "version": 1, "request": { "op": "apply_sharing", "smb": [], "nfs": [{ "name": "photos",
-            "volume": 1, "clients": [{ "network": "*(rw,no_root_squash)", "write": true }] }] } });
+            "volume": 1, "clients": [{ "network": "*(rw,no_root_squash)", "write": true }] }],
+            "services": request["request"]["services"] } });
         assert!(serde_json::from_value::<Envelope>(injected).is_err());
+        let mut workgroup = request.clone();
+        workgroup["request"]["services"]["workgroup"] = json!("X\n[global]");
+        assert!(serde_json::from_value::<Envelope>(workgroup).is_err());
+        let mut without = request;
+        without["request"].as_object_mut().unwrap().remove("services");
+        assert!(
+            serde_json::from_value::<Envelope>(without).is_err(),
+            "the services are part of every change"
+        );
     }
 
     #[test]

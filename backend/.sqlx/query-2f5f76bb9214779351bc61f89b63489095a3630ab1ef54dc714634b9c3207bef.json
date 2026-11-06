@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT min_length, mixed_case AS \"mixed_case: bool\", digit AS \"digit: bool\",\n                      symbol AS \"symbol: bool\", max_age_days FROM password_policy WHERE id = 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "min_length",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "password_policy",
+            "name": "min_length"
+          }
+        }
+      },
+      {
+        "name": "mixed_case: bool",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "password_policy",
+            "name": "mixed_case"
+          }
+        }
+      },
+      {
+        "name": "digit: bool",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "password_policy",
+            "name": "digit"
+          }
+        }
+      },
+      {
+        "name": "symbol: bool",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "password_policy",
+            "name": "symbol"
+          }
+        }
+      },
+      {
+        "name": "max_age_days",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "password_policy",
+            "name": "max_age_days"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "2f5f76bb9214779351bc61f89b63489095a3630ab1ef54dc714634b9c3207bef"
+}

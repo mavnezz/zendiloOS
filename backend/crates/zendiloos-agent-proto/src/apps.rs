@@ -170,12 +170,16 @@ impl std::fmt::Debug for AppSettingValue {
     }
 }
 
-/// A share the administrator picked for one of the app's shares.
+/// A share the administrator picked for one of the app's shares, or a
+/// folder in it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AppShareChoice {
     pub volume: VolumeNumber,
     pub name: ShareName,
+    /// Below the share's root; empty for the whole share.
+    #[serde(default = "AppFolder::whole")]
+    pub folder: AppFolder,
 }
 
 /// What zendiloos fills in for an app, by the ids its manifest declares.
@@ -189,9 +193,9 @@ pub struct AppValues {
     pub settings: BTreeMap<String, AppSettingValue>,
 }
 
-/// A folder below an app's data folder, relative to it: names separated by
-/// `/`, none empty, `.` or `..`; at most 1024 bytes. Empty means the data
-/// folder itself.
+/// A folder below an app's data folder or a share, relative to it: names
+/// separated by `/`, none empty, `.` or `..`; at most 1024 bytes. Empty
+/// means that folder itself.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct AppFolder(String);
@@ -209,6 +213,15 @@ impl AppFolder {
         let valid =
             value.is_empty() || (value.len() <= Self::MAX_BYTES && value.split('/').all(is_file_name));
         if valid { Ok(Self(value.to_owned())) } else { Err(InvalidAppFolder) }
+    }
+
+    /// The folder itself: empty.
+    pub fn whole() -> Self {
+        Self(String::new())
+    }
+
+    pub fn is_whole(&self) -> bool {
+        self.0.is_empty()
     }
 
     pub fn as_str(&self) -> &str {

@@ -1,124 +1,121 @@
 <script setup lang="ts">
-import { BellRing, Info, Network, Palette, UserRound } from 'lucide-vue-next'
-import { computed, ref } from 'vue'
+import { useQuery } from '@tanstack/vue-query'
+import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import ChangePasswordForm from '@/features/auth/components/ChangePasswordForm.vue'
+import UsersPage from '@/features/accounts/components/UsersPage.vue'
 import { useSessionStore } from '@/features/auth/store'
 import ChannelsSection from '@/features/channels/components/ChannelsSection.vue'
+import { useNetwork } from '@/features/network/api'
 import NetworkSection from '@/features/network/components/NetworkSection.vue'
-import AboutSection from '@/features/system/components/AboutSection.vue'
-import { LANGUAGES } from '@/shared/i18n'
-import type { ThemePreference } from '@/shared/lib/theme'
-import { cn } from '@/shared/lib/utils'
+import SecurityPage from '@/features/security/components/SecurityPage.vue'
+import FileServicesPage from '@/features/shares/components/FileServicesPage.vue'
+import { useSystemInfo } from '@/features/system/api'
+import DeviceInfoPage from '@/features/system/components/DeviceInfoPage.vue'
+import TerminalPage from '@/features/system/components/TerminalPage.vue'
+import { api, unwrap } from '@/shared/api/client'
+import { useWindowSection } from '@/shared/lib/window-section'
 import { AppFrame, type NavGroup } from '@/shared/ui/frame'
-import { PanelSection } from '@/shared/ui/section'
-import { usePreferences } from '@/shared/preferences/store'
+import { ComingLater, PageDescription, PageHeader } from '@/shared/ui/page'
 
-const { t, locale } = useI18n()
+import { SETTINGS_SECTIONS } from '../apps'
+import AccountPage from './settings/AccountPage.vue'
+import AppearancePage from './settings/AppearancePage.vue'
+import LocalePage from './settings/LocalePage.vue'
+import PowerPage from './settings/PowerPage.vue'
+import UpdatePage from './settings/UpdatePage.vue'
+
+const { t } = useI18n()
 const session = useSessionStore()
-const preferences = usePreferences()
 
-const groups = computed<NavGroup[]>(() => [
-  {
-    id: 'personal',
-    label: t('settings.groups.personal'),
-    items: [
-      { id: 'account', label: t('settings.account'), icon: UserRound, tone: 'blue' },
-      { id: 'appearance', label: t('settings.appearance'), icon: Palette, tone: 'violet' },
-    ],
-  },
-  {
-    id: 'system',
-    label: t('settings.groups.system'),
-    items: [
-      { id: 'network', label: t('settings.network'), icon: Network, tone: 'sky' },
-      // Notification channels are for administrators (`system.manage`).
-      ...(session.can('system.manage')
-        ? [
-            {
-              id: 'notifications',
-              label: t('settings.notifications'),
-              icon: BellRing,
-              tone: 'amber' as const,
-            },
-          ]
-        : []),
-      { id: 'about', label: t('settings.about'), icon: Info, tone: 'slate' },
-    ],
-  },
-])
-const section = ref('account')
+/** The pages this account may open, in the navigation's groups. */
+const sections = computed(() =>
+  SETTINGS_SECTIONS.filter((section) => !section.permission || session.can(section.permission)),
+)
+const groups = computed<NavGroup[]>(() => {
+  const grouped: NavGroup[] = []
+  for (const section of sections.value) {
+    const item = { id: section.id, label: t(section.label), icon: section.icon }
+    const last = grouped.at(-1)
+    if (last && last.id === section.group) last.items.push(item)
+    else
+      grouped.push({
+        id: section.group ?? '',
+        label: section.group ? t(section.group) : undefined,
+        items: [item],
+      })
+  }
+  return grouped
+})
+const section = useWindowSection(() => sections.value.map((entry) => entry.id))
+const current = computed(() => sections.value.find((entry) => entry.id === section.value))
 
-const themes: ThemePreference[] = ['light', 'dark', 'system']
+// Where clients reach the NAS, for the file services' connection help.
+const { data: info } = useSystemInfo()
+const { data: network } = useNetwork()
+const address = computed(
+  () =>
+    network.value?.interfaces
+      .filter((item) => item.state === 'up')
+      .flatMap((item) => item.addresses)
+      .find((entry) => entry.address.includes('.') && entry.scope !== 'host')?.address,
+)
 
-const choice = (selected: boolean) =>
-  cn(
-    'rounded-[5px] px-3 py-1 text-sm transition-colors',
-    selected ? 'bg-card font-medium shadow-xs' : 'text-muted-foreground hover:text-foreground',
-  )
+const { data: pools } = useQuery({
+  queryKey: ['storage', 'pools'],
+  queryFn: () => unwrap(api.GET('/api/v1/storage/pools')),
+  enabled: computed(() => session.can('storage.view') && section.value === 'device'),
+})
 </script>
 
-<!-- Settings of the signed-in account and of this browser. -->
+<!-- The control panel: the NAS's settings and the account's. -->
 <template>
   <AppFrame v-model:section="section" :groups="groups">
-    <div v-if="section === 'account' && session.info" class="grid max-w-xl gap-6">
-      <div class="flex items-center gap-3">
-        <span
-          class="grid size-11 place-items-center rounded-full bg-primary/10 text-base font-semibold text-primary uppercase"
-        >
-          {{ session.info.account.name.slice(0, 2) }}
-        </span>
-        <div class="grid">
-          <h3 class="text-base font-semibold">
-            {{ t('settings.signedInAs', { name: session.info.account.name }) }}
-          </h3>
-          <p class="text-xs text-muted-foreground">
-            {{ t('settings.role') }}: {{ t(`settings.roles.${session.info.account.role}`) }}
-          </p>
-        </div>
-      </div>
-      <PanelSection :title="t('settings.changePassword')">
-        <ChangePasswordForm />
-      </PanelSection>
+    <ComingLater
+      v-if="current?.soon"
+      :icon="current.icon"
+      :title="t(current.label)"
+      :description="t(`controlPanel.soon.${current.id}`)"
+    />
+    <DeviceInfoPage v-else-if="section === 'device'" :pools="pools" />
+    <AppearancePage v-else-if="section === 'appearance'" />
+    <div v-else-if="section === 'network'">
+      <PageHeader
+        :title="t('controlPanel.network')"
+        :description="t('controlPanel.networkDescription')"
+      />
+      <NetworkSection :can-manage="session.can('system.manage')" />
+      <PageDescription>
+        <p>{{ t('controlPanel.networkHelp') }}</p>
+        <p>{{ t('controlPanel.networkWarning') }}</p>
+      </PageDescription>
     </div>
-
-    <div v-else-if="section === 'appearance'" class="grid gap-6">
-      <PanelSection :title="t('settings.theme')">
-        <div class="inline-flex w-fit gap-0.5 rounded-md bg-muted p-0.5" role="radiogroup">
-          <button
-            v-for="option in themes"
-            :key="option"
-            type="button"
-            role="radio"
-            :aria-checked="preferences.theme === option"
-            :class="choice(preferences.theme === option)"
-            @click="preferences.chooseTheme(option)"
-          >
-            {{ t(`settings.themes.${option}`) }}
-          </button>
-        </div>
-      </PanelSection>
-      <PanelSection :title="t('settings.language')">
-        <div class="inline-flex w-fit gap-0.5 rounded-md bg-muted p-0.5" role="radiogroup">
-          <button
-            v-for="language in LANGUAGES"
-            :key="language.locale"
-            type="button"
-            role="radio"
-            :lang="language.locale"
-            :aria-checked="locale === language.locale"
-            :class="choice(locale === language.locale)"
-            @click="preferences.chooseLanguage(language.locale)"
-          >
-            {{ language.name }}
-          </button>
-        </div>
-      </PanelSection>
+    <PowerPage v-else-if="section === 'power'" />
+    <UpdatePage v-else-if="section === 'update'" />
+    <LocalePage v-else-if="section === 'locale'" />
+    <UsersPage v-else-if="section === 'accounts'" :own-account-id="session.info?.account.id" />
+    <AccountPage v-else-if="section === 'account'" />
+    <FileServicesPage
+      v-else-if="section === 'file-services'"
+      :can-manage="session.can('system.manage')"
+      :hostname="info?.hostname"
+      :address="address"
+    />
+    <TerminalPage
+      v-else-if="section === 'terminal'"
+      :hostname="info?.hostname"
+      :address="address"
+    />
+    <SecurityPage v-else-if="section === 'security'" />
+    <div v-else-if="section === 'notifications'">
+      <PageHeader
+        :title="t('controlPanel.notifications')"
+        :description="t('controlPanel.notificationsDescription')"
+      />
+      <ChannelsSection />
+      <PageDescription>
+        <p>{{ t('controlPanel.notificationsHelp') }}</p>
+      </PageDescription>
     </div>
-
-    <NetworkSection v-else-if="section === 'network'" :can-manage="session.can('system.manage')" />
-    <ChannelsSection v-else-if="section === 'notifications'" />
-    <AboutSection v-else-if="section === 'about'" />
   </AppFrame>
 </template>

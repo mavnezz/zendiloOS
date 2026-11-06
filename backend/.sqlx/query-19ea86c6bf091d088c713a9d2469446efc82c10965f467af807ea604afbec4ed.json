@@ -1,0 +1,242 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT smb AS \"smb: bool\", nfs AS \"nfs: bool\", workgroup, smb_min_protocol, smb_encryption,\n                      smb_signing, hide_unreadable AS \"hide_unreadable: bool\", multichannel AS \"multichannel: bool\",\n                      oplocks AS \"oplocks: bool\", leases AS \"leases: bool\",\n                      durable_handles AS \"durable_handles: bool\", mac_compat AS \"mac_compat: bool\",\n                      follow_symlinks AS \"follow_symlinks: bool\", veto_files,\n                      delete_veto_files AS \"delete_veto_files: bool\", wsdd AS \"wsdd: bool\", bonjour AS \"bonjour: bool\",\n                      time_machine_share, time_machine_max_bytes\n               FROM file_services WHERE id = 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "smb: bool",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "file_services",
+            "name": "smb"
+          }
+        }
+      },
+      {
+        "name": "nfs: bool",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "file_services",
+            "name": "nfs"
+          }
+        }
+      },
+      {
+        "name": "workgroup",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_services",
+            "name": "workgroup"
+          }
+        }
+      },
+      {
+        "name": "smb_min_protocol",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_services",
+            "name": "smb_min_protocol"
+          }
+        }
+      },
+      {
+        "name": "smb_encryption",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_services",
+            "name": "smb_encryption"
+          }
+        }
+      },
+      {
+        "name": "smb_signing",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_services",
+            "name": "smb_signing"
+          }
+        }
+      },
+      {
+        "name": "hide_unreadable: bool",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "file_services",
+            "name": "hide_unreadable"
+          }
+        }
+      },
+      {
+        "name": "multichannel: bool",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "file_services",
+            "name": "multichannel"
+          }
+        }
+      },
+      {
+        "name": "oplocks: bool",
+        "ordinal": 8,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "file_services",
+            "name": "oplocks"
+          }
+        }
+      },
+      {
+        "name": "leases: bool",
+        "ordinal": 9,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "file_services",
+            "name": "leases"
+          }
+        }
+      },
+      {
+        "name": "durable_handles: bool",
+        "ordinal": 10,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "file_services",
+            "name": "durable_handles"
+          }
+        }
+      },
+      {
+        "name": "mac_compat: bool",
+        "ordinal": 11,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "file_services",
+            "name": "mac_compat"
+          }
+        }
+      },
+      {
+        "name": "follow_symlinks: bool",
+        "ordinal": 12,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "file_services",
+            "name": "follow_symlinks"
+          }
+        }
+      },
+      {
+        "name": "veto_files",
+        "ordinal": 13,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_services",
+            "name": "veto_files"
+          }
+        }
+      },
+      {
+        "name": "delete_veto_files: bool",
+        "ordinal": 14,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "file_services",
+            "name": "delete_veto_files"
+          }
+        }
+      },
+      {
+        "name": "wsdd: bool",
+        "ordinal": 15,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "file_services",
+            "name": "wsdd"
+          }
+        }
+      },
+      {
+        "name": "bonjour: bool",
+        "ordinal": 16,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "file_services",
+            "name": "bonjour"
+          }
+        }
+      },
+      {
+        "name": "time_machine_share",
+        "ordinal": 17,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "file_services",
+            "name": "time_machine_share"
+          }
+        }
+      },
+      {
+        "name": "time_machine_max_bytes",
+        "ordinal": 18,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "file_services",
+            "name": "time_machine_max_bytes"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "19ea86c6bf091d088c713a9d2469446efc82c10965f467af807ea604afbec4ed"
+}

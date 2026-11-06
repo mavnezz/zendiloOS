@@ -14,10 +14,15 @@ use zendiloos_fileops::FileError;
 use crate::accounts::{AccountFiles, Accounts};
 use crate::apps::Apps;
 use crate::config::Tools;
+use crate::docker::Docker;
 use crate::files::Files;
 use crate::network::{Network, NetworkPaths};
+use crate::packages::Packages;
 use crate::pools::{Erasable, HostPaths, Pools};
 use crate::sharing::Sharing;
+use crate::ssh::{Ssh, SshPaths};
+use crate::time::{Time, TimePaths};
+use crate::web::{Web, WebPaths};
 
 /// Where the agent finds the host's account databases, devices and units;
 /// other than the real places only in tests.
@@ -26,6 +31,9 @@ pub struct Paths {
     pub accounts: AccountFiles,
     pub host: HostPaths,
     pub network: NetworkPaths,
+    pub time: TimePaths,
+    pub ssh: SshPaths,
+    pub web: WebPaths,
 }
 
 const MDSTAT: &str = "/proc/mdstat";
@@ -44,10 +52,15 @@ pub struct Operations {
     zfs: Program,
     accounts: Accounts,
     apps: Apps,
+    packages: Packages,
     pools: Pools,
     sharing: Sharing,
     files: Files,
     network: std::sync::Arc<Network>,
+    time: Time,
+    ssh: Ssh,
+    web: Web,
+    docker: Docker,
     console_issue: std::path::PathBuf,
     role: Role,
 }
@@ -72,9 +85,23 @@ impl Operations {
             zfs: Program::new(&tools.zfs)?,
             files: Files::new(paths.accounts.clone(), paths.host.volumes.clone()),
             network: std::sync::Arc::new(Network::new(tools, paths.network)?),
+            time: Time::new(tools, paths.time)?,
+            ssh: Ssh::new(tools, paths.ssh)?,
+            web: Web::new(tools, paths.web)?,
+            docker: Docker::new(Program::new(&tools.docker)?),
             console_issue: paths.host.console_issue.clone(),
             sharing: Sharing::new(tools, paths.host.clone(), paths.accounts.clone())?,
-            apps: Apps::new(Program::new(&tools.docker)?, paths.host.clone(), paths.accounts.clone()),
+            apps: Apps::new(
+                Program::new(&tools.docker)?,
+                Program::new(&tools.systemctl)?,
+                paths.host.clone(),
+                paths.accounts.clone(),
+            ),
+            packages: Packages::new(
+                Program::new(&tools.systemctl)?,
+                Program::new(&tools.systemd_run)?,
+                paths.host.clone(),
+            ),
             accounts: Accounts::new(tools, paths.accounts)?,
             pools: Pools::new(tools, erasable, paths.host)?,
             role,
@@ -134,6 +161,9 @@ impl Operations {
             }
             Request::DockerState {} => self.pools.docker_state().await,
             Request::EnableDocker { pool, volume } => self.pools.enable_docker(pool, *volume).await,
+            Request::MoveDocker { from_pool, from_volume, to_pool, to_volume } => {
+                self.pools.move_docker(from_pool, *from_volume, to_pool, *to_volume).await
+            }
             Request::PrepareApp { app, pool, volume } => {
                 match self.pools.prepare_app_dataset(pool, *volume, app).await {
                     Ok(()) => self.accounts.create_app_account(app).await.map(|()| Response::Done),
@@ -152,12 +182,48 @@ impl Operations {
             },
             Request::DeleteAppAccount { app } => self.accounts.delete_app_account(app).await,
             Request::AppsStatus {} => self.apps.status().await,
+            Request::StartPackages { task, release } => self.packages.start(*task, release.as_ref()).await,
+            Request::PackagesState {} => self.packages.state().await,
             Request::AppLogs { app, lines } => self.apps.logs(app, *lines).await,
             Request::NetworkState {} => self.network.state().await,
             Request::ApplyNetwork { config, confirm_within } => {
                 self.network.apply(config, *confirm_within).await
             }
             Request::ConfirmNetwork {} => self.network.confirm().await,
+            Request::SshState {} => self.ssh.state().await,
+            Request::SetSsh { config } => self.ssh.set(config).await,
+            Request::WebTlsState {} => self.web.state(),
+            Request::DockerContainers {} => self.docker.containers().await,
+            Request::DockerStats {} => self.docker.stats().await,
+            Request::DockerImages {} => self.docker.images().await,
+            Request::DockerNetworks {} => self.docker.networks().await,
+            Request::DockerDiskUsage {} => self.docker.disk_usage().await,
+            Request::ControlContainer { container, action } => {
+                self.docker.control_container(container, *action).await
+            }
+            Request::ContainerLogs { container, lines } => {
+                self.docker.container_logs(container, *lines).await
+            }
+            Request::RemoveImage { image } => self.docker.remove_image(image).await,
+            Request::PullImage { reference } => self.docker.pull_image(reference).await,
+            Request::PruneImages {} => self.docker.prune_images().await,
+            Request::CreateNetwork { name, subnet, gateway } => {
+                self.docker.create_network(name, subnet.as_ref(), *gateway).await
+            }
+            Request::RemoveNetwork { name } => self.docker.remove_network(name).await,
+            Request::CheckCompose { project, directory, compose } => {
+                self.docker.check_compose(project, directory, compose).await
+            }
+            Request::ControlProject { project, action, file } => {
+                self.docker.control_project(project, *action, file.as_ref()).await
+            }
+            Request::ProjectLogs { project, lines } => self.docker.project_logs(project, *lines).await,
+            Request::ProjectFiles { project } => self.docker.project_files(project).await,
+            Request::SetWebTls { minimum } => self.web.set_tls(*minimum).await,
+            Request::TimeState {} => self.time.state().await,
+            Request::SetTime { zone, network_time, servers, clock } => {
+                self.time.set(zone, *network_time, servers, *clock).await
+            }
             Request::RollbackSnapshot { pool, volume, share, label } => {
                 self.pools.rollback_snapshot(pool, *volume, share, label).await
             }
@@ -175,7 +241,14 @@ impl Operations {
             Request::DestroyShare { pool, volume, name } => {
                 self.pools.destroy_share(pool, *volume, name).await
             }
-            Request::ApplySharing { smb, nfs } => self.sharing.apply(smb, nfs).await,
+            Request::ApplySharing { smb, nfs, services, homes } => {
+                self.sharing.apply(smb, nfs, services, homes.as_ref()).await
+            }
+            Request::PrepareHomes { pool, volume } => self.pools.prepare_homes(pool, *volume).await,
+            Request::SetHomeQuota { pool, volume, user, quota_bytes } => {
+                self.pools.set_home_quota(pool, *volume, user, *quota_bytes).await
+            }
+            Request::MakeHome { volume, user } => self.sharing.make_home(*volume, user),
             Request::SetShareAccess { volume, name, access, removed, recursive } => {
                 self.sharing.set_access(*volume, name, access, removed, *recursive).await
             }

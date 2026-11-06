@@ -51,9 +51,13 @@ impl AuditReader for SqliteAuditLog {
         let limit = i64::from(query.limit);
         let rows = sqlx::query!(
             r#"SELECT id AS "id!", at, actor, client_ip, action, target, outcome, request_id, details
-               FROM audit_log WHERE ?1 IS NULL OR id < ?1 ORDER BY id DESC LIMIT ?2"#,
+               FROM audit_log WHERE (?1 IS NULL OR id < ?1) AND (?3 IS NULL OR action = ?3)
+                   AND (?4 IS NULL OR substr(action, 1, length(?4)) = ?4)
+               ORDER BY id DESC LIMIT ?2"#,
             query.before,
-            limit
+            limit,
+            query.action,
+            query.prefix
         )
         .fetch_all(self.db.pool())
         .await
@@ -138,14 +142,27 @@ mod tests {
             audit.record(entry).await.unwrap();
         }
 
-        let first = audit.read(&AuditQuery { limit: 2, before: None }).await.unwrap();
+        let first =
+            audit.read(&AuditQuery { limit: 2, before: None, action: None, prefix: None }).await.unwrap();
         let targets: Vec<_> = first.iter().map(|r| r.target.clone().unwrap()).collect();
         assert_eq!(targets, ["user5", "user4"]);
-        let next = audit.read(&AuditQuery { limit: 10, before: Some(first[1].id) }).await.unwrap();
+        let next = audit
+            .read(&AuditQuery { limit: 10, before: Some(first[1].id), action: None, prefix: None })
+            .await
+            .unwrap();
         let targets: Vec<_> = next.iter().map(|r| r.target.clone().unwrap()).collect();
         assert_eq!(targets, ["user3", "user2", "user1"]);
         assert_eq!(next[0].actor.as_deref(), Some("alice"));
         assert_eq!(next[0].reason, None);
+        let logins =
+            AuditQuery { limit: 10, before: None, action: Some("identity.login".to_owned()), prefix: None };
+        assert!(audit.read(&logins).await.unwrap().is_empty(), "only that action");
+        let identity =
+            AuditQuery { limit: 10, before: None, action: None, prefix: Some("identity.".to_owned()) };
+        assert_eq!(audit.read(&identity).await.unwrap().len(), 5, "every action that starts so");
+        let other =
+            AuditQuery { limit: 10, before: None, action: None, prefix: Some("identity_".to_owned()) };
+        assert!(audit.read(&other).await.unwrap().is_empty(), "no wildcards");
         db.close().await;
     }
 }

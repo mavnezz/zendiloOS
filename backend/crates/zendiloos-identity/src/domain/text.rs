@@ -31,9 +31,40 @@ pub fn description(value: Option<&str>) -> Result<Option<String>, InvalidText> {
     optional_text("description", value, MAX_DESCRIPTION_CHARS)
 }
 
+pub const MAX_EMAIL_CHARS: usize = 254;
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("not an e-mail address")]
+pub struct InvalidEmail;
+
+/// An e-mail address, as far as it can be told without sending mail: one
+/// `@` with something on both sides and a dot in the domain, no spaces.
+pub fn email(value: Option<&str>) -> Result<Option<String>, InvalidEmail> {
+    let invalid = InvalidEmail;
+    let Some(value) = optional_text("e-mail address", value, MAX_EMAIL_CHARS).map_err(|_| InvalidEmail)?
+    else {
+        return Ok(None);
+    };
+    let valid = value.split_once('@').is_some_and(|(local, domain)| {
+        !local.is_empty() && domain.contains('.') && !domain.starts_with('.') && !domain.ends_with('.')
+    }) && value.matches('@').count() == 1
+        && !value.contains(char::is_whitespace);
+    if valid { Ok(Some(value)) } else { Err(invalid) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn email_addresses_look_like_ones() {
+        assert_eq!(email(Some(" anna@example.org ")), Ok(Some("anna@example.org".to_owned())));
+        assert_eq!(email(Some("")), Ok(None));
+        for bad in ["anna", "anna@", "@example.org", "anna@localhost", "a b@example.org", "a@b@c.de", "a@x."]
+        {
+            assert!(email(Some(bad)).is_err(), "{bad}");
+        }
+    }
 
     #[test]
     fn trims_and_limits() {

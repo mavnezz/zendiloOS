@@ -5,10 +5,24 @@ through a web desktop (Vue 3) backed by a Rust server.
 
 > **Status:** early development (milestone M0). Not for real data.
 
+## Installation
+
+Download the installation ISO of the newest stable release,
+[zendiloos-amd64-netinst.iso](https://github.com/mavnezz/zendiloOS/releases/latest/download/zendiloos-amd64-netinst.iso),
+write it to a USB stick and start the NAS from it, then choose
+"Install zendiloOS". The installer asks for the language, the keyboard, the
+machine's name, root's password and the disk for the system; it needs the
+network. The console then shows the address of the web interface and the
+code for the first administrator. Afterwards the NAS updates itself
+(Settings → Update & restore). On an existing Debian 13, install the package
+of a release instead (`apt install ./zendiloos_….deb`, with `contrib`
+enabled for ZFS).
+
 ## Documentation
 
 - [Architecture](docs/architecture.md): target architecture, modules, security model, decisions
 - [Roadmap](docs/roadmap.md): MVP, milestones, next steps
+- [Releases](docs/releases.md): channels, signing, the installation ISO
 
 ## Development
 

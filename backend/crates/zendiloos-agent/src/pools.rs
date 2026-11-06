@@ -21,8 +21,8 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use zendiloos_agent_proto::{
-    AppName, DiskId, DiskName, Layout, PoolName, Response, ShareCompression, ShareName, ShareRecordSize,
-    SnapshotFrequency, SnapshotLabel, SnapshotNote, VolumeNumber,
+    AppName, DiskId, DiskName, HOMES_DIRECTORY, Layout, PoolName, Response, ShareCompression, ShareName,
+    ShareRecordSize, SnapshotFrequency, SnapshotLabel, SnapshotNote, UserName, VolumeNumber,
 };
 use zendiloos_exec::{Limits, Program};
 
@@ -109,6 +109,18 @@ pub struct HostPaths {
     pub apps: PathBuf,
     /// Its link names the time zone apps get.
     pub localtime: PathBuf,
+    /// Where the folders of shares apps were given are mounted
+    /// (`app_shares`), only root may change it.
+    pub app_shares: PathBuf,
+    /// This program, which units run to mount those folders and apt.
+    pub agent: PathBuf,
+    /// Where the runs of apt are recorded.
+    pub packages: PathBuf,
+    /// Where zendiloosd downloads a release of zendiloOS to.
+    pub update_spool: PathBuf,
+    /// The keys a release may be signed with, the first that exists counts:
+    /// one an administrator put in `/etc`, then the package's own.
+    pub release_keys: Vec<PathBuf>,
 }
 
 impl Default for HostPaths {
@@ -127,6 +139,14 @@ impl Default for HostPaths {
             docker_config: PathBuf::from("/etc/docker/daemon.json"),
             apps: PathBuf::from("/etc/zendiloos/apps"),
             localtime: PathBuf::from("/etc/localtime"),
+            app_shares: PathBuf::from("/run/zendiloos-app-shares"),
+            agent: PathBuf::from("/usr/libexec/zendiloos/zendiloos-agent"),
+            packages: PathBuf::from("/var/lib/zendiloos-packages"),
+            update_spool: PathBuf::from("/var/lib/zendiloos/updates"),
+            release_keys: vec![
+                PathBuf::from("/etc/zendiloos/release-signing.pub"),
+                PathBuf::from("/usr/share/zendiloos/release-signing.pub"),
+            ],
         }
     }
 }
@@ -142,6 +162,7 @@ pub(crate) struct Pools {
     udevadm: Program,
     systemctl: Program,
     docker: Program,
+    dockerd: PathBuf,
     exportfs: Program,
     /// One change to disks and pools at a time.
     serial: tokio::sync::Mutex<()>,
@@ -182,6 +203,7 @@ impl Pools {
             udevadm: Program::new(&tools.udevadm)?,
             systemctl: Program::new(&tools.systemctl)?,
             docker: Program::new(&tools.docker)?,
+            dockerd: tools.dockerd.clone(),
             exportfs: Program::new(&tools.exportfs)?,
             serial: tokio::sync::Mutex::new(()),
         })
@@ -500,7 +522,7 @@ impl Pools {
 
     /// Whether Docker is there and running, and where its data is.
     pub(crate) async fn docker_state(&self) -> Result<Response, OperationError> {
-        let installed = self.docker.path().exists();
+        let installed = self.docker.path().exists() && self.dockerd.exists();
         let running = installed
             && zendiloos_exec::run(&self.systemctl, &["is-active", "--quiet", "docker"], LIMITS)
                 .await
@@ -509,7 +531,18 @@ impl Pools {
             .get("data-root")
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned);
-        Ok(Response::DockerState { installed, running, data_root })
+        let version = if running {
+            let args = ["version", "--format", "{{.Server.Version}}"];
+            zendiloos_exec::run(&self.docker, args, LIMITS)
+                .await
+                .ok()
+                .filter(|output| output.status.success())
+                .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+                .filter(|version| !version.is_empty() && version.len() <= 64)
+        } else {
+            None
+        };
+        Ok(Response::DockerState { installed, running, data_root, version })
     }
 
     /// Puts Docker's data on the pool: dataset, mount unit, a drop-in so
@@ -522,12 +555,12 @@ impl Pools {
         volume: VolumeNumber,
     ) -> Result<Response, OperationError> {
         let _serial = self.serial.lock().await;
-        if !self.docker.path().exists() {
+        if !self.docker.path().exists() || !self.dockerd.exists() {
             return Err(refused("Docker is not installed: apt install docker.io docker-compose".into()));
         }
         self.require_managed(pool, Some(volume)).await?;
         let root = format!("/volume{}/{DOCKER_DIRECTORY}", volume.get());
-        let mut config = docker_config(&self.paths.docker_config)?;
+        let config = docker_config(&self.paths.docker_config)?;
         if let Some(other) = config.get("data-root").and_then(serde_json::Value::as_str)
             && other != root
             && other.ends_with(&format!("/{DOCKER_DIRECTORY}"))
@@ -539,6 +572,22 @@ impl Pools {
         if !existing.lines().any(|line| line == dataset) {
             run(&self.zfs, &["create", "-o", "mountpoint=legacy", &dataset]).await?;
         }
+        self.point_docker(pool, volume, config).await?;
+        run(&self.systemctl, &["restart", "docker"]).await?;
+        Ok(Response::Done)
+    }
+
+    /// Docker's data on `pool`: its mount unit, a drop-in so Docker starts
+    /// only with it mounted, and `data-root` with `overlay2` in `config`,
+    /// written back as `daemon.json`.
+    async fn point_docker(
+        &self,
+        pool: &PoolName,
+        volume: VolumeNumber,
+        mut config: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), OperationError> {
+        let root = format!("/volume{}/{DOCKER_DIRECTORY}", volume.get());
+        let dataset = format!("{}/{DOCKER_DATASET}", pool.as_str());
         let unit = docker_unit_name(volume);
         let content = format!(
             "# Created by zendiloOS: Docker's data (images, containers) on pool {pool}.\n\
@@ -573,13 +622,164 @@ impl Pools {
         }
         write_file(&self.paths.docker_config, &format!("{text}\n"))?;
         run(&self.systemctl, &["daemon-reload"]).await?;
-        run(&self.systemctl, &["restart", "docker"]).await?;
+        Ok(())
+    }
+
+    /// Moves Docker's data from one pool to another: stopped, copied with
+    /// `zfs send | zfs receive`, started from the copy; the old dataset is
+    /// destroyed last. If the copy fails, Docker starts as it was.
+    pub(crate) async fn move_docker(
+        &self,
+        from: &PoolName,
+        from_volume: VolumeNumber,
+        to: &PoolName,
+        to_volume: VolumeNumber,
+    ) -> Result<Response, OperationError> {
+        let _serial = self.serial.lock().await;
+        if !self.docker.path().exists() || !self.dockerd.exists() {
+            return Err(refused("Docker is not installed".into()));
+        }
+        if from == to {
+            return Err(refused(format!("Docker's data is on {} already", to.as_str())));
+        }
+        self.require_managed(from, Some(from_volume)).await?;
+        self.require_managed(to, Some(to_volume)).await?;
+        let old_root = format!("/volume{}/{DOCKER_DIRECTORY}", from_volume.get());
+        let config = docker_config(&self.paths.docker_config)?;
+        if config.get("data-root").and_then(serde_json::Value::as_str) != Some(old_root.as_str()) {
+            return Err(refused(format!("Docker's data is not on {}", from.as_str())));
+        }
+        let source = format!("{}/{DOCKER_DATASET}", from.as_str());
+        let target = format!("{}/{DOCKER_DATASET}", to.as_str());
+        let existing = output(&self.zfs, &["list", "-H", "-o", "name", "-d", "1", to.as_str()]).await?;
+        if existing.lines().any(|line| line == target) {
+            return Err(refused(format!("{} holds Docker's data already", to.as_str())));
+        }
+        // Stopped, so nothing changes while it is copied.
+        let _ = run(&self.systemctl, &["stop", "docker.socket"]).await;
+        run(&self.systemctl, &["stop", "docker.service"]).await?;
+        let snapshot = format!("{source}@zendiloos-move");
+        let _ = run(&self.zfs, &["destroy", &snapshot]).await;
+        let copied = async {
+            run(&self.zfs, &["snapshot", &snapshot]).await?;
+            self.send_receive(&snapshot, &target).await
+        }
+        .await;
+        if let Err(error) = copied {
+            let _ = run(&self.zfs, &["destroy", "-r", &target]).await;
+            let _ = run(&self.zfs, &["destroy", &snapshot]).await;
+            let _ = run(&self.systemctl, &["start", "docker.service"]).await;
+            return Err(error);
+        }
+        // From here on, Docker's data is the copy.
+        self.point_docker(to, to_volume, config).await?;
+        self.remove_unit(&docker_unit_name(from_volume)).await?;
+        run(&self.systemctl, &["start", "docker.service"]).await?;
+        let _ = run(&self.zfs, &["destroy", &format!("{target}@zendiloos-move")]).await;
+        run(&self.zfs, &["destroy", "-r", &source]).await?;
         Ok(Response::Done)
+    }
+
+    /// `zfs send -R snapshot | zfs receive -u target`, unmounted, for up to
+    /// six hours.
+    async fn send_receive(&self, snapshot: &str, target: &str) -> Result<(), OperationError> {
+        use std::process::Stdio;
+        let spawn_error = |e: std::io::Error| OperationError::Failed(format!("cannot start zfs: {e}"));
+        let mut send = tokio::process::Command::new(self.zfs.path())
+            .args(["send", "-R", snapshot])
+            .env_clear()
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(spawn_error)?;
+        let stream: Stdio = send
+            .stdout
+            .take()
+            .ok_or_else(|| OperationError::Failed("zfs send gives no stream".into()))?
+            .try_into()
+            .map_err(spawn_error)?;
+        let receive = tokio::process::Command::new(self.zfs.path())
+            .args(["receive", "-u", "-o", "mountpoint=legacy", target])
+            .env_clear()
+            .stdin(stream)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(spawn_error)?;
+        let both = async { tokio::join!(send.wait_with_output(), receive.wait_with_output()) };
+        let (sent, received) = tokio::time::timeout(std::time::Duration::from_secs(6 * 3600), both)
+            .await
+            .map_err(|_| OperationError::Failed("copying Docker's data took longer than six hours".into()))?;
+        for (what, finished) in [("zfs send", sent), ("zfs receive", received)] {
+            let finished = finished.map_err(spawn_error)?;
+            if !finished.status.success() {
+                let complaint = String::from_utf8_lossy(&finished.stderr).trim().to_owned();
+                return Err(OperationError::Failed(format!("{what}: {complaint}")));
+            }
+        }
+        Ok(())
     }
 
     /// The dataset of an app's data, `<pool>/zendiloos.apps/<app>`, mounted
     /// by its own unit at `/volume<N>/@apps/<app>` before Docker starts.
     /// What exists already stays.
+    /// The personal folders' dataset, mounted at `/volume<N>/@homes`.
+    /// What exists stays.
+    pub(crate) async fn prepare_homes(
+        &self,
+        pool: &PoolName,
+        volume: VolumeNumber,
+    ) -> Result<Response, OperationError> {
+        let _serial = self.serial.lock().await;
+        self.require_managed(pool, Some(volume)).await?;
+        let dataset = format!("{}/{HOMES_DATASET}", pool.as_str());
+        let existing = output(&self.zfs, &["list", "-H", "-o", "name", "-d", "1", pool.as_str()]).await?;
+        if !existing.lines().any(|line| line == dataset) {
+            let options = ["create", "-o", "mountpoint=legacy", "-o", "setuid=off", "-o", "devices=off"];
+            run(&self.zfs, &[&options[..], &[dataset.as_str()]].concat()).await?;
+        }
+        let content = format!(
+            "# Created by zendiloOS: the personal folders on pool {pool}.\n\
+             [Unit]\n\
+             Description=zendiloOS personal folders (ZFS dataset {dataset})\n\
+             Requires=zfs-import.target\n\
+             After=zfs-import.target\n\
+             \n\
+             [Mount]\n\
+             What={dataset}\n\
+             Where=/volume{number}/{HOMES_DIRECTORY}\n\
+             Type=zfs\n\
+             \n\
+             [Install]\n\
+             WantedBy=multi-user.target\n",
+            pool = pool.as_str(),
+            number = volume.get(),
+        );
+        // Its owner and mode come with the first folder (`MakeHome`): only
+        // the files agent may write to the volumes.
+        self.install_unit(&homes_unit_name(volume), &content).await?;
+        Ok(Response::Done)
+    }
+
+    /// How much `user` may store in the personal folders' dataset.
+    pub(crate) async fn set_home_quota(
+        &self,
+        pool: &PoolName,
+        volume: VolumeNumber,
+        user: &UserName,
+        quota_bytes: Option<u64>,
+    ) -> Result<Response, OperationError> {
+        let _serial = self.serial.lock().await;
+        self.require_managed(pool, Some(volume)).await?;
+        let dataset = format!("{}/{HOMES_DATASET}", pool.as_str());
+        let quota = quota_bytes.map_or_else(|| "none".to_owned(), |bytes| bytes.to_string());
+        run(&self.zfs, &["set", &format!("userquota@{}={quota}", user.as_str()), &dataset]).await?;
+        Ok(Response::Done)
+    }
+
     pub(crate) async fn prepare_app_dataset(
         &self,
         pool: &PoolName,
@@ -861,6 +1061,14 @@ pub(crate) use zendiloos_fileops::APPS_DIRECTORY;
 /// `volume<N>-\x40apps-<app>.mount`; systemd escapes `-` in paths.
 pub(crate) fn app_unit_name(volume: VolumeNumber, app: &AppName) -> String {
     format!("volume{}-\\x40apps-{}.mount", volume.get(), app.as_str().replace('-', "\\x2d"))
+}
+
+/// The personal folders' dataset below a pool: `<pool>/zendiloos.homes`.
+pub(crate) const HOMES_DATASET: &str = "zendiloos.homes";
+
+/// `volume<N>-\x40homes.mount`.
+pub(crate) fn homes_unit_name(volume: VolumeNumber) -> String {
+    format!("volume{}-\\x40homes.mount", volume.get())
 }
 
 /// `volume<N>-\x40docker.mount`.

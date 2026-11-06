@@ -16,7 +16,9 @@ ExecStart=/usr/libexec/zendiloos/zendiloos-agent --role files
 #   CAP_FOWNER), reaching them in users' private directories
 #   (CAP_DAC_READ_SEARCH);
 # - the file manager: opening files as the signed-in user (CAP_SETUID,
-#   CAP_SETGID).
+#   CAP_SETGID);
+# - personal folders: making each user's folder in /volume<N>/@homes and
+#   giving it to the user (CAP_CHOWN).
 NoNewPrivileges=yes
 CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_DAC_READ_SEARCH CAP_SETUID CAP_SETGID
 PrivateNetwork=yes

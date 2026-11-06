@@ -1,24 +1,32 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted } from 'vue'
+import { useQuery } from '@tanstack/vue-query'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 
 import { useSessionStore } from '@/features/auth/store'
+import { api, unwrap } from '@/shared/api/client'
 import { live } from '@/shared/api/live'
-import { useCompactLayout } from '@/shared/lib/media'
 import { useJobsStore } from '@/shared/jobs/store'
+import { useCompactLayout } from '@/shared/lib/media'
 import { useNotifications } from '@/shared/lib/notifications'
 import { useServerNotices } from '@/shared/notices/store'
 import { usePreferences } from '@/shared/preferences/store'
-import { cn } from '@/shared/lib/utils'
-import { IconTile } from '@/shared/ui/icon-tile'
+import { BrandMark } from '@/shared/ui/brand'
 
-import { APPS, findApp } from './apps'
+import AppLauncher from './AppLauncher.vue'
+import { ACCOUNT_SECTION, APPS, type AppDefinition, findApp, SETTINGS_APP } from './apps'
 import AppWindow from './AppWindow.vue'
+import DesktopIcons from './DesktopIcons.vue'
+import NotificationCenter from './NotificationCenter.vue'
 import PowerOverlay from './PowerOverlay.vue'
-import DesktopTaskbar from './DesktopTaskbar.vue'
+import DesktopDock from './DesktopDock.vue'
 import ToastStack from './ToastStack.vue'
+import UserMenu from './UserMenu.vue'
+import WidgetPanel from './WidgetPanel.vue'
 import { useWindows } from './windows'
+
+const WIDGETS_KEY = 'zendiloos.widgets.open'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -30,13 +38,23 @@ const notices = useServerNotices()
 const preferences = usePreferences()
 const compact = useCompactLayout()
 
-/** Only apps this account may use; the server enforces the same. */
-const apps = computed(() => APPS.filter((app) => session.can(app.permission)))
+/** Whether Docker is installed: the App Store's question, shared with it. */
+const docker = useQuery({
+  queryKey: ['apps', 'docker'],
+  queryFn: () => unwrap(api.GET('/api/v1/apps/docker')),
+  enabled: computed(() => session.can('containers.manage')),
+})
+
+/** Only apps this account may use and the NAS has; the server enforces the same. */
+function usable(app: AppDefinition): boolean {
+  return session.can(app.permission) && (!app.requires || Boolean(docker.data.value?.installed))
+}
+const apps = computed(() => APPS.filter(usable))
 
 const openWindows = computed(() =>
   windows.state.windows.flatMap((window) => {
     const app = findApp(window.appId)
-    return app && session.can(app.permission) ? [{ window, app }] : []
+    return app && usable(app) ? [{ window, app }] : []
   }),
 )
 
@@ -48,9 +66,40 @@ const layers = computed(
     ),
 )
 
+const launcherOpen = ref(false)
+/** Whether the widgets show: a convenience of this browser, not a setting. */
+const widgetsOpen = ref(readWidgetsOpen())
+function readWidgetsOpen(): boolean {
+  try {
+    return localStorage.getItem(WIDGETS_KEY) !== 'false'
+  } catch {
+    return true
+  }
+}
+function toggleWidgets(): void {
+  widgetsOpen.value = !widgetsOpen.value
+  try {
+    localStorage.setItem(WIDGETS_KEY, String(widgetsOpen.value))
+  } catch {
+    // Only a convenience.
+  }
+}
+
+// Windows live in the desktop's area, between the bar and the widgets.
+const area = ref<HTMLElement | null>(null)
+let observer: ResizeObserver | null = null
+
 onMounted(() => {
   windows.restore(session.info?.account.name ?? '')
-  window.addEventListener('resize', windows.resized)
+  observer = new ResizeObserver(([entry]) => {
+    if (entry) {
+      windows.resized({
+        width: Math.floor(entry.contentRect.width),
+        height: Math.floor(entry.contentRect.height),
+      })
+    }
+  })
+  if (area.value) observer.observe(area.value)
   live.connect()
   void jobs.start()
   // Notifications are about pools, disks and shares (`storage.view`).
@@ -59,11 +108,15 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
-  window.removeEventListener('resize', windows.resized)
+  observer?.disconnect()
   jobs.stop()
   notices.stop()
   live.disconnect()
 })
+
+function open(app: AppDefinition, section?: string): void {
+  windows.open(app, section)
+}
 
 async function signOut(): Promise<void> {
   try {
@@ -77,47 +130,66 @@ async function signOut(): Promise<void> {
 </script>
 
 <template>
-  <div class="wallpaper flex h-dvh flex-col overflow-hidden">
-    <main class="relative min-h-0 flex-1">
-      <ul
-        :class="
-          cn(
-            compact
-              ? 'grid grid-cols-4 gap-2 p-4'
-              : 'absolute top-3 left-3 flex max-h-[calc(100%-1.5rem)] flex-col flex-wrap gap-0.5',
-          )
-        "
-      >
-        <li v-for="app in apps" :key="app.id">
-          <button
-            type="button"
-            class="group flex w-[84px] flex-col items-center gap-1.5 rounded-lg px-1 py-2 text-xs font-medium text-white outline-none hover:bg-white/10 focus-visible:ring-2 focus-visible:ring-white/60"
-            @click="windows.open(app)"
-          >
-            <IconTile
-              :icon="app.icon"
-              :tone="app.tone"
-              size="xl"
-              class="transition-transform group-active:scale-95"
-            />
-            <span class="text-center leading-tight [text-shadow:0_1px_3px_rgb(0_0_0/0.6)]">
-              {{ t(`apps.${app.id}`) }}
-            </span>
-          </button>
-        </li>
-      </ul>
-      <AppWindow
-        v-for="{ window, app } in openWindows"
-        :key="app.id"
-        :app="app"
-        :window="window"
-        :layer="layers.get(app.id) ?? 0"
-        :active="windows.active === app.id"
-        :compact="compact"
-      />
+  <!-- Phones: a home screen of widgets and icons; apps open full screen. -->
+  <div v-if="compact" class="wallpaper fixed inset-0 overflow-y-auto">
+    <header class="flex items-center justify-between p-4">
+      <BrandMark class="size-8" />
+      <div class="glass glass-thin flex items-center rounded-panel">
+        <NotificationCenter />
+        <UserMenu
+          @open-settings="open(findApp(SETTINGS_APP)!, ACCOUNT_SECTION)"
+          @sign-out="signOut"
+        />
+      </div>
+    </header>
+    <div class="px-4">
+      <WidgetPanel wide />
+    </div>
+    <main
+      ref="area"
+      :aria-label="t('desktop.apps')"
+      class="grid grid-cols-[repeat(auto-fill,minmax(6rem,1fr))] justify-items-center gap-2 p-4"
+    >
+      <DesktopIcons :apps="apps" class="contents" @open="open" />
     </main>
-    <DesktopTaskbar :apps="apps" :compact="compact" @open="windows.open" @sign-out="signOut" />
-    <ToastStack />
-    <PowerOverlay />
+    <AppWindow
+      v-for="{ window, app } in openWindows"
+      :key="app.id"
+      :app="app"
+      :window="window"
+      :layer="layers.get(app.id) ?? 0"
+      :active="windows.active === app.id"
+      compact
+    />
   </div>
+
+  <!-- Everything floats clear of the screen's edges, resting on the wallpaper. -->
+  <div v-else class="wallpaper fixed inset-0 flex gap-3 p-3">
+    <DesktopDock
+      :apps="apps"
+      :launcher-open="launcherOpen"
+      :widgets-open="widgetsOpen"
+      @launcher="launcherOpen = !launcherOpen"
+      @widgets="toggleWidgets"
+      @sign-out="signOut"
+    />
+    <div class="relative flex min-w-0 flex-1 gap-3">
+      <main ref="area" :aria-label="t('desktop.desktop')" class="relative min-w-0 flex-1">
+        <DesktopIcons :apps="apps" @open="open" />
+        <AppWindow
+          v-for="{ window, app } in openWindows"
+          :key="app.id"
+          :app="app"
+          :window="window"
+          :layer="layers.get(app.id) ?? 0"
+          :active="windows.active === app.id"
+          :compact="false"
+        />
+      </main>
+      <WidgetPanel v-if="widgetsOpen" />
+      <AppLauncher v-if="launcherOpen" :apps="apps" @close="launcherOpen = false" @open="open" />
+    </div>
+  </div>
+  <ToastStack />
+  <PowerOverlay />
 </template>

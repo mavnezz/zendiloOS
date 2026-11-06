@@ -1,12 +1,13 @@
 <script setup lang="ts">
-import { ChevronLeft, Copy, Minus, Square, X } from 'lucide-vue-next'
-import { computed } from 'vue'
+import { ChevronLeft, CircleHelp, Copy, Minus, Square, X } from 'lucide-vue-next'
+import { computed, provide } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import { cn } from '@/shared/lib/utils'
-import { IconTile } from '@/shared/ui/icon-tile'
+import { WINDOW_SECTION } from '@/shared/lib/window-section'
 
 import type { AppDefinition } from './apps'
+import AppTile from './AppTile.vue'
 import { type Geometry, shownGeometry, type WindowState } from './windowManager'
 import { useWindows } from './windows'
 
@@ -22,6 +23,12 @@ const props = defineProps<{
 
 const { t } = useI18n()
 const windows = useWindows()
+
+// The app's page belongs to the window, so it survives a reload.
+provide(WINDOW_SECTION, {
+  section: computed(() => props.window.section),
+  navigate: (section: string) => windows.navigate(props.app.id, section),
+})
 const title = computed(() => t(`apps.${props.app.id}`))
 const fills = computed(() => props.compact || props.window.maximized)
 const geometry = computed(() => shownGeometry(props.window.geometry, windows.viewport))
@@ -33,13 +40,20 @@ const style = computed(() => {
   return { ...z, left: `${x}px`, top: `${y}px`, width: `${width}px`, height: `${height}px` }
 })
 
-let drag: { mode: 'move' | 'resize'; pointerX: number; pointerY: number; origin: Geometry } | null =
-  null
+type Edge = 'x' | 'y' | 'xy'
 
-function startDrag(event: PointerEvent, mode: 'move' | 'resize'): void {
+let drag: {
+  mode: 'move' | 'resize'
+  edge: Edge
+  pointerX: number
+  pointerY: number
+  origin: Geometry
+} | null = null
+
+function startDrag(event: PointerEvent, mode: 'move' | 'resize', edge: Edge = 'xy'): void {
   if (event.button !== 0 || fills.value) return
   ;(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId)
-  drag = { mode, pointerX: event.clientX, pointerY: event.clientY, origin: geometry.value }
+  drag = { mode, edge, pointerX: event.clientX, pointerY: event.clientY, origin: geometry.value }
 }
 
 function dragTo(event: PointerEvent): void {
@@ -49,7 +63,10 @@ function dragTo(event: PointerEvent): void {
   if (drag.mode === 'move') {
     windows.move(props.app.id, { x: drag.origin.x + dx, y: drag.origin.y + dy })
   } else {
-    const size = { width: drag.origin.width + dx, height: drag.origin.height + dy }
+    const size = {
+      width: drag.origin.width + (drag.edge === 'y' ? 0 : dx),
+      height: drag.origin.height + (drag.edge === 'x' ? 0 : dy),
+    }
     windows.resize(props.app.id, size, props.app.minimum)
   }
 }
@@ -59,7 +76,7 @@ function endDrag(): void {
 }
 
 const control =
-  'grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-chrome-hover hover:text-foreground'
+  'flex size-7 items-center justify-center rounded-lg text-muted-foreground outline-none transition hover:bg-foreground/10 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-3.5'
 </script>
 
 <template>
@@ -69,16 +86,22 @@ const control =
     :aria-label="title"
     :class="
       cn(
-        'absolute flex flex-col overflow-hidden bg-chrome text-card-foreground',
-        fills ? 'inset-0 rounded-none' : 'window-shadow rounded-xl',
-        !active && 'shadow-md',
+        'absolute flex flex-col overflow-hidden text-foreground outline-none motion-safe:animate-window-in',
+        compact ? 'inset-0 bg-background' : 'glass',
+        !compact && (fills ? 'rounded-none border-0' : 'rounded-window'),
+        !compact && active && 'glass-lifted',
       )
     "
     :style="style"
     @pointerdown="windows.focus(app.id)"
   >
     <header
-      class="relative flex h-10 shrink-0 touch-none items-center px-1.5 select-none"
+      :class="
+        cn(
+          'relative flex h-11 shrink-0 touch-none items-center gap-1 border-b border-foreground/10 px-2 select-none',
+          !fills && 'cursor-grab active:cursor-grabbing',
+        )
+      "
       @pointerdown="startDrag($event, 'move')"
       @pointermove="dragTo"
       @pointerup="endDrag"
@@ -88,64 +111,95 @@ const control =
       <button
         v-if="compact"
         type="button"
-        class="relative z-10 grid size-7 place-items-center rounded-md hover:bg-chrome-hover"
+        :class="cn(control, 'relative z-10 size-9 [&_svg]:size-5')"
         :aria-label="t('desktop.back')"
         @pointerdown.stop
         @click="windows.minimize(app.id)"
       >
-        <ChevronLeft class="size-4" />
+        <ChevronLeft />
       </button>
-      <div class="pointer-events-none absolute inset-x-24 flex items-center justify-center gap-2">
-        <IconTile :icon="app.icon" :tone="app.tone" size="xs" />
-        <h2
-          :class="
-            cn('truncate text-[13px] font-semibold', !active && 'font-medium text-muted-foreground')
-          "
-        >
-          {{ title }}
-        </h2>
-      </div>
+      <h2
+        :class="
+          cn(
+            'pointer-events-none absolute inset-x-0 mx-auto flex w-fit max-w-[60%] items-center gap-1.5 text-sm font-medium',
+            !active && 'text-muted-foreground',
+          )
+        "
+      >
+        <AppTile :app="app" size="title" />
+        <span class="truncate">{{ title }}</span>
+      </h2>
       <div class="relative z-10 ml-auto flex items-center gap-0.5" @pointerdown.stop>
         <template v-if="!compact">
           <button
             type="button"
             :class="control"
+            :aria-label="t('desktop.help')"
+            :title="t('desktop.help')"
+          >
+            <CircleHelp />
+          </button>
+          <span aria-hidden="true" class="mx-1 h-4 w-px bg-foreground/15" />
+          <button
+            type="button"
+            :class="control"
             :aria-label="t('desktop.minimize')"
+            :title="t('desktop.minimize')"
             @click="windows.minimize(app.id)"
           >
-            <Minus class="size-3.5" />
+            <Minus />
           </button>
           <button
             type="button"
             :class="control"
             :aria-label="window.maximized ? t('desktop.restore') : t('desktop.maximize')"
+            :title="window.maximized ? t('desktop.restore') : t('desktop.maximize')"
             @click="windows.toggleMaximized(app.id)"
           >
-            <Copy v-if="window.maximized" class="size-3" />
-            <Square v-else class="size-3" />
+            <Copy v-if="window.maximized" class="-scale-x-100" />
+            <Square v-else />
           </button>
         </template>
         <button
           type="button"
           :class="cn(control, 'hover:bg-destructive hover:text-white')"
           :aria-label="t('desktop.close')"
+          :title="t('desktop.close')"
           @click="windows.close(app.id)"
         >
-          <X class="size-3.5" />
+          <X />
         </button>
       </div>
     </header>
-    <div class="@container min-h-0 flex-1 overflow-hidden">
+    <!-- The page itself is opaque: reading text over a wallpaper is not a fair fight. -->
+    <div class="@container min-h-0 flex-1 overflow-hidden bg-background/92">
       <component :is="app.component" />
     </div>
-    <div
-      v-if="!fills"
-      class="absolute right-0 bottom-0 size-4 cursor-se-resize touch-none"
-      aria-hidden="true"
-      @pointerdown.stop="startDrag($event, 'resize')"
-      @pointermove="dragTo"
-      @pointerup="endDrag"
-      @pointercancel="endDrag"
-    />
+    <template v-if="!fills">
+      <div
+        aria-hidden="true"
+        class="absolute inset-y-0 right-0 w-1.5 cursor-ew-resize touch-none"
+        @pointerdown.stop="startDrag($event, 'resize', 'x')"
+        @pointermove="dragTo"
+        @pointerup="endDrag"
+        @pointercancel="endDrag"
+      />
+      <div
+        aria-hidden="true"
+        class="absolute inset-x-0 bottom-0 h-1.5 cursor-ns-resize touch-none"
+        @pointerdown.stop="startDrag($event, 'resize', 'y')"
+        @pointermove="dragTo"
+        @pointerup="endDrag"
+        @pointercancel="endDrag"
+      />
+      <div
+        aria-hidden="true"
+        class="absolute right-0 bottom-0 size-4 cursor-nwse-resize touch-none"
+        @pointerdown.stop="startDrag($event, 'resize', 'xy')"
+        @pointermove="dragTo"
+        @pointerup="endDrag"
+        @pointercancel="endDrag"
+      />
+    </template>
   </section>
 </template>

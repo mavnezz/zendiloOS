@@ -11,13 +11,14 @@ use zendiloos_kernel::{AuditEntry, AuditLog, Clock, PortError, Secret, Timestamp
 use zendiloos_kernel::RequestContext;
 
 use crate::application::ports::{
-    AccountRepository, Creation, GroupRepository, IssuedToken, PasswordHasher, PreferenceRepository,
-    SessionRepository, SessionTokens, SetupCodes, SystemAccounts,
+    AccountRepository, Creation, GroupObserver, GroupRepository, IssuedToken, PasswordHasher,
+    PreferenceRepository, SecurityRepository, SessionRepository, SessionTokens, SetupCodes, SystemAccounts,
 };
 use crate::application::{IdentityConfig, IdentityPorts, IdentityUseCases};
 use crate::domain::{
-    Account, AccountId, AccountName, Group, GroupId, GroupName, NewAccount, NewGroup, NewSession,
-    PasswordHash, Preferences, Role, Session, SessionId, SetupCode, TokenHash,
+    Account, AccountId, AccountName, AddressRange, BlockedAddress, Group, GroupId, GroupName, NewAccount,
+    NewGroup, NewSession, PasswordHash, Preferences, Role, SecuritySettings, Session, SessionDetails,
+    SessionId, SetupCode, TokenHash,
 };
 
 /// The code [`MemorySetupCodes`] issues.
@@ -26,6 +27,7 @@ pub const SETUP_CODE: &str = "ABCD-EFGH-JKLM";
 #[derive(Default)]
 pub struct InMemoryAccounts {
     accounts: Mutex<Vec<Account>>,
+    policy: Mutex<Option<crate::domain::PasswordPolicy>>,
     /// IDs are never reused, as in the database.
     last_id: AtomicI64,
     /// Group memberships go with a deleted account, as in the database.
@@ -39,17 +41,7 @@ impl InMemoryAccounts {
 
     pub fn insert(&self, new: NewAccount) -> Account {
         let mut accounts = self.accounts.lock().unwrap();
-        let account = Account {
-            id: AccountId::new(self.last_id.fetch_add(1, Ordering::Relaxed) + 1),
-            name: new.name,
-            full_name: new.full_name,
-            role: new.role,
-            password_hash: new.password_hash,
-            password_change_required: new.password_change_required,
-            disabled: false,
-            created_at: new.created_at,
-            updated_at: new.created_at,
-        };
+        let account = new.stored(AccountId::new(self.last_id.fetch_add(1, Ordering::Relaxed) + 1));
         accounts.push(account.clone());
         account
     }
@@ -90,6 +82,7 @@ impl AccountRepository for InMemoryAccounts {
         self.update(id, |account| {
             account.password_hash = hash.clone();
             account.password_change_required = false;
+            account.password_changed_at = at;
             account.updated_at = at;
         });
         Ok(())
@@ -111,8 +104,12 @@ impl AccountRepository for InMemoryAccounts {
     async fn update(&self, account: &Account) -> Result<(), PortError> {
         self.update(account.id, |stored| {
             stored.full_name.clone_from(&account.full_name);
+            stored.description.clone_from(&account.description);
+            stored.email.clone_from(&account.email);
             stored.role = account.role;
             stored.disabled = account.disabled;
+            stored.password_locked = account.password_locked;
+            stored.password_change_required = account.password_change_required;
             stored.updated_at = account.updated_at;
         });
         Ok(())
@@ -126,7 +123,8 @@ impl AccountRepository for InMemoryAccounts {
     ) -> Result<(), PortError> {
         self.update(id, |account| {
             account.password_hash = hash.clone();
-            account.password_change_required = true;
+            account.password_change_required = !account.password_locked;
+            account.password_changed_at = at;
             account.updated_at = at;
         });
         Ok(())
@@ -137,6 +135,20 @@ impl AccountRepository for InMemoryAccounts {
         if let Some(groups) = self.groups.lock().unwrap().as_ref() {
             groups.remove_member(id);
         }
+        Ok(())
+    }
+
+    async fn require_password_change(&self, id: AccountId) -> Result<(), PortError> {
+        self.update(id, |account| account.password_change_required = true);
+        Ok(())
+    }
+
+    async fn password_policy(&self) -> Result<crate::domain::PasswordPolicy, PortError> {
+        Ok(self.policy.lock().unwrap().unwrap_or_default())
+    }
+
+    async fn set_password_policy(&self, policy: &crate::domain::PasswordPolicy) -> Result<(), PortError> {
+        *self.policy.lock().unwrap() = Some(*policy);
         Ok(())
     }
 }
@@ -291,9 +303,14 @@ impl SystemAccounts for FakeSystemAccounts {
     }
 }
 
+/// A session's address and user agent, by its id.
+type Client = (SessionId, Option<std::net::IpAddr>, Option<String>);
+
 #[derive(Default)]
 pub struct InMemorySessions {
     sessions: Mutex<Vec<Session>>,
+    /// Address and user agent of each, by id.
+    clients: Mutex<Vec<Client>>,
     last_id: AtomicI64,
 }
 
@@ -307,6 +324,7 @@ impl InMemorySessions {
 impl SessionRepository for InMemorySessions {
     async fn create(&self, session: NewSession) -> Result<SessionId, PortError> {
         let id = SessionId::new(self.last_id.fetch_add(1, Ordering::Relaxed) + 1);
+        self.clients.lock().unwrap().push((id, session.client_ip, session.user_agent.clone()));
         self.sessions.lock().unwrap().push(Session {
             id,
             account_id: session.account_id,
@@ -354,6 +372,80 @@ impl SessionRepository for InMemorySessions {
         let before = sessions.len();
         sessions.retain(|s| now < s.expires_at && now.duration_since(s.last_seen_at) < idle_timeout);
         Ok(u64::try_from(before - sessions.len()).unwrap())
+    }
+
+    async fn list(&self) -> Result<Vec<SessionDetails>, PortError> {
+        let clients = self.clients.lock().unwrap();
+        let mut list: Vec<SessionDetails> = self
+            .sessions
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|s| {
+                let client = clients.iter().find(|(id, _, _)| *id == s.id);
+                SessionDetails {
+                    id: s.id,
+                    account_id: s.account_id,
+                    client_ip: client.and_then(|(_, ip, _)| *ip),
+                    user_agent: client.and_then(|(_, _, ua)| ua.clone()),
+                    created_at: s.created_at,
+                    last_seen_at: s.last_seen_at,
+                    expires_at: s.expires_at,
+                }
+            })
+            .collect();
+        list.reverse();
+        Ok(list)
+    }
+}
+
+/// Security settings and blocks in memory.
+#[derive(Default)]
+pub struct InMemorySecurity {
+    settings: Mutex<Option<SecuritySettings>>,
+    blocked: Mutex<Vec<BlockedAddress>>,
+}
+
+impl InMemorySecurity {
+    pub fn blocked(&self) -> Vec<BlockedAddress> {
+        self.blocked.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl SecurityRepository for InMemorySecurity {
+    async fn settings(&self) -> Result<SecuritySettings, PortError> {
+        Ok(self.settings.lock().unwrap().clone().unwrap_or_default())
+    }
+
+    async fn save_settings(&self, settings: &SecuritySettings) -> Result<(), PortError> {
+        *self.settings.lock().unwrap() = Some(settings.clone());
+        Ok(())
+    }
+
+    async fn blocked(&self) -> Result<Vec<BlockedAddress>, PortError> {
+        Ok(self.blocked.lock().unwrap().iter().rev().cloned().collect())
+    }
+
+    async fn block(&self, block: &BlockedAddress) -> Result<(), PortError> {
+        let mut blocked = self.blocked.lock().unwrap();
+        blocked.retain(|b| b.range != block.range);
+        blocked.push(block.clone());
+        Ok(())
+    }
+
+    async fn unblock(&self, range: &AddressRange) -> Result<bool, PortError> {
+        let mut blocked = self.blocked.lock().unwrap();
+        let before = blocked.len();
+        blocked.retain(|b| b.range != *range);
+        Ok(blocked.len() < before)
+    }
+
+    async fn delete_expired(&self, now: Timestamp) -> Result<u64, PortError> {
+        let mut blocked = self.blocked.lock().unwrap();
+        let before = blocked.len();
+        blocked.retain(|b| !b.is_over(now));
+        Ok(u64::try_from(before - blocked.len()).unwrap())
     }
 }
 
@@ -458,7 +550,7 @@ pub struct InMemoryPreferences(Mutex<std::collections::HashMap<AccountId, Prefer
 #[async_trait]
 impl PreferenceRepository for InMemoryPreferences {
     async fn load(&self, account: AccountId) -> Result<Preferences, PortError> {
-        Ok(self.0.lock().unwrap().get(&account).copied().unwrap_or_default())
+        Ok(self.0.lock().unwrap().get(&account).cloned().unwrap_or_default())
     }
 
     async fn save(&self, account: AccountId, preferences: Preferences) -> Result<(), PortError> {
@@ -490,12 +582,50 @@ impl Clock for ManualClock {
     }
 }
 
+/// Records what it is told about groups, as `members <group> <before>` or
+/// `deleting <group>`; refuses deletions while `refuse` is set.
+#[derive(Default)]
+pub struct RecordingGroupObserver {
+    pub events: Mutex<Vec<String>>,
+    pub refuse: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait]
+impl GroupObserver for RecordingGroupObserver {
+    async fn members_changed(
+        &self,
+        group: GroupId,
+        before: &[AccountId],
+        _: &zendiloos_kernel::Actor,
+        _: &RequestContext,
+    ) -> Result<(), PortError> {
+        let before: Vec<String> = before.iter().map(|id| id.get().to_string()).collect();
+        self.events.lock().unwrap().push(format!("members {} [{}]", group.get(), before.join(",")));
+        Ok(())
+    }
+
+    async fn deleting(
+        &self,
+        group: GroupId,
+        _: &zendiloos_kernel::Actor,
+        _: &RequestContext,
+    ) -> Result<(), PortError> {
+        if self.refuse.load(Ordering::Relaxed) {
+            return Err(PortError::new("sharing", "refused"));
+        }
+        self.events.lock().unwrap().push(format!("deleting {}", group.get()));
+        Ok(())
+    }
+}
+
 /// The use cases wired to in-memory ports, with handles to inspect them.
 pub struct TestIdentity {
     pub use_cases: IdentityUseCases,
     pub accounts: Arc<InMemoryAccounts>,
     pub groups: Arc<InMemoryGroups>,
+    pub group_observer: Arc<RecordingGroupObserver>,
     pub sessions: Arc<InMemorySessions>,
+    pub security: Arc<InMemorySecurity>,
     pub system: Arc<FakeSystemAccounts>,
     pub setup_codes: Arc<MemorySetupCodes>,
     pub audit: Arc<MemoryAudit>,
@@ -512,14 +642,18 @@ impl TestIdentity {
         let groups = Arc::new(InMemoryGroups::default());
         *accounts.groups.lock().unwrap() = Some(groups.clone());
         let sessions = Arc::new(InMemorySessions::default());
+        let security = Arc::new(InMemorySecurity::default());
         let system = Arc::new(FakeSystemAccounts::default());
         let setup_codes = Arc::new(MemorySetupCodes::default());
         let audit = Arc::new(MemoryAudit::default());
         let clock = Arc::new(ManualClock::default());
+        let group_observer = Arc::new(RecordingGroupObserver::default());
         let ports = IdentityPorts {
             accounts: accounts.clone(),
             groups: groups.clone(),
+            group_observer: group_observer.clone(),
             sessions: sessions.clone(),
+            security: security.clone(),
             preferences: Arc::new(InMemoryPreferences::default()),
             system: system.clone(),
             hasher: Arc::new(FakeHasher),
@@ -532,7 +666,9 @@ impl TestIdentity {
             use_cases: IdentityUseCases::new(ports, config),
             accounts,
             groups,
+            group_observer,
             sessions,
+            security,
             system,
             setup_codes,
             audit,
@@ -545,9 +681,12 @@ impl TestIdentity {
         self.accounts.insert(NewAccount {
             name: AccountName::parse(name).unwrap(),
             full_name: None,
+            description: None,
+            email: None,
             role,
             password_hash: FakeHasher::hash_of(password),
             password_change_required: false,
+            password_locked: false,
             created_at: self.clock.now(),
         })
     }

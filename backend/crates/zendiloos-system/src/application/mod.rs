@@ -8,7 +8,10 @@ use std::sync::Arc;
 
 use zendiloos_kernel::{AuditLog, Clock};
 
-use ports::{AuditReader, JournalReader, LiveMetrics, PowerControl, SystemInfoProvider};
+use ports::{
+    AuditReader, JournalReader, ListeningPorts, LiveMetrics, PowerControl, SshControl, SystemInfoProvider,
+    TimeControl, WebTlsControl,
+};
 
 /// Adapters for every port of this context, plugged in by the composition
 /// root.
@@ -17,6 +20,10 @@ pub struct SystemPorts {
     pub info: Arc<dyn SystemInfoProvider>,
     pub metrics: Arc<dyn LiveMetrics>,
     pub power: Arc<dyn PowerControl>,
+    pub time: Arc<dyn TimeControl>,
+    pub ssh: Arc<dyn SshControl>,
+    pub listening: Arc<dyn ListeningPorts>,
+    pub tls: Arc<dyn WebTlsControl>,
     pub journal: Arc<dyn JournalReader>,
     pub audit: Arc<dyn AuditLog>,
     pub audit_reader: Arc<dyn AuditReader>,
@@ -29,6 +36,12 @@ pub struct SystemUseCases {
     pub get_info: queries::GetSystemInfo,
     pub watch_metrics: queries::WatchMetrics,
     pub request_power_action: commands::RequestPowerAction,
+    pub get_time: queries::GetTime,
+    pub set_time: commands::SetTime,
+    pub get_ssh: queries::GetSsh,
+    pub set_ssh: commands::SetSsh,
+    pub get_tls: queries::GetTls,
+    pub set_tls: commands::SetTls,
     pub read_journal: queries::ReadJournal,
     pub read_audit_log: queries::ReadAuditLog,
 }
@@ -38,7 +51,22 @@ impl SystemUseCases {
         Self {
             get_info: queries::GetSystemInfo::new(ports.info),
             watch_metrics: queries::WatchMetrics::new(ports.metrics),
-            request_power_action: commands::RequestPowerAction::new(ports.power, ports.audit, ports.clock),
+            request_power_action: commands::RequestPowerAction::new(
+                ports.power,
+                ports.audit.clone(),
+                ports.clock.clone(),
+            ),
+            get_time: queries::GetTime::new(ports.time.clone()),
+            set_time: commands::SetTime::new(ports.time, ports.audit.clone(), ports.clock.clone()),
+            get_ssh: queries::GetSsh::new(ports.ssh.clone()),
+            set_ssh: commands::SetSsh::new(
+                ports.ssh,
+                ports.listening,
+                ports.audit.clone(),
+                ports.clock.clone(),
+            ),
+            get_tls: queries::GetTls::new(ports.tls.clone()),
+            set_tls: commands::SetTls::new(ports.tls, ports.audit, ports.clock),
             read_journal: queries::ReadJournal::new(ports.journal),
             read_audit_log: queries::ReadAuditLog::new(ports.audit_reader),
         }

@@ -11,7 +11,7 @@ use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 use zendiloos_identity::application::commands::{ChangePasswordInput, LoginInput, SetupInput};
 use zendiloos_identity::application::{AuthContext, SignedIn};
-use zendiloos_identity::domain::{Language, Preferences, Role, Theme};
+use zendiloos_identity::domain::{Language, Layout, Preferences, Role, Theme, Wallpaper};
 use zendiloos_kernel::Secret;
 
 use crate::auth::{Auth, AuthAllowPending, SameOrigin, removal_cookie, session_cookie};
@@ -64,6 +64,8 @@ pub struct CurrentAccount {
     pub permissions: Vec<String>,
     /// Nothing but changing the password is allowed until this is false.
     pub password_change_required: bool,
+    /// Only administrators set this account's password.
+    pub password_locked: bool,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -87,6 +89,7 @@ impl From<&AuthContext> for SessionInfo {
                 role: account.role.into(),
                 permissions: account.role.permissions().map(|p| p.as_str().to_owned()).collect(),
                 password_change_required: account.password_change_required,
+                password_locked: account.password_locked,
             },
             csrf_token: auth.csrf_token.expose().to_owned(),
             expires_at: auth.expires_at.unix_seconds(),
@@ -270,13 +273,23 @@ pub enum InterfaceTheme {
 
 /// How the signed-in account wants the interface. `null` means not chosen:
 /// each browser keeps what it shows.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct InterfacePreferences {
     #[serde(default)]
     pub language: Option<InterfaceLanguage>,
     #[serde(default)]
     pub theme: Option<InterfaceTheme>,
+    /// The desktop's background, by the interface's name for it (lowercase
+    /// letters).
+    #[serde(default)]
+    pub wallpaper: Option<String>,
+    /// The widgets beside the desktop, in order, by id; empty for none.
+    #[serde(default)]
+    pub widgets: Option<Vec<String>>,
+    /// The app icons on the desktop, in order, by id.
+    #[serde(default)]
+    pub desktop_icons: Option<Vec<String>>,
 }
 
 impl From<Preferences> for InterfacePreferences {
@@ -291,13 +304,28 @@ impl From<Preferences> for InterfacePreferences {
                 Theme::Dark => InterfaceTheme::Dark,
                 Theme::System => InterfaceTheme::System,
             }),
+            wallpaper: preferences.wallpaper.map(|wallpaper| wallpaper.as_str().to_owned()),
+            widgets: preferences.widgets.map(|layout| layout.ids().to_vec()),
+            desktop_icons: preferences.desktop_icons.map(|layout| layout.ids().to_vec()),
         }
     }
 }
 
-impl From<InterfacePreferences> for Preferences {
-    fn from(preferences: InterfacePreferences) -> Self {
-        Self {
+impl TryFrom<InterfacePreferences> for Preferences {
+    type Error = ApiError;
+
+    fn try_from(preferences: InterfacePreferences) -> Result<Self, Self::Error> {
+        let invalid = |what: &str| ApiError::InvalidInput(format!("not a valid {what}"));
+        let layout = |ids: Option<Vec<String>>, what: &str| {
+            ids.map(|ids| Layout::new(ids).ok_or_else(|| invalid(what))).transpose()
+        };
+        Ok(Self {
+            wallpaper: preferences
+                .wallpaper
+                .map(|name| Wallpaper::parse(&name).ok_or_else(|| invalid("wallpaper")))
+                .transpose()?,
+            widgets: layout(preferences.widgets, "widget layout")?,
+            desktop_icons: layout(preferences.desktop_icons, "icon layout")?,
             language: preferences.language.map(|language| match language {
                 InterfaceLanguage::En => Language::English,
                 InterfaceLanguage::De => Language::German,
@@ -307,7 +335,7 @@ impl From<InterfacePreferences> for Preferences {
                 InterfaceTheme::Dark => Theme::Dark,
                 InterfaceTheme::System => Theme::System,
             }),
-        }
+        })
     }
 }
 
@@ -333,13 +361,16 @@ async fn preferences(
     tag = "identity",
     security(("session" = [])),
     request_body = InterfacePreferences,
-    responses((status = NO_CONTENT, description = "Saved."))
+    responses(
+        (status = NO_CONTENT, description = "Saved."),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_input`: no such wallpaper name or layout"),
+    )
 )]
 async fn save_preferences(
     auth: Auth,
     State(state): State<ApiState>,
     ApiJson(preferences): ApiJson<InterfacePreferences>,
 ) -> Result<StatusCode, ApiError> {
-    state.identity.save_preferences.execute(&auth.0, preferences.into()).await?;
+    state.identity.save_preferences.execute(&auth.0, preferences.try_into()?).await?;
     Ok(StatusCode::NO_CONTENT)
 }

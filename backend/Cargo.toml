@@ -16,6 +16,8 @@ zendiloos-agent = { path = "crates/zendiloos-agent" }
 zendiloos-agent-proto = { path = "crates/zendiloos-agent-proto" }
 zendiloos-api = { path = "crates/zendiloos-api" }
 zendiloos-apps = { path = "crates/zendiloos-apps" }
+zendiloos-containers = { path = "crates/zendiloos-containers" }
+zendiloos-updates = { path = "crates/zendiloos-updates" }
 zendiloos-exec = { path = "crates/zendiloos-exec" }
 zendiloos-fileops = { path = "crates/zendiloos-fileops" }
 zendiloos-identity = { path = "crates/zendiloos-identity" }
@@ -62,6 +64,8 @@ rustix = { version = "1.1", features = ["fs", "net", "thread", "process", "rand"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
+# Releases of zendiloOS are checked against their minisign signature.
+minisign-verify = "0.2"
 # SQLite is bundled, so every build runs against the same, known version.
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite-bundled", "migrate", "macros"] }
 sysinfo = { version = "0.40", default-features = false, features = ["system", "network", "component"] }

@@ -12,8 +12,9 @@ use zendiloos_kernel::{Actor, AuditEntry, Outcome, PortError, RequestContext};
 use super::SharingPorts;
 use super::ports::{HostError, Names};
 use crate::domain::{
-    Access, AccessRule, AppAccess, InvalidNetwork, InvalidShareName, NewShare, NfsClient, NfsSpec, Principal,
-    Share, ShareId, ShareName, ShareSettings, ShareUsage, SharingConfig, SmbSpec, Subject, network,
+    Access, AccessRule, AppAccess, FileServices, HomesSpec, InvalidFileServices, InvalidNetwork,
+    InvalidShareName, NewShare, NfsClient, NfsSpec, Permission, Principal, Share, ShareId, ShareName,
+    ShareSettings, ShareUsage, SharingConfig, SmbSpec, Subject, network,
 };
 
 pub const MAX_DESCRIPTION_CHARS: usize = 200;
@@ -24,6 +25,8 @@ pub enum SharingError {
     InvalidName(#[from] InvalidShareName),
     #[error(transparent)]
     InvalidNetwork(#[from] InvalidNetwork),
+    #[error(transparent)]
+    InvalidServices(#[from] InvalidFileServices),
     #[error("the description must be at most {MAX_DESCRIPTION_CHARS} characters, without line breaks")]
     InvalidDescription,
     #[error("a share with this name exists")]
@@ -127,8 +130,9 @@ fn check_rules(rules: &[AccessRule], names: &Names) -> Result<(), SharingError> 
     Ok(())
 }
 
-/// Rules with names; rules of accounts or groups deleted since are left out.
-fn principals(rules: &[AccessRule], names: &Names) -> Vec<(Principal, Access)> {
+/// Rules with names, groups as groups, for Samba, which follows their
+/// members itself; rules of accounts or groups deleted since are left out.
+fn principals(rules: &[AccessRule], names: &Names) -> Vec<(Principal, Permission)> {
     rules
         .iter()
         .filter_map(|rule| {
@@ -136,26 +140,71 @@ fn principals(rules: &[AccessRule], names: &Names) -> Vec<(Principal, Access)> {
                 Subject::Account(id) => Principal::User(names.accounts.get(&id)?.clone()),
                 Subject::Group(id) => Principal::Group(names.groups.get(&id)?.clone()),
             };
-            Some((principal, rule.access))
+            Some((principal, rule.permission))
         })
         .collect()
 }
 
-/// What the share's directory should allow: the people's rules, then the
+/// The accounts the rules deny, themselves or through a group, sorted.
+fn denied(rules: &[AccessRule], names: &Names) -> Vec<i64> {
+    let mut denied: Vec<i64> = rules
+        .iter()
+        .filter(|rule| rule.permission == Permission::Deny)
+        .flat_map(|rule| match rule.subject {
+            Subject::Account(id) => vec![id],
+            Subject::Group(id) => names.members.get(&id).cloned().unwrap_or_default(),
+        })
+        .filter(|id| names.accounts.contains_key(id))
+        .collect();
+    denied.sort_unstable();
+    denied.dedup();
+    denied
+}
+
+/// What the share's directory should say, as POSIX ACL entries: the
+/// grants of accounts not denied and of groups, an entry without
+/// permissions for every account denied, itself or as a member of a
+/// group (a named user entry comes before the group entries), then the
 /// apps'. Samba never learns of the apps.
-fn acl(rules: &[AccessRule], names: &Names, share: ShareId, apps: &[AppAccess]) -> Vec<(Principal, Access)> {
-    let mut acl = principals(rules, names);
+pub(super) fn acl(
+    rules: &[AccessRule],
+    names: &Names,
+    share: ShareId,
+    apps: &[AppAccess],
+) -> Vec<(Principal, Permission)> {
+    let denied = denied(rules, names);
+    let mut acl: Vec<(Principal, Permission)> = principals(
+        &rules
+            .iter()
+            .filter(|rule| rule.permission != Permission::Deny)
+            .filter(|rule| !matches!(rule.subject, Subject::Account(id) if denied.contains(&id)))
+            .cloned()
+            .collect::<Vec<_>>(),
+        names,
+    );
+    acl.extend(
+        denied
+            .iter()
+            .filter_map(|id| Some((Principal::User(names.accounts.get(id)?.clone()), Permission::Deny))),
+    );
     acl.extend(
         apps.iter()
             .filter(|app| app.share == share)
-            .map(|app| (Principal::User(app.account.clone()), app.access)),
+            .map(|app| (Principal::User(app.account.clone()), app.access.into())),
     );
     acl
 }
 
 /// What the servers should offer for `shares`.
-pub fn config(shares: &[Share], names: &Names) -> SharingConfig {
+pub fn config(
+    shares: &[Share],
+    names: &Names,
+    services: FileServices,
+    homes: Option<HomesSpec>,
+) -> SharingConfig {
     SharingConfig {
+        services: services.clone(),
+        homes,
         smb: shares
             .iter()
             .map(|share| SmbSpec {
@@ -164,6 +213,10 @@ pub fn config(shares: &[Share], names: &Names) -> SharingConfig {
                 access: principals(&share.access, names),
                 recycle_bin: share.recycle_bin,
                 comment: share.description.clone(),
+                time_machine: services
+                    .time_machine
+                    .filter(|machine| machine.share == share.id)
+                    .map(|machine| machine.max_bytes),
             })
             .collect(),
         nfs: shares
@@ -230,11 +283,75 @@ impl SharingUseCases {
             .collect())
     }
 
-    async fn apply_locked(&self, request: &RequestContext) -> Result<(), SharingError> {
+    pub(super) async fn apply_locked(&self, request: &RequestContext) -> Result<(), SharingError> {
         let shares = self.ports.shares.list().await?;
         let names = self.ports.directory.names().await?;
-        self.ports.host.apply(&config(&shares, &names), request).await?;
+        let services = self.ports.shares.file_services().await?;
+        let homes = match self.ports.shares.homes_location().await? {
+            Some(location) => {
+                let mut users: Vec<String> = self
+                    .ports
+                    .shares
+                    .homes()
+                    .await?
+                    .iter()
+                    .filter_map(|home| names.accounts.get(&home.account).cloned())
+                    .collect();
+                users.sort();
+                Some(HomesSpec { volume: location.volume, users })
+            }
+            None => None,
+        };
+        self.ports.host.apply(&config(&shares, &names, services, homes), request).await?;
         Ok(())
+    }
+
+    /// The file services; a Time Machine share deleted since is gone.
+    pub async fn file_services(&self) -> Result<FileServices, SharingError> {
+        let mut services = self.ports.shares.file_services().await?;
+        if let Some(machine) = services.time_machine
+            && self.ports.shares.find(machine.share).await?.is_none()
+        {
+            services.time_machine = None;
+        }
+        Ok(services)
+    }
+
+    /// Stores the file services and applies them with the shares. If the
+    /// host refuses, the previous ones return.
+    pub async fn set_file_services(
+        &self,
+        services: FileServices,
+        actor: &Actor,
+        request: &RequestContext,
+    ) -> Result<FileServices, SharingError> {
+        let services = services.checked()?;
+        let _changes = self.changes.lock().await;
+        if let Some(machine) = services.time_machine
+            && self.ports.shares.find(machine.share).await?.is_none()
+        {
+            return Err(SharingError::ShareNotFound);
+        }
+        let previous = self.ports.shares.file_services().await?;
+        self.ports.shares.set_file_services(&services).await?;
+        let applied = self.apply_locked(request).await;
+        if applied.is_err() {
+            self.ports.shares.set_file_services(&previous).await?;
+            if let Err(error) = self.apply_locked(request).await {
+                tracing::error!(%error, "cannot apply the previous file services again");
+            }
+        }
+        let outcome = if applied.is_ok() { Outcome::Success } else { Outcome::Failure };
+        let target = format!(
+            "smb={} nfs={} workgroup={} min={}",
+            services.smb,
+            services.nfs,
+            services.workgroup,
+            services.smb_min_protocol.as_str()
+        );
+        self.audit("sharing.services_update", outcome, &target, actor, request).await;
+        applied?;
+        Ok(services)
     }
 
     pub(super) async fn audit(
@@ -377,29 +494,38 @@ impl SharingUseCases {
         self.audit("sharing.share_update", Outcome::Success, share.name.as_str(), actor, request).await;
 
         let job = match follow_up {
-            Some((access, removed)) => {
-                let host = Arc::clone(&self.ports.host);
-                let (volume, name, request) = (share.volume, share.name.clone(), request.clone());
-                let job = self
-                    .ports
-                    .jobs
-                    .start(
-                        "sharing.apply_access",
-                        Some(share.name.to_string()),
-                        Some(actor),
-                        move |progress| async move {
-                            progress.step("existing_files", None).await;
-                            host.set_access(volume, &name, &access, &removed, true, &request)
-                                .await
-                                .map_err(|error| JobError::new("agent_failed", Some(error.to_string())))
-                        },
-                    )
-                    .await?;
-                Some(job)
-            }
+            Some((access, removed)) => Some(
+                self.access_job(share.volume, share.name.clone(), access, removed, actor, request).await?,
+            ),
             None => None,
         };
         Ok((share, job))
+    }
+
+    /// A job that gives everything in the share the permissions its
+    /// directory got already.
+    pub(super) async fn access_job(
+        &self,
+        volume: u16,
+        name: ShareName,
+        access: Vec<(Principal, Permission)>,
+        removed: Vec<Principal>,
+        actor: &Actor,
+        request: &RequestContext,
+    ) -> Result<Job, SharingError> {
+        let host = Arc::clone(&self.ports.host);
+        let request = request.clone();
+        let label = name.to_string();
+        Ok(self
+            .ports
+            .jobs
+            .start("sharing.apply_access", Some(label), Some(actor), move |progress| async move {
+                progress.step("existing_files", None).await;
+                host.set_access(volume, &name, &access, &removed, true, &request)
+                    .await
+                    .map_err(|error| JobError::new("agent_failed", Some(error.to_string())))
+            })
+            .await?)
     }
 
     /// Gives an app's `account` exactly `grants` (share by name), on the

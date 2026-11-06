@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT group_id AS \"group_id!\", account_id AS \"account_id!\" FROM group_members\n               ORDER BY group_id, account_id",
+  "describe": {
+    "columns": [
+      {
+        "name": "group_id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "group_members",
+            "name": "group_id"
+          }
+        }
+      },
+      {
+        "name": "account_id!",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "group_members",
+            "name": "account_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "0b905610474f19f9c3c6d61e1ffd38949c12ce27acf6e1713a08be364432c211"
+}

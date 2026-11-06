@@ -1,0 +1,62 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT address, blocked_at, until, automatic AS \"automatic: bool\"\n               FROM blocked_addresses ORDER BY blocked_at DESC, address",
+  "describe": {
+    "columns": [
+      {
+        "name": "address",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "blocked_addresses",
+            "name": "address"
+          }
+        }
+      },
+      {
+        "name": "blocked_at",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "blocked_addresses",
+            "name": "blocked_at"
+          }
+        }
+      },
+      {
+        "name": "until",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "blocked_addresses",
+            "name": "until"
+          }
+        }
+      },
+      {
+        "name": "automatic: bool",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "blocked_addresses",
+            "name": "automatic"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "ae10eee438a31bc2f271dc55914551ededec3bf1e412fd6ba9a97b6f5c642c2a"
+}

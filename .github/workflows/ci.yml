@@ -1,11 +1,16 @@
 # Runs exactly what `just check` and `just deb` run locally, in the same Nix
 # development shell, so a green check on a workstation means a green CI.
 # Actions are pinned to commit SHAs; tags can be moved, commits cannot.
+#
+# A push to main or of a tag `v*` also publishes a release
+# (docs/releases.md): a tag `v1.2.3` a stable one, `v1.2.3-rc.1` a test one,
+# main the rolling development build `dev`.
 name: CI
 
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
 
 permissions:
@@ -47,15 +52,108 @@ jobs:
     runs-on: ubuntu-24.04
     needs: check
     steps:
+      # The whole history: the version of a development build counts from
+      # the last tag.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
 
+      - name: Version
+        id: version
+        run: echo "version=$(scripts/release-version.sh)" >> "$GITHUB_OUTPUT"
+
       - name: just deb
-        run: nix develop --command just deb
+        run: ZENDILOOS_VERSION='${{ steps.version.outputs.version }}' nix develop --command just deb
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: zendiloos-deb
           path: dist/*.deb
           if-no-files-found: error
+
+  release:
+    name: Release
+    runs-on: ubuntu-24.04
+    needs: package
+    if: github.event_name == 'push'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: zendiloos-deb
+          path: dist
+
+      # The installation ISO, for releases of the kinds the repository
+      # variable ZENDILOOS_ISO names: stable (the default), test (and
+      # stable), all (and every development build) or off. It is only the
+      # way in: afterwards the NAS updates itself.
+      - name: Installation ISO
+        env:
+          ISO: ${{ vars.ZENDILOOS_ISO || 'stable' }}
+        run: |
+          case "$GITHUB_REF_TYPE:$GITHUB_REF_NAME" in
+            tag:*-*) kind=test ;;
+            tag:*) kind=stable ;;
+            *) kind=development ;;
+          esac
+          case "$ISO:$kind" in
+            stable:stable | test:stable | test:test | all:*) ;;
+            *) echo "No ISO for a $kind release (ZENDILOOS_ISO=$ISO)"; exit 0 ;;
+          esac
+          nix develop --command scripts/build-iso.sh dist/zendiloos_*_amd64.deb dist
+          # One name in every release, so that .../releases/latest/download/
+          # zendiloos-amd64-netinst.iso is always the newest stable one.
+          mv dist/zendiloos-*-amd64-netinst.iso dist/zendiloos-amd64-netinst.iso
+
+      - name: Sign
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+        run: |
+          if [ -z "$MINISIGN_SECRET_KEY" ]; then
+            # A release asked for by a tag fails; the development build
+            # just waits for the key.
+            if [ "$GITHUB_REF_TYPE" = tag ]; then
+              echo "::error::The secret MINISIGN_SECRET_KEY is missing (docs/releases.md)"
+              exit 1
+            fi
+            echo "::warning::No development build: the secret MINISIGN_SECRET_KEY is missing (docs/releases.md)"
+            echo "SKIP_RELEASE=1" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          key=$(mktemp)
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key"
+          package=$(ls dist/zendiloos_*.deb)
+          version=$(basename "$package" | sed 's/^zendiloos_\(.*\)_[a-z0-9]*\.deb$/\1/')
+          (cd dist && sha256sum zendiloos_*.deb $(ls zendiloos-*.iso 2>/dev/null) > SHA256SUMS)
+          printf '%s\n' "$MINISIGN_PASSWORD" | nix develop --command \
+            minisign -S -s "$key" -m dist/SHA256SUMS -t "zendiloos $version"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Publish
+        if: env.SKIP_RELEASE != '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          files=(dist/zendiloos_*.deb dist/SHA256SUMS dist/SHA256SUMS.minisig)
+          [ -f dist/zendiloos-amd64-netinst.iso ] && files+=(dist/zendiloos-amd64-netinst.iso)
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            kind=()
+            case "$GITHUB_REF_NAME" in *-*) kind=(--prerelease) ;; esac
+            gh release create "$GITHUB_REF_NAME" "${files[@]}" "${kind[@]}" \
+              --title "zendiloOS $VERSION" --generate-notes --verify-tag
+          else
+            # One rolling development build: the latest commit on main.
+            gh release delete dev --cleanup-tag --yes 2>/dev/null || true
+            gh release create dev "${files[@]}" --prerelease --target "$GITHUB_SHA" \
+              --title "Development build $VERSION" \
+              --notes "The state of main at $GITHUB_SHA. Untested; for the development channel only."
+          fi

@@ -4,7 +4,8 @@ use async_trait::async_trait;
 use zendiloos_kernel::{PortError, RequestContext};
 
 use crate::domain::{
-    AuditQuery, AuditRecord, JournalPage, JournalQuery, MetricsSample, PowerAction, SystemInfo,
+    AuditQuery, AuditRecord, JournalPage, JournalQuery, MetricsSample, PowerAction, SshSettings, SshStatus,
+    SystemInfo, TimeSettings, TimeStatus, TlsMinimum,
 };
 
 /// Supplies facts about the host. Implemented in `zendiloos-infra`.
@@ -18,6 +19,38 @@ pub trait SystemInfoProvider: Send + Sync {
 pub trait PowerControl: Send + Sync {
     /// Returns once the action is under way.
     async fn request(&self, action: PowerAction, context: &RequestContext) -> Result<(), PortError>;
+}
+
+/// The SSH server; changing it needs the privileged agent.
+#[async_trait]
+pub trait SshControl: Send + Sync {
+    async fn status(&self, context: &RequestContext) -> Result<SshStatus, PortError>;
+
+    /// Applies checked settings.
+    async fn apply(&self, settings: &SshSettings, context: &RequestContext) -> Result<(), PortError>;
+}
+
+/// The web interface's TLS; changing it needs the privileged agent.
+#[async_trait]
+pub trait WebTlsControl: Send + Sync {
+    async fn minimum(&self, context: &RequestContext) -> Result<TlsMinimum, PortError>;
+
+    async fn apply(&self, minimum: TlsMinimum, context: &RequestContext) -> Result<(), PortError>;
+}
+
+/// Which TCP ports something on the machine listens on.
+#[async_trait]
+pub trait ListeningPorts: Send + Sync {
+    async fn is_listening(&self, port: u16) -> Result<bool, PortError>;
+}
+
+/// The machine's clock; changing it needs the privileged agent.
+#[async_trait]
+pub trait TimeControl: Send + Sync {
+    async fn status(&self, context: &RequestContext) -> Result<TimeStatus, PortError>;
+
+    /// Applies checked settings.
+    async fn apply(&self, settings: &TimeSettings, context: &RequestContext) -> Result<(), PortError>;
 }
 
 /// The newest metrics sample, and a way to follow the ones after it. A

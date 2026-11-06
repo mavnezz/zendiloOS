@@ -3,13 +3,12 @@ import { computed, type HTMLAttributes } from 'vue'
 
 import { cn } from '@/shared/lib/utils'
 
-import { IconTile } from '../icon-tile'
 import type { NavGroup } from '.'
 
 const props = defineProps<{
-  /** Side navigation; without it the panel fills the window. */
+  /** Navigation; without it the page fills the window. */
   groups?: NavGroup[]
-  /** No padding inside the panel: for tables and lists edge to edge. */
+  /** No padding around the page: for tables and lists edge to edge. */
   flush?: boolean
   panelClass?: HTMLAttributes['class']
 }>()
@@ -19,99 +18,76 @@ const items = computed(() => (props.groups ?? []).flatMap((group) => group.items
 </script>
 
 <!--
-  The inside of a window: side navigation on the window's frame and a white
-  panel for the content, with optional tabs above it. Under 640 px of width
-  the navigation becomes a row above the panel.
+  The inside of a window. Apps with pages get a navigation: a column on the
+  left in wide windows, a scrollable row on top in narrow ones.
 -->
 <template>
-  <div class="flex h-full flex-col @2xl:flex-row">
-    <template v-if="groups?.length">
+  <div class="@container/app h-full">
+    <div class="flex h-full flex-col @2xl/app:flex-row">
       <nav
-        class="hidden w-52 shrink-0 flex-col gap-3 overflow-y-auto px-2 pt-0.5 pb-2 @2xl:flex"
+        v-if="groups?.length"
         :aria-label="items.find((item) => item.id === section)?.label"
+        class="flex shrink-0 gap-1 overflow-x-auto border-b bg-muted/40 p-2 @2xl/app:w-60 @2xl/app:flex-col @2xl/app:overflow-x-visible @2xl/app:overflow-y-auto @2xl/app:border-r @2xl/app:border-b-0"
       >
         <slot name="sidebar-top" />
-        <div v-for="group in groups" :key="group.id" class="grid gap-px">
-          <p
+        <div
+          v-for="group in groups"
+          :key="group.id"
+          class="flex shrink-0 gap-1 @2xl/app:flex-col @2xl/app:not-first:mt-3"
+        >
+          <div
             v-if="group.label"
-            class="px-2.5 pb-1 text-[11px] font-medium tracking-wide text-muted-foreground uppercase"
+            class="hidden px-2 pb-1 text-xs font-medium text-muted-foreground @2xl/app:block"
           >
             {{ group.label }}
-          </p>
+          </div>
           <button
             v-for="item in group.items"
             :key="item.id"
             type="button"
+            :aria-current="section === item.id ? 'page' : undefined"
             :class="
               cn(
-                'group flex h-8 items-center gap-2.5 rounded-md px-2.5 text-left text-sm transition-colors',
-                section === item.id
-                  ? 'bg-card font-medium text-primary shadow-xs'
-                  : 'text-foreground/85 hover:bg-chrome-hover',
+                'flex shrink-0 items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm whitespace-nowrap outline-none hover:bg-foreground/5 focus-visible:ring-2 focus-visible:ring-ring @2xl/app:items-start @2xl/app:whitespace-normal',
+                section === item.id && 'bg-primary/10 font-medium text-primary hover:bg-primary/15',
               )
             "
-            :aria-current="section === item.id ? 'page' : undefined"
             @click="section = item.id"
           >
-            <IconTile v-if="item.icon && item.tone" :icon="item.icon" :tone="item.tone" size="sm" />
-            <component
-              :is="item.icon"
-              v-else-if="item.icon"
-              :class="
-                cn(
-                  'size-4 shrink-0',
-                  section === item.id ? 'text-primary' : 'text-muted-foreground',
-                )
-              "
+            <component :is="item.icon" v-if="item.icon" class="mt-0.5 size-4 shrink-0" />
+            <span class="min-w-0 flex-1">{{ item.label }}</span>
+            <span
+              v-if="item.alert"
+              class="mt-1.5 size-1.5 shrink-0 rounded-full bg-destructive"
+              aria-hidden="true"
             />
-            <span class="min-w-0 flex-1 truncate">{{ item.label }}</span>
-            <span v-if="item.alert" class="size-1.5 rounded-full bg-destructive" />
             <span
               v-if="item.count !== undefined"
-              class="min-w-5 rounded-full bg-foreground/[0.06] px-1.5 text-center text-[11px] leading-5 text-muted-foreground tabular-nums"
+              class="mt-px rounded-full bg-foreground/[0.07] px-1.5 text-xs leading-4 text-muted-foreground tabular-nums"
             >
               {{ item.count }}
             </span>
           </button>
         </div>
-        <div class="mt-auto">
+        <div class="hidden @2xl/app:mt-auto @2xl/app:block">
           <slot name="sidebar-bottom" />
         </div>
       </nav>
-      <nav class="flex shrink-0 gap-1 overflow-x-auto px-1.5 pb-1.5 @2xl:hidden">
-        <button
-          v-for="item in items"
-          :key="item.id"
-          type="button"
+      <div class="flex min-h-0 min-w-0 flex-1 flex-col">
+        <slot name="tabs" />
+        <div
           :class="
             cn(
-              'flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-xs',
-              section === item.id
-                ? 'bg-card font-medium text-primary shadow-xs'
-                : 'hover:bg-chrome-hover',
+              '@container min-h-0 flex-1 overflow-auto',
+              // The padding as a variable: a page footer reaches over it.
+              !flush &&
+                'p-(--frame-padding) [--frame-padding:--spacing(4)] @3xl:[--frame-padding:--spacing(6)]',
+              panelClass,
             )
           "
-          :aria-current="section === item.id ? 'page' : undefined"
-          @click="section = item.id"
         >
-          <component :is="item.icon" v-if="item.icon" class="size-3.5" />
-          {{ item.label }}
-        </button>
-      </nav>
-    </template>
-    <div
-      :class="
-        cn(
-          'mx-1.5 mb-1.5 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border border-black/[0.06] bg-card shadow-xs dark:border-white/[0.06]',
-          groups?.length && '@2xl:ml-0',
-        )
-      "
-    >
-      <slot name="tabs" />
-      <div
-        :class="cn('@container/panel min-h-0 flex-1 overflow-auto', !flush && 'p-5', panelClass)"
-      >
-        <slot />
+          <slot />
+        </div>
       </div>
     </div>
   </div>

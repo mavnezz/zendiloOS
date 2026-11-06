@@ -181,6 +181,10 @@ pub struct AuditParams {
     pub limit: Option<u16>,
     /// `older` of the previous page.
     pub before: Option<i64>,
+    /// Only entries of this action, such as `identity.login`.
+    pub action: Option<String>,
+    /// Only entries whose action starts so, such as `containers.`.
+    pub prefix: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -226,7 +230,8 @@ async fn audit(
 ) -> Result<Json<AuditPage>, ApiError> {
     auth.require(Permission::LogsView)?;
     let limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, AuditQuery::MAX_LIMIT);
-    let records = state.system.read_audit_log.execute(AuditQuery { limit, before: params.before }).await?;
+    let query = AuditQuery { limit, before: params.before, action: params.action, prefix: params.prefix };
+    let records = state.system.read_audit_log.execute(query).await?;
     let older = (records.len() >= usize::from(limit)).then(|| records.last().map(|r| r.id)).flatten();
     Ok(Json(AuditPage {
         entries: records

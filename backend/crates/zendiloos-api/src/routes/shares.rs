@@ -26,6 +26,10 @@ pub(super) fn routes() -> OpenApiRouter<ApiState> {
         .routes(routes!(delete_snapshot))
         .routes(routes!(rollback_snapshot))
         .routes(routes!(set_snapshot_schedules))
+        .routes(routes!(file_services, set_file_services))
+        .routes(routes!(subject_access, set_subject_access))
+        .routes(routes!(homes, set_homes))
+        .routes(routes!(set_account_home))
 }
 
 impl From<SharingError> for ApiError {
@@ -34,6 +38,7 @@ impl From<SharingError> for ApiError {
         match error {
             SharingError::InvalidName(e) => ApiError::InvalidInput(e.to_string()),
             SharingError::InvalidNetwork(e) => ApiError::InvalidInput(e.to_string()),
+            SharingError::InvalidServices(e) => ApiError::InvalidInput(e.to_string()),
             SharingError::InvalidDescription => ApiError::InvalidInput(error.to_string()),
             SharingError::NameTaken => rejected(StatusCode::CONFLICT, "name_taken", None),
             SharingError::VolumeNotFound => {
@@ -68,6 +73,46 @@ pub enum ShareAccessLevel {
     ReadWrite,
 }
 
+/// What a rule says. `deny` keeps the account or group out, also where
+/// another rule would let it in: a group's denial wins over its members'
+/// own rules.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ShareRuleLevel {
+    Deny,
+    Read,
+    ReadWrite,
+}
+
+impl From<sharing::Permission> for ShareRuleLevel {
+    fn from(permission: sharing::Permission) -> Self {
+        match permission {
+            sharing::Permission::Deny => ShareRuleLevel::Deny,
+            sharing::Permission::Read => ShareRuleLevel::Read,
+            sharing::Permission::ReadWrite => ShareRuleLevel::ReadWrite,
+        }
+    }
+}
+
+impl From<ShareRuleLevel> for sharing::Permission {
+    fn from(level: ShareRuleLevel) -> Self {
+        match level {
+            ShareRuleLevel::Deny => sharing::Permission::Deny,
+            ShareRuleLevel::Read => sharing::Permission::Read,
+            ShareRuleLevel::ReadWrite => sharing::Permission::ReadWrite,
+        }
+    }
+}
+
+impl From<sharing::Access> for ShareAccessLevel {
+    fn from(access: sharing::Access) -> Self {
+        match access {
+            sharing::Access::Read => ShareAccessLevel::Read,
+            sharing::Access::ReadWrite => ShareAccessLevel::ReadWrite,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SubjectKind {
@@ -82,7 +127,7 @@ pub struct ShareRule {
     pub kind: SubjectKind,
     /// Account or group ID.
     pub id: i64,
-    pub access: ShareAccessLevel,
+    pub access: ShareRuleLevel,
 }
 
 /// A host or network that may mount the share over NFS.
@@ -207,11 +252,7 @@ impl From<sharing::AccessRule> for ShareRule {
             sharing::Subject::Account(id) => (SubjectKind::Account, id),
             sharing::Subject::Group(id) => (SubjectKind::Group, id),
         };
-        let access = match rule.access {
-            sharing::Access::Read => ShareAccessLevel::Read,
-            sharing::Access::ReadWrite => ShareAccessLevel::ReadWrite,
-        };
-        Self { kind, id, access }
+        Self { kind, id, access: rule.permission.into() }
     }
 }
 
@@ -221,11 +262,7 @@ impl From<ShareRule> for sharing::AccessRule {
             SubjectKind::Account => sharing::Subject::Account(rule.id),
             SubjectKind::Group => sharing::Subject::Group(rule.id),
         };
-        let access = match rule.access {
-            ShareAccessLevel::Read => sharing::Access::Read,
-            ShareAccessLevel::ReadWrite => sharing::Access::ReadWrite,
-        };
-        Self { subject, access }
+        Self { subject, permission: rule.access.into() }
     }
 }
 
@@ -655,4 +692,462 @@ async fn set_snapshot_schedules(
     let saved =
         state.sharing.set_snapshot_schedules(ShareId::new(id), schedules, &auth.0.actor(), &client).await?;
     Ok(Json(saved.into_iter().map(schedule_dto).collect()))
+}
+
+/// The oldest SMB version the NAS answers.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SmbMinProtocol {
+    /// SMB 2.0: Windows Vista, old printers and scanners.
+    Smb2,
+    /// SMB 2.1: Windows 7.
+    #[serde(rename = "smb2_1")]
+    Smb2_1,
+    /// SMB 3: Windows 8 and every current system.
+    Smb3,
+}
+
+/// Whether SMB traffic is encrypted.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SmbEncryptionMode {
+    /// As each client asks.
+    #[default]
+    Default,
+    /// Always; clients that cannot encrypt cannot connect.
+    Required,
+    Off,
+}
+
+/// Whether SMB packets are signed.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SmbSigningMode {
+    /// As each client asks.
+    #[default]
+    Default,
+    Mandatory,
+    Disabled,
+}
+
+/// The share Macs back up to with Time Machine.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TimeMachineShare {
+    pub share_id: i64,
+    /// At least 1 GiB; absent: as much as the share may hold.
+    #[serde(default)]
+    pub max_bytes: Option<u64>,
+}
+
+/// Which file services run, and how Samba presents itself; one set for
+/// all shares. Fields added later have defaults, as a fresh install has
+/// them.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FileServices {
+    /// SMB for Windows, macOS and Linux.
+    pub smb: bool,
+    /// NFS for Linux and other Unix systems.
+    pub nfs: bool,
+    /// The Windows workgroup: 1 to 15 letters, digits, `-` or `_`.
+    pub workgroup: String,
+    pub smb_min_protocol: SmbMinProtocol,
+    #[serde(default)]
+    pub smb_encryption: SmbEncryptionMode,
+    #[serde(default)]
+    pub smb_signing: SmbSigningMode,
+    /// Shares a user may not open are not listed to them.
+    #[serde(default = "yes")]
+    pub hide_unreadable: bool,
+    /// SMB 3 over several connections at once.
+    #[serde(default = "yes")]
+    pub multichannel: bool,
+    /// Clients may cache files they have open.
+    #[serde(default = "yes")]
+    pub oplocks: bool,
+    /// SMB 2 leases; only with oplocks.
+    #[serde(default = "yes")]
+    pub leases: bool,
+    /// Open files survive a short network loss; SMB's locks then no longer
+    /// hold against NFS or the file manager.
+    #[serde(default)]
+    pub durable_handles: bool,
+    /// Names with characters Windows does not allow, and Apple's
+    /// extensions; needed for Time Machine.
+    #[serde(default = "yes")]
+    pub mac_compat: bool,
+    /// Symbolic links inside a share are followed; never out of it.
+    #[serde(default = "yes")]
+    pub follow_symlinks: bool,
+    /// Names kept out of the shares, e.g. `/*.tmp/Thumbs.db/`.
+    #[serde(default)]
+    pub veto_files: Option<String>,
+    /// Folders holding only such files can be deleted.
+    #[serde(default)]
+    pub delete_veto_files: bool,
+    /// Windows finds the NAS (WS-Discovery).
+    #[serde(default = "yes")]
+    pub wsdd: bool,
+    /// Macs find the NAS and its Time Machine share (Bonjour).
+    #[serde(default = "yes")]
+    pub bonjour: bool,
+    #[serde(default)]
+    pub time_machine: Option<TimeMachineShare>,
+}
+
+impl From<sharing::FileServices> for FileServices {
+    fn from(services: sharing::FileServices) -> Self {
+        Self {
+            smb: services.smb,
+            nfs: services.nfs,
+            workgroup: services.workgroup,
+            smb_min_protocol: match services.smb_min_protocol {
+                sharing::SmbProtocol::Smb2 => SmbMinProtocol::Smb2,
+                sharing::SmbProtocol::Smb2_1 => SmbMinProtocol::Smb2_1,
+                sharing::SmbProtocol::Smb3 => SmbMinProtocol::Smb3,
+            },
+            smb_encryption: match services.smb_encryption {
+                sharing::SmbEncryption::Default => SmbEncryptionMode::Default,
+                sharing::SmbEncryption::Required => SmbEncryptionMode::Required,
+                sharing::SmbEncryption::Off => SmbEncryptionMode::Off,
+            },
+            smb_signing: match services.smb_signing {
+                sharing::SmbSigning::Default => SmbSigningMode::Default,
+                sharing::SmbSigning::Mandatory => SmbSigningMode::Mandatory,
+                sharing::SmbSigning::Disabled => SmbSigningMode::Disabled,
+            },
+            hide_unreadable: services.hide_unreadable,
+            multichannel: services.multichannel,
+            oplocks: services.oplocks,
+            leases: services.leases,
+            durable_handles: services.durable_handles,
+            mac_compat: services.mac_compat,
+            follow_symlinks: services.follow_symlinks,
+            veto_files: services.veto_files,
+            delete_veto_files: services.delete_veto_files,
+            wsdd: services.wsdd,
+            bonjour: services.bonjour,
+            time_machine: services.time_machine.map(|machine| TimeMachineShare {
+                share_id: machine.share.get(),
+                max_bytes: machine.max_bytes,
+            }),
+        }
+    }
+}
+
+impl From<FileServices> for sharing::FileServices {
+    fn from(request: FileServices) -> Self {
+        Self {
+            smb: request.smb,
+            nfs: request.nfs,
+            workgroup: request.workgroup,
+            smb_min_protocol: match request.smb_min_protocol {
+                SmbMinProtocol::Smb2 => sharing::SmbProtocol::Smb2,
+                SmbMinProtocol::Smb2_1 => sharing::SmbProtocol::Smb2_1,
+                SmbMinProtocol::Smb3 => sharing::SmbProtocol::Smb3,
+            },
+            smb_encryption: match request.smb_encryption {
+                SmbEncryptionMode::Default => sharing::SmbEncryption::Default,
+                SmbEncryptionMode::Required => sharing::SmbEncryption::Required,
+                SmbEncryptionMode::Off => sharing::SmbEncryption::Off,
+            },
+            smb_signing: match request.smb_signing {
+                SmbSigningMode::Default => sharing::SmbSigning::Default,
+                SmbSigningMode::Mandatory => sharing::SmbSigning::Mandatory,
+                SmbSigningMode::Disabled => sharing::SmbSigning::Disabled,
+            },
+            hide_unreadable: request.hide_unreadable,
+            multichannel: request.multichannel,
+            oplocks: request.oplocks,
+            leases: request.leases,
+            durable_handles: request.durable_handles,
+            mac_compat: request.mac_compat,
+            follow_symlinks: request.follow_symlinks,
+            veto_files: request.veto_files,
+            delete_veto_files: request.delete_veto_files,
+            wsdd: request.wsdd,
+            bonjour: request.bonjour,
+            time_machine: request.time_machine.map(|machine| sharing::TimeMachine {
+                share: ShareId::new(machine.share_id),
+                max_bytes: machine.max_bytes,
+            }),
+        }
+    }
+}
+
+/// Which file services run. Needs `system.view`.
+#[utoipa::path(
+    get,
+    path = "/file-services",
+    tag = "shares",
+    security(("session" = [])),
+    responses(
+        (status = OK, body = FileServices),
+        (status = FORBIDDEN, body = Problem, description = "`forbidden`"),
+    )
+)]
+async fn file_services(auth: Auth, State(state): State<ApiState>) -> Result<Json<FileServices>, ApiError> {
+    auth.require(Permission::SystemView)?;
+    Ok(Json(state.sharing.file_services().await?.into()))
+}
+
+/// Turns SMB and NFS on or off and sets the workgroup and the oldest SMB
+/// version; applied with the shares at once. Needs `system.manage`.
+#[utoipa::path(
+    put,
+    path = "/file-services",
+    tag = "shares",
+    security(("session" = [])),
+    request_body = FileServices,
+    responses(
+        (status = OK, body = FileServices, description = "As stored: the workgroup uppercase."),
+        (status = FORBIDDEN, body = Problem, description = "`forbidden`, `csrf_rejected`"),
+        (status = CONFLICT, body = Problem, description = "`refused`: the host did not accept it; the previous settings apply"),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`: the Time Machine share"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_input`"),
+    )
+)]
+async fn set_file_services(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    ApiJson(request): ApiJson<FileServices>,
+) -> Result<Json<FileServices>, ApiError> {
+    auth.require(Permission::SystemManage)?;
+    let services = request.into();
+    let stored = state.sharing.set_file_services(services, &auth.0.actor(), &client).await?;
+    Ok(Json(stored.into()))
+}
+
+/// One share as an account or group sees it.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SubjectShareAccess {
+    pub share_id: i64,
+    pub share: String,
+    /// The account's or group's own rule; absent without one.
+    pub rule: Option<ShareRuleLevel>,
+    /// What it may do in the end. For an account: absent if any rule
+    /// denies it (its own or a group's), else its own rule, else the
+    /// broadest of its groups'. For a group: what its rule grants.
+    pub effective: Option<ShareAccessLevel>,
+}
+
+fn subject(kind: SubjectKind, id: i64) -> sharing::Subject {
+    match kind {
+        SubjectKind::Account => sharing::Subject::Account(id),
+        SubjectKind::Group => sharing::Subject::Group(id),
+    }
+}
+
+/// Every share with an account's or group's rule and what it may do.
+/// Needs `shares.manage`.
+#[utoipa::path(
+    get,
+    path = "/shares/access/{kind}/{id}",
+    tag = "shares",
+    security(("session" = [])),
+    params(("kind" = SubjectKind, Path), ("id" = i64, Path)),
+    responses(
+        (status = OK, body = Vec<SubjectShareAccess>),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`unknown_subject`"),
+    )
+)]
+async fn subject_access(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Path((kind, id)): Path<(SubjectKind, i64)>,
+) -> Result<Json<Vec<SubjectShareAccess>>, ApiError> {
+    auth.require(Permission::SharesManage)?;
+    let seen = state.sharing.subject_access(subject(kind, id)).await?;
+    Ok(Json(
+        seen.into_iter()
+            .map(|entry| SubjectShareAccess {
+                share_id: entry.share.get(),
+                share: entry.name.to_string(),
+                rule: entry.rule.map(Into::into),
+                effective: entry.effective.map(Into::into),
+            })
+            .collect(),
+    ))
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SubjectRule {
+    pub share_id: i64,
+    /// Absent or null: no rule.
+    #[serde(default)]
+    pub rule: Option<ShareRuleLevel>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetSubjectAccessRequest {
+    /// The shares to change; others keep their rules.
+    pub rules: Vec<SubjectRule>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SubjectAccessUpdate {
+    /// One per share that changed: its existing files follow.
+    pub jobs: Vec<Job>,
+}
+
+/// Sets an account's or group's rules on several shares at once. Each
+/// share that changes gets its permissions at once and its existing files
+/// in a job. Needs `shares.manage`.
+#[utoipa::path(
+    put,
+    path = "/shares/access/{kind}/{id}",
+    tag = "shares",
+    security(("session" = [])),
+    params(("kind" = SubjectKind, Path), ("id" = i64, Path)),
+    request_body = SetSubjectAccessRequest,
+    responses(
+        (status = OK, body = SubjectAccessUpdate),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`: a share"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`unknown_subject`, `duplicate_rule`"),
+    )
+)]
+async fn set_subject_access(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path((kind, id)): Path<(SubjectKind, i64)>,
+    ApiJson(request): ApiJson<SetSubjectAccessRequest>,
+) -> Result<Json<SubjectAccessUpdate>, ApiError> {
+    auth.require(Permission::SharesManage)?;
+    let rules: Vec<(ShareId, Option<sharing::Permission>)> = request
+        .rules
+        .into_iter()
+        .map(|rule| (ShareId::new(rule.share_id), rule.rule.map(Into::into)))
+        .collect();
+    let jobs = state.sharing.set_subject_access(subject(kind, id), &rules, &auth.0.actor(), &client).await?;
+    Ok(Json(SubjectAccessUpdate { jobs: jobs.into_iter().map(Job::from).collect() }))
+}
+
+/// Where the personal folders are.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct HomesLocation {
+    pub pool: String,
+    pub volume: u16,
+}
+
+/// An account with a personal folder.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AccountHome {
+    pub account_id: i64,
+    /// How much it may store there; absent: as much as the pool has.
+    pub quota_bytes: Option<u64>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct Homes {
+    /// Absent while personal folders are off.
+    pub location: Option<HomesLocation>,
+    pub homes: Vec<AccountHome>,
+}
+
+impl From<zendiloos_sharing::application::HomesSettings> for Homes {
+    fn from(settings: zendiloos_sharing::application::HomesSettings) -> Self {
+        Self {
+            location: settings.location.map(|l| HomesLocation { pool: l.pool, volume: l.volume }),
+            homes: settings
+                .homes
+                .into_iter()
+                .map(|h| AccountHome { account_id: h.account, quota_bytes: h.quota_bytes })
+                .collect(),
+        }
+    }
+}
+
+/// Where the personal folders are and who has one. Needs `users.manage`.
+#[utoipa::path(
+    get,
+    path = "/homes",
+    tag = "shares",
+    security(("session" = [])),
+    responses((status = OK, body = Homes), (status = FORBIDDEN, body = Problem, description = "`forbidden`"))
+)]
+async fn homes(auth: Auth, State(state): State<ApiState>) -> Result<Json<Homes>, ApiError> {
+    auth.require(Permission::UsersManage)?;
+    Ok(Json(state.sharing.homes_settings().await?.into()))
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetHomesRequest {
+    /// The pool to keep the personal folders on; null turns them off,
+    /// keeping their files.
+    pub pool: Option<String>,
+}
+
+/// Turns personal folders on, on a pool, or off. Needs `users.manage`.
+#[utoipa::path(
+    put,
+    path = "/homes",
+    tag = "shares",
+    security(("session" = [])),
+    request_body = SetHomesRequest,
+    responses(
+        (status = OK, body = Homes),
+        (status = CONFLICT, body = Problem, description = "`refused`: e.g. a share is called home"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`volume_not_found`"),
+    )
+)]
+async fn set_homes(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    ApiJson(request): ApiJson<SetHomesRequest>,
+) -> Result<Json<Homes>, ApiError> {
+    auth.require(Permission::UsersManage)?;
+    let actor = auth.0.actor();
+    match request.pool {
+        Some(pool) => Ok(Json(state.sharing.enable_homes(&pool, &actor, &client).await?.into())),
+        None => {
+            state.sharing.disable_homes(&actor, &client).await?;
+            Ok(Json(state.sharing.homes_settings().await?.into()))
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetAccountHomeRequest {
+    pub enabled: bool,
+    /// At least 1 GiB; absent: no limit.
+    #[serde(default)]
+    pub quota_bytes: Option<u64>,
+}
+
+/// Gives an account a personal folder, changes its quota or takes it away
+/// (its files stay). Needs `users.manage`.
+#[utoipa::path(
+    put,
+    path = "/homes/{account_id}",
+    tag = "shares",
+    security(("session" = [])),
+    params(("account_id" = i64, Path)),
+    request_body = SetAccountHomeRequest,
+    responses(
+        (status = OK, body = Option<AccountHome>),
+        (status = CONFLICT, body = Problem, description = "`refused`: personal folders are off"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`unknown_subject`, `invalid_input`"),
+    )
+)]
+async fn set_account_home(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(account_id): Path<i64>,
+    ApiJson(request): ApiJson<SetAccountHomeRequest>,
+) -> Result<Json<Option<AccountHome>>, ApiError> {
+    auth.require(Permission::UsersManage)?;
+    let home = state
+        .sharing
+        .set_account_home(account_id, request.enabled, request.quota_bytes, &auth.0.actor(), &client)
+        .await?;
+    Ok(Json(home.map(|h| AccountHome { account_id: h.account, quota_bytes: h.quota_bytes })))
 }

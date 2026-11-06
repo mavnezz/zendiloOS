@@ -35,7 +35,7 @@ impl Authenticate {
     async fn resolve(&self, token: &Secret, touch: bool) -> Result<AuthContext, IdentityError> {
         let c = &self.context;
         let now = c.now();
-        let policy = &c.config.sessions;
+        let policy = &c.session_policy().await?;
         let sessions = &c.ports.sessions;
 
         let hash = c.ports.tokens.digest(token);

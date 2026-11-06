@@ -1,0 +1,165 @@
+<script setup lang="ts">
+import { Boxes, Play, Plus, RefreshCw, RotateCw, Search, Square, Trash2 } from 'lucide-vue-next'
+import { computed, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
+
+import type { DockerProject } from '@/shared/api/types'
+import { problemMessage } from '@/shared/i18n'
+import { type Action, ActionMenu } from '@/shared/ui/action-menu'
+import { Alert } from '@/shared/ui/alert'
+import { Badge } from '@/shared/ui/badge'
+import { Button } from '@/shared/ui/button'
+import { ConfirmDialog } from '@/shared/ui/confirm-dialog'
+import { Input } from '@/shared/ui/input'
+
+import { useProjectAction, useProjects, useUpdatable } from '../api'
+import { projectStatus, statusVariant } from '../lib/status'
+
+const emit = defineEmits<{ open: [name: string]; create: [] }>()
+
+const { t } = useI18n()
+const { data: projects, isPending } = useProjects()
+const act = useProjectAction()
+const updatable = useUpdatable()
+const filter = ref('')
+const deleting = ref<DockerProject | null>(null)
+
+const shown = computed(() => {
+  const term = filter.value.trim().toLowerCase()
+  return (projects.value ?? []).filter((p) => !term || p.name.includes(term))
+})
+
+function actions(project: DockerProject): Action[] {
+  const app = project.kind === 'app'
+  return [
+    {
+      id: 'restart',
+      label: t('docker.actions.restart'),
+      icon: RotateCw,
+      disabled: !project.containers.length,
+    },
+    { id: 'redeploy', label: t('docker.actions.redeploy'), icon: RefreshCw, disabled: app },
+    {
+      id: 'delete',
+      label: t('docker.actions.delete'),
+      icon: Trash2,
+      destructive: true,
+      disabled: app,
+    },
+  ]
+}
+
+function run(project: DockerProject, action: string): void {
+  if (action === 'delete') {
+    deleting.value = project
+    return
+  }
+  act.mutate({ name: project.name, action: action as 'start' | 'stop' | 'restart' | 'redeploy' })
+}
+function confirmDelete(): void {
+  if (deleting.value) act.mutate({ name: deleting.value.name, action: 'delete' })
+  deleting.value = null
+}
+</script>
+
+<!-- The Compose projects, whoever made them. -->
+<template>
+  <div class="grid gap-3">
+    <div class="flex flex-wrap items-center gap-2">
+      <Button @click="emit('create')">
+        <Plus />
+        {{ t('docker.projects.create') }}
+      </Button>
+      <div class="relative ml-auto w-full max-w-60">
+        <Search class="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+        <Input
+          v-model="filter"
+          class="pl-8"
+          :placeholder="t('docker.search')"
+          :aria-label="t('docker.search')"
+        />
+      </div>
+    </div>
+    <Alert v-if="act.error.value" variant="destructive">{{
+      problemMessage(act.error.value)
+    }}</Alert>
+    <div v-if="isPending" class="h-40 animate-pulse rounded-xl bg-muted" />
+    <p v-else-if="!shown.length" class="py-16 text-center text-sm text-muted-foreground">
+      {{ t('docker.projects.none') }}
+    </p>
+    <ul class="grid gap-3">
+      <li
+        v-for="project in shown"
+        :key="project.name"
+        class="flex cursor-pointer flex-wrap items-center gap-4 rounded-xl border bg-card p-4 transition-colors hover:bg-accent/40"
+        @click="emit('open', project.name)"
+      >
+        <span
+          class="grid size-12 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary"
+        >
+          <Boxes class="size-6" />
+        </span>
+        <div class="grid min-w-40 flex-1 gap-1">
+          <span class="truncate font-medium">{{ project.name }}</span>
+          <span class="flex flex-wrap gap-1.5">
+            <Badge :variant="statusVariant(projectStatus(project))">{{
+              t(`docker.status.${projectStatus(project)}`)
+            }}</Badge>
+            <Badge variant="outline">{{ t(`docker.kinds.${project.kind}`) }}</Badge>
+            <Badge
+              v-if="project.kind !== 'app' && project.containers.some((c) => updatable.has(c.name))"
+              variant="info"
+              >{{ t('docker.updatable') }}</Badge
+            >
+          </span>
+        </div>
+        <div class="grid min-w-32 text-center">
+          <span class="text-lg font-semibold tabular-nums">
+            <span class="text-success">{{ project.running }}</span> /
+            {{ project.containers.length }}
+          </span>
+          <span class="text-xs text-muted-foreground">{{ t('docker.projects.runningOfAll') }}</span>
+        </div>
+        <div class="flex items-center gap-1" @click.stop>
+          <Button
+            variant="ghost"
+            size="sm"
+            :disabled="
+              !project.containers.length ||
+              project.running === project.containers.length ||
+              act.isPending.value
+            "
+            @click="run(project, 'start')"
+          >
+            <Play />
+            {{ t('docker.actions.start') }}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            :disabled="project.running === 0 || act.isPending.value"
+            @click="run(project, 'stop')"
+          >
+            <Square />
+            {{ t('docker.actions.stop') }}
+          </Button>
+          <ActionMenu
+            :actions="actions(project)"
+            :label="t('docker.actions.more')"
+            @select="run(project, $event)"
+          />
+        </div>
+      </li>
+    </ul>
+    <ConfirmDialog
+      :open="deleting !== null"
+      :title="t('docker.projects.deleteTitle', { name: deleting?.name })"
+      :description="t('docker.projects.deleteText')"
+      :confirm-label="t('docker.actions.delete')"
+      :cancel-label="t('desktop.cancel')"
+      destructive
+      @update:open="(open: boolean) => !open && (deleting = null)"
+      @confirm="confirmDelete"
+    />
+  </div>
+</template>

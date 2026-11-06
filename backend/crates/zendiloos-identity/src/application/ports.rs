@@ -3,11 +3,12 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use zendiloos_kernel::{PortError, RequestContext, Secret, Timestamp};
+use zendiloos_kernel::{Actor, PortError, RequestContext, Secret, Timestamp};
 
 use crate::domain::{
-    Account, AccountId, AccountName, Group, GroupId, GroupName, NewAccount, NewGroup, NewSession,
-    PasswordHash, Preferences, Session, SessionId, SetupCode, TokenHash,
+    Account, AccountId, AccountName, AddressRange, BlockedAddress, Group, GroupId, GroupName, NewAccount,
+    NewGroup, NewSession, PasswordHash, PasswordPolicy, Preferences, SecuritySettings, Session,
+    SessionDetails, SessionId, SetupCode, TokenHash,
 };
 
 #[async_trait]
@@ -49,6 +50,14 @@ pub trait AccountRepository: Send + Sync {
 
     /// Deletes the account with its sessions and group memberships.
     async fn delete(&self, id: AccountId) -> Result<(), PortError>;
+
+    /// The account must choose a new password at its next login.
+    async fn require_password_change(&self, id: AccountId) -> Result<(), PortError>;
+
+    /// The password policy; the defaults until an administrator sets one.
+    async fn password_policy(&self) -> Result<PasswordPolicy, PortError>;
+
+    async fn set_password_policy(&self, policy: &PasswordPolicy) -> Result<(), PortError>;
 }
 
 #[async_trait]
@@ -129,6 +138,31 @@ pub trait SessionRepository: Send + Sync {
 
     /// Removes sessions past their lifetime or idle for `idle_timeout`.
     async fn delete_inactive(&self, now: Timestamp, idle_timeout: Duration) -> Result<u64, PortError>;
+
+    /// Every stored session, newest first; ended ones may be among them.
+    async fn list(&self) -> Result<Vec<SessionDetails>, PortError>;
+}
+
+/// The settings of [`SecuritySettings`] and the addresses the web
+/// interface refuses.
+#[async_trait]
+pub trait SecurityRepository: Send + Sync {
+    /// The defaults until an administrator sets them.
+    async fn settings(&self) -> Result<SecuritySettings, PortError>;
+
+    async fn save_settings(&self, settings: &SecuritySettings) -> Result<(), PortError>;
+
+    /// Every block, the newest first; those that are over may be among them.
+    async fn blocked(&self) -> Result<Vec<BlockedAddress>, PortError>;
+
+    /// Adds `block`, or replaces the one for the same range.
+    async fn block(&self, block: &BlockedAddress) -> Result<(), PortError>;
+
+    /// `false` if `range` was not blocked.
+    async fn unblock(&self, range: &AddressRange) -> Result<bool, PortError>;
+
+    /// Removes blocks that are over. Returns how many.
+    async fn delete_expired(&self, now: Timestamp) -> Result<u64, PortError>;
 }
 
 #[async_trait]
@@ -177,4 +211,27 @@ pub trait PreferenceRepository: Send + Sync {
     async fn load(&self, account: AccountId) -> Result<Preferences, PortError>;
 
     async fn save(&self, account: AccountId, preferences: Preferences) -> Result<(), PortError>;
+}
+
+/// Told about changes to groups that others keep state about. The
+/// Sharing context gives members of groups denied a share an ACL entry of
+/// their own, which has to follow the group's members.
+#[async_trait]
+pub trait GroupObserver: Send + Sync {
+    /// The members of `group` changed; `before` were its members until now.
+    async fn members_changed(
+        &self,
+        group: GroupId,
+        before: &[AccountId],
+        actor: &Actor,
+        context: &RequestContext,
+    ) -> Result<(), PortError>;
+
+    /// `group` is about to be deleted; it and its members still exist.
+    async fn deleting(
+        &self,
+        group: GroupId,
+        actor: &Actor,
+        context: &RequestContext,
+    ) -> Result<(), PortError>;
 }

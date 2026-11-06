@@ -11,6 +11,7 @@ publish.workspace = true
 # zendiloos-infra into the ports of the bounded contexts.
 [dependencies]
 zendiloos-apps.workspace = true
+zendiloos-containers.workspace = true
 zendiloos-agent-proto.workspace = true
 zendiloos-api.workspace = true
 zendiloos-identity.workspace = true
@@ -24,6 +25,7 @@ zendiloos-sharing.workspace = true
 zendiloos-sim.workspace = true
 zendiloos-storage.workspace = true
 zendiloos-system.workspace = true
+zendiloos-updates.workspace = true
 anyhow.workspace = true
 axum.workspace = true
 clap.workspace = true

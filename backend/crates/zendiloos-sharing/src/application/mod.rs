@@ -1,9 +1,11 @@
 //! Use cases of the Sharing context and the ports they need.
 
 mod files;
+mod homes;
 pub mod ports;
 mod shares;
 mod snapshots;
+mod subjects;
 
 #[cfg(test)]
 mod tests;
@@ -15,8 +17,10 @@ use zendiloos_kernel::{AuditLog, Clock};
 use zendiloos_notify::Notifier;
 
 pub use files::{FilesError, FilesUseCases, Transfer, Upload, UploadTicket, UsableShare};
+pub use homes::HomesSettings;
 use ports::{Directory, FileHost, ShareHost, ShareRepository, Volumes};
 pub use shares::{NewShareInput, ShareChanges, SharingError, SharingUseCases};
+pub use subjects::SubjectAccess;
 
 /// Adapters for every port of this context, plugged in by the composition
 /// root.

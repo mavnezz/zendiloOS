@@ -4,8 +4,9 @@ use async_trait::async_trait;
 use zendiloos_kernel::{PortError, Timestamp};
 use zendiloos_sharing::application::ports::{Directory, Names, ShareRepository};
 use zendiloos_sharing::domain::{
-    Access, AccessRule, AppAccess, Compression, Favourite, FilePath, Frequency, NewShare, NfsClient,
-    RecordSize, Share, ShareId, ShareName, ShareSettings, SnapshotSchedule, Subject,
+    Access, AccessRule, AppAccess, Compression, Favourite, FilePath, FileServices, Frequency, Home,
+    HomesLocation, NewShare, NfsClient, Permission, RecordSize, Share, ShareId, ShareName, ShareSettings,
+    SmbEncryption, SmbProtocol, SmbSigning, SnapshotSchedule, Subject, TimeMachine,
 };
 
 use super::Database;
@@ -75,9 +76,10 @@ async fn replace_rules(
             Subject::Account(account) => (Some(account), None),
             Subject::Group(group) => (None, Some(group)),
         };
-        let level = match rule.access {
-            Access::Read => "read",
-            Access::ReadWrite => "read_write",
+        let level = match rule.permission {
+            Permission::Deny => "deny",
+            Permission::Read => "read",
+            Permission::ReadWrite => "read_write",
         };
         let position = position as i64;
         sqlx::query!(
@@ -128,12 +130,13 @@ impl SqliteShares {
                 (None, Some(group)) => Subject::Group(group),
                 _ => return Err(stored("a rule without exactly one subject")),
             };
-            let level = match rule.access.as_str() {
-                "read" => Access::Read,
-                "read_write" => Access::ReadWrite,
+            let permission = match rule.access.as_str() {
+                "deny" => Permission::Deny,
+                "read" => Permission::Read,
+                "read_write" => Permission::ReadWrite,
                 other => return Err(stored(format!("access {other:?}"))),
             };
-            access.entry(rule.share_id).or_default().push(AccessRule { subject, access: level });
+            access.entry(rule.share_id).or_default().push(AccessRule { subject, permission });
         }
         let mut nfs: HashMap<i64, Vec<NfsClient>> = HashMap::new();
         for client in clients {
@@ -343,6 +346,179 @@ impl ShareRepository for SqliteShares {
         transaction.commit().await.map_err(db_error)
     }
 
+    async fn file_services(&self) -> Result<FileServices, PortError> {
+        let row = sqlx::query!(
+            r#"SELECT smb AS "smb: bool", nfs AS "nfs: bool", workgroup, smb_min_protocol, smb_encryption,
+                      smb_signing, hide_unreadable AS "hide_unreadable: bool", multichannel AS "multichannel: bool",
+                      oplocks AS "oplocks: bool", leases AS "leases: bool",
+                      durable_handles AS "durable_handles: bool", mac_compat AS "mac_compat: bool",
+                      follow_symlinks AS "follow_symlinks: bool", veto_files,
+                      delete_veto_files AS "delete_veto_files: bool", wsdd AS "wsdd: bool", bonjour AS "bonjour: bool",
+                      time_machine_share, time_machine_max_bytes
+               FROM file_services WHERE id = 1"#
+        )
+        .fetch_optional(self.db.pool())
+        .await
+        .map_err(db_error)?;
+        let Some(row) = row else { return Ok(FileServices::default()) };
+        let stored = |what: &str| PortError::new("stored file services", what.to_owned());
+        Ok(FileServices {
+            smb: row.smb,
+            nfs: row.nfs,
+            workgroup: row.workgroup,
+            smb_min_protocol: SmbProtocol::parse(&row.smb_min_protocol)
+                .ok_or_else(|| stored("SMB version"))?,
+            smb_encryption: SmbEncryption::parse(&row.smb_encryption).ok_or_else(|| stored("encryption"))?,
+            smb_signing: SmbSigning::parse(&row.smb_signing).ok_or_else(|| stored("signing"))?,
+            hide_unreadable: row.hide_unreadable,
+            multichannel: row.multichannel,
+            oplocks: row.oplocks,
+            leases: row.leases,
+            durable_handles: row.durable_handles,
+            mac_compat: row.mac_compat,
+            follow_symlinks: row.follow_symlinks,
+            veto_files: row.veto_files,
+            delete_veto_files: row.delete_veto_files,
+            wsdd: row.wsdd,
+            bonjour: row.bonjour,
+            time_machine: match row.time_machine_share {
+                Some(share) => Some(TimeMachine {
+                    share: ShareId::new(share),
+                    max_bytes: row
+                        .time_machine_max_bytes
+                        .map(u64::try_from)
+                        .transpose()
+                        .map_err(|_| stored("Time Machine size"))?,
+                }),
+                None => None,
+            },
+        })
+    }
+
+    async fn set_file_services(&self, services: &FileServices) -> Result<(), PortError> {
+        let (protocol, encryption, signing) = (
+            services.smb_min_protocol.as_str(),
+            services.smb_encryption.as_str(),
+            services.smb_signing.as_str(),
+        );
+        let machine_share = services.time_machine.map(|machine| machine.share.get());
+        let machine_bytes = services
+            .time_machine
+            .and_then(|machine| machine.max_bytes)
+            .map(i64::try_from)
+            .transpose()
+            .map_err(|_| stored("Time Machine size"))?;
+        sqlx::query!(
+            "INSERT INTO file_services (id, smb, nfs, workgroup, smb_min_protocol, smb_encryption, smb_signing,
+                 hide_unreadable, multichannel, oplocks, leases, durable_handles, mac_compat, follow_symlinks,
+                 veto_files, delete_veto_files, wsdd, bonjour, time_machine_share, time_machine_max_bytes)
+             VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT (id) DO UPDATE SET smb = excluded.smb, nfs = excluded.nfs,
+                 workgroup = excluded.workgroup, smb_min_protocol = excluded.smb_min_protocol,
+                 smb_encryption = excluded.smb_encryption, smb_signing = excluded.smb_signing,
+                 hide_unreadable = excluded.hide_unreadable, multichannel = excluded.multichannel,
+                 oplocks = excluded.oplocks, leases = excluded.leases, durable_handles = excluded.durable_handles,
+                 mac_compat = excluded.mac_compat, follow_symlinks = excluded.follow_symlinks,
+                 veto_files = excluded.veto_files, delete_veto_files = excluded.delete_veto_files,
+                 wsdd = excluded.wsdd, bonjour = excluded.bonjour, time_machine_share = excluded.time_machine_share,
+                 time_machine_max_bytes = excluded.time_machine_max_bytes",
+            services.smb,
+            services.nfs,
+            services.workgroup,
+            protocol,
+            encryption,
+            signing,
+            services.hide_unreadable,
+            services.multichannel,
+            services.oplocks,
+            services.leases,
+            services.durable_handles,
+            services.mac_compat,
+            services.follow_symlinks,
+            services.veto_files,
+            services.delete_veto_files,
+            services.wsdd,
+            services.bonjour,
+            machine_share,
+            machine_bytes
+        )
+        .execute(self.db.pool())
+        .await
+        .map_err(db_error)?;
+        Ok(())
+    }
+
+    async fn homes_location(&self) -> Result<Option<HomesLocation>, PortError> {
+        let row = sqlx::query!("SELECT pool, volume FROM homes_location WHERE id = 1")
+            .fetch_optional(self.db.pool())
+            .await
+            .map_err(db_error)?;
+        row.map(|row| {
+            let volume = u16::try_from(row.volume).map_err(|_| stored("volume of the personal folders"))?;
+            Ok(HomesLocation { pool: row.pool, volume })
+        })
+        .transpose()
+    }
+
+    async fn set_homes_location(&self, location: Option<&HomesLocation>) -> Result<(), PortError> {
+        match location {
+            Some(location) => {
+                let volume = i64::from(location.volume);
+                sqlx::query!(
+                    "INSERT INTO homes_location (id, pool, volume) VALUES (1, ?, ?)
+                     ON CONFLICT (id) DO UPDATE SET pool = excluded.pool, volume = excluded.volume",
+                    location.pool,
+                    volume
+                )
+                .execute(self.db.pool())
+                .await
+            }
+            None => sqlx::query!("DELETE FROM homes_location").execute(self.db.pool()).await,
+        }
+        .map_err(db_error)?;
+        Ok(())
+    }
+
+    async fn homes(&self) -> Result<Vec<Home>, PortError> {
+        let rows =
+            sqlx::query!(r#"SELECT account_id AS "account_id!", quota_bytes FROM homes ORDER BY account_id"#)
+                .fetch_all(self.db.pool())
+                .await
+                .map_err(db_error)?;
+        rows.into_iter()
+            .map(|row| {
+                let quota_bytes = row
+                    .quota_bytes
+                    .map(u64::try_from)
+                    .transpose()
+                    .map_err(|_| stored("quota of a personal folder"))?;
+                Ok(Home { account: row.account_id, quota_bytes })
+            })
+            .collect()
+    }
+
+    async fn set_home(&self, home: &Home) -> Result<(), PortError> {
+        let quota = home.quota_bytes.map(i64::try_from).transpose().map_err(|_| stored("quota"))?;
+        sqlx::query!(
+            "INSERT INTO homes (account_id, quota_bytes) VALUES (?, ?)
+             ON CONFLICT (account_id) DO UPDATE SET quota_bytes = excluded.quota_bytes",
+            home.account,
+            quota
+        )
+        .execute(self.db.pool())
+        .await
+        .map_err(db_error)?;
+        Ok(())
+    }
+
+    async fn remove_home(&self, account: i64) -> Result<(), PortError> {
+        sqlx::query!("DELETE FROM homes WHERE account_id = ?", account)
+            .execute(self.db.pool())
+            .await
+            .map_err(db_error)?;
+        Ok(())
+    }
+
     async fn favourites(&self, account: i64) -> Result<Vec<Favourite>, PortError> {
         let rows = sqlx::query!(
             "SELECT share_id, path FROM file_favourites WHERE account_id = ? ORDER BY position",
@@ -394,9 +570,21 @@ impl Directory for SqliteShares {
             .fetch_all(self.db.pool())
             .await
             .map_err(db_error)?;
+        let memberships = sqlx::query!(
+            r#"SELECT group_id AS "group_id!", account_id AS "account_id!" FROM group_members
+               ORDER BY group_id, account_id"#
+        )
+        .fetch_all(self.db.pool())
+        .await
+        .map_err(db_error)?;
+        let mut members: HashMap<i64, Vec<i64>> = HashMap::new();
+        for row in memberships {
+            members.entry(row.group_id).or_default().push(row.account_id);
+        }
         Ok(Names {
             accounts: accounts.into_iter().map(|a| (a.id, a.name)).collect(),
             groups: groups.into_iter().map(|g| (g.id, g.name)).collect(),
+            members,
         })
     }
 
@@ -421,6 +609,29 @@ mod tests {
     use crate::sqlite::{SqliteAccounts, SqliteGroups};
 
     #[tokio::test]
+    async fn file_services_are_the_defaults_until_set() {
+        let (_dir, db) = temporary_database().await;
+        let shares = SqliteShares::new(db);
+        assert_eq!(shares.file_services().await.unwrap(), FileServices::default());
+
+        let set = FileServices {
+            smb: false,
+            nfs: true,
+            workgroup: "HOME".into(),
+            smb_min_protocol: SmbProtocol::Smb3,
+            smb_signing: SmbSigning::Mandatory,
+            veto_files: Some("/*.tmp/".into()),
+            bonjour: false,
+            time_machine: Some(TimeMachine { share: ShareId::new(7), max_bytes: Some(1 << 40) }),
+            ..FileServices::default()
+        };
+        shares.set_file_services(&set).await.unwrap();
+        shares.set_file_services(&set).await.unwrap();
+
+        assert_eq!(shares.file_services().await.unwrap(), set);
+    }
+
+    #[tokio::test]
     async fn stores_shares_with_rules_that_follow_accounts_and_groups() {
         let (_dir, db) = temporary_database().await;
         let at = Timestamp::from_unix_seconds(100);
@@ -428,9 +639,12 @@ mod tests {
             .create(NewAccount {
                 name: AccountName::parse("alice").unwrap(),
                 full_name: None,
+                description: None,
+                email: None,
                 role: Role::User,
                 password_hash: PasswordHash::new("$argon2id$x"),
                 password_change_required: false,
+                password_locked: false,
                 created_at: at,
             })
             .await
@@ -454,8 +668,8 @@ mod tests {
             volume: 1,
             recycle_bin: true,
             access: vec![
-                AccessRule { subject: Subject::Group(family.id.get()), access: Access::ReadWrite },
-                AccessRule { subject: Subject::Account(alice.id.get()), access: Access::Read },
+                AccessRule { subject: Subject::Group(family.id.get()), permission: Permission::ReadWrite },
+                AccessRule { subject: Subject::Account(alice.id.get()), permission: Permission::Read },
             ],
             nfs: vec![NfsClient { network: "192.168.1.0/24".into(), write: false }],
             settings: ShareSettings {
@@ -492,7 +706,7 @@ mod tests {
         let rules = shares.find(share.id).await.unwrap().unwrap().access;
         assert_eq!(
             rules,
-            [AccessRule { subject: Subject::Group(family.id.get()), access: Access::ReadWrite }]
+            [AccessRule { subject: Subject::Group(family.id.get()), permission: Permission::ReadWrite }]
         );
 
         let plans = [

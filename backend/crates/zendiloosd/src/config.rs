@@ -30,6 +30,23 @@ pub struct Config {
     pub journal: JournalConfig,
     pub network: NetworkConfig,
     pub log: LogConfig,
+    pub updates: UpdatesConfig,
+}
+
+/// Where zendiloOS's releases come from.
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct UpdatesConfig {
+    /// GitHub's API, or something answering like it.
+    pub api: String,
+    /// The repository whose releases are zendiloOS's, `owner/name`.
+    pub repository: String,
+}
+
+impl Default for UpdatesConfig {
+    fn default() -> Self {
+        Self { api: "https://api.github.com".into(), repository: "mavnezz/zendiloOS".into() }
+    }
 }
 
 /// How zendiloosd reads the system journal for the log viewer.
@@ -89,6 +106,7 @@ impl Default for Config {
             journal: JournalConfig::default(),
             network: NetworkConfig::default(),
             log: LogConfig::default(),
+            updates: UpdatesConfig::default(),
         }
     }
 }
@@ -96,6 +114,11 @@ impl Default for Config {
 impl Config {
     pub fn database_path(&self) -> PathBuf {
         self.state_dir.join("zendiloos.db")
+    }
+
+    /// Where releases are downloaded to; the agent takes them from there.
+    pub fn update_dir(&self) -> PathBuf {
+        self.state_dir.join("updates")
     }
 
     pub fn backup_dir(&self) -> PathBuf {

@@ -13,6 +13,8 @@ pub struct DockerHostState {
     pub installed: bool,
     pub running: bool,
     pub data_root: Option<String>,
+    /// The engine's version, while it runs.
+    pub version: Option<String>,
 }
 
 /// The volume number in a data root zendiloOS set: `/volume<N>/@docker`.

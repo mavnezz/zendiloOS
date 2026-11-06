@@ -16,22 +16,28 @@ use tokio::task::JoinHandle;
 use zendiloos_agent_proto::{AgentTransport, ConsoleSetupCode, Request, Response, UnixTransport};
 use zendiloos_api::{ApiState, UseCases};
 use zendiloos_apps::application::{Catalogs, Docker, InstallPorts, Installs};
+use zendiloos_containers::application::{Containers, ContainersPorts};
 use zendiloos_identity::application::commands::PurgeExpiredSessions;
 use zendiloos_identity::application::{IdentityConfig, IdentityPorts, IdentityUseCases};
 use zendiloos_infra::SystemClock;
 use zendiloos_infra::agent::{
-    AgentApps, AgentFiles, AgentNetwork, AgentPowerControl, AgentSharing, AgentStorage, AgentSystemAccounts,
-    RandomPlanTokens, agent_version,
+    AgentApps, AgentDockerData, AgentDockerEngine, AgentFiles, AgentNetwork, AgentPowerControl, AgentSharing,
+    AgentSsh, AgentStorage, AgentSystemAccounts, AgentTime, AgentUpdates, AgentWebTls, RandomPlanTokens,
+    agent_version,
 };
-use zendiloos_infra::apps::{HttpsCatalogs, ProcListening, RandomSecrets, SharingForApps};
-use zendiloos_infra::host::{HostSystemInfo, IpNetworkReader, JournalctlReader, MetricsHub};
-use zendiloos_infra::identity::{Argon2PasswordHasher, FileSetupCodes, RandomSessionTokens};
+use zendiloos_infra::apps::{HttpsCatalogs, RandomSecrets, SharingForApps};
+use zendiloos_infra::containers::{HttpsRegistries, SharesForProjects};
+use zendiloos_infra::host::{HostSystemInfo, IpNetworkReader, JournalctlReader, MetricsHub, ProcListening};
+use zendiloos_infra::identity::{
+    Argon2PasswordHasher, FileSetupCodes, RandomSessionTokens, SharingFollowsGroups,
+};
 use zendiloos_infra::notify::NetworkChannels;
 use zendiloos_infra::sqlite::{
     Database, SqliteAccounts, SqliteAppSources, SqliteAuditLog, SqliteChannels, SqliteGroups,
-    SqliteInstalledApps, SqliteJobs, SqliteNotifications, SqlitePreferences, SqliteSelfTestPlans,
-    SqliteSessions, SqliteShares,
+    SqliteInstalledApps, SqliteJobs, SqliteNotifications, SqlitePreferences, SqliteProjects, SqliteSecurity,
+    SqliteSelfTestPlans, SqliteSessions, SqliteShares, SqliteSystemUpdates, SqliteUpdateSettings,
 };
+use zendiloos_infra::updates::GitHubReleases;
 use zendiloos_jobs::Jobs;
 use zendiloos_kernel::{AuditLog, RequestContext};
 use zendiloos_network::application::NetworkUseCases;
@@ -43,6 +49,7 @@ use zendiloos_storage::application::monitor::StorageMonitor;
 use zendiloos_storage::application::self_tests::SelfTestSchedule;
 use zendiloos_storage::application::{StoragePorts, StorageUseCases};
 use zendiloos_system::application::{SystemPorts, SystemUseCases};
+use zendiloos_updates::application::{Updates, UpdatesPorts};
 
 use crate::config::{AgentTransportKind, Config, Source};
 
@@ -90,10 +97,7 @@ async fn main() -> anyhow::Result<()> {
 async fn serve(config: Config) -> anyhow::Result<()> {
     let database = open_database(&config).await?;
     let audit: Arc<dyn AuditLog> = Arc::new(SqliteAuditLog::new(database.clone()));
-    let (agent, files_agent, patient_agent) = agent_transports(&config).await;
-    let identity = identity(&config, &database, audit.clone(), agent.clone())?;
-    let setup_code = announce_setup(&config, &identity).await?;
-    let purge = spawn_session_purge(identity.purge_expired_sessions.clone());
+    let (agent, files_agent, patient_agent, moving_agent) = agent_transports(&config).await;
     let (metrics, sampler) = MetricsHub::spawn(Duration::from_secs(2), Arc::new(SystemClock));
     let journal = JournalctlReader::new(config.journal.journalctl.as_deref());
     match journal.path() {
@@ -104,6 +108,10 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         info: Arc::new(HostSystemInfo),
         metrics: Arc::new(metrics),
         power: Arc::new(AgentPowerControl::new(agent.clone())),
+        time: Arc::new(AgentTime::new(agent.clone())),
+        ssh: Arc::new(AgentSsh::new(agent.clone())),
+        listening: Arc::new(ProcListening::default()),
+        tls: Arc::new(AgentWebTls::new(agent.clone())),
         journal: Arc::new(journal),
         audit: audit.clone(),
         audit_reader: Arc::new(SqliteAuditLog::new(database.clone())),
@@ -137,9 +145,9 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     let agent_for_sharing = agent.clone();
     let console_agent = agent.clone();
     let network_agent = agent.clone();
-    let agent_storage = Arc::new(AgentStorage::new(agent));
+    let agent_storage = Arc::new(AgentStorage::new(agent.clone()));
     let agent_storage_for_sharing = agent_storage.clone();
-    let docker = Docker::new(agent_storage.clone(), audit.clone(), Arc::new(SystemClock));
+    let docker = Docker::new(agent_storage.clone(), audit.clone(), Arc::new(SystemClock), jobs.clone());
     let docker_host = agent_storage.clone();
     let storage = StorageUseCases::new(StoragePorts {
         devices: agent_storage.clone(),
@@ -168,11 +176,15 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         notifier: notifier.clone(),
     };
     let sharing = SharingUseCases::new(sharing_ports.clone());
+    // After sharing: shares follow the members of groups they deny.
+    let identity = identity(&config, &database, audit.clone(), agent.clone(), sharing.clone())?;
+    let setup_code = announce_setup(&config, &identity).await?;
+    let purge = spawn_session_purge(identity.purge_expired_sessions.clone());
     let files = FilesUseCases::new(sharing_ports);
     let installs = Installs::new(InstallPorts {
         catalogs: apps.clone(),
         installed: Arc::new(SqliteInstalledApps::new(database.clone())),
-        host: Arc::new(AgentApps::new(patient_agent, files_agent.clone())),
+        host: Arc::new(AgentApps::new(patient_agent.clone(), files_agent.clone())),
         docker: docker_host,
         shares: Arc::new(SharingForApps::new(sharing.clone())),
         listening: Arc::new(ProcListening::default()),
@@ -205,6 +217,36 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         Arc::new(SystemClock),
     );
 
+    let containers = Containers::new(ContainersPorts {
+        engine: Arc::new(AgentDockerEngine::new(patient_agent)),
+        projects: Arc::new(SqliteProjects::new(database.clone())),
+        storage: Arc::new(SharesForProjects::new(files.clone())),
+        registries: Arc::new(HttpsRegistries::default()),
+        updates: Arc::new(SqliteUpdateSettings::new(database.clone())),
+        data: Arc::new(AgentDockerData::new(AgentStorage::new(agent.clone()), moving_agent)),
+        jobs: jobs.clone(),
+        audit: audit.clone(),
+        clock: Arc::new(SystemClock),
+    });
+    let container_sampler = spawn_container_sampler(containers.clone());
+    let image_updates = spawn_image_updates(containers.clone());
+    let updates = Updates::new(
+        UpdatesPorts {
+            releases: Arc::new(GitHubReleases::new(
+                &config.updates.api,
+                &config.updates.repository,
+                config.update_dir(),
+            )),
+            host: Arc::new(AgentUpdates::new(agent.clone())),
+            store: Arc::new(SqliteSystemUpdates::new(database.clone())),
+            notifier: notifier.clone(),
+            audit: audit.clone(),
+            clock: Arc::new(SystemClock),
+        },
+        zendiloos_kernel::VERSION,
+    );
+    let update_checks = spawn_update_checks(updates.clone());
+
     let snapshots = spawn_snapshot_schedules(sharing.clone());
     let self_tests = spawn_self_test_schedule(storage.self_test_schedule.clone());
     let use_cases = UseCases {
@@ -220,6 +262,8 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         apps,
         docker,
         installs,
+        containers,
+        updates,
     };
     let state = ApiState::new(use_cases, config.secure_cookies);
     let app = zendiloos_api::router(state);
@@ -235,20 +279,23 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     // Under systemd the socket comes from zendiloosd.socket and only nginx
     // can reach it; run by hand, zendiloosd listens on TCP.
     if let Some(listener) = systemd::inherited_unix_listener()? {
-        tracing::info!(version = env!("CARGO_PKG_VERSION"), "zendiloosd started on the socket from systemd");
+        tracing::info!(version = zendiloos_kernel::VERSION, "zendiloosd started on the socket from systemd");
         systemd::notify_ready();
         axum::serve(listener, app).with_graceful_shutdown(shutdown_requested()).await?;
     } else {
         let listener = TcpListener::bind(config.listen)
             .await
             .with_context(|| format!("cannot listen on {}", config.listen))?;
-        tracing::info!(address = %listener.local_addr()?, version = env!("CARGO_PKG_VERSION"), "zendiloosd started");
+        tracing::info!(address = %listener.local_addr()?, version = zendiloos_kernel::VERSION, "zendiloosd started");
         systemd::notify_ready();
         let app = app.into_make_service_with_connect_info::<SocketAddr>();
         axum::serve(listener, app).with_graceful_shutdown(shutdown_requested()).await?;
     }
     purge.abort();
     sampler.abort();
+    container_sampler.abort();
+    image_updates.abort();
+    update_checks.abort();
     monitor.abort();
     snapshots.abort();
     self_tests.abort();
@@ -266,31 +313,34 @@ async fn serve(config: Config) -> anyhow::Result<()> {
 /// the patience apps need. The simulation serves all.
 async fn agent_transports(
     config: &Config,
-) -> (Arc<dyn AgentTransport>, Arc<dyn AgentTransport>, Arc<dyn AgentTransport>) {
+) -> (Arc<dyn AgentTransport>, Arc<dyn AgentTransport>, Arc<dyn AgentTransport>, Arc<dyn AgentTransport>) {
     type Transport = Arc<dyn AgentTransport>;
-    let (system, files, patient): (Transport, Transport, Transport) = match config.agent.transport {
-        AgentTransportKind::Unix => (
-            Arc::new(UnixTransport::new(&config.agent.socket, Duration::from_secs(30))),
-            // Applying permissions to a large share takes a while.
-            Arc::new(UnixTransport::new(&config.agent.files_socket, Duration::from_secs(3600))),
-            // Fetching an app's images too; the agent gives up after 30 minutes.
-            Arc::new(UnixTransport::new(&config.agent.socket, Duration::from_secs(31 * 60))),
-        ),
-        AgentTransportKind::Simulated => {
-            tracing::warn!("using the simulated agent: privileged operations are not carried out");
-            // Share contents are real files, kept with the state.
-            let simulated =
-                Arc::new(SimulatedAgent::new().with_files(config.state_dir.join("simulated-volumes")));
-            (simulated.clone(), simulated.clone(), simulated)
-        }
-    };
+    let (system, files, patient, moving): (Transport, Transport, Transport, Transport) =
+        match config.agent.transport {
+            AgentTransportKind::Unix => (
+                Arc::new(UnixTransport::new(&config.agent.socket, Duration::from_secs(30))),
+                // Applying permissions to a large share takes a while.
+                Arc::new(UnixTransport::new(&config.agent.files_socket, Duration::from_secs(3600))),
+                // Fetching an app's images too; the agent gives up after 30 minutes.
+                Arc::new(UnixTransport::new(&config.agent.socket, Duration::from_secs(31 * 60))),
+                // Copying Docker's data to another pool; the agent gives up after six hours.
+                Arc::new(UnixTransport::new(&config.agent.socket, Duration::from_secs(6 * 3600 + 600))),
+            ),
+            AgentTransportKind::Simulated => {
+                tracing::warn!("using the simulated agent: privileged operations are not carried out");
+                // Share contents are real files, kept with the state.
+                let simulated =
+                    Arc::new(SimulatedAgent::new().with_files(config.state_dir.join("simulated-volumes")));
+                (simulated.clone(), simulated.clone(), simulated.clone(), simulated)
+            }
+        };
     for (role, transport) in [("system", &system), ("files", &files)] {
         match agent_version(transport.as_ref()).await {
             Ok(version) => tracing::info!(role, version, "agent reachable"),
             Err(error) => tracing::warn!(role, error = %error_chain(&error), "agent not reachable"),
         }
     }
-    (system, files, patient)
+    (system, files, patient, moving)
 }
 
 /// `outer: inner: innermost`, so the log shows the root cause.
@@ -310,11 +360,14 @@ fn identity(
     database: &Database,
     audit: Arc<dyn AuditLog>,
     agent: Arc<dyn AgentTransport>,
+    sharing: SharingUseCases,
 ) -> anyhow::Result<IdentityUseCases> {
     let ports = IdentityPorts {
         accounts: Arc::new(SqliteAccounts::new(database.clone())),
         groups: Arc::new(SqliteGroups::new(database.clone())),
+        group_observer: Arc::new(SharingFollowsGroups::new(sharing)),
         sessions: Arc::new(SqliteSessions::new(database.clone())),
+        security: Arc::new(SqliteSecurity::new(database.clone())),
         preferences: Arc::new(SqlitePreferences::new(database.clone())),
         system: Arc::new(AgentSystemAccounts::new(agent)),
         hasher: Arc::new(Argon2PasswordHasher::new()?),
@@ -385,6 +438,74 @@ fn spawn_catalog_refresh(apps: Catalogs) -> JoinHandle<()> {
             every_six_hours.tick().await;
             if let Err(error) = apps.refresh().await {
                 tracing::warn!(%error, "apps: cannot read the catalogs");
+            }
+        }
+    })
+}
+
+/// Takes newer images when the schedule says so, checked every minute,
+/// and asks the registries for them every six hours, the first time three
+/// minutes after the start.
+/// Says how a finished update went and looks for updates daily, as the
+/// settings ask; the first time a few minutes after the start.
+fn spawn_update_checks(updates: Updates) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(120)).await;
+        let mut every = tokio::time::interval(zendiloos_updates::application::TICK);
+        every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            every.tick().await;
+            if let Err(error) = updates.tick().await {
+                tracing::info!(%error, "updates: cannot look for updates");
+            }
+        }
+    })
+}
+
+fn spawn_image_updates(containers: Containers) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut every_minute = tokio::time::interval(Duration::from_secs(60));
+        every_minute.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut minutes: u32 = 0;
+        loop {
+            every_minute.tick().await;
+            match containers.run_schedule().await {
+                Ok(Some(job)) => {
+                    tracing::info!(job = job.id.get(), "containers: updating images on schedule")
+                }
+                Ok(None) => {}
+                Err(error) => tracing::warn!(%error, "containers: cannot update images on schedule"),
+            }
+            if minutes % 360 == 3
+                && let Err(error) = containers.check_if_wanted().await
+            {
+                tracing::info!(%error, "containers: cannot look for newer images");
+            }
+            minutes = minutes.wrapping_add(1);
+        }
+    })
+}
+
+/// Samples what the containers use, for the history. Says once when Docker
+/// stops answering, and once when it answers again.
+fn spawn_container_sampler(containers: Containers) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut every = tokio::time::interval(zendiloos_containers::application::SAMPLE_EVERY);
+        every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut answering = true;
+        loop {
+            every.tick().await;
+            match containers.sample().await {
+                Ok(()) if !answering => {
+                    tracing::info!("containers: Docker answers again");
+                    answering = true;
+                }
+                Ok(()) => {}
+                Err(error) if answering => {
+                    tracing::info!(%error, "containers: no samples while Docker does not answer");
+                    answering = false;
+                }
+                Err(_) => {}
             }
         }
     })

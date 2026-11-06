@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 use rustix::process::{Gid, Uid, getegid, geteuid, getgid, getuid};
 use rustix::thread::{capabilities, set_thread_groups, set_thread_res_gid, set_thread_res_uid};
-use zendiloos_agent_proto::{AppFolder, FileLocation, Request, Response, UserName};
+use zendiloos_agent_proto::{AppFolder, FileLocation, FileRoot, Request, Response, UserName};
 use zendiloos_fileops::{FileError, ShareRoot};
 
 use crate::accounts::{AccountFiles, ID_MAX, ID_MIN, USERS_GROUP};
@@ -152,21 +152,25 @@ impl Files {
     }
 
     /// Opened as root, before the switch: refused unless the share's own
-    /// dataset is mounted.
-    fn share(&self, location: &FileLocation) -> Result<ShareRoot, OperationError> {
-        match &location.snapshot {
-            None => ShareRoot::open(&self.volumes, location.volume, &location.share, true),
-            Some(label) => ShareRoot::open_snapshot(&self.volumes, location.volume, &location.share, label),
+    /// dataset is mounted. A personal folder is always `user`'s own.
+    fn share(&self, location: &FileLocation, user: &UserName) -> Result<ShareRoot, OperationError> {
+        match (&location.root, &location.snapshot) {
+            (FileRoot::Share(share), None) => ShareRoot::open(&self.volumes, location.volume, share, true),
+            (FileRoot::Share(share), Some(label)) => {
+                ShareRoot::open_snapshot(&self.volumes, location.volume, share, label)
+            }
+            (FileRoot::Home, None) => ShareRoot::open_home(&self.volumes, location.volume, user),
+            (FileRoot::Home, Some(_)) => Err(FileError::Invalid("personal folders have no snapshots")),
         }
         .map_err(OperationError::File)
     }
 
-    /// The live share at `location`: snapshots cannot be changed.
-    fn writable(&self, location: &FileLocation) -> Result<ShareRoot, OperationError> {
+    /// The live root at `location`: snapshots cannot be changed.
+    fn writable(&self, location: &FileLocation, user: &UserName) -> Result<ShareRoot, OperationError> {
         if location.snapshot.is_some() {
             return Err(OperationError::File(FileError::Invalid("a snapshot cannot be changed")));
         }
-        self.share(location)
+        self.share(location, user)
     }
 
     pub(crate) async fn execute(
@@ -176,7 +180,7 @@ impl Files {
         match request {
             Request::ListDirectory { user, location } => {
                 let (identity, share, path) =
-                    (self.identity(user)?, self.share(location)?, location.path.clone());
+                    (self.identity(user)?, self.share(location, user)?, location.path.clone());
                 let listing = as_user(identity, move || share.list(&path)).await?;
                 let response = Response::Directory {
                     entries: listing.entries,
@@ -187,46 +191,46 @@ impl Files {
             }
             Request::OpenFile { user, location } => {
                 let (identity, share, path) =
-                    (self.identity(user)?, self.share(location)?, location.path.clone());
+                    (self.identity(user)?, self.share(location, user)?, location.path.clone());
                 let (file, size) = as_user(identity, move || share.open_file(&path)).await?;
                 Ok((Response::File { size }, Some(file)))
             }
             Request::CreateUpload { user, location } => {
                 let (identity, share, path) =
-                    (self.identity(user)?, self.writable(location)?, location.path.clone());
+                    (self.identity(user)?, self.writable(location, user)?, location.path.clone());
                 let (file, name) = as_user(identity, move || share.create_upload(&path)).await?;
                 Ok((Response::Upload { name }, Some(file)))
             }
             Request::MakeDirectory { user, location } => {
                 let (identity, share, path) =
-                    (self.identity(user)?, self.writable(location)?, location.path.clone());
+                    (self.identity(user)?, self.writable(location, user)?, location.path.clone());
                 as_user(identity, move || share.make_directory(&path)).await?;
                 Ok((Response::Done, None))
             }
             Request::MoveEntry { user, from, to, replace } => {
                 let identity = self.identity(user)?;
-                let (source, target) = (self.writable(from)?, self.writable(to)?);
+                let (source, target) = (self.writable(from, user)?, self.writable(to, user)?);
                 let (from, to, replace) = (from.path.clone(), to.path.clone(), *replace);
                 as_user(identity, move || source.move_entry(&from, &target, &to, replace)).await?;
                 Ok((Response::Done, None))
             }
             Request::CopyEntry { user, from, to } => {
                 let identity = self.identity(user)?;
-                let (source, target) = (self.share(from)?, self.writable(to)?);
+                let (source, target) = (self.share(from, user)?, self.writable(to, user)?);
                 let (from, to) = (from.path.clone(), to.path.clone());
                 let path = as_user(identity, move || source.copy_entry(&from, &target, &to)).await?;
                 Ok((Response::Copied { path }, None))
             }
             Request::RemoveEntry { user, location, recycle } => {
                 let (identity, share, path) =
-                    (self.identity(user)?, self.writable(location)?, location.path.clone());
+                    (self.identity(user)?, self.writable(location, user)?, location.path.clone());
                 let bin_owner = recycle.then(|| user.as_str().to_owned());
                 as_user(identity, move || share.remove(&path, bin_owner.as_deref())).await?;
                 Ok((Response::Done, None))
             }
             Request::RestoreEntry { user, location } => {
                 let (identity, share, path) =
-                    (self.identity(user)?, self.writable(location)?, location.path.clone());
+                    (self.identity(user)?, self.writable(location, user)?, location.path.clone());
                 let owner = user.as_str().to_owned();
                 let path = as_user(identity, move || share.restore(&path, &owner)).await?;
                 Ok((Response::Restored { path }, None))
@@ -242,9 +246,15 @@ impl Files {
                 let permit = std::sync::Arc::clone(&self.archives)
                     .try_acquire_owned()
                     .map_err(|_| busy("too many folders are being downloaded"))?;
-                let share = std::sync::Arc::new(self.share(location)?);
+                let share = std::sync::Arc::new(self.share(location, user)?);
                 let path = location.path.clone();
-                let name = path.file_name().unwrap_or(location.share.as_str()).to_owned();
+                let name = path
+                    .file_name()
+                    .unwrap_or(match &location.root {
+                        FileRoot::Share(share) => share.as_str(),
+                        FileRoot::Home => "home",
+                    })
+                    .to_owned();
                 let (planner, planned_path) = (std::sync::Arc::clone(&share), path.clone());
                 let plan =
                     as_user(identity.clone(), move || planner.plan_archive(&planned_path, &name)).await?;
@@ -358,7 +368,7 @@ mod tests {
         let files = files(directory.path());
         let location = FileLocation {
             volume: VolumeNumber::new(1).unwrap(),
-            share: ShareName::parse("photos").unwrap(),
+            root: FileRoot::Share(ShareName::parse("photos").unwrap()),
             path: SharePath::root(),
             snapshot: None,
         };

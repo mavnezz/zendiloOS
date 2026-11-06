@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ScrollText, ShieldCheck } from 'lucide-vue-next'
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 
+import { useWindowSection } from '@/shared/lib/window-section'
 import { AppFrame, type NavGroup } from '@/shared/ui/frame'
 
 import AuditSection from './AuditSection.vue'
@@ -18,7 +19,7 @@ const groups = computed<NavGroup[]>(() => [
     ],
   },
 ])
-const section = ref('journal')
+const section = useWindowSection(() => ['journal', 'audit'])
 </script>
 
 <!-- What the system logged, and who changed what. -->

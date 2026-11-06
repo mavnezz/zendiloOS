@@ -14,7 +14,7 @@ import { Label } from '@/shared/ui/label'
 
 import { useShareActions, useSubjects, useVolumes } from '../api'
 
-type Level = 'none' | 'read' | 'read_write'
+type Level = 'none' | 'deny' | 'read' | 'read_write'
 
 /** Creates a share, or edits `share` if given. */
 const props = defineProps<{ share?: Share }>()
@@ -190,6 +190,7 @@ async function submit(): Promise<void> {
               <option :value="undefined">{{ t('shares.levels.none') }}</option>
               <option value="read">{{ t('shares.levels.read') }}</option>
               <option value="read_write">{{ t('shares.levels.read_write') }}</option>
+              <option value="deny">{{ t('shares.levels.deny') }}</option>
             </select>
           </div>
           <div
@@ -206,6 +207,7 @@ async function submit(): Promise<void> {
               <option :value="undefined">{{ t('shares.levels.none') }}</option>
               <option value="read">{{ t('shares.levels.read') }}</option>
               <option value="read_write">{{ t('shares.levels.read_write') }}</option>
+              <option value="deny">{{ t('shares.levels.deny') }}</option>
             </select>
           </div>
         </div>

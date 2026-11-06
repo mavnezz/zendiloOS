@@ -85,13 +85,18 @@ pub fn is_system_mount(mount_point: &str) -> bool {
     EXACT.contains(&mount_point) || BELOW.iter().any(|prefix| mount_point.starts_with(prefix))
 }
 
+/// The smallest device ZFS takes; anything smaller (a floppy drive) is no
+/// disk for the NAS.
+const MIN_DISK_BYTES: u64 = 64 * 1024 * 1024;
+
 /// The disks among the host's block devices, each classified by usage;
 /// `pools` must have their disks resolved ([`super::resolve_pool_disks`]).
-/// Loop devices, optical drives and empty card readers are not disks.
+/// Loop devices, optical drives, empty card readers and floppy drives are
+/// not disks.
 pub fn disks(devices: &[BlockDevice], pools: &[Pool]) -> Vec<Disk> {
     devices
         .iter()
-        .filter(|device| device.kind == DeviceKind::Disk && device.size_bytes > 0)
+        .filter(|device| device.kind == DeviceKind::Disk && device.size_bytes >= MIN_DISK_BYTES)
         .map(|device| Disk {
             name: device.name.clone(),
             model: device.model.clone(),
@@ -229,6 +234,7 @@ mod tests {
             device("loop0", DeviceKind::Other("loop".into())),
             device("sr0", DeviceKind::Other("rom".into())),
             BlockDevice { size_bytes: 0, ..disk("sdg", vec![]) },
+            BlockDevice { size_bytes: 1_474_560, ..disk("fd0", vec![]) },
             disk("sdh", vec![]),
         ];
         let names: Vec<_> = disks(&devices, &[]).into_iter().map(|d| d.name).collect();

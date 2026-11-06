@@ -67,11 +67,15 @@ fn paths(values: &[String]) -> Result<Vec<FilePath>, ApiError> {
     values.iter().map(|value| path(value)).collect()
 }
 
-/// A share the signed-in user may use.
+/// A share the signed-in user may use, or their personal folder.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct FileShare {
+    /// `0` for the personal folder, which only its owner sees.
     pub id: i64,
+    /// `home` for the personal folder.
     pub name: String,
+    /// The personal folder of the signed-in user.
+    pub home: bool,
     pub description: Option<String>,
     pub access: ShareAccessLevel,
     /// Deleted entries go to `.recycle/<user>` in the share.
@@ -83,6 +87,7 @@ impl From<UsableShare> for FileShare {
         Self {
             id: usable.share.id.get(),
             name: usable.share.name.to_string(),
+            home: false,
             description: usable.share.description,
             access: match usable.access {
                 sharing::Access::Read => ShareAccessLevel::Read,
@@ -93,8 +98,8 @@ impl From<UsableShare> for FileShare {
     }
 }
 
-/// Shares whose rules name the signed-in user or one of their groups.
-/// Needs `files.read`.
+/// The signed-in user's personal folder, if they have one, then the
+/// shares whose rules let them in. Needs `files.read`.
 #[utoipa::path(
     get,
     path = "/files/shares",
@@ -104,8 +109,20 @@ impl From<UsableShare> for FileShare {
 )]
 async fn my_shares(auth: Auth, State(state): State<ApiState>) -> Result<Json<Vec<FileShare>>, ApiError> {
     auth.require(Permission::FilesRead)?;
-    let shares = state.files.shares(&auth.0.actor()).await?;
-    Ok(Json(shares.into_iter().map(FileShare::from).collect()))
+    let actor = auth.0.actor();
+    let mut listed: Vec<FileShare> = Vec::new();
+    if state.files.home(&actor).await?.is_some() {
+        listed.push(FileShare {
+            id: sharing::HOME_SHARE.get(),
+            name: "home".to_owned(),
+            home: true,
+            description: None,
+            access: ShareAccessLevel::ReadWrite,
+            recycle_bin: true,
+        });
+    }
+    listed.extend(state.files.shares(&actor).await?.into_iter().map(FileShare::from));
+    Ok(Json(listed))
 }
 
 #[derive(Debug, Clone, Copy, Serialize, ToSchema)]

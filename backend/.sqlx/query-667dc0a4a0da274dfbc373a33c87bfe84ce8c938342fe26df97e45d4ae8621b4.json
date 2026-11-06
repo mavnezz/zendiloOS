@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT address FROM allowed_addresses ORDER BY rowid",
+  "describe": {
+    "columns": [
+      {
+        "name": "address",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "allowed_addresses",
+            "name": "address"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "667dc0a4a0da274dfbc373a33c87bfe84ce8c938342fe26df97e45d4ae8621b4"
+}

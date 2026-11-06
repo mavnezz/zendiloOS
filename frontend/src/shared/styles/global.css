@@ -1,99 +1,82 @@
 @import 'tailwindcss';
-@import '@fontsource-variable/inter';
+@import '@fontsource-variable/geist';
 @import '@fontsource-variable/jetbrains-mono';
 
 @custom-variant dark (&:where(.dark, .dark *));
 
-/* Design tokens. Components use the semantic names (bg-primary, text-muted-foreground, ...). */
+/*
+ * Design tokens. Components use the roles (bg-primary, text-muted-foreground,
+ * ...), never raw colours. A neutral base with one blue; status colours for
+ * what is fine, worth a look or wrong; chart colours in a fixed order.
+ */
 :root {
-  --radius: 0.5rem;
-  /* The frame of windows: title bar and side navigation, around the white panel. */
-  --chrome: oklch(0.955 0.007 262);
-  --chrome-hover: oklch(0.925 0.01 262);
-  --success: oklch(0.6 0.15 155);
-  --warning: oklch(0.72 0.16 70);
+  --radius: 0.625rem;
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.546 0.215 262.9);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.546 0.215 262.9);
+  --success: oklch(0.627 0.17 149.2);
+  --warning: oklch(0.666 0.157 58.3);
   --info: oklch(0.62 0.15 240);
-  /* Series in charts, in this order. */
-  --chart-1: oklch(0.6 0.19 258);
-  --chart-2: oklch(0.7 0.15 165);
-  --chart-3: oklch(0.75 0.16 70);
+  --chart-1: #2a78d6;
+  --chart-2: #eb6834;
+  --chart-3: oklch(0.7 0.15 165);
   --chart-4: oklch(0.63 0.2 330);
   --chart-5: oklch(0.6 0.18 295);
-  --background: oklch(0.985 0.003 265);
-  --foreground: oklch(0.2 0.02 265);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.2 0.02 265);
-  --primary: oklch(0.54 0.2 262);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.955 0.008 265);
-  --secondary-foreground: oklch(0.25 0.03 265);
-  --muted: oklch(0.955 0.008 265);
-  --muted-foreground: oklch(0.52 0.02 265);
-  --accent: oklch(0.945 0.015 265);
-  --accent-foreground: oklch(0.25 0.03 265);
-  --destructive: oklch(0.58 0.22 27);
-  --border: oklch(0.91 0.008 265);
-  --input: oklch(0.89 0.01 265);
-  --ring: oklch(0.6 0.15 265);
 }
 
 .dark {
-  --chrome: oklch(0.2 0.016 265);
-  --chrome-hover: oklch(0.26 0.02 265);
-  --success: oklch(0.7 0.14 155);
-  --warning: oklch(0.78 0.14 75);
-  --info: oklch(0.7 0.13 240);
-  --chart-1: oklch(0.68 0.16 258);
-  --chart-2: oklch(0.74 0.13 165);
-  --chart-3: oklch(0.8 0.14 75);
-  --chart-4: oklch(0.7 0.17 330);
-  --chart-5: oklch(0.68 0.15 295);
-  --background: oklch(0.17 0.015 265);
-  --foreground: oklch(0.96 0.005 265);
-  --card: oklch(0.21 0.018 265);
-  --card-foreground: oklch(0.96 0.005 265);
-  --primary: oklch(0.68 0.15 265);
-  --primary-foreground: oklch(0.16 0.02 265);
-  --secondary: oklch(0.27 0.02 265);
-  --secondary-foreground: oklch(0.96 0.005 265);
-  --muted: oklch(0.27 0.02 265);
-  --muted-foreground: oklch(0.71 0.02 265);
-  --accent: oklch(0.3 0.03 265);
-  --accent-foreground: oklch(0.96 0.005 265);
-  --destructive: oklch(0.66 0.19 22);
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.623 0.188 259.8);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.6 0.12 265);
+  --ring: oklch(0.623 0.188 259.8);
+  --success: oklch(0.792 0.209 151.7);
+  --warning: oklch(0.769 0.188 70.08);
+  --info: oklch(0.7 0.13 240);
+  --chart-1: #3987e5;
+  --chart-2: #d95926;
+  --chart-3: oklch(0.74 0.13 165);
+  --chart-4: oklch(0.7 0.17 330);
+  --chart-5: oklch(0.68 0.15 295);
 }
 
 @theme inline {
-  --font-sans: 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-sans: 'Geist Variable', ui-sans-serif, system-ui, sans-serif;
   --font-mono: 'JetBrains Mono Variable', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
-  /* A denser scale than the default: 12, 13, 14, 16, 18 px. */
-  --text-xs: 0.75rem;
-  --text-xs--line-height: 1rem;
-  --text-sm: 0.8125rem;
-  --text-sm--line-height: 1.25rem;
-  --text-base: 0.875rem;
-  --text-base--line-height: 1.375rem;
-  --text-lg: 1rem;
-  --text-lg--line-height: 1.5rem;
-  --text-xl: 1.125rem;
-  --text-xl--line-height: 1.625rem;
-  --color-chrome: var(--chrome);
-  --color-chrome-hover: var(--chrome-hover);
-  --color-success: var(--success);
-  --color-warning: var(--warning);
-  --color-info: var(--info);
-  --color-chart-1: var(--chart-1);
-  --color-chart-2: var(--chart-2);
-  --color-chart-3: var(--chart-3);
-  --color-chart-4: var(--chart-4);
-  --color-chart-5: var(--chart-5);
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
   --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
   --color-secondary: var(--secondary);
@@ -106,36 +89,191 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-info: var(--info);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-window: 1rem;
+  --radius-panel: 1.25rem;
+  --radius-tile: 1rem;
 }
 
-/* Background of the sign-in pages and the desktop: deep blue in both
-   themes, so light windows stand out as they do on a desktop. */
+/*
+ * Glass. Every floating surface (the bar, windows, widgets, menus) is a
+ * sheet of translucent material over the wallpaper: blur, a saturation
+ * boost so colour survives the blur, a bright hairline along the top edge
+ * and a wide soft shadow. A viewer who asked for less transparency, or a
+ * browser without backdrop-filter, gets solid surfaces.
+ */
+:root {
+  --glass-blur: 20px;
+  --glass-saturate: 180%;
+  --glass-surface: color-mix(in oklab, var(--background) 68%, transparent);
+  --glass-surface-strong: color-mix(in oklab, var(--background) 86%, transparent);
+  --glass-surface-thin: color-mix(in oklab, var(--background) 45%, transparent);
+  --glass-edge: color-mix(in oklab, white 58%, transparent);
+  --glass-highlight: color-mix(in oklab, white 72%, transparent);
+  --glass-shadow: 0 10px 34px -10px oklch(0 0 0 / 0.28), 0 2px 8px -2px oklch(0 0 0 / 0.14);
+  --glass-shadow-lifted: 0 28px 70px -20px oklch(0 0 0 / 0.42), 0 6px 18px -6px oklch(0 0 0 / 0.2);
+}
+
+.dark {
+  --glass-surface: color-mix(in oklab, var(--background) 62%, transparent);
+  --glass-surface-strong: color-mix(in oklab, var(--background) 82%, transparent);
+  --glass-surface-thin: color-mix(in oklab, var(--background) 40%, transparent);
+  --glass-edge: color-mix(in oklab, white 14%, transparent);
+  --glass-highlight: color-mix(in oklab, white 18%, transparent);
+  --glass-shadow: 0 10px 34px -10px oklch(0 0 0 / 0.6), 0 2px 8px -2px oklch(0 0 0 / 0.4);
+  --glass-shadow-lifted: 0 28px 70px -20px oklch(0 0 0 / 0.75), 0 6px 18px -6px oklch(0 0 0 / 0.5);
+}
+
+@layer components {
+  .glass {
+    background-color: var(--glass-surface);
+    backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+    border: 1px solid var(--glass-edge);
+    box-shadow:
+      inset 0 1px 0 0 var(--glass-highlight),
+      var(--glass-shadow);
+  }
+
+  /* Surfaces that carry reading text over a busy wallpaper. */
+  .glass-strong {
+    background-color: var(--glass-surface-strong);
+  }
+
+  /* The bar and other chrome, where the wallpaper should stay visible. */
+  .glass-thin {
+    background-color: var(--glass-surface-thin);
+  }
+
+  /* The window in front, lifted further off the desktop than the rest. */
+  .glass-lifted {
+    box-shadow:
+      inset 0 1px 0 0 var(--glass-highlight),
+      var(--glass-shadow-lifted);
+  }
+
+  /* The wet look on something you can press: a highlight from the top left. */
+  .glass-sheen {
+    position: relative;
+    isolation: isolate;
+  }
+  .glass-sheen::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    z-index: -1;
+    background: linear-gradient(
+      135deg,
+      color-mix(in oklab, white 26%, transparent) 0%,
+      transparent 42%
+    );
+  }
+  .dark .glass-sheen::after {
+    background: linear-gradient(
+      135deg,
+      color-mix(in oklab, white 12%, transparent) 0%,
+      transparent 42%
+    );
+  }
+}
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .glass,
+  .glass-thin,
+  .glass-strong {
+    background-color: var(--background);
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .glass,
+  .glass-thin,
+  .glass-strong {
+    background-color: var(--background);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  .glass-sheen::after {
+    display: none;
+  }
+}
+
+/*
+ * The wallpaper of the desktop and the sign-in pages: an image by default,
+ * gradients as alternatives (see shared/lib/wallpapers.ts). The colour
+ * underneath shows while the image loads.
+ */
+:root {
+  --wallpaper-color: #0b1428;
+  --wallpaper-image: url('/wallpapers/aurora.png');
+}
+
 @utility wallpaper {
-  background-color: oklch(0.2 0.06 268);
-  background-image:
-    radial-gradient(70rem 45rem at 85% 110%, oklch(0.55 0.2 255 / 55%), transparent 65%),
-    radial-gradient(55rem 40rem at 10% -10%, oklch(0.42 0.17 285 / 60%), transparent 70%),
-    radial-gradient(40rem 30rem at 60% 40%, oklch(0.35 0.12 240 / 35%), transparent 70%),
-    linear-gradient(160deg, oklch(0.18 0.05 270), oklch(0.24 0.08 258));
+  background-color: var(--wallpaper-color);
+  background-image: var(--wallpaper-image);
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
 }
 
-/* What the window manager draws around a window. */
-@utility window-shadow {
-  box-shadow:
-    0 0 0 1px oklch(0 0 0 / 8%),
-    0 2px 6px oklch(0 0 0 / 8%),
-    0 24px 64px -12px oklch(0 0 0 / 45%);
+@keyframes window-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+
+@utility animate-window-in {
+  animation: window-in 150ms ease-out;
+}
+
+@keyframes slide-in-right {
+  from {
+    opacity: 0;
+    transform: translateX(1rem);
+  }
+}
+
+@utility animate-slide-in-right {
+  animation: slide-in-right 200ms ease-out;
+}
+
+/*
+ * The browser draws some controls itself: the list of a select, scroll
+ * bars, date pickers. It learns from color-scheme whether the page is dark.
+ */
+:root {
+  color-scheme: light;
+}
+
+.dark {
+  color-scheme: dark;
 }
 
 @layer base {
   * {
     @apply border-border outline-ring/50;
   }
+  /* For browsers that colour the options themselves. */
+  option {
+    background-color: var(--popover);
+    color: var(--popover-foreground);
+  }
   body {
-    @apply bg-background text-foreground font-sans antialiased;
+    @apply bg-background font-sans text-foreground antialiased;
   }
 }

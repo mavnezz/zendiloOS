@@ -1,7 +1,11 @@
 //! Docker on the host, through the system agent.
 
 use async_trait::async_trait;
-use zendiloos_agent_proto::{ErrorCode, PoolName, Request, Response, VolumeNumber};
+use std::time::Duration;
+
+use zendiloos_agent_proto::{
+    ErrorCode, PackageRunState, PackageTask, PoolName, Request, Response, VolumeNumber,
+};
 use zendiloos_apps::application::ports::{DockerError, DockerHost};
 use zendiloos_apps::domain::{AppVolume, DockerHostState};
 use zendiloos_kernel::{PortError, RequestContext};
@@ -9,14 +13,49 @@ use zendiloos_storage::application::ports::ZfsSource;
 
 use super::{AgentStorage, WHAT, agent_error, call, call_raw, unexpected};
 
+/// How often a run of apt is looked at, and for how long at most.
+const PACKAGES_POLL: Duration = Duration::from_secs(2);
+const PACKAGES_TIMEOUT: Duration = Duration::from_secs(3600);
+
 #[async_trait]
 impl DockerHost for AgentStorage {
     async fn state(&self, context: &RequestContext) -> Result<DockerHostState, PortError> {
         match call(self.transport(), Request::DockerState {}, context).await? {
-            Response::DockerState { installed, running, data_root } => {
-                Ok(DockerHostState { installed, running, data_root })
+            Response::DockerState { installed, running, data_root, version } => {
+                Ok(DockerHostState { installed, running, data_root, version })
             }
             other => Err(unexpected(other)),
+        }
+    }
+
+    async fn install(&self, context: &RequestContext) -> Result<(), DockerError> {
+        let request = Request::StartPackages { task: PackageTask::InstallDocker, release: None };
+        let id = match call_raw(self.transport(), request, context).await? {
+            Response::PackagesStarted { id } => id,
+            Response::Error { code: ErrorCode::Forbidden, message } => {
+                return Err(DockerError::Refused(message));
+            }
+            Response::Error { code, message } => return Err(agent_error(code, &message).into()),
+            other => return Err(unexpected(other).into()),
+        };
+        // apt records its run; looked at until it ends, for an hour at most.
+        let deadline = tokio::time::Instant::now() + PACKAGES_TIMEOUT;
+        loop {
+            tokio::time::sleep(PACKAGES_POLL).await;
+            let run = match call(self.transport(), Request::PackagesState {}, context).await? {
+                Response::Packages { run } => run,
+                other => return Err(unexpected(other).into()),
+            };
+            match run {
+                Some(run) if run.id == id && run.state == PackageRunState::Succeeded => return Ok(()),
+                Some(run) if run.id == id && run.state == PackageRunState::Failed => {
+                    return Err(DockerError::Failed(run.error.unwrap_or_else(|| "apt failed".into())));
+                }
+                _ if tokio::time::Instant::now() > deadline => {
+                    return Err(DockerError::Failed("apt did not finish within an hour".into()));
+                }
+                _ => {}
+            }
         }
     }
 

@@ -10,6 +10,8 @@ publish.workspace = true
 [dependencies]
 zendiloos-agent-proto.workspace = true
 zendiloos-apps.workspace = true
+zendiloos-containers.workspace = true
+zendiloos-updates.workspace = true
 zendiloos-catalog.workspace = true
 zendiloos-exec.workspace = true
 zendiloos-identity.workspace = true
@@ -44,6 +46,7 @@ tokio = { workspace = true, features = ["rt", "sync", "time", "fs", "net"] }
 
 [dev-dependencies]
 zendiloos-sim.workspace = true
+zendiloos-updates = { workspace = true, features = ["testing"] }
 tempfile.workspace = true
 tokio.workspace = true
 

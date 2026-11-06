@@ -19,13 +19,33 @@ ExecStart=/usr/libexec/zendiloos/zendiloos-agent
 # - the shadow tools and smbpasswd write /etc and Samba's databases and
 #   set the group of /etc/shadow (CAP_CHOWN);
 # - shares: datasets and mount units as for pools; Samba and NFS
-#   configuration in /etc, NFS state in /var/lib/nfs;
+#   configuration in /etc, NFS state in /var/lib/nfs; smbd, wsdd2 and
+#   nfs-server are started, stopped, enabled and disabled by systemd;
+# - personal folders: their dataset and mount unit as for shares, and
+#   each user's quota (zfs userquota); the folders themselves are the files
+#   agent's;
+# - time: systemd-timedated sets the zone, network time and the clock
+#   (asked over D-Bus by timedatectl; the agent itself may not touch the
+#   clock), timesyncd's server list goes to /etc;
+# - SSH: its settings go to /etc/ssh/sshd_config.d; `sshd -t` checks them
+#   in a transient unit (systemd-run), which brings /run/sshd along when
+#   the service is stopped; ssh.service is started, stopped, enabled and
+#   disabled by systemd, and a transient timer turns it off on request;
+# - the web interface's oldest TLS version goes to /etc/zendiloos/nginx,
+#   and nginx is reloaded by systemd;
 # - apps: Docker's data and each app's on datasets as for shares, the
 #   apps' accounts as for people, their checked compose files in
 #   /etc/zendiloos/apps; `docker compose` talks to dockerd over its socket
 #   (AF_UNIX), and dockerd, outside this sandbox, fetches and runs. Before
 #   every start the agent walks the folders an app mounts, which belong to
-#   the app's account (CAP_DAC_READ_SEARCH).
+#   the app's account (CAP_DAC_READ_SEARCH). Folders in shares an app was
+#   given are mounted by a unit per app (zendiloos-app-<app>-shares.service,
+#   this binary as `pin-shares`) in the host's namespace, as mount units are;
+# - Debian's packages, Docker's among them, and zendiloOS's releases: apt
+#   runs outside this sandbox in a transient unit (systemd-run,
+#   zendiloos-packages.service, this binary as `run-packages`), which
+#   records its steps in /var/lib/zendiloos-packages; the agent only reads
+#   that and, before an update, the release zendiloosd downloaded.
 # The contents of volumes are the files agent's (zendiloos-files.service).
 NoNewPrivileges=yes
 CapabilityBoundingSet=CAP_SYS_RAWIO CAP_SYS_ADMIN CAP_CHOWN CAP_DAC_READ_SEARCH

@@ -9,7 +9,7 @@ import { i18n } from '@/shared/i18n'
 import { webUrl } from '../api'
 import InstalledSection from './InstalledSection.vue'
 
-const stop = vi.fn<(id: string) => Promise<void>>(() => Promise.resolve())
+const update = vi.fn<(id: string, confirm: boolean) => Promise<void>>(() => Promise.resolve())
 const retry = vi.fn<(id: string) => Promise<void>>(() => Promise.resolve())
 const apps = ref<InstalledApp[]>([])
 
@@ -17,7 +17,7 @@ vi.mock('../api', async (original) => ({
   ...(await original<typeof import('../api')>()),
   useInstalled: () => ({ data: apps, error: ref(null), isPending: ref(false), refetch: vi.fn() }),
   useInstallActions: () => ({
-    stop: (id: string) => stop(id),
+    update: (id: string, confirm: boolean) => update(id, confirm),
     retry: (id: string) => retry(id),
   }),
 }))
@@ -48,7 +48,7 @@ function app(id: string, extra: Partial<InstalledApp> = {}): InstalledApp {
 beforeEach(() => {
   setActivePinia(createPinia())
   i18n.global.locale.value = 'en'
-  stop.mockClear()
+  update.mockClear()
   retry.mockClear()
   apps.value = [
     app('jellyfin', { update: '1.1' }),
@@ -57,28 +57,34 @@ beforeEach(() => {
 })
 
 describe('the installed apps', () => {
-  it('show how they run and offer what fits', async () => {
+  it('put newer versions first and offer what fits', async () => {
     const wrapper = mount(InstalledSection, { global: { plugins: [i18n] } })
-    const [jellyfin, immich] = wrapper.findAll('li')
-    expect(jellyfin!.text()).toContain('Running')
-    expect(jellyfin!.text()).toContain('Version 1.1 available')
-    expect(jellyfin!.find('a').attributes('href')).toBe(
+    const [updatable, installed] = wrapper.findAll('section')
+
+    expect(updatable!.text()).toContain('Update available')
+    expect(updatable!.text()).toContain('Version 1.1 available')
+    expect(updatable!.text()).not.toContain('Immich')
+    const rows = installed!.findAll('li')
+    expect(rows.map((row) => row.text())).toEqual([
+      expect.stringContaining('Not installed'),
+      expect.stringContaining('Running'),
+    ])
+    expect(rows[1]!.find('a').attributes('href')).toBe(
       `http://${window.location.hostname}:8096/web`,
     )
-    expect(immich!.text()).toContain('Not installed')
-    expect(immich!.find('a').exists()).toBe(false)
+    expect(rows[0]!.find('a').exists()).toBe(false)
 
-    await jellyfin!
-      .findAll('button')
-      .find((b) => b.text() === 'Stop')!
-      .trigger('click')
-    await immich!
+    await rows[0]!
       .findAll('button')
       .find((b) => b.text() === 'Try again')!
       .trigger('click')
+    await updatable!
+      .findAll('button')
+      .find((b) => b.text() === 'Update all')!
+      .trigger('click')
     await flushPromises()
-    expect(stop).toHaveBeenCalledWith('jellyfin')
     expect(retry).toHaveBeenCalledWith('immich')
+    expect(update).toHaveBeenCalledWith('jellyfin', false)
   })
 
   it('open the web interface on the address the NAS was reached at', () => {

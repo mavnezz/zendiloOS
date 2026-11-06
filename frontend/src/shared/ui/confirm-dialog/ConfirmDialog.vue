@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import {
-  AlertDialogAction,
   AlertDialogCancel,
   AlertDialogContent,
   AlertDialogDescription,
@@ -22,6 +21,11 @@ defineProps<{
 }>()
 const open = defineModel<boolean>('open', { default: false })
 const emit = defineEmits<{ confirm: [] }>()
+
+function confirm(): void {
+  emit('confirm')
+  open.value = false
+}
 </script>
 
 <!-- Asks before an action that cannot simply be undone. -->
@@ -36,16 +40,19 @@ const emit = defineEmits<{ confirm: [] }>()
         <AlertDialogDescription class="text-sm text-muted-foreground">
           {{ description }}
         </AlertDialogDescription>
+        <slot />
         <div class="flex justify-end gap-2">
           <AlertDialogCancel :class="buttonVariants({ variant: 'outline' })">
             {{ cancelLabel }}
           </AlertDialogCancel>
-          <AlertDialogAction
+          <!-- Says confirm first, then closes: whoever asked still knows what. -->
+          <button
+            type="button"
             :class="buttonVariants({ variant: destructive ? 'destructive' : 'default' })"
-            @click="emit('confirm')"
+            @click="confirm"
           >
             {{ confirmLabel }}
-          </AlertDialogAction>
+          </button>
         </div>
       </AlertDialogContent>
     </AlertDialogPortal>

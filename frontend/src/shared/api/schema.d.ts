@@ -144,6 +144,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/apps/docker/install": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Installs Docker from Debian (`docker.io`, `docker-compose`) and puts
+         *     its data on a pool, as a job; apps can be installed afterwards. Needs
+         *     `containers.manage`.
+         */
+        post: operations["install_docker"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/apps/installed": {
         parameters: {
             query?: never;
@@ -412,6 +433,517 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/docker/compose/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reads a Compose file as Compose would and names what it lets
+         *     containers do beyond themselves. Needs `containers.manage`.
+         */
+        post: operations["check_compose"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/docker/containers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every container, by name, with its newest use. Needs `containers.manage`. */
+        get: operations["list_containers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/docker/containers/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Removes a container that does not run. Needs `containers.manage`. */
+        delete: operations["remove_container"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/docker/containers/{id}/logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The last lines a container wrote. Needs `containers.manage`. */
+        get: operations["container_logs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/docker/containers/{id}/{action}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Starts, stops or restarts a container. Needs `containers.manage`. */
+        post: operations["control_container"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/docker/data": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Where Docker's data is, and the pools it could go to. Needs
+         *     `containers.manage`.
+         */
+        get: operations["data_location"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/docker/data/move": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Moves Docker's data to another pool, in a job: every container stops
+         *     meanwhile. Needs `containers.manage`.
+         */
+        post: operations["move_data"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/docker/images": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every image, the newest first. Needs `containers.manage`. */
+        get: operations["list_images"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/docker/images/prune": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Removes every image no container uses; says what was freed. Needs
+         *     `containers.manage`.
+         */
+        post: operations["prune_images"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/docker/images/pull": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Fetches an image, in a job. Needs `containers.manage`. */
+        post: operations["pull_image"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/docker/images/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Removes an image no container uses. Needs `containers.manage`. */
+        delete: operations["remove_image"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/docker/networks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every network, Docker's own first. Needs `containers.manage`. */
+        get: operations["list_networks"];
+        put?: never;
+        /** Creates a bridge network. Needs `containers.manage`. */
+        post: operations["create_network"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/docker/networks/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Removes a network no container is in. Needs `containers.manage`. */
+        delete: operations["remove_network"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/docker/overview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The engine at a glance. Needs `containers.manage`. */
+        get: operations["docker_overview"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/docker/places": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The shares the caller may put a project's folder in. Needs
+         *     `containers.manage`.
+         */
+        get: operations["places"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/docker/projects": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every Compose project, by name. Needs `containers.manage`. */
+        get: operations["list_projects"];
+        put?: never;
+        /**
+         * Makes a project: writes its Compose file into the folder, with the
+         *     caller's permissions, and deploys it if asked. Needs `containers.manage`.
+         */
+        post: operations["create_project"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/docker/projects/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One project. Needs `containers.manage`. */
+        get: operations["project"];
+        put?: never;
+        post?: never;
+        /**
+         * Removes a project's containers and networks, in a job; images, data and
+         *     its folder stay. Not for an app of a catalog. Needs `containers.manage`.
+         */
+        delete: operations["delete_project"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/docker/projects/{name}/compose": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A project's Compose files. Not for an app of a catalog: they hold its
+         *     generated settings. Needs `containers.manage`.
+         */
+        get: operations["project_compose"];
+        /**
+         * Writes a project's changed Compose file and deploys it again, in a job.
+         *     Only for a project made here. Needs `containers.manage`.
+         */
+        put: operations["change_compose"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/docker/projects/{name}/logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The last lines of the project's containers. Needs `containers.manage`. */
+        get: operations["project_logs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/docker/projects/{name}/redeploy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Fetches the images anew and recreates what changed, in a job. Not for
+         *     an app of a catalog. Needs `containers.manage`.
+         */
+        post: operations["redeploy_project"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/docker/projects/{name}/{action}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Starts, stops or restarts a project's containers. Needs
+         *     `containers.manage`.
+         */
+        post: operations["control_project"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/docker/updates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The newest look for newer images, `null` before the first. Needs
+         *     `containers.manage`.
+         */
+        get: operations["updates"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/docker/updates/apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Updates every project with a newer image, in a job; `job` is `null` if
+         *     there is none. Apps of catalogs are the App Center's. Needs
+         *     `containers.manage`.
+         */
+        post: operations["apply_updates"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/docker/updates/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Asks the registries now. Needs `containers.manage`. */
+        post: operations["check_updates"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/docker/updates/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** When newer images are looked for and taken. Needs `containers.manage`. */
+        get: operations["update_settings"];
+        /** Sets them. Needs `containers.manage`. */
+        put: operations["set_update_settings"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/docker/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What the containers used, sample by sample, oldest first. Needs
+         *     `containers.manage`.
+         */
+        get: operations["docker_usage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/file-services": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Which file services run. Needs `system.view`. */
+        get: operations["file_services"];
+        /**
+         * Turns SMB and NFS on or off and sets the workgroup and the oldest SMB
+         *     version; applied with the shares at once. Needs `system.manage`.
+         */
+        put: operations["set_file_services"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/files/favourites": {
         parameters: {
             query?: never;
@@ -441,8 +973,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Shares whose rules name the signed-in user or one of their groups.
-         *     Needs `files.read`.
+         * The signed-in user's personal folder, if they have one, then the
+         *     shares whose rules let them in. Needs `files.read`.
          */
         get: operations["my_shares"];
         put?: never;
@@ -731,6 +1263,44 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/homes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Where the personal folders are and who has one. Needs `users.manage`. */
+        get: operations["homes"];
+        /** Turns personal folders on, on a pool, or off. Needs `users.manage`. */
+        put: operations["set_homes"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/homes/{account_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Gives an account a personal folder, changes its quota or takes it away
+         *     (its files stay). Needs `users.manage`.
+         */
+        put: operations["set_account_home"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/jobs": {
         parameters: {
             query?: never;
@@ -1001,6 +1571,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/password-policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The rules for new passwords; every account may read them. Never
+         *     common passwords or ones containing the account name, whatever is set.
+         */
+        get: operations["password_policy"];
+        /**
+         * Sets the rules for new passwords; passwords already set stay. Needs
+         *     `users.manage`.
+         */
+        put: operations["set_password_policy"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/preferences": {
         parameters: {
             query?: never;
@@ -1013,6 +1607,108 @@ export interface paths {
         /** Replaces the signed-in account's interface preferences. */
         put: operations["save_preferences"];
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/security/blocked": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The blocks in force, the newest first. Needs `system.manage`. */
+        get: operations["blocked"];
+        put?: never;
+        /**
+         * Blocks an address or network until the block is lifted. Needs
+         *     `system.manage`.
+         */
+        post: operations["block"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/security/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The sessions of every account that have not ended, the most recently
+         *     active first. Needs `system.manage`.
+         */
+        get: operations["sessions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/security/sessions/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Ends a session; its browser is signed out with its next request. Needs
+         *     `system.manage`.
+         */
+        delete: operations["end_session"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/security/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * When sessions end, when accounts lock and addresses are blocked. Needs
+         *     `system.manage`.
+         */
+        get: operations["settings"];
+        /**
+         * Sets them; counts of failed attempts start anew where a limit changed,
+         *     blocks in place stay. Needs `system.manage`.
+         */
+        put: operations["set_settings"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/security/unblock": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Lifts a block. Needs `system.manage`. */
+        post: operations["unblock"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1052,6 +1748,31 @@ export interface paths {
          *     over SMB (and NFS, if clients are given). Needs `shares.manage`.
          */
         post: operations["create_share"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/shares/access/{kind}/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Every share with an account's or group's rule and what it may do.
+         *     Needs `shares.manage`.
+         */
+        get: operations["subject_access"];
+        /**
+         * Sets an account's or group's rules on several shares at once. Each
+         *     share that changes gets its permissions at once and its existing files
+         *     in a job. Needs `shares.manage`.
+         */
+        put: operations["set_subject_access"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1533,6 +2254,147 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/system/ssh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The SSH server. Needs `system.view`. */
+        get: operations["ssh"];
+        /**
+         * Turns the SSH server on or off and sets its port and rules; open
+         *     sessions stay. Needs `system.manage`.
+         */
+        put: operations["set_ssh"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/system/time": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The time zone and how the clock is kept. Needs `system.view`. */
+        get: operations["time"];
+        /**
+         * Sets the time zone and the time servers, or the time itself when none
+         *     keep it. Needs `system.manage`.
+         */
+        put: operations["set_time"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/system/tls": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The oldest TLS version the web interface accepts. Needs `system.manage`. */
+        get: operations["tls"];
+        /** Sets it; connections already open stay. Needs `system.manage`. */
+        put: operations["set_tls"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/system/updates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What there is to update, what is going on and how the NAS looks for
+         *     updates. Needs `system.manage`.
+         */
+        get: operations["system_updates"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/system/updates/apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Installs what the last check found: Debian's packages, then zendiloOS,
+         *     whose interface restarts on the way. A restart of the NAS is asked for
+         *     separately. Needs `system.manage`.
+         */
+        post: operations["apply_system_updates"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/system/updates/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Looks for a newer release and for Debian's updates, in the background;
+         *     the overview says when it is done. Needs `system.manage`.
+         */
+        post: operations["check_system_updates"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/system/updates/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Which releases are offered and whether the NAS looks daily. Needs
+         *     `system.manage`.
+         */
+        put: operations["set_system_update_settings"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1540,7 +2402,9 @@ export interface components {
         Account: {
             /** Format: int64 */
             created_at: number;
+            description?: string | null;
             disabled: boolean;
+            email?: string | null;
             full_name?: string | null;
             /** Format: int64 */
             id: number;
@@ -1548,17 +2412,58 @@ export interface components {
             name: string;
             /** @description The account must choose a new password at its next login. */
             password_change_required: boolean;
+            /**
+             * Format: int64
+             * @description When its password was last set, in Unix seconds.
+             */
+            password_changed_at: number;
+            /** @description Only administrators set its password. */
+            password_locked: boolean;
             role: components["schemas"]["AccountRole"];
             /** Format: int64 */
             updated_at: number;
         };
+        /** @description An account with a personal folder. */
+        AccountHome: {
+            /** Format: int64 */
+            account_id: number;
+            /**
+             * Format: int64
+             * @description How much it may store there; absent: as much as the pool has.
+             */
+            quota_bytes?: number | null;
+        };
         /** @enum {string} */
         AccountRole: "admin" | "user" | "readonly";
+        /** @description A session of some account that has not ended. */
+        ActiveSession: {
+            account: string;
+            address?: string | null;
+            /**
+             * Format: int64
+             * @description Unix seconds.
+             */
+            created_at: number;
+            /** @description The caller's own. */
+            current: boolean;
+            /** Format: int64 */
+            id: number;
+            /**
+             * Format: int64
+             * @description Unix seconds.
+             */
+            last_seen_at: number;
+            user_agent?: string | null;
+        };
         AddSourceRequest: {
             /**
              * @description A GitHub repository (`github.com/owner/repository`) or the https
              *     address of an `index.json`.
              */
+            address: string;
+        };
+        AddressRequest: {
+            /** @description An IP address or a network such as `198.51.100.0/24`. */
             address: string;
         };
         /** @enum {string} */
@@ -1683,6 +2588,59 @@ export interface components {
             request_id?: string | null;
             target?: string | null;
         };
+        /** @description Addresses that fail too often are blocked. */
+        AutoBlock: {
+            /**
+             * Format: int32
+             * @description 3 to 100.
+             */
+            failures: number;
+            /**
+             * Format: int32
+             * @description 1 to 365; `null`: until lifted by hand.
+             */
+            release_after_days?: number | null;
+            /**
+             * Format: int32
+             * @description 1 to 1440.
+             */
+            window_minutes: number;
+        };
+        /** @description A newer release of zendiloOS on the channel. */
+        AvailableRelease: {
+            channel: components["schemas"]["UpdateChannel"];
+            /** @description What changed, in Markdown. */
+            notes: string;
+            /**
+             * Format: int64
+             * @description Unix seconds.
+             */
+            published_at?: number | null;
+            /**
+             * Format: int64
+             * @description Of the package, in bytes.
+             */
+            size: number;
+            tag: string;
+            version: string;
+        };
+        /** @description An address or network the web interface refuses. */
+        BlockedAddress: {
+            /** @description `192.0.2.7` or `198.51.100.0/24`. */
+            address: string;
+            /** @description Blocked after failed logins, not by an administrator. */
+            automatic: boolean;
+            /**
+             * Format: int64
+             * @description Unix seconds.
+             */
+            blocked_at: number;
+            /**
+             * Format: int64
+             * @description Unix seconds; `null`: until lifted by hand.
+             */
+            until?: number | null;
+        };
         /** @description An app as the store lists it. */
         CatalogApp: {
             categories: string[];
@@ -1760,6 +2718,44 @@ export interface components {
             kind: "webhook";
             url: string;
         };
+        ComposeChange: {
+            accept_risks?: boolean;
+            compose: string;
+        };
+        ComposeCheck: {
+            compose: string;
+            folder?: string | null;
+            name: string;
+            /**
+             * Format: int64
+             * @description For a new project: the share and the folder in it. Without, the
+             *     existing project's folder.
+             */
+            share_id?: number | null;
+        };
+        ComposeCheckResult: {
+            /**
+             * @description To be confirmed before it runs; empty if nothing reaches beyond the
+             *     containers.
+             */
+            risks: components["schemas"]["ComposeRisk"][];
+        };
+        ComposeFile: {
+            content: string;
+            /** @description On the machine. */
+            path: string;
+        };
+        /** @description Something a service may do beyond its container. */
+        ComposeRisk: {
+            /** @description The path, namespace, devices or capabilities. */
+            detail?: string | null;
+            /**
+             * @description `privileged`, `docker_socket`, `system_path`, `host_network`,
+             *     `host_namespace`, `devices`, `capabilities`, `unconfined`.
+             */
+            kind: string;
+            service: string;
+        };
         /**
          * @description Something wrong with a pool or disk, as a code with parameters for the
          *     interface to word, e.g. `pool_degraded` with `pool` and `state`.
@@ -1778,14 +2774,38 @@ export interface components {
             };
             severity: components["schemas"]["Severity"];
         };
+        ContainerMount: {
+            destination: string;
+            /** @description `bind` or `volume`. */
+            kind: string;
+            read_only: boolean;
+            source: string;
+        };
+        ContainerUsage: {
+            /** Format: double */
+            cpu_percent: number;
+            /** Format: int64 */
+            memory_bytes: number;
+            /** Format: int64 */
+            memory_limit_bytes: number;
+            /** Format: int64 */
+            received_bytes: number;
+            /** Format: int64 */
+            sent_bytes: number;
+        };
         CreateAccountRequest: {
+            description?: string | null;
+            email?: string | null;
             full_name?: string | null;
             name: string;
             /**
              * Format: password
-             * @description Initial password; the account must change it at its first login.
+             * @description Initial password; the account must change it at its first login,
+             *     unless `password_locked`.
              */
             password: string;
+            /** @description Only administrators set its password. */
+            password_locked?: boolean;
             role: components["schemas"]["AccountRole"];
         };
         CreateFolderRequest: {
@@ -1821,12 +2841,18 @@ export interface components {
             name: string;
             /** @description Nothing but changing the password is allowed until this is false. */
             password_change_required: boolean;
+            /** @description Only administrators set this account's password. */
+            password_locked: boolean;
             /**
              * @description Everything this account may do, e.g. `system.view`. The interface
              *     uses it to show only what is allowed; the server checks anyway.
              */
             permissions: string[];
             role: components["schemas"]["AccountRole"];
+        };
+        DataMove: {
+            /** @description The pool to move Docker's data to. */
+            pool: string;
         };
         DefaultRoute: {
             gateway: string;
@@ -1883,11 +2909,121 @@ export interface components {
          * @enum {string}
          */
         DiskUsage: "system" | "array_member" | "pool_member" | "volume" | "foreign" | "unused";
+        DockerContainer: {
+            /**
+             * Format: int64
+             * @description Unix seconds.
+             */
+            created_at: number;
+            /** Format: int64 */
+            exit_code?: number | null;
+            health?: string | null;
+            id: string;
+            image: string;
+            image_id: string;
+            mounts: components["schemas"]["ContainerMount"][];
+            name: string;
+            networks: string[];
+            ports: components["schemas"]["PublishedPort"][];
+            project?: string | null;
+            restart_policy: string;
+            service?: string | null;
+            /** Format: int64 */
+            started_at?: number | null;
+            /** @description `created`, `running`, `paused`, `restarting`, `removing`, `exited`, `dead`. */
+            state: string;
+            usage?: components["schemas"]["ContainerUsage"] | null;
+        };
+        DockerDataLocation: {
+            current?: components["schemas"]["DockerDataPlace"] | null;
+            /** Format: int64 */
+            data_bytes: number;
+            /** @description The other pools. */
+            targets: components["schemas"]["DockerDataPlace"][];
+        };
+        DockerDataPlace: {
+            /**
+             * Format: int64
+             * @description Free for files, if known.
+             */
+            available_bytes?: number | null;
+            pool: string;
+            /** Format: int32 */
+            volume: number;
+        };
+        DockerImage: {
+            /** Format: int64 */
+            created_at?: number | null;
+            digests: string[];
+            id: string;
+            /** @description `repository:tag` each. */
+            references: string[];
+            /** Format: int64 */
+            size_bytes: number;
+            /** @description The containers made from it, by name. */
+            used_by: string[];
+        };
+        DockerNetwork: {
+            /** @description Docker's own: it cannot be removed. */
+            built_in: boolean;
+            /** @description The containers in it now, by name. */
+            containers: string[];
+            driver: string;
+            gateways: string[];
+            id: string;
+            internal: boolean;
+            name: string;
+            project?: string | null;
+            subnets: string[];
+        };
+        /** @description The engine at a glance. */
+        DockerOverview: {
+            containers: number;
+            containers_running: number;
+            /**
+             * Format: double
+             * @description Of the machine's processors, 0 to 100; `null` before the first sample.
+             */
+            cpu_share?: number | null;
+            /**
+             * Format: int64
+             * @description What Docker's data takes up.
+             */
+            data_bytes: number;
+            images: number;
+            /** Format: int64 */
+            memory_bytes?: number | null;
+            /** Format: int64 */
+            memory_total_bytes?: number | null;
+            projects: number;
+            projects_running: number;
+        };
+        DockerProject: {
+            /** @description For an app: its id in the App Center. */
+            app?: string | null;
+            containers: components["schemas"]["DockerContainer"][];
+            /** Format: int64 */
+            created_at?: number | null;
+            created_by?: string | null;
+            /**
+             * @description Where its Compose file is: on the machine for every kind, and in the
+             *     share for one made here (`docker/teslamate/compose.yaml`).
+             */
+            files: string[];
+            folder?: string | null;
+            kind: components["schemas"]["ProjectKind"];
+            name: string;
+            running: number;
+            /** Format: int64 */
+            share_id?: number | null;
+        };
         /** @description Whether apps can run on this NAS. */
         DockerSetup: {
             /** @description Debian's `docker.io` is installed. */
             installed: boolean;
             running: boolean;
+            /** @description The engine's version, while it runs. */
+            version?: string | null;
             volume?: components["schemas"]["AppVolume"] | null;
             /** @description Pools it could go to. */
             volumes: components["schemas"]["AppVolume"][];
@@ -1895,6 +3031,19 @@ export interface components {
         EnableDockerRequest: {
             /** @description A pool zendiloOS created. */
             pool: string;
+        };
+        /** @description So many failed logins within so many minutes. */
+        FailureLimit: {
+            /**
+             * Format: int32
+             * @description 3 to 100.
+             */
+            failures: number;
+            /**
+             * Format: int32
+             * @description 1 to 1440.
+             */
+            window_minutes: number;
         };
         /** @description A folder kept at hand. */
         Favourite: {
@@ -1922,12 +3071,63 @@ export interface components {
         };
         /** @enum {string} */
         FileKind: "file" | "directory" | "symlink" | "other";
-        /** @description A share the signed-in user may use. */
+        /**
+         * @description Which file services run, and how Samba presents itself; one set for
+         *     all shares. Fields added later have defaults, as a fresh install has
+         *     them.
+         */
+        FileServices: {
+            /** @description Macs find the NAS and its Time Machine share (Bonjour). */
+            bonjour?: boolean;
+            /** @description Folders holding only such files can be deleted. */
+            delete_veto_files?: boolean;
+            /**
+             * @description Open files survive a short network loss; SMB's locks then no longer
+             *     hold against NFS or the file manager.
+             */
+            durable_handles?: boolean;
+            /** @description Symbolic links inside a share are followed; never out of it. */
+            follow_symlinks?: boolean;
+            /** @description Shares a user may not open are not listed to them. */
+            hide_unreadable?: boolean;
+            /** @description SMB 2 leases; only with oplocks. */
+            leases?: boolean;
+            /**
+             * @description Names with characters Windows does not allow, and Apple's
+             *     extensions; needed for Time Machine.
+             */
+            mac_compat?: boolean;
+            /** @description SMB 3 over several connections at once. */
+            multichannel?: boolean;
+            /** @description NFS for Linux and other Unix systems. */
+            nfs: boolean;
+            /** @description Clients may cache files they have open. */
+            oplocks?: boolean;
+            /** @description SMB for Windows, macOS and Linux. */
+            smb: boolean;
+            smb_encryption?: components["schemas"]["SmbEncryptionMode"];
+            smb_min_protocol: components["schemas"]["SmbMinProtocol"];
+            smb_signing?: components["schemas"]["SmbSigningMode"];
+            time_machine?: components["schemas"]["TimeMachineShare"] | null;
+            /** @description Names kept out of the shares, e.g. `/*.tmp/Thumbs.db/`. */
+            veto_files?: string | null;
+            /** @description The Windows workgroup: 1 to 15 letters, digits, `-` or `_`. */
+            workgroup: string;
+            /** @description Windows finds the NAS (WS-Discovery). */
+            wsdd?: boolean;
+        };
+        /** @description A share the signed-in user may use, or their personal folder. */
         FileShare: {
             access: components["schemas"]["ShareAccessLevel"];
             description?: string | null;
-            /** Format: int64 */
+            /** @description The personal folder of the signed-in user. */
+            home: boolean;
+            /**
+             * Format: int64
+             * @description `0` for the personal folder, which only its owner sees.
+             */
             id: number;
+            /** @description `home` for the personal folder. */
             name: string;
             /** @description Deleted entries go to `.recycle/<user>` in the share. */
             recycle_bin: boolean;
@@ -1992,12 +3192,58 @@ export interface components {
             /** @description `ok` whenever the server answers. */
             status: string;
         };
+        Homes: {
+            homes: components["schemas"]["AccountHome"][];
+            location?: components["schemas"]["HomesLocation"] | null;
+        };
+        /** @description Where the personal folders are. */
+        HomesLocation: {
+            pool: string;
+            /** Format: int32 */
+            volume: number;
+        };
         /** @enum {string} */
         HookFormat: "json" | "text";
+        ImageUpdate: {
+            /** @description The containers made from it, by name. */
+            containers: string[];
+            /** @description Why it cannot be told, for `unknown`. */
+            reason?: string | null;
+            /** @description As the containers name it: `postgres:17`. */
+            reference: string;
+            state: components["schemas"]["ImageUpdateState"];
+        };
+        /** @description When newer images are taken: on these days at this time. */
+        ImageUpdateSchedule: {
+            /** @description 0 is Monday. */
+            days: number[];
+            /** @description `05:40`, in the machine's time zone. */
+            time: string;
+        };
+        ImageUpdateSettings: {
+            /** @description Registries are asked every six hours. */
+            check: boolean;
+            schedule?: components["schemas"]["ImageUpdateSchedule"] | null;
+        };
+        /** @enum {string} */
+        ImageUpdateState: "current" | "available" | "unknown";
+        ImageUpdates: {
+            /**
+             * Format: int64
+             * @description Unix seconds.
+             */
+            checked_at: number;
+            images: components["schemas"]["ImageUpdate"][];
+        };
         InstallAppRequest: {
             app: string;
             /** @description The administrator confirmed the app's permissions. */
             confirm_permissions?: boolean;
+            /**
+             * @description The pool the app's data goes on, one of `volumes` of `/apps/docker`;
+             *     the one Docker's data is on if absent.
+             */
+            pool?: string | null;
             /** @description Port id → host port; missing ones get their default. */
             ports?: {
                 [key: string]: number;
@@ -2009,7 +3255,11 @@ export interface components {
             settings?: {
                 [key: string]: string;
             };
-            /** @description Share id → the name of the share picked for it. */
+            /**
+             * @description Share id → the share picked for it: its name, or a folder in it
+             *     (`media/Films`), which the app then mounts instead of the whole
+             *     share.
+             */
             shares?: {
                 [key: string]: string;
             };
@@ -2032,7 +3282,10 @@ export interface components {
                 [key: string]: number;
             };
             run_state?: components["schemas"]["RunState"] | null;
-            /** @description Share id → share name. */
+            /**
+             * @description Share id → the share it got: its name, or a folder in it
+             *     (`media/Films`).
+             */
             shares: {
                 [key: string]: string;
             };
@@ -2084,8 +3337,17 @@ export interface components {
          *     each browser keeps what it shows.
          */
         InterfacePreferences: {
+            /** @description The app icons on the desktop, in order, by id. */
+            desktop_icons?: string[] | null;
             language?: components["schemas"]["InterfaceLanguage"] | null;
             theme?: components["schemas"]["InterfaceTheme"] | null;
+            /**
+             * @description The desktop's background, by the interface's name for it (lowercase
+             *     letters).
+             */
+            wallpaper?: string | null;
+            /** @description The widgets beside the desktop, in order, by id; empty for none. */
+            widgets?: string[] | null;
         };
         InterfaceSettingsInput: {
             /** @description Up to three; empty: those DHCP and the router give. */
@@ -2208,6 +3470,10 @@ export interface components {
          * @enum {string}
          */
         LogSource: "system" | "zendiloos" | "storage" | "sharing" | "kernel";
+        LogText: {
+            /** @description With timestamps, oldest first. */
+            text: string;
+        };
         LoginRequest: {
             name: string;
             /** Format: password */
@@ -2294,6 +3560,28 @@ export interface components {
             managed: boolean;
             pending?: components["schemas"]["PendingNetworkChange"] | null;
         };
+        NewDockerProject: {
+            /**
+             * @description What the file lets containers do beyond themselves was shown and
+             *     accepted.
+             */
+            accept_risks?: boolean;
+            compose: string;
+            /** @description In the share: `docker/teslamate`; made if missing. */
+            folder: string;
+            name: string;
+            /** Format: int64 */
+            share_id: number;
+            /** @description Deploys it right away. */
+            start?: boolean;
+        };
+        NewNetwork: {
+            /** @description Only with a subnet. */
+            gateway?: string | null;
+            name: string;
+            /** @description `172.30.0.0/24`; Docker's choice if absent. */
+            subnet?: string | null;
+        };
         /** @enum {string} */
         NewPoolLayout: "single" | "mirror" | "raidz1" | "raidz2" | "raidz3";
         /** @description A host or network that may mount the share over NFS. */
@@ -2374,6 +3662,14 @@ export interface components {
             /** Format: int64 */
             unsafe_shutdowns: number;
         };
+        /** @description A Debian package an update brings. */
+        PackageUpdate: {
+            /** @description None for one that comes in new. */
+            from?: string | null;
+            name: string;
+            security: boolean;
+            to: string;
+        };
         Partition: {
             filesystem?: string | null;
             label?: string | null;
@@ -2381,6 +3677,24 @@ export interface components {
             name: string;
             /** Format: int64 */
             size_bytes: number;
+        };
+        /** @description The rules a new password must follow. */
+        PasswordPolicy: {
+            digit: boolean;
+            /**
+             * Format: int32
+             * @description From 30 to 730 days; absent: passwords do not expire.
+             */
+            max_age_days?: number | null;
+            /**
+             * Format: int32
+             * @description From 10 to 64 characters.
+             */
+            min_length: number;
+            /** @description Upper and lower case letters. */
+            mixed_case: boolean;
+            /** @description A character that is neither a letter nor a digit; a space counts. */
+            symbol: boolean;
         };
         PendingNetworkChange: {
             interface: string;
@@ -2556,6 +3870,35 @@ export interface components {
             /** @description Always `about:blank`; `code` identifies the problem. */
             type: string;
         };
+        ProjectCompose: {
+            /** @description Made here: changed and deployed again with `PUT`. */
+            editable: boolean;
+            files: components["schemas"]["ComposeFile"][];
+        };
+        ProjectCreated: {
+            job?: components["schemas"]["Job"] | null;
+        };
+        /** @enum {string} */
+        ProjectKind: "own" | "app" | "foreign";
+        /** @description A share a project's folder can go in. */
+        ProjectPlace: {
+            share: string;
+            /** Format: int64 */
+            share_id: number;
+        };
+        PublishedPort: {
+            /** Format: int32 */
+            container_port: number;
+            /** @description `null`: every address. */
+            host_ip?: string | null;
+            /** Format: int32 */
+            host_port: number;
+            protocol: string;
+        };
+        PullRequest: {
+            /** @description `postgres:17`, `ghcr.io/owner/app:latest`. */
+            reference: string;
+        };
         /** @description A software RAID array. */
         RaidArray: {
             /**
@@ -2627,6 +3970,11 @@ export interface components {
             destroyed: string[];
         };
         /**
+         * @description Whether root may log in over SSH.
+         * @enum {string}
+         */
+        RootLoginMode: "no" | "key_only" | "yes";
+        /**
          * @description What Docker makes of an installed app.
          * @enum {string}
          */
@@ -2648,6 +3996,20 @@ export interface components {
              * @description When it last started its tests, in Unix seconds.
              */
             last_run_at?: number | null;
+        };
+        SecuritySettings: {
+            account_lock?: components["schemas"]["FailureLimit"] | null;
+            /**
+             * @description Addresses and networks never blocked, such as `192.168.1.0/24`; at
+             *     most 64. This machine itself never is.
+             */
+            allowed?: string[];
+            auto_block?: components["schemas"]["AutoBlock"] | null;
+            /**
+             * Format: int32
+             * @description A session ends after this many minutes without requests: 5 to 1440.
+             */
+            idle_minutes: number;
         };
         SelfTest: {
             description: string;
@@ -2701,12 +4063,31 @@ export interface components {
              */
             expires_at: number;
         };
+        SetAccountHomeRequest: {
+            enabled: boolean;
+            /**
+             * Format: int64
+             * @description At least 1 GiB; absent: no limit.
+             */
+            quota_bytes?: number | null;
+        };
         SetFavouritesRequest: {
             /** @description In the order to show them; at most 50. */
             favourites: components["schemas"]["FavouriteFolder"][];
         };
+        SetHomesRequest: {
+            /**
+             * @description The pool to keep the personal folders on; null turns them off,
+             *     keeping their files.
+             */
+            pool?: string | null;
+        };
         SetSelfTestPlans: {
             plans: components["schemas"]["SelfTestPlan"][];
+        };
+        SetSubjectAccessRequest: {
+            /** @description The shares to change; others keep their rules. */
+            rules: components["schemas"]["SubjectRule"][];
         };
         SetupRequest: {
             /** @description Name of the first administrator account. */
@@ -2767,7 +4148,7 @@ export interface components {
         ShareCompressionKind: "off" | "lz4" | "zstd";
         /** @description An account or group and what it may do in the share. */
         ShareRule: {
-            access: components["schemas"]["ShareAccessLevel"];
+            access: components["schemas"]["ShareRuleLevel"];
             /**
              * Format: int64
              * @description Account or group ID.
@@ -2775,6 +4156,13 @@ export interface components {
             id: number;
             kind: components["schemas"]["SubjectKind"];
         };
+        /**
+         * @description What a rule says. `deny` keeps the account or group out, also where
+         *     another rule would let it in: a group's denial wins over its members'
+         *     own rules.
+         * @enum {string}
+         */
+        ShareRuleLevel: "deny" | "read" | "read_write";
         /** @description How a share's dataset stores data. */
         ShareSettingsDto: {
             compression: components["schemas"]["ShareCompressionKind"];
@@ -2896,10 +4284,62 @@ export interface components {
         /** @enum {string} */
         SmartStatus: "available" | "standby" | "unsupported";
         /**
+         * @description Whether SMB traffic is encrypted.
+         * @enum {string}
+         */
+        SmbEncryptionMode: "default" | "required" | "off";
+        /**
+         * @description The oldest SMB version the NAS answers.
+         * @enum {string}
+         */
+        SmbMinProtocol: "smb2" | "smb2_1" | "smb3";
+        /**
+         * @description Whether SMB packets are signed.
+         * @enum {string}
+         */
+        SmbSigningMode: "default" | "mandatory" | "disabled";
+        /**
          * @description How often a schedule takes a snapshot.
          * @enum {string}
          */
         SnapshotFrequency: "hourly" | "daily" | "weekly" | "monthly";
+        SshRequest: {
+            enabled: boolean;
+            /**
+             * Format: int32
+             * @description Turns SSH off again after 1 to 1440 minutes; `null`: never.
+             */
+            off_after_minutes?: number | null;
+            /** @description `null`: as the system's configuration has it. */
+            password_login?: boolean | null;
+            /**
+             * Format: int32
+             * @description 22, or a port from 1024 that no service of the NAS uses.
+             */
+            port: number;
+            root_login?: components["schemas"]["RootLoginMode"] | null;
+        };
+        /**
+         * @description The SSH server: on or off, its port and two of its rules. Who may log
+         *     in otherwise stays as the system has it.
+         */
+        SshState: {
+            /** @description Starts with the machine. */
+            enabled: boolean;
+            /** @description The server is installed; without it, nothing can be turned on. */
+            installed: boolean;
+            /**
+             * Format: int64
+             * @description When it turns itself off, in Unix seconds.
+             */
+            off_at?: number | null;
+            /** @description `null`: as the system's configuration has it. */
+            password_login?: boolean | null;
+            /** Format: int32 */
+            port: number;
+            root_login?: components["schemas"]["RootLoginMode"] | null;
+            running: boolean;
+        };
         StartSelfTestRequest: {
             kind: components["schemas"]["SelfTestKind"];
         };
@@ -2919,8 +4359,25 @@ export interface components {
             used_bytes: number;
             verdict?: components["schemas"]["Severity"] | null;
         };
+        SubjectAccessUpdate: {
+            /** @description One per share that changed: its existing files follow. */
+            jobs: components["schemas"]["Job"][];
+        };
         /** @enum {string} */
         SubjectKind: "account" | "group";
+        SubjectRule: {
+            rule?: components["schemas"]["ShareRuleLevel"] | null;
+            /** Format: int64 */
+            share_id: number;
+        };
+        /** @description One share as an account or group sees it. */
+        SubjectShareAccess: {
+            effective?: components["schemas"]["ShareAccessLevel"] | null;
+            rule?: components["schemas"]["ShareRuleLevel"] | null;
+            share: string;
+            /** Format: int64 */
+            share_id: number;
+        };
         /** @enum {string} */
         SyncOperation: "resync" | "recovery" | "check" | "repair" | "reshape";
         SyncProgress: {
@@ -2974,6 +4431,54 @@ export interface components {
             celsius: number;
             label: string;
         };
+        /** @description The share Macs back up to with Time Machine. */
+        TimeMachineShare: {
+            /**
+             * Format: int64
+             * @description At least 1 GiB; absent: as much as the share may hold.
+             */
+            max_bytes?: number | null;
+            /** Format: int64 */
+            share_id: number;
+        };
+        TimeRequest: {
+            /**
+             * Format: int64
+             * @description Only without network time: sets the clock, in Unix seconds.
+             */
+            clock?: number | null;
+            network_time: boolean;
+            /** @description At most four host names or IP addresses; empty: Debian's pool. */
+            servers?: string[];
+            zone: string;
+        };
+        /** @description The machine's clock: its time zone and how it is kept. */
+        TimeState: {
+            /** @description A time service is installed: network time can be turned on. */
+            can_network_time: boolean;
+            /** @description Time servers keep the clock. */
+            network_time: boolean;
+            /**
+             * Format: int64
+             * @description The machine's time, in Unix seconds, when this was read.
+             */
+            now: number;
+            /** @description The server the clock comes from now. */
+            server_in_use?: string | null;
+            /** @description The servers set here; empty: Debian's pool. */
+            servers: string[];
+            /** @description The clock agrees with a time server. */
+            synchronized: boolean;
+            /** @description A zone of the tz database: `Europe/Berlin`. */
+            zone: string;
+            /** @description Every zone the system has, sorted. */
+            zones: string[];
+        };
+        /**
+         * @description The oldest TLS version the web interface accepts.
+         * @enum {string}
+         */
+        TlsVersion: "tls1_2" | "tls1_3";
         /** @enum {string} */
         TransferMode: "copy" | "move";
         TransferRequest: {
@@ -2996,9 +4501,14 @@ export interface components {
         };
         /** @description Absent fields stay as they are. */
         UpdateAccountRequest: {
+            /** @description An empty string removes it. */
+            description?: string | null;
             disabled?: boolean | null;
+            /** @description An empty string removes it. */
+            email?: string | null;
             /** @description An empty string removes the full name. */
             full_name?: string | null;
+            password_locked?: boolean | null;
             role?: components["schemas"]["AccountRole"] | null;
         };
         UpdateAppRequest: {
@@ -3008,12 +4518,48 @@ export interface components {
              */
             confirm_permissions?: boolean;
         };
+        /**
+         * @description Which releases of zendiloOS are offered: each channel takes those of
+         *     the steadier ones too.
+         * @enum {string}
+         */
+        UpdateChannel: "stable" | "test" | "development";
         /** @description Absent fields stay as they are. */
         UpdateGroupRequest: {
             /** @description An empty string removes the description. */
             description?: string | null;
             /** @description Replaces all members. */
             members?: number[] | null;
+        };
+        /**
+         * @description What zendiloosd is doing before a run on the NAS starts.
+         * @enum {string}
+         */
+        UpdatePhase: "idle" | "checking" | "downloading" | "failed";
+        /** @description The update on the NAS, running or the last one. */
+        UpdateRun: {
+            error?: string | null;
+            /** Format: int64 */
+            finished_at?: number | null;
+            id: string;
+            /** @description A newer kernel waits for a restart. */
+            restart_needed: boolean;
+            /** Format: int64 */
+            started_at: number;
+            state: components["schemas"]["UpdateRunState"];
+            /** @description `lists`, `debian`, `zendiloos`, `modules`. */
+            step: string;
+            /** @description The version of zendiloOS it installs. */
+            zendiloos?: string | null;
+            /** @description The ZFS module is built for the newest kernel. */
+            zfs_ready: boolean;
+        };
+        /** @enum {string} */
+        UpdateRunState: "running" | "succeeded" | "failed";
+        UpdateSettings: {
+            channel: components["schemas"]["UpdateChannel"];
+            /** @description Look once a day and say what there is; installing stays a click. */
+            check_daily: boolean;
         };
         /** @description Absent fields stay as they are. */
         UpdateShareRequest: {
@@ -3026,8 +4572,56 @@ export interface components {
             recycle_bin?: boolean | null;
             settings?: components["schemas"]["ShareSettingsDto"] | null;
         };
+        UpdatesOverview: {
+            /**
+             * Format: int64
+             * @description When the last check was, Unix seconds.
+             */
+            checked_at?: number | null;
+            /** @description The version of zendiloOS that runs. */
+            current: string;
+            newest_kernel?: string | null;
+            packages: components["schemas"]["PackageUpdate"][];
+            /** @description Why apt could not be asked. */
+            packages_error?: string | null;
+            phase: components["schemas"]["UpdatePhase"];
+            phase_error?: string | null;
+            release?: components["schemas"]["AvailableRelease"] | null;
+            /** @description Why GitHub could not be asked. */
+            release_error?: string | null;
+            /** @description A newer kernel is installed and waits for a restart. */
+            restart_needed: boolean;
+            run?: components["schemas"]["UpdateRun"] | null;
+            running_kernel?: string | null;
+            settings: components["schemas"]["UpdateSettings"];
+            /**
+             * @description The ZFS module is built for the newest kernel; without it a restart
+             *     would leave the pools behind.
+             */
+            zfs_ready: boolean;
+        };
         UploadedFile: {
             path: string;
+        };
+        UsageMoment: {
+            /**
+             * Format: int64
+             * @description Unix seconds.
+             */
+            at: number;
+            points: components["schemas"]["UsagePoint"][];
+        };
+        /** @description One container at one moment. */
+        UsagePoint: {
+            container: string;
+            /** Format: double */
+            cpu_percent: number;
+            /** Format: int64 */
+            memory_bytes: number;
+            /** Format: double */
+            received_per_second: number;
+            /** Format: double */
+            sent_per_second: number;
         };
         /**
          * @description State of a pool or one of its devices.
@@ -3059,6 +4653,10 @@ export interface components {
             size_bytes?: number | null;
             /** Format: int64 */
             used_bytes?: number | null;
+        };
+        WebTls: {
+            /** @description TLS 1.2 serves older clients too; 1.3 alone refuses them. */
+            minimum: components["schemas"]["TlsVersion"];
         };
     };
     responses: never;
@@ -3428,6 +5026,47 @@ export interface operations {
                 };
             };
             /** @description `refused`: Docker missing, or its data on another pool */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    install_docker: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EnableDockerRequest"];
+            };
+        };
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description `not_found`: no such pool */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `docker_installed` */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -4070,6 +5709,1320 @@ export interface operations {
             };
             /** @description `unauthenticated` */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    check_compose: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ComposeCheck"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ComposeCheckResult"];
+                };
+            };
+            /** @description `forbidden`, `csrf_rejected`, `share_denied` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `refused`: Compose cannot read it, in its words */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    list_containers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DockerContainer"][];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    remove_container: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `forbidden`, `csrf_rejected` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `host_failed`: it runs */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    container_logs: {
+        parameters: {
+            query?: {
+                /** @description At most 10 000; 500 if absent. */
+                lines?: number;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LogText"];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    control_container: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                /** @description `start`, `stop` or `restart` */
+                action: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Done. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `forbidden`, `csrf_rejected` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `host_failed` */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    data_location: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DockerDataLocation"];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    move_data: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DataMove"];
+            };
+        };
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description `forbidden`, `csrf_rejected` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found`: no such other pool */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `refused`: too little space, or not on a pool zendiloOS made */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    list_images: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DockerImage"][];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    prune_images: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LogText"];
+                };
+            };
+            /** @description `forbidden`, `csrf_rejected` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    pull_image: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PullRequest"];
+            };
+        };
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description `forbidden`, `csrf_rejected` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    remove_image: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `forbidden`, `csrf_rejected` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `host_failed`: in use */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    list_networks: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DockerNetwork"][];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    create_network: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewNetwork"];
+            };
+        };
+        responses: {
+            /** @description Created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `forbidden`, `csrf_rejected` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `refused` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `host_failed` */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    remove_network: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `forbidden`, `csrf_rejected` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `refused`: Docker's own */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `host_failed`: in use */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    docker_overview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DockerOverview"];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `host_failed`: Docker does not answer */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    places: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectPlace"][];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    list_projects: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DockerProject"][];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    create_project: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewDockerProject"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectCreated"];
+                };
+            };
+            /** @description `forbidden`, `csrf_rejected`, `share_denied` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `project_exists`; `refused`: Compose cannot read it; `compose_risks`: not accepted */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    project: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DockerProject"];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_project: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description `forbidden`, `csrf_rejected` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `app_project` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    project_compose: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectCompose"];
+                };
+            };
+            /** @description `forbidden`, `share_denied` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `app_project` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    change_compose: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ComposeChange"];
+            };
+        };
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description `forbidden`, `csrf_rejected`, `share_denied` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `app_project`, `not_own_project`; `refused`: Compose cannot read it; `compose_risks` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    project_logs: {
+        parameters: {
+            query?: {
+                /** @description At most 10 000; 500 if absent. */
+                lines?: number;
+            };
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LogText"];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    redeploy_project: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description `forbidden`, `csrf_rejected` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `app_project` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    control_project: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+                /** @description `start`, `stop` or `restart` */
+                action: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Done. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `forbidden`, `csrf_rejected` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `host_failed` */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    updates: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImageUpdates"] | null;
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    apply_updates: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectCreated"];
+                };
+            };
+            /** @description `forbidden`, `csrf_rejected` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    check_updates: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImageUpdates"];
+                };
+            };
+            /** @description `forbidden`, `csrf_rejected` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    update_settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImageUpdateSettings"];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    set_update_settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImageUpdateSettings"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImageUpdateSettings"];
+                };
+            };
+            /** @description `forbidden`, `csrf_rejected` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    docker_usage: {
+        parameters: {
+            query?: {
+                /** @description How far back, at most twelve hours; one hour if absent. */
+                seconds?: number;
+                /** @description Container names, comma separated; all if absent. */
+                containers?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageMoment"][];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    file_services: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FileServices"];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    set_file_services: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FileServices"];
+            };
+        };
+        responses: {
+            /** @description As stored: the workgroup uppercase. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FileServices"];
+                };
+            };
+            /** @description `forbidden`, `csrf_rejected` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found`: the Time Machine share */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `refused`: the host did not accept it; the previous settings apply */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input` */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4861,6 +7814,118 @@ export interface operations {
             };
         };
     };
+    homes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Homes"];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    set_homes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetHomesRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Homes"];
+                };
+            };
+            /** @description `refused`: e.g. a share is called home */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `volume_not_found` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    set_account_home: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                account_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetAccountHomeRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountHome"] | null;
+                };
+            };
+            /** @description `refused`: personal folders are off */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `unknown_subject`, `invalid_input` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     list_jobs: {
         parameters: {
             query?: {
@@ -4929,6 +7994,10 @@ export interface operations {
                 limit?: number;
                 /** @description `older` of the previous page. */
                 before?: number;
+                /** @description Only entries of this action, such as `identity.login`. */
+                action?: string;
+                /** @description Only entries whose action starts so, such as `containers.`. */
+                prefix?: string;
             };
             header?: never;
             path?: never;
@@ -5391,6 +8460,66 @@ export interface operations {
             };
         };
     };
+    password_policy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PasswordPolicy"];
+                };
+            };
+        };
+    };
+    set_password_policy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PasswordPolicy"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PasswordPolicy"];
+                };
+            };
+            /** @description `forbidden`, `csrf_rejected` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     preferences: {
         parameters: {
             query?: never;
@@ -5429,6 +8558,277 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description `invalid_input`: no such wallpaper name or layout */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    blocked: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BlockedAddress"][];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    block: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddressRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BlockedAddress"];
+                };
+            };
+            /** @description `forbidden`, `csrf_rejected` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `own_address`: the caller would be blocked; `address_allowed`: it is never blocked */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    sessions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActiveSession"][];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    end_session: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Ended. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `forbidden`, `csrf_rejected` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecuritySettings"];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    set_settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SecuritySettings"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecuritySettings"];
+                };
+            };
+            /** @description `forbidden`, `csrf_rejected` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    unblock: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddressRequest"];
+            };
+        };
+        responses: {
+            /** @description Lifted. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `forbidden`, `csrf_rejected` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found`: it is not blocked */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
             };
         };
     };
@@ -5561,6 +8961,81 @@ export interface operations {
                 };
             };
             /** @description `invalid_input`, `volume_not_found`, `unknown_subject`, `duplicate_rule` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    subject_access: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kind: components["schemas"]["SubjectKind"];
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubjectShareAccess"][];
+                };
+            };
+            /** @description `unknown_subject` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    set_subject_access: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kind: components["schemas"]["SubjectKind"];
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetSubjectAccessRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubjectAccessUpdate"];
+                };
+            };
+            /** @description `not_found`: a share */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `unknown_subject`, `duplicate_rule` */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -6527,6 +10002,311 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    ssh: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SshState"];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    set_ssh: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SshRequest"];
+            };
+        };
+        responses: {
+            /** @description The server afterwards. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SshState"];
+                };
+            };
+            /** @description `forbidden`, `csrf_rejected` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_installed`: there is no SSH server; `port_in_use`: another program listens on the port */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input`: a port below 1024 or in use, a time to turn off out of range */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    time: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TimeState"];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    set_time: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TimeRequest"];
+            };
+        };
+        responses: {
+            /** @description The clock afterwards. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TimeState"];
+                };
+            };
+            /** @description `forbidden`, `csrf_rejected` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input`: an unknown zone, a bad server, a time with servers on */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    tls: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebTls"];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    set_tls: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WebTls"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebTls"];
+                };
+            };
+            /** @description `forbidden`, `csrf_rejected` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    system_updates: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UpdatesOverview"];
+                };
+            };
+        };
+    };
+    apply_system_updates: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The update begins. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `update_busy`, `not_checked`, `nothing_to_update` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    check_system_updates: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Looking. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `update_busy` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    set_system_update_settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateSettings"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UpdateSettings"];
                 };
             };
         };

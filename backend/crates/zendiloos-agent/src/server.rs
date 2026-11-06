@@ -179,7 +179,7 @@ mod tests {
         let share = ShareName::parse("photos").unwrap();
         let location = FileLocation {
             volume,
-            share: share.clone(),
+            root: zendiloos_agent_proto::FileRoot::Share(share.clone()),
             path: SharePath::parse("album").unwrap(),
             snapshot: None,
         };

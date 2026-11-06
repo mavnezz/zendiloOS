@@ -1,4 +1,5 @@
 use zendiloos_apps::application::{Catalogs, Docker, Installs};
+use zendiloos_containers::application::Containers;
 use zendiloos_identity::application::IdentityUseCases;
 use zendiloos_jobs::Jobs;
 use zendiloos_network::application::NetworkUseCases;
@@ -7,6 +8,7 @@ use zendiloos_notify::channels::Channels;
 use zendiloos_sharing::application::{FilesUseCases, SharingUseCases};
 use zendiloos_storage::application::StorageUseCases;
 use zendiloos_system::application::SystemUseCases;
+use zendiloos_updates::application::Updates;
 
 /// The use cases the handlers call, and how the API is exposed. Cheap to
 /// clone.
@@ -24,6 +26,8 @@ pub struct ApiState {
     pub(crate) apps: Catalogs,
     pub(crate) docker: Docker,
     pub(crate) installs: Installs,
+    pub(crate) containers: Containers,
+    pub(crate) updates: Updates,
     /// Session cookies get `Secure` and the `__Host-` prefix. Only turn
     /// this off where the interface is reached over plain HTTP.
     pub(crate) secure_cookies: bool,
@@ -43,6 +47,8 @@ pub struct UseCases {
     pub apps: Catalogs,
     pub docker: Docker,
     pub installs: Installs,
+    pub containers: Containers,
+    pub updates: Updates,
 }
 
 impl ApiState {
@@ -60,6 +66,8 @@ impl ApiState {
             apps,
             docker,
             installs,
+            containers,
+            updates,
         } = use_cases;
         Self {
             system,
@@ -74,6 +82,8 @@ impl ApiState {
             apps,
             docker,
             installs,
+            containers,
+            updates,
             secure_cookies,
         }
     }

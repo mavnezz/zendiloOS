@@ -57,7 +57,11 @@ impl Host {
             groupdel: any.clone(),
             gpasswd: any.clone(),
             smbpasswd: any.clone(),
-            docker: any,
+            timedatectl: any.clone(),
+            sshd: any.clone(),
+            systemd_run: any.clone(),
+            docker: any.clone(),
+            dockerd: any,
         };
         Self { _dir: dir, root, tools }
     }

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE accounts SET password_hash = ?1, password_change_required = NOT password_locked,\n                 password_changed_at = ?2, updated_at = ?2 WHERE id = ?3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "8b575a5341b81ab5ff308cc3456b07dbaddd1fdc8a293fc32429517f1d1a4b9f"
+}

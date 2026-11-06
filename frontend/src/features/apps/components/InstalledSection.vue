@@ -1,24 +1,14 @@
 <script setup lang="ts">
-import {
-  ArrowUpCircle,
-  Blocks,
-  ExternalLink,
-  Play,
-  RotateCcw,
-  ScrollText,
-  Square,
-  Trash2,
-} from 'lucide-vue-next'
+import { LoaderCircle, Play, RotateCcw, ScrollText, Square, Trash2 } from 'lucide-vue-next'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import { ApiProblem } from '@/shared/api/client'
 import type { InstalledApp } from '@/shared/api/types'
 import { problemMessage } from '@/shared/i18n'
 import { useJobsStore } from '@/shared/jobs/store'
 import { useNotifications } from '@/shared/lib/notifications'
+import { type Action, ActionMenu } from '@/shared/ui/action-menu'
 import { Alert } from '@/shared/ui/alert'
-import { Badge } from '@/shared/ui/badge'
 import { Button } from '@/shared/ui/button'
 import { ConfirmDialog } from '@/shared/ui/confirm-dialog'
 import { ModalDialog } from '@/shared/ui/dialog'
@@ -26,35 +16,42 @@ import { Input } from '@/shared/ui/input'
 import { Label } from '@/shared/ui/label'
 
 import { iconUrl, useInstallActions, useInstalled, webUrl } from '../api'
+import { useAppUpdates } from '../lib/update'
 import { appText } from '../texts'
+import AppRow from './AppRow.vue'
 
-defineEmits<{ store: [] }>()
+const emit = defineEmits<{ open: [app: InstalledApp]; store: [] }>()
 
 const { t, locale } = useI18n()
 const { data: apps, error, isPending, refetch } = useInstalled()
 const actions = useInstallActions()
+const updates = useAppUpdates()
 const notifications = useNotifications()
 const jobs = useJobsStore()
 
 const busy = ref<string | null>(null)
-const failure = ref<string | null>(null)
-const missingIcons = ref(new Set<string>())
-
 const logsOf = ref<InstalledApp | null>(null)
 const logs = ref('')
 const logsError = ref<string | null>(null)
 const removing = ref<InstalledApp | null>(null)
 const confirm = ref('')
 const removeError = ref<string | null>(null)
-const updating = ref<InstalledApp | null>(null)
 
 // What Docker reports changes without a job: look again now and then.
 const timer = window.setInterval(() => void refetch(), 15_000)
 onBeforeUnmount(() => window.clearInterval(timer))
-
 watch(
   () => jobs.list.filter((job) => job.kind.startsWith('apps.') && job.state !== 'running').length,
   () => void refetch(),
+)
+
+const updatable = computed(() =>
+  (apps.value ?? []).filter((app) => app.update && app.state === 'installed'),
+)
+const sorted = computed(() =>
+  [...(apps.value ?? [])].sort((a, b) =>
+    appText(a, 'name', locale.value).localeCompare(appText(b, 'name', locale.value)),
+  ),
 )
 
 /** The running job of an app, if any, for its step. */
@@ -65,47 +62,52 @@ const runningJobs = computed(
     ),
 )
 
-function stateLabel(app: InstalledApp): { text: string; tone: 'ok' | 'warn' | 'bad' | 'muted' } {
+function state(app: InstalledApp): string {
   if (app.state === 'installing') {
     const step = runningJobs.value.get(app.id)?.step
-    const text = step
-      ? t(`appStore.installed.steps.${step}`)
-      : t('appStore.installed.states.installing')
-    return { text, tone: 'muted' }
+    return step ? t(`appStore.installed.steps.${step}`) : t('appStore.installed.states.installing')
   }
-  if (app.state === 'removing')
-    return { text: t('appStore.installed.states.removing'), tone: 'muted' }
-  if (app.state === 'failed') return { text: t('appStore.installed.states.failed'), tone: 'bad' }
-  switch (app.run_state) {
-    case 'running':
-      return { text: t('appStore.installed.run.running'), tone: 'ok' }
-    case 'partly':
-      return { text: t('appStore.installed.run.partly'), tone: 'warn' }
-    case 'restarting':
-      return { text: t('appStore.installed.run.restarting'), tone: 'bad' }
-    case 'stopped':
-      return { text: t('appStore.installed.run.stopped'), tone: 'muted' }
-    default:
-      return { text: t('appStore.installed.run.unknown'), tone: 'muted' }
-  }
+  if (app.state === 'removing' || app.state === 'failed')
+    return t(`appStore.installed.states.${app.state}`)
+  return t(`appStore.installed.run.${app.run_state ?? 'unknown'}`)
 }
 
-const tones = {
-  ok: 'border-emerald-500/60 text-emerald-700 dark:text-emerald-400',
-  warn: 'border-amber-500/60 text-amber-700 dark:text-amber-400',
-  bad: 'border-destructive/60 text-destructive',
-  muted: '',
+function menu(app: InstalledApp): Action[] {
+  const ready = app.state === 'installed'
+  return [
+    app.run_state === 'stopped'
+      ? { id: 'start', label: t('appStore.installed.start'), icon: Play, disabled: !ready }
+      : { id: 'stop', label: t('appStore.installed.stop'), icon: Square, disabled: !ready },
+    { id: 'logs', label: t('appStore.installed.logs'), icon: ScrollText },
+    {
+      id: 'remove',
+      label: t('appStore.installed.remove'),
+      icon: Trash2,
+      destructive: true,
+      disabled: app.state === 'installing' || app.state === 'removing',
+    },
+  ]
 }
 
 async function act(app: InstalledApp, action: () => Promise<unknown>): Promise<void> {
   busy.value = app.id
-  failure.value = null
   try {
     await action()
   } catch (problem) {
-    failure.value = `${appText(app, 'name', locale.value)}: ${problemMessage(problem)}`
+    notifications.notify('error', appText(app, 'name', locale.value), problemMessage(problem))
   } finally {
     busy.value = null
+  }
+}
+
+function choose(app: InstalledApp, id: string): void {
+  if (id === 'start') void act(app, () => actions.start(app.id))
+  else if (id === 'stop') void act(app, () => actions.stop(app.id))
+  else if (id === 'logs') void showLogs(app)
+  else if (id === 'remove') {
+    removing.value = app
+    confirm.value = ''
+    removeError.value = null
   }
 }
 
@@ -118,32 +120,6 @@ async function showLogs(app: InstalledApp): Promise<void> {
   } catch (problem) {
     logsError.value = problemMessage(problem)
   }
-}
-
-async function update(app: InstalledApp, confirmPermissions = false): Promise<void> {
-  busy.value = app.id
-  failure.value = null
-  try {
-    await actions.update(app.id, confirmPermissions)
-    notifications.notify(
-      'info',
-      t('appStore.installed.updating', { name: appText(app, 'name', locale.value) }),
-    )
-  } catch (problem) {
-    if (problem instanceof ApiProblem && problem.code === 'permissions_not_confirmed') {
-      updating.value = app
-    } else {
-      failure.value = `${appText(app, 'name', locale.value)}: ${problemMessage(problem)}`
-    }
-  } finally {
-    busy.value = null
-  }
-}
-
-function askRemove(app: InstalledApp): void {
-  removing.value = app
-  confirm.value = ''
-  removeError.value = null
 }
 
 async function remove(): Promise<void> {
@@ -161,132 +137,132 @@ async function remove(): Promise<void> {
     removeError.value = problemMessage(problem)
   }
 }
+
+function confirmUpdate(): void {
+  const app = updates.asking.value
+  updates.asking.value = null
+  if (app) void updates.update(app, true)
+}
+
+const pill = 'h-7 rounded-full px-4 text-[13px] font-medium'
+const heading = 'flex items-center gap-2 text-xl font-semibold'
+const count =
+  'rounded-full bg-foreground/[0.07] px-2 text-sm font-normal text-muted-foreground tabular-nums'
 </script>
 
-<!-- The apps on this NAS: whether they run, and what can be done with them. -->
+<!-- The apps on this NAS: those with a newer version first, then all of them. -->
 <template>
-  <div class="grid gap-4">
+  <div class="grid gap-6">
     <Alert v-if="error" variant="destructive">{{ problemMessage(error) }}</Alert>
-    <Alert v-if="failure" variant="destructive">{{ failure }}</Alert>
-    <div
-      v-if="!isPending && !apps?.length"
-      class="grid justify-items-start gap-2 text-sm text-muted-foreground"
-    >
-      <p>{{ t('appStore.installed.empty') }}</p>
-      <Button size="sm" variant="outline" @click="$emit('store')">{{
-        t('appStore.installed.toStore')
-      }}</Button>
-    </div>
 
-    <ul class="grid gap-3">
-      <li v-for="app in apps" :key="app.id" class="grid gap-3 rounded-xl border bg-card p-3">
-        <div class="flex items-start gap-3">
-          <Blocks
-            v-if="missingIcons.has(app.id)"
-            class="size-12 shrink-0 rounded-lg text-muted-foreground"
-          />
-          <img
-            v-else
-            :src="iconUrl(app)"
-            alt=""
-            class="size-12 shrink-0 rounded-lg"
-            @error="missingIcons = new Set([...missingIcons, app.id])"
-          />
-          <div class="grid min-w-0 flex-1 gap-1">
-            <p class="flex flex-wrap items-center gap-2">
-              <span class="truncate font-medium">{{ appText(app, 'name', locale) }}</span>
-              <span class="text-xs text-muted-foreground">{{ app.version }}</span>
-              <Badge variant="outline" :class="tones[stateLabel(app).tone]">{{
-                stateLabel(app).text
-              }}</Badge>
-              <Badge v-if="app.update" variant="secondary">
-                {{ t('appStore.installed.updateAvailable', { version: app.update }) }}
-              </Badge>
-            </p>
-            <p class="line-clamp-1 text-xs text-muted-foreground">
-              {{ appText(app, 'tagline', locale) }}
-            </p>
-            <p class="text-xs text-muted-foreground">
-              <span v-for="(port, id) in app.ports" :key="id" class="mr-3">{{
-                t('appStore.installed.port', { id, port })
-              }}</span>
-              <span v-for="(share, id) in app.shares" :key="id" class="mr-3">{{
-                t('appStore.installed.share', { id, share })
-              }}</span>
-            </p>
-          </div>
-        </div>
-        <div class="flex flex-wrap gap-2">
-          <Button
-            v-if="webUrl(app) && app.state === 'installed'"
-            as="a"
-            size="sm"
-            :href="webUrl(app) ?? undefined"
-            target="_blank"
-            rel="noopener noreferrer"
+    <section v-if="updatable.length" class="grid">
+      <div class="flex flex-wrap items-center gap-3">
+        <h2 :class="heading">
+          {{ t('appStore.installed.updatable') }} <span :class="count">{{ updatable.length }}</span>
+        </h2>
+        <button
+          type="button"
+          class="ml-auto text-sm font-medium text-primary hover:underline disabled:opacity-50"
+          :disabled="updates.busy.value !== null"
+          @click="updates.updateAll(updatable)"
+        >
+          {{ t('appStore.installed.updateAll') }}
+        </button>
+      </div>
+      <ul class="grid gap-x-10 @2xl:grid-cols-2 @5xl:grid-cols-3">
+        <li v-for="app in updatable" :key="app.id" class="border-b pb-3">
+          <AppRow
+            :name="appText(app, 'name', locale)"
+            :subtitle="t('appStore.installed.newVersion', { version: app.update })"
+            :icon="iconUrl(app)"
+            plain
+            @open="emit('open', app)"
           >
-            <ExternalLink />
-            {{ t('appStore.installed.open') }}
-          </Button>
-          <template v-if="app.state === 'installed'">
             <Button
-              v-if="app.run_state === 'stopped'"
-              size="sm"
-              variant="outline"
+              variant="secondary"
+              :class="pill"
+              class="text-primary"
+              :disabled="updates.busy.value === app.id"
+              @click="updates.update(app)"
+              >{{ t('appStore.installed.update') }}</Button
+            >
+          </AppRow>
+          <p class="text-sm">
+            <span class="font-medium">{{ app.update }}</span>
+            <span class="ml-2 text-muted-foreground">{{
+              t('appStore.installed.fromVersion', { version: app.version })
+            }}</span>
+          </p>
+        </li>
+      </ul>
+    </section>
+
+    <section class="grid">
+      <h2 :class="heading">
+        {{ t('appStore.sections.installed') }} <span :class="count">{{ apps?.length ?? 0 }}</span>
+      </h2>
+      <div v-if="isPending" class="mt-4 h-40 animate-pulse rounded-xl bg-muted" />
+      <div
+        v-else-if="!apps?.length"
+        class="grid justify-items-start gap-2 py-6 text-sm text-muted-foreground"
+      >
+        <p>{{ t('appStore.installed.empty') }}</p>
+        <Button size="sm" variant="outline" @click="emit('store')">{{
+          t('appStore.installed.toStore')
+        }}</Button>
+      </div>
+      <ul class="grid gap-x-10 @2xl:grid-cols-2 @5xl:grid-cols-3">
+        <li v-for="app in sorted" :key="app.id">
+          <AppRow
+            :name="appText(app, 'name', locale)"
+            :subtitle="state(app)"
+            :icon="iconUrl(app)"
+            @open="emit('open', app)"
+          >
+            <LoaderCircle
+              v-if="app.state === 'installing' || app.state === 'removing'"
+              class="size-4 animate-spin text-muted-foreground"
+            />
+            <Button
+              v-else-if="app.state === 'failed'"
+              variant="secondary"
+              :class="pill"
+              class="text-primary"
+              :disabled="busy === app.id"
+              @click="act(app, () => actions.retry(app.id))"
+            >
+              <RotateCcw />
+              {{ t('appStore.installed.retry') }}
+            </Button>
+            <Button
+              v-else-if="webUrl(app) && app.run_state !== 'stopped'"
+              as="a"
+              variant="secondary"
+              :class="pill"
+              class="text-primary"
+              :href="webUrl(app) ?? undefined"
+              target="_blank"
+              rel="noopener noreferrer"
+              >{{ t('appStore.installed.open') }}</Button
+            >
+            <Button
+              v-else-if="app.run_state === 'stopped'"
+              variant="secondary"
+              :class="pill"
+              class="text-primary"
               :disabled="busy === app.id"
               @click="act(app, () => actions.start(app.id))"
+              >{{ t('appStore.installed.start') }}</Button
             >
-              <Play />
-              {{ t('appStore.installed.start') }}
-            </Button>
-            <Button
-              v-else
-              size="sm"
-              variant="outline"
-              :disabled="busy === app.id"
-              @click="act(app, () => actions.stop(app.id))"
-            >
-              <Square />
-              {{ t('appStore.installed.stop') }}
-            </Button>
-            <Button
-              v-if="app.update"
-              size="sm"
-              variant="outline"
-              :disabled="busy === app.id"
-              @click="update(app)"
-            >
-              <ArrowUpCircle />
-              {{ t('appStore.installed.update') }}
-            </Button>
-          </template>
-          <Button
-            v-if="app.state === 'failed'"
-            size="sm"
-            variant="outline"
-            :disabled="busy === app.id"
-            @click="act(app, () => actions.retry(app.id))"
-          >
-            <RotateCcw />
-            {{ t('appStore.installed.retry') }}
-          </Button>
-          <Button size="sm" variant="ghost" @click="showLogs(app)">
-            <ScrollText />
-            {{ t('appStore.installed.logs') }}
-          </Button>
-          <Button
-            v-if="app.state === 'installed' || app.state === 'failed'"
-            size="sm"
-            variant="ghost"
-            class="text-destructive"
-            @click="askRemove(app)"
-          >
-            <Trash2 />
-            {{ t('appStore.installed.remove') }}
-          </Button>
-        </div>
-      </li>
-    </ul>
+            <ActionMenu
+              :actions="menu(app)"
+              :label="t('docker.actions.more')"
+              @select="choose(app, $event)"
+            />
+          </AppRow>
+        </li>
+      </ul>
+    </section>
 
     <ModalDialog
       :open="logsOf !== null"
@@ -295,12 +271,12 @@ async function remove(): Promise<void> {
         t('appStore.installed.logsTitle', { name: logsOf ? appText(logsOf, 'name', locale) : '' })
       "
       :close-label="t('desktop.close')"
-      @update:open="(value) => !value && (logsOf = null)"
+      @update:open="(value: boolean) => !value && (logsOf = null)"
     >
       <Alert v-if="logsError" variant="destructive">{{ logsError }}</Alert>
       <pre
         v-else
-        class="max-h-[60dvh] overflow-auto rounded-md border bg-muted/40 p-3 font-mono text-xs whitespace-pre-wrap"
+        class="max-h-[60dvh] overflow-auto rounded-md bg-zinc-900 p-3 font-mono text-xs whitespace-pre-wrap text-zinc-100"
         >{{ logs || t('appStore.installed.noLogs') }}</pre>
       <div class="flex justify-end">
         <Button v-if="logsOf" size="sm" variant="outline" @click="showLogs(logsOf)">
@@ -318,7 +294,7 @@ async function remove(): Promise<void> {
       "
       :description="t('appStore.installed.removeHint')"
       :close-label="t('desktop.close')"
-      @update:open="(value) => !value && (removing = null)"
+      @update:open="(value: boolean) => !value && (removing = null)"
     >
       <form v-if="removing" class="grid gap-3" @submit.prevent="remove">
         <Label for="remove-confirm">{{
@@ -338,13 +314,13 @@ async function remove(): Promise<void> {
     </ModalDialog>
 
     <ConfirmDialog
-      :open="updating !== null"
+      :open="updates.asking.value !== null"
       :title="t('appStore.installed.updatePermissionsTitle')"
       :description="t('appStore.installed.updatePermissionsHint')"
       :confirm-label="t('appStore.installed.update')"
       :cancel-label="t('desktop.cancel')"
-      @update:open="(value) => !value && (updating = null)"
-      @confirm="updating && update(updating, true)"
+      @update:open="(value: boolean) => !value && (updates.asking.value = null)"
+      @confirm="confirmUpdate"
     />
   </div>
 </template>

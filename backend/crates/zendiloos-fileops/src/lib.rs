@@ -23,8 +23,8 @@ use rustix::fs::{
 use rustix::io::Errno;
 use rustix::rand::{GetRandomFlags, getrandom};
 use zendiloos_agent_proto::{
-    AppFolder, AppName, DirectoryEntry, EntryKind, MAX_DIRECTORY_ENTRIES, ShareName, SharePath,
-    SnapshotLabel, VolumeNumber, is_file_name,
+    AppFolder, AppName, DirectoryEntry, EntryKind, HOMES_DIRECTORY, MAX_DIRECTORY_ENTRIES, ShareName,
+    SharePath, SnapshotLabel, UserName, VolumeNumber, is_file_name,
 };
 
 mod archive;
@@ -341,6 +341,26 @@ impl ShareRoot {
         let stat = fstat(&directory)?;
         if device(&stat) == device(&fstat(&apps)?) {
             return Err(FileError::Invalid("the app's dataset is not mounted"));
+        }
+        Ok(Self { directory, file_system: device(&stat), inode: inode(&stat) })
+    }
+
+    /// The personal folder of `user`, `<volumes>/volume<N>/@homes/<user>`,
+    /// as a root: only with the homes' dataset mounted at `@homes`, and only
+    /// a folder in that dataset itself.
+    pub fn open_home(volumes: &Path, volume: VolumeNumber, user: &UserName) -> Result<Self, FileError> {
+        let flags = OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        let base = open(volumes, flags, Mode::empty())?;
+        let volume_directory = openat(&base, format!("volume{}", volume.get()), flags, Mode::empty())?;
+        let homes = openat(&volume_directory, HOMES_DIRECTORY, flags, Mode::empty())?;
+        let homes_device = device(&fstat(&homes)?);
+        if homes_device == device(&fstat(&volume_directory)?) {
+            return Err(FileError::Invalid("the personal folders' dataset is not mounted"));
+        }
+        let directory = openat(&homes, user.as_str(), flags, Mode::empty())?;
+        let stat = fstat(&directory)?;
+        if device(&stat) != homes_device {
+            return Err(FileError::Invalid("the personal folder is not a folder of the homes' dataset"));
         }
         Ok(Self { directory, file_system: device(&stat), inode: inode(&stat) })
     }

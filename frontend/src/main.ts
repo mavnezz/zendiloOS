@@ -12,9 +12,11 @@ import { ApiProblem, configureApi } from '@/shared/api/client'
 import { live } from '@/shared/api/live'
 import { i18n } from '@/shared/i18n'
 import { applyTheme, followSystemTheme } from '@/shared/lib/theme'
+import { applyWallpaper, storedWallpaper } from '@/shared/lib/wallpapers'
 
 applyTheme()
 followSystemTheme()
+applyWallpaper(storedWallpaper())
 
 const queryClient = new QueryClient({
   defaultOptions: {

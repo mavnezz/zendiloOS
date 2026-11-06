@@ -534,6 +534,61 @@
         ]
       }
     },
+    "/api/v1/apps/docker/install": {
+      "post": {
+        "tags": [
+          "apps"
+        ],
+        "summary": "Installs Docker from Debian (`docker.io`, `docker-compose`) and puts\nits data on a pool, as a job; apps can be installed afterwards. Needs\n`containers.manage`.",
+        "operationId": "install_docker",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnableDockerRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no such pool",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`docker_installed`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/apps/installed": {
       "get": {
         "tags": [
@@ -1390,6 +1445,1761 @@
         ]
       }
     },
+    "/api/v1/docker/compose/check": {
+      "post": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "Reads a Compose file as Compose would and names what it lets\ncontainers do beyond themselves. Needs `containers.manage`.",
+        "operationId": "check_compose",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ComposeCheck"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComposeCheckResult"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`, `share_denied`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`refused`: Compose cannot read it, in its words",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/docker/containers": {
+      "get": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "Every container, by name, with its newest use. Needs `containers.manage`.",
+        "operationId": "list_containers",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DockerContainer"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/docker/containers/{id}": {
+      "delete": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "Removes a container that does not run. Needs `containers.manage`.",
+        "operationId": "remove_container",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed."
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`host_failed`: it runs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/docker/containers/{id}/logs": {
+      "get": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "The last lines a container wrote. Needs `containers.manage`.",
+        "operationId": "container_logs",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "lines",
+            "in": "query",
+            "description": "At most 10 000; 500 if absent.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogText"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/docker/containers/{id}/{action}": {
+      "post": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "Starts, stops or restarts a container. Needs `containers.manage`.",
+        "operationId": "control_container",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "action",
+            "in": "path",
+            "description": "`start`, `stop` or `restart`",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Done."
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`host_failed`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/docker/data": {
+      "get": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "Where Docker's data is, and the pools it could go to. Needs\n`containers.manage`.",
+        "operationId": "data_location",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DockerDataLocation"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/docker/data/move": {
+      "post": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "Moves Docker's data to another pool, in a job: every container stops\nmeanwhile. Needs `containers.manage`.",
+        "operationId": "move_data",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DataMove"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no such other pool",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`refused`: too little space, or not on a pool zendiloOS made",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/docker/images": {
+      "get": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "Every image, the newest first. Needs `containers.manage`.",
+        "operationId": "list_images",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DockerImage"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/docker/images/prune": {
+      "post": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "Removes every image no container uses; says what was freed. Needs\n`containers.manage`.",
+        "operationId": "prune_images",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogText"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/docker/images/pull": {
+      "post": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "Fetches an image, in a job. Needs `containers.manage`.",
+        "operationId": "pull_image",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PullRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/docker/images/{id}": {
+      "delete": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "Removes an image no container uses. Needs `containers.manage`.",
+        "operationId": "remove_image",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed."
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`host_failed`: in use",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/docker/networks": {
+      "get": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "Every network, Docker's own first. Needs `containers.manage`.",
+        "operationId": "list_networks",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DockerNetwork"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "Creates a bridge network. Needs `containers.manage`.",
+        "operationId": "create_network",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewNetwork"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created."
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`refused`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`host_failed`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/docker/networks/{name}": {
+      "delete": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "Removes a network no container is in. Needs `containers.manage`.",
+        "operationId": "remove_network",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed."
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`refused`: Docker's own",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`host_failed`: in use",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/docker/overview": {
+      "get": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "The engine at a glance. Needs `containers.manage`.",
+        "operationId": "docker_overview",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DockerOverview"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`host_failed`: Docker does not answer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/docker/places": {
+      "get": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "The shares the caller may put a project's folder in. Needs\n`containers.manage`.",
+        "operationId": "places",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ProjectPlace"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/docker/projects": {
+      "get": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "Every Compose project, by name. Needs `containers.manage`.",
+        "operationId": "list_projects",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DockerProject"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "Makes a project: writes its Compose file into the folder, with the\ncaller's permissions, and deploys it if asked. Needs `containers.manage`.",
+        "operationId": "create_project",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewDockerProject"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectCreated"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`, `share_denied`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`project_exists`; `refused`: Compose cannot read it; `compose_risks`: not accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/docker/projects/{name}": {
+      "get": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "One project. Needs `containers.manage`.",
+        "operationId": "project",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DockerProject"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "Removes a project's containers and networks, in a job; images, data and\nits folder stay. Not for an app of a catalog. Needs `containers.manage`.",
+        "operationId": "delete_project",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`app_project`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/docker/projects/{name}/compose": {
+      "get": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "A project's Compose files. Not for an app of a catalog: they hold its\ngenerated settings. Needs `containers.manage`.",
+        "operationId": "project_compose",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectCompose"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `share_denied`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`app_project`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "Writes a project's changed Compose file and deploys it again, in a job.\nOnly for a project made here. Needs `containers.manage`.",
+        "operationId": "change_compose",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ComposeChange"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`, `share_denied`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`app_project`, `not_own_project`; `refused`: Compose cannot read it; `compose_risks`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/docker/projects/{name}/logs": {
+      "get": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "The last lines of the project's containers. Needs `containers.manage`.",
+        "operationId": "project_logs",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "lines",
+            "in": "query",
+            "description": "At most 10 000; 500 if absent.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogText"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/docker/projects/{name}/redeploy": {
+      "post": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "Fetches the images anew and recreates what changed, in a job. Not for\nan app of a catalog. Needs `containers.manage`.",
+        "operationId": "redeploy_project",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`app_project`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/docker/projects/{name}/{action}": {
+      "post": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "Starts, stops or restarts a project's containers. Needs\n`containers.manage`.",
+        "operationId": "control_project",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "action",
+            "in": "path",
+            "description": "`start`, `stop` or `restart`",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Done."
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`host_failed`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/docker/updates": {
+      "get": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "The newest look for newer images, `null` before the first. Needs\n`containers.manage`.",
+        "operationId": "updates",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ImageUpdates"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/docker/updates/apply": {
+      "post": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "Updates every project with a newer image, in a job; `job` is `null` if\nthere is none. Apps of catalogs are the App Center's. Needs\n`containers.manage`.",
+        "operationId": "apply_updates",
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectCreated"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/docker/updates/check": {
+      "post": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "Asks the registries now. Needs `containers.manage`.",
+        "operationId": "check_updates",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImageUpdates"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/docker/updates/settings": {
+      "get": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "When newer images are looked for and taken. Needs `containers.manage`.",
+        "operationId": "update_settings",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImageUpdateSettings"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "Sets them. Needs `containers.manage`.",
+        "operationId": "set_update_settings",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImageUpdateSettings"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImageUpdateSettings"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/docker/usage": {
+      "get": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "What the containers used, sample by sample, oldest first. Needs\n`containers.manage`.",
+        "operationId": "docker_usage",
+        "parameters": [
+          {
+            "name": "seconds",
+            "in": "query",
+            "description": "How far back, at most twelve hours; one hour if absent.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "containers",
+            "in": "query",
+            "description": "Container names, comma separated; all if absent.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/UsageMoment"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/file-services": {
+      "get": {
+        "tags": [
+          "shares"
+        ],
+        "summary": "Which file services run. Needs `system.view`.",
+        "operationId": "file_services",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileServices"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "shares"
+        ],
+        "summary": "Turns SMB and NFS on or off and sets the workgroup and the oldest SMB\nversion; applied with the shares at once. Needs `system.manage`.",
+        "operationId": "set_file_services",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FileServices"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "As stored: the workgroup uppercase.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileServices"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the Time Machine share",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`refused`: the host did not accept it; the previous settings apply",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/files/favourites": {
       "get": {
         "tags": [
@@ -1479,7 +3289,7 @@
         "tags": [
           "files"
         ],
-        "summary": "Shares whose rules name the signed-in user or one of their groups.\nNeeds `files.read`.",
+        "summary": "The signed-in user's personal folder, if they have one, then the\nshares whose rules let them in. Needs `files.read`.",
         "operationId": "my_shares",
         "responses": {
           "200": {
@@ -2579,6 +4389,167 @@
         }
       }
     },
+    "/api/v1/homes": {
+      "get": {
+        "tags": [
+          "shares"
+        ],
+        "summary": "Where the personal folders are and who has one. Needs `users.manage`.",
+        "operationId": "homes",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Homes"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "shares"
+        ],
+        "summary": "Turns personal folders on, on a pool, or off. Needs `users.manage`.",
+        "operationId": "set_homes",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetHomesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Homes"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`refused`: e.g. a share is called home",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`volume_not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/homes/{account_id}": {
+      "put": {
+        "tags": [
+          "shares"
+        ],
+        "summary": "Gives an account a personal folder, changes its quota or takes it away\n(its files stay). Needs `users.manage`.",
+        "operationId": "set_account_home",
+        "parameters": [
+          {
+            "name": "account_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetAccountHomeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/AccountHome"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`refused`: personal folders are off",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`unknown_subject`, `invalid_input`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/jobs": {
       "get": {
         "tags": [
@@ -2703,6 +4674,24 @@
             "schema": {
               "type": "integer",
               "format": "int64"
+            }
+          },
+          {
+            "name": "action",
+            "in": "query",
+            "description": "Only entries of this action, such as `identity.login`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "prefix",
+            "in": "query",
+            "description": "Only entries whose action starts so, such as `containers.`.",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -3345,6 +5334,84 @@
         ]
       }
     },
+    "/api/v1/password-policy": {
+      "get": {
+        "tags": [
+          "accounts"
+        ],
+        "summary": "The rules for new passwords; every account may read them. Never\ncommon passwords or ones containing the account name, whatever is set.",
+        "operationId": "password_policy",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PasswordPolicy"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "accounts"
+        ],
+        "summary": "Sets the rules for new passwords; passwords already set stay. Needs\n`users.manage`.",
+        "operationId": "set_password_policy",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordPolicy"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PasswordPolicy"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/preferences": {
       "get": {
         "tags": [
@@ -3388,6 +5455,352 @@
         "responses": {
           "204": {
             "description": "Saved."
+          },
+          "422": {
+            "description": "`invalid_input`: no such wallpaper name or layout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/security/blocked": {
+      "get": {
+        "tags": [
+          "security"
+        ],
+        "summary": "The blocks in force, the newest first. Needs `system.manage`.",
+        "operationId": "blocked",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/BlockedAddress"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "security"
+        ],
+        "summary": "Blocks an address or network until the block is lifted. Needs\n`system.manage`.",
+        "operationId": "block",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddressRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BlockedAddress"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`own_address`: the caller would be blocked; `address_allowed`: it is never blocked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/security/sessions": {
+      "get": {
+        "tags": [
+          "security"
+        ],
+        "summary": "The sessions of every account that have not ended, the most recently\nactive first. Needs `system.manage`.",
+        "operationId": "sessions",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ActiveSession"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/security/sessions/{id}": {
+      "delete": {
+        "tags": [
+          "security"
+        ],
+        "summary": "Ends a session; its browser is signed out with its next request. Needs\n`system.manage`.",
+        "operationId": "end_session",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Ended."
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/security/settings": {
+      "get": {
+        "tags": [
+          "security"
+        ],
+        "summary": "When sessions end, when accounts lock and addresses are blocked. Needs\n`system.manage`.",
+        "operationId": "settings",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecuritySettings"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "security"
+        ],
+        "summary": "Sets them; counts of failed attempts start anew where a limit changed,\nblocks in place stay. Needs `system.manage`.",
+        "operationId": "set_settings",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SecuritySettings"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecuritySettings"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/security/unblock": {
+      "post": {
+        "tags": [
+          "security"
+        ],
+        "summary": "Lifts a block. Needs `system.manage`.",
+        "operationId": "unblock",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddressRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Lifted."
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: it is not blocked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -3551,6 +5964,135 @@
           },
           "422": {
             "description": "`invalid_input`, `volume_not_found`, `unknown_subject`, `duplicate_rule`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/shares/access/{kind}/{id}": {
+      "get": {
+        "tags": [
+          "shares"
+        ],
+        "summary": "Every share with an account's or group's rule and what it may do.\nNeeds `shares.manage`.",
+        "operationId": "subject_access",
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/SubjectKind"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SubjectShareAccess"
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`unknown_subject`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "shares"
+        ],
+        "summary": "Sets an account's or group's rules on several shares at once. Each\nshare that changes gets its permissions at once and its existing files\nin a job. Needs `shares.manage`.",
+        "operationId": "set_subject_access",
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/SubjectKind"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetSubjectAccessRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubjectAccessUpdate"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: a share",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`unknown_subject`, `duplicate_rule`",
             "content": {
               "application/json": {
                 "schema": {
@@ -4930,6 +7472,390 @@
           }
         ]
       }
+    },
+    "/api/v1/system/ssh": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "The SSH server. Needs `system.view`.",
+        "operationId": "ssh",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SshState"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Turns the SSH server on or off and sets its port and rules; open\nsessions stay. Needs `system.manage`.",
+        "operationId": "set_ssh",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SshRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The server afterwards.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SshState"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_installed`: there is no SSH server; `port_in_use`: another program listens on the port",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`: a port below 1024 or in use, a time to turn off out of range",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/system/time": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "The time zone and how the clock is kept. Needs `system.view`.",
+        "operationId": "time",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TimeState"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Sets the time zone and the time servers, or the time itself when none\nkeep it. Needs `system.manage`.",
+        "operationId": "set_time",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TimeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The clock afterwards.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TimeState"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`: an unknown zone, a bad server, a time with servers on",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/system/tls": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "The oldest TLS version the web interface accepts. Needs `system.manage`.",
+        "operationId": "tls",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebTls"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Sets it; connections already open stay. Needs `system.manage`.",
+        "operationId": "set_tls",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WebTls"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebTls"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/system/updates": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "What there is to update, what is going on and how the NAS looks for\nupdates. Needs `system.manage`.",
+        "operationId": "system_updates",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpdatesOverview"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/system/updates/apply": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Installs what the last check found: Debian's packages, then zendiloOS,\nwhose interface restarts on the way. A restart of the NAS is asked for\nseparately. Needs `system.manage`.",
+        "operationId": "apply_system_updates",
+        "responses": {
+          "202": {
+            "description": "The update begins."
+          },
+          "409": {
+            "description": "`update_busy`, `not_checked`, `nothing_to_update`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/system/updates/check": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Looks for a newer release and for Debian's updates, in the background;\nthe overview says when it is done. Needs `system.manage`.",
+        "operationId": "check_system_updates",
+        "responses": {
+          "202": {
+            "description": "Looking."
+          },
+          "409": {
+            "description": "`update_busy`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/system/updates/settings": {
+      "put": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Which releases are offered and whether the NAS looks daily. Needs\n`system.manage`.",
+        "operationId": "set_system_update_settings",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateSettings"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpdateSettings"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -4942,6 +7868,8 @@
           "role",
           "disabled",
           "password_change_required",
+          "password_locked",
+          "password_changed_at",
           "created_at",
           "updated_at"
         ],
@@ -4950,8 +7878,20 @@
             "type": "integer",
             "format": "int64"
           },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "disabled": {
             "type": "boolean"
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "full_name": {
             "type": [
@@ -4971,12 +7911,43 @@
             "type": "boolean",
             "description": "The account must choose a new password at its next login."
           },
+          "password_changed_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When its password was last set, in Unix seconds."
+          },
+          "password_locked": {
+            "type": "boolean",
+            "description": "Only administrators set its password."
+          },
           "role": {
             "$ref": "#/components/schemas/AccountRole"
           },
           "updated_at": {
             "type": "integer",
             "format": "int64"
+          }
+        }
+      },
+      "AccountHome": {
+        "type": "object",
+        "description": "An account with a personal folder.",
+        "required": [
+          "account_id"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "quota_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How much it may store there; absent: as much as the pool has.",
+            "minimum": 0
           }
         }
       },
@@ -4988,6 +7959,52 @@
           "readonly"
         ]
       },
+      "ActiveSession": {
+        "type": "object",
+        "description": "A session of some account that has not ended.",
+        "required": [
+          "id",
+          "account",
+          "created_at",
+          "last_seen_at",
+          "current"
+        ],
+        "properties": {
+          "account": {
+            "type": "string"
+          },
+          "address": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix seconds."
+          },
+          "current": {
+            "type": "boolean",
+            "description": "The caller's own."
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "last_seen_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix seconds."
+          },
+          "user_agent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "AddSourceRequest": {
         "type": "object",
         "required": [
@@ -4997,6 +8014,19 @@
           "address": {
             "type": "string",
             "description": "A GitHub repository (`github.com/owner/repository`) or the https\naddress of an `index.json`."
+          }
+        },
+        "additionalProperties": false
+      },
+      "AddressRequest": {
+        "type": "object",
+        "required": [
+          "address"
+        ],
+        "properties": {
+          "address": {
+            "type": "string",
+            "description": "An IP address or a network such as `198.51.100.0/24`."
           }
         },
         "additionalProperties": false
@@ -5389,6 +8419,110 @@
           }
         }
       },
+      "AutoBlock": {
+        "type": "object",
+        "description": "Addresses that fail too often are blocked.",
+        "required": [
+          "failures",
+          "window_minutes"
+        ],
+        "properties": {
+          "failures": {
+            "type": "integer",
+            "format": "int32",
+            "description": "3 to 100.",
+            "minimum": 0
+          },
+          "release_after_days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "1 to 365; `null`: until lifted by hand.",
+            "minimum": 0
+          },
+          "window_minutes": {
+            "type": "integer",
+            "format": "int32",
+            "description": "1 to 1440.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "AvailableRelease": {
+        "type": "object",
+        "description": "A newer release of zendiloOS on the channel.",
+        "required": [
+          "tag",
+          "version",
+          "channel",
+          "notes",
+          "size"
+        ],
+        "properties": {
+          "channel": {
+            "$ref": "#/components/schemas/UpdateChannel"
+          },
+          "notes": {
+            "type": "string",
+            "description": "What changed, in Markdown."
+          },
+          "published_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Unix seconds."
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Of the package, in bytes.",
+            "minimum": 0
+          },
+          "tag": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "BlockedAddress": {
+        "type": "object",
+        "description": "An address or network the web interface refuses.",
+        "required": [
+          "address",
+          "blocked_at",
+          "automatic"
+        ],
+        "properties": {
+          "address": {
+            "type": "string",
+            "description": "`192.0.2.7` or `198.51.100.0/24`."
+          },
+          "automatic": {
+            "type": "boolean",
+            "description": "Blocked after failed logins, not by an administrator."
+          },
+          "blocked_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix seconds."
+          },
+          "until": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Unix seconds; `null`: until lifted by hand."
+          }
+        }
+      },
       "CatalogApp": {
         "type": "object",
         "description": "An app as the store lists it.",
@@ -5672,6 +8806,106 @@
         ],
         "description": "Where a channel delivers."
       },
+      "ComposeChange": {
+        "type": "object",
+        "required": [
+          "compose"
+        ],
+        "properties": {
+          "accept_risks": {
+            "type": "boolean"
+          },
+          "compose": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ComposeCheck": {
+        "type": "object",
+        "required": [
+          "name",
+          "compose"
+        ],
+        "properties": {
+          "compose": {
+            "type": "string"
+          },
+          "folder": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "share_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "For a new project: the share and the folder in it. Without, the\nexisting project's folder."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ComposeCheckResult": {
+        "type": "object",
+        "required": [
+          "risks"
+        ],
+        "properties": {
+          "risks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ComposeRisk"
+            },
+            "description": "To be confirmed before it runs; empty if nothing reaches beyond the\ncontainers."
+          }
+        }
+      },
+      "ComposeFile": {
+        "type": "object",
+        "required": [
+          "path",
+          "content"
+        ],
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string",
+            "description": "On the machine."
+          }
+        }
+      },
+      "ComposeRisk": {
+        "type": "object",
+        "description": "Something a service may do beyond its container.",
+        "required": [
+          "service",
+          "kind"
+        ],
+        "properties": {
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The path, namespace, devices or capabilities."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`privileged`, `docker_socket`, `system_path`, `host_network`,\n`host_namespace`, `devices`, `capabilities`, `unconfined`."
+          },
+          "service": {
+            "type": "string"
+          }
+        }
+      },
       "Concern": {
         "type": "object",
         "description": "Something wrong with a pool or disk, as a code with parameters for the\ninterface to word, e.g. `pool_degraded` with `pool` and `state`.",
@@ -5699,6 +8933,66 @@
           }
         }
       },
+      "ContainerMount": {
+        "type": "object",
+        "required": [
+          "kind",
+          "source",
+          "destination",
+          "read_only"
+        ],
+        "properties": {
+          "destination": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "description": "`bind` or `volume`."
+          },
+          "read_only": {
+            "type": "boolean"
+          },
+          "source": {
+            "type": "string"
+          }
+        }
+      },
+      "ContainerUsage": {
+        "type": "object",
+        "required": [
+          "cpu_percent",
+          "memory_bytes",
+          "memory_limit_bytes",
+          "received_bytes",
+          "sent_bytes"
+        ],
+        "properties": {
+          "cpu_percent": {
+            "type": "number",
+            "format": "double"
+          },
+          "memory_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "memory_limit_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "received_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "sent_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "CreateAccountRequest": {
         "type": "object",
         "required": [
@@ -5707,6 +9001,18 @@
           "password"
         ],
         "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "full_name": {
             "type": [
               "string",
@@ -5719,7 +9025,11 @@
           "password": {
             "type": "string",
             "format": "password",
-            "description": "Initial password; the account must change it at its first login."
+            "description": "Initial password; the account must change it at its first login,\nunless `password_locked`."
+          },
+          "password_locked": {
+            "type": "boolean",
+            "description": "Only administrators set its password."
           },
           "role": {
             "$ref": "#/components/schemas/AccountRole"
@@ -5840,7 +9150,8 @@
           "name",
           "role",
           "permissions",
-          "password_change_required"
+          "password_change_required",
+          "password_locked"
         ],
         "properties": {
           "full_name": {
@@ -5860,6 +9171,10 @@
             "type": "boolean",
             "description": "Nothing but changing the password is allowed until this is false."
           },
+          "password_locked": {
+            "type": "boolean",
+            "description": "Only administrators set this account's password."
+          },
           "permissions": {
             "type": "array",
             "items": {
@@ -5871,6 +9186,19 @@
             "$ref": "#/components/schemas/AccountRole"
           }
         }
+      },
+      "DataMove": {
+        "type": "object",
+        "required": [
+          "pool"
+        ],
+        "properties": {
+          "pool": {
+            "type": "string",
+            "description": "The pool to move Docker's data to."
+          }
+        },
+        "additionalProperties": false
       },
       "DefaultRoute": {
         "type": "object",
@@ -6061,6 +9389,401 @@
           "unused"
         ]
       },
+      "DockerContainer": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "image",
+          "image_id",
+          "state",
+          "created_at",
+          "ports",
+          "networks",
+          "mounts",
+          "restart_policy"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix seconds."
+          },
+          "exit_code": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "health": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "image": {
+            "type": "string"
+          },
+          "image_id": {
+            "type": "string"
+          },
+          "mounts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ContainerMount"
+            }
+          },
+          "name": {
+            "type": "string"
+          },
+          "networks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "ports": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PublishedPort"
+            }
+          },
+          "project": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "restart_policy": {
+            "type": "string"
+          },
+          "service": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "started_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "state": {
+            "type": "string",
+            "description": "`created`, `running`, `paused`, `restarting`, `removing`, `exited`, `dead`."
+          },
+          "usage": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ContainerUsage",
+                "description": "The newest sample, while it runs."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "DockerDataLocation": {
+        "type": "object",
+        "required": [
+          "targets",
+          "data_bytes"
+        ],
+        "properties": {
+          "current": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DockerDataPlace",
+                "description": "`null`: not on a pool zendiloOS made; it cannot be moved here."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "data_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "targets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DockerDataPlace"
+            },
+            "description": "The other pools."
+          }
+        }
+      },
+      "DockerDataPlace": {
+        "type": "object",
+        "required": [
+          "pool",
+          "volume"
+        ],
+        "properties": {
+          "available_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Free for files, if known.",
+            "minimum": 0
+          },
+          "pool": {
+            "type": "string"
+          },
+          "volume": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "DockerImage": {
+        "type": "object",
+        "required": [
+          "id",
+          "references",
+          "digests",
+          "size_bytes",
+          "used_by"
+        ],
+        "properties": {
+          "created_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "digests": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "id": {
+            "type": "string"
+          },
+          "references": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "`repository:tag` each."
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "used_by": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The containers made from it, by name."
+          }
+        }
+      },
+      "DockerNetwork": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "driver",
+          "internal",
+          "subnets",
+          "gateways",
+          "containers",
+          "built_in"
+        ],
+        "properties": {
+          "built_in": {
+            "type": "boolean",
+            "description": "Docker's own: it cannot be removed."
+          },
+          "containers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The containers in it now, by name."
+          },
+          "driver": {
+            "type": "string"
+          },
+          "gateways": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "id": {
+            "type": "string"
+          },
+          "internal": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "project": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "subnets": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "DockerOverview": {
+        "type": "object",
+        "description": "The engine at a glance.",
+        "required": [
+          "projects_running",
+          "projects",
+          "containers_running",
+          "containers",
+          "images",
+          "data_bytes"
+        ],
+        "properties": {
+          "containers": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "containers_running": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "cpu_share": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Of the machine's processors, 0 to 100; `null` before the first sample."
+          },
+          "data_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "What Docker's data takes up.",
+            "minimum": 0
+          },
+          "images": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "memory_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "memory_total_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "projects": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "projects_running": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "DockerProject": {
+        "type": "object",
+        "required": [
+          "name",
+          "kind",
+          "files",
+          "running",
+          "containers"
+        ],
+        "properties": {
+          "app": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For an app: its id in the App Center."
+          },
+          "containers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DockerContainer"
+            }
+          },
+          "created_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "created_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Where its Compose file is: on the machine for every kind, and in the\nshare for one made here (`docker/teslamate/compose.yaml`)."
+          },
+          "folder": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ProjectKind"
+          },
+          "name": {
+            "type": "string"
+          },
+          "running": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "share_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          }
+        }
+      },
       "DockerSetup": {
         "type": "object",
         "description": "Whether apps can run on this NAS.",
@@ -6076,6 +9799,13 @@
           },
           "running": {
             "type": "boolean"
+          },
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The engine's version, while it runs."
           },
           "volume": {
             "oneOf": [
@@ -6106,6 +9836,29 @@
           "pool": {
             "type": "string",
             "description": "A pool zendiloOS created."
+          }
+        },
+        "additionalProperties": false
+      },
+      "FailureLimit": {
+        "type": "object",
+        "description": "So many failed logins within so many minutes.",
+        "required": [
+          "failures",
+          "window_minutes"
+        ],
+        "properties": {
+          "failures": {
+            "type": "integer",
+            "format": "int32",
+            "description": "3 to 100.",
+            "minimum": 0
+          },
+          "window_minutes": {
+            "type": "integer",
+            "format": "int32",
+            "description": "1 to 1440.",
+            "minimum": 0
           }
         },
         "additionalProperties": false
@@ -6184,12 +9937,104 @@
           "other"
         ]
       },
+      "FileServices": {
+        "type": "object",
+        "description": "Which file services run, and how Samba presents itself; one set for\nall shares. Fields added later have defaults, as a fresh install has\nthem.",
+        "required": [
+          "smb",
+          "nfs",
+          "workgroup",
+          "smb_min_protocol"
+        ],
+        "properties": {
+          "bonjour": {
+            "type": "boolean",
+            "description": "Macs find the NAS and its Time Machine share (Bonjour)."
+          },
+          "delete_veto_files": {
+            "type": "boolean",
+            "description": "Folders holding only such files can be deleted."
+          },
+          "durable_handles": {
+            "type": "boolean",
+            "description": "Open files survive a short network loss; SMB's locks then no longer\nhold against NFS or the file manager."
+          },
+          "follow_symlinks": {
+            "type": "boolean",
+            "description": "Symbolic links inside a share are followed; never out of it."
+          },
+          "hide_unreadable": {
+            "type": "boolean",
+            "description": "Shares a user may not open are not listed to them."
+          },
+          "leases": {
+            "type": "boolean",
+            "description": "SMB 2 leases; only with oplocks."
+          },
+          "mac_compat": {
+            "type": "boolean",
+            "description": "Names with characters Windows does not allow, and Apple's\nextensions; needed for Time Machine."
+          },
+          "multichannel": {
+            "type": "boolean",
+            "description": "SMB 3 over several connections at once."
+          },
+          "nfs": {
+            "type": "boolean",
+            "description": "NFS for Linux and other Unix systems."
+          },
+          "oplocks": {
+            "type": "boolean",
+            "description": "Clients may cache files they have open."
+          },
+          "smb": {
+            "type": "boolean",
+            "description": "SMB for Windows, macOS and Linux."
+          },
+          "smb_encryption": {
+            "$ref": "#/components/schemas/SmbEncryptionMode"
+          },
+          "smb_min_protocol": {
+            "$ref": "#/components/schemas/SmbMinProtocol"
+          },
+          "smb_signing": {
+            "$ref": "#/components/schemas/SmbSigningMode"
+          },
+          "time_machine": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TimeMachineShare"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "veto_files": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Names kept out of the shares, e.g. `/*.tmp/Thumbs.db/`."
+          },
+          "workgroup": {
+            "type": "string",
+            "description": "The Windows workgroup: 1 to 15 letters, digits, `-` or `_`."
+          },
+          "wsdd": {
+            "type": "boolean",
+            "description": "Windows finds the NAS (WS-Discovery)."
+          }
+        },
+        "additionalProperties": false
+      },
       "FileShare": {
         "type": "object",
-        "description": "A share the signed-in user may use.",
+        "description": "A share the signed-in user may use, or their personal folder.",
         "required": [
           "id",
           "name",
+          "home",
           "access",
           "recycle_bin"
         ],
@@ -6203,12 +10048,18 @@
               "null"
             ]
           },
+          "home": {
+            "type": "boolean",
+            "description": "The personal folder of the signed-in user."
+          },
           "id": {
             "type": "integer",
-            "format": "int64"
+            "format": "int64",
+            "description": "`0` for the personal folder, which only its owner sees."
           },
           "name": {
-            "type": "string"
+            "type": "string",
+            "description": "`home` for the personal folder."
           },
           "recycle_bin": {
             "type": "boolean",
@@ -6390,12 +10241,162 @@
           }
         }
       },
+      "Homes": {
+        "type": "object",
+        "required": [
+          "homes"
+        ],
+        "properties": {
+          "homes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountHome"
+            }
+          },
+          "location": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/HomesLocation",
+                "description": "Absent while personal folders are off."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "HomesLocation": {
+        "type": "object",
+        "description": "Where the personal folders are.",
+        "required": [
+          "pool",
+          "volume"
+        ],
+        "properties": {
+          "pool": {
+            "type": "string"
+          },
+          "volume": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
       "HookFormat": {
         "type": "string",
         "enum": [
           "json",
           "text"
         ]
+      },
+      "ImageUpdate": {
+        "type": "object",
+        "required": [
+          "reference",
+          "state",
+          "containers"
+        ],
+        "properties": {
+          "containers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The containers made from it, by name."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why it cannot be told, for `unknown`."
+          },
+          "reference": {
+            "type": "string",
+            "description": "As the containers name it: `postgres:17`."
+          },
+          "state": {
+            "$ref": "#/components/schemas/ImageUpdateState"
+          }
+        }
+      },
+      "ImageUpdateSchedule": {
+        "type": "object",
+        "description": "When newer images are taken: on these days at this time.",
+        "required": [
+          "days",
+          "time"
+        ],
+        "properties": {
+          "days": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "description": "0 is Monday."
+          },
+          "time": {
+            "type": "string",
+            "description": "`05:40`, in the machine's time zone."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ImageUpdateSettings": {
+        "type": "object",
+        "required": [
+          "check"
+        ],
+        "properties": {
+          "check": {
+            "type": "boolean",
+            "description": "Registries are asked every six hours."
+          },
+          "schedule": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ImageUpdateSchedule",
+                "description": "`null`: newer images are taken by hand only."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "ImageUpdateState": {
+        "type": "string",
+        "enum": [
+          "current",
+          "available",
+          "unknown"
+        ]
+      },
+      "ImageUpdates": {
+        "type": "object",
+        "required": [
+          "checked_at",
+          "images"
+        ],
+        "properties": {
+          "checked_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix seconds."
+          },
+          "images": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImageUpdate"
+            }
+          }
+        }
       },
       "InstallAppRequest": {
         "type": "object",
@@ -6410,6 +10411,13 @@
           "confirm_permissions": {
             "type": "boolean",
             "description": "The administrator confirmed the app's permissions."
+          },
+          "pool": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The pool the app's data goes on, one of `volumes` of `/apps/docker`;\nthe one Docker's data is on if absent."
           },
           "ports": {
             "type": "object",
@@ -6435,7 +10443,7 @@
           },
           "shares": {
             "type": "object",
-            "description": "Share id → the name of the share picked for it.",
+            "description": "Share id → the share picked for it: its name, or a folder in it\n(`media/Films`), which the app then mounts instead of the whole\nshare.",
             "additionalProperties": {
               "type": "string"
             },
@@ -6516,7 +10524,7 @@
           },
           "shares": {
             "type": "object",
-            "description": "Share id → share name.",
+            "description": "Share id → the share it got: its name, or a folder in it\n(`media/Films`).",
             "additionalProperties": {
               "type": "string"
             },
@@ -6648,6 +10656,16 @@
         "type": "object",
         "description": "How the signed-in account wants the interface. `null` means not chosen:\neach browser keeps what it shows.",
         "properties": {
+          "desktop_icons": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "The app icons on the desktop, in order, by id."
+          },
           "language": {
             "oneOf": [
               {
@@ -6667,6 +10685,23 @@
                 "type": "null"
               }
             ]
+          },
+          "wallpaper": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The desktop's background, by the interface's name for it (lowercase\nletters)."
+          },
+          "widgets": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "The widgets beside the desktop, in order, by id; empty for none."
           }
         },
         "additionalProperties": false
@@ -7077,6 +11112,18 @@
           "kernel"
         ]
       },
+      "LogText": {
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "With timestamps, oldest first."
+          }
+        }
+      },
       "LoginRequest": {
         "type": "object",
         "required": [
@@ -7373,6 +11420,66 @@
           }
         }
       },
+      "NewDockerProject": {
+        "type": "object",
+        "required": [
+          "name",
+          "share_id",
+          "folder",
+          "compose"
+        ],
+        "properties": {
+          "accept_risks": {
+            "type": "boolean",
+            "description": "What the file lets containers do beyond themselves was shown and\naccepted."
+          },
+          "compose": {
+            "type": "string"
+          },
+          "folder": {
+            "type": "string",
+            "description": "In the share: `docker/teslamate`; made if missing."
+          },
+          "name": {
+            "type": "string"
+          },
+          "share_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "start": {
+            "type": "boolean",
+            "description": "Deploys it right away."
+          }
+        },
+        "additionalProperties": false
+      },
+      "NewNetwork": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "gateway": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Only with a subnet."
+          },
+          "name": {
+            "type": "string"
+          },
+          "subnet": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`172.30.0.0/24`; Docker's choice if absent."
+          }
+        },
+        "additionalProperties": false
+      },
       "NewPoolLayout": {
         "type": "string",
         "enum": [
@@ -7586,6 +11693,33 @@
           }
         }
       },
+      "PackageUpdate": {
+        "type": "object",
+        "description": "A Debian package an update brings.",
+        "required": [
+          "name",
+          "to",
+          "security"
+        ],
+        "properties": {
+          "from": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "None for one that comes in new."
+          },
+          "name": {
+            "type": "string"
+          },
+          "security": {
+            "type": "boolean"
+          },
+          "to": {
+            "type": "string"
+          }
+        }
+      },
       "Partition": {
         "type": "object",
         "required": [
@@ -7621,6 +11755,45 @@
             "minimum": 0
           }
         }
+      },
+      "PasswordPolicy": {
+        "type": "object",
+        "description": "The rules a new password must follow.",
+        "required": [
+          "min_length",
+          "mixed_case",
+          "digit",
+          "symbol"
+        ],
+        "properties": {
+          "digit": {
+            "type": "boolean"
+          },
+          "max_age_days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "From 30 to 730 days; absent: passwords do not expire.",
+            "minimum": 0
+          },
+          "min_length": {
+            "type": "integer",
+            "format": "int32",
+            "description": "From 10 to 64 characters.",
+            "minimum": 0
+          },
+          "mixed_case": {
+            "type": "boolean",
+            "description": "Upper and lower case letters."
+          },
+          "symbol": {
+            "type": "boolean",
+            "description": "A character that is neither a letter nor a digit; a space counts."
+          }
+        },
+        "additionalProperties": false
       },
       "PendingNetworkChange": {
         "type": "object",
@@ -8103,6 +12276,109 @@
           }
         }
       },
+      "ProjectCompose": {
+        "type": "object",
+        "required": [
+          "files",
+          "editable"
+        ],
+        "properties": {
+          "editable": {
+            "type": "boolean",
+            "description": "Made here: changed and deployed again with `PUT`."
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ComposeFile"
+            }
+          }
+        }
+      },
+      "ProjectCreated": {
+        "type": "object",
+        "properties": {
+          "job": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Job",
+                "description": "Deploying it, if asked to start."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "ProjectKind": {
+        "type": "string",
+        "enum": [
+          "own",
+          "app",
+          "foreign"
+        ]
+      },
+      "ProjectPlace": {
+        "type": "object",
+        "description": "A share a project's folder can go in.",
+        "required": [
+          "share_id",
+          "share"
+        ],
+        "properties": {
+          "share": {
+            "type": "string"
+          },
+          "share_id": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "PublishedPort": {
+        "type": "object",
+        "required": [
+          "host_port",
+          "container_port",
+          "protocol"
+        ],
+        "properties": {
+          "container_port": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "host_ip": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`null`: every address."
+          },
+          "host_port": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "protocol": {
+            "type": "string"
+          }
+        }
+      },
+      "PullRequest": {
+        "type": "object",
+        "required": [
+          "reference"
+        ],
+        "properties": {
+          "reference": {
+            "type": "string",
+            "description": "`postgres:17`, `ghcr.io/owner/app:latest`."
+          }
+        },
+        "additionalProperties": false
+      },
       "RaidArray": {
         "type": "object",
         "description": "A software RAID array.",
@@ -8354,6 +12630,15 @@
           }
         }
       },
+      "RootLoginMode": {
+        "type": "string",
+        "description": "Whether root may log in over SSH.",
+        "enum": [
+          "no",
+          "key_only",
+          "yes"
+        ]
+      },
       "RunState": {
         "type": "string",
         "description": "What Docker makes of an installed app.",
@@ -8412,6 +12697,50 @@
             }
           }
         ]
+      },
+      "SecuritySettings": {
+        "type": "object",
+        "required": [
+          "idle_minutes"
+        ],
+        "properties": {
+          "account_lock": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FailureLimit",
+                "description": "`null`: accounts never lock."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "allowed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Addresses and networks never blocked, such as `192.168.1.0/24`; at\nmost 64. This machine itself never is."
+          },
+          "auto_block": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AutoBlock",
+                "description": "`null`: no address is blocked automatically."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "idle_minutes": {
+            "type": "integer",
+            "format": "int32",
+            "description": "A session ends after this many minutes without requests: 5 to 1440.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
       },
       "SelfTest": {
         "type": "object",
@@ -8527,6 +12856,27 @@
           }
         }
       },
+      "SetAccountHomeRequest": {
+        "type": "object",
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "quota_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "At least 1 GiB; absent: no limit.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
       "SetFavouritesRequest": {
         "type": "object",
         "required": [
@@ -8543,6 +12893,19 @@
         },
         "additionalProperties": false
       },
+      "SetHomesRequest": {
+        "type": "object",
+        "properties": {
+          "pool": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The pool to keep the personal folders on; null turns them off,\nkeeping their files."
+          }
+        },
+        "additionalProperties": false
+      },
       "SetSelfTestPlans": {
         "type": "object",
         "required": [
@@ -8554,6 +12917,22 @@
             "items": {
               "$ref": "#/components/schemas/SelfTestPlan"
             }
+          }
+        },
+        "additionalProperties": false
+      },
+      "SetSubjectAccessRequest": {
+        "type": "object",
+        "required": [
+          "rules"
+        ],
+        "properties": {
+          "rules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SubjectRule"
+            },
+            "description": "The shares to change; others keep their rules."
           }
         },
         "additionalProperties": false
@@ -8717,7 +13096,7 @@
         ],
         "properties": {
           "access": {
-            "$ref": "#/components/schemas/ShareAccessLevel"
+            "$ref": "#/components/schemas/ShareRuleLevel"
           },
           "id": {
             "type": "integer",
@@ -8729,6 +13108,15 @@
           }
         },
         "additionalProperties": false
+      },
+      "ShareRuleLevel": {
+        "type": "string",
+        "description": "What a rule says. `deny` keeps the account or group out, also where\nanother rule would let it in: a group's denial wins over its members'\nown rules.",
+        "enum": [
+          "deny",
+          "read",
+          "read_write"
+        ]
       },
       "ShareSettingsDto": {
         "type": "object",
@@ -9109,6 +13497,33 @@
           "unsupported"
         ]
       },
+      "SmbEncryptionMode": {
+        "type": "string",
+        "description": "Whether SMB traffic is encrypted.",
+        "enum": [
+          "default",
+          "required",
+          "off"
+        ]
+      },
+      "SmbMinProtocol": {
+        "type": "string",
+        "description": "The oldest SMB version the NAS answers.",
+        "enum": [
+          "smb2",
+          "smb2_1",
+          "smb3"
+        ]
+      },
+      "SmbSigningMode": {
+        "type": "string",
+        "description": "Whether SMB packets are signed.",
+        "enum": [
+          "default",
+          "mandatory",
+          "disabled"
+        ]
+      },
       "SnapshotFrequency": {
         "type": "string",
         "description": "How often a schedule takes a snapshot.",
@@ -9118,6 +13533,106 @@
           "weekly",
           "monthly"
         ]
+      },
+      "SshRequest": {
+        "type": "object",
+        "required": [
+          "enabled",
+          "port"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "off_after_minutes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Turns SSH off again after 1 to 1440 minutes; `null`: never.",
+            "minimum": 0
+          },
+          "password_login": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "`null`: as the system's configuration has it."
+          },
+          "port": {
+            "type": "integer",
+            "format": "int32",
+            "description": "22, or a port from 1024 that no service of the NAS uses.",
+            "minimum": 0
+          },
+          "root_login": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RootLoginMode",
+                "description": "`null`: as the system's configuration has it."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "SshState": {
+        "type": "object",
+        "description": "The SSH server: on or off, its port and two of its rules. Who may log\nin otherwise stays as the system has it.",
+        "required": [
+          "installed",
+          "enabled",
+          "running",
+          "port"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Starts with the machine."
+          },
+          "installed": {
+            "type": "boolean",
+            "description": "The server is installed; without it, nothing can be turned on."
+          },
+          "off_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When it turns itself off, in Unix seconds."
+          },
+          "password_login": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "`null`: as the system's configuration has it."
+          },
+          "port": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "root_login": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RootLoginMode",
+                "description": "`null`: as the system's configuration has it."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "running": {
+            "type": "boolean"
+          }
+        }
       },
       "StartSelfTestRequest": {
         "type": "object",
@@ -9182,12 +13697,90 @@
           }
         }
       },
+      "SubjectAccessUpdate": {
+        "type": "object",
+        "required": [
+          "jobs"
+        ],
+        "properties": {
+          "jobs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Job"
+            },
+            "description": "One per share that changed: its existing files follow."
+          }
+        }
+      },
       "SubjectKind": {
         "type": "string",
         "enum": [
           "account",
           "group"
         ]
+      },
+      "SubjectRule": {
+        "type": "object",
+        "required": [
+          "share_id"
+        ],
+        "properties": {
+          "rule": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ShareRuleLevel",
+                "description": "Absent or null: no rule."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "share_id": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SubjectShareAccess": {
+        "type": "object",
+        "description": "One share as an account or group sees it.",
+        "required": [
+          "share_id",
+          "share"
+        ],
+        "properties": {
+          "effective": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ShareAccessLevel",
+                "description": "What it may do in the end. For an account: absent if any rule\ndenies it (its own or a group's), else its own rule, else the\nbroadest of its groups'. For a group: what its rule grants."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rule": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ShareRuleLevel",
+                "description": "The account's or group's own rule; absent without one."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "share": {
+            "type": "string"
+          },
+          "share_id": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
       },
       "SyncOperation": {
         "type": "string",
@@ -9362,6 +13955,125 @@
           }
         }
       },
+      "TimeMachineShare": {
+        "type": "object",
+        "description": "The share Macs back up to with Time Machine.",
+        "required": [
+          "share_id"
+        ],
+        "properties": {
+          "max_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "At least 1 GiB; absent: as much as the share may hold.",
+            "minimum": 0
+          },
+          "share_id": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "additionalProperties": false
+      },
+      "TimeRequest": {
+        "type": "object",
+        "required": [
+          "zone",
+          "network_time"
+        ],
+        "properties": {
+          "clock": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Only without network time: sets the clock, in Unix seconds."
+          },
+          "network_time": {
+            "type": "boolean"
+          },
+          "servers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "At most four host names or IP addresses; empty: Debian's pool."
+          },
+          "zone": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "TimeState": {
+        "type": "object",
+        "description": "The machine's clock: its time zone and how it is kept.",
+        "required": [
+          "zone",
+          "network_time",
+          "can_network_time",
+          "synchronized",
+          "servers",
+          "zones",
+          "now"
+        ],
+        "properties": {
+          "can_network_time": {
+            "type": "boolean",
+            "description": "A time service is installed: network time can be turned on."
+          },
+          "network_time": {
+            "type": "boolean",
+            "description": "Time servers keep the clock."
+          },
+          "now": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The machine's time, in Unix seconds, when this was read."
+          },
+          "server_in_use": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The server the clock comes from now."
+          },
+          "servers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The servers set here; empty: Debian's pool."
+          },
+          "synchronized": {
+            "type": "boolean",
+            "description": "The clock agrees with a time server."
+          },
+          "zone": {
+            "type": "string",
+            "description": "A zone of the tz database: `Europe/Berlin`."
+          },
+          "zones": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Every zone the system has, sorted."
+          }
+        }
+      },
+      "TlsVersion": {
+        "type": "string",
+        "description": "The oldest TLS version the web interface accepts.",
+        "enum": [
+          "tls1_2",
+          "tls1_3"
+        ]
+      },
       "TransferMode": {
         "type": "string",
         "enum": [
@@ -9427,11 +14139,25 @@
         "type": "object",
         "description": "Absent fields stay as they are.",
         "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "An empty string removes it."
+          },
           "disabled": {
             "type": [
               "boolean",
               "null"
             ]
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "An empty string removes it."
           },
           "full_name": {
             "type": [
@@ -9439,6 +14165,12 @@
               "null"
             ],
             "description": "An empty string removes the full name."
+          },
+          "password_locked": {
+            "type": [
+              "boolean",
+              "null"
+            ]
           },
           "role": {
             "oneOf": [
@@ -9463,6 +14195,15 @@
         },
         "additionalProperties": false
       },
+      "UpdateChannel": {
+        "type": "string",
+        "description": "Which releases of zendiloOS are offered: each channel takes those of\nthe steadier ones too.",
+        "enum": [
+          "stable",
+          "test",
+          "development"
+        ]
+      },
       "UpdateGroupRequest": {
         "type": "object",
         "description": "Absent fields stay as they are.",
@@ -9484,6 +14225,97 @@
               "format": "int64"
             },
             "description": "Replaces all members."
+          }
+        },
+        "additionalProperties": false
+      },
+      "UpdatePhase": {
+        "type": "string",
+        "description": "What zendiloosd is doing before a run on the NAS starts.",
+        "enum": [
+          "idle",
+          "checking",
+          "downloading",
+          "failed"
+        ]
+      },
+      "UpdateRun": {
+        "type": "object",
+        "description": "The update on the NAS, running or the last one.",
+        "required": [
+          "id",
+          "state",
+          "step",
+          "started_at",
+          "restart_needed",
+          "zfs_ready"
+        ],
+        "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "finished_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "id": {
+            "type": "string"
+          },
+          "restart_needed": {
+            "type": "boolean",
+            "description": "A newer kernel waits for a restart."
+          },
+          "started_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "state": {
+            "$ref": "#/components/schemas/UpdateRunState"
+          },
+          "step": {
+            "type": "string",
+            "description": "`lists`, `debian`, `zendiloos`, `modules`."
+          },
+          "zendiloos": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The version of zendiloOS it installs."
+          },
+          "zfs_ready": {
+            "type": "boolean",
+            "description": "The ZFS module is built for the newest kernel."
+          }
+        }
+      },
+      "UpdateRunState": {
+        "type": "string",
+        "enum": [
+          "running",
+          "succeeded",
+          "failed"
+        ]
+      },
+      "UpdateSettings": {
+        "type": "object",
+        "required": [
+          "channel",
+          "check_daily"
+        ],
+        "properties": {
+          "channel": {
+            "$ref": "#/components/schemas/UpdateChannel"
+          },
+          "check_daily": {
+            "type": "boolean",
+            "description": "Look once a day and say what there is; installing stays a click."
           }
         },
         "additionalProperties": false
@@ -9539,6 +14371,103 @@
         },
         "additionalProperties": false
       },
+      "UpdatesOverview": {
+        "type": "object",
+        "required": [
+          "current",
+          "settings",
+          "phase",
+          "packages",
+          "restart_needed",
+          "zfs_ready"
+        ],
+        "properties": {
+          "checked_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When the last check was, Unix seconds."
+          },
+          "current": {
+            "type": "string",
+            "description": "The version of zendiloOS that runs."
+          },
+          "newest_kernel": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "packages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PackageUpdate"
+            }
+          },
+          "packages_error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why apt could not be asked."
+          },
+          "phase": {
+            "$ref": "#/components/schemas/UpdatePhase"
+          },
+          "phase_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "release": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AvailableRelease"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "release_error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why GitHub could not be asked."
+          },
+          "restart_needed": {
+            "type": "boolean",
+            "description": "A newer kernel is installed and waits for a restart."
+          },
+          "run": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/UpdateRun"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "running_kernel": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "settings": {
+            "$ref": "#/components/schemas/UpdateSettings"
+          },
+          "zfs_ready": {
+            "type": "boolean",
+            "description": "The ZFS module is built for the newest kernel; without it a restart\nwould leave the pools behind."
+          }
+        }
+      },
       "UploadedFile": {
         "type": "object",
         "required": [
@@ -9547,6 +14476,59 @@
         "properties": {
           "path": {
             "type": "string"
+          }
+        }
+      },
+      "UsageMoment": {
+        "type": "object",
+        "required": [
+          "at",
+          "points"
+        ],
+        "properties": {
+          "at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix seconds."
+          },
+          "points": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UsagePoint"
+            }
+          }
+        }
+      },
+      "UsagePoint": {
+        "type": "object",
+        "description": "One container at one moment.",
+        "required": [
+          "container",
+          "cpu_percent",
+          "memory_bytes",
+          "received_per_second",
+          "sent_per_second"
+        ],
+        "properties": {
+          "container": {
+            "type": "string"
+          },
+          "cpu_percent": {
+            "type": "number",
+            "format": "double"
+          },
+          "memory_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "received_per_second": {
+            "type": "number",
+            "format": "double"
+          },
+          "sent_per_second": {
+            "type": "number",
+            "format": "double"
           }
         }
       },
@@ -9649,6 +14631,19 @@
             "minimum": 0
           }
         }
+      },
+      "WebTls": {
+        "type": "object",
+        "required": [
+          "minimum"
+        ],
+        "properties": {
+          "minimum": {
+            "$ref": "#/components/schemas/TlsVersion",
+            "description": "TLS 1.2 serves older clients too; 1.3 alone refuses them."
+          }
+        },
+        "additionalProperties": false
       }
     },
     "securitySchemes": {

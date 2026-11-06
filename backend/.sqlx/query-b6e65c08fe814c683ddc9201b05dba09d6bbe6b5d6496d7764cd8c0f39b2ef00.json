@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO blocked_addresses (address, blocked_at, until, automatic) VALUES (?, ?, ?, ?)\n             ON CONFLICT (address) DO UPDATE SET blocked_at = excluded.blocked_at, until = excluded.until,\n                 automatic = excluded.automatic",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "b6e65c08fe814c683ddc9201b05dba09d6bbe6b5d6496d7764cd8c0f39b2ef00"
+}

@@ -6,6 +6,9 @@
 export DH_VERBOSE = 1
 # The SQL macros check queries against backend/.sqlx; no database needed.
 export SQLX_OFFLINE = true
+# The version zendiloosd reports and compares releases with
+# (zendiloos_kernel::VERSION): the package's own.
+export ZENDILOOS_VERSION := $(shell dpkg-parsechangelog -S Version)
 
 %:
 	dh $@
@@ -25,6 +28,12 @@ override_dh_auto_install:
 		debian/zendiloos/usr/libexec/zendiloos/zendiloos-agent
 	install -d debian/zendiloos/usr/share/zendiloos/webui
 	cp -r frontend/dist/. debian/zendiloos/usr/share/zendiloos/webui/
+	# The key releases are signed with; without it, this build takes no
+	# updates of zendiloOS (docs/releases.md).
+	if [ -f packaging/release-signing.pub ]; then \
+		install -D -m 0644 packaging/release-signing.pub \
+			debian/zendiloos/usr/share/zendiloos/release-signing.pub; \
+	fi
 
 override_dh_auto_clean:
 	rm -rf frontend/dist

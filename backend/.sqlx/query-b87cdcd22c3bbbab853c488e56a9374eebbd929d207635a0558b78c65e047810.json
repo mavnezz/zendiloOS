@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO homes_location (id, pool, volume) VALUES (1, ?, ?)\n                     ON CONFLICT (id) DO UPDATE SET pool = excluded.pool, volume = excluded.volume",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "b87cdcd22c3bbbab853c488e56a9374eebbd929d207635a0558b78c65e047810"
+}

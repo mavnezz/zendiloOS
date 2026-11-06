@@ -13,7 +13,10 @@ use super::{
     FilesError, FilesUseCases, NewShareInput, ShareChanges, SharingError, SharingPorts, SharingUseCases,
     Transfer,
 };
-use crate::domain::{Access, AccessRule, Favourite, FilePath, Principal, ShareId, Subject};
+use crate::domain::{
+    Access, AccessRule, Favourite, FilePath, FileServices, Permission, Principal, ShareId, SmbProtocol,
+    Subject,
+};
 use crate::testing::{Files, Host, Shares, Volumes};
 
 struct Static;
@@ -25,6 +28,7 @@ impl Directory for Static {
         names.accounts.insert(1, "alice".into());
         names.accounts.insert(2, "bob".into());
         names.groups.insert(10, "family".into());
+        names.members.insert(10, vec![1]);
         Ok(names)
     }
 
@@ -106,7 +110,11 @@ fn alice() -> Actor {
 }
 
 fn rule(subject: Subject, access: Access) -> AccessRule {
-    AccessRule { subject, access }
+    AccessRule { subject, permission: access.into() }
+}
+
+fn deny(subject: Subject) -> AccessRule {
+    AccessRule { subject, permission: Permission::Deny }
 }
 
 fn input(name: &str, pool: &str) -> NewShareInput {
@@ -154,8 +162,8 @@ async fn creating_a_share_makes_its_dataset_permissions_and_configuration() {
     assert_eq!(
         config.smb[0].access,
         [
-            (Principal::Group("family".into()), Access::ReadWrite),
-            (Principal::User("bob".into()), Access::Read)
+            (Principal::Group("family".into()), Permission::ReadWrite),
+            (Principal::User("bob".into()), Permission::Read)
         ]
     );
     assert_eq!(config.nfs.len(), 1);
@@ -536,7 +544,7 @@ async fn photos(s: &Setup) -> ShareId {
         description: None,
         pool: "tank".into(),
         recycle_bin: true,
-        access: vec![AccessRule { subject: Subject::Account(1), access: Access::ReadWrite }],
+        access: vec![rule(Subject::Account(1), Access::ReadWrite)],
         nfs: vec![],
         settings: crate::domain::ShareSettings::default(),
     };
@@ -696,4 +704,212 @@ async fn settings_go_to_the_dataset_and_a_quota_never_below_what_is_there() {
         .unwrap();
     assert_eq!(updated.settings, none);
     assert_eq!(s.sharing.usage(&request).await.unwrap()[0].1.used_bytes, 3 * MIN_QUOTA_BYTES);
+}
+
+#[tokio::test]
+async fn file_services_are_applied_with_the_shares() {
+    let s = setup();
+    let request = RequestContext::default();
+    assert_eq!(s.sharing.file_services().await.unwrap(), FileServices::default());
+    s.sharing.create(input("photos", "tank"), &alice(), &request).await.unwrap();
+
+    let wanted = FileServices {
+        smb: true,
+        nfs: false,
+        workgroup: " home ".into(),
+        smb_min_protocol: SmbProtocol::Smb3,
+        ..FileServices::default()
+    };
+    let stored = s.sharing.set_file_services(wanted, &alice(), &request).await.unwrap();
+
+    assert_eq!(stored.workgroup, "HOME");
+    let config = s.host.configs.lock().unwrap().last().unwrap().clone();
+    assert_eq!((config.smb.len(), config.services), (1, stored.clone()));
+    assert_eq!(s.sharing.file_services().await.unwrap(), stored);
+}
+
+#[tokio::test]
+async fn file_services_the_host_refuses_give_way_to_the_previous_ones() {
+    let s = setup();
+    let request = RequestContext::default();
+    s.host.refuse_all_off.store(true, std::sync::atomic::Ordering::Relaxed);
+    let off = FileServices { smb: false, nfs: false, ..FileServices::default() };
+
+    let result = s.sharing.set_file_services(off, &alice(), &request).await;
+
+    assert!(matches!(result, Err(SharingError::Refused(_))), "{result:?}");
+    assert_eq!(s.sharing.file_services().await.unwrap(), FileServices::default());
+    assert_eq!(s.host.configs.lock().unwrap().last().unwrap().services, FileServices::default());
+
+    let bad = FileServices { workgroup: "A B".into(), ..FileServices::default() };
+    let result = s.sharing.set_file_services(bad, &alice(), &request).await;
+    assert!(matches!(result, Err(SharingError::InvalidServices(_))));
+}
+
+/// photos with alice (1) writing and nobody else.
+async fn alices_photos(s: &Setup) -> ShareId {
+    let mut photos = input("photos", "tank");
+    photos.access = vec![rule(Subject::Account(1), Access::ReadWrite)];
+    photos.nfs = vec![];
+    s.sharing.create(photos, &alice(), &RequestContext::default()).await.unwrap().id
+}
+
+#[tokio::test]
+async fn a_denied_group_overrides_its_members_own_rules() {
+    let s = setup();
+    let request = RequestContext::default();
+    let photos = alices_photos(&s).await;
+
+    let jobs = s
+        .sharing
+        .set_subject_access(Subject::Group(10), &[(photos, Some(Permission::Deny))], &alice(), &request)
+        .await
+        .unwrap();
+
+    assert_eq!(jobs.len(), 1);
+    finished(&s.jobs, jobs[0].clone()).await;
+    let calls = s.host.calls();
+    assert!(calls.contains(&"access 1 photos [alice:-] -[]".to_owned()), "alice is in family: {calls:?}");
+    assert!(calls.contains(&"access 1 photos [alice:-] -[] recursive".to_owned()), "{calls:?}");
+    let config = s.host.configs.lock().unwrap().last().unwrap().clone();
+    assert_eq!(
+        config.smb[0].access,
+        [
+            (Principal::User("alice".into()), Permission::ReadWrite),
+            (Principal::Group("family".into()), Permission::Deny)
+        ],
+        "Samba gets the group: it follows its members itself"
+    );
+    let seen = s.sharing.subject_access(Subject::Account(1)).await.unwrap();
+    assert_eq!((seen[0].rule, seen[0].effective), (Some(Permission::ReadWrite), None));
+    let group = s.sharing.subject_access(Subject::Group(10)).await.unwrap();
+    assert_eq!((group[0].rule, group[0].effective), (Some(Permission::Deny), None));
+    assert!(matches!(s.sharing.subject_access(Subject::Group(99)).await, Err(SharingError::UnknownSubject)));
+}
+
+#[tokio::test]
+async fn members_who_leave_a_denied_group_lose_their_entry() {
+    let s = setup();
+    let request = RequestContext::default();
+    let photos = alices_photos(&s).await;
+    s.sharing
+        .set_subject_access(Subject::Group(10), &[(photos, Some(Permission::Deny))], &alice(), &request)
+        .await
+        .unwrap();
+
+    // bob (2) was in family and has left; alice (1) still is.
+    let jobs = s.sharing.group_members_changed(10, &[1, 2], &alice(), &request).await.unwrap();
+
+    assert_eq!(jobs.len(), 1);
+    finished(&s.jobs, jobs[0].clone()).await;
+    let calls = s.host.calls();
+    assert!(calls.contains(&"access 1 photos [alice:-] -[bob] recursive".to_owned()), "{calls:?}");
+    assert!(
+        s.sharing.group_members_changed(77, &[1], &alice(), &request).await.unwrap().is_empty(),
+        "denied nowhere"
+    );
+}
+
+#[tokio::test]
+async fn a_group_about_to_go_takes_its_rules_and_its_members_entries_along() {
+    let s = setup();
+    let request = RequestContext::default();
+    let photos = alices_photos(&s).await;
+    s.sharing
+        .set_subject_access(Subject::Group(10), &[(photos, Some(Permission::Deny))], &alice(), &request)
+        .await
+        .unwrap();
+
+    let jobs = s.sharing.group_deleting(10, &alice(), &request).await.unwrap();
+
+    finished(&s.jobs, jobs[0].clone()).await;
+    let calls = s.host.calls();
+    assert!(
+        calls.contains(&"access 1 photos [alice:rw] -[] recursive".to_owned()),
+        "alice's own rule is back: {calls:?}"
+    );
+    let share = s.sharing.list().await.unwrap().into_iter().find(|share| share.id == photos).unwrap();
+    assert_eq!(share.rule_of(Subject::Group(10)), None);
+}
+
+#[tokio::test]
+async fn subject_rules_are_checked_before_anything_changes() {
+    let s = setup();
+    let request = RequestContext::default();
+    let photos = alices_photos(&s).await;
+    let calls = s.host.calls().len();
+
+    let twice = [(photos, Some(Permission::Read)), (photos, None)];
+    assert!(matches!(
+        s.sharing.set_subject_access(Subject::Account(2), &twice, &alice(), &request).await,
+        Err(SharingError::Duplicate)
+    ));
+    let unknown = [(photos, Some(Permission::Read)), (ShareId::new(99), Some(Permission::Read))];
+    assert!(matches!(
+        s.sharing.set_subject_access(Subject::Account(2), &unknown, &alice(), &request).await,
+        Err(SharingError::ShareNotFound)
+    ));
+    assert_eq!(s.host.calls().len(), calls);
+}
+
+#[tokio::test]
+async fn personal_folders_are_given_one_by_one_and_only_their_owner_reaches_them() {
+    let s = setup();
+    let request = RequestContext::default();
+    let bob = Actor { account_id: 2, name: "bob".into() };
+    let off = s.sharing.set_account_home(1, true, None, &alice(), &request).await;
+    assert!(matches!(off, Err(SharingError::Refused(_))), "personal folders are off: {off:?}");
+
+    let settings = s.sharing.enable_homes("tank", &alice(), &request).await.unwrap();
+    assert_eq!(settings.location.unwrap().volume, 1);
+    let quota = Some(5 << 30);
+    s.sharing.set_account_home(1, true, quota, &alice(), &request).await.unwrap();
+
+    assert!(
+        s.host.calls().ends_with(&[
+            "prepare_homes tank 1".to_owned(),
+            "apply 0".to_owned(),
+            format!("set_home tank 1 alice {quota:?}"),
+            "apply 0".to_owned()
+        ]),
+        "{:?}",
+        s.host.calls()
+    );
+    let config = s.host.configs.lock().unwrap().last().unwrap().clone();
+    assert_eq!(config.homes, Some(crate::domain::HomesSpec { volume: 1, users: vec!["alice".into()] }));
+    assert_eq!(s.files.home(&alice()).await.unwrap(), Some(1));
+    assert_eq!(s.files.home(&bob).await.unwrap(), None);
+
+    s.files.list(&alice(), crate::domain::HOME_SHARE, FilePath::root(), None, &request).await.unwrap();
+    assert!(s.file_host.calls().contains(&"list alice home:".to_owned()), "{:?}", s.file_host.calls());
+    let strangers = s.files.list(&bob, crate::domain::HOME_SHARE, FilePath::root(), None, &request).await;
+    assert!(matches!(strangers, Err(FilesError::ShareNotFound)));
+    let snapshot =
+        s.files.list(&alice(), crate::domain::HOME_SHARE, FilePath::root(), Some("x"), &request).await;
+    assert!(matches!(snapshot, Err(FilesError::Invalid(_))));
+
+    let small = s.sharing.set_account_home(1, true, Some(1024), &alice(), &request).await;
+    assert!(matches!(small, Err(SharingError::InvalidSettings(_))));
+    s.sharing.set_account_home(1, false, None, &alice(), &request).await.unwrap();
+    assert_eq!(s.files.home(&alice()).await.unwrap(), None, "taken away: files stay, nobody reaches them");
+    s.sharing.disable_homes(&alice(), &request).await.unwrap();
+    assert_eq!(s.host.configs.lock().unwrap().last().unwrap().homes, None);
+}
+
+#[tokio::test]
+async fn a_denied_account_keeps_out_although_its_group_may_write() {
+    let s = setup();
+    let mut photos = input("photos", "tank");
+    photos.access = vec![rule(Subject::Group(10), Access::ReadWrite), deny(Subject::Account(1))];
+    photos.nfs = vec![];
+
+    s.sharing.create(photos, &alice(), &RequestContext::default()).await.unwrap();
+
+    assert!(
+        s.host.calls().contains(&"access 1 photos [@family:rw,alice:-] -[]".to_owned()),
+        "{:?}",
+        s.host.calls()
+    );
+    let seen = s.sharing.subject_access(Subject::Account(1)).await.unwrap();
+    assert_eq!((seen[0].rule, seen[0].effective), (Some(Permission::Deny), None));
 }

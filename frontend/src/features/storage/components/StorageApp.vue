@@ -3,6 +3,7 @@ import { Activity, Database, HardDrive, Layers, RefreshCw } from 'lucide-vue-nex
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
+import { useWindowSection } from '@/shared/lib/window-section'
 import { Button } from '@/shared/ui/button'
 import { AppFrame, type NavGroup } from '@/shared/ui/frame'
 
@@ -30,7 +31,7 @@ const groups = computed<NavGroup[]>(() => [
     ],
   },
 ])
-const section = ref('overview')
+const section = useWindowSection(() => ['overview', 'volumes', 'pools', 'disks'])
 const selectedDisk = ref<string | null>(null)
 watch(section, () => (selectedDisk.value = null))
 </script>

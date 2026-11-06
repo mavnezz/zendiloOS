@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT check_images AS \"check_images: bool\", weekdays, minute FROM docker_update_settings WHERE id = 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "check_images: bool",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "docker_update_settings",
+            "name": "check_images"
+          }
+        }
+      },
+      {
+        "name": "weekdays",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "docker_update_settings",
+            "name": "weekdays"
+          }
+        }
+      },
+      {
+        "name": "minute",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "docker_update_settings",
+            "name": "minute"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "f9f9e2f53ff3bffe1110b2d2d1bfeed9adab34ce68154c320934658eedeaa300"
+}

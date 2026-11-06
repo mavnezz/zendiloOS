@@ -59,7 +59,8 @@ impl InstallState {
 /// What zendiloOS filled in for an app, by the ids its manifest declares.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InstallValues {
-    /// Share id → the name of the share picked for it.
+    /// Share id → the share picked for it: its name, or a folder in it
+    /// (`media/Films`), see [`share_and_folder`].
     pub shares: BTreeMap<String, String>,
     /// Port id → host port.
     pub ports: BTreeMap<String, u16>,
@@ -160,6 +161,8 @@ pub enum ValueProblem {
     Missing,
     #[error("there is no such share")]
     NoSuchShare,
+    #[error("not a folder's path in the share")]
+    NoFolder,
     #[error("port {0} is used by zendiloOS")]
     Reserved(u16),
     #[error("the port is fixed at {0}")]
@@ -174,6 +177,25 @@ pub enum ValueProblem {
     WrongKind,
     #[error("at most {MAX_SETTING_BYTES} bytes, without line breaks")]
     TooLong,
+}
+
+/// Longest path of a folder in a share an app may be given.
+pub const MAX_FOLDER_BYTES: usize = 1024;
+
+/// A share picked for one of an app's shares, split into the share's name
+/// and the folder in it (empty for the whole share): `media/Films` →
+/// (`media`, `Films`).
+pub fn share_and_folder(picked: &str) -> (&str, &str) {
+    picked.split_once('/').unwrap_or((picked, ""))
+}
+
+/// Folder names separated by `/`: none empty, `.` or `..`, none with a
+/// NUL; at most [`MAX_FOLDER_BYTES`].
+fn is_folder(folder: &str) -> bool {
+    folder.len() <= MAX_FOLDER_BYTES
+        && folder
+            .split('/')
+            .all(|name| !name.is_empty() && name != "." && name != ".." && !name.contains('\0'))
 }
 
 fn invalid(field: impl Into<String>, problem: ValueProblem) -> InvalidValue {
@@ -214,11 +236,15 @@ pub fn install_values(
     let mut shares = BTreeMap::new();
     for share in &app.shares {
         let field = format!("shares.{}", share.id);
-        let name = request.shares.get(&share.id).ok_or_else(|| invalid(&field, ValueProblem::Missing))?;
+        let picked = request.shares.get(&share.id).ok_or_else(|| invalid(&field, ValueProblem::Missing))?;
+        let (name, folder) = share_and_folder(picked);
         if !request.existing_shares.contains(name) {
             return Err(invalid(&field, ValueProblem::NoSuchShare));
         }
-        shares.insert(share.id.clone(), name.clone());
+        if picked.contains('/') && !is_folder(folder) {
+            return Err(invalid(&field, ValueProblem::NoFolder));
+        }
+        shares.insert(share.id.clone(), picked.clone());
     }
 
     if let Some(unknown) = request.ports.keys().find(|id| app.ports.iter().all(|p| &p.id != *id)) {
@@ -390,6 +416,18 @@ mod tests {
         assert_eq!(problem(given.values(None)), "shares.photos: there is no such share");
         given.shares.clear();
         assert_eq!(problem(given.values(None)), "shares.photos: a value is needed");
+        for odd in ["family/", "family//x", "family/../etc", "family/./x", "family/a\0b"] {
+            given.shares.insert("photos".into(), odd.into());
+            assert_eq!(
+                problem(given.values(None)),
+                "shares.photos: not a folder's path in the share",
+                "{odd:?}"
+            );
+        }
+        given.shares.insert("photos".into(), "family/2024/Summer trip".into());
+        assert_eq!(given.values(None).unwrap().shares["photos"], "family/2024/Summer trip");
+        assert_eq!(share_and_folder("family/2024/Summer trip"), ("family", "2024/Summer trip"));
+        assert_eq!(share_and_folder("family"), ("family", ""));
         given = Given::new();
         given.settings.insert("WORKERS".into(), "many".into());
         assert_eq!(problem(given.values(None)), "settings.WORKERS: not a value of this kind");

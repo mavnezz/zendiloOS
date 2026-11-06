@@ -21,6 +21,7 @@ const session: SessionInfo = {
     role: 'admin',
     permissions: ['system.view'],
     password_change_required: false,
+    password_locked: false,
   },
   csrf_token: 'csrf-1',
   expires_at: 0,

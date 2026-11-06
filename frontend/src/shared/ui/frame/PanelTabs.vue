@@ -7,9 +7,15 @@ defineProps<{ tabs: TabItem[] }>()
 const active = defineModel<string>({ required: true })
 </script>
 
-<!-- Tabs along the top of a panel, the chosen one underlined. -->
+<!--
+  Tabs along the top of a page, the chosen one underlined; room on the
+  right. The line under them is an inset shadow (see PageTabs).
+-->
 <template>
-  <div class="flex shrink-0 items-end gap-5 overflow-x-auto border-b px-5" role="tablist">
+  <div
+    class="flex shrink-0 items-end gap-1 overflow-x-auto px-4 pt-3 shadow-[inset_0_-1px_0_var(--color-border)] @3xl:px-6"
+    role="tablist"
+  >
     <button
       v-for="tab in tabs"
       :key="tab.id"
@@ -18,20 +24,22 @@ const active = defineModel<string>({ required: true })
       :aria-selected="active === tab.id"
       :class="
         cn(
-          'relative flex h-10 shrink-0 items-center gap-1.5 text-sm transition-colors',
+          'shrink-0 border-b-2 px-3 pb-2.5 text-sm font-medium whitespace-nowrap outline-none transition hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring',
           active === tab.id
-            ? 'font-medium text-primary after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:rounded-full after:bg-primary'
-            : 'text-muted-foreground hover:text-foreground',
+            ? 'border-primary text-primary'
+            : 'border-transparent text-muted-foreground',
         )
       "
       @click="active = tab.id"
     >
       {{ tab.label }}
-      <span v-if="tab.count !== undefined" class="text-xs text-muted-foreground tabular-nums">{{
-        tab.count
-      }}</span>
+      <span
+        v-if="tab.count !== undefined"
+        class="ml-1 text-xs text-muted-foreground tabular-nums"
+        >{{ tab.count }}</span
+      >
     </button>
-    <div class="ml-auto flex items-center gap-2 self-center">
+    <div class="ml-auto flex items-center gap-2 self-center pb-2">
       <slot />
     </div>
   </div>

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO file_services (id, smb, nfs, workgroup, smb_min_protocol, smb_encryption, smb_signing,\n                 hide_unreadable, multichannel, oplocks, leases, durable_handles, mac_compat, follow_symlinks,\n                 veto_files, delete_veto_files, wsdd, bonjour, time_machine_share, time_machine_max_bytes)\n             VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\n             ON CONFLICT (id) DO UPDATE SET smb = excluded.smb, nfs = excluded.nfs,\n                 workgroup = excluded.workgroup, smb_min_protocol = excluded.smb_min_protocol,\n                 smb_encryption = excluded.smb_encryption, smb_signing = excluded.smb_signing,\n                 hide_unreadable = excluded.hide_unreadable, multichannel = excluded.multichannel,\n                 oplocks = excluded.oplocks, leases = excluded.leases, durable_handles = excluded.durable_handles,\n                 mac_compat = excluded.mac_compat, follow_symlinks = excluded.follow_symlinks,\n                 veto_files = excluded.veto_files, delete_veto_files = excluded.delete_veto_files,\n                 wsdd = excluded.wsdd, bonjour = excluded.bonjour, time_machine_share = excluded.time_machine_share,\n                 time_machine_max_bytes = excluded.time_machine_max_bytes",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 19
+    },
+    "nullable": []
+  },
+  "hash": "8a48993b8bb43c74515f5811622e5e1160c6f0e4f84f9c6191ff30f65c214ccf"
+}

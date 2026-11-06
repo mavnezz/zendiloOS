@@ -37,6 +37,16 @@ load_zfs() {
     fi
 }
 
+# The web interface's oldest TLS version, which the control panel rewrites;
+# nginx's site includes it.
+web_tls_defaults() {
+    if [ ! -e /etc/zendiloos/nginx/tls.conf ]; then
+        mkdir -p /etc/zendiloos/nginx
+        printf '%s\n' '# Written by zendiloOS; changes made here are replaced.' \
+            'ssl_protocols TLSv1.2 TLSv1.3;' >/etc/zendiloos/nginx/tls.conf
+    fi
+}
+
 case "$1" in
     configure)
         load_zfs
@@ -45,6 +55,7 @@ case "$1" in
         rm -f /var/lib/zendiloos/console.issue /var/lib/zendiloos/console.tmp
         configure_samba
         /usr/libexec/zendiloos/make-certificate
+        web_tls_defaults
         retire_default_site
         if nginx -t >/dev/null 2>&1; then
             deb-systemd-invoke reload nginx.service || true

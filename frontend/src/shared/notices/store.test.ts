@@ -83,3 +83,31 @@ describe('server notifications', () => {
     expect(calls.posted).toEqual([])
   })
 })
+
+describe('the wording of update notices', () => {
+  const notice = (code: string, params: Record<string, string>): ServerNotification => ({
+    id: 1,
+    at: 0,
+    level: 'info',
+    code,
+    params,
+  })
+
+  it('names a release only when there is one, and warns before a restart without ZFS', async () => {
+    const { wording } = await import('./store')
+    const { i18n } = await import('@/shared/i18n')
+    i18n.global.locale.value = 'en'
+    expect(
+      wording(notice('updates_available', { version: '0.2.0', packages: '3', security: '1' })).body,
+    ).toBe('zendiloOS 0.2.0 and 3 Debian packages, 1 of them security updates.')
+    expect(wording(notice('updates_available', { packages: '3', security: '1' })).body).toBe(
+      '3 Debian packages, 1 of them security updates.',
+    )
+    expect(
+      wording(notice('updates_installed', { restart: 'true', zfs_ready: 'true' })).body,
+    ).toContain('restart')
+    expect(
+      wording(notice('updates_installed', { restart: 'true', zfs_ready: 'false' })).body,
+    ).toContain('Do not restart')
+  })
+})

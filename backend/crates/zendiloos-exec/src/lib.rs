@@ -166,6 +166,54 @@ where
     run_inner(program, args, Stdin::File(file), &Surroundings::default(), limits).await
 }
 
+/// Like [`run_with`] without input, but with stderr written into the same
+/// pipe as stdout, in the order the program wrote them: for output such as
+/// a container's, whose two streams belong together. `stderr` of the
+/// result is empty.
+pub async fn run_combined<I, A>(
+    program: &Program,
+    args: I,
+    surroundings: &Surroundings<'_>,
+    limits: Limits,
+) -> Result<Output, ExecError>
+where
+    I: IntoIterator<Item = A>,
+    A: AsRef<OsStr>,
+{
+    let name = program.name();
+    let io_error = |source| ExecError::Io { program: name.clone(), source };
+    let (reader, writer) = io::pipe().map_err(io_error)?;
+    let mut command = Command::new(program.path());
+    command
+        .args(args)
+        .env_clear()
+        .envs(surroundings.variables.iter().map(|(name, value)| (name, value)))
+        .current_dir(surroundings.directory.unwrap_or(Path::new("/")))
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(writer.try_clone().map_err(io_error)?))
+        .stderr(Stdio::from(writer))
+        .kill_on_drop(true);
+    let mut child =
+        spawn(&mut command).await.map_err(|source| ExecError::Spawn { program: name.clone(), source })?;
+    // Only the child may hold the writing end, or reading never ends.
+    drop(command);
+    let reader = tokio::net::unix::pipe::Receiver::from_owned_fd(std::os::fd::OwnedFd::from(reader))
+        .map_err(io_error)?;
+
+    let finished = async {
+        let stdout = read_limited(reader, limits.max_stdout).await.map_err(io_error)?;
+        if stdout.len() > limits.max_stdout {
+            return Err(ExecError::OutputTooLarge { program: name.clone(), limit: limits.max_stdout });
+        }
+        let status = child.wait().await.map_err(io_error)?;
+        Ok(Output { status, stdout, stderr: String::new() })
+    };
+    match tokio::time::timeout(limits.timeout, finished).await {
+        Ok(result) => result,
+        Err(_) => Err(ExecError::Timeout { program: name.clone(), after: limits.timeout }),
+    }
+}
+
 enum Stdin<'a> {
     Null,
     Bytes(&'a [u8]),
@@ -269,6 +317,15 @@ mod tests {
     /// Only tests use a shell, to script the behaviour under test.
     fn sh() -> Program {
         Program::new("/bin/sh").unwrap()
+    }
+
+    #[tokio::test]
+    async fn combined_output_keeps_the_order_the_program_wrote() {
+        let script = "echo one; echo two >&2; echo three";
+        let output =
+            run_combined(&sh(), ["-c", script], &Surroundings::default(), Limits::default()).await.unwrap();
+        assert_eq!(output.stdout, b"one\ntwo\nthree\n");
+        assert!(output.status.success() && output.stderr.is_empty());
     }
 
     #[tokio::test]

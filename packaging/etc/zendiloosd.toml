@@ -27,3 +27,8 @@
 #[log]
 #filter = "info"
 #format = "text"
+
+# Where zendiloOS's releases come from (docs/releases.md).
+#[updates]
+#api = "https://api.github.com"
+#repository = "mavnezz/zendiloOS"

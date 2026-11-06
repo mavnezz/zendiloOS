@@ -1,7 +1,8 @@
-import { useQuery } from '@tanstack/vue-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
+import { computed } from 'vue'
 
 import { api, unwrap } from '@/shared/api/client'
-import type { PowerAction } from '@/shared/api/types'
+import type { PowerAction, SshRequest, TimeRequest } from '@/shared/api/types'
 
 export function useSystemInfo() {
   return useQuery({
@@ -22,4 +23,38 @@ export async function isServerReachable(): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+/** The NAS's time zone and how its clock is kept. */
+export function useTime(enabled: () => boolean = () => true) {
+  return useQuery({
+    queryKey: ['system', 'time'],
+    queryFn: () => unwrap(api.GET('/api/v1/system/time')),
+    enabled: computed(enabled),
+  })
+}
+
+export function useSetTime() {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: (body: TimeRequest) => unwrap(api.PUT('/api/v1/system/time', { body })),
+    onSuccess: (state) => client.setQueryData(['system', 'time'], state),
+  })
+}
+
+/** The SSH server; looked at again while a timer is to turn it off. */
+export function useSsh() {
+  return useQuery({
+    queryKey: ['system', 'ssh'],
+    queryFn: () => unwrap(api.GET('/api/v1/system/ssh')),
+    refetchInterval: (query) => (query.state.data?.off_at ? 30_000 : false),
+  })
+}
+
+export function useSetSsh() {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: (body: SshRequest) => unwrap(api.PUT('/api/v1/system/ssh', { body })),
+    onSuccess: (state) => client.setQueryData(['system', 'ssh'], state),
+  })
 }

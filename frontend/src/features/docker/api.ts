@@ -1,0 +1,309 @@
+import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
+import { computed, type Ref } from 'vue'
+
+import { api, unwrap } from '@/shared/api/client'
+import type { ImageUpdateSettings, NewDockerProject } from '@/shared/api/types'
+
+/** How often lists that change by themselves are asked again. */
+const REFRESH = 10_000
+
+export function useDockerOverview() {
+  return useQuery({
+    queryKey: ['docker', 'overview'],
+    queryFn: () => unwrap(api.GET('/api/v1/docker/overview')),
+    refetchInterval: REFRESH,
+  })
+}
+
+/** What the containers used over the last `seconds`. */
+export function useUsage(seconds: Ref<number>, containers: Ref<string[]>) {
+  return useQuery({
+    queryKey: ['docker', 'usage', seconds, containers],
+    queryFn: () =>
+      unwrap(
+        api.GET('/api/v1/docker/usage', {
+          params: {
+            query: {
+              seconds: seconds.value,
+              containers: containers.value.length ? containers.value.join(',') : undefined,
+            },
+          },
+        }),
+      ),
+    refetchInterval: 20_000,
+  })
+}
+
+export function useContainers() {
+  return useQuery({
+    queryKey: ['docker', 'containers'],
+    queryFn: () => unwrap(api.GET('/api/v1/docker/containers')),
+    refetchInterval: REFRESH,
+  })
+}
+
+export function useImages() {
+  return useQuery({
+    queryKey: ['docker', 'images'],
+    queryFn: () => unwrap(api.GET('/api/v1/docker/images')),
+  })
+}
+
+export function useNetworks() {
+  return useQuery({
+    queryKey: ['docker', 'networks'],
+    queryFn: () => unwrap(api.GET('/api/v1/docker/networks')),
+  })
+}
+
+export function useProjects() {
+  return useQuery({
+    queryKey: ['docker', 'projects'],
+    queryFn: () => unwrap(api.GET('/api/v1/docker/projects')),
+    refetchInterval: REFRESH,
+  })
+}
+
+export function useProject(name: Ref<string>) {
+  return useQuery({
+    queryKey: ['docker', 'projects', name],
+    queryFn: () =>
+      unwrap(api.GET('/api/v1/docker/projects/{name}', { params: { path: { name: name.value } } })),
+    refetchInterval: REFRESH,
+  })
+}
+
+export function useProjectCompose(name: Ref<string>, enabled: () => boolean) {
+  return useQuery({
+    queryKey: ['docker', 'projects', name, 'compose'],
+    queryFn: () =>
+      unwrap(
+        api.GET('/api/v1/docker/projects/{name}/compose', {
+          params: { path: { name: name.value } },
+        }),
+      ),
+    enabled: computed(enabled),
+  })
+}
+
+export function usePlaces() {
+  return useQuery({
+    queryKey: ['docker', 'places'],
+    queryFn: () => unwrap(api.GET('/api/v1/docker/places')),
+  })
+}
+
+/** Lines a container or a project wrote; asked again while shown. */
+export function useLogs(kind: 'containers' | 'projects', id: Ref<string>, enabled: () => boolean) {
+  return useQuery({
+    queryKey: ['docker', kind, id, 'logs'],
+    queryFn: () =>
+      kind === 'containers'
+        ? unwrap(
+            api.GET('/api/v1/docker/containers/{id}/logs', {
+              params: { path: { id: id.value }, query: { lines: 500 } },
+            }),
+          )
+        : unwrap(
+            api.GET('/api/v1/docker/projects/{name}/logs', {
+              params: { path: { name: id.value }, query: { lines: 500 } },
+            }),
+          ),
+    enabled: computed(enabled),
+    refetchInterval: 5000,
+  })
+}
+
+/** What the Docker app did, newest first. */
+export function useActivity() {
+  return useQuery({
+    queryKey: ['docker', 'activity'],
+    queryFn: () =>
+      unwrap(
+        api.GET('/api/v1/logs/audit', { params: { query: { prefix: 'containers.', limit: 200 } } }),
+      ),
+  })
+}
+
+/** After any change: the engine's lists all may differ. */
+function useRefresh() {
+  const client = useQueryClient()
+  return () => client.invalidateQueries({ queryKey: ['docker'] })
+}
+
+export type RunAction = 'start' | 'stop' | 'restart'
+
+export function useContainerAction() {
+  const refresh = useRefresh()
+  return useMutation({
+    mutationFn: ({ id, action }: { id: string; action: RunAction | 'remove' }) =>
+      action === 'remove'
+        ? unwrap(api.DELETE('/api/v1/docker/containers/{id}', { params: { path: { id } } }))
+        : unwrap(
+            api.POST('/api/v1/docker/containers/{id}/{action}', {
+              params: { path: { id, action } },
+            }),
+          ),
+    onSettled: refresh,
+  })
+}
+
+export function useProjectAction() {
+  const refresh = useRefresh()
+  return useMutation({
+    mutationFn: ({ name, action }: { name: string; action: RunAction | 'redeploy' | 'delete' }) => {
+      const path = { params: { path: { name } } }
+      if (action === 'delete') return unwrap(api.DELETE('/api/v1/docker/projects/{name}', path))
+      if (action === 'redeploy')
+        return unwrap(api.POST('/api/v1/docker/projects/{name}/redeploy', path))
+      return unwrap(
+        api.POST('/api/v1/docker/projects/{name}/{action}', { params: { path: { name, action } } }),
+      )
+    },
+    onSettled: refresh,
+  })
+}
+
+export async function checkCompose(body: {
+  name: string
+  compose: string
+  share_id?: number | null
+  folder?: string | null
+}) {
+  return unwrap(api.POST('/api/v1/docker/compose/check', { body }))
+}
+
+export function useCreateProject() {
+  const refresh = useRefresh()
+  return useMutation({
+    mutationFn: (body: NewDockerProject) => unwrap(api.POST('/api/v1/docker/projects', { body })),
+    onSettled: refresh,
+  })
+}
+
+export function useChangeCompose() {
+  const refresh = useRefresh()
+  return useMutation({
+    mutationFn: ({ name, compose, accept }: { name: string; compose: string; accept: boolean }) =>
+      unwrap(
+        api.PUT('/api/v1/docker/projects/{name}/compose', {
+          params: { path: { name } },
+          body: { compose, accept_risks: accept },
+        }),
+      ),
+    onSettled: refresh,
+  })
+}
+
+export function usePullImage() {
+  const refresh = useRefresh()
+  return useMutation({
+    mutationFn: (reference: string) =>
+      unwrap(api.POST('/api/v1/docker/images/pull', { body: { reference } })),
+    onSettled: refresh,
+  })
+}
+
+export function useRemoveImage() {
+  const refresh = useRefresh()
+  return useMutation({
+    mutationFn: (id: string) =>
+      unwrap(api.DELETE('/api/v1/docker/images/{id}', { params: { path: { id } } })),
+    onSettled: refresh,
+  })
+}
+
+export function usePruneImages() {
+  const refresh = useRefresh()
+  return useMutation({
+    mutationFn: () => unwrap(api.POST('/api/v1/docker/images/prune')),
+    onSettled: refresh,
+  })
+}
+
+export function useCreateNetwork() {
+  const refresh = useRefresh()
+  return useMutation({
+    mutationFn: (body: { name: string; subnet?: string | null; gateway?: string | null }) =>
+      unwrap(api.POST('/api/v1/docker/networks', { body })),
+    onSettled: refresh,
+  })
+}
+
+export function useRemoveNetwork() {
+  const refresh = useRefresh()
+  return useMutation({
+    mutationFn: (name: string) =>
+      unwrap(api.DELETE('/api/v1/docker/networks/{name}', { params: { path: { name } } })),
+    onSettled: refresh,
+  })
+}
+
+export function useUpdateSettings() {
+  return useQuery({
+    queryKey: ['docker', 'updates', 'settings'],
+    queryFn: () => unwrap(api.GET('/api/v1/docker/updates/settings')),
+  })
+}
+
+export function useSetUpdateSettings() {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: (body: ImageUpdateSettings) =>
+      unwrap(api.PUT('/api/v1/docker/updates/settings', { body })),
+    onSuccess: (settings) => client.setQueryData(['docker', 'updates', 'settings'], settings),
+  })
+}
+
+/** The newest look for newer images; `null` before the first. */
+export function useUpdates() {
+  return useQuery({
+    queryKey: ['docker', 'updates', 'report'],
+    queryFn: () => unwrap(api.GET('/api/v1/docker/updates')),
+    refetchInterval: 60_000,
+  })
+}
+
+export function useCheckUpdates() {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: () => unwrap(api.POST('/api/v1/docker/updates/check')),
+    onSuccess: (report) => client.setQueryData(['docker', 'updates', 'report'], report),
+  })
+}
+
+export function useApplyUpdates() {
+  const refresh = useRefresh()
+  return useMutation({
+    mutationFn: () => unwrap(api.POST('/api/v1/docker/updates/apply')),
+    onSettled: refresh,
+  })
+}
+
+export function useDataLocation() {
+  return useQuery({
+    queryKey: ['docker', 'data'],
+    queryFn: () => unwrap(api.GET('/api/v1/docker/data')),
+  })
+}
+
+export function useMoveData() {
+  const refresh = useRefresh()
+  return useMutation({
+    mutationFn: (pool: string) => unwrap(api.POST('/api/v1/docker/data/move', { body: { pool } })),
+    onSettled: refresh,
+  })
+}
+
+/** The containers whose image has a newer one, by name. */
+export function useUpdatable() {
+  const { data } = useUpdates()
+  return computed(
+    () =>
+      new Set(
+        (data.value?.images ?? [])
+          .filter((image) => image.state === 'available')
+          .flatMap((image) => image.containers),
+      ),
+  )
+}

@@ -16,9 +16,13 @@ use crate::domain::{
 pub struct NewAccountInput {
     pub name: String,
     pub full_name: Option<String>,
+    pub description: Option<String>,
+    pub email: Option<String>,
     pub role: Role,
-    /// Initial password; the account must change it at the first login.
+    /// Initial password; the account must change it at the first login,
+    /// unless only administrators may set it.
     pub password: Secret,
+    pub password_locked: bool,
 }
 
 /// Command: an administrator creates an account.
@@ -42,7 +46,10 @@ impl CreateAccount {
         Context::require(auth, Permission::UsersManage)?;
         let name = AccountName::parse(input.name.trim())?;
         let full_name = text::full_name(input.full_name.as_deref())?;
-        let password = NewPassword::parse(input.password, &name)?;
+        let description = text::description(input.description.as_deref())?;
+        let email = text::email(input.email.as_deref())?;
+        let policy = c.ports.accounts.password_policy().await?;
+        let password = NewPassword::parse(input.password, &name, &policy)?;
 
         let _changes = c.changes.lock().await;
         let now = c.now();
@@ -55,9 +62,12 @@ impl CreateAccount {
             let new = NewAccount {
                 name: name.clone(),
                 full_name,
+                description,
+                email,
                 role: input.role,
                 password_hash,
-                password_change_required: true,
+                password_change_required: !input.password_locked,
+                password_locked: input.password_locked,
                 created_at: now,
             };
             c.ports.accounts.create(new).await?.ok_or(IdentityError::NameTaken)
@@ -82,8 +92,11 @@ impl CreateAccount {
 pub struct AccountChanges {
     /// `Some(None)` removes the full name.
     pub full_name: Option<Option<String>>,
+    pub description: Option<Option<String>>,
+    pub email: Option<Option<String>>,
     pub role: Option<Role>,
     pub disabled: Option<bool>,
+    pub password_locked: Option<bool>,
 }
 
 /// Command: an administrator changes another account's name, role or
@@ -108,13 +121,18 @@ impl UpdateAccount {
         let c = &self.context;
         Context::require(auth, Permission::UsersManage)?;
         let full_name = changes.full_name.map(|name| text::full_name(name.as_deref())).transpose()?;
+        let description = changes.description.map(|d| text::description(d.as_deref())).transpose()?;
+        let email = changes.email.map(|e| text::email(e.as_deref())).transpose()?;
 
         let _changes = c.changes.lock().await;
         let now = c.now();
         let mut account = c.ports.accounts.find_by_id(id).await?.ok_or(IdentityError::AccountNotFound)?;
         let role = changes.role.unwrap_or(account.role);
         let disabled = changes.disabled.unwrap_or(account.disabled);
-        let access_changes = role != account.role || disabled != account.disabled;
+        let password_locked = changes.password_locked.unwrap_or(account.password_locked);
+        let access_changes = role != account.role
+            || disabled != account.disabled
+            || password_locked != account.password_locked;
         if access_changes && id == auth.account.id {
             return Err(IdentityError::OwnAccount);
         }
@@ -133,6 +151,17 @@ impl UpdateAccount {
         if let Some(full_name) = full_name {
             account.full_name = full_name;
         }
+        if let Some(description) = description {
+            account.description = description;
+        }
+        if let Some(email) = email {
+            account.email = email;
+        }
+        if password_locked {
+            // It could not follow the request: only administrators set it.
+            account.password_change_required = false;
+        }
+        account.password_locked = password_locked;
         account.role = role;
         account.disabled = disabled;
         account.updated_at = now;
@@ -173,7 +202,8 @@ impl ResetPassword {
         let _changes = c.changes.lock().await;
         let now = c.now();
         let account = c.ports.accounts.find_by_id(id).await?.ok_or(IdentityError::AccountNotFound)?;
-        let password = NewPassword::parse(password, &account.name)?;
+        let policy = c.ports.accounts.password_policy().await?;
+        let password = NewPassword::parse(password, &account.name, &policy)?;
         c.ports.system.set_password(&account.name, password.secret(), request).await?;
         let hash = c.ports.hasher.hash(password.secret()).await?;
         c.ports.accounts.reset_password(id, &hash, now).await?;

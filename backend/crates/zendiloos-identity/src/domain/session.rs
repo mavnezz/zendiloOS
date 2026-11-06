@@ -85,6 +85,24 @@ impl Session {
     }
 }
 
+/// A session as administrators see it among all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionDetails {
+    pub id: SessionId,
+    pub account_id: AccountId,
+    pub client_ip: Option<IpAddr>,
+    pub user_agent: Option<String>,
+    pub created_at: Timestamp,
+    pub last_seen_at: Timestamp,
+    pub expires_at: Timestamp,
+}
+
+impl SessionDetails {
+    pub fn is_active(&self, now: Timestamp, idle_timeout: Duration) -> bool {
+        now < self.expires_at && now.duration_since(self.last_seen_at) < idle_timeout
+    }
+}
+
 /// A session that is about to be stored.
 #[derive(Debug, Clone)]
 pub struct NewSession {

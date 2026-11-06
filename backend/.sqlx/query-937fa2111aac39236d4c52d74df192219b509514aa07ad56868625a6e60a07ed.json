@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO homes (account_id, quota_bytes) VALUES (?, ?)\n             ON CONFLICT (account_id) DO UPDATE SET quota_bytes = excluded.quota_bytes",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "937fa2111aac39236d4c52d74df192219b509514aa07ad56868625a6e60a07ed"
+}

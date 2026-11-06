@@ -162,6 +162,7 @@ impl AppHost for AgentApps {
             let choice = AppShareChoice {
                 volume: volume_number(share.volume)?,
                 name: ShareName::parse(&share.name).map_err(|_| invalid("share name"))?,
+                folder: AppFolder::parse(&share.folder).map_err(|_| invalid("folder in a share"))?,
             };
             agent_values.shares.insert(id.clone(), choice);
         }
@@ -279,7 +280,10 @@ mod tests {
         let volume = AppVolume { pool: "tank".into(), number: 1 };
         apps.prepare("demo", &volume, &context).await.unwrap();
         let values = HostValues {
-            shares: BTreeMap::from([("media".into(), HostShare { volume: 1, name: "family".into() })]),
+            shares: BTreeMap::from([(
+                "media".into(),
+                HostShare { volume: 1, name: "family".into(), folder: "Films".into() },
+            )]),
             ports: BTreeMap::from([("web".into(), 8080)]),
             settings: BTreeMap::from([("PASSWORD".into(), "s3cret".into())]),
         };

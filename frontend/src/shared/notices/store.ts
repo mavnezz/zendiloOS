@@ -20,9 +20,15 @@ export function wording(notification: ServerNotification): { title: string; body
   }
   if (!te(`${key}.title`)) return { title: notification.code }
   const count = Number(params.errors ?? 0)
+  let body = `${key}.body`
+  if (notification.code === 'updates_available' && !params.version) body = `${key}.bodyDebian`
+  if (notification.code === 'updates_installed') {
+    if (params.zfs_ready === 'false') body = `${key}.bodyZfs`
+    else if (params.restart === 'true') body = `${key}.bodyRestart`
+  }
   return {
     title: t(`${key}.title`, params),
-    body: te(`${key}.body`) ? t(`${key}.body`, params, count) : undefined,
+    body: te(body) ? t(body, params, count) : undefined,
   }
 }
 

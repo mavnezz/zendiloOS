@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM blocked_addresses WHERE until IS NOT NULL AND until <= ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "38735d3f92fb560dfcabe5a6c51a171e350da654cc6c4eb39ce8011ecfa6b20e"
+}

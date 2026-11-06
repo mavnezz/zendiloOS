@@ -9,8 +9,8 @@ use zendiloos_agent_proto::{
 use zendiloos_kernel::{PortError, RequestContext, Timestamp};
 use zendiloos_sharing::application::ports::{HostError, ShareHost, Volume, Volumes};
 use zendiloos_sharing::domain::{
-    Access, Compression, Frequency, Principal, RecordSize, ShareName, ShareSettings, ShareUsage,
-    SharingConfig, Snapshot, is_label,
+    Compression, Frequency, Permission, Principal, RecordSize, ShareName, ShareSettings, ShareUsage,
+    SharingConfig, SmbEncryption, SmbProtocol, SmbSigning, Snapshot, is_label,
 };
 use zendiloos_storage::application::ports::ZfsSource;
 
@@ -71,10 +71,17 @@ fn principal(principal: &Principal) -> Result<proto::Principal, HostError> {
     })
 }
 
-fn access(rules: &[(Principal, Access)]) -> Result<Vec<ShareAccess>, HostError> {
+fn access(rules: &[(Principal, Permission)]) -> Result<Vec<ShareAccess>, HostError> {
     rules
         .iter()
-        .map(|(p, a)| Ok(ShareAccess { principal: principal(p)?, write: *a == Access::ReadWrite }))
+        .map(|(p, permission)| {
+            let permission = match permission {
+                Permission::Deny => proto::SharePermission::Deny,
+                Permission::Read => proto::SharePermission::Read,
+                Permission::ReadWrite => proto::SharePermission::ReadWrite,
+            };
+            Ok(ShareAccess { principal: principal(p)?, permission })
+        })
         .collect()
 }
 
@@ -279,6 +286,7 @@ impl ShareHost for AgentSharing {
                     recycle_bin: spec.recycle_bin,
                     // What Samba could misread is dropped from the text.
                     comment: spec.comment.as_deref().and_then(ShareComment::lossy),
+                    time_machine: spec.time_machine,
                 })
             })
             .collect::<Result<_, HostError>>()?;
@@ -297,14 +305,90 @@ impl ShareHost for AgentSharing {
                 Ok(NfsExport { name: share(&spec.name)?, volume: volume(spec.volume)?, clients })
             })
             .collect::<Result<_, HostError>>()?;
-        change(self.system.as_ref(), Request::ApplySharing { smb, nfs }, context).await
+        let services = proto::FileServices {
+            smb: config.services.smb,
+            nfs: config.services.nfs,
+            workgroup: proto::Workgroup::parse(&config.services.workgroup)
+                .map_err(|_| invalid("workgroup"))?,
+            smb_min_protocol: match config.services.smb_min_protocol {
+                SmbProtocol::Smb2 => proto::SmbProtocol::Smb2,
+                SmbProtocol::Smb2_1 => proto::SmbProtocol::Smb2_1,
+                SmbProtocol::Smb3 => proto::SmbProtocol::Smb3,
+            },
+            smb_encryption: match config.services.smb_encryption {
+                SmbEncryption::Default => proto::SmbEncryption::Default,
+                SmbEncryption::Required => proto::SmbEncryption::Required,
+                SmbEncryption::Off => proto::SmbEncryption::Off,
+            },
+            smb_signing: match config.services.smb_signing {
+                SmbSigning::Default => proto::SmbSigning::Default,
+                SmbSigning::Mandatory => proto::SmbSigning::Mandatory,
+                SmbSigning::Disabled => proto::SmbSigning::Disabled,
+            },
+            hide_unreadable: config.services.hide_unreadable,
+            multichannel: config.services.multichannel,
+            oplocks: config.services.oplocks,
+            leases: config.services.leases,
+            durable_handles: config.services.durable_handles,
+            mac_compat: config.services.mac_compat,
+            follow_symlinks: config.services.follow_symlinks,
+            veto_files: config
+                .services
+                .veto_files
+                .as_deref()
+                .map(|pattern| proto::VetoFiles::parse(pattern).map_err(|_| invalid("pattern of files")))
+                .transpose()?,
+            delete_veto_files: config.services.delete_veto_files,
+            wsdd: config.services.wsdd,
+            bonjour: config.services.bonjour,
+        };
+        let homes = match &config.homes {
+            Some(homes) => Some(proto::HomesShare {
+                volume: volume(homes.volume)?,
+                users: homes
+                    .users
+                    .iter()
+                    .map(|name| UserName::parse(name).map_err(|_| invalid("user name")))
+                    .collect::<Result<_, _>>()?,
+            }),
+            None => None,
+        };
+        change(self.system.as_ref(), Request::ApplySharing { smb, nfs, services, homes }, context).await
+    }
+
+    async fn prepare_homes(
+        &self,
+        pool_name: &str,
+        number: u16,
+        context: &RequestContext,
+    ) -> Result<(), HostError> {
+        let request = Request::PrepareHomes { pool: pool(pool_name)?, volume: volume(number)? };
+        change(self.system.as_ref(), request, context).await
+    }
+
+    async fn set_home(
+        &self,
+        pool_name: &str,
+        number: u16,
+        user: &str,
+        quota_bytes: Option<u64>,
+        context: &RequestContext,
+    ) -> Result<(), HostError> {
+        let user = UserName::parse(user).map_err(|_| invalid("user name"))?;
+        // The folder through the files agent, the only one that writes to
+        // the volumes; the quota through the system agent, which runs zfs.
+        let make = Request::MakeHome { volume: volume(number)?, user: user.clone() };
+        change(self.files.as_ref(), make, context).await?;
+        let quota =
+            Request::SetHomeQuota { pool: pool(pool_name)?, volume: volume(number)?, user, quota_bytes };
+        change(self.system.as_ref(), quota, context).await
     }
 
     async fn set_access(
         &self,
         number: u16,
         name: &ShareName,
-        rules: &[(Principal, Access)],
+        rules: &[(Principal, Permission)],
         removed: &[Principal],
         recursive: bool,
         context: &RequestContext,

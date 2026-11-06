@@ -12,7 +12,8 @@ use std::time::Duration;
 
 use rustix::fs::{CWD, Mode, OFlags, openat};
 use zendiloos_agent_proto::{
-    NfsExport, Principal, Response, SNAPSHOT_LABEL_FORMAT, ShareAccess, ShareName, SmbShare, VolumeNumber,
+    FileServices, HOMES_DIRECTORY, HomesShare, NfsExport, Principal, Response, SNAPSHOT_LABEL_FORMAT,
+    ShareAccess, ShareName, SharePermission, SmbShare, UserName, VolumeNumber,
 };
 use zendiloos_exec::{Limits, Program};
 
@@ -27,6 +28,11 @@ const TREE_LIMITS: Limits = Limits { timeout: Duration::from_secs(6 * 3600), max
 
 pub use zendiloos_fileops::RECYCLE_DIRECTORY;
 const HEADER: &str = "# Written by zendiloOS. Changes here are overwritten; use the web interface.\n";
+/// WS-Discovery, so Windows lists the NAS; recommended, not required.
+const WSDD: &str = "wsdd2.service";
+/// Bonjour, so Macs find the NAS and its Time Machine share; recommended too.
+const AVAHI: &str = "avahi-daemon.service";
+const AVAHI_SOCKET: &str = "avahi-daemon.socket";
 
 #[derive(Debug)]
 pub(crate) struct Sharing {
@@ -53,14 +59,60 @@ fn acl_entry(principal: &Principal) -> String {
     }
 }
 
-/// `smb.conf` sections for `shares`. A share nobody may use is left out:
-/// Samba would read an empty `valid users` as "everybody".
-pub fn samba_config(shares: &[SmbShare]) -> String {
+/// Samba's settings for all shares, then a section for each share. A
+/// share nobody may use is left out: Samba would read an empty `valid
+/// users` as "everybody". Denied users and groups are `invalid users`.
+///
+/// `/etc/samba/smb.conf` includes the file at the end of `[global]`: the
+/// lines before the first section are global settings, and they win over
+/// the same ones above the include.
+pub fn samba_config(shares: &[SmbShare], services: &FileServices, homes: Option<&HomesShare>) -> String {
     let mut text = HEADER.to_owned();
-    for share in shares.iter().filter(|share| !share.access.is_empty()) {
-        let valid: Vec<String> = share.access.iter().map(|a| principal(&a.principal)).collect();
+    let yes = |on: bool| if on { "yes" } else { "no" };
+    let _ = writeln!(
+        text,
+        "workgroup = {}\nserver min protocol = {}\nserver smb encrypt = {}\nserver signing = {}\n\
+         server multi channel support = {}\nmulticast dns register = {}",
+        services.workgroup.as_str(),
+        services.smb_min_protocol.samba_name(),
+        services.smb_encryption.samba_name(),
+        services.smb_signing.samba_name(),
+        yes(services.multichannel),
+        yes(services.bonjour),
+    );
+    // Share settings here are the defaults of every share.
+    let _ = writeln!(
+        text,
+        "access based share enum = {}\noplocks = {}\nsmb2 leases = {}\nfollow symlinks = {}",
+        yes(services.hide_unreadable),
+        yes(services.oplocks),
+        yes(services.oplocks && services.leases),
+        yes(services.follow_symlinks),
+    );
+    if services.durable_handles {
+        // Durable handles need Samba's locks kept from the kernel; they then
+        // do not hold against NFS or the file manager.
+        text.push_str("durable handles = yes\nkernel share modes = no\nposix locking = no\n");
+    } else {
+        // Samba's default is yes; said here, so off is off.
+        text.push_str("durable handles = no\n");
+    }
+    if let Some(veto) = &services.veto_files {
+        let _ = writeln!(
+            text,
+            "veto files = {}\ndelete veto files = {}",
+            veto.as_str(),
+            yes(services.delete_veto_files)
+        );
+    }
+    let mac = if services.mac_compat { "catia fruit " } else { "" };
+    for share in shares.iter().filter(|share| share.access.iter().any(|a| !a.denied())) {
+        let valid: Vec<String> =
+            share.access.iter().filter(|a| !a.denied()).map(|a| principal(&a.principal)).collect();
         let writers: Vec<String> =
-            share.access.iter().filter(|a| a.write).map(|a| principal(&a.principal)).collect();
+            share.access.iter().filter(|a| a.writes()).map(|a| principal(&a.principal)).collect();
+        let invalid: Vec<String> =
+            share.access.iter().filter(|a| a.denied()).map(|a| principal(&a.principal)).collect();
         let _ = write!(
             text,
             "\n[{name}]\n   path = /volume{volume}/{name}\n   valid users = {valid}\n",
@@ -68,6 +120,10 @@ pub fn samba_config(shares: &[SmbShare]) -> String {
             volume = share.volume.get(),
             valid = valid.join(" "),
         );
+        // Wins over `valid users`, also for members of a group listed there.
+        if !invalid.is_empty() {
+            let _ = writeln!(text, "   invalid users = {}", invalid.join(" "));
+        }
         if let Some(comment) = &share.comment {
             let _ = writeln!(text, "   comment = {}", comment.as_str());
         }
@@ -82,7 +138,7 @@ pub fn samba_config(shares: &[SmbShare]) -> String {
             writeln!(text, "   shadow:snapdir = .zfs/snapshot\n   shadow:format = {SNAPSHOT_LABEL_FORMAT}");
         text.push_str("   shadow:localtime = no\n   shadow:sort = desc\n");
         if share.recycle_bin {
-            text.push_str("   vfs objects = shadow_copy2 catia fruit streams_xattr recycle\n");
+            let _ = writeln!(text, "   vfs objects = shadow_copy2 {mac}streams_xattr recycle");
             let _ = writeln!(text, "   recycle:repository = {RECYCLE_DIRECTORY}/%U");
             // Each user's bin is private. `.recycle` itself exists with the
             // share's permissions (see `set_access`): created by Samba, it
@@ -98,12 +154,51 @@ pub fn samba_config(shares: &[SmbShare]) -> String {
             // makes it one pattern that matches nothing.
             text.push_str("   recycle:exclude = *.tmp, *.temp, ~$*, .~lock.*#, *.swp\n");
         } else {
-            text.push_str("   vfs objects = shadow_copy2 catia fruit streams_xattr\n");
+            let _ = writeln!(text, "   vfs objects = shadow_copy2 {mac}streams_xattr");
         }
         // Hidden, not vetoed: users restore their files from it.
         let _ = writeln!(text, "   hide files = /{RECYCLE_DIRECTORY}/");
+        if let Some(limit) = share.time_machine {
+            text.push_str("   fruit:time machine = yes\n");
+            if let Some(bytes) = limit {
+                let _ = writeln!(text, "   fruit:time machine max size = {}M", bytes / (1024 * 1024));
+            }
+        }
+    }
+    if let Some(homes) = homes.filter(|homes| !homes.users.is_empty()) {
+        let users: Vec<&str> = homes.users.iter().map(UserName::as_str).collect();
+        // `%U` is the user who connected: each one sees their own folder.
+        let _ = write!(
+            text,
+            "\n[home]\n   comment = Personal folder\n   path = /volume{volume}/{HOMES_DIRECTORY}/%U\n   \
+             valid users = {users}\n   read only = no\n   browseable = yes\n   create mask = 0600\n   \
+             directory mask = 0700\n   vfs objects = {mac}streams_xattr recycle\n   \
+             recycle:repository = {RECYCLE_DIRECTORY}/%U\n   recycle:keeptree = yes\n   \
+             recycle:versions = yes\n   recycle:touch = yes\n   recycle:directory_mode = 0700\n   \
+             recycle:exclude = *.tmp, *.temp, ~$*, .~lock.*#, *.swp\n   hide files = /{RECYCLE_DIRECTORY}/\n",
+            volume = homes.volume.get(),
+            users = users.join(" "),
+        );
     }
     text
+}
+
+/// What smbd announces over Bonjour in a configuration it wrote: whether
+/// it does, and its Time Machine shares.
+fn announced(config: &str) -> (bool, Vec<&str>) {
+    let mut section = "";
+    let mut machines = Vec::new();
+    let mut register = false;
+    for line in config.lines().map(str::trim) {
+        if let Some(name) = line.strip_prefix('[').and_then(|rest| rest.strip_suffix(']')) {
+            section = name;
+        } else if line == "fruit:time machine = yes" {
+            machines.push(section);
+        } else if line == "multicast dns register = yes" {
+            register = true;
+        }
+    }
+    (register, machines)
 }
 
 /// `/etc/exports` lines for `exports`; root is squashed everywhere.
@@ -146,37 +241,135 @@ impl Sharing {
         })
     }
 
-    /// Writes both configurations; Samba's only if `testparm` accepts it.
+    /// Writes both configurations, Samba's only if `testparm` accepts it,
+    /// and has the servers that are on run with them; those that are off
+    /// stop and stay off after a restart.
     pub(crate) async fn apply(
         &self,
         smb: &[SmbShare],
         nfs: &[NfsExport],
+        services: &FileServices,
+        homes: Option<&HomesShare>,
     ) -> Result<Response, OperationError> {
         let _serial = self.serial.lock().await;
-        let samba = samba_config(smb);
+        if !services.mac_compat && smb.iter().any(|share| share.time_machine.is_some()) {
+            return Err(OperationError::Refused("Time Machine needs the macOS compatibility of SMB".into()));
+        }
+        if homes.is_some() && smb.iter().any(|share| share.name.as_str() == "home") {
+            return Err(OperationError::Refused(
+                "a share is called home, the name of the personal folders' share".into(),
+            ));
+        }
+        let samba = samba_config(smb, services, homes);
         let candidate = self.paths.samba_config.with_extension("check");
         write_atomically(&candidate, &samba)?;
         let checked = run(&self.testparm, &["--suppress-prompt", &candidate.to_string_lossy()]).await;
         let _ = fs::remove_file(&candidate);
         checked?;
+        let before = fs::read_to_string(&self.paths.samba_config).unwrap_or_default();
         write_atomically(&self.paths.samba_config, &samba)?;
-        run(&self.systemctl, &["try-reload-or-restart", "smbd.service"]).await?;
+        if services.smb {
+            run(&self.systemctl, &["enable", "--now", "smbd.service"]).await?;
+            // smbd announces itself and its Time Machine shares over Bonjour
+            // when it starts, not when it reloads: it restarts when that
+            // changes, which ends open connections; otherwise it reloads.
+            let verb =
+                if announced(&before) == announced(&samba) { "try-reload-or-restart" } else { "try-restart" };
+            run(&self.systemctl, &[verb, "smbd.service"]).await?;
+        } else {
+            run(&self.systemctl, &["disable", "--now", "smbd.service"]).await?;
+        }
+        if services.smb && services.wsdd {
+            self.optional(&["enable", "--now", WSDD]).await;
+        } else {
+            self.optional(&["disable", "--now", WSDD]).await;
+        }
+        if services.bonjour {
+            self.optional(&["enable", "--now", AVAHI_SOCKET, AVAHI]).await;
+        } else {
+            self.optional(&["disable", "--now", AVAHI, AVAHI_SOCKET]).await;
+        }
 
         let exports = nfs_exports(nfs);
+        let exported = nfs.iter().any(|export| !export.clients.is_empty());
         let nfs_installed = self.exportfs.path().exists();
-        if !nfs_installed && nfs.iter().any(|export| !export.clients.is_empty()) {
+        if !nfs_installed && services.nfs && exported {
             return Err(OperationError::Setup("the NFS server is not installed".to_owned()));
         }
         write_atomically(&self.paths.nfs_exports, &exports)?;
         if nfs_installed {
             // Through systemd: the kernel's NFS server keeps its export
             // cache per network namespace, and this agent has its own.
-            let reload = if nfs.iter().any(|export| !export.clients.is_empty()) {
-                "reload-or-restart"
+            if services.nfs {
+                run(&self.systemctl, &["enable", "--now", "nfs-server.service"]).await?;
+                run(&self.systemctl, &["reload-or-restart", "nfs-server.service"]).await?;
             } else {
-                "try-reload-or-restart"
-            };
-            run(&self.systemctl, &[reload, "nfs-server.service"]).await?;
+                run(&self.systemctl, &["disable", "--now", "nfs-server.service"]).await?;
+            }
+        }
+        Ok(Response::Done)
+    }
+
+    /// For a service that may not be installed: a failure is only noted.
+    async fn optional(&self, args: &[&str]) {
+        if let Err(error) = run(&self.systemctl, args).await {
+            tracing::info!(%error, "an optional service was not changed");
+        }
+    }
+
+    /// Makes `user`'s personal folder if missing: owner the user, mode
+    /// 0700. Only in the homes' dataset, mounted at `@homes`, which only
+    /// root may write to, so nothing can be swapped in meanwhile. Run by
+    /// the files agent, the one that may write to the volumes.
+    pub(crate) fn make_home(
+        &self,
+        volume: VolumeNumber,
+        user: &UserName,
+    ) -> Result<Response, OperationError> {
+        let volume_directory = self.paths.volumes.join(format!("volume{}", volume.get()));
+        let homes = volume_directory.join(HOMES_DIRECTORY);
+        let (homes_meta, volume_meta) = match (fs::metadata(&homes), fs::metadata(&volume_directory)) {
+            (Ok(homes), Ok(volume)) => (homes, volume),
+            _ => {
+                return Err(OperationError::Refused(
+                    "the personal folders are not set up on this volume".into(),
+                ));
+            }
+        };
+        if homes_meta.dev() == volume_meta.dev() {
+            return Err(OperationError::Refused("the personal folders' dataset is not mounted".into()));
+        }
+        // Users reach their own folder through it; nobody lists the others,
+        // and only root makes folders in it.
+        std::os::unix::fs::chown(&homes, Some(0), Some(0))
+            .map_err(|e| OperationError::Write(homes.clone(), e))?;
+        fs::set_permissions(&homes, std::os::unix::fs::PermissionsExt::from_mode(0o711))
+            .map_err(|e| OperationError::Write(homes.clone(), e))?;
+        let read =
+            |path: &Path| fs::read_to_string(path).map_err(|e| OperationError::Read(path.to_owned(), e));
+        let (passwd, group) = (read(&self.accounts.passwd)?, read(&self.accounts.group)?);
+        let (uid, gid) = crate::passwd::lookup(&passwd, user.as_str())
+            .ok_or_else(|| OperationError::NotManaged(user.as_str().to_owned()))?;
+        let managed = (crate::accounts::ID_MIN..=crate::accounts::ID_MAX).contains(&uid)
+            && crate::passwd::group_id(&group, crate::accounts::USERS_GROUP) == Some(gid);
+        if !managed {
+            return Err(OperationError::NotManaged(user.as_str().to_owned()));
+        }
+        let home = homes.join(user.as_str());
+        match fs::create_dir(&home) {
+            Ok(()) => {
+                std::os::unix::fs::chown(&home, Some(uid), Some(gid))
+                    .map_err(|e| OperationError::Write(home.clone(), e))?;
+                fs::set_permissions(&home, std::os::unix::fs::PermissionsExt::from_mode(0o700))
+                    .map_err(|e| OperationError::Write(home.clone(), e))?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let meta = fs::symlink_metadata(&home).map_err(|e| OperationError::Read(home.clone(), e))?;
+                if !meta.is_dir() {
+                    return Err(OperationError::Refused(format!("{} is not a folder", home.display())));
+                }
+            }
+            Err(error) => return Err(OperationError::Write(home, error)),
         }
         Ok(Response::Done)
     }
@@ -215,11 +408,12 @@ impl Sharing {
             access
                 .iter()
                 .map(|a| {
-                    let permissions = match (a.write, files) {
-                        (true, true) => "rwX",
-                        (false, true) => "rX",
-                        (true, false) => "rwx",
-                        (false, false) => "r-x",
+                    let permissions = match (a.permission, files) {
+                        (SharePermission::Deny, _) => "---",
+                        (SharePermission::ReadWrite, true) => "rwX",
+                        (SharePermission::Read, true) => "rX",
+                        (SharePermission::ReadWrite, false) => "rwx",
+                        (SharePermission::Read, false) => "r-x",
                     };
                     let prefix = if default { "d:" } else { "" };
                     format!("{prefix}{}:{permissions}", acl_entry(&a.principal))
@@ -296,7 +490,7 @@ impl Sharing {
         };
         let (passwd, group) = (read(&self.accounts.passwd)?, read(&self.accounts.group)?);
         let mut names: Vec<String> = Vec::new();
-        for entry in access.iter().filter(|a| a.write) {
+        for entry in access.iter().filter(|a| a.writes()) {
             match &entry.principal {
                 Principal::User(user) => names.push(user.as_str().to_owned()),
                 Principal::Group(name) => {
@@ -307,6 +501,16 @@ impl Sharing {
         }
         names.sort();
         names.dedup();
+        // A denied user gets no bin, even as a member of a group that writes.
+        let denied: Vec<&str> = access
+            .iter()
+            .filter(|a| a.denied())
+            .filter_map(|a| match &a.principal {
+                Principal::User(user) => Some(user.as_str()),
+                Principal::Group(_) => None,
+            })
+            .collect();
+        names.retain(|name| !denied.contains(&name.as_str()));
         let users_group = crate::passwd::group_id(&group, crate::accounts::USERS_GROUP);
         Ok(names
             .into_iter()
@@ -390,9 +594,34 @@ fn tree_commands(entries: &[String], removals: &[String], modify: &[String]) -> 
 
 #[cfg(test)]
 mod tests {
-    use zendiloos_agent_proto::{GroupName, Network, NfsClient, ShareComment, UserName};
+    use zendiloos_agent_proto::{
+        GroupName, Network, NfsClient, ShareComment, SmbProtocol, UserName, Workgroup,
+    };
 
     use super::*;
+
+    /// SMB on, NFS off, everything else as a fresh install has it.
+    fn base_services() -> FileServices {
+        FileServices {
+            smb: true,
+            nfs: false,
+            workgroup: Workgroup::parse("WORKGROUP").unwrap(),
+            smb_min_protocol: SmbProtocol::Smb2_1,
+            smb_encryption: zendiloos_agent_proto::SmbEncryption::Default,
+            smb_signing: zendiloos_agent_proto::SmbSigning::Default,
+            hide_unreadable: true,
+            multichannel: true,
+            oplocks: true,
+            leases: true,
+            durable_handles: false,
+            mac_compat: true,
+            follow_symlinks: true,
+            veto_files: None,
+            delete_veto_files: false,
+            wsdd: true,
+            bonjour: true,
+        }
+    }
 
     #[test]
     fn each_writer_gets_a_private_bin_and_nothing_else_takes_its_name() {
@@ -418,7 +647,8 @@ mod tests {
     }
 
     fn access(principal: Principal, write: bool) -> ShareAccess {
-        ShareAccess { principal, write }
+        let permission = if write { SharePermission::ReadWrite } else { SharePermission::Read };
+        ShareAccess { principal, permission }
     }
 
     #[test]
@@ -470,6 +700,7 @@ mod tests {
                 ],
                 recycle_bin: true,
                 comment: Some(ShareComment::parse("Family photos").unwrap()),
+                time_machine: None,
             },
             SmbShare {
                 name: ShareName::parse("nobody").unwrap(),
@@ -477,9 +708,22 @@ mod tests {
                 access: vec![],
                 recycle_bin: false,
                 comment: None,
+                time_machine: None,
             },
         ];
-        let text = samba_config(&shares);
+        let services = FileServices {
+            smb: true,
+            nfs: false,
+            workgroup: Workgroup::parse("HOME").unwrap(),
+            smb_min_protocol: SmbProtocol::Smb3,
+            ..base_services()
+        };
+        let text = samba_config(&shares, &services, None);
+        let globals = &text[..text.find('[').unwrap()];
+        assert!(
+            globals.contains("use the web interface.\nworkgroup = HOME\nserver min protocol = SMB3\n"),
+            "global settings come before the first section: {text}"
+        );
         assert!(
             text.contains(
                 "[photos]\n   path = /volume2/photos\n   valid users = @family guest-bob\n   comment = Family photos\n"
@@ -492,6 +736,125 @@ mod tests {
         assert!(text.contains("shadow:format = zdl-%Y-%m-%d_%H.%M.%S\n"), "{text}");
         assert!(text.contains("recycle:exclude = *.tmp, *.temp, ~$*, .~lock.*#, *.swp\n"), "{text}");
         assert!(!text.contains("[nobody]"), "a share without access is not offered: {text}");
+    }
+
+    #[test]
+    fn denied_users_and_groups_are_invalid_users_and_a_share_only_denying_is_not_offered() {
+        let user = |name: &str| Principal::User(UserName::parse(name).unwrap());
+        let group = |name: &str| Principal::Group(GroupName::parse(name).unwrap());
+        let rule = |principal, permission| ShareAccess { principal, permission };
+        let services = FileServices {
+            smb: true,
+            nfs: false,
+            workgroup: Workgroup::parse("WORKGROUP").unwrap(),
+            smb_min_protocol: SmbProtocol::Smb2_1,
+            ..base_services()
+        };
+        let shares = [
+            SmbShare {
+                name: ShareName::parse("photos").unwrap(),
+                volume: VolumeNumber::new(1).unwrap(),
+                access: vec![
+                    rule(group("family"), SharePermission::ReadWrite),
+                    rule(user("guest-bob"), SharePermission::Deny),
+                    rule(group("kids"), SharePermission::Deny),
+                ],
+                recycle_bin: false,
+                comment: None,
+                time_machine: None,
+            },
+            SmbShare {
+                name: ShareName::parse("closed").unwrap(),
+                volume: VolumeNumber::new(1).unwrap(),
+                access: vec![rule(group("kids"), SharePermission::Deny)],
+                recycle_bin: false,
+                comment: None,
+                time_machine: None,
+            },
+        ];
+
+        let text = samba_config(&shares, &services, None);
+
+        assert!(text.contains("   valid users = @family\n   invalid users = guest-bob @kids\n"), "{text}");
+        assert!(text.contains("   write list = @family\n"), "{text}");
+        assert!(!text.contains("[closed]"), "nobody may use it: {text}");
+    }
+
+    #[test]
+    fn options_become_defaults_of_every_share_and_time_machine_one_share_s() {
+        let services = FileServices {
+            smb_encryption: zendiloos_agent_proto::SmbEncryption::Required,
+            smb_signing: zendiloos_agent_proto::SmbSigning::Mandatory,
+            hide_unreadable: false,
+            oplocks: false,
+            durable_handles: true,
+            veto_files: Some(zendiloos_agent_proto::VetoFiles::parse("/*.tmp/Thumbs.db/").unwrap()),
+            delete_veto_files: true,
+            bonjour: false,
+            ..base_services()
+        };
+        let backups = SmbShare {
+            name: ShareName::parse("backups").unwrap(),
+            volume: VolumeNumber::new(1).unwrap(),
+            access: vec![ShareAccess {
+                principal: Principal::User(UserName::parse("anna").unwrap()),
+                permission: SharePermission::ReadWrite,
+            }],
+            recycle_bin: false,
+            comment: None,
+            time_machine: Some(Some(500 << 30)),
+        };
+
+        let text = samba_config(std::slice::from_ref(&backups), &services, None);
+
+        for line in [
+            "server smb encrypt = required\n",
+            "server signing = mandatory\n",
+            "multicast dns register = no\n",
+            "access based share enum = no\n",
+            "oplocks = no\nsmb2 leases = no\n",
+            "durable handles = yes\nkernel share modes = no\nposix locking = no\n",
+            "veto files = /*.tmp/Thumbs.db/\ndelete veto files = yes\n",
+            "   vfs objects = shadow_copy2 catia fruit streams_xattr\n",
+            "   fruit:time machine = yes\n   fruit:time machine max size = 512000M\n",
+        ] {
+            assert!(text.contains(line), "{line:?} missing: {text}");
+        }
+        let windows_only = FileServices { mac_compat: false, ..base_services() };
+        let text = samba_config(&[SmbShare { time_machine: None, ..backups }], &windows_only, None);
+        assert!(text.contains("   vfs objects = shadow_copy2 streams_xattr\n"), "{text}");
+    }
+
+    #[test]
+    fn a_new_time_machine_share_is_a_new_announcement() {
+        let plain = "multicast dns register = yes\n\n[photos]\n   path = /volume1/photos\n";
+        let machine = format!("{plain}\n[backups]\n   fruit:time machine = yes\n");
+        assert_eq!(announced(plain), announced(&plain.replace("photos\n", "pictures\n")));
+        assert_ne!(announced(plain), announced(&machine));
+        assert_ne!(announced(plain), announced(&plain.replace("register = yes", "register = no")));
+    }
+
+    #[test]
+    fn the_home_share_shows_each_user_their_own_folder() {
+        let services = FileServices {
+            smb: true,
+            nfs: false,
+            workgroup: Workgroup::parse("WORKGROUP").unwrap(),
+            smb_min_protocol: SmbProtocol::Smb2_1,
+            ..base_services()
+        };
+        let homes = HomesShare {
+            volume: VolumeNumber::new(2).unwrap(),
+            users: vec![UserName::parse("anna").unwrap(), UserName::parse("ben").unwrap()],
+        };
+
+        let text = samba_config(&[], &services, Some(&homes));
+
+        assert!(text.contains("[home]\n"), "{text}");
+        assert!(text.contains("   path = /volume2/@homes/%U\n   valid users = anna ben\n"), "{text}");
+        assert!(text.contains("   create mask = 0600\n   directory mask = 0700\n"), "{text}");
+        let nobody = HomesShare { users: vec![], ..homes };
+        assert!(!samba_config(&[], &services, Some(&nobody)).contains("[home]"));
     }
 
     #[test]

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO system_update_settings (id, channel, check_daily) VALUES (1, ?, ?)\n             ON CONFLICT (id) DO UPDATE SET channel = excluded.channel, check_daily = excluded.check_daily",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "79bf5f86bb7262024d0ab484a3ca036dc498466518f0ff1fd5da6e6e58a203f7"
+}

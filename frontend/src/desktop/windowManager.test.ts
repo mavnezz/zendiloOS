@@ -6,8 +6,10 @@ import {
   emptyDesktop,
   focusWindow,
   MIN_VISIBLE,
+  minimizeAll,
   minimizeWindow,
   moveWindow,
+  navigateWindow,
   openWindow,
   resizeWindow,
   restoreDesktop,
@@ -28,6 +30,25 @@ function find(state: ReturnType<typeof withWindows>, appId: string) {
 }
 
 describe('the window manager', () => {
+  it('opens an app on a page and keeps the page with its window', () => {
+    let state = openWindow(emptyDesktop, 'settings', size, screen, 'account')
+    expect(state.windows[0]?.section).toBe('account')
+    state = navigateWindow(state, 'settings', 'network')
+    expect(state.windows[0]?.section).toBe('network')
+    state = openWindow(state, 'settings', size, screen, 'device')
+    expect(state.windows).toHaveLength(1)
+    expect(state.windows[0]?.section).toBe('device')
+    expect(
+      restoreDesktop(JSON.parse(JSON.stringify(state)), new Set(['settings'])).windows[0]?.section,
+    ).toBe('device')
+  })
+
+  it('shows the desktop by putting every window away', () => {
+    let state = openWindow(emptyDesktop, 'files', size, screen)
+    state = openWindow(state, 'logs', size, screen)
+    expect(minimizeAll(state).windows.every((window) => window.minimized)).toBe(true)
+  })
+
   it('opens apps cascaded, each in front of the previous', () => {
     const state = withWindows('dashboard', 'settings')
     const [first, second] = state.windows

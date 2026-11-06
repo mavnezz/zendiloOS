@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 use zendiloos_identity::application::ports::AccountRepository;
-use zendiloos_identity::domain::{Account, AccountId, AccountName, NewAccount, PasswordHash, Role};
+use zendiloos_identity::domain::{
+    Account, AccountId, AccountName, NewAccount, PasswordHash, PasswordPolicy, Role,
+};
 use zendiloos_kernel::{PortError, Timestamp};
 
 use super::Database;
@@ -25,9 +27,13 @@ struct AccountRow {
     id: i64,
     name: String,
     full_name: Option<String>,
+    description: Option<String>,
+    email: Option<String>,
     role: String,
     password_hash: String,
     password_change_required: bool,
+    password_locked: bool,
+    password_changed_at: i64,
     disabled: bool,
     created_at: i64,
     updated_at: i64,
@@ -44,9 +50,13 @@ impl TryFrom<AccountRow> for Account {
             id: AccountId::new(row.id),
             name,
             full_name: row.full_name,
+            description: row.description,
+            email: row.email,
             role,
             password_hash: PasswordHash::new(row.password_hash),
             password_change_required: row.password_change_required,
+            password_locked: row.password_locked,
+            password_changed_at: Timestamp::from_unix_seconds(row.password_changed_at),
             disabled: row.disabled,
             created_at: Timestamp::from_unix_seconds(row.created_at),
             updated_at: Timestamp::from_unix_seconds(row.updated_at),
@@ -69,8 +79,9 @@ impl AccountRepository for SqliteAccounts {
         let id = id.get();
         sqlx::query_as!(
             AccountRow,
-            r#"SELECT id, name, full_name, role, password_hash,
+            r#"SELECT id, name, full_name, description, email, role, password_hash,
                       password_change_required AS "password_change_required: bool",
+                      password_locked AS "password_locked: bool", password_changed_at,
                       disabled AS "disabled: bool", created_at, updated_at
                FROM accounts WHERE id = ?"#,
             id
@@ -86,8 +97,9 @@ impl AccountRepository for SqliteAccounts {
         let name = name.as_str();
         sqlx::query_as!(
             AccountRow,
-            r#"SELECT id, name, full_name, role, password_hash,
+            r#"SELECT id, name, full_name, description, email, role, password_hash,
                       password_change_required AS "password_change_required: bool",
+                      password_locked AS "password_locked: bool", password_changed_at,
                       disabled AS "disabled: bool", created_at, updated_at
                FROM accounts WHERE name = ?"#,
             name
@@ -107,32 +119,26 @@ impl AccountRepository for SqliteAccounts {
         // with a concurrent setup.
         let id = sqlx::query_scalar!(
             r#"INSERT INTO accounts
-                   (name, full_name, role, password_hash, password_change_required, created_at, updated_at)
-               SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?6
+                   (name, full_name, description, email, role, password_hash, password_change_required,
+                    password_locked, password_changed_at, created_at, updated_at)
+               SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?9
                WHERE NOT EXISTS (SELECT 1 FROM accounts WHERE role = 'admin')
                RETURNING id AS "id!""#,
             name,
             account.full_name,
+            account.description,
+            account.email,
             role,
             hash,
             account.password_change_required,
+            account.password_locked,
             created_at
         )
         .fetch_optional(self.db.pool())
         .await
         .map_err(db_error)?;
 
-        Ok(id.map(|id| Account {
-            id: AccountId::new(id),
-            name: account.name,
-            full_name: account.full_name,
-            role: account.role,
-            password_hash: account.password_hash,
-            password_change_required: account.password_change_required,
-            disabled: false,
-            created_at: account.created_at,
-            updated_at: account.created_at,
-        }))
+        Ok(id.map(|id| account.stored(AccountId::new(id))))
     }
 
     async fn update_password(
@@ -143,7 +149,8 @@ impl AccountRepository for SqliteAccounts {
     ) -> Result<(), PortError> {
         let (id, hash, at) = (id.get(), hash.as_str(), at.unix_seconds());
         sqlx::query!(
-            "UPDATE accounts SET password_hash = ?, password_change_required = 0, updated_at = ? WHERE id = ?",
+            "UPDATE accounts SET password_hash = ?1, password_change_required = 0, password_changed_at = ?2,
+                 updated_at = ?2 WHERE id = ?3",
             hash,
             at,
             id
@@ -157,8 +164,9 @@ impl AccountRepository for SqliteAccounts {
     async fn list(&self) -> Result<Vec<Account>, PortError> {
         sqlx::query_as!(
             AccountRow,
-            r#"SELECT id, name, full_name, role, password_hash,
+            r#"SELECT id, name, full_name, description, email, role, password_hash,
                       password_change_required AS "password_change_required: bool",
+                      password_locked AS "password_locked: bool", password_changed_at,
                       disabled AS "disabled: bool", created_at, updated_at
                FROM accounts ORDER BY name"#
         )
@@ -176,41 +184,40 @@ impl AccountRepository for SqliteAccounts {
         let created_at = account.created_at.unix_seconds();
         let id = sqlx::query_scalar!(
             r#"INSERT INTO accounts
-                   (name, full_name, role, password_hash, password_change_required, created_at, updated_at)
-               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+                   (name, full_name, description, email, role, password_hash, password_change_required,
+                    password_locked, password_changed_at, created_at, updated_at)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?9)
                ON CONFLICT (name) DO NOTHING
                RETURNING id AS "id!""#,
             name,
             account.full_name,
+            account.description,
+            account.email,
             role,
             hash,
             account.password_change_required,
+            account.password_locked,
             created_at
         )
         .fetch_optional(self.db.pool())
         .await
         .map_err(db_error)?;
 
-        Ok(id.map(|id| Account {
-            id: AccountId::new(id),
-            name: account.name,
-            full_name: account.full_name,
-            role: account.role,
-            password_hash: account.password_hash,
-            password_change_required: account.password_change_required,
-            disabled: false,
-            created_at: account.created_at,
-            updated_at: account.created_at,
-        }))
+        Ok(id.map(|id| account.stored(AccountId::new(id))))
     }
 
     async fn update(&self, account: &Account) -> Result<(), PortError> {
         let (id, role, at) = (account.id.get(), account.role.as_str(), account.updated_at.unix_seconds());
         sqlx::query!(
-            "UPDATE accounts SET full_name = ?, role = ?, disabled = ?, updated_at = ? WHERE id = ?",
+            "UPDATE accounts SET full_name = ?, description = ?, email = ?, role = ?, disabled = ?,
+                 password_locked = ?, password_change_required = ?, updated_at = ? WHERE id = ?",
             account.full_name,
+            account.description,
+            account.email,
             role,
             account.disabled,
+            account.password_locked,
+            account.password_change_required,
             at,
             id
         )
@@ -228,7 +235,8 @@ impl AccountRepository for SqliteAccounts {
     ) -> Result<(), PortError> {
         let (id, hash, at) = (id.get(), hash.as_str(), at.unix_seconds());
         sqlx::query!(
-            "UPDATE accounts SET password_hash = ?, password_change_required = 1, updated_at = ? WHERE id = ?",
+            "UPDATE accounts SET password_hash = ?1, password_change_required = NOT password_locked,
+                 password_changed_at = ?2, updated_at = ?2 WHERE id = ?3",
             hash,
             at,
             id
@@ -247,6 +255,57 @@ impl AccountRepository for SqliteAccounts {
             .map_err(db_error)?;
         Ok(())
     }
+
+    async fn require_password_change(&self, id: AccountId) -> Result<(), PortError> {
+        let id = id.get();
+        sqlx::query!("UPDATE accounts SET password_change_required = 1 WHERE id = ?", id)
+            .execute(self.db.pool())
+            .await
+            .map_err(db_error)?;
+        Ok(())
+    }
+
+    async fn password_policy(&self) -> Result<PasswordPolicy, PortError> {
+        let row = sqlx::query!(
+            r#"SELECT min_length, mixed_case AS "mixed_case: bool", digit AS "digit: bool",
+                      symbol AS "symbol: bool", max_age_days FROM password_policy WHERE id = 1"#
+        )
+        .fetch_optional(self.db.pool())
+        .await
+        .map_err(db_error)?;
+        let Some(row) = row else { return Ok(PasswordPolicy::default()) };
+        let stored = |what: &str| PortError::new("stored password policy", what.to_owned());
+        Ok(PasswordPolicy {
+            min_length: u8::try_from(row.min_length).map_err(|_| stored("minimum length"))?,
+            mixed_case: row.mixed_case,
+            digit: row.digit,
+            symbol: row.symbol,
+            max_age_days: row
+                .max_age_days
+                .map(u16::try_from)
+                .transpose()
+                .map_err(|_| stored("maximum age"))?,
+        })
+    }
+
+    async fn set_password_policy(&self, policy: &PasswordPolicy) -> Result<(), PortError> {
+        let (min_length, max_age_days) = (i64::from(policy.min_length), policy.max_age_days.map(i64::from));
+        sqlx::query!(
+            "INSERT INTO password_policy (id, min_length, mixed_case, digit, symbol, max_age_days)
+             VALUES (1, ?, ?, ?, ?, ?)
+             ON CONFLICT (id) DO UPDATE SET min_length = excluded.min_length, mixed_case = excluded.mixed_case,
+                 digit = excluded.digit, symbol = excluded.symbol, max_age_days = excluded.max_age_days",
+            min_length,
+            policy.mixed_case,
+            policy.digit,
+            policy.symbol,
+            max_age_days
+        )
+        .execute(self.db.pool())
+        .await
+        .map_err(db_error)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -258,11 +317,42 @@ mod tests {
         NewAccount {
             name: AccountName::parse(name).unwrap(),
             full_name: Some("Full Name".to_owned()),
+            description: None,
+            email: None,
             role,
             password_hash: PasswordHash::new("$argon2id$hash"),
             password_change_required: true,
+            password_locked: false,
             created_at: Timestamp::from_unix_seconds(1000),
         }
+    }
+
+    #[tokio::test]
+    async fn keeps_the_password_policy_and_locked_passwords() {
+        let (_dir, db) = temporary_database().await;
+        let accounts = SqliteAccounts::new(db);
+        assert_eq!(accounts.password_policy().await.unwrap(), PasswordPolicy::default());
+        let policy = PasswordPolicy {
+            min_length: 14,
+            symbol: true,
+            max_age_days: Some(90),
+            ..PasswordPolicy::default()
+        };
+        accounts.set_password_policy(&policy).await.unwrap();
+        accounts.set_password_policy(&policy).await.unwrap();
+        assert_eq!(accounts.password_policy().await.unwrap(), policy);
+
+        let mut locked = new_account("kiosk", Role::User);
+        locked.password_locked = true;
+        locked.description = Some("Kitchen tablet".into());
+        let kiosk = accounts.create(locked).await.unwrap().unwrap();
+        let at = Timestamp::from_unix_seconds(5_000);
+        accounts.reset_password(kiosk.id, &PasswordHash::new("$argon2id$new"), at).await.unwrap();
+        let stored = accounts.find_by_id(kiosk.id).await.unwrap().unwrap();
+        assert!(!stored.password_change_required, "only administrators set it anyway");
+        assert_eq!((stored.password_changed_at, stored.description.as_deref()), (at, Some("Kitchen tablet")));
+        accounts.require_password_change(kiosk.id).await.unwrap();
+        assert!(accounts.find_by_id(kiosk.id).await.unwrap().unwrap().password_change_required);
     }
 
     #[tokio::test]

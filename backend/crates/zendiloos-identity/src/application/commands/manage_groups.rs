@@ -107,6 +107,7 @@ impl UpdateGroup {
         let _changes = c.changes.lock().await;
         let now = c.now();
         let mut group = c.ports.groups.find_by_id(id).await?.ok_or(IdentityError::GroupNotFound)?;
+        let before = group.members.clone();
         if let Some(members) = changes.members {
             let (members, names) = c.members(members).await?;
             if members != group.members {
@@ -119,6 +120,14 @@ impl UpdateGroup {
         }
         group.updated_at = now;
         c.ports.groups.update(&group).await?;
+        if group.members != before {
+            // The change stands; what follows it is the observer's to report.
+            if let Err(error) =
+                c.ports.group_observer.members_changed(group.id, &before, &auth.actor(), request).await
+            {
+                tracing::warn!(%error, group = group.name.as_str(), "others could not follow the group's members");
+            }
+        }
 
         let entry = AuditEntry::new(now, AuditAction::GroupUpdate.as_str(), Outcome::Success, request);
         c.audit(entry.by(&auth.actor()).target(group.name.as_str())).await?;
@@ -149,6 +158,8 @@ impl DeleteGroup {
         let _changes = c.changes.lock().await;
         let now = c.now();
         let group = c.ports.groups.find_by_id(id).await?.ok_or(IdentityError::GroupNotFound)?;
+        // Before it goes: shares still know its members.
+        c.ports.group_observer.deleting(group.id, &auth.actor(), request).await?;
         c.ports.system.delete_group(&group.name, request).await?;
         c.ports.groups.delete(id).await?;
 

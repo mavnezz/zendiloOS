@@ -1,7 +1,10 @@
 mod logs;
 mod metrics;
 mod power;
+mod ssh;
 mod system_info;
+mod time;
+mod web;
 
 pub use logs::{
     AuditQuery, AuditRecord, InvalidCursor, JournalCursor, JournalEntry, JournalPage, JournalQuery,
@@ -11,4 +14,7 @@ pub use metrics::{
     DiskRate, HISTORY_SAMPLES, InterfaceRate, MemoryUsage, MetricsHistory, MetricsSample, Temperature,
 };
 pub use power::PowerAction;
+pub use ssh::{InvalidSshSettings, RootLogin, SshSettings, SshStatus};
 pub use system_info::{Hardware, SystemInfo, joined, meaningful};
+pub use time::{InvalidTimeSettings, MAX_TIME_SERVERS, TimeSettings, TimeStatus, is_host, is_zone_name};
+pub use web::TlsMinimum;

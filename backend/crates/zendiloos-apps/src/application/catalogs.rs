@@ -42,6 +42,8 @@ pub enum AppsError {
     IdTooLong,
     #[error("Docker is not set up and running on a pool")]
     DockerNotReady,
+    #[error("Docker is installed already")]
+    DockerInstalled,
     #[error("the app's permissions were not confirmed")]
     PermissionsNotConfirmed,
     #[error(transparent)]
