@@ -1,0 +1,17 @@
+[package]
+name = "zendiloos-architecture"
+description = "Tests only: the dependency rules of docs/architecture.md (2.1), checked against the workspace"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Nothing depends on this crate, and it depends on no other: it reads the
+# workspace with `cargo metadata` and parses the sources.
+[dev-dependencies]
+serde_json.workspace = true
+syn = { version = "2", default-features = false, features = ["full", "parsing", "visit"] }
+
+[lints]
+workspace = true

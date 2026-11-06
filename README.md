@@ -96,6 +96,7 @@ the Nix devShell; direnv loads it when entering the directory, otherwise use
 just               # list all recipes
 just web-install   # once, and after dependency changes: frontend packages
 just check         # everything CI checks: backend and frontend
+just coverage      # the tests with their coverage, against CI's thresholds
 just dev           # API server on http://127.0.0.1:8780, state in dev/state
 just web-dev       # interface on http://localhost:5173, talks to `just dev`
 just api-types     # after API changes: regenerate the TypeScript types

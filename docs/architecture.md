@@ -115,11 +115,13 @@ The backend follows domain-driven design with a hexagonal (ports and
 adapters) architecture. The goal is the dependency rule: everything points
 inward, and the domain knows no frameworks, databases or operating system.
 **Crate boundaries enforce it**, so a violation is a build error, not a
-review comment.
+review comment; what the compiler cannot see (a dependency the table does
+not allow, I/O in the core, a domain layer reaching out) the architecture
+tests in `zendiloos-architecture` catch, as part of `cargo test`.
 
 | Concept | In Zendiloos |
 |---|---|
-| Bounded context | one core crate each: `identity`, `system`, `storage`, `sharing`, `apps`, `network` |
+| Bounded context | one core crate each: `identity`, `system`, `storage`, `sharing`, `apps`, `containers`, `updates`, `network` |
 | Domain layer | entities, value objects, aggregates, domain rules and errors; pure Rust, no I/O |
 | Application layer | use cases (commands and queries) and the **ports** they need, as traits |
 | Primary (driving) adapter | `zendiloos-api`: HTTP and WebSocket |
@@ -133,22 +135,23 @@ review comment.
 | `zendiloos-identity` | accounts and groups with their Linux users and groups, roles and permissions, sessions, passwords, throttling, audit | kernel |
 | `zendiloos-system` | system information, metrics, power, logs | kernel |
 | `zendiloos-storage` | disks, SMART, ZFS pools and volumes, plans for erasing disks, monitoring; mdadm arrays read-only | kernel, jobs, notify |
-| `zendiloos-sharing` | SMB and NFS shares, share permissions, and the file manager (share contents as the signed-in user) | kernel, jobs |
+| `zendiloos-sharing` | SMB and NFS shares, share permissions, and the file manager (share contents as the signed-in user) | kernel, jobs, notify |
 | `zendiloos-apps` | app catalogs and their sources, installed apps (Docker Compose projects under the policy of 4.9) | kernel, jobs |
 | `zendiloos-containers` | the Docker engine as administrators see it: containers, images, networks, Compose projects (administrators' own with their file in a share), use over time, newer images on a schedule, moving Docker's data (4.9) | kernel, jobs |
 | `zendiloos-updates` | updates of the NAS: Debian's packages and zendiloOS's releases from GitHub by channel, checked daily, installed on request (4.10) | kernel, notify |
 | `zendiloos-network` | interfaces, addresses, default routes, name servers (read-only until M6); later IP configuration, DNS, hostname | kernel |
-| `zendiloos-infra` | all secondary adapters, SQLite migrations | kernel, contexts, agent-proto |
-| `zendiloos-api` | primary adapter: axum routes, DTOs, OpenAPI, auth middleware, WebSocket | kernel, contexts |
+| `zendiloos-infra` | all secondary adapters, SQLite migrations | kernel, jobs, notify, contexts, agent-proto, exec; in tests also sim |
+| `zendiloos-api` | primary adapter: axum routes, DTOs, OpenAPI, auth middleware, WebSocket | kernel, jobs, notify, contexts |
 | `zendiloosd` | composition root (binary) | everything except agent |
 | `zendiloos-agent-proto` | wire protocol to the agent, `AgentTransport` trait, Unix client | – |
 | `zendiloos-exec` | the only way to run programs | – |
-| `zendiloos-agent` | privileged root service (binary): the system agent, and with `--role files` the files agent | agent-proto, exec, fileops |
+| `zendiloos-agent` | privileged root service (binary): the system agent, and with `--role files` the files agent | agent-proto, exec, fileops, logging |
 | `zendiloos-fileops` | file operations beneath a share's root (`openat2`), with the credentials of the calling thread | agent-proto |
 | `zendiloos-sim` | simulated agent behind `AgentTransport`; a model of a small NAS (disks, ZFS pools, resilver and scrub over time); executes nothing, but keeps share contents as real files in a scratch directory | agent-proto, fileops |
 | `zendiloos-jobs` | long-running operations: recorded, published to subscribers, marked as interrupted after a restart | kernel |
 | `zendiloos-notify` | notifications for administrators: a code with parameters, stored (the 500 most recent) and published; how far each account has read and cleared them; channels that carry them by email and to webhooks | kernel |
 | `zendiloos-logging` | logging setup shared by `zendiloosd` and the agent | – |
+| `zendiloos-architecture` | tests only: checks this table and the rules below against the workspace (`cargo metadata`, and the sources parsed with `syn`) | – |
 
 Crates are created in the step that needs them; there are no empty
 placeholder crates.
@@ -173,12 +176,18 @@ placeholder crates.
 
 Rules:
 
-- **Context crates contain no I/O.** Their only dependencies are the kernel,
-  `thiserror` and `async-trait`: no sqlx, axum, sysinfo or serde. Two
-  deliberate exceptions from tokio: `tokio::sync` for locks that serialize
-  changes, and `tokio::fs::File` as the handle of a file the agent opened,
-  which the file manager's port hands through; contexts never open files
-  themselves.
+- **Context crates contain no I/O**, and neither do the kernel, jobs and
+  notify. Their only outside dependencies are `thiserror`, `async-trait`,
+  `tokio` and `tracing`: no sqlx, axum, sysinfo or serde. From tokio they use
+  locks that serialize changes (`tokio::sync`), tasks and timers, and
+  `tokio::fs::File` as the handle of a file the agent opened, which the file
+  manager's port hands through; contexts never open files themselves. Their
+  code (tests aside) names nothing of `std::fs`, `std::process`, `std::env`,
+  `std::os`, `std::net` (addresses aside), `tokio::fs`, `tokio::process`,
+  `tokio::net` or `tokio::signal`.
+- **A domain layer stands on its own:** it names neither its application
+  layer nor tokio or `async-trait`; ports and use cases live in
+  `application/`.
 - **Contexts do not depend on each other.** If one context needs something
   from another (sharing needs to know volumes), it declares a port in its
   own terms, and `zendiloos-infra` or the composition root implements that

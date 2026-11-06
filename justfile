@@ -19,8 +19,28 @@ lint:
 test:
     cargo test --workspace --locked
 
-# Everything CI checks
-check: lint deny test sqlx-check api-check web-check
+# Everything CI checks; the tests run measured, against the coverage thresholds
+check: lint deny coverage-backend sqlx-check api-check web-check
+
+# Test coverage of backend and frontend, against the thresholds CI holds
+coverage: coverage-backend coverage-web
+
+# The backend's tests, measured; thresholds in scripts/coverage-check.sh
+[working-directory: 'backend']
+coverage-backend:
+    mkdir -p ../dev/coverage
+    cargo llvm-cov --workspace --locked --json --summary-only --output-path ../dev/coverage/backend.json
+    ../scripts/coverage-check.sh ../dev/coverage/backend.json
+
+# The frontend's tests, measured; thresholds in frontend/vite.config.ts
+[working-directory: 'frontend']
+coverage-web:
+    npm run -s test:coverage
+
+# A browsable report of the backend's coverage: dev/coverage/backend/html/index.html
+[working-directory: 'backend']
+coverage-html:
+    cargo llvm-cov --workspace --locked --html --output-dir ../dev/coverage/backend
 
 # The SQL macros check queries against this schema-only database.
 sqlx_db := "sqlite://" + justfile_directory() + "/dev/sqlx.db"
@@ -82,12 +102,12 @@ web-dev:
 web-fmt:
     npm run -s format
 
-# Frontend checks: formatting, lint, tests, types and production build
+# Frontend checks: formatting, lint, tests with their coverage, types and production build
 [working-directory: 'frontend']
 web-check:
     npm run -s format:check
     npm run -s lint
-    npm run -s test
+    npm run -s test:coverage
     npm run -s build
 
 # Build the Debian package in a debian:trixie container; the result lands in dist/

@@ -13,6 +13,7 @@
     "typecheck": "vue-tsc -b",
     "lint": "eslint --max-warnings 0 .",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "gen:api": "openapi-typescript openapi.json -o src/shared/api/schema.d.ts",
     "format": "prettier --write src/ *.ts *.js",
     "format:check": "prettier --check src/ *.ts *.js"
@@ -37,6 +38,7 @@
     "@tailwindcss/vite": "^4.3.4",
     "@types/node": "^26.6.6",
     "@vitejs/plugin-vue": "^6.0.10",
+    "@vitest/coverage-v8": "^5.1.0",
     "@vue/eslint-config-prettier": "^10.2.0",
     "@vue/eslint-config-typescript": "^14.9.0",
     "@vue/test-utils": "^2.5.1",

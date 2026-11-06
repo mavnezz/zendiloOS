@@ -47,6 +47,27 @@ jobs:
       - name: just check
         run: nix develop --command just check
 
+      # The coverage of every crate and of the frontend, on the run's page.
+      - name: Coverage summary
+        if: ${{ !cancelled() && hashFiles('dev/coverage/backend.json') != '' }}
+        run: |
+          {
+            echo '### Coverage'
+            echo '```text'
+            scripts/coverage-check.sh dev/coverage/backend.json 2>&1 || true
+            if [[ -f dev/coverage/frontend/coverage-summary.json ]]; then
+              jq -r '"frontend lines \(.total.lines.pct) %, statements \(.total.statements.pct) %"' dev/coverage/frontend/coverage-summary.json
+            fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() && hashFiles('dev/coverage/backend.json') != '' }}
+        with:
+          name: coverage
+          path: dev/coverage/
+          retention-days: 14
+
   package:
     name: Debian package
     runs-on: ubuntu-24.04

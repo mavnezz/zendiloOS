@@ -58,6 +58,8 @@
               sqlx-cli
               sqlite
               cargo-deny
+              # Test coverage (just coverage); needs llvm-tools from the toolchain
+              cargo-llvm-cov
               # Signing releases (just release-key, just sign-release)
               minisign
               # Test VM (scripts/vm.sh, scripts/vm-storage-test.sh)

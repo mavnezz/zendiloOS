@@ -18,5 +18,19 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     include: ['src/**/*.test.ts'],
+    // `npm run test:coverage` (just coverage-web); CI holds the thresholds.
+    coverage: {
+      provider: 'v8',
+      include: ['src/**/*.{ts,vue}'],
+      exclude: ['src/**/*.test.ts', 'src/**/*.d.ts', 'src/main.ts'],
+      reporter: ['text-summary', 'html', 'json-summary'],
+      reportsDirectory: '../dev/coverage/frontend',
+      // Just below what the tests reach (11/2026): coverage may rise, not
+      // fall unnoticed. The logic in .ts files is held higher than views.
+      thresholds: {
+        lines: 27,
+        'src/**/*.ts': { lines: 38 },
+      },
+    },
   },
 })
