@@ -404,7 +404,7 @@ impl Apps {
         compose: &AppCompose,
         values: &AppValues,
     ) -> Result<Response, OperationError> {
-        let _serial = self.serial.lock().await;
+        let _serial = crate::waiting::lock(&self.serial).await?;
         let manifest: Manifest = serde_json::from_str(manifest.as_str())
             .map_err(|e| refused(format!("the manifest cannot be read: {e}")))?;
         if manifest.id != app.as_str() {
@@ -553,7 +553,7 @@ impl Apps {
     /// Containers, images and the kept file; nothing if the app never got
     /// that far.
     pub(crate) async fn remove(&self, app: &AppName) -> Result<(), OperationError> {
-        let _serial = self.serial.lock().await;
+        let _serial = crate::waiting::lock(&self.serial).await?;
         let path = self.config_path(app);
         if !path.exists() {
             return Ok(());

@@ -409,6 +409,9 @@ pub(crate) enum OperationError {
     /// A program did not do what was asked, in its words.
     #[error("{0}")]
     Failed(String),
+    /// The request did not get its turn (see `waiting`): not carried out.
+    #[error("not carried out: {0}")]
+    NotNow(String),
 }
 
 impl OperationError {

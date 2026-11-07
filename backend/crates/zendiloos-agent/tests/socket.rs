@@ -232,26 +232,75 @@ async fn serves_only_its_client_account() {
     assert_eq!(agent.calls(), "", "nothing ran");
 }
 
-#[tokio::test]
-async fn a_request_whose_client_gave_up_waiting_is_not_carried_out() {
-    let agent = Agent::start(None, 0).await;
+/// Four slow requests take every place for quick ones.
+fn occupy(
+    agent: &Agent,
+) -> Vec<tokio::task::JoinHandle<Result<Response, zendiloos_agent_proto::TransportError>>> {
     fs::write(agent.dir.path().join("slow"), "").unwrap();
-    // Four slow requests take every place for quick ones.
-    let busy: Vec<_> = (0..4)
+    (0..4)
         .map(|_| {
             let client = agent.client();
             tokio::spawn(async move { client.call(Request::ListBlockDevices {}, None).await })
         })
-        .collect();
+        .collect()
+}
+
+#[tokio::test]
+async fn a_request_whose_client_gave_up_waiting_is_not_carried_out() {
+    let agent = Agent::start(None, 0).await;
+    let busy = occupy(&agent);
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let impatient = UnixTransport::new(agent.socket(), Duration::from_millis(300));
-    assert!(impatient.call(Request::ListBlockDevices {}, None).await.is_err(), "it waited for a place");
+    // A client that does not say how long it waits, and hangs up.
+    let mut impatient = UnixStream::connect(agent.socket()).await.unwrap();
+    impatient.write_all(b"{\"version\":1,\"request\":{\"op\":\"list_block_devices\"}}\n").await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    drop(impatient);
     for request in busy {
         request.await.unwrap().unwrap();
     }
     tokio::time::sleep(Duration::from_millis(500)).await;
 
+    assert_eq!(agent.calls().matches("lsblk").count(), 4, "{}", agent.calls());
+}
+
+#[tokio::test]
+async fn a_request_waits_for_its_turn_half_the_time_its_client_waits() {
+    let agent = Agent::start(None, 0).await;
+    let busy = occupy(&agent);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let started = std::time::Instant::now();
+    let client = UnixTransport::new(agent.socket(), Duration::from_millis(1200));
+    let answer = client.call(Request::ListBlockDevices {}, None).await.unwrap();
+    assert!(
+        matches!(&answer, Response::Error { code: ErrorCode::Failed, message } if message.contains("not carried out")),
+        "{answer:?}"
+    );
+    assert!(started.elapsed() < Duration::from_millis(1100), "answered before the client gave up");
+    for request in busy {
+        request.await.unwrap().unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(agent.calls().matches("lsblk").count(), 4, "{}", agent.calls());
+}
+
+#[tokio::test]
+async fn what_waits_for_its_turn_is_refused_when_the_agent_stops() {
+    let mut agent = Agent::start(None, 0).await;
+    let busy = occupy(&agent);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let client = agent.client();
+    let waiting = tokio::spawn(async move { client.call(Request::ListBlockDevices {}, None).await });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let _ = agent.stop.take().unwrap().send(());
+
+    let answer = waiting.await.unwrap().unwrap();
+    assert!(matches!(&answer, Response::Error { message, .. } if message.contains("stopping")), "{answer:?}");
+    for request in busy {
+        assert!(matches!(request.await.unwrap(), Ok(Response::BlockDevices { .. })), "seen through");
+    }
     assert_eq!(agent.calls().matches("lsblk").count(), 4, "{}", agent.calls());
 }
 

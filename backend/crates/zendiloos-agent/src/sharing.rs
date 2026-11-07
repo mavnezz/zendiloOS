@@ -4,27 +4,36 @@
 //! option, path or host from zendiloosd reaches a configuration file as
 //! text. Paths are always `/volume<N>/<share>`.
 
+use std::collections::HashMap;
+use std::ffi::{CStr, CString, OsStr};
 use std::fmt::Write as _;
 use std::fs;
+use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, PoisonError};
 use std::time::Duration;
 
 use rustix::fs::{CWD, Mode, OFlags, openat};
+use rustix::io::Errno;
 use zendiloos_agent_proto::{
     FileServices, HOMES_DIRECTORY, HomesShare, NfsExport, Principal, Response, SNAPSHOT_LABEL_FORMAT,
     ShareAccess, ShareName, SharePermission, SmbShare, UserName, VolumeNumber,
 };
 use zendiloos_exec::{Limits, Program};
 
+use crate::acl::{self, Acl, Rules, Who};
 use crate::config::Tools;
 use crate::operations::OperationError;
 use crate::pools::{HostPaths, run};
 
 const LIMITS: Limits = Limits { timeout: Duration::from_secs(120), max_stdout: 1024 * 1024 };
-/// Permissions of a whole tree: large shares take a while, and a change of
-/// access must not die halfway.
 pub use zendiloos_fileops::RECYCLE_DIRECTORY;
+/// How long a change of a share's own folder waits for another change of
+/// the same share: one that goes through all its files may take hours, and
+/// whoever asked is told to come back rather than kept waiting.
+const SHARE_WAIT: Duration = Duration::from_secs(if cfg!(test) { 1 } else { 15 });
 const HEADER: &str = "# Written by zendiloOS. Changes here are overwritten; use the web interface.\n";
 /// WS-Discovery, so Windows lists the NAS; recommended, not required.
 const WSDD: &str = "wsdd2.service";
@@ -40,8 +49,14 @@ pub(crate) struct Sharing {
     exportfs: Program,
     systemctl: Program,
     setfacl: Program,
-    serial: tokio::sync::Mutex<()>,
+    /// One writing of the services' configuration at a time.
+    config: tokio::sync::Mutex<()>,
+    /// One change of a share's permissions at a time, for each share: a
+    /// change going through a large share keeps only that share waiting.
+    shares: std::sync::Mutex<HashMap<(u16, String), ShareLock>>,
 }
+
+type ShareLock = Arc<tokio::sync::Mutex<()>>;
 
 fn principal(principal: &Principal) -> String {
     match principal {
@@ -233,7 +248,8 @@ impl Sharing {
             exportfs: Program::new(&tools.exportfs)?,
             systemctl: Program::new(&tools.systemctl)?,
             setfacl: Program::new(&tools.setfacl)?,
-            serial: tokio::sync::Mutex::new(()),
+            config: tokio::sync::Mutex::new(()),
+            shares: std::sync::Mutex::new(HashMap::new()),
         })
     }
 
@@ -247,7 +263,7 @@ impl Sharing {
         services: &FileServices,
         homes: Option<&HomesShare>,
     ) -> Result<Response, OperationError> {
-        let _serial = self.serial.lock().await;
+        let _config = crate::waiting::lock(&self.config).await?;
         if !services.mac_compat && smb.iter().any(|share| share.time_machine.is_some()) {
             return Err(OperationError::Refused("Time Machine needs the macOS compatibility of SMB".into()));
         }
@@ -374,9 +390,18 @@ impl Sharing {
         self.paths.volumes.join(format!("volume{}", volume.get())).join(name.as_str())
     }
 
+    fn share_lock(&self, volume: VolumeNumber, name: &ShareName) -> ShareLock {
+        let mut shares = self.shares.lock().unwrap_or_else(PoisonError::into_inner);
+        Arc::clone(shares.entry((volume.get(), name.as_str().to_owned())).or_default())
+    }
+
     /// Owner `root`, mode 0770 and an ACL for each principal, inherited by
     /// new files. With `recursive`, existing contents follow, except the
-    /// users' recycle bins.
+    /// users' recycle bins and other private folders (see `change_tree`).
+    ///
+    /// A change of the share's folder alone (the one a person waits for)
+    /// does not wait long for one going through its files: it is refused,
+    /// to be asked again once that has ended.
     pub(crate) async fn set_access(
         &self,
         volume: VolumeNumber,
@@ -385,7 +410,17 @@ impl Sharing {
         removed: &[Principal],
         recursive: bool,
     ) -> Result<Response, OperationError> {
-        let _serial = self.serial.lock().await;
+        let lock = self.share_lock(volume, name);
+        let _share = if recursive {
+            crate::waiting::lock(&lock).await?
+        } else {
+            tokio::time::timeout(SHARE_WAIT, crate::waiting::lock(&lock)).await.map_err(|_| {
+                OperationError::Refused(format!(
+                    "the permissions of share {} are being applied to its files; try again once that has ended",
+                    name.as_str()
+                ))
+            })??
+        };
         let path = self.share_path(volume, name);
         let parent = path.parent().unwrap_or(&path).to_owned();
         let (own, above) = match (fs::metadata(&path), fs::metadata(&parent)) {
@@ -431,17 +466,7 @@ impl Sharing {
         // link and changed through that descriptor: a link swapped in
         // meanwhile changes nothing.
         let bin = path.join(RECYCLE_DIRECTORY);
-        match fs::create_dir(&bin) {
-            Err(error) if error.kind() != std::io::ErrorKind::AlreadyExists => {
-                return Err(OperationError::Write(bin, error));
-            }
-            _ => {}
-        }
-        let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-        let directory = openat(CWD, &bin, flags, Mode::empty()).map_err(|_| {
-            OperationError::Refused(format!("{RECYCLE_DIRECTORY} in {} is not a folder", name.as_str()))
-        })?;
-        let directory = fs::File::from(directory);
+        let directory = fs::File::from(open_bin(&path, name)?);
         std::os::unix::fs::fchown(&directory, Some(0), Some(0))
             .map_err(|e| OperationError::Write(bin.clone(), e))?;
         let for_acl = directory.try_clone().map_err(|e| OperationError::Write(bin.clone(), e))?;
@@ -464,17 +489,77 @@ impl Sharing {
         }
 
         if recursive {
-            let mut modify = entries(false, true);
-            modify.extend(entries(true, false));
-            let removals: Vec<String> =
-                removed.iter().flat_map(|p| [acl_entry(p), format!("d:{}", acl_entry(p))]).collect();
-            self.change_tree(&path, &removals, &modify).await?;
+            let rules = self.rules(access, removed)?;
+            tokio::task::spawn_blocking(move || change_tree(&path, &rules))
+                .await
+                .map_err(|error| OperationError::Failed(format!("the change stopped: {error}")))??;
         }
         Ok(Response::Done)
     }
 }
 
+/// The share's `.recycle`, made if missing, opened without following a
+/// link. Something else of that name (a writer may make a file or link
+/// there) is moved aside, so the bins work again.
+fn open_bin(share: &Path, name: &ShareName) -> Result<OwnedFd, OperationError> {
+    let bin = share.join(RECYCLE_DIRECTORY);
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let make = || match fs::create_dir(&bin) {
+        Err(error) if error.kind() != std::io::ErrorKind::AlreadyExists => {
+            Err(OperationError::Write(bin.clone(), error))
+        }
+        _ => Ok(()),
+    };
+    make()?;
+    if let Ok(directory) = openat(CWD, &bin, flags, Mode::empty()) {
+        return Ok(directory);
+    }
+    let since =
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |since| since.as_secs());
+    let aside = share.join(format!("{RECYCLE_DIRECTORY}.not-a-folder-{since}-{}", std::process::id()));
+    rustix::fs::renameat_with(CWD, &bin, CWD, &aside, rustix::fs::RenameFlags::NOREPLACE)
+        .map_err(|e| OperationError::Write(bin.clone(), e.into()))?;
+    tracing::warn!(share = name.as_str(), aside = %aside.display(), "what took the recycle bin's place was moved aside");
+    make()?;
+    openat(CWD, &bin, flags, Mode::empty()).map_err(|_| {
+        OperationError::Refused(format!("{RECYCLE_DIRECTORY} in {} is not a folder", name.as_str()))
+    })
+}
+
 impl Sharing {
+    /// The rules for what is in a share, by ID: what setfacl would look up
+    /// by name. Who is removed but no longer known has no entries to find.
+    fn rules(&self, access: &[ShareAccess], removed: &[Principal]) -> Result<Rules, OperationError> {
+        let read = |path: &std::path::Path| {
+            fs::read_to_string(path).map_err(|e| OperationError::Read(path.to_owned(), e))
+        };
+        let (passwd, group) = (read(&self.accounts.passwd)?, read(&self.accounts.group)?);
+        let id = |subject: &Principal| match subject {
+            Principal::User(user) => {
+                crate::passwd::lookup(&passwd, user.as_str()).map(|(uid, _)| Who::User(uid))
+            }
+            Principal::Group(name) => crate::passwd::group_id(&group, name.as_str()).map(Who::Group),
+        };
+        let mut grant = Vec::new();
+        for entry in access {
+            let who = id(&entry.principal)
+                .ok_or_else(|| OperationError::NotManaged(principal(&entry.principal)))?;
+            grant.push((who, entry.permission));
+        }
+        let mut remove = Vec::new();
+        for subject in removed {
+            match id(subject) {
+                Some(who) if !grant.iter().any(|(granted, _)| *granted == who) => remove.push(who),
+                Some(_) => {}
+                None => tracing::info!(
+                    subject = principal(subject),
+                    "no longer known: nothing of theirs to remove"
+                ),
+            }
+        }
+        Ok(Rules { remove, grant })
+    }
+
     /// The managed users who may write, directly or through a group, with
     /// their UID and primary GID.
     fn writers(&self, access: &[ShareAccess]) -> Result<Vec<(String, u32, u32)>, OperationError> {
@@ -554,90 +639,203 @@ fn prepare_bin(bin: &fs::File, user: &str, uid: u32, gid: u32) -> Result<(), Ope
 
 /// Folders deeper than this are not looked into.
 const MAX_DEPTH: usize = 256;
+/// Entries that may fail before a change of a whole tree gives up.
+const MAX_FAILURES: usize = 100;
 
-impl Sharing {
-    /// Changes the permissions of everything below a share's root (not the
-    /// root, which is set on its own): access taken away first, so it is
-    /// gone even if giving fails. Each folder and file is reached by
-    /// descriptor and changed through it (`/proc/self/fd/0`), never by its
-    /// path: whoever may write the share could swap a folder for a link
-    /// while the change goes on, and setfacl's own walk (`-R`) would follow
-    /// it, onto other shares, the bins or `@docker`. Links, other file
-    /// systems and the recycle bins are left alone.
-    async fn change_tree(
-        &self,
-        root: &Path,
-        removals: &[String],
-        modify: &[String],
-    ) -> Result<(), OperationError> {
-        let folder_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-        let unreadable = |e: rustix::io::Errno| OperationError::Read(root.to_owned(), e.into());
-        let top = openat(CWD, root, folder_flags, Mode::empty()).map_err(unreadable)?;
-        let device = rustix::fs::fstat(&top).map_err(unreadable)?.st_dev;
-        let mut folders = vec![(top, 0)];
-        while let Some((folder, depth)) = folders.pop() {
-            let mut names = Vec::new();
-            for entry in rustix::fs::Dir::read_from(&folder).map_err(unreadable)? {
-                let name = entry.map_err(unreadable)?.file_name().to_owned();
-                let own = name.as_c_str() == c"." || name.as_c_str() == c"..";
-                let bin = depth == 0 && name.as_bytes() == RECYCLE_DIRECTORY.as_bytes();
-                if !own && !bin {
-                    names.push(name);
-                }
-            }
-            for name in names {
-                // Gone, or swapped for a link, since it was listed: skipped.
-                let Ok(stat) = rustix::fs::statat(&folder, &name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW)
-                else {
-                    continue;
-                };
-                let kind = rustix::fs::FileType::from_raw_mode(stat.st_mode);
-                if kind == rustix::fs::FileType::Symlink || stat.st_dev != device {
-                    continue;
-                }
-                let is_folder = kind == rustix::fs::FileType::Directory;
-                let flags =
-                    if is_folder { folder_flags } else { OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC };
-                let Ok(entry) = openat(&folder, &name, flags, Mode::empty()) else { continue };
-                let opened = rustix::fs::fstat(&entry).map_err(unreadable)?;
-                let still = rustix::fs::FileType::from_raw_mode(opened.st_mode);
-                if still == rustix::fs::FileType::Symlink
-                    || opened.st_dev != device
-                    || (still == rustix::fs::FileType::Directory) != is_folder
-                {
-                    continue;
-                }
-                self.change_one(&entry, is_folder, removals, modify).await?;
-                if is_folder && depth + 1 < MAX_DEPTH {
-                    folders.push((entry, depth + 1));
-                }
-            }
+/// The entries a change of a tree could not change.
+#[derive(Debug, Default)]
+struct Failures {
+    count: usize,
+    first: Option<String>,
+}
+
+impl Failures {
+    /// Notes one; too many end the change.
+    fn note(&mut self, path: &Path, error: Errno) -> Result<(), OperationError> {
+        self.count += 1;
+        if self.first.is_none() {
+            self.first = Some(format!("{}: {}", path.display(), std::io::Error::from(error)));
         }
-        Ok(())
+        if self.count > MAX_FAILURES { Err(self.error()) } else { Ok(()) }
     }
 
-    /// `setfacl -x` then `-m` on the entry behind `entry`; default entries
-    /// (`d:`) for folders only.
-    async fn change_one(
-        &self,
-        entry: &std::os::fd::OwnedFd,
-        folder: bool,
-        removals: &[String],
-        modify: &[String],
-    ) -> Result<(), OperationError> {
-        for (option, list) in [("-x", removals), ("-m", modify)] {
-            let kept: Vec<&str> =
-                list.iter().map(String::as_str).filter(|entry| folder || !entry.starts_with("d:")).collect();
-            if kept.is_empty() {
+    fn error(&self) -> OperationError {
+        OperationError::Failed(format!(
+            "the permissions of {} entries could not be changed, among them {}",
+            self.count,
+            self.first.as_deref().unwrap_or("?")
+        ))
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Pass {
+    Remove,
+    Grant,
+}
+
+/// Changes the permissions of everything below a share's root (not the
+/// root, which is set on its own): access taken away from the whole tree
+/// first, so it is gone even if giving fails. Each folder and file is
+/// reached by descriptor and its ACL changed through it, never by its path:
+/// whoever may write the share could swap a folder for a link while the
+/// change goes on, and a walk by path would follow it, onto other shares,
+/// the bins or `@docker`.
+///
+/// Left alone: links, other file systems, what is neither folder nor file,
+/// the recycle bins, and every other private folder with what is in it (a
+/// folder not root's that only its owner may enter: renamed bins among
+/// them, which nobody else could reach anyway). Only the folders on the way
+/// down are open at a time. An entry that cannot be changed does not stop
+/// the others; the change fails at the end, naming one of them.
+fn change_tree(root: &Path, rules: &Rules) -> Result<(), OperationError> {
+    let mut failures = Failures::default();
+    if !rules.remove.is_empty() {
+        walk(root, rules, Pass::Remove, &mut failures)?;
+    }
+    if !rules.grant.is_empty() {
+        walk(root, rules, Pass::Grant, &mut failures)?;
+    }
+    if failures.count > 0 { Err(failures.error()) } else { Ok(()) }
+}
+
+const FOLDER: OFlags = OFlags::RDONLY.union(OFlags::DIRECTORY).union(OFlags::NOFOLLOW).union(OFlags::CLOEXEC);
+
+/// A folder on the way down: its descriptor, what in it is still to do.
+struct Level {
+    folder: OwnedFd,
+    names: std::vec::IntoIter<CString>,
+    path: PathBuf,
+}
+
+fn walk(root: &Path, rules: &Rules, pass: Pass, failures: &mut Failures) -> Result<(), OperationError> {
+    let unreadable = |e: Errno| OperationError::Read(root.to_owned(), e.into());
+    let top = openat(CWD, root, FOLDER, Mode::empty()).map_err(unreadable)?;
+    let device = rustix::fs::fstat(&top).map_err(unreadable)?.st_dev;
+    let listed = names(&top, true).map_err(unreadable)?;
+    let mut stack = vec![Level { folder: top, names: listed.into_iter(), path: root.to_owned() }];
+    while let Some(level) = stack.last_mut() {
+        let Some(name) = level.names.next() else {
+            stack.pop();
+            continue;
+        };
+        let path = level.path.join(OsStr::from_bytes(name.as_bytes()));
+        let (entry, folder, mode) = match open_entry(&level.folder, &name, device) {
+            Ok(Some(found)) => found,
+            Ok(None) => continue,
+            Err(error) => {
+                failures.note(&path, error)?;
                 continue;
             }
-            let file =
-                fs::File::from(entry.try_clone().map_err(|e| OperationError::Write(PathBuf::from("."), e))?);
-            let args = [option, &kept.join(","), "--", "/proc/self/fd/0"];
-            zendiloos_exec::run_on(&self.setfacl, args, file, LIMITS).await?.success(&self.setfacl)?;
+        };
+        if let Err(error) = change_entry(&entry, folder, mode, rules, pass) {
+            failures.note(&path, error)?;
         }
-        Ok(())
+        if folder && stack.len() < MAX_DEPTH {
+            match names(&entry, false) {
+                Ok(listed) => stack.push(Level { folder: entry, names: listed.into_iter(), path }),
+                Err(error) => failures.note(&path, error)?,
+            }
+        }
     }
+    Ok(())
+}
+
+/// What is in `folder`, without `.` and `..`, and at the top without the
+/// recycle bins (whose own folder `set_access` sets).
+fn names(folder: &OwnedFd, top: bool) -> Result<Vec<CString>, Errno> {
+    let mut names = Vec::new();
+    for entry in rustix::fs::Dir::read_from(folder)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let own = name == c"." || name == c"..";
+        let bin = top && name.to_bytes() == RECYCLE_DIRECTORY.as_bytes();
+        if !own && !bin {
+            names.push(name.to_owned());
+        }
+    }
+    Ok(names)
+}
+
+/// `name` in `folder` opened, with whether it is a folder and its mode;
+/// `None` for what is left alone, or went or changed since it was listed.
+fn open_entry(folder: &OwnedFd, name: &CStr, device: u64) -> Result<Option<(OwnedFd, bool, u32)>, Errno> {
+    use rustix::fs::FileType;
+    let stat = match rustix::fs::statat(folder, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(stat) => stat,
+        Err(Errno::NOENT) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let kind = FileType::from_raw_mode(stat.st_mode);
+    let folder_kind = match kind {
+        FileType::Directory => true,
+        FileType::RegularFile => false,
+        _ => return Ok(None),
+    };
+    if stat.st_dev != device {
+        return Ok(None);
+    }
+    let flags = if folder_kind { FOLDER } else { OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC };
+    let entry = match openat(folder, name, flags, Mode::empty()) {
+        Ok(entry) => entry,
+        // Gone, or swapped for a link or something else, since.
+        Err(Errno::NOENT | Errno::LOOP | Errno::NOTDIR) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let opened = rustix::fs::fstat(&entry)?;
+    if FileType::from_raw_mode(opened.st_mode) != kind || opened.st_dev != device {
+        return Ok(None);
+    }
+    if folder_kind && opened.st_uid != 0 && opened.st_mode & 0o077 == 0 {
+        return Ok(None);
+    }
+    Ok(Some((entry, folder_kind, opened.st_mode)))
+}
+
+/// One pass's change of the entry behind `entry`, through
+/// `/proc/self/fd`: the attributes of what was opened, whatever its path
+/// is by now. Default entries for folders only.
+fn change_entry(entry: &OwnedFd, folder: bool, mode: u32, rules: &Rules, pass: Pass) -> Result<(), Errno> {
+    let path = format!("/proc/self/fd/{}", entry.as_raw_fd());
+    let access = read_acl(&path, acl::ACCESS)?;
+    let changed = match pass {
+        Pass::Remove => acl::without(access.clone(), mode, rules),
+        Pass::Grant => acl::with(access.clone(), mode, folder, rules),
+    };
+    if let Some(acl) = &changed {
+        rustix::fs::setxattr(&path, acl::ACCESS, &acl.to_bytes(), rustix::fs::XattrFlags::empty())?;
+    }
+    if folder {
+        let default = read_acl(&path, acl::DEFAULT)?;
+        let changed_default = match pass {
+            Pass::Remove => acl::default_without(default, rules),
+            Pass::Grant => {
+                let now = changed.or(access).unwrap_or_else(|| Acl::from_mode(mode));
+                acl::default_with(default, &now, rules)
+            }
+        };
+        if let Some(acl) = changed_default {
+            rustix::fs::setxattr(&path, acl::DEFAULT, &acl.to_bytes(), rustix::fs::XattrFlags::empty())?;
+        }
+    }
+    Ok(())
+}
+
+/// An ACL attribute; `None` if there is none. One the kernel would not
+/// write is not guessed at.
+fn read_acl(path: &str, name: &str) -> Result<Option<Acl>, Errno> {
+    let mut buffer = vec![0u8; 4 + 8 * 64];
+    let length = match rustix::fs::getxattr(path, name, &mut buffer[..]) {
+        Ok(length) => length,
+        Err(Errno::NODATA) => return Ok(None),
+        Err(Errno::RANGE) => {
+            let size = rustix::fs::getxattr(path, name, &mut [0u8; 0][..])?;
+            buffer = vec![0u8; size];
+            rustix::fs::getxattr(path, name, &mut buffer[..])?
+        }
+        Err(error) => return Err(error),
+    };
+    Acl::parse(&buffer[..length]).map(Some).ok_or(Errno::INVAL)
 }
 
 #[cfg(test)]
@@ -699,49 +897,127 @@ mod tests {
         ShareAccess { principal, permission }
     }
 
-    #[tokio::test]
-    async fn a_tree_is_changed_entry_by_entry_through_descriptors() {
+    fn acl_of(path: &Path, name: &str) -> Option<Acl> {
+        read_acl(path.to_str().unwrap(), name).unwrap()
+    }
+
+    #[test]
+    fn a_tree_is_changed_through_descriptors_and_private_folders_are_left_alone() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("share");
         fs::create_dir_all(root.join("album/2024")).unwrap();
         fs::write(root.join("album/2024/a.jpg"), "x").unwrap();
         fs::write(root.join("notes.txt"), "x").unwrap();
+        fs::write(root.join("run.sh"), "x").unwrap();
+        fs::set_permissions(root.join("run.sh"), std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
         fs::create_dir_all(root.join(RECYCLE_DIRECTORY).join("anna")).unwrap();
+        // A bin a writer renamed: private, so nobody else's entries go there.
+        let renamed = root.join("old-bin/bob");
+        fs::create_dir_all(&renamed).unwrap();
+        fs::write(renamed.join("deleted.txt"), "x").unwrap();
+        fs::set_permissions(&renamed, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
         let elsewhere = dir.path().join("elsewhere");
         fs::create_dir(&elsewhere).unwrap();
         std::os::unix::fs::symlink(&elsewhere, root.join("escape")).unwrap();
-        // setfacl as it is called: its arguments and what descriptor 0 is.
-        let log = dir.path().join("setfacl.log");
-        let setfacl = dir.path().join("setfacl");
-        fs::write(
-            &setfacl,
-            format!("#!/bin/sh\necho \"$* $(readlink /proc/self/fd/0)\" >> {}\n", log.display()),
-        )
-        .unwrap();
-        fs::set_permissions(&setfacl, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-        let tools = Tools { setfacl, ..Tools::default() };
-        let accounts = crate::accounts::AccountFiles::default();
-        let sharing = Sharing::new(&tools, HostPaths::default(), accounts).unwrap();
-        let removals = ["u:bob".to_owned(), "d:u:bob".to_owned()];
-        let modify = ["u:anna:rwX".to_owned(), "d:u:anna:rwX".to_owned()];
+        let (bob, anna, staff) = (Who::User(4242), Who::User(4243), Who::Group(4244));
 
-        sharing.change_tree(&root, &removals, &modify).await.unwrap();
+        let before = Rules { remove: vec![], grant: vec![(bob, SharePermission::ReadWrite)] };
+        change_tree(&root, &before).unwrap();
+        let access = |path: &str| acl_of(&root.join(path), acl::ACCESS).unwrap();
+        assert_eq!(access("album").named(bob), Some(7));
+        assert_eq!(acl_of(&root.join("album"), acl::DEFAULT).unwrap().named(bob), Some(7));
+        assert_eq!(access("album/2024/a.jpg").named(bob), Some(6), "no execute on a plain file");
+        assert_eq!(access("run.sh").named(bob), Some(7), "a program stays one");
 
-        let shown = |path: &str| root.join(path).display().to_string();
-        let mut calls: Vec<String> = fs::read_to_string(&log).unwrap().lines().map(str::to_owned).collect();
-        calls.sort();
-        let mut expected = vec![
-            format!("-m u:anna:rwX,d:u:anna:rwX -- /proc/self/fd/0 {}", shown("album")),
-            format!("-m u:anna:rwX,d:u:anna:rwX -- /proc/self/fd/0 {}", shown("album/2024")),
-            format!("-m u:anna:rwX -- /proc/self/fd/0 {}", shown("album/2024/a.jpg")),
-            format!("-m u:anna:rwX -- /proc/self/fd/0 {}", shown("notes.txt")),
-            format!("-x u:bob,d:u:bob -- /proc/self/fd/0 {}", shown("album")),
-            format!("-x u:bob,d:u:bob -- /proc/self/fd/0 {}", shown("album/2024")),
-            format!("-x u:bob -- /proc/self/fd/0 {}", shown("album/2024/a.jpg")),
-            format!("-x u:bob -- /proc/self/fd/0 {}", shown("notes.txt")),
-        ];
-        expected.sort();
-        assert_eq!(calls, expected, "neither the link nor the bins, default entries on folders only");
+        let after = Rules {
+            remove: vec![bob],
+            grant: vec![(anna, SharePermission::Read), (staff, SharePermission::ReadWrite)],
+        };
+        change_tree(&root, &after).unwrap();
+        for folder in ["album", "album/2024", "old-bin"] {
+            let acl = access(folder);
+            assert_eq!(
+                (acl.named(bob), acl.named(anna), acl.named(staff)),
+                (None, Some(5), Some(7)),
+                "{folder}"
+            );
+            let default = acl_of(&root.join(folder), acl::DEFAULT).unwrap();
+            assert_eq!((default.named(bob), default.named(anna)), (None, Some(5)), "{folder}");
+        }
+        assert_eq!(access("notes.txt").named(anna), Some(4));
+        assert_eq!(access("notes.txt").named(bob), None);
+        assert_eq!(access("run.sh").named(anna), Some(5));
+        assert!(acl_of(&elsewhere, acl::ACCESS).is_none(), "not through the link");
+        assert!(acl_of(&root.join(RECYCLE_DIRECTORY).join("anna"), acl::ACCESS).is_none(), "not the bins");
+        assert!(acl_of(&renamed, acl::ACCESS).is_none(), "not a private folder");
+        assert!(acl_of(&renamed.join("deleted.txt"), acl::ACCESS).is_none(), "nor what is in it");
+    }
+
+    #[test]
+    fn a_wide_tree_keeps_only_the_folders_on_the_way_down_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("share");
+        for n in 0..1500 {
+            fs::create_dir_all(root.join(format!("{n}/inner"))).unwrap();
+        }
+        let anna = Who::User(4243);
+        change_tree(&root, &Rules { remove: vec![], grant: vec![(anna, SharePermission::Read)] }).unwrap();
+        for n in [0, 749, 1499] {
+            assert_eq!(acl_of(&root.join(format!("{n}/inner")), acl::ACCESS).unwrap().named(anna), Some(5));
+        }
+    }
+
+    #[test]
+    fn failures_are_counted_and_too_many_end_the_change() {
+        let mut failures = Failures::default();
+        for _ in 0..MAX_FAILURES {
+            failures.note(Path::new("/volume1/media/a"), Errno::IO).unwrap();
+        }
+        let error = failures.note(Path::new("/volume1/media/b"), Errno::IO).unwrap_err();
+        assert!(error.to_string().contains("101 entries"), "{error}");
+        assert!(error.to_string().contains("/volume1/media/a"), "{error}");
+    }
+
+    #[test]
+    fn what_takes_the_bins_place_is_moved_aside() {
+        let dir = tempfile::tempdir().unwrap();
+        let name = ShareName::parse("media").unwrap();
+        for (share, odd) in [("file", true), ("link", false)] {
+            let root = dir.path().join(share);
+            fs::create_dir(&root).unwrap();
+            if odd {
+                fs::write(root.join(RECYCLE_DIRECTORY), "not a folder").unwrap();
+            } else {
+                std::os::unix::fs::symlink(dir.path(), root.join(RECYCLE_DIRECTORY)).unwrap();
+            }
+            let bin = open_bin(&root, &name).unwrap();
+            assert!(rustix::fs::fstat(&bin).map(|s| s.st_mode & 0o170000 == 0o040000).unwrap());
+            assert!(fs::symlink_metadata(root.join(RECYCLE_DIRECTORY)).unwrap().is_dir());
+            let aside: Vec<String> = fs::read_dir(&root)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().into_string().unwrap())
+                .filter(|n| n.starts_with(".recycle.not-a-folder-"))
+                .collect();
+            assert_eq!(aside.len(), 1, "{share}: {aside:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_change_of_a_shares_folder_does_not_wait_long_for_one_through_its_files() {
+        let sharing =
+            Sharing::new(&Tools::default(), HostPaths::default(), crate::accounts::AccountFiles::default())
+                .unwrap();
+        let volume = VolumeNumber::new(1).unwrap();
+        let (media, photos) = (ShareName::parse("media").unwrap(), ShareName::parse("photos").unwrap());
+        let walking = sharing.share_lock(volume, &media);
+        let _walking = walking.lock().await;
+
+        let refused = sharing.set_access(volume, &media, &[], &[], false).await.unwrap_err();
+        assert!(refused.to_string().contains("being applied to its files"), "{refused}");
+        // Another share is not held up: it gets as far as finding its folder.
+        let other = sharing.set_access(volume, &photos, &[], &[], false).await.unwrap_err();
+        assert!(other.to_string().contains("not present"), "{other}");
     }
 
     #[test]

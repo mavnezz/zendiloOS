@@ -521,14 +521,21 @@ rustls with ring and the system's certificate authorities
   which the files agent resolves to the folder of the user it acts as and
   nobody else's. Turning them off, or taking one away, leaves the files.
 - Changed rules apply to the share's directory at once and to existing
-  files in a job (`setfacl -R -P`), except the users' recycle bins. Access
-  is taken away before any is given, so a revocation holds even if adding
-  fails; the job may run for hours. Links are never followed: links at the
-  share's top are left out (as arguments setfacl would follow them into
-  other shares or the system), `-P` skips those inside, and `.recycle` is
-  opened with `O_NOFOLLOW` and changed through its descriptor
-  (`setfacl … /proc/self/fd/0`), so a link swapped in meanwhile changes
-  nothing. **[Later]** the whole walk through descriptors instead of paths.
+  files in a job, except the users' recycle bins. Access is taken away
+  from the whole tree before any is given, so a revocation holds even if
+  adding fails; the job may run for hours. The files agent walks the tree
+  itself, depth first, by descriptor (`O_NOFOLLOW`, only the folders on the
+  way down open), and changes each ACL through its descriptor
+  (`system.posix_acl_*` via `/proc/self/fd`, the edits of `setfacl -x/-m`
+  with the mask recomputed), so a folder swapped for a link meanwhile
+  changes nothing. Links, other file systems, what is neither folder nor
+  file, and private folders (not root's, only their owner may enter: a
+  bin a writer renamed among them) are left alone; an entry that cannot be
+  changed does not stop the others, the job fails at the end naming one.
+  One change per share runs at a time; a change of a share's folder waits
+  15 seconds at most for one going through its files, then is refused
+  ("try again"), while other shares are not held up. Something not a
+  folder in `.recycle`'s place is moved aside (`.recycle.not-a-folder-…`).
 - **Recycle bin:** Samba's `vfs_recycle` moves files deleted over SMB to
   `.recycle/<user>/<folders>/<name>` in the share (`Copy #N of <name>` if
   taken), hidden but not vetoed, so users can restore from it. Each user's
@@ -660,10 +667,15 @@ rustls with ring and the system's certificate authorities
   places of their own; quick ones have four. One user's large copies never
   keep others from listing, downloading or uploading.
 - **Nothing happens behind a caller's back:** a request still waiting for
-  its place when its client gives up (zendiloosd's own timeout) is dropped,
-  never carried out later; zendiloosd waits two minutes for a quick request
-  and two hours for a long one, longer than the agent itself lets one run,
-  so once begun, a change is seen through and its outcome reported.
+  its turn, a place or a lock another operation holds, when its client
+  gives up (zendiloosd's own timeout, its connection closed) is dropped,
+  never carried out later. The client says how long it waits (`wait_ms`);
+  the agent waits for the turn half of that at most, so what was asked has
+  time to run and be answered, and refuses what has not started once it is
+  asked to stop. zendiloosd waits two minutes for a quick system request
+  and two hours for a long one, ten minutes and a day for files requests
+  (copies, moves, permissions of a whole share), so once begun, a change is
+  seen through and its outcome reported.
 - Every change to a pool, scrubs included, requires its `zendiloos:volume`
   property: pools the owner made stay untouched.
 - Known limits: with `erasable = "unused"`, a compromised `zendiloosd` could

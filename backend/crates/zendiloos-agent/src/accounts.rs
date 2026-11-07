@@ -142,7 +142,7 @@ impl Accounts {
     }
 
     pub(crate) async fn create_user(&self, name: &UserName) -> Result<Response, OperationError> {
-        let _serial = self.serial.lock().await;
+        let _serial = crate::waiting::lock(&self.serial).await?;
         let (passwd, group) = self.read_files().await?;
         if passwd::lookup(&passwd, name.as_str()).is_some() {
             return Err(OperationError::Conflict);
@@ -174,7 +174,7 @@ impl Accounts {
     }
 
     pub(crate) async fn delete_user(&self, name: &UserName) -> Result<Response, OperationError> {
-        let _serial = self.serial.lock().await;
+        let _serial = crate::waiting::lock(&self.serial).await?;
         self.require_managed_user(name).await?;
         // The Samba entry may be missing, e.g. after a failed creation.
         if let Err(error) = run(&self.smbpasswd, &["-x", name.as_str()]).await {
@@ -189,7 +189,7 @@ impl Accounts {
         name: &UserName,
         password: &Password,
     ) -> Result<Response, OperationError> {
-        let _serial = self.serial.lock().await;
+        let _serial = crate::waiting::lock(&self.serial).await?;
         self.require_managed_user(name).await?;
         // -s reads the new password twice from stdin, without prompts.
         let input = format!("{0}\n{0}\n", password.expose());
@@ -209,14 +209,14 @@ impl Accounts {
         name: &UserName,
         enabled: bool,
     ) -> Result<Response, OperationError> {
-        let _serial = self.serial.lock().await;
+        let _serial = crate::waiting::lock(&self.serial).await?;
         self.require_managed_user(name).await?;
         run(&self.smbpasswd, &[if enabled { "-e" } else { "-d" }, name.as_str()]).await?;
         Ok(Response::Done)
     }
 
     pub(crate) async fn create_group(&self, name: &GroupName) -> Result<Response, OperationError> {
-        let _serial = self.serial.lock().await;
+        let _serial = crate::waiting::lock(&self.serial).await?;
         let (_, group) = self.read_files().await?;
         if passwd::group_id(&group, name.as_str()).is_some() {
             return Err(OperationError::Conflict);
@@ -230,7 +230,7 @@ impl Accounts {
     }
 
     pub(crate) async fn delete_group(&self, name: &GroupName) -> Result<Response, OperationError> {
-        let _serial = self.serial.lock().await;
+        let _serial = crate::waiting::lock(&self.serial).await?;
         let (passwd, group) = self.read_files().await?;
         require_managed_group(&passwd, &group, name)?;
         run(&self.groupdel, &["--", name.as_str()]).await?;
@@ -242,7 +242,7 @@ impl Accounts {
         name: &GroupName,
         members: &[UserName],
     ) -> Result<Response, OperationError> {
-        let _serial = self.serial.lock().await;
+        let _serial = crate::waiting::lock(&self.serial).await?;
         let (passwd, group) = self.read_files().await?;
         require_managed_group(&passwd, &group, name)?;
         for member in members {
@@ -257,7 +257,7 @@ impl Accounts {
     /// own, then the user in it, both with IDs never handed out before.
     /// `conflict` if the name belongs to somebody else.
     pub(crate) async fn create_app_account(&self, app: &AppName) -> Result<(), OperationError> {
-        let _serial = self.serial.lock().await;
+        let _serial = crate::waiting::lock(&self.serial).await?;
         let (passwd, group) = self.read_files().await?;
         if app_account(&passwd, &group, app).is_some() {
             return Ok(());
@@ -313,7 +313,7 @@ impl Accounts {
 
     /// Deletes `app`'s account and its group; nothing if it is gone.
     pub(crate) async fn delete_app_account(&self, app: &AppName) -> Result<Response, OperationError> {
-        let _serial = self.serial.lock().await;
+        let _serial = crate::waiting::lock(&self.serial).await?;
         let (passwd, group) = self.read_files().await?;
         let name = app.account();
         if app_account(&passwd, &group, app).is_none() {

@@ -6,6 +6,7 @@
 //! parsing happens unprivileged, so parser bugs never run as root.
 
 mod accounts;
+mod acl;
 mod app_shares;
 mod apps;
 pub mod config;
@@ -23,6 +24,7 @@ mod server;
 mod sharing;
 mod ssh;
 mod time;
+mod waiting;
 mod web;
 
 pub use accounts::AccountFiles;

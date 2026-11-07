@@ -352,8 +352,20 @@ async fn create_share(
         nfs: request.nfs.into_iter().map(|c| (c.network, c.write)).collect(),
         settings: request.settings.map(TryInto::try_into).transpose()?.unwrap_or_default(),
     };
-    let share = state.sharing.create(input, &auth.0.actor(), &client).await?;
+    let (sharing, actor) = (state.sharing.clone(), auth.0.actor());
+    let share = to_the_end(async move { sharing.create(input, &actor, &client).await }).await?;
     Ok((StatusCode::CREATED, Json(share.into())))
+}
+
+/// Runs a change of shares to its end even if the client hangs up
+/// meanwhile (nginx gives up after a minute): dropped halfway, it would
+/// leave the host and the records apart, a dataset without its share or a
+/// share's folder with rules nobody recorded.
+async fn to_the_end<T: Send + 'static>(work: impl Future<Output = T> + Send + 'static) -> T {
+    match tokio::spawn(work).await {
+        Ok(done) => done,
+        Err(error) => std::panic::resume_unwind(error.into_panic()),
+    }
 }
 
 /// Absent fields stay as they are.
@@ -409,7 +421,9 @@ async fn update_share(
         nfs: request.nfs.map(|clients| clients.into_iter().map(|c| (c.network, c.write)).collect()),
         settings: request.settings.map(TryInto::try_into).transpose()?,
     };
-    let (share, job) = state.sharing.update(ShareId::new(id), changes, &auth.0.actor(), &client).await?;
+    let (sharing, actor) = (state.sharing.clone(), auth.0.actor());
+    let (share, job) =
+        to_the_end(async move { sharing.update(ShareId::new(id), changes, &actor, &client).await }).await?;
     Ok(Json(ShareUpdate { share: share.into(), job: job.map(Job::from) }))
 }
 
@@ -443,7 +457,10 @@ async fn delete_share(
     ApiJson(request): ApiJson<DeleteShareRequest>,
 ) -> Result<(StatusCode, Json<Job>), ApiError> {
     auth.require(Permission::SharesManage)?;
-    let job = state.sharing.delete(ShareId::new(id), &request.confirm, &auth.0.actor(), &client).await?;
+    let (sharing, actor) = (state.sharing.clone(), auth.0.actor());
+    let job =
+        to_the_end(async move { sharing.delete(ShareId::new(id), &request.confirm, &actor, &client).await })
+            .await?;
     Ok((StatusCode::ACCEPTED, Json(job.into())))
 }
 

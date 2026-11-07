@@ -229,7 +229,7 @@ impl Pools {
         ids: &[DiskId],
         volume: VolumeNumber,
     ) -> Result<Response, OperationError> {
-        let _serial = self.serial.lock().await;
+        let _serial = crate::waiting::lock(&self.serial).await?;
         if !layout.disks().contains(&ids.len()) {
             return Err(refused(format!("{layout:?} takes {:?} disks, not {}", layout.disks(), ids.len())));
         }
@@ -275,7 +275,7 @@ impl Pools {
         name: &PoolName,
         volume: VolumeNumber,
     ) -> Result<Response, OperationError> {
-        let _serial = self.serial.lock().await;
+        let _serial = crate::waiting::lock(&self.serial).await?;
         self.require_managed(name, Some(volume)).await?;
         let members = self.members(name).await?;
         // Docker would start without its data, on the system disk.
@@ -350,7 +350,7 @@ impl Pools {
         device: u64,
         id: &DiskId,
     ) -> Result<Response, OperationError> {
-        let _serial = self.serial.lock().await;
+        let _serial = crate::waiting::lock(&self.serial).await?;
         self.require_managed(pool, None).await?;
         let disk = self.check(id)?;
         // New partitions match the members' size, whatever the new disk's.
@@ -381,7 +381,7 @@ impl Pools {
         volume: VolumeNumber,
         name: &ShareName,
     ) -> Result<Response, OperationError> {
-        let _serial = self.serial.lock().await;
+        let _serial = crate::waiting::lock(&self.serial).await?;
         self.require_managed(pool, Some(volume)).await?;
         let dataset = format!("{}/{}", pool.as_str(), name.as_str());
         let unit = share_unit_name(volume, name);
@@ -423,7 +423,7 @@ impl Pools {
         volume: VolumeNumber,
         name: &ShareName,
     ) -> Result<Response, OperationError> {
-        let _serial = self.serial.lock().await;
+        let _serial = crate::waiting::lock(&self.serial).await?;
         self.require_managed(pool, Some(volume)).await?;
         self.release_nfs().await?;
         self.remove_unit(&share_unit_name(volume, name)).await?;
@@ -453,7 +453,7 @@ impl Pools {
         schedules: &[SnapshotFrequency],
         note: Option<&SnapshotNote>,
     ) -> Result<Response, OperationError> {
-        let _serial = self.serial.lock().await;
+        let _serial = crate::waiting::lock(&self.serial).await?;
         self.require_managed(pool, Some(volume)).await?;
         let dataset = self.share_dataset(pool, share).await?;
         let mut args = vec!["snapshot".to_owned()];
@@ -478,7 +478,7 @@ impl Pools {
         share: &ShareName,
         label: &SnapshotLabel,
     ) -> Result<Response, OperationError> {
-        let _serial = self.serial.lock().await;
+        let _serial = crate::waiting::lock(&self.serial).await?;
         self.require_managed(pool, Some(volume)).await?;
         let dataset = self.share_dataset(pool, share).await?;
         run(&self.zfs, &["destroy", &format!("{dataset}@{}", label.as_str())]).await?;
@@ -494,7 +494,7 @@ impl Pools {
         share: &ShareName,
         label: &SnapshotLabel,
     ) -> Result<Response, OperationError> {
-        let _serial = self.serial.lock().await;
+        let _serial = crate::waiting::lock(&self.serial).await?;
         self.require_managed(pool, Some(volume)).await?;
         let dataset = self.share_dataset(pool, share).await?;
         run(&self.zfs, &["rollback", "-r", &format!("{dataset}@{}", label.as_str())]).await?;
@@ -511,7 +511,7 @@ impl Pools {
         compression: ShareCompression,
         record_size: ShareRecordSize,
     ) -> Result<Response, OperationError> {
-        let _serial = self.serial.lock().await;
+        let _serial = crate::waiting::lock(&self.serial).await?;
         self.require_managed(pool, Some(volume)).await?;
         let dataset = self.share_dataset(pool, share).await?;
         let quota = quota_bytes.map_or("none".to_owned(), |bytes| bytes.to_string());
@@ -608,7 +608,7 @@ impl Pools {
         pool: &PoolName,
         volume: VolumeNumber,
     ) -> Result<Response, OperationError> {
-        let _serial = self.serial.lock().await;
+        let _serial = crate::waiting::lock(&self.serial).await?;
         if !self.docker.path().exists() || !self.dockerd.exists() {
             return Err(refused("Docker is not installed: apt install docker.io docker-compose".into()));
         }
@@ -693,8 +693,8 @@ impl Pools {
         // never through the hours a copy may take: every other change to a
         // pool would wait. Meanwhile the source cannot be destroyed (the
         // data root is still on it) and a second move waits here.
-        let _moving = self.docker_move.lock().await;
-        let serial = self.serial.lock().await;
+        let _moving = crate::waiting::lock(&self.docker_move).await?;
+        let serial = crate::waiting::lock(&self.serial).await?;
         if !self.docker.path().exists() || !self.dockerd.exists() {
             return Err(refused("Docker is not installed".into()));
         }
@@ -726,6 +726,7 @@ impl Pools {
             self.send_receive(&snapshot, &target).await
         }
         .await;
+        // In the middle of the move: waits as long as it takes.
         let _serial = self.serial.lock().await;
         if let Err(error) = copied {
             let _ = run(&self.zfs, &["destroy", "-r", &target]).await;
@@ -810,7 +811,7 @@ impl Pools {
         pool: &PoolName,
         volume: VolumeNumber,
     ) -> Result<Response, OperationError> {
-        let _serial = self.serial.lock().await;
+        let _serial = crate::waiting::lock(&self.serial).await?;
         self.require_managed(pool, Some(volume)).await?;
         let dataset = format!("{}/{HOMES_DATASET}", pool.as_str());
         let existing = output(&self.zfs, &["list", "-H", "-o", "name", "-d", "1", pool.as_str()]).await?;
@@ -849,7 +850,7 @@ impl Pools {
         user: &UserName,
         quota_bytes: Option<u64>,
     ) -> Result<Response, OperationError> {
-        let _serial = self.serial.lock().await;
+        let _serial = crate::waiting::lock(&self.serial).await?;
         self.require_managed(pool, Some(volume)).await?;
         let dataset = format!("{}/{HOMES_DATASET}", pool.as_str());
         let quota = quota_bytes.map_or_else(|| "none".to_owned(), |bytes| bytes.to_string());
@@ -863,7 +864,7 @@ impl Pools {
         volume: VolumeNumber,
         app: &AppName,
     ) -> Result<(), OperationError> {
-        let _serial = self.serial.lock().await;
+        let _serial = crate::waiting::lock(&self.serial).await?;
         self.require_managed(pool, Some(volume)).await?;
         let parent = format!("{}/{APPS_DATASET}", pool.as_str());
         let dataset = format!("{parent}/{}", app.as_str());
@@ -904,7 +905,7 @@ impl Pools {
         volume: VolumeNumber,
         app: &AppName,
     ) -> Result<(), OperationError> {
-        let _serial = self.serial.lock().await;
+        let _serial = crate::waiting::lock(&self.serial).await?;
         self.require_managed(pool, Some(volume)).await?;
         self.remove_unit(&app_unit_name(volume, app)).await?;
         let dataset = format!("{}/{APPS_DATASET}/{}", pool.as_str(), app.as_str());

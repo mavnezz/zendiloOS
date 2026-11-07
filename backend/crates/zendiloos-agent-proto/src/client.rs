@@ -20,7 +20,7 @@ pub enum TransportError {
         #[source]
         source: io::Error,
     },
-    #[error("the agent did not answer within {0:?}")]
+    #[error("the agent did not answer within {0:?}; what was asked may still be going on")]
     Timeout(Duration),
     #[error("talking to the agent failed")]
     Frame(#[from] FrameError),
@@ -93,7 +93,7 @@ impl AgentTransport for UnixTransport {
         request_id: Option<RequestId>,
     ) -> Result<(Response, Option<OwnedFd>), TransportError> {
         let limit = if request.is_long() { self.long.unwrap_or(self.timeout) } else { self.timeout };
-        let envelope = Envelope::new(request, request_id);
+        let envelope = Envelope::new(request, request_id).waiting(limit);
         tokio::time::timeout(limit, self.exchange(&envelope))
             .await
             .map_err(|_| TransportError::Timeout(limit))?

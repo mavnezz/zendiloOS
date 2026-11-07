@@ -63,8 +63,10 @@ pub use web::TlsMinimum;
 
 /// Agent and API come from the same release; any difference is refused.
 pub const PROTOCOL_VERSION: u32 = 1;
-/// Largest request the agent reads.
-pub const MAX_REQUEST_BYTES: usize = 512 * 1024;
+/// Largest request the agent reads: room for the largest project's
+/// configuration ([`ProjectConfig::MAX_BYTES`]) and the request around it.
+pub const MAX_REQUEST_BYTES: usize = 2 * 1024 * 1024;
+const _: () = assert!(ProjectConfig::MAX_BYTES + 64 * 1024 <= MAX_REQUEST_BYTES);
 /// Largest response the client reads.
 pub const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 
@@ -75,12 +77,22 @@ pub struct Envelope {
     pub version: u32,
     #[serde(default)]
     pub request_id: Option<RequestId>,
+    /// How long the client waits for the answer, in milliseconds. The
+    /// agent waits for the request's turn half of it at most, so what was
+    /// asked has time left to run (none: as long as it takes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_ms: Option<u64>,
     pub request: Request,
 }
 
 impl Envelope {
     pub fn new(request: Request, request_id: Option<RequestId>) -> Self {
-        Self { version: PROTOCOL_VERSION, request_id, request }
+        Self { version: PROTOCOL_VERSION, request_id, wait_ms: None, request }
+    }
+
+    /// Says how long the client waits for the answer.
+    pub fn waiting(self, wait: std::time::Duration) -> Self {
+        Self { wait_ms: Some(u64::try_from(wait.as_millis()).unwrap_or(u64::MAX)), ..self }
     }
 }
 

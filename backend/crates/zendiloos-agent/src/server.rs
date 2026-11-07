@@ -6,13 +6,14 @@ use std::os::fd::OwnedFd;
 
 use tokio::io::{AsyncReadExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::Semaphore;
+use tokio::sync::{Semaphore, watch};
 use zendiloos_agent_proto::{
     Envelope, ErrorCode, FrameError, MAX_REQUEST_BYTES, PROTOCOL_VERSION, Response, read_message,
     write_message_with_file,
 };
 
 use crate::operations::Operations;
+use crate::waiting::Turn;
 
 /// A client must send its request within this time.
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
@@ -30,6 +31,9 @@ pub struct Server {
     client_uid: u32,
     permits: Arc<Semaphore>,
     long_permits: Arc<Semaphore>,
+    /// Set once the agent is asked to stop: what has not started yet does
+    /// not start any more.
+    stopping: Arc<watch::Sender<bool>>,
 }
 
 impl Server {
@@ -39,6 +43,7 @@ impl Server {
             client_uid,
             permits: Arc::new(Semaphore::new(MAX_CONCURRENT)),
             long_permits: Arc::new(Semaphore::new(MAX_CONCURRENT_LONG)),
+            stopping: Arc::new(watch::channel(false).0),
         }
     }
 
@@ -71,6 +76,7 @@ impl Server {
         uid: u32,
         pid: Option<i32>,
     ) -> (Response, Option<OwnedFd>) {
+        let received = tokio::time::Instant::now();
         let envelope: Envelope =
             match tokio::time::timeout(READ_TIMEOUT, read_message(&mut reader, MAX_REQUEST_BYTES)).await {
                 Ok(Ok(envelope)) => envelope,
@@ -103,20 +109,39 @@ impl Server {
         }
 
         let permits = if envelope.request.is_long() { &self.long_permits } else { &self.permits };
-        // While it waits for a place, the client may give up (zendiloosd's
-        // own timeout) and report a failure; what it asked for must not
-        // happen after that, behind its back. The request is read whole, so
-        // the connection says nothing more until it is closed.
+        // The request is read whole, so the connection says nothing more
+        // until the client closes it: it gave up (zendiloosd's own timeout)
+        // and reported a failure. While the request waits for a place or a
+        // lock, that ends the wait (see `waiting`); once it runs, it is
+        // seen through.
+        let (gone_tx, gone) = watch::channel(false);
+        let until = envelope.wait_ms.map(|ms| received + Duration::from_millis(ms) / 2);
+        let turn = Turn::new(gone, self.stopping.subscribe(), until);
+        let work = turn.scope(async {
+            let _permit = crate::waiting::wait(permits.acquire()).await?;
+            Ok::<_, crate::operations::OperationError>(
+                self.operations.execute_with_file(&envelope.request).await,
+            )
+        });
+        tokio::pin!(work);
         let mut more = [0u8; 1];
-        let _permit = tokio::select! {
-            biased;
-            permit = permits.acquire() => permit,
-            _ = reader.read(&mut more) => {
-                tracing::warn!(request_id, op, uid, pid, "the client gave up waiting: not carried out");
-                return (error_response(ErrorCode::Failed, "the client gave up waiting"), None);
+        let mut watching = true;
+        let outcome = loop {
+            tokio::select! {
+                outcome = &mut work => break outcome,
+                _ = reader.read(&mut more), if watching => {
+                    watching = false;
+                    let _ = gone_tx.send(true);
+                }
             }
         };
-        let (response, file) = self.operations.execute_with_file(&envelope.request).await;
+        let (response, file) = match outcome {
+            Ok(answer) => answer,
+            Err(error) => {
+                tracing::warn!(request_id, op, uid, pid, %error, "not carried out");
+                return (error_response(ErrorCode::Failed, &error.to_string()), None);
+            }
+        };
         match &response {
             Response::Error { code, message } => {
                 tracing::warn!(request_id, op, uid, pid, ?code, message, "operation failed");
@@ -124,6 +149,11 @@ impl Server {
             _ => tracing::info!(request_id, op, uid, pid, "operation done"),
         }
         (response, file)
+    }
+
+    /// Nothing that has not started yet starts any more.
+    fn stop(&self) {
+        let _ = self.stopping.send(true);
     }
 }
 
@@ -152,9 +182,11 @@ pub async fn serve(listener: UnixListener, server: Server, shutdown: impl Future
         }
     }
     // Asked to stop (a package upgrade, a restart): nothing new is taken,
-    // and what runs is seen through, or a pool's change or a copy of
-    // Docker's data would stop halfway. systemd's TimeoutStopSec bounds it.
+    // what waits for its turn is refused, and what runs is seen through, or
+    // a pool's change or a copy of Docker's data would stop halfway.
+    // systemd's TimeoutStopSec bounds it.
     drop(listener);
+    server.stop();
     if !running.is_empty() {
         tracing::info!(running = running.len(), "stopping once the running operations are done");
     }

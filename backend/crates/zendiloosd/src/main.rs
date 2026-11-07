@@ -339,8 +339,12 @@ async fn agent_transports(
                     UnixTransport::new(&config.agent.socket, Duration::from_secs(120))
                         .with_long(Duration::from_secs(2 * 3600)),
                 ),
-                // Applying permissions to a large share takes a while.
-                Arc::new(UnixTransport::new(&config.agent.files_socket, Duration::from_secs(3600))),
+                // Copies, moves and permissions of a whole share may take
+                // many hours; everything else little.
+                Arc::new(
+                    UnixTransport::new(&config.agent.files_socket, Duration::from_secs(600))
+                        .with_long(Duration::from_secs(24 * 3600)),
+                ),
                 // Fetching an app's images too; the agent gives up after 30 minutes.
                 Arc::new(UnixTransport::new(&config.agent.socket, Duration::from_secs(31 * 60))),
                 // Copying Docker's data to another pool; the agent gives up after six hours.

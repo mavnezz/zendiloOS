@@ -58,7 +58,7 @@ impl Projects {
         config: &ProjectConfig,
         pull: bool,
     ) -> Result<Response, OperationError> {
-        let _serial = self.serial.lock().await;
+        let _serial = crate::waiting::lock(&self.serial).await?;
         let owner = Owner::Project(project);
         let mut normalized: Value = serde_json::from_str(config.as_str())
             .map_err(|_| OperationError::Refused("the project cannot be read".into()))?;
@@ -88,7 +88,7 @@ impl Projects {
     /// Takes the project's containers and networks down and removes what
     /// deploying it kept: its file, its pins and their unit.
     pub(crate) async fn down(&self, project: &ProjectName) -> Result<Response, OperationError> {
-        let _serial = self.serial.lock().await;
+        let _serial = crate::waiting::lock(&self.serial).await?;
         let owner = Owner::Project(project);
         self.compose(project, &["down", "--remove-orphans"]).await?;
         app_shares::remove_unit(&self.systemctl, &self.paths, owner).await?;
