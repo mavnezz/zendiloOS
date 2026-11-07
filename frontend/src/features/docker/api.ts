@@ -341,3 +341,68 @@ export function useUpdatable() {
       ),
   )
 }
+
+/** One container as Docker inspects it, asked again while shown. */
+export function useContainerDetails(id: Ref<string>) {
+  return useQuery({
+    queryKey: ['docker', 'containers', id, 'details'],
+    queryFn: () =>
+      unwrap(api.GET('/api/v1/docker/containers/{id}', { params: { path: { id: id.value } } })),
+    refetchInterval: REFRESH,
+  })
+}
+
+/** The processes of a running container, asked again while shown. */
+export function useContainerProcesses(id: Ref<string>, enabled: () => boolean) {
+  return useQuery({
+    queryKey: ['docker', 'containers', id, 'processes'],
+    queryFn: () =>
+      unwrap(
+        api.GET('/api/v1/docker/containers/{id}/processes', { params: { path: { id: id.value } } }),
+      ),
+    enabled: computed(enabled),
+    refetchInterval: 5000,
+    retry: false,
+  })
+}
+
+/** The last `lines` lines a container wrote; asked again every few seconds while `live`. */
+export function useContainerLog(id: Ref<string>, lines: Ref<number>, live: Ref<boolean>) {
+  return useQuery({
+    queryKey: ['docker', 'containers', id, 'logs', lines],
+    queryFn: () =>
+      unwrap(
+        api.GET('/api/v1/docker/containers/{id}/logs', {
+          params: { path: { id: id.value }, query: { lines: lines.value } },
+        }),
+      ),
+    refetchInterval: () => (live.value ? 3000 : false),
+  })
+}
+
+/** How updating a container would go: by its project, or its image fetched only. */
+export function containerUpdateWay(id: string) {
+  return unwrap(api.GET('/api/v1/docker/containers/{id}/update', { params: { path: { id } } }))
+}
+
+export function useUpdateContainer() {
+  const refresh = useRefresh()
+  return useMutation({
+    mutationFn: (id: string) =>
+      unwrap(api.POST('/api/v1/docker/containers/{id}/update', { params: { path: { id } } })),
+    onSettled: refresh,
+  })
+}
+
+/** Where a terminal in a container is reached, on the page's own host. */
+export function terminalUrl(
+  id: string,
+  command: string,
+  columns: number,
+  rows: number,
+  page: Pick<Location, 'protocol' | 'host'> = window.location,
+): string {
+  const scheme = page.protocol === 'https:' ? 'wss' : 'ws'
+  const query = new URLSearchParams({ command, columns: String(columns), rows: String(rows) })
+  return `${scheme}://${page.host}/api/v1/docker/containers/${encodeURIComponent(id)}/terminal?${query.toString()}`
+}

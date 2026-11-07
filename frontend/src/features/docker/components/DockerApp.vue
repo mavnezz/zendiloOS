@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { Box, Boxes, Disc3, LayoutDashboard, Network, ScrollText, Settings2 } from 'lucide-vue-next'
-import { computed, inject, nextTick, ref, watch } from 'vue'
+import { computed, inject, nextTick, provide, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import { useWindowSection, WINDOW_SECTION } from '@/shared/lib/window-section'
 import { AppFrame, type NavGroup } from '@/shared/ui/frame'
 
+import { OPEN_CONTAINER } from '../lib/navigation'
 import ActivitySection from './ActivitySection.vue'
+import ContainerDetail from './ContainerDetail.vue'
 import ContainersSection from './ContainersSection.vue'
 import ImagesSection from './ImagesSection.vue'
 import ManagementSection from './ManagementSection.vue'
@@ -53,7 +55,19 @@ type View =
   | { kind: 'create' }
   | { kind: 'edit'; name: string; compose: string }
 const view = ref<View>({ kind: 'list' })
-watch(section, () => (view.value = { kind: 'list' }))
+/** Within Containers: the one opened, by ID. */
+const container = ref<string | null>(null)
+watch(section, () => {
+  view.value = { kind: 'list' }
+  container.value = null
+})
+
+// A container's name opens its page, from Containers or a project.
+provide(OPEN_CONTAINER, (id: string) => {
+  section.value = 'containers'
+  // After the change of page, which shows the list.
+  void nextTick(() => (container.value = id))
+})
 
 // Another app (the App Center) opens a project here as `project:<name>`.
 const frame = inject(WINDOW_SECTION, null)
@@ -102,7 +116,10 @@ watch(
         @create="view = { kind: 'create' }"
       />
     </template>
-    <ContainersSection v-else-if="section === 'containers'" />
+    <template v-else-if="section === 'containers'">
+      <ContainerDetail v-if="container" :id="container" :key="container" @back="container = null" />
+      <ContainersSection v-else />
+    </template>
     <ImagesSection v-else-if="section === 'images'" />
     <NetworksSection v-else-if="section === 'networks'" />
     <ActivitySection v-else-if="section === 'activity'" />

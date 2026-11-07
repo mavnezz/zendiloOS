@@ -1,23 +1,29 @@
 <script setup lang="ts">
-import { Box } from 'lucide-vue-next'
-import { computed } from 'vue'
+import { ArrowUpCircle, Box, LoaderCircle } from 'lucide-vue-next'
+import { computed, inject } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import type { DockerContainer } from '@/shared/api/types'
 import { formatBytes, formatRate } from '@/shared/lib/format'
 import { Badge } from '@/shared/ui/badge'
 
+import { OPEN_CONTAINER } from '../lib/navigation'
 import { isUp } from '../lib/status'
 import { imageParts } from '../lib/usage'
 
+/** `updating`: an update of it runs now. */
 const props = defineProps<{
   container: DockerContainer
   showProject?: boolean
   updatable?: boolean
   /** What its network sends and receives now, per second, instead of the totals. */
   rates?: { sent: number; received: number }
+  updating?: boolean
 }>()
+const emit = defineEmits<{ update: [] }>()
 const { t } = useI18n()
+/** Within the Docker app, the name opens the container's page. */
+const open = inject(OPEN_CONTAINER, null)
 
 const image = computed(() => imageParts(props.container.image))
 const usage = computed(() => props.container.usage)
@@ -38,11 +44,34 @@ const state = computed(() => (isUp(props.container) ? 'running' : 'stopped'))
       </span>
       <div class="grid min-w-0 flex-1 gap-0.5">
         <span class="flex flex-wrap items-center gap-2">
-          <span class="truncate font-medium">{{ container.name }}</span>
+          <button
+            v-if="open"
+            type="button"
+            class="truncate rounded font-medium outline-none hover:text-primary hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+            @click="open(container.id)"
+          >
+            {{ container.name }}
+          </button>
+          <span v-else class="truncate font-medium">{{ container.name }}</span>
           <Badge :variant="state === 'running' ? 'success' : 'secondary'">{{
             t(`docker.status.${state}`)
           }}</Badge>
-          <Badge v-if="updatable" variant="info">{{ t('docker.updatable') }}</Badge>
+          <Badge v-if="updating" variant="info">
+            <LoaderCircle class="size-3 animate-spin" />
+            {{ t('docker.update.running') }}
+          </Badge>
+          <button
+            v-else-if="updatable"
+            type="button"
+            class="rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            :title="t('docker.update.action')"
+            @click="emit('update')"
+          >
+            <Badge variant="info">
+              <ArrowUpCircle class="size-3" />
+              {{ t('docker.updatable') }}
+            </Badge>
+          </button>
           <Badge
             v-if="container.health"
             :variant="container.health === 'healthy' ? 'success' : 'warning'"

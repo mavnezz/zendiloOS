@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { FileText, RotateCw, Search, Trash2 } from 'lucide-vue-next'
+import { ArrowUpCircle, FileText, Info, RotateCw, Search, Trash2 } from 'lucide-vue-next'
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
@@ -7,6 +7,7 @@ import type { DockerContainer } from '@/shared/api/types'
 import { problemMessage } from '@/shared/i18n'
 import { type Action, ActionMenu } from '@/shared/ui/action-menu'
 import { Alert } from '@/shared/ui/alert'
+import { Button } from '@/shared/ui/button'
 import { ConfirmDialog } from '@/shared/ui/confirm-dialog'
 import { ModalDialog } from '@/shared/ui/dialog'
 import { Input } from '@/shared/ui/input'
@@ -14,13 +15,22 @@ import { Switch } from '@/shared/ui/switch'
 
 import { useContainerAction, useContainers, useLogs, useUpdatable } from '../api'
 import { isUp } from '../lib/status'
+import { useContainerUpdates } from '../updating'
 import ContainerRow from './ContainerRow.vue'
 import LogView from './LogView.vue'
+import UpdateDialog from './UpdateDialog.vue'
 
 const { t } = useI18n()
 const { data: containers, isPending } = useContainers()
 const act = useContainerAction()
 const updatable = useUpdatable()
+const updates = useContainerUpdates()
+/** Containers with a newer image under their tag, not being updated already. */
+const outdated = computed(() =>
+  (containers.value ?? []).filter(
+    (c) => updatable.value.has(c.name) && !updates.updating.value.has(c.name),
+  ),
+)
 const filter = ref('')
 const removing = ref<DockerContainer | null>(null)
 const reading = ref<DockerContainer | null>(null)
@@ -42,6 +52,12 @@ function actions(container: DockerContainer): Action[] {
   return [
     { id: 'logs', label: t('docker.containers.logs'), icon: FileText },
     {
+      id: 'update',
+      label: t('docker.update.action'),
+      icon: ArrowUpCircle,
+      disabled: !updatable.value.has(container.name) || updates.updating.value.has(container.name),
+    },
+    {
       id: 'restart',
       label: t('docker.actions.restart'),
       icon: RotateCw,
@@ -59,6 +75,7 @@ function actions(container: DockerContainer): Action[] {
 
 function run(container: DockerContainer, action: string): void {
   if (action === 'logs') reading.value = container
+  else if (action === 'update') updates.ask(container)
   else if (action === 'remove') removing.value = container
   else act.mutate({ id: container.id, action: 'restart' })
 }
@@ -86,8 +103,22 @@ function confirmRemove(): void {
         />
       </div>
     </div>
-    <Alert v-if="act.error.value" variant="destructive">{{
-      problemMessage(act.error.value)
+    <div
+      v-if="outdated.length"
+      role="status"
+      class="flex flex-wrap items-center gap-3 rounded-xl bg-info/10 px-4 py-3 text-sm"
+    >
+      <Info class="size-4 shrink-0 text-info" />
+      <span class="flex-1">{{
+        t('docker.update.banner', { n: outdated.length }, outdated.length)
+      }}</span>
+      <Button size="sm" variant="outline" @click="updates.askAll()">
+        <ArrowUpCircle />
+        {{ t('docker.update.allAction') }}
+      </Button>
+    </div>
+    <Alert v-if="act.error.value || updates.failure.value" variant="destructive">{{
+      problemMessage(act.error.value ?? updates.failure.value)
     }}</Alert>
     <div v-if="isPending" class="h-40 animate-pulse rounded-xl bg-muted" />
     <p v-else-if="!shown.length" class="py-16 text-center text-sm text-muted-foreground">
@@ -99,6 +130,8 @@ function confirmRemove(): void {
           :container="container"
           show-project
           :updatable="updatable.has(container.name)"
+          :updating="updates.updating.value.has(container.name)"
+          @update="updates.ask(container)"
         >
           <div class="flex items-center gap-1">
             <ActionMenu
@@ -125,6 +158,17 @@ function confirmRemove(): void {
       destructive
       @update:open="(open: boolean) => !open && (removing = null)"
       @confirm="confirmRemove"
+    />
+    <UpdateDialog
+      :open="updates.asking.value !== null"
+      :container="updates.asking.value"
+      @update:open="(open: boolean) => !open && (updates.asking.value = null)"
+      @confirm="updates.asking.value && updates.start(updates.asking.value)"
+    />
+    <UpdateDialog
+      v-model:open="updates.askingAll.value"
+      :count="outdated.length"
+      @confirm="updates.startAll()"
     />
     <ModalDialog
       :open="reading !== null"
