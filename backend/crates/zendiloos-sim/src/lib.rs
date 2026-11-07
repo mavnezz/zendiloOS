@@ -732,6 +732,15 @@ impl AgentTransport for SimulatedAgent {
                 let now = (self.clock)();
                 changed(self.host().stop_scrub(pool.as_str(), now))
             }
+            Request::MountRemovable { id } => match self.host().mount_removable(id.as_str()) {
+                Ok(()) => Response::RemovableMounted { read_only: false },
+                Err(refusal) => changed(Err(refusal)),
+            },
+            Request::EjectRemovable { id, power_off } => {
+                changed(self.host().eject_removable(id.as_str(), *power_off))
+            }
+            // Nothing is ever left behind here.
+            Request::CleanRemovable {} => Response::RemovableCleaned { ids: Vec::new() },
             Request::CreateSnapshot { pool, volume, share, label, schedules, note } => {
                 let names: Vec<&str> = schedules.iter().map(|f| f.as_str()).collect();
                 let snapshot = host::SimSnapshot {
@@ -1249,6 +1258,34 @@ mod tests {
             .await
             .unwrap();
         refused(&refused_docker, ErrorCode::Forbidden);
+    }
+
+    #[tokio::test]
+    async fn the_usb_stick_is_mounted_and_ejected_like_a_real_one() {
+        use zendiloos_agent_proto::RemovableId;
+        let agent = SimulatedAgent::new();
+        let id = || RemovableId::parse(host::STICK_ID).unwrap();
+        let lsblk = || async {
+            match agent.call(Request::ListBlockDevices {}, None).await.unwrap() {
+                Response::BlockDevices { lsblk_json } => lsblk_json,
+                other => panic!("{other:?}"),
+            }
+        };
+        assert!(lsblk().await.contains("\"tran\":\"usb\""));
+
+        let mounted = agent.call(Request::MountRemovable { id: id() }, None).await.unwrap();
+        assert_eq!(mounted, Response::RemovableMounted { read_only: false });
+        assert!(lsblk().await.contains("/run/zendiloos-removable/1A2B-3C4D"));
+        let kept = agent.call(Request::EjectRemovable { id: id(), power_off: false }, None).await.unwrap();
+        assert_eq!(kept, Response::Done);
+        assert!(lsblk().await.contains("SIMUSB0001") && !lsblk().await.contains("/run/zendiloos-removable"));
+        let off = agent.call(Request::EjectRemovable { id: id(), power_off: true }, None).await.unwrap();
+        assert_eq!(off, Response::Done);
+        assert!(!lsblk().await.contains("SIMUSB0001"), "gone from the bus");
+        let gone = agent.call(Request::MountRemovable { id: id() }, None).await.unwrap();
+        assert!(matches!(gone, Response::Error { code: ErrorCode::Forbidden, .. }), "{gone:?}");
+        let cleaned = agent.call(Request::CleanRemovable {}, None).await.unwrap();
+        assert_eq!(cleaned, Response::RemovableCleaned { ids: Vec::new() });
     }
 
     #[tokio::test]

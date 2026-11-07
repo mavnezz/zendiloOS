@@ -17,6 +17,7 @@ mod files;
 mod framing;
 mod network;
 mod packages;
+mod removable;
 mod services;
 mod ssh;
 mod time;
@@ -49,6 +50,9 @@ pub use network::{
 pub use packages::{
     InvalidReleasePackage, PackageReport, PackageRun, PackageRunState, PackageTask, ReleasePackage,
     UpgradablePackage,
+};
+pub use removable::{
+    InvalidRemovableId, MEMBER_SIGNATURES, REMOVABLE_PLACE, RemovableFilesystem, RemovableId,
 };
 pub use services::{
     FileServices, InvalidVetoFiles, InvalidWorkgroup, SmbEncryption, SmbProtocol, SmbSigning, VetoFiles,
@@ -165,6 +169,28 @@ pub enum Request {
     StopScrub {
         pool: PoolName,
     },
+    /// Mounts the removable drive whose file system has UUID `id` at its
+    /// place ([`RemovableId::place`]): no setuid programs, device files or
+    /// programs run from it, FAT, exFAT and NTFS readable and writable by
+    /// the group `zendiloos-users` only; read-only if it cannot be written.
+    /// The agent checks the drive itself first: the only file system with
+    /// this UUID, one it mounts, on a USB or removable disk that holds no
+    /// system, pool, RAID, LVM or encrypted device, nothing on it mounted
+    /// or held elsewhere. Answers [`Response::RemovableMounted`].
+    MountRemovable {
+        id: RemovableId,
+    },
+    /// Unmounts the removable drive `id` (refused while files on it are
+    /// open) and removes its place; with `power_off`, also takes its disk
+    /// off the bus so it can be pulled out, as Windows' "Eject" does.
+    EjectRemovable {
+        id: RemovableId,
+        power_off: bool,
+    },
+    /// Lets go of removable drives pulled out without being ejected:
+    /// unmounts what is left of them, lazily, and removes empty places.
+    /// Answers [`Response::RemovableCleaned`].
+    CleanRemovable {},
     /// Takes snapshot `<pool>/<share>@<label>` of a share on a pool
     /// zendiloos created, noting the schedules it is for and a note as ZFS
     /// properties.
@@ -623,6 +649,9 @@ impl Request {
             Request::ReplaceDisk { .. } => "replace_disk",
             Request::ScrubPool { .. } => "scrub_pool",
             Request::StopScrub { .. } => "stop_scrub",
+            Request::MountRemovable { .. } => "mount_removable",
+            Request::EjectRemovable { .. } => "eject_removable",
+            Request::CleanRemovable {} => "clean_removable",
             Request::CreateSnapshot { .. } => "create_snapshot",
             Request::DestroySnapshot { .. } => "destroy_snapshot",
             Request::RollbackSnapshot { .. } => "rollback_snapshot",
@@ -844,6 +873,15 @@ pub enum Response {
         /// `zfs list -H -p -t filesystem -d 1 -o name,used,available`.
         zfs_list: String,
     },
+    /// A removable drive is mounted; `read_only` if it could not be
+    /// written (write-protected, or NTFS that Windows left hibernated).
+    RemovableMounted {
+        read_only: bool,
+    },
+    /// The removable drives let go of: places of drives that were gone.
+    RemovableCleaned {
+        ids: Vec<RemovableId>,
+    },
     Error {
         code: ErrorCode,
         message: String,
@@ -1029,6 +1067,10 @@ impl Request {
             | Request::DestroyPool { .. }
             | Request::ReplaceDisk { .. }
             | Request::DestroyShare { .. }
+            // A file system replays its journal; unmounting writes what is
+            // cached, minutes for a slow stick.
+            | Request::MountRemovable { .. }
+            | Request::EjectRemovable { .. }
             // Images fetched, projects brought up or down: up to half an hour.
             | Request::PullImage { .. }
             | Request::PruneImages {}
@@ -1781,6 +1823,29 @@ mod tests {
         assert!(!access(false).is_long());
         assert!(access(true).is_walk() && !access(false).is_walk());
         assert_eq!(access(true).acting_user(), None, "an administrator's, in places of its own");
+        let id = || RemovableId::parse("1A2B-3C4D").unwrap();
+        assert!(Request::MountRemovable { id: id() }.is_long());
+        assert!(Request::EjectRemovable { id: id(), power_off: true }.is_long());
+        assert!(!Request::CleanRemovable {}.is_long());
+    }
+
+    #[test]
+    fn removable_drives_travel_by_their_uuid_to_the_system_agent() {
+        let eject = serde_json::from_value::<Request>(
+            json!({ "op": "eject_removable", "id": "1A2B-3C4D", "power_off": true }),
+        )
+        .unwrap();
+        assert_eq!(eject.name(), "eject_removable");
+        assert_eq!(eject.role(), Role::System);
+        for id in ["../etc", "-o", "a b"] {
+            let mount = json!({ "op": "mount_removable", "id": id });
+            assert!(serde_json::from_value::<Request>(mount).is_err(), "{id}");
+        }
+        assert_eq!(Request::CleanRemovable {}.name(), "clean_removable");
+        assert_eq!(
+            Request::MountRemovable { id: RemovableId::parse("A").unwrap() }.name(),
+            "mount_removable"
+        );
     }
     #[test]
     fn has_a_stable_wire_format() {

@@ -20,6 +20,7 @@ use crate::network::{Network, NetworkPaths};
 use crate::packages::Packages;
 use crate::pools::{Erasable, HostPaths, Pools};
 use crate::projects::Projects;
+use crate::removable::Removable;
 use crate::sharing::Sharing;
 use crate::ssh::{Ssh, SshPaths};
 use crate::time::{Time, TimePaths};
@@ -63,6 +64,7 @@ pub struct Operations {
     web: Web,
     docker: Docker,
     projects: Projects,
+    removable: Removable,
     console_issue: std::path::PathBuf,
     role: Role,
 }
@@ -96,6 +98,7 @@ impl Operations {
                 Program::new(&tools.systemctl)?,
                 paths.host.clone(),
             ),
+            removable: Removable::new(tools, paths.host.clone(), &paths.accounts)?,
             console_issue: paths.host.console_issue.clone(),
             sharing: Sharing::new(tools, paths.host.clone(), paths.accounts.clone())?,
             apps: Apps::new(
@@ -165,6 +168,9 @@ impl Operations {
             Request::ReplaceDisk { pool, device, disk } => self.pools.replace(pool, *device, disk).await,
             Request::ScrubPool { pool } => self.pools.scrub(pool).await,
             Request::StopScrub { pool } => self.pools.stop_scrub(pool).await,
+            Request::MountRemovable { id } => self.removable.mount(id).await,
+            Request::EjectRemovable { id, power_off } => self.removable.eject(id, *power_off).await,
+            Request::CleanRemovable {} => self.removable.clean().await,
             Request::CreateSnapshot { pool, volume, share, label, schedules, note } => {
                 self.pools.create_snapshot(pool, *volume, share, label, schedules, note.as_ref()).await
             }
@@ -400,6 +406,9 @@ pub(crate) enum OperationError {
     Read(std::path::PathBuf, #[source] io::Error),
     #[error("the name is already taken")]
     Conflict,
+    /// What is to be changed is in use, e.g. files open on a drive.
+    #[error("in use: {0}")]
+    Busy(String),
     #[error("{0} is not managed by zendiloos")]
     NotManaged(String),
     #[error("the system is not set up for this: {0}")]
@@ -424,7 +433,7 @@ pub(crate) enum OperationError {
 impl OperationError {
     fn code(&self) -> ErrorCode {
         match self {
-            OperationError::Conflict => ErrorCode::Conflict,
+            OperationError::Conflict | OperationError::Busy(_) => ErrorCode::Conflict,
             OperationError::NotManaged(_) | OperationError::Refused(_) => ErrorCode::Forbidden,
             OperationError::File(error) => match error {
                 FileError::NotFound => ErrorCode::NotFound,
@@ -447,6 +456,7 @@ mod tests {
         let io = || io::Error::other("x");
         for (error, code) in [
             (OperationError::Conflict, ErrorCode::Conflict),
+            (OperationError::Busy("files open".into()), ErrorCode::Conflict),
             (OperationError::NotManaged("user x".into()), ErrorCode::Forbidden),
             (OperationError::Refused("no".into()), ErrorCode::Forbidden),
             (OperationError::File(FileError::NotFound), ErrorCode::NotFound),

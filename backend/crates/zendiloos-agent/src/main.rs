@@ -8,10 +8,10 @@ use tokio::net::UnixListener;
 use tokio::signal::unix::{SignalKind, signal};
 use zendiloos_agent::config::Config;
 use zendiloos_agent::{
-    HostPaths, Operations, Server, passwd, pin_project, pin_shares, run_packages, serve, unpin_project,
-    unpin_shares,
+    HostPaths, Operations, Server, passwd, pin_project, pin_shares, power_off_drive, run_packages, serve,
+    unpin_project, unpin_shares,
 };
-use zendiloos_agent_proto::{AppName, ProjectName, Role};
+use zendiloos_agent_proto::{AppName, DiskName, ProjectName, Role};
 
 #[derive(Parser)]
 #[command(version, about = "The privileged zendiloos agent")]
@@ -43,6 +43,8 @@ enum Command {
     UnpinProject { project: String },
     /// Run apt on a task (in zendiloos-packages.service), recording each step
     RunPackages { id: String, task: String, release: Option<String> },
+    /// Take an ejected removable drive's disk off the bus, so it can be pulled out
+    PowerOffDrive { disk: String },
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -58,6 +60,12 @@ async fn main() -> anyhow::Result<()> {
         return run_packages(&HostPaths::default(), id, task, release.as_deref())
             .map_err(|error| anyhow::anyhow!("{error}"));
     }
+    if let Some(Command::PowerOffDrive { disk }) = &cli.command {
+        let name = DiskName::parse(disk).map_err(|_| anyhow::anyhow!("{disk:?} is no disk"))?;
+        power_off_drive(&HostPaths::default(), &name).map_err(|error| anyhow::anyhow!("{error}"))?;
+        println!("{disk}: powered off");
+        return Ok(());
+    }
     if let Some(command) = cli.command {
         let paths = HostPaths::default();
         let app = |name: &str| AppName::parse(name).map_err(|_| anyhow::anyhow!("{name:?} is no app"));
@@ -70,7 +78,7 @@ async fn main() -> anyhow::Result<()> {
             Command::UnpinProject { project: name } => {
                 (name, "unpinned", unpin_project(&paths, &project(name)?))
             }
-            Command::RunPackages { .. } => unreachable!("handled above"),
+            Command::RunPackages { .. } | Command::PowerOffDrive { .. } => unreachable!("handled above"),
         };
         outcome.map_err(|error| anyhow::anyhow!("{name}: {error}"))?;
         println!("{name}: folders of shares {done}");

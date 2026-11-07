@@ -191,6 +191,7 @@ fn host(erasable: Erasable) -> Host {
             localtime: root.join("localtime"),
             app_shares: root.join("app-shares"),
             project_shares: root.join("project-shares"),
+            removable: root.join("removable"),
             agent: root.join("zendiloos-agent"),
             packages: root.join("packages"),
             docker_socket: root.join("docker.sock"),

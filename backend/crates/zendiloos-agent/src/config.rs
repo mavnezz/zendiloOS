@@ -69,6 +69,12 @@ pub struct Tools {
     /// May be missing: then the SSH server is not installed.
     pub sshd: PathBuf,
     pub systemd_run: PathBuf,
+    /// Mounts removable drives in transient units.
+    pub systemd_mount: PathBuf,
+    /// Run in a transient unit, to unmount removable drives.
+    pub umount: PathBuf,
+    /// Run in a transient unit, to remove a removable drive's place.
+    pub rmdir: PathBuf,
     /// May be missing: then Docker is not installed.
     pub docker: PathBuf,
     /// Docker's daemon, from the `docker.io` package; the client above
@@ -100,6 +106,9 @@ impl Default for Tools {
             timedatectl: PathBuf::from("/usr/bin/timedatectl"),
             sshd: PathBuf::from("/usr/sbin/sshd"),
             systemd_run: PathBuf::from("/usr/bin/systemd-run"),
+            systemd_mount: PathBuf::from("/usr/bin/systemd-mount"),
+            umount: PathBuf::from("/usr/bin/umount"),
+            rmdir: PathBuf::from("/usr/bin/rmdir"),
             docker: PathBuf::from("/usr/bin/docker"),
             dockerd: PathBuf::from("/usr/sbin/dockerd"),
         }

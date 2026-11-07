@@ -52,6 +52,9 @@ impl Agent {
             path
         };
         let tools = Tools {
+            systemd_mount: "/bin/false".into(),
+            umount: "/bin/false".into(),
+            rmdir: "/bin/false".into(),
             // No run of apt goes on unless the file `updating` is there.
             systemctl: script(
                 "systemctl",

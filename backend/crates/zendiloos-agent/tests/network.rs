@@ -35,6 +35,9 @@ impl Host {
         };
         let any = script("tool", "");
         let tools = Tools {
+            systemd_mount: "/bin/false".into(),
+            umount: "/bin/false".into(),
+            rmdir: "/bin/false".into(),
             systemctl: script("systemctl", "exit 0"),
             // systemd-networkd knows enp1s0 only, as link 2.
             busctl: script(

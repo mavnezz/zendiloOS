@@ -51,6 +51,9 @@ impl Host {
     fn operations(&self, role: Role) -> Operations {
         let p = |name: &str| self.program(name);
         let tools = Tools {
+            systemd_mount: "/bin/false".into(),
+            umount: "/bin/false".into(),
+            rmdir: "/bin/false".into(),
             systemctl: p("systemctl"),
             lsblk: p("lsblk"),
             smartctl: p("smartctl"),
@@ -93,6 +96,7 @@ impl Host {
             localtime: at("localtime"),
             app_shares: at("app-shares"),
             project_shares: at("project-shares"),
+            removable: at("removable"),
             agent: at("agent"),
             packages: at("packages"),
             docker_socket: at("docker.sock"),

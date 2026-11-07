@@ -58,6 +58,9 @@ esac
         fs::write(&any, "#!/bin/sh\n").unwrap();
         fs::set_permissions(&any, fs::Permissions::from_mode(0o755)).unwrap();
         let tools = Tools {
+            systemd_mount: "/bin/false".into(),
+            umount: "/bin/false".into(),
+            rmdir: "/bin/false".into(),
             lsblk: any.clone(),
             smartctl: any.clone(),
             zpool: any.clone(),
@@ -87,6 +90,7 @@ esac
             units: root.join("units"),
             projects: root.join("etc-projects"),
             project_shares: root.join("project-shares"),
+            removable: root.join("removable"),
             ..HostPaths::default()
         };
         let paths = Paths { host, ..Paths::default() };

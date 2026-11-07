@@ -51,6 +51,12 @@ ExecStart=/usr/libexec/zendiloos/zendiloos-agent
 #   zendiloos-packages.service, this binary as `run-packages`), which
 #   records its steps in /var/lib/zendiloos-packages; the agent only reads
 #   that and, before an update, the release zendiloosd downloaded.
+# - removable drives: mounted by systemd in transient mount units
+#   (systemd-mount) below /run/zendiloos-removable, unmounted, their
+#   places removed and their disks powered off in transient services
+#   (systemd-run: umount, rmdir, this binary as `power-off-drive`, which
+#   writes to sysfs), all outside this sandbox, which only sees them;
+#   /run stays read-only here, so no mount of its own hides theirs.
 # The contents of volumes are the files agent's (zendiloos-files.service).
 NoNewPrivileges=yes
 CapabilityBoundingSet=CAP_SYS_RAWIO CAP_SYS_ADMIN CAP_CHOWN CAP_DAC_READ_SEARCH

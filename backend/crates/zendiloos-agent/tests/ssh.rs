@@ -35,6 +35,9 @@ impl Host {
         };
         let any = script("tool", "");
         let tools = Tools {
+            systemd_mount: "/bin/false".into(),
+            umount: "/bin/false".into(),
+            rmdir: "/bin/false".into(),
             systemctl: script(
                 "systemctl",
                 "case \"$1\" in\n\

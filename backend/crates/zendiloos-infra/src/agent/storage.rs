@@ -253,6 +253,7 @@ mod tests {
                 ("sde".into(), DiskUsage::Unused),
                 ("nvme0n1".into(), DiskUsage::System),
                 ("nvme1n1".into(), DiskUsage::Unused),
+                ("sdf".into(), DiskUsage::Foreign),
             ]
         );
         let states: Vec<_> =

@@ -3,6 +3,10 @@
 //! so zendiloosd's parsers run against it unchanged.
 
 use serde_json::{Value, json};
+use zendiloos_agent_proto::REMOVABLE_PLACE;
+
+/// The UUID of the simulated USB stick's file system.
+pub(crate) const STICK_ID: &str = "1A2B-3C4D";
 
 /// Seconds a simulated scrub or resilver takes.
 pub(crate) const SCAN_SECONDS: u64 = 90;
@@ -15,6 +19,8 @@ pub(crate) struct Disk {
     pub size: u64,
     pub transport: &'static str,
     pub rotational: bool,
+    /// A USB stick, say, as the kernel flags it.
+    pub removable: bool,
     pub partitions: Vec<Partition>,
 }
 
@@ -24,7 +30,7 @@ pub(crate) struct Partition {
     pub fstype: Option<&'static str>,
     pub label: Option<String>,
     pub uuid: Option<String>,
-    pub mount: Option<&'static str>,
+    pub mount: Option<String>,
     /// Filesystem size and use while mounted.
     pub usage: Option<(u64, u64)>,
 }
@@ -58,11 +64,11 @@ impl Disk {
                 json!({
                     "name": name, "kname": name, "path": format!("/dev/{name}"), "type": "part",
                     "size": partition.size, "model": null, "serial": null, "wwn": null,
-                    "tran": self.transport, "rota": self.rotational, "rm": false, "ro": false,
+                    "tran": self.transport, "rota": self.rotational, "rm": self.removable, "ro": false,
                     "fstype": partition.fstype, "label": partition.label, "uuid": partition.uuid,
                     "fssize": partition.usage.map(|u| u.0), "fsused": partition.usage.map(|u| u.1),
                     "fsavail": partition.usage.map(|u| u.0 - u.1),
-                    "mountpoints": partition.mount.map_or_else(Vec::new, |m| vec![m]),
+                    "mountpoints": partition.mount.clone().map_or_else(Vec::new, |m| vec![m]),
                     "pkname": self.name, "id-link": format!("{}-part{}", self.id_link(), index + 1),
                 })
             })
@@ -70,7 +76,7 @@ impl Disk {
         json!({
             "name": self.name, "kname": self.name, "path": format!("/dev/{}", self.name), "type": "disk",
             "size": self.size, "model": self.model, "serial": self.serial, "wwn": null,
-            "tran": self.transport, "rota": self.rotational, "rm": false, "ro": false,
+            "tran": self.transport, "rota": self.rotational, "rm": self.removable, "ro": false,
             "fstype": null, "label": null, "uuid": null, "fssize": null, "fsused": null, "fsavail": null,
             "mountpoints": [], "pkname": null, "id-link": self.id_link(), "children": children,
         })
@@ -342,6 +348,7 @@ impl Host {
             size: TB4,
             transport: "sata",
             rotational: true,
+            removable: false,
             partitions: Vec::new(),
         };
         let system = Disk {
@@ -351,13 +358,14 @@ impl Host {
             size: 512_110_190_592,
             transport: "nvme",
             rotational: false,
+            removable: false,
             partitions: vec![
                 Partition {
                     size: 512 * 1024 * 1024,
                     fstype: Some("vfat"),
                     label: None,
                     uuid: Some("4A1B-2C3D".to_owned()),
-                    mount: Some("/boot/efi"),
+                    mount: Some("/boot/efi".to_owned()),
                     usage: Some((536_608_768, 6_291_456)),
                 },
                 Partition {
@@ -365,7 +373,7 @@ impl Host {
                     fstype: Some("ext4"),
                     label: None,
                     uuid: Some("3c5d7e9f-1a2b-4c3d-8e4f-5a6b7c8d9e0f".to_owned()),
-                    mount: Some("/"),
+                    mount: Some("/".to_owned()),
                     usage: Some((494 * GIB, 9 * GIB)),
                 },
                 Partition {
@@ -373,7 +381,7 @@ impl Host {
                     fstype: Some("swap"),
                     label: None,
                     uuid: Some("9f8e7d6c-5b4a-4321-8fed-cba987654321".to_owned()),
-                    mount: Some("[SWAP]"),
+                    mount: Some("[SWAP]".to_owned()),
                     usage: None,
                 },
             ],
@@ -385,7 +393,26 @@ impl Host {
             size: 1_000_204_886_016,
             transport: "nvme",
             rotational: false,
+            removable: false,
             partitions: Vec::new(),
+        };
+        // Plugged in, not mounted yet: zendiloosd mounts it when it looks.
+        let stick = Disk {
+            name: "sdf".to_owned(),
+            model: "SIM USB Stick".to_owned(),
+            serial: "SIMUSB0001".to_owned(),
+            size: 32_017_047_552,
+            transport: "usb",
+            rotational: false,
+            removable: true,
+            partitions: vec![Partition {
+                size: 32_015_998_976,
+                fstype: Some("vfat"),
+                label: Some("STICK".to_owned()),
+                uuid: Some(STICK_ID.to_owned()),
+                mount: None,
+                usage: Some((32_000_000_000, 7_400_000_000)),
+            }],
         };
         let mut host = Self {
             disks: vec![
@@ -396,6 +423,7 @@ impl Host {
                 hdd("sde", "SIM4T0005"),
                 system,
                 spare,
+                stick,
             ],
             pools: Vec::new(),
         };
@@ -490,6 +518,31 @@ impl Host {
             .iter()
             .position(|disk| disk.id_link() == id)
             .ok_or_else(|| Refusal::Refused(format!("disk {id} is not present")))
+    }
+
+    /// Mounts the removable drive `id` at its place, as the agent would.
+    pub fn mount_removable(&mut self, id: &str) -> Result<(), Refusal> {
+        let partition = self.removable(id)?;
+        partition.mount = Some(format!("{REMOVABLE_PLACE}/{id}"));
+        Ok(())
+    }
+
+    /// Unmounts it; with `power_off` its disk is gone, as when pulled out.
+    pub fn eject_removable(&mut self, id: &str, power_off: bool) -> Result<(), Refusal> {
+        self.removable(id)?.mount = None;
+        if power_off {
+            self.disks.retain(|disk| !disk.partitions.iter().any(|p| p.uuid.as_deref() == Some(id)));
+        }
+        Ok(())
+    }
+
+    fn removable(&mut self, id: &str) -> Result<&mut Partition, Refusal> {
+        self.disks
+            .iter_mut()
+            .filter(|disk| disk.removable || disk.transport == "usb")
+            .flat_map(|disk| disk.partitions.iter_mut())
+            .find(|partition| partition.uuid.as_deref() == Some(id))
+            .ok_or_else(|| Refusal::Refused(format!("there is no drive {id}")))
     }
 
     /// Like the agent: only disks without partitions in use.

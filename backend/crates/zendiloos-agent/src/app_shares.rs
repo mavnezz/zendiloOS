@@ -726,6 +726,7 @@ mod tests {
         let paths = HostPaths {
             app_shares: PathBuf::from("/run/pins"),
             project_shares: PathBuf::from("/run/project-pins"),
+            removable: PathBuf::from("/run/removable"),
             ..HostPaths::default()
         };
         assert_eq!(
@@ -896,6 +897,7 @@ mod tests {
             apps: dir.path().join("apps"),
             app_shares: dir.path().join("app-shares"),
             project_shares: dir.path().join("project-shares"),
+            removable: dir.path().join("removable"),
             ..HostPaths::default()
         };
         let places = dir.path().join("app-shares/jellyfin");

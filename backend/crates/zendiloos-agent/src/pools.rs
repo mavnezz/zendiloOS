@@ -117,6 +117,9 @@ pub struct HostPaths {
     pub app_shares: PathBuf,
     /// The same for the folders and files administrators' projects bind.
     pub project_shares: PathBuf,
+    /// Where removable drives are mounted, a folder each
+    /// ([`zendiloos_agent_proto::REMOVABLE_PLACE`]).
+    pub removable: PathBuf,
     /// This program, which units run to mount those folders and apt.
     pub agent: PathBuf,
     /// Where the runs of apt are recorded.
@@ -149,6 +152,7 @@ impl Default for HostPaths {
             localtime: PathBuf::from("/etc/localtime"),
             app_shares: PathBuf::from("/run/zendiloos-app-shares"),
             project_shares: PathBuf::from("/run/zendiloos-project-shares"),
+            removable: PathBuf::from(zendiloos_agent_proto::REMOVABLE_PLACE),
             agent: PathBuf::from("/usr/libexec/zendiloos/zendiloos-agent"),
             packages: PathBuf::from("/var/lib/zendiloos-packages"),
             docker_socket: PathBuf::from("/run/docker.sock"),

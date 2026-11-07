@@ -1,3 +1,6 @@
 # The console login prompt shows what the agent writes here: the address of
 # the web interface and, until the initial setup is done, the setup code.
 d /run/issue.d 0755 root root -
+# Removable drives are mounted here, a folder each, named by the UUID of
+# their file system: root's, outside the volumes, gone at the next boot.
+d /run/zendiloos-removable 0755 root root -
