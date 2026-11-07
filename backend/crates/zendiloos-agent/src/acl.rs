@@ -173,12 +173,37 @@ impl Acl {
 }
 
 /// A share's rules for what is in it: who loses their entries, who gets
-/// which. Folders get them as default entries too, for what is made in
-/// them later.
+/// which, and whose files pass to root. Folders get the entries as default
+/// entries too, for what is made in them later.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Rules {
     pub(crate) remove: Vec<Who>,
     pub(crate) grant: Vec<(Who, SharePermission)>,
+    pub(crate) owners: Owners,
+}
+
+/// Who may own what is in a share. The kernel gives a file's owner the
+/// owner's entry (`user::`) whatever named entries say, and lets them
+/// change the mode and the ACL: whoever may not write a share would still
+/// write their own files in it (over NFS, say), and could make them
+/// writable again. So what an account zendiloOS manages owns in a share
+/// passes to root once it may not write there; the share's entries alone
+/// then say what it may do. Other UIDs (system accounts, those containers
+/// run as) are no accounts of the share's rules and keep theirs.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Owners {
+    /// The UIDs of the accounts zendiloOS manages; none: nobody's pass.
+    pub(crate) managed: Option<std::ops::RangeInclusive<u32>>,
+    /// Those of them that may write, and keep what they own.
+    pub(crate) writers: Vec<u32>,
+}
+
+impl Owners {
+    /// Whether what `owner` owns passes to root.
+    pub(crate) fn hand_over(&self, owner: u32) -> bool {
+        self.managed.as_ref().is_some_and(|managed| managed.contains(&owner))
+            && !self.writers.contains(&owner)
+    }
 }
 
 /// What a permission is on a folder, and in a folder's default ACL.
@@ -265,7 +290,18 @@ mod tests {
     use super::*;
 
     fn rules(remove: &[Who], grant: &[(Who, SharePermission)]) -> Rules {
-        Rules { remove: remove.to_vec(), grant: grant.to_vec() }
+        Rules { remove: remove.to_vec(), grant: grant.to_vec(), owners: Owners::default() }
+    }
+
+    #[test]
+    fn what_managed_accounts_that_may_not_write_own_passes_to_root() {
+        let owners = Owners { managed: Some(2000..=59999), writers: vec![2001] };
+        assert!(!owners.hand_over(2001), "a writer keeps theirs");
+        assert!(owners.hand_over(2002), "one who may only read, or not at all");
+        assert!(owners.hand_over(2999), "an account gone since");
+        assert!(!owners.hand_over(999), "a container's or system account's stays");
+        assert!(!owners.hand_over(0));
+        assert!(!Owners::default().hand_over(2002), "without the managed range, nothing passes");
     }
 
     #[test]

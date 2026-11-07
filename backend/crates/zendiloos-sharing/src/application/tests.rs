@@ -1071,3 +1071,148 @@ async fn a_denied_account_keeps_out_although_its_group_may_write() {
     let seen = s.sharing.subject_access(Subject::Account(1)).await.unwrap();
     assert_eq!((seen[0].rule, seen[0].effective), (Some(Permission::Deny), None));
 }
+
+fn bob_gets(permission: Permission) -> ShareChanges {
+    ShareChanges {
+        access: Some(vec![
+            rule(Subject::Group(10), Access::ReadWrite),
+            AccessRule { subject: Subject::Account(2), permission },
+        ]),
+        ..ShareChanges::default()
+    }
+}
+
+fn recursive(calls: &[String]) -> Vec<&str> {
+    calls.iter().filter(|call| call.ends_with(" recursive")).map(String::as_str).collect()
+}
+
+#[tokio::test]
+async fn while_a_walk_gives_rules_it_read_no_change_of_the_shares_rules_is_taken() {
+    let s = setup();
+    let request = RequestContext::default();
+    let share = s.sharing.create(input("photos", "tank"), &alice(), &request).await.unwrap();
+    s.host.hold_walks.store(true, std::sync::atomic::Ordering::Relaxed);
+
+    let (_, granting) =
+        s.sharing.update(share.id, bob_gets(Permission::ReadWrite), &alice(), &request).await.unwrap();
+    while s.host.walks_held.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+        tokio::task::yield_now().await;
+    }
+    // The walk has read "bob may write" and is going through the files: a
+    // revocation now would be undone by it, on the files and the folder.
+    let refused = s.sharing.update(share.id, bob_gets(Permission::Deny), &alice(), &request).await;
+    assert!(
+        matches!(refused, Err(SharingError::Refused(ref why)) if why.contains("try again")),
+        "{refused:?}"
+    );
+    let app = s.sharing.set_app_access("app-immich", &[(share.name.clone(), Access::Read)], &request).await;
+    assert!(matches!(app, Err(SharingError::Refused(_))), "{app:?}");
+    assert!(s.sharing.list().await.unwrap()[0].rule_of(Subject::Account(2)) == Some(Permission::ReadWrite));
+
+    s.host.hold_walks.store(false, std::sync::atomic::Ordering::Relaxed);
+    s.host.let_walks_on.notify_one();
+    assert_eq!(finished(&s.jobs, granting.unwrap()).await.state, JobState::Succeeded);
+    let (_, revoking) =
+        s.sharing.update(share.id, bob_gets(Permission::Deny), &alice(), &request).await.unwrap();
+    finished(&s.jobs, revoking.unwrap()).await;
+    let calls = s.host.calls();
+    assert_eq!(
+        recursive(&calls).last(),
+        Some(&"access 1 photos [@family:rw,bob:-] -[] recursive"),
+        "{calls:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_walk_that_waited_gives_the_rules_recorded_when_it_runs() {
+    let s = setup();
+    let request = RequestContext::default();
+    let share = s.sharing.create(input("photos", "tank"), &alice(), &request).await.unwrap();
+    // A walk of the share is ahead of both: they wait their turn.
+    let queue = s.sharing.walks.queue(share.id);
+    let ahead = queue.lock().await;
+
+    let (_, granting) =
+        s.sharing.update(share.id, bob_gets(Permission::ReadWrite), &alice(), &request).await.unwrap();
+    let (_, revoking) =
+        s.sharing.update(share.id, bob_gets(Permission::Deny), &alice(), &request).await.unwrap();
+    drop(ahead);
+    finished(&s.jobs, granting.unwrap()).await;
+    finished(&s.jobs, revoking.unwrap()).await;
+
+    let calls = s.host.calls();
+    assert_eq!(
+        recursive(&calls),
+        ["access 1 photos [@family:rw,bob:-] -[] recursive"; 2],
+        "the older job gives bob nothing either: {calls:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_walk_removes_only_who_the_rules_do_not_name_again() {
+    let s = setup();
+    let request = RequestContext::default();
+    let share = s.sharing.create(input("photos", "tank"), &alice(), &request).await.unwrap();
+    let queue = s.sharing.walks.queue(share.id);
+    let ahead = queue.lock().await;
+
+    let without_bob = ShareChanges {
+        access: Some(vec![rule(Subject::Group(10), Access::ReadWrite)]),
+        ..ShareChanges::default()
+    };
+    let (_, removing) = s.sharing.update(share.id, without_bob, &alice(), &request).await.unwrap();
+    let (_, back) = s.sharing.update(share.id, bob_gets(Permission::Read), &alice(), &request).await.unwrap();
+    drop(ahead);
+    finished(&s.jobs, removing.unwrap()).await;
+    finished(&s.jobs, back.unwrap()).await;
+
+    let calls = s.host.calls();
+    assert_eq!(recursive(&calls), ["access 1 photos [@family:rw,bob:r] -[] recursive"; 2], "{calls:?}");
+}
+
+#[tokio::test]
+async fn a_walk_of_a_share_gone_meanwhile_does_nothing() {
+    let s = setup();
+    let request = RequestContext::default();
+    let share = s.sharing.create(input("photos", "tank"), &alice(), &request).await.unwrap();
+    let queue = s.sharing.walks.queue(share.id);
+    let ahead = queue.lock().await;
+    let (_, walking) =
+        s.sharing.update(share.id, bob_gets(Permission::ReadWrite), &alice(), &request).await.unwrap();
+    let deleting = s.sharing.delete(share.id, "photos", &alice(), &request).await.unwrap();
+    finished(&s.jobs, deleting).await;
+    drop(ahead);
+
+    assert_eq!(finished(&s.jobs, walking.unwrap()).await.state, JobState::Succeeded);
+    assert!(recursive(&s.host.calls()).is_empty());
+}
+
+#[tokio::test]
+async fn members_of_a_denied_group_change_only_once_its_shares_walk_has_ended() {
+    let s = setup();
+    let request = RequestContext::default();
+    let photos = alices_photos(&s).await;
+    let jobs = s
+        .sharing
+        .set_subject_access(Subject::Group(10), &[(photos, Some(Permission::Deny))], &alice(), &request)
+        .await
+        .unwrap();
+    finished(&s.jobs, jobs[0].clone()).await;
+    s.host.hold_walks.store(true, std::sync::atomic::Ordering::Relaxed);
+    let jobs = s
+        .sharing
+        .set_subject_access(Subject::Account(2), &[(photos, Some(Permission::Read))], &alice(), &request)
+        .await
+        .unwrap();
+    while s.host.walks_held.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+        tokio::task::yield_now().await;
+    }
+
+    let refused = s.sharing.group_members_changed(10, &[1, 2], &alice(), &request).await;
+    assert!(matches!(refused, Err(SharingError::Refused(_))), "{refused:?}");
+
+    s.host.hold_walks.store(false, std::sync::atomic::Ordering::Relaxed);
+    s.host.let_walks_on.notify_one();
+    finished(&s.jobs, jobs[0].clone()).await;
+    assert_eq!(s.sharing.group_members_changed(10, &[1, 2], &alice(), &request).await.unwrap().len(), 1);
+}

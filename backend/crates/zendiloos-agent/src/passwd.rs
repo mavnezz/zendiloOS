@@ -40,6 +40,16 @@ pub fn memberships(group_file: &str, user: &str) -> Vec<u32> {
         .collect()
 }
 
+/// Every account `passwd` lists: name, UID and primary GID.
+pub fn accounts(passwd: &str) -> impl Iterator<Item = (&str, u32, u32)> {
+    passwd.lines().filter_map(|line| {
+        let mut fields = line.split(':');
+        let name = fields.next()?;
+        let _password = fields.next()?;
+        Some((name, fields.next()?.parse().ok()?, fields.next()?.parse().ok()?))
+    })
+}
+
 /// Names `group_file` lists as members of `group`.
 pub fn members<'a>(group_file: &'a str, group: &str) -> Vec<&'a str> {
     group_file
@@ -55,6 +65,12 @@ pub fn members<'a>(group_file: &'a str, group: &str) -> Vec<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lists_accounts() {
+        let passwd = "root:x:0:0::/root:/bin/sh\nbroken\nanna:x:2001:990::/:/bin/false\nodd:x:uid:1::/:/\n";
+        assert_eq!(accounts(passwd).collect::<Vec<_>>(), [("root", 0, 0), ("anna", 2001, 990)]);
+    }
 
     #[test]
     fn finds_members() {

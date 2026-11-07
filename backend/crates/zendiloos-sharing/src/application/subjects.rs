@@ -103,8 +103,16 @@ impl SharingUseCases {
         let _changes = self.changes.lock().await;
         let names = self.ports.directory.names().await?;
         let apps = self.ports.shares.app_access().await?;
+        let shares = self.ports.shares.list().await?;
+        // A denied group's members carry entries of their own: a walk with
+        // the members as they were would undo them.
+        let denying =
+            |share: &&crate::domain::Share| share.rule_of(Subject::Group(group)) == Some(Permission::Deny);
+        for share in shares.iter().filter(denying) {
+            self.not_walking(share)?;
+        }
         let mut jobs = Vec::new();
-        for share in self.ports.shares.list().await? {
+        for share in shares {
             let rule = share.rule_of(Subject::Group(group));
             if rule == Some(Permission::ReadWrite) {
                 let now = acl(&share.access, &names, share.id, &apps);
@@ -122,7 +130,7 @@ impl SharingUseCases {
                 .filter(|principal| !now.iter().any(|(entry, _)| entry == principal))
                 .collect();
             self.ports.host.set_access(share.volume, &share.name, &now, &removed, false, request).await?;
-            jobs.push(self.access_job(share.volume, share.name.clone(), now, removed, actor, request).await?);
+            jobs.push(self.access_job(&share, removed, actor, request).await?);
         }
         Ok(jobs)
     }

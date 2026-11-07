@@ -23,7 +23,7 @@ use zendiloos_agent_proto::{
 };
 use zendiloos_exec::{Limits, Program};
 
-use crate::acl::{self, Acl, Rules, Who};
+use crate::acl::{self, Acl, Owners, Rules, Who};
 use crate::config::Tools;
 use crate::operations::OperationError;
 use crate::pools::{HostPaths, run};
@@ -589,7 +589,7 @@ impl Sharing {
                 ),
             }
         }
-        Ok(Rules { remove, grant })
+        Ok(Rules { remove, grant, owners: owners(access, &passwd, &group) })
     }
 
     /// The managed users who may write, directly or through a group, with
@@ -633,6 +633,38 @@ impl Sharing {
             })
             .collect())
     }
+}
+
+/// The managed accounts that may write by `access`, as the kernel decides
+/// it: by an entry of the account's own if it has one, otherwise by the
+/// entry of any group it is in (its primary group or a listed one).
+fn owners(access: &[ShareAccess], passwd: &str, group: &str) -> Owners {
+    let managed = crate::accounts::ID_MIN..=crate::accounts::ID_MAX;
+    let writing_groups: Vec<u32> = access
+        .iter()
+        .filter(|entry| entry.permission == SharePermission::ReadWrite)
+        .filter_map(|entry| match &entry.principal {
+            Principal::Group(name) => crate::passwd::group_id(group, name.as_str()),
+            Principal::User(_) => None,
+        })
+        .collect();
+    let writes = |name: &str, gid: u32| {
+        let own = access
+            .iter()
+            .find(|entry| matches!(&entry.principal, Principal::User(user) if user.as_str() == name));
+        match own {
+            Some(entry) => entry.permission == SharePermission::ReadWrite,
+            None => {
+                writing_groups.contains(&gid)
+                    || crate::passwd::memberships(group, name).iter().any(|id| writing_groups.contains(id))
+            }
+        }
+    };
+    let writers = crate::passwd::accounts(passwd)
+        .filter(|(name, uid, gid)| managed.contains(uid) && writes(name, *gid))
+        .map(|(_, uid, _)| uid)
+        .collect();
+    Owners { managed: Some(managed), writers }
 }
 
 /// Makes `user`'s bin in the share's `.recycle` (opened as `bin`): theirs,
@@ -705,31 +737,35 @@ impl Failures {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Pass {
+    /// Entries removed and what is owned handed over.
     Remove,
     Grant,
 }
 
 /// Changes the permissions of everything below a share's root (not the
 /// root, which is set on its own): access taken away from the whole tree
-/// first, so it is gone even if giving fails. Each folder and file is
+/// first, entries and what those who may not write own (see [`Owners`]),
+/// so it is gone even if giving fails. Each folder and file is
 /// reached by descriptor and its ACL changed through it, never by its path:
 /// whoever may write the share could swap a folder for a link while the
 /// change goes on, and a walk by path would follow it, onto other shares,
 /// the bins or `@docker`.
 ///
 /// Left alone: links, other file systems, what is neither folder nor file,
-/// the recycle bins, and every other private folder with what is in it (a
-/// folder not root's that only its owner may enter: renamed bins among
-/// them, which nobody else could reach anyway). Only the folders on the way
+/// and the entries of the recycle bins and of every other private folder
+/// with what is in it (a folder only its owner may enter: renamed bins
+/// among them, which nobody else could reach anyway, and those passed to
+/// root from someone who may no longer write, which stay private). What is
+/// in them is still handed over. Only the folders on the way
 /// down are open at a time, each read as it goes, never held whole: a
 /// folder of millions of entries must not take the agent's memory. An entry
 /// that cannot be changed, or a folder too deep to look into, does not stop
 /// the others; the change fails at the end, naming one of them.
 fn change_tree(root: &Path, rules: &Rules) -> Result<(), OperationError> {
     let mut failures = Failures::default();
-    if !rules.remove.is_empty() {
+    if !rules.remove.is_empty() || rules.owners.managed.is_some() {
         walk(root, rules, Pass::Remove, &mut failures)?;
     }
     if !rules.grant.is_empty() {
@@ -745,26 +781,43 @@ const FOLDER: OFlags = OFlags::RDONLY.union(OFlags::DIRECTORY).union(OFlags::NOF
 struct Level {
     folder: rustix::fs::Dir,
     path: PathBuf,
-    /// The share's root, where the recycle bins are left out (`set_access`
-    /// sets their own folder).
+    /// The share's root, where the recycle bins' folder is (`set_access`
+    /// sets it on its own).
     top: bool,
+    /// In the bins or a private folder: only owners change.
+    private: bool,
 }
 
 impl Level {
-    /// The next name to look at; `None` once the folder is read.
-    fn next_name(&mut self) -> Option<Result<CString, Errno>> {
+    /// The next name to look at, and whether it is the bins' folder;
+    /// `None` once the folder is read.
+    fn next_name(&mut self) -> Option<Result<(CString, bool), Errno>> {
         loop {
             let entry = match self.folder.next()? {
                 Ok(entry) => entry,
                 Err(error) => return Some(Err(error)),
             };
             let name = entry.file_name();
-            let own = name == c"." || name == c"..";
-            let bin = self.top && name.to_bytes() == RECYCLE_DIRECTORY.as_bytes();
-            if !own && !bin {
-                return Some(Ok(name.to_owned()));
+            if name != c"." && name != c".." {
+                let bin = self.top && name.to_bytes() == RECYCLE_DIRECTORY.as_bytes();
+                return Some(Ok((name.to_owned(), bin)));
             }
         }
+    }
+}
+
+/// An entry of a share as opened.
+struct Found {
+    entry: OwnedFd,
+    folder: bool,
+    mode: u32,
+    owner: u32,
+}
+
+impl Found {
+    /// Only its owner may enter it.
+    fn is_private(&self) -> bool {
+        self.folder && self.mode & 0o077 == 0
     }
 }
 
@@ -773,10 +826,10 @@ fn walk(root: &Path, rules: &Rules, pass: Pass, failures: &mut Failures) -> Resu
     let top = openat(CWD, root, FOLDER, Mode::empty()).map_err(unreadable)?;
     let device = rustix::fs::fstat(&top).map_err(unreadable)?.st_dev;
     let top = rustix::fs::Dir::new(top).map_err(unreadable)?;
-    let mut stack = vec![Level { folder: top, path: root.to_owned(), top: true }];
+    let mut stack = vec![Level { folder: top, path: root.to_owned(), top: true, private: false }];
     while let Some(level) = stack.last_mut() {
-        let name = match level.next_name() {
-            Some(Ok(name)) => name,
+        let (name, bin) = match level.next_name() {
+            Some(Ok(named)) => named,
             Some(Err(error)) => {
                 // What is left of this folder cannot be read.
                 let path = level.path.clone();
@@ -790,8 +843,12 @@ fn walk(root: &Path, rules: &Rules, pass: Pass, failures: &mut Failures) -> Resu
             }
         };
         let path = level.path.join(OsStr::from_bytes(name.as_bytes()));
+        let within = level.private;
+        if pass == Pass::Grant && (within || bin) {
+            continue;
+        }
         let opened = level.folder.fd().and_then(|fd| open_entry(fd, &name, device));
-        let (entry, folder, mode) = match opened {
+        let found = match opened {
             Ok(Some(found)) => found,
             Ok(None) => continue,
             Err(error) => {
@@ -799,27 +856,32 @@ fn walk(root: &Path, rules: &Rules, pass: Pass, failures: &mut Failures) -> Resu
                 continue;
             }
         };
-        if let Err(error) = change_entry(&entry, folder, mode, rules, pass) {
+        let private = within || bin || found.is_private();
+        if pass == Pass::Grant && private {
+            continue;
+        }
+        if let Err(error) = change_entry(&found, private, rules, pass) {
             failures.note(&path, error)?;
         }
-        if !folder {
+        if !found.folder {
             continue;
         }
         if stack.len() >= MAX_DEPTH {
             failures.note_why(&path, "folders are nested too deeply to look into")?;
             continue;
         }
-        match rustix::fs::Dir::new(entry) {
-            Ok(inner) => stack.push(Level { folder: inner, path, top: false }),
+        match rustix::fs::Dir::new(found.entry) {
+            Ok(inner) => stack.push(Level { folder: inner, path, top: false, private }),
             Err(error) => failures.note(&path, error)?,
         }
     }
     Ok(())
 }
 
-/// `name` in `folder` opened, with whether it is a folder and its mode;
-/// `None` for what is left alone, or went or changed since it was listed.
-fn open_entry(folder: impl AsFd, name: &CStr, device: u64) -> Result<Option<(OwnedFd, bool, u32)>, Errno> {
+/// `name` in `folder` opened; `None` for what is left alone (links, other
+/// file systems, what is neither folder nor file), or went or changed
+/// since it was listed.
+fn open_entry(folder: impl AsFd, name: &CStr, device: u64) -> Result<Option<Found>, Errno> {
     let folder = folder.as_fd();
     use rustix::fs::FileType;
     let stat = match rustix::fs::statat(folder, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW) {
@@ -847,16 +909,30 @@ fn open_entry(folder: impl AsFd, name: &CStr, device: u64) -> Result<Option<(Own
     if FileType::from_raw_mode(opened.st_mode) != kind || opened.st_dev != device {
         return Ok(None);
     }
-    if folder_kind && opened.st_uid != 0 && opened.st_mode & 0o077 == 0 {
-        return Ok(None);
-    }
-    Ok(Some((entry, folder_kind, opened.st_mode)))
+    Ok(Some(Found { entry, folder: folder_kind, mode: opened.st_mode, owner: opened.st_uid }))
 }
 
-/// One pass's change of the entry behind `entry`, through
-/// `/proc/self/fd`: the attributes of what was opened, whatever its path
-/// is by now. Default entries for folders only.
-fn change_entry(entry: &OwnedFd, folder: bool, mode: u32, rules: &Rules, pass: Pass) -> Result<(), Errno> {
+/// One pass's change of `found`, through `/proc/self/fd`: the attributes
+/// of what was opened, whatever its path is by now. Default entries for
+/// folders only; of a `private` one only its owner, in the taking pass.
+fn change_entry(found: &Found, private: bool, rules: &Rules, pass: Pass) -> Result<(), Errno> {
+    if !private {
+        change_acl(&found.entry, found.folder, found.mode, rules, pass)?;
+    }
+    if pass == Pass::Remove && rules.owners.hand_over(found.owner) {
+        // Its group stays: the share's folder gives that group nothing.
+        rustix::fs::chownat(
+            &found.entry,
+            c"",
+            Some(rustix::fs::Uid::ROOT),
+            None,
+            rustix::fs::AtFlags::EMPTY_PATH,
+        )?;
+    }
+    Ok(())
+}
+
+fn change_acl(entry: &OwnedFd, folder: bool, mode: u32, rules: &Rules, pass: Pass) -> Result<(), Errno> {
     let path = format!("/proc/self/fd/{}", entry.as_raw_fd());
     let access = read_acl(&path, acl::ACCESS)?;
     let changed = match pass {
@@ -1166,7 +1242,7 @@ mod tests {
         std::os::unix::fs::symlink(&elsewhere, root.join("escape")).unwrap();
         let (bob, anna, staff) = (Who::User(4242), Who::User(4243), Who::Group(4244));
 
-        let before = Rules { remove: vec![], grant: vec![(bob, SharePermission::ReadWrite)] };
+        let before = Rules { grant: vec![(bob, SharePermission::ReadWrite)], ..Rules::default() };
         change_tree(&root, &before).unwrap();
         let access = |path: &str| acl_of(&root.join(path), acl::ACCESS).unwrap();
         assert_eq!(access("album").named(bob), Some(7));
@@ -1177,6 +1253,7 @@ mod tests {
         let after = Rules {
             remove: vec![bob],
             grant: vec![(anna, SharePermission::Read), (staff, SharePermission::ReadWrite)],
+            ..Rules::default()
         };
         change_tree(&root, &after).unwrap();
         for folder in ["album", "album/2024", "old-bin"] {
@@ -1206,10 +1283,93 @@ mod tests {
             fs::create_dir_all(root.join(format!("{n}/inner"))).unwrap();
         }
         let anna = Who::User(4243);
-        change_tree(&root, &Rules { remove: vec![], grant: vec![(anna, SharePermission::Read)] }).unwrap();
+        change_tree(&root, &Rules { grant: vec![(anna, SharePermission::Read)], ..Rules::default() })
+            .unwrap();
         for n in [0, 749, 1499] {
             assert_eq!(acl_of(&root.join(format!("{n}/inner")), acl::ACCESS).unwrap().named(anna), Some(5));
         }
+    }
+
+    #[test]
+    fn a_files_owner_writes_it_whatever_its_own_named_entry_says() {
+        // Why what a reader or a denied account owns passes to root: the
+        // kernel asks the owner's entry first, and the owner may change it.
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("mine.txt");
+        fs::write(&file, "x").unwrap();
+        let me = rustix::process::getuid().as_raw();
+        let mut acl = Acl::from_mode(0o640);
+        acl.set(Who::User(me), 0);
+        acl.fix_mask();
+        rustix::fs::setxattr(&file, acl::ACCESS, &acl.to_bytes(), rustix::fs::XattrFlags::empty()).unwrap();
+        assert_eq!(acl_of(&file, acl::ACCESS).unwrap().named(Who::User(me)), Some(0));
+
+        assert!(fs::OpenOptions::new().append(true).open(&file).is_ok(), "written despite user:{me}:---");
+        fs::set_permissions(&file, std::os::unix::fs::PermissionsExt::from_mode(0o440)).unwrap();
+        fs::set_permissions(&file, std::os::unix::fs::PermissionsExt::from_mode(0o640)).unwrap();
+    }
+
+    #[test]
+    fn what_those_who_may_not_write_own_is_handed_to_root_bins_and_private_folders_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("share");
+        fs::create_dir_all(root.join("album")).unwrap();
+        fs::write(root.join("album/a.jpg"), "x").unwrap();
+        fs::create_dir_all(root.join(RECYCLE_DIRECTORY).join("ben")).unwrap();
+        fs::write(root.join(RECYCLE_DIRECTORY).join("ben/old.txt"), "x").unwrap();
+        let private = root.join("private");
+        fs::create_dir(&private).unwrap();
+        fs::write(private.join("secret.txt"), "x").unwrap();
+        fs::set_permissions(&private, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+        std::os::unix::fs::symlink(dir.path(), root.join("escape")).unwrap();
+        let me = rustix::process::getuid().as_raw();
+        let anna = Who::User(4243);
+        let writing = |writers: Vec<u32>| Rules {
+            grant: vec![(anna, SharePermission::Read)],
+            owners: Owners { managed: Some(me..=me), writers },
+            ..Rules::default()
+        };
+
+        change_tree(&root, &writing(vec![me])).unwrap();
+        assert_eq!(fs::metadata(root.join("album/a.jpg")).unwrap().uid(), me, "a writer keeps theirs");
+
+        let changed = change_tree(&root, &writing(vec![]));
+        // Seven entries: the album and its photo, the bins' folder, a bin
+        // and what is in it, the private folder and its file; not the link.
+        if rustix::process::geteuid().is_root() {
+            changed.unwrap();
+            for path in ["album", "album/a.jpg", ".recycle", ".recycle/ben/old.txt", "private/secret.txt"] {
+                assert_eq!(fs::metadata(root.join(path)).unwrap().uid(), 0, "{path}");
+            }
+        } else {
+            let error = changed.unwrap_err().to_string();
+            assert!(error.contains("of 7 entries") && error.contains("Operation not permitted"), "{error}");
+        }
+        assert!(acl_of(&private, acl::ACCESS).is_none(), "a private folder gets no entries");
+        assert!(acl_of(&root.join(RECYCLE_DIRECTORY).join("ben"), acl::ACCESS).is_none(), "nor a bin");
+        assert_eq!(acl_of(&root.join("album"), acl::ACCESS).unwrap().named(anna), Some(5));
+    }
+
+    #[test]
+    fn the_owners_are_the_managed_accounts_that_may_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let sharing = with_accounts(dir.path());
+        let owners = |access: &[ShareAccess]| sharing.rules(access, &[]).unwrap().owners;
+        let reads = |principal| ShareAccess { principal, permission: SharePermission::Read };
+        let denied = |principal| ShareAccess { principal, permission: SharePermission::Deny };
+
+        let family = owners(&[access(group("family"), true), reads(user("ben"))]);
+        assert_eq!(family.writers, [2001], "ben's own rule wins over his group's");
+        assert_eq!(family.managed, Some(crate::accounts::ID_MIN..=crate::accounts::ID_MAX));
+        assert!(!family.writers.contains(&1000), "debian is in family but no managed account");
+        assert_eq!(owners(&[access(group("family"), true), denied(user("anna"))]).writers, [2002]);
+        assert_eq!(owners(&[access(user("ben"), true), reads(group("family"))]).writers, [2002]);
+        assert_eq!(
+            owners(&[access(group("zendiloos-users"), true)]).writers,
+            [2001, 2002],
+            "a primary group"
+        );
+        assert!(owners(&[reads(group("family"))]).writers.is_empty());
     }
 
     #[test]
@@ -1224,7 +1384,7 @@ mod tests {
         let anna = Who::User(4243);
 
         let failed =
-            change_tree(&root, &Rules { remove: vec![], grant: vec![(anna, SharePermission::Read)] });
+            change_tree(&root, &Rules { grant: vec![(anna, SharePermission::Read)], ..Rules::default() });
 
         let error = failed.unwrap_err().to_string();
         assert!(error.contains("nested too deeply") && error.contains("1 entries"), "{error}");

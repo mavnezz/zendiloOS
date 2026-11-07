@@ -3,8 +3,8 @@
 //! servers' configuration, which is always written as a whole from the
 //! database.
 
-use std::collections::HashSet;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, PoisonError};
 
 use zendiloos_jobs::{Job, JobError};
 use zendiloos_kernel::{Actor, AuditEntry, Outcome, PortError, RequestContext};
@@ -243,11 +243,97 @@ pub struct SharingUseCases {
     pub(super) changes: Arc<tokio::sync::Mutex<()>>,
     /// Shares whose scheduled snapshot failed; reported once until one works.
     pub(super) snapshot_failures: Arc<std::sync::Mutex<std::collections::HashSet<ShareId>>>,
+    pub(super) walks: Arc<Walks>,
+}
+
+/// Changes of everything in a share (walks), which may take hours: one
+/// at a time for each share, and the shares with one under way.
+#[derive(Default)]
+pub(super) struct Walks {
+    queues: std::sync::Mutex<HashMap<ShareId, Arc<tokio::sync::Mutex<()>>>>,
+    /// Shares whose walk has read the rules it gives and not ended.
+    under_way: std::sync::Mutex<HashSet<ShareId>>,
+}
+
+impl Walks {
+    pub(super) fn queue(&self, share: ShareId) -> Arc<tokio::sync::Mutex<()>> {
+        let mut queues = self.queues.lock().unwrap_or_else(PoisonError::into_inner);
+        Arc::clone(queues.entry(share).or_default())
+    }
+
+    fn is_under_way(&self, share: ShareId) -> bool {
+        self.under_way.lock().unwrap_or_else(PoisonError::into_inner).contains(&share)
+    }
+
+    /// Marks a walk of `share` under way until the guard goes.
+    fn start(&self, share: ShareId) -> UnderWay<'_> {
+        self.under_way.lock().unwrap_or_else(PoisonError::into_inner).insert(share);
+        UnderWay { walks: self, share }
+    }
+}
+
+struct UnderWay<'a> {
+    walks: &'a Walks,
+    share: ShareId,
+}
+
+impl Drop for UnderWay<'_> {
+    fn drop(&mut self) {
+        self.walks.under_way.lock().unwrap_or_else(PoisonError::into_inner).remove(&self.share);
+    }
 }
 
 impl SharingUseCases {
     pub fn new(ports: SharingPorts) -> Self {
-        Self { ports, changes: Arc::new(tokio::sync::Mutex::new(())), snapshot_failures: Arc::default() }
+        Self {
+            ports,
+            changes: Arc::new(tokio::sync::Mutex::new(())),
+            snapshot_failures: Arc::default(),
+            walks: Arc::default(),
+        }
+    }
+
+    /// Refused while a walk gives the share's files rules it read before:
+    /// it would undo the change on them, and on the share's folder too.
+    /// Called with `changes` held, before anything changes.
+    pub(super) fn not_walking(&self, share: &Share) -> Result<(), SharingError> {
+        if self.walks.is_under_way(share.id) {
+            return Err(SharingError::Refused(format!(
+                "the permissions of share {} are being applied to its files; try again once that has ended",
+                share.name.as_str()
+            )));
+        }
+        Ok(())
+    }
+
+    /// Gives the share's folder and everything in it the rules the
+    /// database has for the share when this gets to run, never rules read
+    /// earlier: walks of a share run one after another, each reads the
+    /// rules once it is its turn, and while one runs no change of the
+    /// share's rules is taken (`not_walking`). So the last walk gives the
+    /// last rules, whatever order the jobs ran in. `removed` lose their
+    /// entries, unless the rules name them again by now. A share gone or
+    /// being deleted is left alone.
+    pub(super) async fn walk(
+        &self,
+        share: ShareId,
+        removed: &[Principal],
+        request: &RequestContext,
+    ) -> Result<(), SharingError> {
+        let queue = self.walks.queue(share);
+        let _turn = queue.lock().await;
+        let (found, now, _under_way) = {
+            let _changes = self.changes.lock().await;
+            let Some(found) = self.ports.shares.find(share).await? else { return Ok(()) };
+            let names = self.ports.directory.names().await?;
+            let apps = self.ports.shares.app_access().await?;
+            let now = acl(&found.access, &names, found.id, &apps);
+            (found, now, self.walks.start(share))
+        };
+        let removed: Vec<Principal> =
+            removed.iter().filter(|gone| !now.iter().any(|(p, _)| p == *gone)).cloned().collect();
+        self.ports.host.set_access(found.volume, &found.name, &now, &removed, true, request).await?;
+        Ok(())
     }
 
     pub async fn list(&self) -> Result<Vec<Share>, SharingError> {
@@ -471,6 +557,7 @@ impl SharingUseCases {
         if let Some(access) = changes.access
             && access != share.access
         {
+            self.not_walking(&share)?;
             check_rules(&access, &names)?;
             let apps = self.ports.shares.app_access().await?;
             let now = acl(&access, &names, share.id, &apps);
@@ -538,37 +625,39 @@ impl SharingUseCases {
         self.audit("sharing.share_update", Outcome::Success, share.name.as_str(), actor, request).await;
 
         let job = match follow_up {
-            Some((access, removed)) => Some(
-                self.access_job(share.volume, share.name.clone(), access, removed, actor, request).await?,
-            ),
+            Some((_, removed)) => Some(self.access_job(&share, removed, actor, request).await?),
             None => None,
         };
         Ok((share, job))
     }
 
     /// A job that gives everything in the share the permissions its
-    /// directory got already.
+    /// directory got already, as they are recorded when it runs (see
+    /// [`Self::walk`]).
     pub(super) async fn access_job(
         &self,
-        volume: u16,
-        name: ShareName,
-        access: Vec<(Principal, Permission)>,
+        share: &Share,
         removed: Vec<Principal>,
         actor: &Actor,
         request: &RequestContext,
     ) -> Result<Job, SharingError> {
-        let host = Arc::clone(&self.ports.host);
+        let this = self.clone();
         let request = request.clone();
-        let label = name.to_string();
+        let id = share.id;
         Ok(self
             .ports
             .jobs
-            .start("sharing.apply_access", Some(label), Some(actor), move |progress| async move {
-                progress.step("existing_files", None).await;
-                host.set_access(volume, &name, &access, &removed, true, &request)
-                    .await
-                    .map_err(|error| JobError::new("agent_failed", Some(error.to_string())))
-            })
+            .start(
+                "sharing.apply_access",
+                Some(share.name.to_string()),
+                Some(actor),
+                move |progress| async move {
+                    progress.step("existing_files", None).await;
+                    this.walk(id, &removed, &request)
+                        .await
+                        .map_err(|error| JobError::new("agent_failed", Some(error.to_string())))
+                },
+            )
             .await?)
     }
 
@@ -592,15 +681,18 @@ impl SharingUseCases {
                 wanted.push((share.id, *access));
             }
             let before = self.ports.shares.app_access().await?;
-            self.ports.shares.set_app_access(account, &wanted).await?;
-            let after = self.ports.shares.app_access().await?;
-            let names = self.ports.directory.names().await?;
             let touched: HashSet<ShareId> = before
                 .iter()
                 .filter(|app| app.account == account)
                 .map(|app| app.share)
                 .chain(wanted.iter().map(|(id, _)| *id))
                 .collect();
+            for share in shares.iter().filter(|share| touched.contains(&share.id)) {
+                self.not_walking(share)?;
+            }
+            self.ports.shares.set_app_access(account, &wanted).await?;
+            let after = self.ports.shares.app_access().await?;
+            let names = self.ports.directory.names().await?;
             for share in shares.iter().filter(|share| touched.contains(&share.id)) {
                 let now = acl(&share.access, &names, share.id, &after);
                 let removed: Vec<Principal> = if wanted.iter().any(|(id, _)| *id == share.id) {
@@ -609,11 +701,11 @@ impl SharingUseCases {
                     vec![Principal::User(account.to_owned())]
                 };
                 self.ports.host.set_access(share.volume, &share.name, &now, &removed, false, request).await?;
-                follow_up.push((share.volume, share.name.clone(), now, removed));
+                follow_up.push((share.id, removed));
             }
         }
-        for (volume, name, now, removed) in follow_up {
-            self.ports.host.set_access(volume, &name, &now, &removed, true, request).await?;
+        for (share, removed) in follow_up {
+            self.walk(share, &removed, request).await?;
         }
         Ok(())
     }

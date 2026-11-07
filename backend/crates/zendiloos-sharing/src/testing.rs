@@ -236,6 +236,12 @@ pub struct Host {
     /// The agent refuses to destroy a dataset before doing anything, as
     /// when a project mounts something of it.
     pub deny_destroy: std::sync::atomic::AtomicBool,
+    /// Changes of whole trees wait in the agent until `let_walks_on`
+    /// lets one on, as behind a long walk of another share.
+    pub hold_walks: std::sync::atomic::AtomicBool,
+    /// How many changes of whole trees are waiting or have waited.
+    pub walks_held: std::sync::atomic::AtomicUsize,
+    pub let_walks_on: tokio::sync::Notify,
 }
 
 impl Host {
@@ -437,6 +443,10 @@ impl ShareHost for Host {
             })
             .collect();
         let removed: Vec<String> = removed.iter().map(shown).collect();
+        if recursive && self.hold_walks.load(std::sync::atomic::Ordering::Relaxed) {
+            self.walks_held.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.let_walks_on.notified().await;
+        }
         self.calls.lock().unwrap().push(format!(
             "access {volume} {name} [{}] -[{}]{}",
             access.join(","),

@@ -535,18 +535,38 @@ rustls with ring and the system's certificate authorities
 - Changed rules apply to the share's directory at once and to existing
   files in a job, except the users' recycle bins. Access is taken away
   from the whole tree before any is given, so a revocation holds even if
-  adding fails; the job may run for hours. The files agent walks the tree
-  itself, depth first, by descriptor (`O_NOFOLLOW`, only the folders on the
+  adding fails; the job may run for hours. The job applies the rules the
+  database has when it gets to run, never those of the change that
+  started it: zendiloosd runs one such job per share at a time, each reads
+  the rules once it is its turn, and while one is under way a change of
+  that share's rules is refused ("try again once that has ended"; changes
+  of an app's access and of a denied group's members too), so the last job
+  always gives the last rules, whatever order the jobs ran in.
+- **Owners:** the kernel asks a file's owner entry (`user::`) before any
+  named one, and lets the owner change mode and ACL; a named entry cannot
+  take an owner's rights away. So in a share only those who may write own
+  anything: when the rules are applied to the tree, what an account
+  zendiloOS manages (UIDs 2000 to 59999, people and apps, accounts gone
+  since among them) owns passes to root (its group stays) unless the
+  account may write, by its own rule or, without one, by a group's. That
+  takes in its recycle bin and private folders with what is in them, which
+  stay private, now root's alone, and are not given back when the account
+  may write again (an administrator can; a new bin is made). Files of other
+  UIDs (system accounts, the users containers run as) keep their owners.
+  Over SMB, Samba's `read only` and `write list` hold besides.
+- The files agent walks the tree itself, depth first, by descriptor
+  (`O_NOFOLLOW`, only the folders on the
   way down open, each read as it goes, never held whole: a folder of
   millions of entries takes no more memory than a small one), and changes
   each ACL through its descriptor
   (`system.posix_acl_*` via `/proc/self/fd`, the edits of `setfacl -x/-m`
   with the mask recomputed), so a folder swapped for a link meanwhile
   changes nothing. Links, other file systems, what is neither folder nor
-  file, and private folders (not root's, only their owner may enter: a
-  bin a writer renamed among them) are left alone; an entry that cannot be
-  changed, or a folder nested deeper than 256 to look into, does not stop
-  the others, the job fails at the end naming one.
+  file are left alone, and so are the entries of the bins and of private
+  folders (only their owner may enter: a bin a writer renamed, one passed
+  to root) with what is in them, whose owners alone change; an entry that
+  cannot be changed, or a folder nested deeper than 256 to look into,
+  does not stop the others, the job fails at the end naming one.
   One change per share runs at a time; a change of a share's folder waits
   15 seconds at most for one going through its files, then is refused
   ("try again"), while other shares are not held up. Something not a
