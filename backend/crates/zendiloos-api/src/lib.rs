@@ -11,6 +11,8 @@ mod routes;
 mod state;
 
 #[cfg(test)]
+mod feature_tests;
+#[cfg(test)]
 mod tests;
 
 use axum::Router;

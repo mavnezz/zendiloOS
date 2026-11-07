@@ -33,8 +33,8 @@ use zendiloos_system::domain::{
 
 use crate::{ApiState, CSRF_HEADER, UseCases, openapi, router};
 
-const HOST: &str = "nas.local";
-const PASSWORD: &str = "correct horse battery";
+pub(crate) const HOST: &str = "nas.local";
+pub(crate) const PASSWORD: &str = "correct horse battery";
 
 struct FakeProvider;
 
@@ -74,7 +74,7 @@ impl SystemInfoProvider for FailingProvider {
 
 /// Remembers power actions instead of carrying them out.
 #[derive(Default)]
-struct RecordingPower(Mutex<Vec<PowerAction>>);
+pub(crate) struct RecordingPower(Mutex<Vec<PowerAction>>);
 
 #[async_trait]
 impl PowerControl for RecordingPower {
@@ -178,7 +178,7 @@ fn sample(at: i64) -> MetricsSample {
 
 /// Records queries and answers with one entry and a cursor to older ones.
 #[derive(Default)]
-struct FakeJournal(Mutex<Vec<JournalQuery>>);
+pub(crate) struct FakeJournal(Mutex<Vec<JournalQuery>>);
 
 #[async_trait]
 impl JournalReader for FakeJournal {
@@ -256,19 +256,20 @@ impl MetricsSubscription for FakeSubscription {
 }
 
 /// The API on in-memory ports.
-struct Harness {
-    app: Router,
-    identity: TestIdentity,
-    power: Arc<RecordingPower>,
-    journal: Arc<FakeJournal>,
-    jobs: Jobs,
-    storage: Arc<FakeStorage>,
-    notifier: Notifier,
-    share_host: Arc<zendiloos_sharing::testing::Host>,
-    file_host: Arc<zendiloos_sharing::testing::Files>,
-    catalogs: Arc<zendiloos_apps::testing::FakeReader>,
-    app_host: Arc<zendiloos_apps::testing::FakeAppHost>,
-    engine: Arc<zendiloos_containers::testing::FakeEngine>,
+pub(crate) struct Harness {
+    pub(crate) app: Router,
+    pub(crate) identity: TestIdentity,
+    pub(crate) power: Arc<RecordingPower>,
+    pub(crate) journal: Arc<FakeJournal>,
+    pub(crate) jobs: Jobs,
+    pub(crate) storage: Arc<FakeStorage>,
+    pub(crate) notifier: Notifier,
+    pub(crate) share_host: Arc<zendiloos_sharing::testing::Host>,
+    pub(crate) file_host: Arc<zendiloos_sharing::testing::Files>,
+    pub(crate) catalogs: Arc<zendiloos_apps::testing::FakeReader>,
+    pub(crate) app_host: Arc<zendiloos_apps::testing::FakeAppHost>,
+    pub(crate) engine: Arc<zendiloos_containers::testing::FakeEngine>,
+    pub(crate) containers: zendiloos_containers::application::Containers,
 }
 
 /// Account and group names from the identity fakes.
@@ -298,23 +299,23 @@ impl zendiloos_sharing::application::ports::Directory for IdentityDirectory {
     }
 }
 
-struct Reply {
-    status: StatusCode,
-    headers: HeaderMap,
-    body: Value,
+pub(crate) struct Reply {
+    pub(crate) status: StatusCode,
+    pub(crate) headers: HeaderMap,
+    pub(crate) body: Value,
 }
 
 impl Reply {
-    fn header(&self, name: impl header::AsHeaderName) -> &str {
+    pub(crate) fn header(&self, name: impl header::AsHeaderName) -> &str {
         self.headers.get(name).expect("header present").to_str().unwrap()
     }
 }
 
 /// A signed-in browser.
-struct Session {
+pub(crate) struct Session {
     /// `name=value`, as sent back in the `Cookie` header.
-    cookie: String,
-    csrf: String,
+    pub(crate) cookie: String,
+    pub(crate) csrf: String,
 }
 
 impl Session {
@@ -328,7 +329,7 @@ impl Session {
 }
 
 impl Harness {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::with(FakeProvider, true)
     }
 
@@ -408,6 +409,7 @@ impl Harness {
         let update_releases = Arc::new(zendiloos_updates::testing::FakeReleases::default());
         *update_releases.releases.lock().unwrap() =
             vec![zendiloos_updates::testing::release("v0.2.0", "0.2.0", false)];
+        let containers = docker_test.containers.clone();
         let use_cases = UseCases {
             containers: docker_test.containers,
             system,
@@ -465,10 +467,11 @@ impl Harness {
             catalogs,
             engine,
             app_host,
+            containers,
         }
     }
 
-    async fn send(&self, request: Request<Body>) -> Reply {
+    pub(crate) async fn send(&self, request: Request<Body>) -> Reply {
         let response = self.app.clone().oneshot(request).await.unwrap();
         let status = response.status();
         let headers = response.headers().clone();
@@ -483,7 +486,7 @@ impl Harness {
         Reply { status, headers, body }
     }
 
-    async fn sign_in(&self, name: &str, role: Role) -> Session {
+    pub(crate) async fn sign_in(&self, name: &str, role: Role) -> Session {
         self.identity.add_account(name, PASSWORD, role);
         let reply =
             self.send(json(post("/api/v1/auth/login"), json!({ "name": name, "password": PASSWORD }))).await;
@@ -493,40 +496,40 @@ impl Harness {
 }
 
 /// A same-origin browser request.
-fn request(method: Method, uri: &str) -> request::Builder {
+pub(crate) fn request(method: Method, uri: &str) -> request::Builder {
     Request::builder().method(method).uri(uri).header(header::HOST, HOST)
 }
 
-fn get(uri: &str) -> request::Builder {
+pub(crate) fn get(uri: &str) -> request::Builder {
     request(Method::GET, uri)
 }
 
-fn post(uri: &str) -> request::Builder {
+pub(crate) fn post(uri: &str) -> request::Builder {
     request(Method::POST, uri).header(header::ORIGIN, format!("https://{HOST}"))
 }
 
 /// A state-changing same-origin request.
-fn changing(method: Method, uri: &str) -> request::Builder {
+pub(crate) fn changing(method: Method, uri: &str) -> request::Builder {
     request(method, uri).header(header::ORIGIN, format!("https://{HOST}"))
 }
 
-fn json(builder: request::Builder, body: Value) -> Request<Body> {
+pub(crate) fn json(builder: request::Builder, body: Value) -> Request<Body> {
     builder.header(header::CONTENT_TYPE, "application/json").body(Body::from(body.to_string())).unwrap()
 }
 
-fn empty(builder: request::Builder) -> Request<Body> {
+pub(crate) fn empty(builder: request::Builder) -> Request<Body> {
     builder.body(Body::empty()).unwrap()
 }
 
-fn with_cookie(builder: request::Builder, session: &Session) -> request::Builder {
+pub(crate) fn with_cookie(builder: request::Builder, session: &Session) -> request::Builder {
     builder.header(header::COOKIE, &session.cookie)
 }
 
-fn with_csrf(builder: request::Builder, session: &Session) -> request::Builder {
+pub(crate) fn with_csrf(builder: request::Builder, session: &Session) -> request::Builder {
     with_cookie(builder, session).header(CSRF_HEADER, &session.csrf)
 }
 
-fn assert_problem(reply: &Reply, status: StatusCode, code: &str) {
+pub(crate) fn assert_problem(reply: &Reply, status: StatusCode, code: &str) {
     assert_eq!(reply.status, status, "{:?}", reply.body);
     assert_eq!(reply.header(header::CONTENT_TYPE), "application/problem+json");
     assert_eq!(reply.body["code"], code, "{:?}", reply.body);

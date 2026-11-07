@@ -1676,3 +1676,184 @@ async fn set_self_test_plans(
     let saved = state.storage.self_test_schedule.set_plans(plans, &auth.0.actor(), &client).await?;
     Ok(Json(plans_dto(saved)))
 }
+
+/// How the storage context's values read in the API, kind by kind.
+#[cfg(test)]
+mod tests {
+    use serde_json::{Value, json};
+
+    use super::*;
+
+    fn to(value: impl Serialize) -> Value {
+        serde_json::to_value(value).unwrap()
+    }
+
+    #[test]
+    fn every_finding_says_its_code_and_numbers() {
+        use storage::Finding as F;
+        let findings = [
+            (F::OverallFailed, "overall_failed"),
+            (F::AttributeFailing { id: 5, name: "Reallocated".into() }, "attribute_failing"),
+            (F::AttributeFailedInPast { id: 5, name: "Reallocated".into() }, "attribute_failed_in_past"),
+            (F::ReallocatedSectors(3), "reallocated_sectors"),
+            (F::PendingSectors(3), "pending_sectors"),
+            (F::UncorrectableSectors(3), "uncorrectable_sectors"),
+            (F::ErrorLogEntries(3), "error_log_entries"),
+            (F::SelfTestFailed, "self_test_failed"),
+            (F::NvmeCriticalWarning(1), "nvme_critical_warning"),
+            (F::NvmeSpareLow { available: 5, threshold: 10 }, "nvme_spare_low"),
+            (F::NvmeWornOut(100), "nvme_worn_out"),
+            (F::NvmeMediaErrors(2), "nvme_media_errors"),
+        ];
+        for (finding, code) in findings {
+            let shown = to(Finding::from(finding));
+            assert_eq!(shown["code"], code);
+            assert!(["good", "warning", "failing"].contains(&shown["severity"].as_str().unwrap()), "{shown}");
+        }
+        let spare = to(Finding::from(F::NvmeSpareLow { available: 5, threshold: 10 }));
+        assert_eq!((spare["value"].clone(), spare["threshold"].clone()), (json!(5), json!(10)));
+        let attribute = to(Finding::from(F::AttributeFailing { id: 5, name: "Reallocated".into() }));
+        assert_eq!(
+            (attribute["attribute_id"].clone(), attribute["attribute_name"].clone()),
+            (json!(5), json!("Reallocated"))
+        );
+    }
+
+    #[test]
+    fn states_concerns_and_warnings_read_as_words() {
+        use storage::VdevState as S;
+        let states = [
+            (S::Online, "online"),
+            (S::Degraded, "degraded"),
+            (S::Faulted, "faulted"),
+            (S::Offline, "offline"),
+            (S::Removed, "removed"),
+            (S::Unavailable, "unavailable"),
+            (S::Suspended, "suspended"),
+            (S::Unknown, "unknown"),
+        ];
+        for (state, word) in states {
+            assert_eq!(to(VdevState::from(state)), json!(word));
+            assert_eq!(state_name(state), word);
+        }
+        use storage::Concern as C;
+        let concerns = [
+            (
+                C::PoolUnavailable { pool: "tank".into(), state: S::Faulted },
+                "pool_unavailable",
+                "state",
+                "faulted",
+            ),
+            (
+                C::PoolDegraded { pool: "tank".into(), state: S::Degraded },
+                "pool_degraded",
+                "state",
+                "degraded",
+            ),
+            (C::PoolDataErrors { pool: "tank".into(), files: 2 }, "pool_data_errors", "files", "2"),
+            (
+                C::DeviceErrors { pool: "tank".into(), device: "sda".into(), errors: 7 },
+                "device_errors",
+                "errors",
+                "7",
+            ),
+            (C::VolumeFilling { pool: "tank".into(), percent: 91 }, "volume_filling", "percent", "91"),
+            (C::DiskFailing { disk: "sda".into(), model: Some("WD".into()) }, "disk_failing", "model", "WD"),
+            (C::DiskWorn { disk: "nvme0n1".into(), model: None }, "disk_worn", "model", ""),
+            (C::NoRedundancy { pool: "tank".into() }, "no_redundancy", "pool", "tank"),
+            (C::ScrubOverdue { pool: "tank".into(), days: 40 }, "scrub_overdue", "days", "40"),
+        ];
+        for (concern, code, key, value) in concerns {
+            let shown = to(Concern::from(concern));
+            assert_eq!(
+                (shown["code"].as_str().unwrap(), shown["params"][key].as_str().unwrap()),
+                (code, value)
+            );
+            assert!(
+                ["notice", "warning", "critical"].contains(&shown["severity"].as_str().unwrap()),
+                "{shown}"
+            );
+        }
+        let shown = to(warnings(vec![
+            storage::PlanWarning::MixedSizes { unused_bytes: 10 },
+            storage::PlanWarning::NoRedundancy,
+            storage::PlanWarning::ErasesData,
+        ]));
+        assert_eq!(shown[0], json!({ "code": "mixed_sizes", "unused_bytes": 10 }));
+        assert_eq!(
+            (shown[1]["code"].clone(), shown[2]["code"].clone()),
+            (json!("no_redundancy"), json!("erases_data"))
+        );
+        for (severity, word) in [
+            (storage::Severity::Notice, "notice"),
+            (storage::Severity::Warning, "warning"),
+            (storage::Severity::Critical, "critical"),
+        ] {
+            assert_eq!(to(Severity::from(severity)), json!(word));
+        }
+        for frequency in [SelfTestFrequency::Daily, SelfTestFrequency::Weekly, SelfTestFrequency::Monthly] {
+            let word = to(frequency);
+            let domain: storage::SelfTestFrequency = frequency.into();
+            assert_eq!(to(SelfTestFrequency::from(domain)), word, "both ways");
+        }
+    }
+
+    #[test]
+    fn raid_arrays_say_how_they_are_and_what_runs() {
+        let member = |device: &str, state| storage::ArrayMember { device: device.into(), index: 0, state };
+        let array = |active, working, sync: Option<storage::SyncOperation>| storage::Array {
+            name: "md0".into(),
+            level: Some("raid1".into()),
+            active,
+            read_only: false,
+            size_bytes: Some(1 << 30),
+            slots: Some(storage::Slots { total: 2, working }),
+            members: vec![
+                member("sda1", storage::MemberState::Active),
+                member("sdb1", storage::MemberState::Spare),
+                member("sdc1", storage::MemberState::Faulty),
+                member("sdd1", storage::MemberState::Replacement),
+                member("sde1", storage::MemberState::Journal),
+            ],
+            sync: sync.map(|operation| storage::SyncProgress {
+                operation,
+                percent: Some(50.0),
+                remaining_seconds: Some(60),
+                speed_bytes_per_second: Some(1000),
+            }),
+        };
+        let shown = to(RaidArray::from(array(true, 2, None)));
+        assert_eq!(shown["health"], "healthy");
+        let states: Vec<&str> =
+            shown["members"].as_array().unwrap().iter().map(|m| m["state"].as_str().unwrap()).collect();
+        assert_eq!(states, ["active", "spare", "faulty", "replacement", "journal"]);
+        assert_eq!(to(RaidArray::from(array(true, 1, None)))["health"], "degraded");
+        assert_eq!(to(RaidArray::from(array(false, 2, None)))["health"], "inactive");
+        for (operation, word) in [
+            (storage::SyncOperation::Resync, "resync"),
+            (storage::SyncOperation::Recovery, "recovery"),
+            (storage::SyncOperation::Check, "check"),
+            (storage::SyncOperation::Repair, "repair"),
+            (storage::SyncOperation::Reshape, "reshape"),
+        ] {
+            let shown = to(RaidArray::from(array(true, 1, Some(operation))));
+            assert_eq!(shown["sync"]["operation"], word);
+        }
+        assert_eq!(
+            to(RaidArray::from(array(true, 1, Some(storage::SyncOperation::Recovery))))["health"],
+            "rebuilding"
+        );
+    }
+
+    #[test]
+    fn disks_without_smart_data_say_why() {
+        let standby = to(SmartReport::from(storage::SmartReport::Standby));
+        assert_eq!(standby["status"], "standby");
+        let unsupported =
+            to(SmartReport::from(storage::SmartReport::Unsupported { reason: "USB bridge".into() }));
+        assert_eq!(
+            (unsupported["status"].clone(), unsupported["reason"].clone()),
+            (json!("unsupported"), json!("USB bridge"))
+        );
+    }
+}
