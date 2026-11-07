@@ -36,7 +36,8 @@ const en = {
     projectName: 'Project name',
     projectNameHint: 'Lowercase letters, digits, - and _: its name in Docker.',
     baseFolder: 'Base folder',
-    baseShare: 'Share',
+    browse: 'Browse…',
+    notAPlace: 'Choose a folder in a share you may write to: share/folder.',
     baseFolderHint:
       'A folder in a share you may write to, made if it is missing. The app keeps its data in folders there, such as ./config.',
     noPlace: 'You may not write to any share. Create one in Shares, or ask for write access.',

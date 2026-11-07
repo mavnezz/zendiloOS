@@ -37,7 +37,9 @@ const de: Messages = {
     projectName: 'Projektname',
     projectNameHint: 'Kleinbuchstaben, Ziffern, - und _: ihr Name in Docker.',
     baseFolder: 'Basisordner',
-    baseShare: 'Freigabe',
+    browse: 'Durchsuchen…',
+    notAPlace:
+      'Wählen Sie einen Ordner in einer Freigabe, in die Sie schreiben dürfen: Freigabe/Ordner.',
     baseFolderHint:
       'Ein Ordner in einer Freigabe, in die Sie schreiben dürfen; fehlt er, wird er angelegt. Die App legt ihre Daten in Ordnern darin ab, etwa ./config.',
     noPlace:

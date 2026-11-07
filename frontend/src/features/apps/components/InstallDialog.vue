@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Eye, EyeOff, Folder } from 'lucide-vue-next'
+import { Eye, EyeOff, Folder, FolderOpen } from 'lucide-vue-next'
 import { computed, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
@@ -12,7 +12,6 @@ import { CodeEditor } from '@/shared/ui/code-editor'
 import { ModalDialog } from '@/shared/ui/dialog'
 import { Input } from '@/shared/ui/input'
 import { Label } from '@/shared/ui/label'
-import { NativeSelect } from '@/shared/ui/native-select'
 import { RisksDialog } from '@/shared/ui/risks-dialog'
 
 import {
@@ -43,10 +42,12 @@ const { data: shareList } = useShareList()
 /** Where the project goes, what the app gets, then the file it becomes. */
 const step = ref<'place' | 'values' | 'review'>('place')
 const name = ref('')
-const shareId = ref(0)
-const folder = ref('')
-/** The folder follows the name until it is typed in itself. */
-const folderTouched = ref(false)
+/** The project's folder as `share/folder/…`. */
+const location = ref('')
+/** The folder follows the name until it is typed in or picked. */
+const locationTouched = ref(false)
+/** The base folder is being picked in the folder browser. */
+const browsing = ref(false)
 
 const ports = reactive<Record<string, string>>({})
 const shares = reactive<Record<string, string>>({})
@@ -67,14 +68,19 @@ const generated = computed(() => props.app.settings.filter((setting) => setting.
 const permissions = computed(() => props.app.permissions)
 const asksMore = computed(() => asksForMore(permissions.value))
 const notes = computed(() => paragraphs(appText(props.app, 'notes', locale.value)))
-const shareName = computed(
-  () => places.value?.find((place) => place.share_id === shareId.value)?.share ?? '',
+/** The share and the folder in it of the location given. */
+const parsed = computed(() => {
+  const [share = '', ...rest] = trimmed(location.value).split('/')
+  return { share, folder: rest.join('/') }
+})
+const shareId = computed(
+  () => places.value?.find((place) => place.share === parsed.value.share)?.share_id ?? 0,
 )
+const shareName = computed(() => (shareId.value ? parsed.value.share : ''))
+const folder = computed(() => parsed.value.folder)
 const nameValid = computed(() => NAME.test(name.value))
-const placed = computed(
-  () =>
-    nameValid.value && shareId.value > 0 && folder.value.trim().replace(/^\/+|\/+$/g, '') !== '',
-)
+const locationValid = computed(() => shareId.value > 0 && folder.value !== '')
+const placed = computed(() => nameValid.value && locationValid.value)
 const filledIn = computed(
   () =>
     props.app.shares.every((share) => shares[share.id]) &&
@@ -88,8 +94,8 @@ watch(
   (isOpen) => {
     if (!isOpen) return
     name.value = props.app.id
-    folder.value = `docker/${props.app.id}`
-    folderTouched.value = false
+    locationTouched.value = false
+    location.value = proposed(props.app.id)
     for (const port of props.app.ports) ports[port.id] = String(port.default)
     for (const share of props.app.shares) shares[share.id] = ''
     for (const setting of asked.value) {
@@ -102,16 +108,33 @@ watch(
   },
   { immediate: true },
 )
-watch(
-  places,
-  (list) => {
-    if (!shareId.value && list?.length) shareId.value = list[0]!.share_id
-  },
-  { immediate: true },
-)
-watch(name, (value) => {
-  if (!folderTouched.value) folder.value = value ? `docker/${value}` : ''
+// The places may come after the dialog opened; the name may change.
+watch([places, name], () => {
+  if (!locationTouched.value) location.value = proposed(name.value)
 })
+
+/** A path without slashes around it. */
+function trimmed(path: string): string {
+  return path.trim().replace(/^\/+|\/+$/g, '')
+}
+
+/**
+ * Where a project is proposed: in a share called `docker` if there is one,
+ * otherwise in a folder `docker` of the first share it may go in.
+ */
+function proposed(project: string): string {
+  const list = places.value ?? []
+  if (!project || !list.length) return ''
+  if (list.some((place) => place.share === 'docker')) return `docker/${project}`
+  return `${list[0]!.share}/docker/${project}`
+}
+
+/** A folder picked in the browser; a share by itself gets a folder named after the project. */
+function pickBase(path: string): void {
+  const picked = trimmed(path)
+  location.value = picked.includes('/') ? picked : `${picked}/${name.value}`
+  locationTouched.value = true
+}
 
 function inputType(kind: string, id: string): string {
   if (kind === 'password') return revealed[id] ? 'text' : 'password'
@@ -148,7 +171,7 @@ async function fill(): Promise<void> {
   }
 }
 
-const place = () => ({ name: name.value, share_id: shareId.value, folder: folder.value.trim() })
+const place = () => ({ name: name.value, share_id: shareId.value, folder: folder.value })
 
 /** Checks the file as Docker reads it; what reaches beyond the containers is confirmed first. */
 async function deploy(): Promise<void> {
@@ -244,27 +267,32 @@ const required = 'text-destructive'
       <div class="grid gap-2">
         <Label for="install-folder" :class="label">{{ t('appStore.baseFolder') }}</Label>
         <div class="flex min-w-0 gap-2">
-          <NativeSelect
-            v-model.number="shareId"
-            class="w-36 shrink-0"
-            :aria-label="t('appStore.baseShare')"
-          >
-            <option v-for="choice in places" :key="choice.share_id" :value="choice.share_id">
-              {{ choice.share }}
-            </option>
-          </NativeSelect>
           <Input
             id="install-folder"
-            v-model="folder"
+            v-model="location"
             :class="filled"
             class="min-w-0 flex-1 font-mono"
             autocomplete="off"
             spellcheck="false"
-            @input="folderTouched = true"
+            :aria-invalid="location.trim() !== '' && !locationValid"
+            @input="locationTouched = true"
           />
+          <Button
+            type="button"
+            variant="outline"
+            class="shrink-0"
+            :disabled="!shareList?.length"
+            @click="browsing = true"
+          >
+            <FolderOpen />
+            {{ t('appStore.browse') }}
+          </Button>
         </div>
         <p v-if="places && !places.length" class="text-xs text-destructive">
           {{ t('appStore.noPlace') }}
+        </p>
+        <p v-else-if="location.trim() !== '' && !locationValid" class="text-xs text-destructive">
+          {{ t('appStore.notAPlace') }}
         </p>
         <p v-else :class="hint">{{ t('appStore.baseFolderHint') }}</p>
       </div>
@@ -404,6 +432,7 @@ const required = 'text-destructive'
 
     <Alert v-if="failure" variant="destructive" class="whitespace-pre-wrap">{{ failure }}</Alert>
 
+    <FolderPicker v-model:open="browsing" :value="location" writable @pick="pickBase" />
     <FolderPicker
       :open="picking !== null"
       :value="picking ? (shares[picking] ?? '') : ''"

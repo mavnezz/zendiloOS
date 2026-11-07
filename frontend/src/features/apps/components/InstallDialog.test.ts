@@ -192,7 +192,7 @@ describe('the install dialog', () => {
     expect(field('install-folder').value).toBe('docker/photos')
     await press('Next')
 
-    expect(document.body.textContent).toContain('Immich · folder: docker/docker/photos')
+    expect(document.body.textContent).toContain('Immich · folder: docker/photos')
     expect(document.body.textContent).toContain('zendiloOS makes up: Database password')
     expect(document.body.textContent).toContain('Create the first account in the browser.')
     expect(button('Next').disabled).toBe(true)
@@ -208,14 +208,14 @@ describe('the install dialog', () => {
       settings: { ADMIN_EMAIL: 'me@example.org' },
     })
     expect(document.body.textContent).toContain('The Compose file')
-    expect(document.body.textContent).toContain('docker/docker/photos/compose.yaml')
+    expect(document.body.textContent).toContain('docker/photos/compose.yaml')
     const editor = document.body.querySelector('textarea')!
     expect(editor.value).toBe('services:\n  immich: {}\n')
     editor.value = 'services:\n  immich: { restart: always }\n'
     editor.dispatchEvent(new Event('input'))
     await press('Install')
 
-    const place = { name: 'photos', share_id: 4, folder: 'docker/photos' }
+    const place = { name: 'photos', share_id: 4, folder: 'photos' }
     const compose = 'services:\n  immich: { restart: always }\n'
     expect(checkCompose).toHaveBeenCalledWith({ ...place, compose })
     expect(createProject).toHaveBeenCalledWith({
@@ -227,6 +227,45 @@ describe('the install dialog', () => {
     expect(useJobsStore().running.map((job) => job.id)).toEqual([9])
     expect(refresh).toHaveBeenCalled()
     expect(wrapper.emitted('installed')).toEqual([['photos']])
+  })
+
+  it('picks the base folder in the folder browser, a share by itself getting the project’s name', async () => {
+    await opened()
+    const browse = () => button('Browse…').dispatchEvent(new MouseEvent('click', { bubbles: true }))
+
+    browse()
+    await flushPromises()
+    expect(sharesOffered()).toEqual(['family'])
+    const family = [...document.body.querySelectorAll('[role=treeitem]')][0]!
+    family.querySelectorAll('button')[1]!.click()
+    await flushPromises()
+    await press('Confirm')
+    expect(field('install-folder').value).toBe('family/immich')
+    await type('install-name', 'photos')
+    expect(field('install-folder').value).toBe('family/immich')
+
+    // It opens where the folder picked before is: family's folders are shown.
+    browse()
+    await flushPromises()
+    const old = [...document.body.querySelectorAll('[role=treeitem]')].find(
+      (row) => row.textContent?.trim() === 'Old',
+    )!
+    old.querySelectorAll('button')[1]!.click()
+    await flushPromises()
+    await press('Confirm')
+    expect(field('install-folder').value).toBe('family/Old')
+    expect(button('Next').disabled).toBe(false)
+  })
+
+  it('says when the base folder is not in a share a project may go in', async () => {
+    await opened()
+    await type('install-folder', 'media/immich')
+    expect(document.body.textContent).toContain('Choose a folder in a share you may write to')
+    expect(button('Next').disabled).toBe(true)
+    await type('install-folder', 'docker')
+    expect(button('Next').disabled).toBe(true)
+    await type('install-folder', '/docker/immich/')
+    expect(button('Next').disabled).toBe(false)
   })
 
   it('asks before what reaches beyond the containers runs', async () => {
