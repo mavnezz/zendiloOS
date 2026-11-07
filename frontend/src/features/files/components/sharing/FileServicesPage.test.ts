@@ -11,14 +11,14 @@ import FileServicesPage from './FileServicesPage.vue'
 const services = ref<FileServices>()
 const mutate = vi.fn<(body: FileServices) => void>()
 
-vi.mock('../api', async (original) => ({
-  ...(await original<typeof import('../api')>()),
+vi.mock('../../sharing', async (original) => ({
+  ...(await original<typeof import('../../sharing')>()),
   useFileServices: () => ({ data: services, isPending: ref(false) }),
   useSetFileServices: () => ({ mutate, reset: vi.fn(), isPending: ref(false), error: ref(null) }),
 }))
 vi.mock('@tanstack/vue-query', async (original) => ({
   ...(await original<typeof import('@tanstack/vue-query')>()),
-  useQuery: () => ({ data: ref([{ id: 3, name: 'backups' }]) }),
+  useQuery: () => ({ data: ref([{ id: 3, name: 'backups', shared: true }]) }),
 }))
 
 function page(canManage = true) {

@@ -11,7 +11,7 @@ import { Label } from '@/shared/ui/label'
 import { NativeSelect } from '@/shared/ui/native-select'
 import { PageTabs } from '@/shared/ui/page'
 
-import type { ServicesDraft } from '../lib/services'
+import type { ServicesDraft } from '../../lib/services'
 
 const VERSIONS: SmbMinProtocol[] = ['smb3', 'smb2_1', 'smb2']
 const PATTERN = /^\/([^/\\%\p{Cc}]+\/)+$/u

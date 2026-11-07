@@ -1,0 +1,158 @@
+import { describe, expect, it } from 'vitest'
+
+import { actionsFor, extension, type Item, type Situation, shortcut, sortItems } from './actions'
+import { folderAt, inBin, ownBin, parentPath, sameLocation, useHistory } from './location'
+
+function item(name: string, extra: Partial<Item> = {}): Item {
+  return {
+    key: name,
+    name,
+    kind: 'file',
+    size: 1,
+    modified: 1,
+    unreadable: false,
+    share: 1,
+    path: name,
+    ...extra,
+  }
+}
+
+function situation(extra: Partial<Situation> = {}): Situation {
+  return {
+    kind: 'folder',
+    writable: true,
+    snapshot: false,
+    ownBin: false,
+    binToEmpty: false,
+    shareWritable: true,
+    canManage: false,
+    clipboard: false,
+    favourite: false,
+    favouriteTarget: true,
+    hasSnapshots: true,
+    shareTarget: null,
+    items: [],
+    ...extra,
+  }
+}
+
+const ids = (s: Situation) => actionsFor(s).map((a) => a.id)
+const enabled = (s: Situation) =>
+  actionsFor(s)
+    .filter((a) => !a.disabled)
+    .map((a) => a.id)
+
+describe('the actions', () => {
+  it('belong where the explorer is', () => {
+    expect(ids(situation())).not.toContain('restore')
+    expect(ids(situation({ kind: 'bin' }))).toEqual(
+      expect.arrayContaining(['restore', 'emptyBin', 'delete']),
+    )
+    expect(ids(situation({ kind: 'bin' }))).not.toContain('copy')
+    expect(ids(situation({ snapshot: true }))).toContain('copyBack')
+    expect(ids(situation({ snapshot: true }))).not.toContain('paste')
+    expect(ids(situation({ kind: 'volume' }))).not.toContain('newFolder')
+    expect(ids(situation({ kind: 'volume', canManage: true }))).toContain('newFolder')
+    expect(ids(situation({ canManage: true, shareTarget: { shared: true } }))).toContain('share')
+  })
+
+  it('are enabled for what is chosen', () => {
+    expect(enabled(situation())).toEqual(
+      expect.arrayContaining(['newFolder', 'upload', 'favourite', 'properties']),
+    )
+    expect(enabled(situation())).not.toContain('paste')
+    expect(enabled(situation({ clipboard: true }))).toContain('paste')
+    const one = situation({ items: [item('a.txt')] })
+    expect(enabled(one)).toEqual(expect.arrayContaining(['open', 'download', 'rename', 'delete']))
+    const two = situation({ items: [item('a'), item('b')] })
+    expect(enabled(two)).not.toContain('rename')
+    expect(enabled(two)).not.toContain('download')
+    const read = situation({ writable: false, items: [item('a')] })
+    expect(enabled(read)).toEqual(expect.arrayContaining(['copy', 'open']))
+    expect(enabled(read)).not.toContain('cut')
+  })
+
+  it('treat a folder on a volume as such', () => {
+    const folder = item('media', {
+      kind: 'directory',
+      path: '',
+      volumeFolder: { shared: false, access: null },
+    })
+    const volume = situation({ kind: 'volume', items: [folder], shareTarget: { shared: false } })
+    expect(enabled(volume)).not.toContain('open')
+    expect(enabled(volume)).not.toContain('delete')
+    expect(enabled({ ...volume, canManage: true })).toEqual(
+      expect.arrayContaining(['delete', 'share']),
+    )
+    expect(enabled({ ...volume, canManage: true })).not.toContain('copy')
+    const shared = actionsFor({ ...volume, canManage: true, shareTarget: { shared: true } })
+    expect(shared.find((a) => a.id === 'share')!.undo).toBe(true)
+  })
+
+  it('know their keys', () => {
+    const press = (key: string, init: KeyboardEventInit = {}) =>
+      shortcut(new KeyboardEvent('keydown', { key, ...init }))
+    expect(press('Delete')).toBe('delete')
+    expect(press('F2')).toBe('rename')
+    expect(press('Enter')).toBe('open')
+    expect(press('Backspace')).toBe('up')
+    expect(press('ArrowUp', { altKey: true })).toBe('up')
+    expect(press('ArrowRight', { altKey: true })).toBe('forward')
+    expect(press('c', { metaKey: true })).toBe('copy')
+    expect(press('q', { ctrlKey: true })).toBeNull()
+    expect(press('x')).toBeNull()
+  })
+})
+
+describe('entries', () => {
+  it('are sorted folders first, by name, date, type or size', () => {
+    const list = [
+      item('b.txt', { size: 3, modified: 1 }),
+      item('A', { kind: 'directory', size: null }),
+      item('a10.pdf', { size: 1, modified: 3 }),
+      item('a9.pdf', { size: 2, modified: 2 }),
+    ]
+    const names = (key: Parameters<typeof sortItems>[1], descending = false) =>
+      sortItems(list, key, descending).map((i) => i.name)
+    expect(names('name')).toEqual(['A', 'a9.pdf', 'a10.pdf', 'b.txt'])
+    expect(names('name', true)).toEqual(['A', 'b.txt', 'a10.pdf', 'a9.pdf'])
+    expect(names('modified')).toEqual(['A', 'b.txt', 'a9.pdf', 'a10.pdf'])
+    expect(names('size')).toEqual(['A', 'a10.pdf', 'a9.pdf', 'b.txt'])
+    expect(names('type')).toEqual(['A', 'a9.pdf', 'a10.pdf', 'b.txt'])
+    expect(extension('archive.tar.gz')).toBe('GZ')
+    expect(extension('.profile')).toBeNull()
+    expect(extension('dot.')).toBeNull()
+  })
+})
+
+describe('locations', () => {
+  it('compare, nest and go back and forth', () => {
+    expect(sameLocation(folderAt(1, 'a'), folderAt(1, 'a'))).toBe(true)
+    expect(sameLocation(folderAt(1, 'a'), folderAt(1, 'a', 'snap'))).toBe(false)
+    expect(sameLocation({ kind: 'volume', volume: 1 }, { kind: 'volume', volume: 2 })).toBe(false)
+    expect(sameLocation({ kind: 'bin' }, { kind: 'bin' })).toBe(true)
+    expect(parentPath('a/b')).toBe('a')
+    expect(parentPath('a')).toBe('')
+    expect(ownBin('anna')).toBe('.recycle/anna')
+    expect(ownBin(undefined)).toBeNull()
+    expect(inBin('.recycle/anna/x')).toBe(true)
+
+    const history = useHistory({ kind: 'bin' })
+    history.go(folderAt(1))
+    history.go(folderAt(1))
+    history.go(folderAt(2))
+    history.back()
+    expect(history.current.value).toEqual(folderAt(1))
+    history.go(folderAt(3))
+    expect(history.canForward.value).toBe(false)
+    history.back()
+    history.back()
+    history.back()
+    expect(history.canBack.value).toBe(false)
+    history.replace(folderAt(9))
+    history.forward()
+    history.forward()
+    history.forward()
+    expect(history.current.value).toEqual(folderAt(3))
+  })
+})

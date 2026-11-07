@@ -13,14 +13,14 @@ import { ModalDialog } from '@/shared/ui/dialog'
 import { Input } from '@/shared/ui/input'
 import { Label } from '@/shared/ui/label'
 
-import { useShareSnapshots, useSnapshotActions } from '../api'
+import { useAdminSnapshots, useSnapshotActions } from '../../sharing'
 
 const props = defineProps<{ share: Share | null }>()
 const open = defineModel<boolean>('open', { default: false })
 
 const { t } = useI18n()
 const id = computed(() => props.share?.id ?? null)
-const { data, error } = useShareSnapshots(id)
+const { data, error } = useAdminSnapshots(id)
 const actions = useSnapshotActions()
 
 const FREQUENCIES: SnapshotFrequency[] = ['hourly', 'daily', 'weekly', 'monthly']

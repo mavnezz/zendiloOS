@@ -13,6 +13,8 @@ const props = defineProps<{
   initial: string
   submitLabel: string
   error: string | null
+  /** What the name must look like, under the field. */
+  hint?: string
 }>()
 const open = defineModel<boolean>('open', { default: false })
 const emit = defineEmits<{ submit: [name: string] }>()
@@ -50,6 +52,7 @@ function valid(value: string): boolean {
           spellcheck="false"
           maxlength="255"
         />
+        <p v-if="hint" class="text-xs text-muted-foreground">{{ hint }}</p>
         <p v-if="name.includes('/')" class="text-xs text-destructive">{{ t('files.noSlash') }}</p>
         <p v-else-if="name.trim().endsWith('.')" class="text-xs text-destructive">
           {{ t('files.noTrailingDot') }}

@@ -21,8 +21,8 @@ import {
 } from '@/shared/ui/page'
 import { Switch } from '@/shared/ui/switch'
 
-import { useFileServices, useSetFileServices } from '../api'
-import { fromDraft, sameServices, type ServicesDraft, toDraft } from '../lib/services'
+import { useFileServices, useSetFileServices } from '../../sharing'
+import { fromDraft, sameServices, type ServicesDraft, toDraft } from '../../lib/services'
 import SmbOptionsDialog from './SmbOptionsDialog.vue'
 
 /** As the server checks it. */
@@ -241,7 +241,13 @@ const isSoon = (id: string): id is keyof typeof soon => id in soon
               :disabled="!canManage || !draft.mac_compat"
             >
               <option :value="0">{{ t('fileServices.noTimeMachine') }}</option>
-              <option v-for="share in shares" :key="share.id" :value="share.id">
+              <option
+                v-for="share in shares?.filter(
+                  (s) => s.shared || s.id === draft?.time_machine_share,
+                )"
+                :key="share.id"
+                :value="share.id"
+              >
                 {{ share.name }}
               </option>
             </NativeSelect>

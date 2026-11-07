@@ -653,6 +653,29 @@ rustls with ring and the system's certificate authorities
   ends short of its length and the browser reports it as failed. At the
   share's top the recycle bins are left out, everywhere uploads in
   progress; at most four folders are written at once.
+- **The explorer** is one app for files and for the folders on the
+  volumes (the Shares app of before is part of it): on the left a tree of
+  places (the personal folder, the favourites, each volume with its folders
+  down to any depth, and one recycle bin view that gathers the person's
+  bins of every folder; removable drives get a section and a location kind
+  of their own there when the NAS offers them), on the right the details
+  view (name, modified, type, size; sorted; chosen with clicks, Ctrl,
+  Shift and Ctrl+A). The toolbar and the context menu (a right click, or a
+  long press on a touch screen, on an entry, on empty space or on a node of
+  the tree) offer the same actions, from one list that says which belong
+  where the explorer is and which the choice allows: open, download, new
+  folder, upload, cut, copy, paste, rename, delete, restore and empty the
+  recycle bin, copy back from a snapshot, favourites, and for a folder
+  directly on a volume share on the network or stop, previous versions
+  (snapshots looked into, and for those who manage shares taken, deleted
+  and rolled back) and properties (general, permissions, sharing). Keys
+  do the same (Del, F2, Ctrl+C/X/V/A, Enter, Backspace and Alt+arrows);
+  entries dragged onto a folder move (Ctrl copies), files dragged from the
+  computer upload. The volumes come from `GET /files/volumes`: someone who
+  manages shares sees every folder on them, those they may not open
+  marked, and makes new ones ("new folder" on a volume: off the network,
+  for its maker only); everyone else sees only the folders open to them.
+  On a phone the tree is a drawer.
 - **Favourites** are folders an account keeps at hand, in its order (at
   most 50, in the database with the account and the share). Only those in
   shares the account may use are shown; the others are kept, should

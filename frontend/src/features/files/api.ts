@@ -4,6 +4,19 @@ import { computed, type Ref, ref } from 'vue'
 import { ApiProblem, api, csrfToken, unwrap } from '@/shared/api/client'
 import type { Favourite, Job, TransferRequest } from '@/shared/api/types'
 
+export { joinPath } from './lib/location'
+
+/**
+ * The volumes and the folders on them the signed-in user sees: all of them
+ * for someone who manages shares, otherwise those open to them.
+ */
+export function useFileVolumes() {
+  return useQuery({
+    queryKey: ['files', 'volumes'],
+    queryFn: () => unwrap(api.GET('/api/v1/files/volumes')),
+  })
+}
+
 /** Shares the signed-in user may use. */
 export function useMyShares() {
   return useQuery({
@@ -143,11 +156,6 @@ export async function textPreview(url: string): Promise<{ text: string; more: bo
 /** Where the browser downloads a folder from, as a tar archive. */
 export function archiveUrl(share: number, path: string, snapshot?: string | null): string {
   return `/api/v1/files/shares/${share}/archive?${query(path, snapshot)}`
-}
-
-/** `parent/name`, or `name` at the root. */
-export function joinPath(parent: string, name: string): string {
-  return parent ? `${parent}/${name}` : name
 }
 
 function problem(request: XMLHttpRequest): ApiProblem {

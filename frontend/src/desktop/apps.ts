@@ -9,7 +9,6 @@ import {
   Database,
   Disc3,
   FolderOpen,
-  FolderTree,
   Gauge,
   Globe,
   HardDrive,
@@ -37,8 +36,7 @@ import { type Component, defineAsyncComponent } from 'vue'
 
 import type { Size } from './windowManager'
 
-export type AppId =
-  'storage' | 'shares' | 'dashboard' | 'logs' | 'settings' | 'files' | 'apps' | 'docker'
+export type AppId = 'storage' | 'dashboard' | 'logs' | 'settings' | 'files' | 'apps' | 'docker'
 
 /** A page inside an app: found by the launcher's search, opened directly. */
 export interface AppSection {
@@ -176,15 +174,6 @@ export const APPS: AppDefinition[] = [
       { id: 'disks', label: 'storage.disks', icon: HardDrive },
     ],
     component: defineAsyncComponent(() => import('./apps/StorageApp.vue')),
-  },
-  {
-    id: 'shares',
-    icon: FolderTree,
-    tile: 'bg-linear-to-br from-amber-300 to-orange-500',
-    permission: 'shares.manage',
-    size: { width: 1040, height: 700 },
-    minimum: { width: 360, height: 320 },
-    component: defineAsyncComponent(() => import('@/features/shares/components/SharesManager.vue')),
   },
   {
     id: 'dashboard',

@@ -1,10 +1,14 @@
 <script setup lang="ts">
 import { useSessionStore } from '@/features/auth/store'
-import FileManager from '@/features/files/components/FileManager.vue'
+import FileExplorer from '@/features/files/components/FileExplorer.vue'
 
 const session = useSessionStore()
 </script>
 
 <template>
-  <FileManager :user-name="session.info?.account.name" />
+  <FileExplorer
+    :user-name="session.info?.account.name"
+    :account-id="session.info?.account.id"
+    :can-manage="session.can('shares.manage')"
+  />
 </template>

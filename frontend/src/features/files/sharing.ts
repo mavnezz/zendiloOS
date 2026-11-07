@@ -12,10 +12,12 @@ import type {
   UpdateShareRequest,
 } from '@/shared/api/types'
 
-export function useShares() {
+/** Every share (needs `shares.manage`); `enabled` false asks for none. */
+export function useShares(options: { enabled?: MaybeRefOrGetter<boolean> } = {}) {
   return useQuery({
     queryKey: ['shares'],
     queryFn: () => unwrap(api.GET('/api/v1/shares')),
+    enabled: () => toValue(options.enabled ?? true),
   })
 }
 
@@ -48,6 +50,9 @@ export function useShareActions() {
       return await request
     } finally {
       await client.invalidateQueries({ queryKey: ['shares'] })
+      // The file manager's tree shows the folders on the volumes too.
+      await client.invalidateQueries({ queryKey: ['files', 'volumes'] })
+      await client.invalidateQueries({ queryKey: ['files', 'shares'] })
     }
   }
   const path = (id: number) => ({ params: { path: { id } } })
@@ -64,7 +69,7 @@ export function useShareActions() {
 }
 
 /** A share's snapshots, newest first, and its schedules. */
-export function useShareSnapshots(id: MaybeRefOrGetter<number | null>) {
+export function useAdminSnapshots(id: MaybeRefOrGetter<number | null>) {
   return useQuery({
     queryKey: ['shares', id, 'snapshots'],
     queryFn: () =>
