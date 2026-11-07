@@ -19,13 +19,14 @@ use std::io;
 use std::os::fd::OwnedFd;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use rustix::process::{Gid, Uid, getegid, geteuid, getgid, getuid};
 use rustix::thread::{
     CapabilitySet, capabilities, set_capabilities, set_thread_groups, set_thread_res_gid, set_thread_res_uid,
 };
 use zendiloos_agent_proto::{FileLocation, FileRoot, Request, Response, SharePath, UserName};
-use zendiloos_fileops::{FileError, PIECES_IN_FLIGHT, Sent, ShareRoot, Taken, settle};
+use zendiloos_fileops::{FileError, PIECES_IN_FLIGHT, SearchBounds, Sent, ShareRoot, Taken, settle};
 
 use crate::accounts::{AccountFiles, ID_MAX, ID_MIN, USERS_GROUP};
 use crate::operations::OperationError;
@@ -46,6 +47,8 @@ pub(crate) struct Files {
 
 /// The most folders written as archives at once.
 const CONCURRENT_ARCHIVES: usize = 4;
+/// How long a search looks before it answers with what it found.
+const SEARCH_TIME: std::time::Duration = std::time::Duration::from_secs(8);
 /// An archive nobody reads for this long is given up.
 const ARCHIVE_STALL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
@@ -323,6 +326,19 @@ impl Files {
                     writable: listing.writable,
                 };
                 Ok((response, None))
+            }
+            Request::SearchFiles { user, location, text, hidden } => {
+                let identity = self.identity(user)?;
+                let (share, path) = (self.share(location, user)?, location.path.clone());
+                let (text, hidden) = (text.clone(), *hidden);
+                let stop = Arc::new(AtomicBool::new(false));
+                let _watching = crate::waiting::flag_when_given_up(Arc::clone(&stop));
+                let until = std::time::Instant::now() + SEARCH_TIME;
+                let found = run(Acting::at(location, &identity), move || {
+                    share.search(&path, &text, hidden, SearchBounds { until, stop: &stop })
+                })
+                .await?;
+                Ok((Response::Found { entries: found.entries, stopped: found.stopped }, None))
             }
             Request::OpenFile { user, location } => {
                 let identity = self.identity(user)?;
@@ -609,6 +625,15 @@ mod tests {
         let listed = files.execute(&Request::ListDirectory { user: anna.clone(), location: at("") }).await;
         let Ok((Response::Directory { entries, .. }, _)) = listed else { panic!("{listed:?}") };
         assert_eq!(entries.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["song.mp3"]);
+        let search = |text: &str| Request::SearchFiles {
+            user: anna.clone(),
+            location: at(""),
+            text: zendiloos_agent_proto::SearchText::parse(text).unwrap(),
+            hidden: false,
+        };
+        let found = files.execute(&search("SONG")).await;
+        let Ok((Response::Found { entries, stopped: None }, None)) = found else { panic!("{found:?}") };
+        assert_eq!(entries.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), [format!("{top}/song.mp3")]);
         files.execute(&Request::MakeDirectory { user: anna.clone(), location: at("new") }).await.unwrap();
         let copied = files
             .execute(&Request::CopyEntry { user: anna.clone(), from: at("song.mp3"), to: at("new/song.mp3") })
@@ -753,6 +778,12 @@ mod tests {
         for request in [
             Request::OpenFile { user: anna.clone(), location: share("a.txt") },
             Request::OpenFile { user: anna.clone(), location: home.clone() },
+            Request::SearchFiles {
+                user: anna.clone(),
+                location: share(""),
+                text: zendiloos_agent_proto::SearchText::parse("a").unwrap(),
+                hidden: true,
+            },
             Request::OpenFile { user: anna.clone(), location: share_snapshot },
             Request::MoveEntry { user: anna.clone(), from: share("a"), to: share("b"), replace: false },
             Request::CopyEntry { user: anna.clone(), from: share("a"), to: share("b") },

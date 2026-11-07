@@ -315,6 +315,7 @@ impl SimulatedAgent {
         // The user every file request is for: personal folders are theirs.
         let user = match request {
             Request::ListDirectory { user, .. }
+            | Request::SearchFiles { user, .. }
             | Request::OpenFile { user, .. }
             | Request::CreateUpload { user, .. }
             | Request::MakeDirectory { user, .. }
@@ -357,6 +358,13 @@ impl SimulatedAgent {
                     let (entries, truncated, writable) =
                         (listing.entries, listing.truncated, listing.writable);
                     (Response::Directory { entries, truncated, writable }, None)
+                }
+                Request::SearchFiles { location, text, hidden, .. } => {
+                    let stop = std::sync::atomic::AtomicBool::new(false);
+                    let until = std::time::Instant::now() + std::time::Duration::from_secs(8);
+                    let bounds = zendiloos_fileops::SearchBounds { until, stop: &stop };
+                    let found = share(location)?.search(&location.path, text, *hidden, bounds)?;
+                    (Response::Found { entries: found.entries, stopped: found.stopped }, None)
                 }
                 Request::OpenFile { location, .. } => {
                     let (file, size) = share(location)?.open_file(&location.path)?;
@@ -813,6 +821,7 @@ impl AgentTransport for SimulatedAgent {
             }
             // A descriptor that comes along is closed here.
             Request::ListDirectory { .. }
+            | Request::SearchFiles { .. }
             | Request::OpenFile { .. }
             | Request::CreateUpload { .. }
             | Request::MakeDirectory { .. }

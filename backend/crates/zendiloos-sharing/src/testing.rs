@@ -10,8 +10,9 @@ use crate::application::ports::{
     self, FileHost, FileHostError, HostError, ShareHost, ShareRepository, Volume,
 };
 use crate::domain::{
-    Access, Entry, EntryKind, FileLocation, FilePath, Frequency, Listing, NewShare, Permission, Principal,
-    Share, ShareId, ShareName, ShareSettings, ShareUsage, SharingConfig, Snapshot, SnapshotSchedule,
+    Access, Entry, EntryKind, FileLocation, FilePath, Found, FoundEntry, Frequency, Listing, NewShare,
+    Permission, Principal, SearchStop, Share, ShareId, ShareName, ShareSettings, ShareUsage, SharingConfig,
+    Snapshot, SnapshotSchedule,
 };
 use zendiloos_kernel::Timestamp;
 
@@ -522,6 +523,30 @@ impl FileHost for Files {
             unreadable: false,
         };
         Ok(Listing { entries: vec![entry], truncated: false, writable: true })
+    }
+
+    /// Finds `beach.jpg` in `album` below where it looks; `many` stops at
+    /// its limit.
+    async fn search(
+        &self,
+        user: &str,
+        at: &FileLocation,
+        text: &str,
+        hidden: bool,
+        _: &RequestContext,
+    ) -> Result<Found, FileHostError> {
+        let hidden = if hidden { " hidden" } else { "" };
+        self.record(format!("search {user} {} {text}{hidden}", place(at)), at)?;
+        let entry = Entry {
+            name: "beach.jpg".into(),
+            kind: EntryKind::File,
+            size: 4,
+            modified: Timestamp::from_unix_seconds(2),
+            unreadable: false,
+        };
+        let path = at.path.join("album").and_then(|album| album.join("beach.jpg")).expect("a short path");
+        let stopped = (text == "many").then_some(SearchStop::Results);
+        Ok(Found { entries: vec![FoundEntry { path, entry }], stopped })
     }
 
     async fn open(

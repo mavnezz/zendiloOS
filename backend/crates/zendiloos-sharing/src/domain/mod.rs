@@ -5,9 +5,9 @@ mod share;
 mod snapshot;
 
 pub use files::{
-    Entry, EntryKind, Favourite, FileLocation, FilePath, FileRoot, InvalidFavourites, InvalidFilePath,
-    Listing, MAX_FAVOURITES, PlaceId, RECYCLE_DIRECTORY, REMOVABLE_PREFIX, favourites, is_drive_id,
-    is_file_name, is_new_file_name,
+    Entry, EntryKind, Favourite, FileLocation, FilePath, FileRoot, Found, FoundEntry, InvalidFavourites,
+    InvalidFilePath, Listing, MAX_FAVOURITES, MAX_SEARCH_BYTES, PlaceId, RECYCLE_DIRECTORY, REMOVABLE_PREFIX,
+    SearchStop, favourites, is_drive_id, is_file_name, is_new_file_name, is_search_text,
 };
 pub use homes::{HOME_SHARE, Home, HomesLocation, HomesSpec};
 pub use services::{

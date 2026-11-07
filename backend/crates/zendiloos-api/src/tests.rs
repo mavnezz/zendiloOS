@@ -1603,6 +1603,7 @@ fn openapi_documents_every_route() {
             "/api/v1/files/removable/{drive}/folder",
             "/api/v1/files/removable/{drive}/folders",
             "/api/v1/files/removable/{drive}/rename",
+            "/api/v1/files/removable/{drive}/search",
             "/api/v1/files/removable/{drive}/transfer",
             "/api/v1/files/removable/{drive}/upload",
             "/api/v1/files/shares",
@@ -1613,6 +1614,7 @@ fn openapi_documents_every_route() {
             "/api/v1/files/shares/{id}/folders",
             "/api/v1/files/shares/{id}/rename",
             "/api/v1/files/shares/{id}/restore",
+            "/api/v1/files/shares/{id}/search",
             "/api/v1/files/shares/{id}/snapshots",
             "/api/v1/files/shares/{id}/snapshots/{label}/restore",
             "/api/v1/files/shares/{id}/transfer",
@@ -2688,6 +2690,66 @@ fn operation_ids_are_unique() {
         }
     }
     assert!(seen.len() > 30, "found only {} operations", seen.len());
+}
+
+#[tokio::test]
+async fn a_search_looks_below_a_folder_the_user_may_see() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let carol = h.sign_in("carol", Role::User).await;
+    let carol_id =
+        h.identity.accounts.all().into_iter().find(|a| a.name.as_str() == "carol").unwrap().id.get();
+    let created = h
+        .send(json(
+            with_csrf(post("/api/v1/shares"), &admin),
+            json!({ "name": "photos", "pool": "tank",
+                    "access": [{ "kind": "account", "id": carol_id, "access": "read" }] }),
+        ))
+        .await;
+    let files = format!("/api/v1/files/shares/{}", created.body["id"]);
+    let search = |session: &Session, query: &str| {
+        h.send(empty(with_cookie(get(&format!("{files}/search?{query}")), session)))
+    };
+
+    let found = search(&carol, "path=2024&text=Beach").await;
+    assert_eq!(found.status, StatusCode::OK, "{:?}", found.body);
+    assert_eq!(
+        found.body,
+        json!({
+            "path": "2024",
+            "entries": [{ "path": "2024/album/beach.jpg", "name": "beach.jpg", "kind": "file",
+                          "size": 4, "modified": 2, "unreadable": false }],
+            "stopped": null,
+        })
+    );
+    let many = search(&carol, "text=many&hidden=true").await;
+    assert_eq!(many.body["stopped"], "results");
+    assert_problem(&search(&carol, "text=").await, StatusCode::UNPROCESSABLE_ENTITY, "invalid_operation");
+    assert_problem(&search(&carol, "path=2024").await, StatusCode::BAD_REQUEST, "bad_request");
+    assert_problem(
+        &search(&carol, "text=x&path=../x").await,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "invalid_input",
+    );
+    assert_problem(&search(&admin, "text=beach").await, StatusCode::NOT_FOUND, "not_found");
+
+    // A drive, for someone who manages storage, while it is mounted.
+    let stick = "/api/v1/files/removable/1A2B-3C4D/search?text=song";
+    let on_stick = |session: &Session| h.send(empty(with_cookie(get(stick), session)));
+    assert_problem(&on_stick(&carol).await, StatusCode::FORBIDDEN, "forbidden");
+    assert_problem(&on_stick(&admin).await, StatusCode::NOT_FOUND, "not_found");
+    h.storage.plug_stick();
+    h.send(empty(with_cookie(get("/api/v1/storage/removable"), &admin))).await;
+    let songs = on_stick(&admin).await;
+    assert_eq!((songs.status, songs.body["path"].clone()), (StatusCode::OK, json!("")), "{:?}", songs.body);
+    assert_eq!(
+        h.file_host.calls(),
+        [
+            "search carol photos:2024 Beach",
+            "search carol photos: many hidden",
+            "search alice removable:1A2B-3C4D: song",
+        ]
+    );
 }
 
 #[tokio::test]

@@ -14,6 +14,8 @@ use std::ffi::{CStr, CString};
 use std::fs::File;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 
 use rustix::fs::Timespec;
 use rustix::fs::{
@@ -23,8 +25,9 @@ use rustix::fs::{
 use rustix::io::Errno;
 use rustix::rand::{GetRandomFlags, getrandom};
 use zendiloos_agent_proto::{
-    AppFolder, AppName, DirectoryEntry, EntryKind, HOMES_DIRECTORY, MAX_DIRECTORY_ENTRIES, RemovableId,
-    ShareName, SharePath, SnapshotLabel, UserName, VolumeNumber, is_file_name,
+    AppFolder, AppName, DirectoryEntry, EntryKind, FoundEntry, HOMES_DIRECTORY, MAX_DIRECTORY_ENTRIES,
+    MAX_SEARCH_RESULTS, RemovableId, SearchStop, SearchText, ShareName, SharePath, SnapshotLabel, UserName,
+    VolumeNumber, is_file_name,
 };
 
 mod archive;
@@ -80,6 +83,24 @@ fn nested(error: FileError) -> FileError {
         other => other,
     }
 }
+
+/// What a search found, and why it ended early, if it did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Found {
+    pub entries: Vec<FoundEntry>,
+    pub stopped: Option<SearchStop>,
+}
+
+/// When a search ends early: at `until`, or once `stop` is set (its client
+/// hung up).
+#[derive(Debug, Clone, Copy)]
+pub struct SearchBounds<'a> {
+    pub until: Instant,
+    pub stop: &'a AtomicBool,
+}
+
+/// Entries looked at between two looks at the clock and the stop flag.
+const SEARCH_CHECK_EVERY: usize = 64;
 
 /// A directory listing.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -517,6 +538,89 @@ impl ShareRoot {
         Ok(Listing { entries, truncated, writable })
     }
 
+    /// Looks through the folder `path` and everything below it for names
+    /// containing `text`, whatever the case, as the calling thread may: a
+    /// folder it may not read is passed by. Walks by descriptor, name by
+    /// name, like the other walks: no link is followed, no other file system
+    /// entered, nothing deeper than 256 folders looked into. Names starting
+    /// with `.` are neither found nor entered unless `hidden`; the recycle
+    /// bins only when searched from inside one, and uploads under way never.
+    /// A name that is not UTF-8 is never found, nor what is in it: it cannot
+    /// be told from a name that looks alike. At most
+    /// [`MAX_SEARCH_RESULTS`], ending early at `bounds`.
+    pub fn search(
+        &self,
+        path: &SharePath,
+        text: &SearchText,
+        hidden: bool,
+        bounds: SearchBounds<'_>,
+    ) -> Result<Found, FileError> {
+        struct Level {
+            folder: Dir,
+            path: SharePath,
+            depth: u32,
+        }
+        let needle = text.needle();
+        let start = self.resolve(path, OFlags::RDONLY | OFlags::DIRECTORY)?;
+        let mut stack = vec![Level { folder: Dir::new(start)?, path: path.clone(), depth: 0 }];
+        let mut entries = Vec::new();
+        let mut looked = 0usize;
+        let stopped = loop {
+            let Some(level) = stack.last_mut() else { break None };
+            looked += 1;
+            if looked.is_multiple_of(SEARCH_CHECK_EVERY)
+                && (Instant::now() >= bounds.until || bounds.stop.load(Ordering::Relaxed))
+            {
+                break Some(SearchStop::Time);
+            }
+            let item = match level.folder.next() {
+                Some(Ok(item)) => item,
+                // What cannot be read further is passed by.
+                Some(Err(_)) | None => {
+                    stack.pop();
+                    continue;
+                }
+            };
+            let raw = item.file_name();
+            if raw == c"." || raw == c".." {
+                continue;
+            }
+            let Ok(name) = std::str::from_utf8(raw.to_bytes()) else { continue };
+            let skipped = (!hidden && name.starts_with('.'))
+                || (path.is_root() && level.depth == 0 && name == RECYCLE_DIRECTORY)
+                || name.starts_with(UPLOAD_PREFIX);
+            if skipped {
+                continue;
+            }
+            let Ok(found_path) = level.path.join(name) else { continue };
+            let folder = level.folder.fd()?;
+            let Ok(stat) = statat(folder, raw, AtFlags::SYMLINK_NOFOLLOW) else { continue };
+            if name.to_lowercase().contains(&needle) {
+                entries.push(FoundEntry { path: found_path.clone(), entry: entry(raw.to_bytes(), &stat) });
+                if entries.len() == MAX_SEARCH_RESULTS {
+                    break Some(SearchStop::Results);
+                }
+            }
+            let enter = kind(&stat) == FileType::Directory
+                && device(&stat) == self.file_system
+                && level.depth + 1 < MAX_DEPTH;
+            if !enter {
+                continue;
+            }
+            // Only the folder looked at: whoever may write here could swap it
+            // for another meanwhile.
+            let Ok(inner) = open_beneath_flags(folder, raw, OFlags::RDONLY | OFlags::DIRECTORY) else {
+                continue;
+            };
+            if fstat(&inner).map(|opened| identity(&opened)).ok() != Some(identity(&stat)) {
+                continue;
+            }
+            let depth = level.depth + 1;
+            stack.push(Level { folder: Dir::new(inner)?, path: found_path, depth });
+        };
+        Ok(Found { entries, stopped })
+    }
+
     /// A regular file, opened for reading, and its size.
     pub fn open_file(&self, path: &SharePath) -> Result<(OwnedFd, u64), FileError> {
         // O_NONBLOCK keeps a pipe from blocking the open; it means nothing
@@ -660,9 +764,11 @@ impl ShareRoot {
 
     /// Moves an entry out of `user`'s recycle bin back to where it was
     /// deleted from: `.recycle/<user>/<folders>/<name>` to `<folders>/<name>`,
-    /// without the `Copy #N of ` a second deletion of a name got there.
-    /// Folders on the way that are gone are made again; if the name is
-    /// taken, the first free `name (N).ext`. Returns where it went.
+    /// at any depth, without the `Copy #N of ` a second deletion of a name
+    /// got there, of the entry or of a folder on its way (something inside
+    /// a folder deleted twice goes back into that folder). Folders on the
+    /// way that are gone are made again; if the name is taken, the first
+    /// free `name (N).ext`. Returns where it went.
     pub fn restore(&self, path: &SharePath, user: &str) -> Result<SharePath, FileError> {
         let mut names = path.names();
         if names.next() != Some(RECYCLE_DIRECTORY) || names.next() != Some(user) {
@@ -677,6 +783,7 @@ impl ShareRoot {
         let mut directory = self.directory(&SharePath::root())?;
         let mut target = SharePath::root();
         for folder in folders {
+            let folder = original_name(folder);
             directory = enter(&directory, folder, 0o777)?;
             target = target.join(folder).map_err(too_long)?;
         }

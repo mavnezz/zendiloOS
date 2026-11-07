@@ -639,6 +639,48 @@ async fn restoring_takes_entries_out_of_the_bin_one_by_one() {
 }
 
 #[tokio::test]
+async fn a_search_looks_where_the_user_may_look_and_only_for_text() {
+    let s = setup();
+    let id = with_photos(&s).await;
+    let request = RequestContext::default();
+    let (files, context) = (&s.files, &request);
+    let search = |actor, place: crate::domain::PlaceId, text: &'static str, snapshot| async move {
+        files.search(&actor, place, file("2024"), text, false, snapshot, context).await
+    };
+
+    let found = search(bob(), id.into(), "Beach", None).await.unwrap();
+    assert_eq!(found.entries[0].path, file("2024/album/beach.jpg"));
+    assert_eq!(found.stopped, None);
+    let many = search(bob(), id.into(), "many", None).await.unwrap();
+    assert_eq!(many.stopped, Some(crate::domain::SearchStop::Results));
+    let label = Some("zdl-2026-11-05_19.40.01");
+    search(bob(), id.into(), "beach", label).await.unwrap();
+    for text in ["", "   ", "a\nb", "\u{7}"] {
+        let refused = s.files.search(&bob(), id, FilePath::root(), text, false, None, &request).await;
+        assert!(matches!(refused, Err(FilesError::Invalid(_))), "{text:?}: {refused:?}");
+    }
+    let long = "x".repeat(crate::domain::MAX_SEARCH_BYTES + 1);
+    let refused = s.files.search(&bob(), id, FilePath::root(), &long, false, None, &request).await;
+    assert!(matches!(refused, Err(FilesError::Invalid(_))));
+    assert!(matches!(search(carol(), id.into(), "beach", None).await, Err(FilesError::ShareNotFound)));
+    let stick = crate::domain::PlaceId::Removable("1A2B-3C4D".into());
+    assert!(matches!(search(alice(), stick.clone(), "beach", None).await, Err(FilesError::ShareNotFound)));
+    s.removable.plug("1A2B-3C4D", Some("STICK"), false);
+    s.files.search(&alice(), stick.clone(), FilePath::root(), "song", true, None, &request).await.unwrap();
+    let frozen = search(alice(), stick, "beach", label).await;
+    assert!(matches!(frozen, Err(FilesError::Invalid(why)) if why.contains("snapshots")));
+    assert_eq!(
+        s.file_host.calls(),
+        [
+            "search bob photos:2024 Beach",
+            "search bob photos:2024 many",
+            "search bob photos@zdl-2026-11-05_19.40.01:2024 beach",
+            "search alice removable:1A2B-3C4D: song hidden",
+        ]
+    );
+}
+
+#[tokio::test]
 async fn a_removable_drive_is_worked_on_while_mounted_and_has_no_bin() {
     let s = setup();
     let id = with_photos(&s).await;

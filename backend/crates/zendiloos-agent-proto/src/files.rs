@@ -10,6 +10,71 @@ use crate::{RemovableId, ShareName, VolumeNumber};
 /// Most entries [`crate::Response::Directory`] lists.
 pub const MAX_DIRECTORY_ENTRIES: usize = 20_000;
 
+/// Most entries a search answers with ([`crate::Response::Found`]).
+pub const MAX_SEARCH_RESULTS: usize = 500;
+
+/// What a search looks for in names: 1 to 255 bytes, no control
+/// characters. Names match when they contain it, whatever the case.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct SearchText(String);
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("a search is 1 to 255 bytes of text without control characters")]
+pub struct InvalidSearchText;
+
+impl SearchText {
+    pub const MAX_BYTES: usize = 255;
+
+    pub fn parse(value: &str) -> Result<Self, InvalidSearchText> {
+        let valid = !value.trim().is_empty()
+            && value.len() <= Self::MAX_BYTES
+            && !value.chars().any(char::is_control);
+        if valid { Ok(Self(value.to_owned())) } else { Err(InvalidSearchText) }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// What names are compared with: lowercase, as they are.
+    pub fn needle(&self) -> String {
+        self.0.to_lowercase()
+    }
+}
+
+impl TryFrom<String> for SearchText {
+    type Error = InvalidSearchText;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(&value)
+    }
+}
+
+impl From<SearchText> for String {
+    fn from(text: SearchText) -> Self {
+        text.0
+    }
+}
+
+/// An entry a search found: where, from the root, and what.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FoundEntry {
+    pub path: SharePath,
+    pub entry: DirectoryEntry,
+}
+
+/// Why a search ended before it had looked everywhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchStop {
+    /// [`MAX_SEARCH_RESULTS`] were found.
+    Results,
+    /// Its time was up, or nobody waited for it any more.
+    Time,
+}
+
 /// A path inside a share, relative to its root: names separated by `/`.
 /// No name is empty, `.` or `..`, longer than 255 bytes or contains NUL;
 /// the whole path has at most 4096 bytes. Empty means the share's root.
@@ -174,6 +239,21 @@ pub struct DirectoryEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_texts_are_short_plain_text() {
+        let text = SearchText::parse("Urlaub 2024").unwrap();
+        assert_eq!((text.as_str(), text.needle().as_str()), ("Urlaub 2024", "urlaub 2024"));
+        assert_eq!(SearchText::parse(&"ä".repeat(127)).unwrap().as_str().len(), 254);
+        for refused in ["", "   ", "a\nb", "tab\there", &"x".repeat(256)] {
+            assert_eq!(SearchText::parse(refused), Err(InvalidSearchText), "{refused:?}");
+        }
+        let parsed: SearchText = serde_json::from_str("\"Beach\"").unwrap();
+        assert_eq!(serde_json::to_string(&parsed).unwrap(), "\"Beach\"");
+        assert!(serde_json::from_str::<SearchText>("\"\"").is_err());
+        let stop: SearchStop = serde_json::from_str("\"results\"").unwrap();
+        assert_eq!(stop, SearchStop::Results);
+    }
 
     #[test]
     fn share_paths_stay_relative_and_plain() {

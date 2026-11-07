@@ -1080,6 +1080,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/files/removable/{drive}/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Looks for names in a folder of a removable drive and everything below
+         *     it, as in a share. Needs `files.read` and `storage.manage`.
+         */
+        get: operations["drive_search"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/files/removable/{drive}/transfer": {
         parameters: {
             query?: never;
@@ -1274,6 +1294,29 @@ export interface paths {
          *     a free one beside it. Stops at the first that fails. Needs `files.write`.
          */
         post: operations["restore_entries"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/files/shares/{id}/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Looks for names in a folder and everything below it, as the user may
+         *     see them: not into links, other file systems, other people's recycle
+         *     bins (nor into the bins at all unless searched from inside one), and
+         *     never by a name that is not UTF-8. At most 500 entries within a few
+         *     seconds. Needs `files.read`.
+         */
+        get: operations["search_folder"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -3523,6 +3566,11 @@ export interface components {
             /** @description The user may create and delete entries here. */
             writable: boolean;
         };
+        /** @description An entry a search found. */
+        FoundFile: components["schemas"]["FileEntry"] & {
+            /** @description Where it is, relative to the root searched in, its name included. */
+            path: string;
+        };
         Group: {
             /** Format: int64 */
             created_at: number;
@@ -4364,6 +4412,18 @@ export interface components {
              */
             last_run_at?: number | null;
         };
+        SearchResults: {
+            /** @description In the order they were come across. */
+            entries: components["schemas"]["FoundFile"][];
+            /** @description The folder searched, relative to the root. */
+            path: string;
+            stopped?: components["schemas"]["SearchStop"] | null;
+        };
+        /**
+         * @description Why a search ended before it had looked everywhere.
+         * @enum {string}
+         */
+        SearchStop: "results" | "time";
         SecuritySettings: {
             account_lock?: components["schemas"]["FailureLimit"] | null;
             /**
@@ -7715,6 +7775,67 @@ export interface operations {
             };
         };
     };
+    drive_search: {
+        parameters: {
+            query: {
+                /** @description The folder to search, with everything below it; empty for the root. */
+                path?: string;
+                /**
+                 * @description What names contain, whatever the case: 1 to 255 bytes, no control
+                 *     characters.
+                 */
+                text: string;
+                /** @description Also names starting with `.`, and what is in such folders. */
+                hidden?: boolean;
+                /** @description In this snapshot of the share, read only (its label). */
+                snapshot?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The drive's ID, as `/storage/removable` lists it */
+                drive: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SearchResults"];
+                };
+            };
+            /** @description `forbidden`: not someone who manages storage */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found`: no such drive mounted, or no such folder */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_operation`: no text to look for, or too much */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     drive_transfer: {
         parameters: {
             query?: never;
@@ -8211,6 +8332,66 @@ export interface operations {
                 };
             };
             /** @description `invalid_operation`: not in your bin */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    search_folder: {
+        parameters: {
+            query: {
+                /** @description The folder to search, with everything below it; empty for the root. */
+                path?: string;
+                /**
+                 * @description What names contain, whatever the case: 1 to 255 bytes, no control
+                 *     characters.
+                 */
+                text: string;
+                /** @description Also names starting with `.`, and what is in such folders. */
+                hidden?: boolean;
+                /** @description In this snapshot of the share, read only (its label). */
+                snapshot?: string;
+            };
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SearchResults"];
+                };
+            };
+            /** @description `permission_denied` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found`: no such share, or not shared with the user, or no such folder */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_operation`: no text to look for, or too much */
             422: {
                 headers: {
                     [name: string]: unknown;

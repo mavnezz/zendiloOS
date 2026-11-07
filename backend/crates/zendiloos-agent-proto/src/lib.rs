@@ -37,8 +37,9 @@ pub use docker::{
     ProjectAction, ProjectConfig, ProjectDirectory, ProjectName, Subnet,
 };
 pub use files::{
-    DirectoryEntry, EntryKind, FileLocation, FileRoot, HOMES_DIRECTORY, InvalidSharePath,
-    MAX_DIRECTORY_ENTRIES, SharePath, is_file_name,
+    DirectoryEntry, EntryKind, FileLocation, FileRoot, FoundEntry, HOMES_DIRECTORY, InvalidSearchText,
+    InvalidSharePath, MAX_DIRECTORY_ENTRIES, MAX_SEARCH_RESULTS, SearchStop, SearchText, SharePath,
+    is_file_name,
 };
 pub use framing::{FrameError, read_message, write_message};
 pub use network::{
@@ -531,6 +532,18 @@ pub enum Request {
         user: UserName,
         location: FileLocation,
     },
+    /// Looks through the folder `location` and everything below it for
+    /// names containing `text`, whatever the case; names starting with `.`
+    /// only with `hidden`. Answers [`Response::Found`]: at most
+    /// [`MAX_SEARCH_RESULTS`], within a few seconds, ending early once its
+    /// client hangs up.
+    SearchFiles {
+        user: UserName,
+        location: FileLocation,
+        text: SearchText,
+        #[serde(default)]
+        hidden: bool,
+    },
     /// Opens a regular file for reading; [`Response::File`] carries it.
     OpenFile {
         user: UserName,
@@ -680,6 +693,7 @@ impl Request {
             Request::DeleteGroup { .. } => "delete_group",
             Request::SetGroupMembers { .. } => "set_group_members",
             Request::ListDirectory { .. } => "list_directory",
+            Request::SearchFiles { .. } => "search_files",
             Request::OpenFile { .. } => "open_file",
             Request::CreateUpload { .. } => "create_upload",
             Request::MakeDirectory { .. } => "make_directory",
@@ -732,6 +746,12 @@ pub enum Response {
         truncated: bool,
         /// The user may create and delete entries in it.
         writable: bool,
+    },
+    /// What [`Request::SearchFiles`] found, in the order it came across it.
+    Found {
+        entries: Vec<FoundEntry>,
+        /// Why it did not look everywhere, if it did not.
+        stopped: Option<SearchStop>,
     },
     /// A regular file, opened for reading; its descriptor comes along.
     File {
@@ -1066,6 +1086,7 @@ impl Request {
             Request::SetShareAccess { .. }
             | Request::MakeHome { .. }
             | Request::ListDirectory { .. }
+            | Request::SearchFiles { .. }
             | Request::OpenFile { .. }
             | Request::CreateUpload { .. }
             | Request::MakeDirectory { .. }
@@ -1752,6 +1773,15 @@ mod tests {
             snapshot: None,
         };
         assert!(!Request::ListDirectory { user: user(), location: location.clone() }.is_long());
+        // A search has a few seconds and ends when its client hangs up.
+        let search: Request = serde_json::from_value(json!({
+            "op": "search_files", "user": "anna", "text": "beach",
+            "location": { "volume": 1, "root": { "share": "photos" }, "path": "album" },
+        }))
+        .unwrap();
+        assert!(matches!(&search, Request::SearchFiles { hidden: false, .. }));
+        assert!(!search.is_long() && search.acting_user().is_none());
+        assert_eq!((search.name(), search.role()), ("search_files", Role::Files));
         assert!(!Request::ScrubPool { pool: PoolName::parse("tank").unwrap() }.is_long());
         let bin = FileLocation { path: SharePath::parse(".recycle/anna/a.txt").unwrap(), ..location.clone() };
         assert!(!Request::RemoveEntry { user: user(), location: location.clone(), recycle: true }.is_long());

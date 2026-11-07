@@ -73,6 +73,31 @@ pub(crate) async fn lock<T>(
     wait(mutex.lock()).await
 }
 
+/// Sets `stop` once the request's client hangs up or the agent is asked
+/// to stop, for work that looks at it as it goes (a search); never outside
+/// a request. Watches until the guard is dropped.
+pub(crate) fn flag_when_given_up(stop: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Option<Watching> {
+    let Turn { mut gone, mut stopping, .. } = TURN.try_with(Clone::clone).ok()?;
+    let task = tokio::spawn(async move {
+        tokio::select! {
+            () = set(&mut gone) => {}
+            () = set(&mut stopping) => {}
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+    Some(Watching(task))
+}
+
+/// Watches as long as it lives.
+#[derive(Debug)]
+pub(crate) struct Watching(tokio::task::JoinHandle<()>);
+
+impl Drop for Watching {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// Resolves once `flag` is set; never if its sender went without.
 async fn set(flag: &mut watch::Receiver<bool>) {
     if flag.wait_for(|set| *set).await.is_err() {
@@ -136,6 +161,41 @@ mod tests {
         let turn = Turn::new(gone, stopping, None);
         let free = tokio::sync::Mutex::new(());
         assert!(turn.scope(async { lock(&free).await.map(drop) }).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn work_that_looks_hears_when_its_client_hangs_up() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        assert!(flag_when_given_up(Arc::new(AtomicBool::new(false))).is_none(), "outside a request");
+        let (turn, gone, _stopping) = turn(None);
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&stop);
+        let watching = turn.scope(async move { flag_when_given_up(flag) }).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert!(!stop.load(Ordering::Relaxed));
+        gone.send(true).unwrap();
+        for _ in 0..100 {
+            if stop.load(Ordering::Relaxed) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(stop.load(Ordering::Relaxed));
+        drop(watching);
+
+        let (turn, _gone, stopping) = self::turn(None);
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&stop);
+        let _watching = turn.scope(async move { flag_when_given_up(flag) }).await.unwrap();
+        stopping.send(true).unwrap();
+        for _ in 0..100 {
+            if stop.load(Ordering::Relaxed) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(stop.load(Ordering::Relaxed), "the agent stops");
     }
 
     #[tokio::test]

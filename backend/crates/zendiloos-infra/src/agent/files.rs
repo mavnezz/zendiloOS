@@ -7,7 +7,9 @@ use zendiloos_agent_proto::{
 };
 use zendiloos_kernel::{PortError, RequestContext, Timestamp};
 use zendiloos_sharing::application::ports::{FileHost, FileHostError};
-use zendiloos_sharing::domain::{Entry, EntryKind, FileLocation, FilePath, FileRoot, Listing};
+use zendiloos_sharing::domain::{
+    Entry, EntryKind, FileLocation, FilePath, FileRoot, Found, FoundEntry, Listing, SearchStop,
+};
 
 use super::{WHAT, agent_error, unexpected};
 
@@ -85,6 +87,21 @@ fn file(descriptor: Option<OwnedFd>) -> Result<tokio::fs::File, FileHostError> {
     Ok(tokio::fs::File::from_std(std::fs::File::from(descriptor)))
 }
 
+fn entry(entry: proto::DirectoryEntry) -> Entry {
+    Entry {
+        name: entry.name,
+        kind: match entry.kind {
+            ProtoKind::File => EntryKind::File,
+            ProtoKind::Directory => EntryKind::Directory,
+            ProtoKind::Symlink => EntryKind::Symlink,
+            ProtoKind::Other => EntryKind::Other,
+        },
+        size: entry.size,
+        modified: Timestamp::from_unix_seconds(entry.modified),
+        unreadable: entry.unreadable,
+    }
+}
+
 #[async_trait]
 impl FileHost for AgentFiles {
     async fn list(
@@ -95,24 +112,36 @@ impl FileHost for AgentFiles {
     ) -> Result<Listing, FileHostError> {
         let request = Request::ListDirectory { user: user(user_name)?, location: location(at)? };
         match self.call(request, context).await? {
-            (Response::Directory { entries, truncated, writable }, _) => Ok(Listing {
+            (Response::Directory { entries, truncated, writable }, _) => {
+                Ok(Listing { entries: entries.into_iter().map(entry).collect(), truncated, writable })
+            }
+            (other, _) => Err(unexpected(other).into()),
+        }
+    }
+
+    async fn search(
+        &self,
+        user_name: &str,
+        at: &FileLocation,
+        text: &str,
+        hidden: bool,
+        context: &RequestContext,
+    ) -> Result<Found, FileHostError> {
+        let text = proto::SearchText::parse(text).map_err(|_| invalid("search"))?;
+        let request = Request::SearchFiles { user: user(user_name)?, location: location(at)?, text, hidden };
+        match self.call(request, context).await? {
+            (Response::Found { entries, stopped }, _) => Ok(Found {
                 entries: entries
                     .into_iter()
-                    .map(|entry| Entry {
-                        name: entry.name,
-                        kind: match entry.kind {
-                            ProtoKind::File => EntryKind::File,
-                            ProtoKind::Directory => EntryKind::Directory,
-                            ProtoKind::Symlink => EntryKind::Symlink,
-                            ProtoKind::Other => EntryKind::Other,
-                        },
-                        size: entry.size,
-                        modified: Timestamp::from_unix_seconds(entry.modified),
-                        unreadable: entry.unreadable,
+                    .map(|found| {
+                        let path = FilePath::parse(found.path.as_str()).map_err(|_| invalid("path"))?;
+                        Ok(FoundEntry { path, entry: entry(found.entry) })
                     })
-                    .collect(),
-                truncated,
-                writable,
+                    .collect::<Result<_, FileHostError>>()?,
+                stopped: stopped.map(|stop| match stop {
+                    proto::SearchStop::Results => SearchStop::Results,
+                    proto::SearchStop::Time => SearchStop::Time,
+                }),
             }),
             (other, _) => Err(unexpected(other).into()),
         }
@@ -282,6 +311,25 @@ mod tests {
             root.path().join("volume1/docs").join(std::ffi::OsStr::from_bytes(b"odd-\xFF.txt")),
         )
         .unwrap();
+        std::fs::create_dir_all(root.path().join("volume1/docs/2024/Reports")).unwrap();
+        std::fs::write(root.path().join("volume1/docs/2024/Reports/q1.pdf"), "q1").unwrap();
+        let found = files.search("anna", &at(""), "REPORT", false, &context).await.unwrap();
+        let mut paths: Vec<_> = found.entries.iter().map(|f| f.path.as_str()).collect();
+        paths.sort_unstable();
+        assert_eq!(paths, ["2024/Reports", "report (2).txt", "report.txt"]);
+        assert_eq!(found.stopped, None);
+        let reports = found.entries.iter().find(|f| f.path.as_str() == "2024/Reports").unwrap();
+        assert_eq!(reports.entry.kind, EntryKind::Directory);
+        let below = files.search("anna", &at("2024"), "q1", false, &context).await.unwrap();
+        assert_eq!(below.entries[0].path.as_str(), "2024/Reports/q1.pdf");
+        assert!(matches!(
+            files.search("anna", &at(""), "", false, &context).await,
+            Err(FileHostError::Port(_))
+        ));
+        assert!(matches!(
+            files.search("anna", &at("nope"), "x", false, &context).await,
+            Err(FileHostError::NotFound)
+        ));
         assert!(matches!(files.open("anna", &at("nope"), &context).await, Err(FileHostError::NotFound)));
         assert!(matches!(
             files.move_entry("anna", &at("report.txt"), &at("report (2).txt"), false, &context).await,

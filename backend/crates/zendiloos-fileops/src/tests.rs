@@ -253,6 +253,135 @@ fn restoring_puts_an_entry_back_where_it_was() {
 }
 
 #[test]
+fn something_inside_a_folder_deleted_twice_goes_back_into_that_folder() {
+    let v = Volumes::new();
+    let photos = v.share("photos");
+    v.write("photos", "album/a.jpg", "first");
+    photos.remove(&path("album"), Some("anna")).unwrap();
+    v.write("photos", "album/2024/b.jpg", "second");
+    photos.remove(&path("album"), Some("anna")).unwrap();
+    assert!(v.exists("photos", ".recycle/anna/Copy #1 of album/2024/b.jpg"));
+
+    // Deep inside the second one: back into `album`, made again.
+    let back = photos.restore(&path(".recycle/anna/Copy #1 of album/2024/b.jpg"), "anna").unwrap();
+    assert_eq!(back, path("album/2024/b.jpg"));
+    assert_eq!(v.read("photos", "album/2024/b.jpg"), "second");
+    let first = photos.restore(&path(".recycle/anna/album/a.jpg"), "anna").unwrap();
+    assert_eq!(first, path("album/a.jpg"));
+    // Deleting inside the bin is for good, at any depth.
+    v.write("photos", "gone/deep/c.jpg", "third");
+    photos.remove(&path("gone"), Some("anna")).unwrap();
+    photos.remove(&path(".recycle/anna/gone/deep/c.jpg"), Some("anna")).unwrap();
+    assert!(!v.exists("photos", ".recycle/anna/gone/deep/c.jpg"));
+    assert!(v.exists("photos", ".recycle/anna/gone/deep"));
+}
+
+fn far_away() -> SearchBounds<'static> {
+    static NEVER: AtomicBool = AtomicBool::new(false);
+    SearchBounds { until: Instant::now() + std::time::Duration::from_secs(60), stop: &NEVER }
+}
+
+fn text(value: &str) -> SearchText {
+    SearchText::parse(value).unwrap()
+}
+
+fn found_paths(found: &Found) -> Vec<&str> {
+    let mut paths: Vec<&str> = found.entries.iter().map(|f| f.path.as_str()).collect();
+    paths.sort_unstable();
+    paths
+}
+
+#[test]
+fn a_search_finds_names_below_a_folder_whatever_their_case() {
+    let v = Volumes::new();
+    v.write("photos", "Beach.jpg", "sand");
+    v.write("photos", "album/2024/beach party.png", "music");
+    v.write("photos", "album/BEACHES/notes.txt", "list");
+    v.write("photos", "album/2023/mountain.jpg", "rock");
+    v.write("photos", ".hidden/beach.jpg", "secret");
+    v.write("photos", "album/.beach.txt", "dot");
+    v.write("photos", ".zendiloos-upload-0123456789abcdef", "beach under way");
+    let photos = v.share("photos");
+    photos.remove(&path("album/2023/mountain.jpg"), Some("anna")).unwrap();
+    v.write("photos", "album/2023/beachball.jpg", "ball");
+    photos.remove(&path("album/2023/beachball.jpg"), Some("anna")).unwrap();
+    symlink(v.share_path("music"), v.share_path("photos").join("beach-link")).unwrap();
+    v.write("music", "beach boys.mp3", "surf");
+
+    let found = photos.search(&SharePath::root(), &text("bEaCh"), false, far_away()).unwrap();
+    assert_eq!(found.stopped, None);
+    assert_eq!(
+        found_paths(&found),
+        ["Beach.jpg", "album/2024/beach party.png", "album/BEACHES", "beach-link"],
+        "no hidden names, no bins, no uploads, no links followed"
+    );
+    let folder = found.entries.iter().find(|f| f.path.as_str() == "album/BEACHES").unwrap();
+    assert_eq!(folder.entry.kind, EntryKind::Directory);
+    let link = found.entries.iter().find(|f| f.path.as_str() == "beach-link").unwrap();
+    assert_eq!(link.entry.kind, EntryKind::Symlink);
+
+    // Hidden names when asked; below a folder only what is below it.
+    let hidden = photos.search(&SharePath::root(), &text("beach"), true, far_away()).unwrap();
+    assert!(found_paths(&hidden).contains(&".hidden/beach.jpg"));
+    assert!(found_paths(&hidden).contains(&"album/.beach.txt"));
+    assert!(!found_paths(&hidden).iter().any(|p| p.starts_with(".recycle")), "the bins only from inside");
+    let below = photos.search(&path("album"), &text("beach"), false, far_away()).unwrap();
+    assert_eq!(found_paths(&below), ["album/2024/beach party.png", "album/BEACHES"]);
+    // From inside a bin, its entries.
+    let bin = photos.search(&path(".recycle/anna"), &text("beach"), false, far_away()).unwrap();
+    assert_eq!(found_paths(&bin), [".recycle/anna/album/2023/beachball.jpg"]);
+
+    let missing = photos.search(&path("nothing"), &text("beach"), false, far_away());
+    assert!(matches!(missing, Err(FileError::NotFound)), "{missing:?}");
+}
+
+#[test]
+fn a_search_never_takes_a_name_that_is_not_utf8_for_another() {
+    use std::os::unix::ffi::OsStrExt;
+    let v = Volumes::new();
+    let odd = std::ffi::OsStr::from_bytes(b"beach-\xFF");
+    fs::create_dir(v.share_path("photos").join(odd)).unwrap();
+    fs::write(v.share_path("photos").join(odd).join("beach.jpg"), "inside").unwrap();
+    v.write("photos", "beach-\u{FFFD}.txt", "real");
+    let found = v.share("photos").search(&SharePath::root(), &text("beach"), false, far_away()).unwrap();
+    assert_eq!(found_paths(&found), ["beach-\u{FFFD}.txt"]);
+}
+
+#[test]
+fn a_search_stops_at_its_limits() {
+    let v = Volumes::new();
+    for n in 0..(MAX_SEARCH_RESULTS + 20) {
+        v.write("photos", &format!("many/file-{n}.txt"), "x");
+    }
+    let photos = v.share("photos");
+    let found = photos.search(&SharePath::root(), &text("file"), false, far_away()).unwrap();
+    assert_eq!((found.entries.len(), found.stopped), (MAX_SEARCH_RESULTS, Some(SearchStop::Results)));
+
+    let past = SearchBounds { until: Instant::now(), stop: far_away().stop };
+    let late = photos.search(&SharePath::root(), &text("file"), false, past).unwrap();
+    assert_eq!(late.stopped, Some(SearchStop::Time));
+    assert!(late.entries.len() < SEARCH_CHECK_EVERY);
+    let gone = AtomicBool::new(true);
+    let stopped = SearchBounds { until: far_away().until, stop: &gone };
+    let given_up = photos.search(&SharePath::root(), &text("file"), false, stopped).unwrap();
+    assert_eq!(given_up.stopped, Some(SearchStop::Time));
+}
+
+#[test]
+fn a_search_stays_on_its_file_system_and_within_its_depth() {
+    let v = Volumes::new();
+    let mut deep = String::from("d");
+    for _ in 1..(MAX_DEPTH + 4) {
+        deep.push_str("/d");
+    }
+    fs::create_dir_all(v.share_path("photos").join(&deep)).unwrap();
+    fs::write(v.share_path("photos").join(&deep).join("target.txt"), "far").unwrap();
+    v.write("photos", "near/target.txt", "close");
+    let found = v.share("photos").search(&SharePath::root(), &text("target"), false, far_away()).unwrap();
+    assert_eq!(found_paths(&found), ["near/target.txt"], "nothing deeper than 256 folders");
+}
+
+#[test]
 fn bin_names_lose_only_a_real_copy_prefix() {
     assert_eq!(original_name("Copy #12 of a.jpg"), "a.jpg");
     for kept in ["a.jpg", "Copy # of a.jpg", "Copy #x of a.jpg", "Copy #1 of ", "Copy #1a.jpg"] {

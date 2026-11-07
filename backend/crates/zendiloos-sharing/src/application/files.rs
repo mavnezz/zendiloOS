@@ -19,8 +19,8 @@ use zendiloos_kernel::{Actor, PortError, RequestContext, Timestamp};
 use super::SharingPorts;
 use super::ports::FileHostError;
 use crate::domain::{
-    self, Access, Favourite, FileLocation, FilePath, FileRoot, HOME_SHARE, InvalidFilePath, Listing,
-    MAX_FAVOURITES, PlaceId, Share, ShareId, ShareName, is_new_file_name,
+    self, Access, Favourite, FileLocation, FilePath, FileRoot, Found, HOME_SHARE, InvalidFilePath, Listing,
+    MAX_FAVOURITES, MAX_SEARCH_BYTES, PlaceId, Share, ShareId, ShareName, is_new_file_name,
 };
 
 /// Most entries one copy, move or delete takes.
@@ -322,6 +322,31 @@ impl FilesUseCases {
     ) -> Result<Listing, FilesError> {
         let share = self.share(actor, id, context).await?.place;
         Ok(self.ports.files.list(&actor.name, &at_snapshot(&share, path, snapshot)?, context).await?)
+    }
+
+    /// What is called like `text` (containing it, whatever the case) in the
+    /// folder `path` of the place and below it, or of its snapshot
+    /// `snapshot`: as the user may see it, within a few seconds, a few
+    /// hundred entries at most. Names starting with `.` only with `hidden`.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn search(
+        &self,
+        actor: &Actor,
+        id: impl Into<PlaceId>,
+        path: FilePath,
+        text: &str,
+        hidden: bool,
+        snapshot: Option<&str>,
+        context: &RequestContext,
+    ) -> Result<Found, FilesError> {
+        if !domain::is_search_text(text) {
+            return Err(FilesError::Invalid(format!(
+                "a search is 1 to {MAX_SEARCH_BYTES} bytes of text without control characters"
+            )));
+        }
+        let share = self.share(actor, id, context).await?.place;
+        let at = at_snapshot(&share, path, snapshot)?;
+        Ok(self.ports.files.search(&actor.name, &at, text, hidden, context).await?)
     }
 
     /// A file for download, and its size; from a snapshot if given.

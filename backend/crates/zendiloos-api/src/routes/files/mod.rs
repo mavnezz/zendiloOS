@@ -35,6 +35,7 @@ pub(super) fn routes() -> OpenApiRouter<ApiState> {
         .routes(routes!(file_volumes))
         .routes(routes!(favourites, set_favourites))
         .routes(routes!(list_folder))
+        .routes(routes!(search_folder))
         .routes(routes!(download))
         .routes(routes!(download_folder))
         .routes(routes!(upload))
@@ -272,6 +273,123 @@ async fn list_folder(
     folder_in(&state, &auth, &client, ShareId::new(id).into(), query).await
 }
 
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct SearchQuery {
+    /// The folder to search, with everything below it; empty for the root.
+    #[serde(default)]
+    pub path: String,
+    /// What names contain, whatever the case: 1 to 255 bytes, no control
+    /// characters.
+    pub text: String,
+    /// Also names starting with `.`, and what is in such folders.
+    #[serde(default)]
+    pub hidden: bool,
+    /// In this snapshot of the share, read only (its label).
+    #[serde(default)]
+    pub snapshot: Option<String>,
+}
+
+/// An entry a search found.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct FoundFile {
+    /// Where it is, relative to the root searched in, its name included.
+    pub path: String,
+    #[serde(flatten)]
+    pub entry: FileEntry,
+}
+
+/// Why a search ended before it had looked everywhere.
+#[derive(Debug, Clone, Copy, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchStop {
+    /// It found as many as it answers with (500).
+    Results,
+    /// Its time was up (a few seconds).
+    Time,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SearchResults {
+    /// The folder searched, relative to the root.
+    pub path: String,
+    /// In the order they were come across.
+    pub entries: Vec<FoundFile>,
+    /// Set when it did not look everywhere.
+    pub stopped: Option<SearchStop>,
+}
+
+/// Looks for names in a folder and everything below it, as the user may
+/// see them: not into links, other file systems, other people's recycle
+/// bins (nor into the bins at all unless searched from inside one), and
+/// never by a name that is not UTF-8. At most 500 entries within a few
+/// seconds. Needs `files.read`.
+#[utoipa::path(
+    get,
+    path = "/files/shares/{id}/search",
+    tag = "files",
+    security(("session" = [])),
+    params(("id" = i64, Path), SearchQuery),
+    responses(
+        (status = OK, body = SearchResults),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`: no such share, or not shared with the user, or no such folder"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_operation`: no text to look for, or too much"),
+        (status = FORBIDDEN, body = Problem, description = "`permission_denied`"),
+    )
+)]
+async fn search_folder(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(id): Path<i64>,
+    ApiQuery(query): ApiQuery<SearchQuery>,
+) -> Result<Json<SearchResults>, ApiError> {
+    auth.require(Permission::FilesRead)?;
+    search_in(&state, &auth, &client, ShareId::new(id).into(), query).await
+}
+
+fn file_entry(entry: sharing::Entry) -> FileEntry {
+    FileEntry {
+        name: entry.name,
+        kind: match entry.kind {
+            sharing::EntryKind::File => FileKind::File,
+            sharing::EntryKind::Directory => FileKind::Directory,
+            sharing::EntryKind::Symlink => FileKind::Symlink,
+            sharing::EntryKind::Other => FileKind::Other,
+        },
+        size: entry.size,
+        modified: entry.modified.unix_seconds(),
+        unreadable: entry.unreadable,
+    }
+}
+
+async fn search_in(
+    state: &ApiState,
+    auth: &Auth,
+    client: &RequestContext,
+    place: PlaceId,
+    query: SearchQuery,
+) -> Result<Json<SearchResults>, ApiError> {
+    let folder = path(&query.path)?;
+    let snapshot = query.snapshot.as_deref();
+    let found = state
+        .files
+        .search(&auth.0.actor(), place, folder.clone(), &query.text, query.hidden, snapshot, client)
+        .await?;
+    Ok(Json(SearchResults {
+        path: folder.as_str().to_owned(),
+        entries: found
+            .entries
+            .into_iter()
+            .map(|found| FoundFile { path: found.path.as_str().to_owned(), entry: file_entry(found.entry) })
+            .collect(),
+        stopped: found.stopped.map(|stop| match stop {
+            sharing::SearchStop::Results => SearchStop::Results,
+            sharing::SearchStop::Time => SearchStop::Time,
+        }),
+    }))
+}
+
 /// A removable drive, for someone who manages storage and may use files
 /// that way (`files.read` or `files.write`).
 fn drive(auth: &Auth, id: String, files: Permission) -> Result<PlaceId, ApiError> {
@@ -292,22 +410,7 @@ async fn folder_in(
     let listing = state.files.list(&auth.0.actor(), place, folder.clone(), snapshot, client).await?;
     Ok(Json(Folder {
         path: folder.as_str().to_owned(),
-        entries: listing
-            .entries
-            .into_iter()
-            .map(|entry| FileEntry {
-                name: entry.name,
-                kind: match entry.kind {
-                    sharing::EntryKind::File => FileKind::File,
-                    sharing::EntryKind::Directory => FileKind::Directory,
-                    sharing::EntryKind::Symlink => FileKind::Symlink,
-                    sharing::EntryKind::Other => FileKind::Other,
-                },
-                size: entry.size,
-                modified: entry.modified.unix_seconds(),
-                unreadable: entry.unreadable,
-            })
-            .collect(),
+        entries: listing.entries.into_iter().map(file_entry).collect(),
         truncated: listing.truncated,
         writable: listing.writable,
     }))

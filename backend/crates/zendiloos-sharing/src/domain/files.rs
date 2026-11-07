@@ -166,6 +166,37 @@ pub struct Listing {
     pub writable: bool,
 }
 
+/// Longest text a search looks for, in bytes.
+pub const MAX_SEARCH_BYTES: usize = 255;
+
+/// What a search looks for in names, as typed: 1 to
+/// [`MAX_SEARCH_BYTES`], not only spaces, no control characters.
+pub fn is_search_text(text: &str) -> bool {
+    !text.trim().is_empty() && text.len() <= MAX_SEARCH_BYTES && !text.chars().any(char::is_control)
+}
+
+/// An entry a search found: where, from the root, and what.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FoundEntry {
+    pub path: FilePath,
+    pub entry: Entry,
+}
+
+/// Why a search ended before it had looked everywhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchStop {
+    /// It found as many as it answers with.
+    Results,
+    /// Its time was up.
+    Time,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Found {
+    pub entries: Vec<FoundEntry>,
+    pub stopped: Option<SearchStop>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

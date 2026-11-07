@@ -3666,6 +3666,108 @@
         ]
       }
     },
+    "/api/v1/files/removable/{drive}/search": {
+      "get": {
+        "tags": [
+          "files"
+        ],
+        "summary": "Looks for names in a folder of a removable drive and everything below\nit, as in a share. Needs `files.read` and `storage.manage`.",
+        "operationId": "drive_search",
+        "parameters": [
+          {
+            "name": "drive",
+            "in": "path",
+            "description": "The drive's ID, as `/storage/removable` lists it",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "description": "The folder to search, with everything below it; empty for the root.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "text",
+            "in": "query",
+            "description": "What names contain, whatever the case: 1 to 255 bytes, no control\ncharacters.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "hidden",
+            "in": "query",
+            "description": "Also names starting with `.`, and what is in such folders.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "snapshot",
+            "in": "query",
+            "description": "In this snapshot of the share, read only (its label).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchResults"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`: not someone who manages storage",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no such drive mounted, or no such folder",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_operation`: no text to look for, or too much",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/files/removable/{drive}/transfer": {
       "post": {
         "tags": [
@@ -4434,6 +4536,108 @@
           },
           "422": {
             "description": "`invalid_operation`: not in your bin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/files/shares/{id}/search": {
+      "get": {
+        "tags": [
+          "files"
+        ],
+        "summary": "Looks for names in a folder and everything below it, as the user may\nsee them: not into links, other file systems, other people's recycle\nbins (nor into the bins at all unless searched from inside one), and\nnever by a name that is not UTF-8. At most 500 entries within a few\nseconds. Needs `files.read`.",
+        "operationId": "search_folder",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "description": "The folder to search, with everything below it; empty for the root.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "text",
+            "in": "query",
+            "description": "What names contain, whatever the case: 1 to 255 bytes, no control\ncharacters.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "hidden",
+            "in": "query",
+            "description": "Also names starting with `.`, and what is in such folders.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "snapshot",
+            "in": "query",
+            "description": "In this snapshot of the share, read only (its label).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchResults"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`permission_denied`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no such share, or not shared with the user, or no such folder",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_operation`: no text to look for, or too much",
             "content": {
               "application/json": {
                 "schema": {
@@ -11199,6 +11403,26 @@
           }
         }
       },
+      "FoundFile": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/FileEntry"
+          },
+          {
+            "type": "object",
+            "required": [
+              "path"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Where it is, relative to the root searched in, its name included."
+              }
+            }
+          }
+        ],
+        "description": "An entry a search found."
+      },
       "Group": {
         "type": "object",
         "required": [
@@ -13763,6 +13987,45 @@
               }
             }
           }
+        ]
+      },
+      "SearchResults": {
+        "type": "object",
+        "required": [
+          "path",
+          "entries"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FoundFile"
+            },
+            "description": "In the order they were come across."
+          },
+          "path": {
+            "type": "string",
+            "description": "The folder searched, relative to the root."
+          },
+          "stopped": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SearchStop",
+                "description": "Set when it did not look everywhere."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "SearchStop": {
+        "type": "string",
+        "description": "Why a search ended before it had looked everywhere.",
+        "enum": [
+          "results",
+          "time"
         ]
       },
       "SecuritySettings": {

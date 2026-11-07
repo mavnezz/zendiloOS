@@ -284,6 +284,7 @@ impl Operations {
                 self.accounts.set_group_members(group, members).await
             }
             Request::ListDirectory { .. }
+            | Request::SearchFiles { .. }
             | Request::OpenFile { .. }
             | Request::CreateUpload { .. }
             | Request::MakeDirectory { .. }

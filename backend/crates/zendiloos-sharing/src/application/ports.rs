@@ -6,9 +6,9 @@ use async_trait::async_trait;
 use zendiloos_kernel::{PortError, RequestContext, Timestamp};
 
 use crate::domain::{
-    Access, AppAccess, Favourite, FileLocation, FilePath, FileServices, Frequency, Home, HomesLocation,
-    Listing, NewShare, Permission, Principal, Share, ShareId, ShareName, ShareSettings, ShareUsage,
-    SharingConfig, Snapshot, SnapshotSchedule,
+    Access, AppAccess, Favourite, FileLocation, FilePath, FileServices, Found, Frequency, Home,
+    HomesLocation, Listing, NewShare, Permission, Principal, Share, ShareId, ShareName, ShareSettings,
+    ShareUsage, SharingConfig, Snapshot, SnapshotSchedule,
 };
 
 #[async_trait]
@@ -286,6 +286,18 @@ pub trait FileHost: Send + Sync {
         at: &FileLocation,
         context: &RequestContext,
     ) -> Result<Listing, FileHostError>;
+
+    /// Names containing `text`, whatever the case, in the folder `at` and
+    /// below it, as the user may see them; names starting with `.` only
+    /// with `hidden`. Within a few seconds, a few hundred at most.
+    async fn search(
+        &self,
+        user: &str,
+        at: &FileLocation,
+        text: &str,
+        hidden: bool,
+        context: &RequestContext,
+    ) -> Result<Found, FileHostError>;
 
     /// A regular file, opened for reading, and its size.
     async fn open(

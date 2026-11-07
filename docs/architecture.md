@@ -602,9 +602,11 @@ rustls with ring and the system's certificate authorities
   share's ACL: created by Samba, it would get the private mode, every other
   user's bin could not be created, and Samba deletes files for good when it
   cannot move them. The file manager deletes into the same bins; inside a
-  bin, deleting is for good. It also restores from the user's own bin:
-  back to where an entry was deleted from (`keeptree` keeps the folders),
-  without the `Copy #N of ` of a second deletion, folders that are gone
+  bin, deleting is for good, at any depth. It also restores from the
+  user's own bin, any entry at any depth: back to where it was deleted
+  from (`keeptree` keeps the folders), without the `Copy #N of ` of a
+  second deletion, of the entry or of a folder on its way (what is inside a
+  folder deleted twice goes back into that folder), folders that are gone
   made again, and a taken name gets a free one beside it; emptying the
   bin deletes `.recycle/<user>` for good.
 - **File manager: the kernel checks, not our code.** `zendiloosd` cannot
@@ -662,6 +664,20 @@ rustls with ring and the system's certificate authorities
   SVG, PDF and anything else is only ever saved, because a file shown from
   our origin could run script there. Every download also carries
   `Content-Security-Policy: sandbox; default-src 'none'` and `nosniff`.
+- **Search.** The explorer's search looks through the folder shown and
+  everything below it on the NAS (`GET /files/shares/{id}/search`, and
+  `/files/removable/{drive}/search`, with `path`, `text`, `hidden` and in
+  a snapshot `snapshot`): names containing the text, whatever the case.
+  The files agent walks as the person, like the other walks: by
+  descriptor, name by name, never following a link, never onto another
+  file system, no deeper than 256 folders, each folder checked to be the
+  one looked at before it is entered; what the person may not read is
+  passed by. Names starting with `.` only when hidden entries are shown,
+  the recycle bins only when searched from inside one, uploads under way
+  never, and a name that is not UTF-8 is neither found nor entered (it
+  could not be told from one that looks alike). It answers with at most
+  500 entries within eight seconds, saying so when it stopped early, and
+  stops as soon as `zendiloosd` hangs up (the person typed on, or left).
 - **Folders as archives.** A folder downloads as a tar archive (POSIX
   pax: long names whole, links as links), which Windows, macOS and Linux
   open without extra software. The files agent first plans it as the
