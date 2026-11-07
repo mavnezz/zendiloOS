@@ -48,7 +48,7 @@ const state = computed(() => (isUp(props.container) ? 'running' : 'stopped'))
             v-if="open"
             type="button"
             class="truncate rounded font-medium outline-none hover:text-primary hover:underline focus-visible:ring-2 focus-visible:ring-ring"
-            @click="open(container.id)"
+            @click="open(container.name)"
           >
             {{ container.name }}
           </button>

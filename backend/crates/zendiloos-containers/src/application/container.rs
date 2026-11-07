@@ -84,9 +84,11 @@ impl Containers {
         let details = self.ports.engine.inspect_container(&container.id, context).await?;
         let service = self.confirmed_service(&details.container).await?;
         let host_paths = host_paths(&details.container.mounts, service.as_ref());
-        let usage = self.history().latest().filter(|_| details.container.state.is_up()).and_then(|sample| {
-            sample.containers.iter().find(|u| u.id == details.container.id).cloned()
-        });
+        let usage = self
+            .history()
+            .latest()
+            .filter(|_| details.container.state.is_up())
+            .and_then(|sample| sample.containers.iter().find(|u| u.id == details.container.id).cloned());
         Ok(ContainerDetailsView { details, host_paths, usage })
     }
 

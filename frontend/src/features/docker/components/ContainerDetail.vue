@@ -27,11 +27,12 @@ import ContainerProcesses from './ContainerProcesses.vue'
 import ContainerTerminal from './ContainerTerminal.vue'
 import UpdateDialog from './UpdateDialog.vue'
 
-const props = defineProps<{ id: string }>()
+/** `name`: the container's name (or ID). */
+const props = defineProps<{ name: string }>()
 const emit = defineEmits<{ back: [] }>()
 
 const { t } = useI18n()
-const id = toRef(props, 'id')
+const id = toRef(props, 'name')
 const { data: details, error } = useContainerDetails(id)
 const container = computed(() => details.value?.container)
 const running = computed(() => Boolean(container.value && isUp(container.value)))
@@ -53,7 +54,7 @@ const ticker = window.setInterval(() => (now.value = Date.now()), 1000)
 onBeforeUnmount(() => window.clearInterval(ticker))
 
 function run(action: 'start' | 'stop' | 'restart'): void {
-  act.mutate({ id: props.id, action })
+  act.mutate({ id: props.name, action })
 }
 </script>
 

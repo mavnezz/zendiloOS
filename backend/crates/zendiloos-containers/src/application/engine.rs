@@ -77,13 +77,14 @@ impl Containers {
             .collect())
     }
 
+    /// The container whose full ID or name is `id`, as Docker takes either.
     pub(super) async fn find_container(
         &self,
         id: &str,
         context: &RequestContext,
     ) -> Result<Container, ContainersError> {
         let containers = self.ports.engine.containers(context).await?;
-        containers.into_iter().find(|c| c.id == id).ok_or(ContainersError::NotFound)
+        containers.into_iter().find(|c| c.id == id || c.name == id).ok_or(ContainersError::NotFound)
     }
 
     pub async fn control_container(

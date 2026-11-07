@@ -469,6 +469,8 @@ async fn a_container_is_shown_with_the_folders_its_project_was_confirmed_with() 
 
     let view = t.containers.container_details("app-id", &context()).await.unwrap();
     assert_eq!(view.details.container.name, "app");
+    let by_name = t.containers.container_details("app", &context()).await.unwrap();
+    assert_eq!(by_name.details.container.id, "app-id", "found by its name too");
     assert_eq!(view.host_paths, ["/volume1/docker/docker/tesla/data"]);
     let plain = t.containers.container_details("stack-web-id", &context()).await.unwrap();
     assert!(plain.host_paths.is_empty());

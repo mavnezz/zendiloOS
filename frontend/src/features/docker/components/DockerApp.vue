@@ -29,6 +29,8 @@ const SECTIONS = [
 ] as const
 /** A page that is a project: `project:<name>`. */
 const PROJECT = 'project:'
+/** A page that is a container: `container:<name>`. */
+const CONTAINER = 'container:'
 
 const { t } = useI18n()
 const icons = {
@@ -55,19 +57,35 @@ type View =
   | { kind: 'create' }
   | { kind: 'edit'; name: string; compose: string }
 const view = ref<View>({ kind: 'list' })
-/** Within Containers: the one opened, by ID. */
-const container = ref<string | null>(null)
+/** Within Containers: the one opened, by name, and the page it was opened from. */
+const container = ref<{ name: string; from: string | null } | null>(null)
 watch(section, () => {
   view.value = { kind: 'list' }
   container.value = null
 })
 
-// A container's name opens its page, from Containers or a project.
-provide(OPEN_CONTAINER, (id: string) => {
+/**
+ * Opens a container's page, remembering the project whose page it was
+ * opened from (if it was), where Back leads.
+ */
+function openContainer(name: string): void {
+  if (container.value?.name === name) return
+  const from = view.value.kind === 'detail' ? view.value.name : null
   section.value = 'containers'
   // After the change of page, which shows the list.
-  void nextTick(() => (container.value = id))
-})
+  void nextTick(() => (container.value = { name, from }))
+}
+
+function leaveContainer(): void {
+  const from = container.value?.from
+  container.value = null
+  if (!from) return
+  section.value = 'projects'
+  void nextTick(() => (view.value = { kind: 'detail', name: from }))
+}
+
+// A container's name opens its page, from Containers or a project.
+provide(OPEN_CONTAINER, openContainer)
 
 // Another app (the App Center) opens a project here as `project:<name>`.
 const frame = inject(WINDOW_SECTION, null)
@@ -81,6 +99,15 @@ watch(
     void nextTick(() => (view.value = { kind: 'detail', name }))
   },
   { immediate: true },
+)
+// A project's page opens a container as `container:<name>`. At once, while
+// the project shown is still known: the page changes after.
+watch(
+  () => frame?.section.value,
+  (asked) => {
+    if (asked?.startsWith(CONTAINER)) openContainer(asked.slice(CONTAINER.length))
+  },
+  { immediate: true, flush: 'sync' },
 )
 </script>
 
@@ -117,7 +144,12 @@ watch(
       />
     </template>
     <template v-else-if="section === 'containers'">
-      <ContainerDetail v-if="container" :id="container" :key="container" @back="container = null" />
+      <ContainerDetail
+        v-if="container"
+        :key="container.name"
+        :name="container.name"
+        @back="leaveContainer"
+      />
       <ContainersSection v-else />
     </template>
     <ImagesSection v-else-if="section === 'images'" />

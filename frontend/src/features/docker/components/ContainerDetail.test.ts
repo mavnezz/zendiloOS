@@ -226,7 +226,7 @@ beforeEach(() => {
     // Without storage there is nothing to forget.
   }
   on('GET', '/api/v1/docker/containers', [container()])
-  on('GET', '/api/v1/docker/containers/id-web', details())
+  on('GET', '/api/v1/docker/containers/tesla-web', details())
   on('GET', '/api/v1/docker/usage', [])
   on('GET', '/api/v1/docker/updates', { checked_at: 1_790_000_000, images: [] })
 })
@@ -239,7 +239,7 @@ describe('a container’s page', () => {
   it('opens by its name and shows what the container is, part by part', async () => {
     const wrapper = await openWeb()
 
-    expect(wrapper.findComponent({ name: 'ContainerDetail' }).props('id')).toBe('id-web')
+    expect(wrapper.findComponent({ name: 'ContainerDetail' }).props('name')).toBe('tesla-web')
     expect(page()).toContain('nginx:1.27')
     expect(page()).toContain('2.5 %')
     // Folders: a share's folder, a Docker volume, a folder of the system.
@@ -273,7 +273,7 @@ describe('a container’s page', () => {
   })
 
   it('lists its processes and follows what it writes', async () => {
-    on('GET', '/api/v1/docker/containers/id-web/processes', [
+    on('GET', '/api/v1/docker/containers/tesla-web/processes', [
       {
         pid: 4242,
         parent: 1,
@@ -285,7 +285,7 @@ describe('a container’s page', () => {
         command: 'nginx: master process',
       },
     ])
-    on('GET', '/api/v1/docker/containers/id-web/logs', {
+    on('GET', '/api/v1/docker/containers/tesla-web/logs', {
       text: '2026-11-07 ready\n2026-11-07 GET /\n',
     })
     const wrapper = await openWeb()
@@ -303,33 +303,33 @@ describe('a container’s page', () => {
     await click(new RegExp(t('docker.logs.download')))
     expect(created).toHaveBeenCalled()
     expect(
-      called('GET', '/api/v1/docker/containers/id-web/logs').some(
+      called('GET', '/api/v1/docker/containers/tesla-web/logs').some(
         (call) => call.query.lines === '500',
       ),
     ).toBe(true)
   })
 
   it('says a stopped container has no processes, and starts it', async () => {
-    on('GET', '/api/v1/docker/containers/id-web', details({ state: 'exited', exit_code: 137 }))
-    on('POST', '/api/v1/docker/containers/id-web/start', null)
+    on('GET', '/api/v1/docker/containers/tesla-web', details({ state: 'exited', exit_code: 137 }))
+    on('POST', '/api/v1/docker/containers/tesla-web/start', null)
     const wrapper = await openWeb()
     expect(page()).toContain('137')
 
     await tab(wrapper, 0, 'processes')
     expect(page()).toContain(t('docker.details.notRunning'))
-    expect(called('GET', '/api/v1/docker/containers/id-web/processes')).toHaveLength(0)
+    expect(called('GET', '/api/v1/docker/containers/tesla-web/processes')).toHaveLength(0)
     await click(new RegExp(t('docker.actions.start')))
-    expect(called('POST', '/api/v1/docker/containers/id-web/start')).toHaveLength(1)
+    expect(called('POST', '/api/v1/docker/containers/tesla-web/start')).toHaveLength(1)
   })
 
   it('stops and restarts a running one', async () => {
-    on('POST', '/api/v1/docker/containers/id-web/stop', null)
-    on('POST', '/api/v1/docker/containers/id-web/restart', null)
+    on('POST', '/api/v1/docker/containers/tesla-web/stop', null)
+    on('POST', '/api/v1/docker/containers/tesla-web/restart', null)
     await openWeb()
     await click(t('docker.actions.stop'))
     await click(new RegExp(t('docker.actions.restart')))
-    expect(called('POST', '/api/v1/docker/containers/id-web/stop')).toHaveLength(1)
-    expect(called('POST', '/api/v1/docker/containers/id-web/restart')).toHaveLength(1)
+    expect(called('POST', '/api/v1/docker/containers/tesla-web/stop')).toHaveLength(1)
+    expect(called('POST', '/api/v1/docker/containers/tesla-web/restart')).toHaveLength(1)
   })
 
   it('opens terminals in it, passes what is typed both ways, and ends them', async () => {
@@ -342,7 +342,9 @@ describe('a container’s page', () => {
     await submit('#terminal-command')
     expect(FakeSocket.made).toHaveLength(1)
     const socket = FakeSocket.made[0]!
-    expect(socket.url).toContain('/api/v1/docker/containers/id-web/terminal?command=%2Fbin%2Fbash')
+    expect(socket.url).toContain(
+      '/api/v1/docker/containers/tesla-web/terminal?command=%2Fbin%2Fbash',
+    )
     expect(socket.binaryType).toBe('arraybuffer')
 
     socket.onopen?.()
@@ -377,6 +379,67 @@ describe('a container’s page', () => {
     await type('#terminal-command-input', '--privileged sh')
     await submit('#terminal-command')
     expect(FakeSocket.made).toHaveLength(0)
+  })
+})
+
+describe('a container asked for by the window', () => {
+  it('opens as container:<name>, and Back leads to the project it came from', async () => {
+    const project = {
+      name: 'tesla',
+      kind: 'own',
+      running: 1,
+      containers: [container()],
+      files: ['/volume1/docker/tesla/compose.yaml'],
+      folder: 'docker/tesla',
+      share_id: 1,
+      created_at: 1_790_000_000,
+      created_by: 'alice',
+      app: null,
+    }
+    on('GET', '/api/v1/docker/projects', [project])
+    on('GET', '/api/v1/docker/projects/tesla', project)
+    const wrapper = await open()
+    section.value = 'projects'
+    await settle()
+    ;(document.querySelector('li') as HTMLElement).click()
+    await settle()
+    expect(wrapper.findComponent({ name: 'ProjectDetail' }).exists()).toBe(true)
+
+    section.value = 'container:tesla-web'
+    await settle()
+    expect(section.value).toBe('containers')
+    expect(wrapper.findComponent({ name: 'ContainerDetail' }).props('name')).toBe('tesla-web')
+    labelled(t('docker.back')).click()
+    await settle()
+    expect(section.value).toBe('projects')
+    expect(wrapper.findComponent({ name: 'ProjectDetail' }).props('name')).toBe('tesla')
+  })
+
+  it('opens from a project’s list of containers by the name', async () => {
+    const project = {
+      name: 'tesla',
+      kind: 'own',
+      running: 1,
+      containers: [container()],
+      files: [],
+      folder: 'docker/tesla',
+      share_id: 1,
+      created_at: 1_790_000_000,
+      created_by: 'alice',
+      app: null,
+    }
+    on('GET', '/api/v1/docker/projects', [project])
+    on('GET', '/api/v1/docker/projects/tesla', project)
+    const wrapper = await open()
+    section.value = 'projects'
+    await settle()
+    ;(document.querySelector('li') as HTMLElement).click()
+    await settle()
+    await click('tesla-web')
+    expect(wrapper.findComponent({ name: 'ContainerDetail' }).props('name')).toBe('tesla-web')
+    labelled(t('docker.back')).click()
+    await settle()
+    expect(wrapper.findComponent({ name: 'ProjectDetail' }).props('name')).toBe('tesla')
   })
 })
 
