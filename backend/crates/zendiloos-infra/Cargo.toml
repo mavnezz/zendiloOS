@@ -47,6 +47,9 @@ tokio = { workspace = true, features = ["rt", "sync", "time", "fs", "net"] }
 [dev-dependencies]
 zendiloos-sim.workspace = true
 zendiloos-updates = { workspace = true, features = ["testing"] }
+zendiloos-sharing = { workspace = true, features = ["testing"] }
+zendiloos-jobs = { workspace = true, features = ["testing"] }
+zendiloos-notify = { workspace = true, features = ["testing"] }
 tempfile.workspace = true
 tokio.workspace = true
 

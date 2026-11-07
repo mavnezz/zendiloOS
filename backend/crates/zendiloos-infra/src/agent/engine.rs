@@ -573,7 +573,144 @@ impl DockerEngine for AgentDockerEngine {
 
 #[cfg(test)]
 mod tests {
+    use zendiloos_sim::SimulatedAgent;
+
     use super::*;
+    use crate::agent::scripted::Scripted;
+
+    fn simulated() -> (AgentDockerEngine, Arc<SimulatedAgent>) {
+        let agent = Arc::new(SimulatedAgent::new());
+        (AgentDockerEngine::new(agent.clone()), agent)
+    }
+
+    #[tokio::test]
+    async fn docker_is_read_through_the_agent() {
+        let (engine, _) = simulated();
+        let context = RequestContext::default();
+        let containers = engine.containers(&context).await.unwrap();
+        assert!(containers.iter().any(|c| c.name == "stack-web-1"), "{containers:?}");
+        let sample = engine.usage(&context).await.unwrap();
+        assert!(sample.processors >= 1);
+        assert!(!engine.images(&context).await.unwrap().is_empty());
+        assert!(engine.networks(&context).await.unwrap().iter().any(|n| n.name == "stack_default"));
+        assert!(engine.disk_usage(&context).await.unwrap().images_bytes > 0);
+        let _ = engine.compose_projects(&context).await.unwrap();
+        let logs = engine.container_logs("lonely", 10, &context).await.unwrap();
+        assert!(logs.contains("lonely"));
+        let project_logs = engine.project_logs("stack", 10, &context).await.unwrap();
+        assert!(project_logs.contains("ready"));
+        let files = engine.project_files("stack", &context).await.unwrap();
+        assert!(files.contains_key("/opt/stack/compose.yml"));
+        assert!(matches!(engine.project_files("tesla", &context).await, Err(EngineError::Failed(_))));
+    }
+
+    #[tokio::test]
+    async fn containers_images_networks_and_projects_are_changed_through_the_agent() {
+        let (engine, agent) = simulated();
+        let context = RequestContext::default();
+        for action in
+            [ContainerAction::Start, ContainerAction::Restart, ContainerAction::Stop, ContainerAction::Remove]
+        {
+            engine.control_container("lonely", action, &context).await.unwrap();
+        }
+        let gone = engine.control_container("lonely", ContainerAction::Start, &context).await;
+        assert!(matches!(gone, Err(EngineError::Failed(_))), "{gone:?}");
+        engine.pull_image("redis:7", &context).await.unwrap();
+        let images = engine.images(&context).await.unwrap();
+        let redis = images.iter().find(|i| i.references.iter().any(|t| t == "redis:7")).expect("pulled");
+        engine.remove_image(&redis.id, &context).await.unwrap();
+        assert!(engine.prune_images(&context).await.unwrap().contains("reclaimed"));
+        engine.create_network("proxy", Some("172.30.0.0/24"), Some("172.30.0.1"), &context).await.unwrap();
+        let again = engine.create_network("proxy", None, None, &context).await;
+        assert!(matches!(again, Err(EngineError::Failed(_))), "{again:?}");
+        engine.remove_network("proxy", &context).await.unwrap();
+        let own = engine.remove_network("bridge", &context).await;
+        assert!(matches!(own, Err(EngineError::Refused(_))), "{own:?}");
+
+        let name = ProjectName::parse("tesla").unwrap();
+        let checked = engine
+            .check_compose(
+                &name,
+                "/volume1/docker/tesla",
+                "services:\n  app:\n    privileged: true\n",
+                &context,
+            )
+            .await
+            .unwrap();
+        assert!(checked.model.services[0].privileged);
+        let broken = engine.check_compose(&name, "/volume1/docker/tesla", "broken: [", &context).await;
+        assert!(matches!(broken, Err(EngineError::Refused(_))), "{broken:?}");
+        engine.deploy_project("tesla", &checked.config, true, &context).await.unwrap();
+        for action in [
+            ProjectAction::Stop,
+            ProjectAction::Start,
+            ProjectAction::Restart,
+            ProjectAction::Pull,
+            ProjectAction::Up,
+            ProjectAction::Down,
+        ] {
+            engine.control_project("tesla", action, &context).await.unwrap();
+        }
+        assert!(
+            agent
+                .received()
+                .iter()
+                .any(|r| matches!(r, Request::ControlProject { action: proto::ProjectAction::Down, .. }))
+        );
+    }
+
+    #[tokio::test]
+    async fn names_docker_would_misread_are_refused_before_they_are_sent() {
+        let agent = Arc::new(Scripted::default());
+        let engine = AgentDockerEngine::new(agent.clone());
+        let context = RequestContext::default();
+        let refused =
+            |result: Result<(), EngineError>| assert!(matches!(result, Err(EngineError::Refused(_))));
+        refused(engine.control_container("--rm", ContainerAction::Stop, &context).await);
+        assert!(engine.container_logs("a b", 1, &context).await.is_err());
+        refused(engine.remove_image("not an id", &context).await);
+        refused(engine.pull_image("-x", &context).await);
+        refused(engine.create_network("bad name", None, None, &context).await);
+        refused(engine.create_network("proxy", Some("no subnet"), None, &context).await);
+        refused(engine.create_network("proxy", None, Some("no address"), &context).await);
+        refused(engine.remove_network("bad name", &context).await);
+        refused(engine.deploy_project("Bad", "{}", false, &context).await);
+        refused(engine.control_project("Bad", ProjectAction::Up, &context).await);
+        assert!(engine.project_logs("Bad", 1, &context).await.is_err());
+        assert!(engine.project_files("Bad", &context).await.is_err());
+        let name = ProjectName::parse("tesla").unwrap();
+        assert!(engine.check_compose(&name, "relative/folder", "services: {}", &context).await.is_err());
+        assert!(agent.asked().is_empty(), "nothing odd was sent");
+    }
+
+    #[tokio::test]
+    async fn the_agents_answers_are_told_apart() {
+        let context = RequestContext::default();
+        let answering =
+            |response: Response| AgentDockerEngine::new(Arc::new(Scripted::answering([response])));
+        let conflict = answering(Response::Error { code: ErrorCode::Conflict, message: "in use".into() });
+        assert!(matches!(conflict.prune_images(&context).await, Err(EngineError::Refused(_))));
+        let failed = answering(Response::Error { code: ErrorCode::Failed, message: "docker".into() });
+        assert!(matches!(failed.prune_images(&context).await, Err(EngineError::Failed(_))));
+        let odd = answering(Response::Done);
+        assert!(matches!(odd.prune_images(&context).await, Err(EngineError::Port(_))), "not printed");
+        let odd = answering(Response::DockerOutput { text: String::new() });
+        assert!(matches!(odd.pull_image("redis:7", &context).await, Err(EngineError::Port(_))), "not done");
+        let odd = answering(Response::Done);
+        assert!(matches!(odd.compose_projects(&context).await, Err(EngineError::Port(_))));
+        let odd = answering(Response::DockerOutput { text: "not json".into() });
+        assert!(odd.project_files("stack", &context).await.is_err());
+        let odd = answering(Response::DockerOutput { text: "not json".into() });
+        assert!(odd.containers(&context).await.is_err());
+        let odd = answering(Response::DockerOutput { text: "{not json".into() });
+        assert!(odd.images(&context).await.is_err());
+        let odd = answering(Response::DockerOutput { text: "{not json".into() });
+        assert!(odd.networks(&context).await.is_err());
+        let odd = answering(Response::DockerOutput { text: "{not json".into() });
+        assert!(odd.disk_usage(&context).await.is_err());
+        let odd = answering(Response::DockerOutput { text: "{not json".into() });
+        assert!(odd.usage(&context).await.is_err());
+    }
 
     const INSPECT: &str = r#"[{
         "Id": "d853eed323e74b49b6a84ea78784086ec720c3be10be36393589bfc80ad6ada1",

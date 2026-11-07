@@ -18,6 +18,8 @@ pub mod identity;
 pub mod notify;
 pub mod sqlite;
 mod storage;
+#[cfg(test)]
+mod test_https;
 pub mod updates;
 
 pub use clock::SystemClock;

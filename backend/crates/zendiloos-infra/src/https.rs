@@ -159,3 +159,96 @@ async fn follow(
     }
     Err("too many redirects".into())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_https::{Asked, client, response, serve};
+
+    async fn server() -> u16 {
+        serve(|asked: &Asked| match asked.path.as_str() {
+            "/hello" => response("200 OK", &[], b"hello"),
+            "/missing" => response("404 Not Found", &[], b""),
+            "/moved" => response("302 Found", &[("Location", "/hello")], b""),
+            "/elsewhere" => response("302 Found", &[("Location", "http://127.0.0.1/hello")], b""),
+            "/nowhere" => response("302 Found", &[], b""),
+            "/again" => response("302 Found", &[("Location", "/again")], b""),
+            "/big" => response("200 OK", &[], &[b'x'; 4096]),
+            "/who" => {
+                let authorized = asked.headers.contains("authorization: bearer secret");
+                response("200 OK", &[], if authorized { b"with" } else { b"without" })
+            }
+            other if other.starts_with("/to-localhost/") => {
+                let port = other.trim_start_matches("/to-localhost/");
+                let target = format!("https://localhost:{port}/who");
+                response("302 Found", &[("Location", target.as_str())], b"")
+            }
+            _ => response("500 Internal Server Error", &[], b""),
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn fetches_over_https_and_follows_redirects_on_https() {
+        let port = server().await;
+        let tls = client();
+        let at = |path: &str| format!("https://127.0.0.1:{port}{path}");
+        assert_eq!(get(&tls, &at("/hello"), 1024).await.unwrap(), b"hello");
+        assert_eq!(get(&tls, &at("/moved"), 1024).await.unwrap(), b"hello", "a relative redirect");
+        let missing = get(&tls, &at("/missing"), 1024).await.unwrap_err();
+        assert!(missing.contains("404"), "{missing}");
+        let answer = send(&tls, Method::GET, &at("/hello"), &[], 64).await.unwrap();
+        assert_eq!(answer.status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn refuses_what_it_must_not_fetch() {
+        let port = server().await;
+        let tls = client();
+        let at = |path: &str| format!("https://127.0.0.1:{port}{path}");
+        let fails = |result: Result<Vec<u8>, String>, says: &str| {
+            let error = result.unwrap_err();
+            assert!(error.contains(says), "{error} does not say {says}");
+        };
+        fails(get(&tls, &format!("http://127.0.0.1:{port}/hello"), 1024).await, "only https");
+        fails(get(&tls, &at("/elsewhere"), 1024).await, "only https");
+        fails(get(&tls, &at("/nowhere"), 1024).await, "without a target");
+        fails(get(&tls, &at("/again"), 1024).await, "too many redirects");
+        fails(get(&tls, &at("/big"), 1024).await, "larger than 1 KiB");
+        fails(get(&tls, &format!("https://user@127.0.0.1:{port}/hello"), 1024).await, "with a user");
+        fails(get(&tls, "not an address", 1024).await, "");
+        // The system's authorities do not know the test's.
+        fails(get(&client_config(), &at("/hello"), 1024).await, "TLS");
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        fails(get(&tls, &format!("https://127.0.0.1:{closed}/hello"), 1024).await, "cannot connect");
+    }
+
+    #[tokio::test]
+    async fn an_authorization_goes_to_the_first_host_only() {
+        let port = server().await;
+        let tls = client();
+        let headers = [(AUTHORIZATION, "Bearer secret".to_owned())];
+        let direct =
+            send(&tls, Method::GET, &format!("https://127.0.0.1:{port}/who"), &headers, 64).await.unwrap();
+        assert_eq!(direct.body, b"with");
+        let redirected = format!("https://127.0.0.1:{port}/to-localhost/{port}");
+        let moved = send(&tls, Method::GET, &redirected, &headers, 64).await.unwrap();
+        assert_eq!(moved.body, b"without", "another host gets no credentials");
+    }
+
+    #[tokio::test]
+    async fn gives_up_after_its_time() {
+        // A server that takes connections and never answers.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((tcp, _)) = listener.accept().await {
+                held.push(tcp);
+            }
+        });
+        let address = format!("https://127.0.0.1:{port}/slow");
+        let error = send_within(&client(), Method::GET, &address, &[], 64, Duration::from_millis(200)).await;
+        assert!(error.is_err_and(|e| e.contains("no answer within")));
+    }
+}

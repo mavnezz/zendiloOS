@@ -422,7 +422,228 @@ impl Volumes for AgentStorage {
 
 #[cfg(test)]
 mod tests {
+    use zendiloos_sharing::domain::{FileServices, HomesSpec, NfsClient as Client, NfsSpec, SmbSpec};
+
     use super::*;
+    use crate::agent::scripted::Scripted;
+
+    fn photos() -> ShareName {
+        ShareName::parse("photos").unwrap()
+    }
+
+    fn host(system: &Arc<Scripted>, files: &Arc<Scripted>) -> AgentSharing {
+        AgentSharing::new(system.clone(), files.clone())
+    }
+
+    fn agents() -> (Arc<Scripted>, Arc<Scripted>) {
+        (Arc::new(Scripted::default()), Arc::new(Scripted::default()))
+    }
+
+    #[tokio::test]
+    async fn the_agents_refusals_and_failures_are_told_apart() {
+        let context = RequestContext::default();
+        let refused = Arc::new(Scripted::refusing(ErrorCode::Forbidden, "not managed"));
+        let error = host(&refused, &refused).create_dataset("tank", 1, &photos(), &context).await;
+        assert!(matches!(error, Err(HostError::Refused(ref why)) if why == "not managed"), "{error:?}");
+        let taken = Arc::new(Scripted::refusing(ErrorCode::Conflict, "exists"));
+        let error = host(&taken, &taken).create_dataset("tank", 1, &photos(), &context).await;
+        assert!(matches!(error, Err(HostError::Conflict)), "{error:?}");
+        let failed = Arc::new(Scripted::refusing(ErrorCode::Failed, "zfs failed"));
+        let error = host(&failed, &failed).destroy_dataset("tank", 1, &photos(), &context).await;
+        assert!(matches!(error, Err(HostError::Port(_))), "{error:?}");
+        let odd = Arc::new(Scripted::answering([Response::ShareUsage { zfs_list: String::new() }]));
+        let error = host(&odd, &odd).destroy_dataset("tank", 1, &photos(), &context).await;
+        assert!(matches!(error, Err(HostError::Port(_))), "{error:?}");
+        let error = host(&odd, &odd).create_dataset("not a pool!", 1, &photos(), &context).await;
+        assert!(matches!(error, Err(HostError::Port(_))), "an odd name is not sent: {error:?}");
+        let error = host(&odd, &odd).create_dataset("tank", 0, &photos(), &context).await;
+        assert!(matches!(error, Err(HostError::Port(_))), "nor volume 0: {error:?}");
+    }
+
+    #[tokio::test]
+    async fn datasets_properties_and_snapshots_become_requests() {
+        let (system, files) = agents();
+        let sharing = host(&system, &files);
+        let context = RequestContext::default();
+        let label = zendiloos_sharing::domain::label_at(Timestamp::from_unix_seconds(1_793_907_601));
+        for (compression, record_size) in [
+            (Compression::Off, RecordSize::K16),
+            (Compression::Lz4, RecordSize::K128),
+            (Compression::Zstd, RecordSize::M1),
+        ] {
+            let settings = ShareSettings { quota_bytes: Some(1 << 30), compression, record_size };
+            sharing.set_properties("tank", 1, &photos(), &settings, &context).await.unwrap();
+        }
+        sharing.create_dataset("tank", 1, &photos(), &context).await.unwrap();
+        sharing.destroy_dataset("tank", 1, &photos(), &context).await.unwrap();
+        let schedules = [Frequency::Hourly, Frequency::Daily, Frequency::Weekly, Frequency::Monthly];
+        sharing
+            .create_snapshot("tank", 1, &photos(), &label, &schedules, Some("before"), &context)
+            .await
+            .unwrap();
+        sharing.destroy_snapshot("tank", 1, &photos(), &label, &context).await.unwrap();
+        sharing.rollback_snapshot("tank", 1, &photos(), &label, &context).await.unwrap();
+        sharing.prepare_homes("tank", 1, &context).await.unwrap();
+
+        let asked = system.asked();
+        assert_eq!(asked.len(), 9, "{asked:?}");
+        assert!(matches!(
+            &asked[2],
+            Request::SetShareProperties { compression: ShareCompression::Zstd, record_size: ShareRecordSize::M1, quota_bytes: Some(q), .. }
+                if *q == 1 << 30
+        ));
+        assert!(matches!(&asked[3], Request::CreateShare { name, .. } if name.as_str() == "photos"));
+        assert!(matches!(&asked[4], Request::DestroyShare { .. }));
+        assert!(
+            matches!(&asked[5], Request::CreateSnapshot { schedules, note: Some(_), .. } if schedules.len() == 4)
+        );
+        assert!(matches!(&asked[6], Request::DestroySnapshot { .. }));
+        assert!(matches!(&asked[7], Request::RollbackSnapshot { .. }));
+        assert!(matches!(&asked[8], Request::PrepareHomes { .. }));
+        assert!(files.asked().is_empty(), "the system agent's work");
+        let odd = sharing.create_snapshot("tank", 1, &photos(), "not-a-label", &[], None, &context).await;
+        assert!(matches!(odd, Err(HostError::Port(_))));
+    }
+
+    #[tokio::test]
+    async fn usage_and_snapshots_are_read_from_the_agents_answer() {
+        let context = RequestContext::default();
+        let system = Arc::new(Scripted::answering([
+            Response::ShareUsage { zfs_list: "tank/photos\t1\t2\n".into() },
+            Response::Snapshots {
+                zfs_list: "tank/photos@zdl-2026-11-05_19.40.01\t1793907601\t1\t2\t-\t-\n".into(),
+            },
+            Response::Error { code: ErrorCode::Failed, message: "zfs".into() },
+            Response::Done,
+        ]));
+        let sharing = host(&system, &system);
+        assert_eq!(sharing.usage(&context).await.unwrap()[0].used_bytes, 1);
+        assert_eq!(sharing.snapshots(&context).await.unwrap()[0].share.as_str(), "photos");
+        assert!(sharing.usage(&context).await.is_err());
+        assert!(sharing.snapshots(&context).await.is_err(), "another answer");
+    }
+
+    #[tokio::test]
+    async fn the_servers_configuration_is_sent_as_typed_values() {
+        let (system, files) = agents();
+        let sharing = host(&system, &files);
+        let context = RequestContext::default();
+        let config = |services: FileServices| SharingConfig {
+            smb: vec![SmbSpec {
+                name: photos(),
+                volume: 1,
+                access: vec![
+                    (Principal::User("anna".into()), Permission::ReadWrite),
+                    (Principal::Group("family".into()), Permission::Read),
+                    (Principal::User("ben".into()), Permission::Deny),
+                ],
+                recycle_bin: true,
+                comment: Some("Holidays\nand more".into()),
+                time_machine: Some(None),
+            }],
+            nfs: vec![NfsSpec {
+                name: photos(),
+                volume: 1,
+                clients: vec![Client { network: "192.168.1.0/24".into(), write: true }],
+            }],
+            services,
+            homes: Some(HomesSpec { volume: 1, users: vec!["anna".into()] }),
+        };
+        let all = [
+            (SmbProtocol::Smb2, SmbEncryption::Default, SmbSigning::Default),
+            (SmbProtocol::Smb2_1, SmbEncryption::Required, SmbSigning::Mandatory),
+            (SmbProtocol::Smb3, SmbEncryption::Off, SmbSigning::Disabled),
+        ];
+        for (smb_min_protocol, smb_encryption, smb_signing) in all {
+            let services = FileServices {
+                smb_min_protocol,
+                smb_encryption,
+                smb_signing,
+                veto_files: Some("/*.tmp/".into()),
+                ..FileServices::default()
+            };
+            sharing.apply(&config(services), &context).await.unwrap();
+        }
+        let Request::ApplySharing { smb, nfs, services, homes } = &system.asked()[2] else { panic!() };
+        assert_eq!(smb[0].access.len(), 3);
+        assert_eq!(nfs[0].clients.len(), 1);
+        assert_eq!(services.smb_min_protocol, proto::SmbProtocol::Smb3);
+        assert_eq!(homes.as_ref().unwrap().users.len(), 1);
+
+        let odd_network = SharingConfig {
+            nfs: vec![NfsSpec {
+                name: photos(),
+                volume: 1,
+                clients: vec![Client { network: "x".into(), write: false }],
+            }],
+            ..SharingConfig::default()
+        };
+        assert!(matches!(sharing.apply(&odd_network, &context).await, Err(HostError::Port(_))));
+        let odd_user = SharingConfig {
+            smb: vec![SmbSpec {
+                name: photos(),
+                volume: 1,
+                access: vec![(Principal::User("not a name".into()), Permission::Read)],
+                recycle_bin: false,
+                comment: None,
+                time_machine: None,
+            }],
+            ..SharingConfig::default()
+        };
+        assert!(matches!(sharing.apply(&odd_user, &context).await, Err(HostError::Port(_))));
+        let odd_group = SharingConfig {
+            smb: vec![SmbSpec {
+                name: photos(),
+                volume: 1,
+                access: vec![(Principal::Group("@x y".into()), Permission::Read)],
+                recycle_bin: false,
+                comment: None,
+                time_machine: None,
+            }],
+            ..SharingConfig::default()
+        };
+        assert!(matches!(sharing.apply(&odd_group, &context).await, Err(HostError::Port(_))));
+        let odd_veto = SharingConfig {
+            services: FileServices { veto_files: Some("*.tmp".into()), ..FileServices::default() },
+            ..SharingConfig::default()
+        };
+        assert!(matches!(sharing.apply(&odd_veto, &context).await, Err(HostError::Port(_))));
+        let odd_home = SharingConfig {
+            homes: Some(HomesSpec { volume: 1, users: vec!["not a name".into()] }),
+            ..SharingConfig::default()
+        };
+        assert!(matches!(sharing.apply(&odd_home, &context).await, Err(HostError::Port(_))));
+        assert_eq!(system.asked().len(), 3, "nothing odd was sent");
+    }
+
+    #[tokio::test]
+    async fn folders_go_to_the_files_agent_quotas_to_the_system_agent() {
+        let (system, files) = agents();
+        let sharing = host(&system, &files);
+        let context = RequestContext::default();
+        sharing.set_home("tank", 1, "anna", Some(1 << 30), &context).await.unwrap();
+        let rules = [(Principal::User("anna".into()), Permission::ReadWrite)];
+        let removed = [Principal::Group("family".into())];
+        sharing.set_access(1, &photos(), &rules, &removed, true, &context).await.unwrap();
+        assert!(matches!(&system.only(), Request::SetHomeQuota { quota_bytes: Some(_), .. }));
+        let asked = files.asked();
+        assert!(matches!(&asked[0], Request::MakeHome { user, .. } if user.as_str() == "anna"));
+        assert!(
+            matches!(&asked[1], Request::SetShareAccess { recursive: true, removed, .. } if removed.len() == 1)
+        );
+        assert!(sharing.set_home("tank", 1, "not a name", None, &context).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn the_volumes_for_shares_are_the_pools_zendiloos_made() {
+        use zendiloos_storage::application::ports::ZfsSource;
+        let agent = zendiloos_sim::SimulatedAgent::new();
+        let storage = AgentStorage::new(Arc::new(agent));
+        let pools = storage.pools(&RequestContext::default()).await.unwrap();
+        let volumes = Volumes::volumes(&storage, &RequestContext::default()).await.unwrap();
+        let managed = pools.iter().filter(|pool| pool.volume.is_some()).count();
+        assert_eq!(volumes.len(), managed);
+    }
 
     /// The context names snapshots, the agent tells Samba how to read the
     /// names: both must agree, or Windows shows no "Previous Versions".

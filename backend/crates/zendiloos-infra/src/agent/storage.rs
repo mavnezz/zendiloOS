@@ -240,6 +240,103 @@ mod tests {
         assert_eq!(storage.arrays(&context).await.unwrap(), []);
     }
 
+    use crate::agent::scripted::Scripted;
+
+    fn tank() -> PoolName {
+        PoolName::parse("tank").unwrap()
+    }
+
+    #[tokio::test]
+    async fn pools_are_made_changed_and_destroyed_through_the_agent() {
+        let agent = Arc::new(Scripted::default());
+        let storage = AgentStorage::new(agent.clone());
+        let context = RequestContext::default();
+        let one = VolumeNumber::new(1).unwrap();
+        for layout in [
+            PoolLayout::Single,
+            PoolLayout::Mirror,
+            PoolLayout::Raidz { parity: 1 },
+            PoolLayout::Raidz { parity: 2 },
+            PoolLayout::Raidz { parity: 3 },
+        ] {
+            let pool = NewPool { name: tank(), layout, disks: vec!["ata-DISK_1".into()], volume: one };
+            storage.create_pool(&pool, &context).await.unwrap();
+        }
+        storage.destroy_pool(&tank(), one, &context).await.unwrap();
+        storage.replace_disk(&tank(), "1234567890", "ata-DISK_2", &context).await.unwrap();
+        storage.scrub(&tank(), &context).await.unwrap();
+        storage.stop_scrub(&tank(), &context).await.unwrap();
+        let asked = agent.asked();
+        assert_eq!(asked.len(), 9);
+        assert!(matches!(&asked[4], Request::CreatePool { layout: proto::Layout::Raidz3, .. }));
+        assert!(matches!(&asked[5], Request::DestroyPool { .. }));
+        assert!(matches!(&asked[6], Request::ReplaceDisk { device: 1_234_567_890, .. }));
+        assert!(matches!(&asked[7], Request::ScrubPool { .. }));
+        assert!(matches!(&asked[8], Request::StopScrub { .. }));
+
+        // What zendiloos does not make, or cannot name, is never sent.
+        let odd =
+            |layout, disk: &str| NewPool { name: tank(), layout, disks: vec![disk.into()], volume: one };
+        assert!(storage.create_pool(&odd(PoolLayout::Raidz { parity: 4 }, "ata-1"), &context).await.is_err());
+        assert!(
+            storage.create_pool(&odd(PoolLayout::Other("draid".into()), "ata-1"), &context).await.is_err()
+        );
+        assert!(storage.create_pool(&odd(PoolLayout::Single, "../sda"), &context).await.is_err());
+        assert!(storage.replace_disk(&tank(), "not a number", "ata-1", &context).await.is_err());
+        assert_eq!(agent.asked().len(), 9);
+    }
+
+    #[tokio::test]
+    async fn refusals_and_conflicts_of_the_agent_are_told_apart() {
+        let context = RequestContext::default();
+        let refused = AgentStorage::new(Arc::new(Scripted::refusing(ErrorCode::Forbidden, "in use")));
+        assert!(
+            matches!(refused.scrub(&tank(), &context).await, Err(AdminError::Refused(ref why)) if why == "in use")
+        );
+        let taken = AgentStorage::new(Arc::new(Scripted::refusing(ErrorCode::Conflict, "taken")));
+        assert!(matches!(taken.scrub(&tank(), &context).await, Err(AdminError::Conflict)));
+        let failed = AgentStorage::new(Arc::new(Scripted::refusing(ErrorCode::Failed, "zpool")));
+        assert!(matches!(failed.scrub(&tank(), &context).await, Err(AdminError::Port(_))));
+        let odd = AgentStorage::new(Arc::new(Scripted::answering([Response::ShareUsage {
+            zfs_list: String::new(),
+        }])));
+        assert!(matches!(odd.scrub(&tank(), &context).await, Err(AdminError::Port(_))));
+    }
+
+    #[tokio::test]
+    async fn self_tests_and_odd_answers() {
+        let context = RequestContext::default();
+        let agent = Arc::new(Scripted::default());
+        let storage = AgentStorage::new(agent.clone());
+        storage.start_self_test("sda", SelfTestKind::Short, &context).await.unwrap();
+        storage.start_self_test("sda", SelfTestKind::Long, &context).await.unwrap();
+        storage.abort_self_test("sda", &context).await.unwrap();
+        assert!(matches!(&agent.asked()[1], Request::StartSelfTest { kind: proto::SelfTestKind::Long, .. }));
+        assert!(storage.abort_self_test("sda1", &context).await.is_err(), "a partition");
+        assert!(storage.start_self_test("../x", SelfTestKind::Short, &context).await.is_err());
+
+        // An answer of another kind is an error for every reading.
+        let odd = || Response::ShareUsage { zfs_list: String::new() };
+        let agent = Arc::new(Scripted::answering((0..6).map(|_| odd())));
+        let storage = AgentStorage::new(agent.clone());
+        assert!(storage.block_devices(&context).await.is_err());
+        assert!(storage.smart_report("sda", &context).await.is_err());
+        assert!(storage.arrays(&context).await.is_err());
+        assert!(storage.pools(&context).await.is_err());
+        assert!(storage.start_self_test("sda", SelfTestKind::Short, &context).await.is_err());
+        assert!(storage.abort_self_test("sda", &context).await.is_err());
+        agent.answer(Response::BlockDevices { lsblk_json: "not json".into() });
+        assert!(storage.block_devices(&context).await.is_err());
+    }
+
+    #[test]
+    fn plan_tokens_are_random_and_url_safe() {
+        let (one, two) = (RandomPlanTokens.token(), RandomPlanTokens.token());
+        assert_ne!(one, two);
+        assert_eq!(one.len(), 22);
+        assert!(one.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'));
+    }
+
     #[tokio::test]
     async fn never_sends_a_name_that_is_not_a_disk() {
         let agent = Arc::new(SimulatedAgent::new());

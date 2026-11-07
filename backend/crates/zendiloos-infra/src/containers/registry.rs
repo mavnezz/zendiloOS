@@ -33,6 +33,11 @@ impl Default for HttpsRegistries {
 }
 
 impl HttpsRegistries {
+    #[cfg(test)]
+    fn with_tls(tls: Arc<rustls::ClientConfig>) -> Self {
+        Self { tls }
+    }
+
     async fn head(&self, address: &str, token: Option<&str>) -> Result<Answer, String> {
         let mut headers: Vec<(HeaderName, String)> = vec![(ACCEPT, MANIFESTS.to_owned())];
         if let Some(token) = token {
@@ -129,5 +134,79 @@ mod tests {
         assert_eq!(parameter(challenge, "scope").as_deref(), Some("repository:library/postgres:pull"));
         assert_eq!(parameter(challenge, "error"), None);
         assert_eq!(encode("repository:library/postgres:pull"), "repository%3Alibrary%2Fpostgres%3Apull");
+    }
+
+    use crate::test_https::{Asked, client, response, serve};
+
+    /// A registry on 127.0.0.1: public images behind an anonymous token,
+    /// and a few that answer otherwise.
+    async fn registry() -> u16 {
+        let port = std::sync::Arc::new(std::sync::OnceLock::<u16>::new());
+        let known = std::sync::Arc::clone(&port);
+        let digest = ("docker-content-digest", "sha256:abc");
+        let served = serve(move |asked: &Asked| {
+            let port = known.get().copied().unwrap_or_default();
+            let realm = format!(r#"Bearer realm="https://127.0.0.1:{port}/token?x=1",service="test",scope="repository:library/app:pull""#);
+            let authorized = asked.headers.contains("authorization: bearer t0ken");
+            match (asked.method.as_str(), asked.path.as_str()) {
+                ("HEAD", "/v2/library/app/manifests/1") if authorized => response("200 OK", &[digest], b""),
+                ("HEAD", "/v2/library/app/manifests/1") => {
+                    response("401 Unauthorized", &[("WWW-Authenticate", realm.as_str())], b"")
+                }
+                ("GET", path) if path.starts_with("/token?x=1&service=test&scope=repository%3Alibrary%2Fapp%3Apull") => {
+                    response("200 OK", &[], br#"{"access_token":"t0ken"}"#)
+                }
+                ("HEAD", "/v2/open/manifests/1") => response("200 OK", &[digest], b""),
+                ("HEAD", "/v2/nodigest/manifests/1") => response("200 OK", &[], b""),
+                ("HEAD", "/v2/gone/manifests/1") => response("404 Not Found", &[], b""),
+                ("HEAD", "/v2/busy/manifests/1") => response("429 Too Many Requests", &[], b""),
+                ("HEAD", "/v2/private/manifests/1") => response("403 Forbidden", &[], b""),
+                ("HEAD", "/v2/nochallenge/manifests/1") => response("401 Unauthorized", &[], b""),
+                ("HEAD", "/v2/notoken/manifests/1") => {
+                    let realm = format!(r#"Bearer realm="https://127.0.0.1:{port}/none""#);
+                    response("401 Unauthorized", &[("WWW-Authenticate", realm.as_str())], b"")
+                }
+                ("HEAD", "/v2/norealm/manifests/1") => {
+                    response("401 Unauthorized", &[("WWW-Authenticate", "Bearer service=\"x\"")], b"")
+                }
+                ("HEAD", "/v2/oddtoken/manifests/1") => {
+                    let realm = format!(r#"Bearer realm="https://127.0.0.1:{port}/odd""#);
+                    response("401 Unauthorized", &[("WWW-Authenticate", realm.as_str())], b"")
+                }
+                ("GET", "/odd") => response("200 OK", &[], br#"{"nothing":1}"#),
+                ("HEAD", _) => response("500 Internal Server Error", &[], b""),
+                _ => response("404 Not Found", &[], b""),
+            }
+        })
+        .await;
+        port.set(served).unwrap();
+        served
+    }
+
+    #[tokio::test]
+    async fn asks_the_registry_for_a_tags_digest_with_an_anonymous_token() {
+        let port = registry().await;
+        let registries = HttpsRegistries::with_tls(client());
+        let image = |repository: &str| RegistryImage {
+            registry: format!("127.0.0.1:{port}"),
+            repository: repository.to_owned(),
+            tag: "1".to_owned(),
+        };
+        assert_eq!(registries.digest(&image("library/app")).await.unwrap(), "sha256:abc");
+        assert_eq!(registries.digest(&image("open")).await.unwrap(), "sha256:abc");
+        for (repository, says) in [
+            ("nodigest", "no digest"),
+            ("gone", "does not know"),
+            ("busy", "wait"),
+            ("private", "login"),
+            ("nochallenge", "login"),
+            ("notoken", "gives no token"),
+            ("norealm", "no place for a token"),
+            ("oddtoken", "holds no token"),
+            ("broken", "answered 500"),
+        ] {
+            let error = registries.digest(&image(repository)).await.unwrap_err();
+            assert!(error.contains(says), "{repository}: {error}");
+        }
     }
 }

@@ -118,6 +118,67 @@ impl PowerControl for AgentPowerControl {
     }
 }
 
+/// An agent for the adapters' tests: answers what a test scripted, `Done`
+/// once nothing is left, and records what it was asked.
+#[cfg(test)]
+pub(crate) mod scripted {
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+
+    use async_trait::async_trait;
+    use zendiloos_agent_proto::{AgentTransport, ErrorCode, Request, RequestId, Response, TransportError};
+
+    #[derive(Default)]
+    pub(crate) struct Scripted {
+        answers: Mutex<VecDeque<Response>>,
+        asked: Mutex<Vec<Request>>,
+    }
+
+    impl Scripted {
+        pub(crate) fn answering(answers: impl IntoIterator<Item = Response>) -> Self {
+            Self { answers: Mutex::new(answers.into_iter().collect()), asked: Mutex::default() }
+        }
+
+        /// An error of the agent, with its code, then `Done`.
+        pub(crate) fn refusing(code: ErrorCode, message: &str) -> Self {
+            Self::answering([Response::Error { code, message: message.to_owned() }])
+        }
+
+        pub(crate) fn answer(&self, response: Response) {
+            self.answers.lock().unwrap().push_back(response);
+        }
+
+        pub(crate) fn asked(&self) -> Vec<Request> {
+            self.asked.lock().unwrap().clone()
+        }
+
+        /// The one request it was asked.
+        pub(crate) fn only(&self) -> Request {
+            let asked = self.asked();
+            assert_eq!(asked.len(), 1, "{asked:?}");
+            asked.into_iter().next().unwrap()
+        }
+    }
+
+    #[async_trait]
+    impl AgentTransport for Scripted {
+        async fn call(&self, request: Request, _: Option<RequestId>) -> Result<Response, TransportError> {
+            self.asked.lock().unwrap().push(request);
+            Ok(self.answers.lock().unwrap().pop_front().unwrap_or(Response::Done))
+        }
+    }
+
+    /// A transport that cannot reach the agent.
+    pub(crate) struct Unreachable;
+
+    #[async_trait]
+    impl AgentTransport for Unreachable {
+        async fn call(&self, _: Request, _: Option<RequestId>) -> Result<Response, TransportError> {
+            Err(TransportError::Timeout(std::time::Duration::from_secs(1)))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use zendiloos_agent_proto::TransportError;
@@ -156,5 +217,22 @@ mod tests {
     async fn checks_the_protocol_version() {
         let version = agent_version(&SimulatedAgent::new()).await.unwrap();
         assert!(version.ends_with("-simulated"), "{version}");
+        let other = scripted::Scripted::answering([Response::Hello {
+            protocol_version: PROTOCOL_VERSION + 1,
+            agent_version: "9".into(),
+        }]);
+        let error = agent_version(&other).await.unwrap_err();
+        assert!(std::error::Error::source(&error).unwrap().to_string().contains("speaks protocol"));
+        let odd = scripted::Scripted::answering([Response::Done]);
+        assert!(agent_version(&odd).await.is_err(), "not a handshake");
+        assert!(agent_version(&scripted::Unreachable).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn an_answer_of_another_kind_is_an_error() {
+        let context = RequestContext { request_id: Some("not an id".into()), ..RequestContext::default() };
+        let odd = scripted::Scripted::answering([Response::Snapshots { zfs_list: String::new() }]);
+        assert!(expect_done(&odd, Request::Reboot {}, &context).await.is_err());
+        assert_eq!(odd.only(), Request::Reboot {});
     }
 }

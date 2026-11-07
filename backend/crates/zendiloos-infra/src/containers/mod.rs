@@ -129,3 +129,124 @@ impl ProjectStorage for SharesForProjects {
         Ok(text)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use zendiloos_jobs::Jobs;
+    use zendiloos_jobs::testing::{FixedClock, MemoryJobs};
+    use zendiloos_kernel::{AuditEntry, AuditLog, Timestamp};
+    use zendiloos_notify::Notifier;
+    use zendiloos_notify::testing::MemoryNotifications;
+    use zendiloos_sharing::application::SharingPorts;
+    use zendiloos_sharing::application::ports::{Directory, Names, ShareRepository};
+    use zendiloos_sharing::domain::{AccessRule, NewShare, Permission, ShareName, ShareSettings, Subject};
+    use zendiloos_sharing::testing::{Files, Host, Projects, Shares, Volumes};
+
+    use super::*;
+
+    struct Alice;
+
+    #[async_trait]
+    impl Directory for Alice {
+        async fn names(&self) -> Result<Names, PortError> {
+            let mut names = Names::default();
+            names.accounts.insert(1, "alice".into());
+            Ok(names)
+        }
+
+        async fn memberships(&self, _: i64) -> Result<Vec<i64>, PortError> {
+            Ok(Vec::new())
+        }
+    }
+
+    struct NoAudit;
+
+    #[async_trait]
+    impl AuditLog for NoAudit {
+        async fn record(&self, _: AuditEntry) -> Result<(), PortError> {
+            Ok(())
+        }
+    }
+
+    fn alice() -> Actor {
+        Actor { account_id: 1, name: "alice".into() }
+    }
+
+    /// The shares `docker` (alice writes) and `media` (alice reads).
+    async fn shares() -> (SharesForProjects, Arc<Files>, i64, i64) {
+        let store = Arc::new(Shares::default());
+        let mut ids = Vec::new();
+        for (name, permission) in [("docker", Permission::ReadWrite), ("media", Permission::Read)] {
+            let new = NewShare {
+                name: ShareName::parse(name).unwrap(),
+                description: None,
+                pool: "tank".into(),
+                volume: 1,
+                recycle_bin: false,
+                settings: ShareSettings::default(),
+                access: vec![AccessRule { subject: Subject::Account(1), permission }],
+                nfs: Vec::new(),
+                created_at: Timestamp::from_unix_seconds(0),
+            };
+            ids.push(store.create(new).await.unwrap().unwrap().id.get());
+        }
+        let files = Arc::new(Files::default());
+        let ports = SharingPorts {
+            shares: store,
+            directory: Arc::new(Alice),
+            volumes: Arc::new(Volumes),
+            projects: Arc::new(Projects::default()),
+            host: Arc::new(Host::default()),
+            files: files.clone(),
+            jobs: Jobs::new(Arc::new(MemoryJobs::default()), Arc::new(FixedClock)),
+            audit: Arc::new(NoAudit),
+            clock: Arc::new(FixedClock),
+            notifier: Notifier::new(Arc::new(MemoryNotifications::default()), Arc::new(FixedClock)),
+        };
+        (SharesForProjects::new(FilesUseCases::new(ports)), files, ids[0], ids[1])
+    }
+
+    #[tokio::test]
+    async fn projects_go_where_the_administrator_may_write() {
+        let (projects, _, docker, media) = shares().await;
+        let places = projects.places(&alice()).await.unwrap();
+        assert_eq!(places.len(), 1);
+        assert_eq!((places[0].share_id, places[0].share.as_str()), (docker, "docker"));
+        assert_eq!(
+            projects.directory(&alice(), docker, "projects/tesla").await.unwrap(),
+            "/volume1/docker/projects/tesla"
+        );
+        let read_only = projects.directory(&alice(), media, "tesla").await;
+        assert!(matches!(read_only, Err(StorageError::Denied)), "{read_only:?}");
+        let unknown = projects.directory(&alice(), 99, "tesla").await;
+        assert!(matches!(unknown, Err(StorageError::Denied)), "{unknown:?}");
+        let odd = projects.directory(&alice(), docker, "../tesla").await;
+        assert!(matches!(odd, Err(StorageError::Invalid(_))), "{odd:?}");
+    }
+
+    #[tokio::test]
+    async fn the_compose_file_is_written_and_read_with_the_administrators_rights() {
+        let (projects, files, docker, media) = shares().await;
+        let context = RequestContext::default();
+        projects
+            .write(&alice(), docker, "projects/tesla", "compose.yaml", "services: {}\n", &context)
+            .await
+            .unwrap();
+        let calls = files.calls();
+        assert!(calls.iter().any(|c| c.contains("docker:projects/tesla")), "{calls:?}");
+        assert!(calls.iter().any(|c| c.starts_with("create_upload alice")), "{calls:?}");
+        let refused = projects.write(&alice(), media, "tesla", "compose.yaml", "x", &context).await;
+        assert!(matches!(refused, Err(StorageError::Denied)), "{refused:?}");
+        let missing = projects.write(&alice(), docker, "missing/tesla", "compose.yaml", "x", &context).await;
+        assert!(matches!(missing, Err(StorageError::NotFound)), "{missing:?}");
+
+        let text = projects.read(&alice(), docker, "projects/tesla/compose.yaml", &context).await.unwrap();
+        assert_eq!(text, zendiloos_sharing::testing::FILE_CONTENT);
+        let gone = projects.read(&alice(), docker, "missing/compose.yaml", &context).await;
+        assert!(matches!(gone, Err(StorageError::NotFound)), "{gone:?}");
+        let odd = projects.read(&alice(), docker, "../x", &context).await;
+        assert!(matches!(odd, Err(StorageError::Invalid(_))), "{odd:?}");
+    }
+}
