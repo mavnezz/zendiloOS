@@ -37,7 +37,8 @@ import ReplaceDiskDialog from './ReplaceDiskDialog.vue'
 /** Whether the signed-in account may change pools (`storage.manage`). */
 const props = defineProps<{ canManage: boolean }>()
 
-const { t, te } = useI18n()
+const i18n = useI18n()
+const { t } = i18n
 const jobs = useJobsStore()
 const refresh = useRefreshStorage()
 const { data: pools, error, isPending } = usePools()
@@ -62,7 +63,7 @@ const runningFor = (since: number) => formatDuration(Math.max(0, Math.round(now.
 /** The step the agent reported, e.g. "Preparing the disks (50 %)", else a general word. */
 function stepOf(job: Job): string {
   const key = `storage.steps.${job.step ?? ''}`
-  if (!job.step || !te(key)) return t('storage.underway')
+  if (!job.step || !i18n.te(key)) return t('storage.underway')
   const share = job.progress
   return share !== null && share !== undefined && share > 0 && share < 1
     ? `${t(key)} (${formatPercent(share * 100)})`
