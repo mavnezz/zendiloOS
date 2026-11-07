@@ -63,6 +63,8 @@ pub enum DiskUsage {
     PoolMember { pool: String },
     /// Carries a data volume directly (no array).
     Volume,
+    /// Mounted as a removable drive: ejected first, then it may be used.
+    Removable,
     /// Has partitions or a signature zendiloos does not manage.
     Foreign,
     /// Nothing on it: free for a new array (M3).
@@ -130,6 +132,10 @@ fn usage(disk: &BlockDevice, pools: &[Pool]) -> DiskUsage {
     if below.iter().any(|device| device.mount_points.iter().any(|m| is_system_mount(m))) {
         return DiskUsage::System;
     }
+    let removable_place = format!("{}/", super::REMOVABLE_PLACE);
+    if below.iter().any(|device| device.mount_points.iter().any(|m| m.starts_with(&removable_place))) {
+        return DiskUsage::Removable;
+    }
     if let Some(array) = below.iter().find(|device| matches!(device.kind, DeviceKind::Raid { .. })) {
         return DiskUsage::ArrayMember { array: array.name.clone() };
     }
@@ -182,6 +188,21 @@ mod tests {
         assert_eq!(usage_of(signature), DiskUsage::Foreign);
 
         assert_eq!(usage_of(disk("sdf", vec![])), DiskUsage::Unused);
+    }
+
+    #[test]
+    fn a_mounted_removable_drive_is_no_disk_to_take() {
+        // A stick's file system often sits on the disk itself, without a
+        // partition table.
+        let stick =
+            with_filesystem(disk("sdg", vec![]), Some("vfat"), &["/run/zendiloos-removable/1A2B-3C4D"]);
+        assert_eq!(usage_of(stick), DiskUsage::Removable);
+        let partitioned =
+            disk("sdh", vec![partition("sdh1", Some("exfat"), &["/run/zendiloos-removable/5E6F-7A8B"])]);
+        assert_eq!(usage_of(partitioned), DiskUsage::Removable);
+        // Only below the place itself.
+        let beside = with_filesystem(disk("sdi", vec![]), Some("vfat"), &["/run/zendiloos-removable-x"]);
+        assert_eq!(usage_of(beside), DiskUsage::Foreign);
     }
 
     #[test]

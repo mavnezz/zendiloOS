@@ -1258,6 +1258,7 @@ const en = {
       pool_member: 'In pool {pool}',
       array_member: 'In {array}',
       volume: 'Volume',
+      removable: 'Removable drive, mounted',
       foreign: 'In use (not managed)',
       unused: 'Unused',
     },

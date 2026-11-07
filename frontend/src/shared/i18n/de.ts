@@ -1284,6 +1284,7 @@ const de: Messages = {
       pool_member: 'In Pool {pool}',
       array_member: 'In {array}',
       volume: 'Volume',
+      removable: 'Wechseldatenträger, eingehängt',
       foreign: 'Belegt (nicht verwaltet)',
       unused: 'Unbenutzt',
     },

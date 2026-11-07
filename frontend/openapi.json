@@ -9624,6 +9624,7 @@
           "array_member",
           "pool_member",
           "volume",
+          "removable",
           "foreign",
           "unused"
         ]

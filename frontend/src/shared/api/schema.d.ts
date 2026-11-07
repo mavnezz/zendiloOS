@@ -3037,7 +3037,7 @@ export interface components {
          * @description What a disk is used for.
          * @enum {string}
          */
-        DiskUsage: "system" | "array_member" | "pool_member" | "volume" | "foreign" | "unused";
+        DiskUsage: "system" | "array_member" | "pool_member" | "volume" | "removable" | "foreign" | "unused";
         DockerContainer: {
             /**
              * Format: int64

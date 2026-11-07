@@ -115,6 +115,8 @@ pub enum Unusable {
     PoolMember,
     /// No `/dev/disk/by-id` link to recognize it by.
     NoStableId,
+    /// Mounted as a removable drive; eject it first.
+    Removable,
     ReadOnly,
 }
 
@@ -155,6 +157,7 @@ fn usable(disk: &Disk) -> Result<&str, Unusable> {
         DiskUsage::System => Err(Unusable::System),
         DiskUsage::ArrayMember { .. } => Err(Unusable::ArrayMember),
         DiskUsage::PoolMember { .. } => Err(Unusable::PoolMember),
+        DiskUsage::Removable => Err(Unusable::Removable),
         _ if disk.read_only => Err(Unusable::ReadOnly),
         _ => disk.id_link.as_deref().ok_or(Unusable::NoStableId),
     }
@@ -387,12 +390,14 @@ mod tests {
             Disk { id_link: None, ..disk("vdb", DiskUsage::Unused) },
             disk("sdb", DiskUsage::Unused),
             disk("sdc", DiskUsage::Unused),
+            disk("sdg", DiskUsage::Removable),
         ];
         let plan = |layout, chosen: &[&str]| plan_pool("new", layout, &names(chosen), &disks, &[]);
         let unusable = |disk: &str, reason| Err(PlanError::DiskUnusable { disk: disk.into(), reason });
         assert_eq!(plan(PoolLayout::Mirror, &["nvme0n1", "sdb"]), unusable("nvme0n1", Unusable::System));
         assert_eq!(plan(PoolLayout::Mirror, &["sda", "sdb"]), unusable("sda", Unusable::PoolMember));
         assert_eq!(plan(PoolLayout::Mirror, &["vdb", "sdb"]), unusable("vdb", Unusable::NoStableId));
+        assert_eq!(plan(PoolLayout::Mirror, &["sdg", "sdb"]), unusable("sdg", Unusable::Removable));
         assert_eq!(plan(PoolLayout::Mirror, &["sdb", "sdb"]), Err(PlanError::DuplicateDisk("sdb".into())));
         assert_eq!(
             plan(PoolLayout::Mirror, &["sdb"]),

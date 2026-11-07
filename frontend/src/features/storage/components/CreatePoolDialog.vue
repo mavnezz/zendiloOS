@@ -45,7 +45,7 @@ const candidates = computed(() =>
     (disk) =>
       disk.id_link &&
       !disk.read_only &&
-      !['system', 'array_member', 'pool_member'].includes(disk.usage),
+      !['system', 'array_member', 'pool_member', 'removable'].includes(disk.usage),
   ),
 )
 const fits = (option: (typeof LAYOUTS)[number]) =>

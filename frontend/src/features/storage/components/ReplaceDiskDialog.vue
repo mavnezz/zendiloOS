@@ -30,7 +30,9 @@ const pending = ref(false)
 const candidates = computed(() =>
   (disks.value ?? []).filter(
     (d) =>
-      d.id_link && !d.read_only && !['system', 'array_member', 'pool_member'].includes(d.usage),
+      d.id_link &&
+      !d.read_only &&
+      !['system', 'array_member', 'pool_member', 'removable'].includes(d.usage),
   ),
 )
 

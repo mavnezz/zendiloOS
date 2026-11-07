@@ -69,7 +69,8 @@ impl StorageMonitor {
         if due {
             seen.smart_at = Some(now);
             for disk in domain::disks(&devices, &pools) {
-                let holds_data = !matches!(disk.usage, DiskUsage::Unused | DiskUsage::Foreign);
+                let holds_data =
+                    !matches!(disk.usage, DiskUsage::Unused | DiskUsage::Foreign | DiskUsage::Removable);
                 if !holds_data {
                     continue;
                 }

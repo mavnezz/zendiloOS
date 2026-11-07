@@ -65,6 +65,7 @@ impl From<StorageError> for ApiError {
                     storage::Unusable::PoolMember => "pool_member",
                     storage::Unusable::NoStableId => "no_stable_id",
                     storage::Unusable::ReadOnly => "read_only",
+                    storage::Unusable::Removable => "removable",
                 };
                 rejected(unprocessable, "disk_unusable", Some(format!("{disk}: {reason}")))
             }
@@ -136,6 +137,8 @@ pub enum DiskUsage {
     PoolMember,
     /// Carries a data volume directly.
     Volume,
+    /// Mounted as a removable drive; ejected first, it may be used.
+    Removable,
     /// Has partitions or data zendiloOS does not manage.
     Foreign,
     Unused,
@@ -180,6 +183,7 @@ impl From<storage::Disk> for Disk {
             storage::DiskUsage::ArrayMember { array } => (DiskUsage::ArrayMember, Some(array), None),
             storage::DiskUsage::PoolMember { pool } => (DiskUsage::PoolMember, None, Some(pool)),
             storage::DiskUsage::Volume => (DiskUsage::Volume, None, None),
+            storage::DiskUsage::Removable => (DiskUsage::Removable, None, None),
             storage::DiskUsage::Foreign => (DiskUsage::Foreign, None, None),
             storage::DiskUsage::Unused => (DiskUsage::Unused, None, None),
         };
