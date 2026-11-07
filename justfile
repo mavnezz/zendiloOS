@@ -25,11 +25,15 @@ check: lint deny coverage-backend sqlx-check api-check web-check
 # Test coverage of backend and frontend, against the thresholds CI holds
 coverage: coverage-backend coverage-web
 
-# The backend's tests, measured; thresholds in scripts/coverage-check.sh
+# The backend's tests, measured; thresholds in scripts/coverage-check.sh.
+# The binaries' main.rs only wire the parts together (configuration,
+# sockets, signals); the VM tests run them, unit tests cannot.
 [working-directory: 'backend']
 coverage-backend:
     mkdir -p ../dev/coverage
-    cargo llvm-cov --workspace --locked --json --summary-only --output-path ../dev/coverage/backend.json
+    cargo llvm-cov --workspace --locked --json --summary-only \
+        --ignore-filename-regex '(zendiloos-agent|zendiloosd)/src/main\.rs' \
+        --output-path ../dev/coverage/backend.json
     ../scripts/coverage-check.sh ../dev/coverage/backend.json
 
 # The frontend's tests, measured; thresholds in frontend/vite.config.ts
