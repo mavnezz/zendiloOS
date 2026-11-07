@@ -120,6 +120,15 @@ pub fn message(notification: &Notification, host: &str, language: Language) -> M
             format!("No snapshot of {}", param("share")),
             "A scheduled snapshot could not be taken. Is the share's volume there?".to_owned(),
         ),
+        "removable_pulled" if german => (
+            format!("{} wurde abgezogen, ohne ausgeworfen zu werden", param("drive")),
+            "Werfen Sie Laufwerke aus, bevor Sie sie abziehen; was gerade geschrieben wurde, kann fehlen."
+                .to_owned(),
+        ),
+        "removable_pulled" => (
+            format!("{} was pulled out without being ejected", param("drive")),
+            "Eject drives before pulling them out; what was being written may be missing.".to_owned(),
+        ),
         "channel_test" if german => (
             "Testnachricht".to_owned(),
             "Dieser Kanal erreicht Sie. So kommen Meldungen des NAS an.".to_owned(),
@@ -241,6 +250,12 @@ mod tests {
                 "Kein Snapshot von photos",
             ),
             ("channel_test", vec![], "Test message", "Testnachricht"),
+            (
+                "removable_pulled",
+                vec![("drive", "STICK")],
+                "STICK was pulled out without being ejected",
+                "STICK wurde abgezogen, ohne ausgeworfen zu werden",
+            ),
         ];
         for (code, params, english, german) in cases {
             let notification = notification(code, &params);

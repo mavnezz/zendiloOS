@@ -7236,6 +7236,158 @@
         ]
       }
     },
+    "/api/v1/storage/removable": {
+      "get": {
+        "tags": [
+          "storage"
+        ],
+        "summary": "The removable drives plugged in. New ones are mounted while they are\nlisted, as on Windows; zendiloOS also looks once a minute by itself.\nNeeds `storage.manage`.",
+        "operationId": "removable_drives",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RemovableDrive"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/storage/removable/{id}/eject": {
+      "post": {
+        "tags": [
+          "storage"
+        ],
+        "summary": "Ejects a drive: unmounts it, refused while files on it are open, and\npowers its disk off. Needs `storage.manage`.",
+        "operationId": "eject_removable",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EjectRemovable"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Ejected."
+          },
+          "404": {
+            "description": "`not_found`: no such drive is plugged in",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`drive_in_use`: files on it are open; `refused`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/storage/removable/{id}/mount": {
+      "post": {
+        "tags": [
+          "storage"
+        ],
+        "summary": "Mounts a drive that was ejected, or that could not be mounted before;\nas it is if it is mounted. Needs `storage.manage`.",
+        "operationId": "mount_removable",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemovableDrive"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no such drive is plugged in",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`refused`: the agent's checks, in its words",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/storage/self-test-plans": {
       "get": {
         "tags": [
@@ -9925,6 +10077,16 @@
           }
         }
       },
+      "EjectRemovable": {
+        "type": "object",
+        "properties": {
+          "power_off": {
+            "type": "boolean",
+            "description": "Also takes the disk off the bus, ready to be pulled out (the\ndefault). Without, the drive stays plugged in, not mounted, e.g. to\nmake a pool of it."
+          }
+        },
+        "additionalProperties": false
+      },
       "EnableDockerRequest": {
         "type": "object",
         "required": [
@@ -12581,6 +12743,111 @@
             ]
           }
         }
+      },
+      "RemovableDrive": {
+        "type": "object",
+        "description": "A removable drive: a file system on a USB stick or disk, a memory card.",
+        "required": [
+          "id",
+          "filesystem",
+          "device",
+          "disk",
+          "size_bytes",
+          "state",
+          "read_only"
+        ],
+        "properties": {
+          "available_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "device": {
+            "type": "string",
+            "description": "The device carrying it, e.g. `sdf1`."
+          },
+          "disk": {
+            "type": "string",
+            "description": "The disk it is on, e.g. `sdf`."
+          },
+          "filesystem": {
+            "$ref": "#/components/schemas/RemovableFilesystem"
+          },
+          "id": {
+            "type": "string",
+            "description": "The file system's UUID: names the drive here and in the paths of\nits files."
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The disk's model."
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where it is mounted on the machine, while it is:\n`/run/zendiloos-removable/<id>`."
+          },
+          "problem": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why it could not be mounted, in the agent's words."
+          },
+          "read_only": {
+            "type": "boolean",
+            "description": "Write-protected, or mounted so because it could not be written."
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "state": {
+            "$ref": "#/components/schemas/RemovableState"
+          },
+          "used_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Only known while mounted.",
+            "minimum": 0
+          }
+        }
+      },
+      "RemovableFilesystem": {
+        "type": "string",
+        "enum": [
+          "fat",
+          "exfat",
+          "ntfs",
+          "ext4"
+        ]
+      },
+      "RemovableState": {
+        "type": "string",
+        "description": "Whether a drive can be opened.",
+        "enum": [
+          "mounted",
+          "ejected",
+          "failed",
+          "unmounted"
+        ]
       },
       "RenameRequest": {
         "type": "object",

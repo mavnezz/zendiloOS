@@ -109,6 +109,9 @@ describe('server notifications', () => {
     expect(wording(notice('pool_trouble', { pool: 'tank', state: 'degraded' })).title).toBeTruthy()
     expect(wording(notice('disk_health', { disk: 'sda', health: 'failing' })).title).toBeTruthy()
     expect(wording(notice('disk_health', { disk: 'sda', health: 'warning' })).title).toBeTruthy()
+    expect(wording(notice('removable_pulled', { drive: 'STICK' })).title).toBe(
+      'STICK was pulled out without being ejected',
+    )
     expect(wording(notice('never_heard_of')).title).toBe('never_heard_of')
   })
 })

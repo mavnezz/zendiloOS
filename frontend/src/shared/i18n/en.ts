@@ -1723,6 +1723,10 @@ const en = {
       title: 'Disk {disk} reports problems',
       body: '{model}: SMART health is {health}. Plan to replace it.',
     },
+    removable_pulled: {
+      title: '{drive} was pulled out without being ejected',
+      body: 'Eject drives before pulling them out; what was being written may be missing.',
+    },
   },
   explorer: {
     navigation: 'Places',

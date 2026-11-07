@@ -1753,6 +1753,10 @@ const de: Messages = {
       title: 'Platte {disk} meldet Probleme',
       body: '{model}: SMART-Zustand ist {health}. Planen Sie den Austausch.',
     },
+    removable_pulled: {
+      title: '{drive} wurde abgezogen, ohne ausgeworfen zu werden',
+      body: 'Werfen Sie Laufwerke aus, bevor Sie sie abziehen; was gerade geschrieben wurde, kann fehlen.',
+    },
   },
   explorer: {
     navigation: 'Orte',

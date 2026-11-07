@@ -99,6 +99,8 @@ impl From<StorageError> for ApiError {
                 rejected(StatusCode::CONFLICT, "pool_in_use", Some(named.join(", ")))
             }
             StorageError::InvalidSelfTestPlan(e) => ApiError::InvalidInput(e.to_string()),
+            StorageError::RemovableNotFound => ApiError::NotFound,
+            StorageError::DriveBusy => rejected(StatusCode::CONFLICT, "drive_in_use", None),
             StorageError::Port(e) => ApiError::internal(e),
         }
     }

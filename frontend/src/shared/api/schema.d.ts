@@ -2182,6 +2182,67 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/storage/removable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The removable drives plugged in. New ones are mounted while they are
+         *     listed, as on Windows; zendiloOS also looks once a minute by itself.
+         *     Needs `storage.manage`.
+         */
+        get: operations["removable_drives"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/storage/removable/{id}/eject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ejects a drive: unmounts it, refused while files on it are open, and
+         *     powers its disk off. Needs `storage.manage`.
+         */
+        post: operations["eject_removable"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/storage/removable/{id}/mount": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Mounts a drive that was ejected, or that could not be mounted before;
+         *     as it is if it is mounted. Needs `storage.manage`.
+         */
+        post: operations["mount_removable"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/storage/self-test-plans": {
         parameters: {
             query?: never;
@@ -3096,6 +3157,14 @@ export interface components {
             volume?: components["schemas"]["AppVolume"] | null;
             /** @description Pools it could go to. */
             volumes: components["schemas"]["AppVolume"][];
+        };
+        EjectRemovable: {
+            /**
+             * @description Also takes the disk off the bus, ready to be pulled out (the
+             *     default). Without, the drive stays plugged in, not mounted, e.g. to
+             *     make a pool of it.
+             */
+            power_off?: boolean;
         };
         EnableDockerRequest: {
             /** @description A pool zendiloOS created. */
@@ -4012,6 +4081,48 @@ export interface components {
             size_bytes?: number | null;
             sync?: components["schemas"]["SyncProgress"] | null;
         };
+        /** @description A removable drive: a file system on a USB stick or disk, a memory card. */
+        RemovableDrive: {
+            /** Format: int64 */
+            available_bytes?: number | null;
+            /** @description The device carrying it, e.g. `sdf1`. */
+            device: string;
+            /** @description The disk it is on, e.g. `sdf`. */
+            disk: string;
+            filesystem: components["schemas"]["RemovableFilesystem"];
+            /**
+             * @description The file system's UUID: names the drive here and in the paths of
+             *     its files.
+             */
+            id: string;
+            label?: string | null;
+            /** @description The disk's model. */
+            model?: string | null;
+            /**
+             * @description Where it is mounted on the machine, while it is:
+             *     `/run/zendiloos-removable/<id>`.
+             */
+            path?: string | null;
+            /** @description Why it could not be mounted, in the agent's words. */
+            problem?: string | null;
+            /** @description Write-protected, or mounted so because it could not be written. */
+            read_only: boolean;
+            /** Format: int64 */
+            size_bytes: number;
+            state: components["schemas"]["RemovableState"];
+            /**
+             * Format: int64
+             * @description Only known while mounted.
+             */
+            used_bytes?: number | null;
+        };
+        /** @enum {string} */
+        RemovableFilesystem: "fat" | "exfat" | "ntfs" | "ext4";
+        /**
+         * @description Whether a drive can be opened.
+         * @enum {string}
+         */
+        RemovableState: "mounted" | "ejected" | "failed" | "unmounted";
         RenameRequest: {
             /** @description The new name, in the same folder. */
             name: string;
@@ -9923,6 +10034,115 @@ export interface operations {
                 };
             };
             /** @description `not_scrubbing` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    removable_drives: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RemovableDrive"][];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    eject_removable: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EjectRemovable"];
+            };
+        };
+        responses: {
+            /** @description Ejected. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `not_found`: no such drive is plugged in */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `drive_in_use`: files on it are open; `refused` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    mount_removable: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RemovableDrive"];
+                };
+            };
+            /** @description `not_found`: no such drive is plugged in */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `refused`: the agent's checks, in its words */
             409: {
                 headers: {
                     [name: string]: unknown;

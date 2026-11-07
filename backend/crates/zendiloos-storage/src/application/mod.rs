@@ -5,14 +5,15 @@ mod error;
 pub mod monitor;
 pub mod ports;
 pub mod queries;
+pub mod removable;
 pub mod self_tests;
 
 use std::sync::Arc;
 
 pub use error::StorageError;
 use ports::{
-    ArraySource, BlockDeviceSource, PlanTokens, PoolAdmin, SelfTestPlanStore, SmartSource, VolumeOccupants,
-    ZfsSource,
+    ArraySource, BlockDeviceSource, PlanTokens, PoolAdmin, RemovableHost, SelfTestPlanStore, SmartSource,
+    VolumeOccupants, ZfsSource,
 };
 use zendiloos_jobs::Jobs;
 use zendiloos_kernel::{AuditLog, Clock};
@@ -34,6 +35,7 @@ pub struct StoragePorts {
     pub notifier: Notifier,
     pub self_test_plans: Arc<dyn SelfTestPlanStore>,
     pub occupants: Arc<dyn VolumeOccupants>,
+    pub removable: Arc<dyn RemovableHost>,
 }
 
 /// All use cases of this context.
@@ -55,10 +57,18 @@ pub struct StorageUseCases {
     pub self_test: commands::SelfTest,
     pub self_test_schedule: self_tests::SelfTestSchedule,
     pub monitor: Arc<monitor::StorageMonitor>,
+    pub removable: Arc<removable::RemovableDrives>,
 }
 
 impl StorageUseCases {
     pub fn new(ports: StoragePorts) -> Self {
+        let removable = Arc::new(removable::RemovableDrives::new(
+            ports.devices.clone(),
+            ports.removable,
+            ports.audit.clone(),
+            ports.clock.clone(),
+            ports.notifier.clone(),
+        ));
         let monitor = Arc::new(monitor::StorageMonitor::new(
             ports.devices.clone(),
             ports.zfs.clone(),
@@ -101,6 +111,7 @@ impl StorageUseCases {
             self_test: commands::SelfTest::new(context),
             self_test_schedule,
             monitor,
+            removable,
             overview,
             list_disks: queries::ListDisks::new(ports.devices.clone(), ports.zfs.clone()),
             get_smart_report: queries::GetSmartReport::new(ports.devices.clone(), ports.smart),

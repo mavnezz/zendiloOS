@@ -2,14 +2,15 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use zendiloos_agent_proto::{
-    self as proto, AgentTransport, DiskId, DiskName, ErrorCode, Request, RequestId, Response,
+    self as proto, AgentTransport, DiskId, DiskName, ErrorCode, RemovableId, Request, RequestId, Response,
 };
 use zendiloos_kernel::{PortError, RequestContext};
 use zendiloos_storage::application::ports::{
-    AdminError, ArraySource, BlockDeviceSource, NewPool, PlanTokens, PoolAdmin, SmartSource, Steps, ZfsSource,
+    AdminError, ArraySource, BlockDeviceSource, NewPool, PlanTokens, PoolAdmin, RemovableHost, SmartSource,
+    Steps, ZfsSource,
 };
 use zendiloos_storage::domain::{
-    Array, BlockDevice, Pool, PoolLayout, PoolName, SelfTestKind, SmartReport, VolumeNumber,
+    Array, BlockDevice, Pool, PoolLayout, PoolName, RemovableDrive, SelfTestKind, SmartReport, VolumeNumber,
 };
 
 use super::{WHAT, call, unexpected};
@@ -112,6 +113,22 @@ impl AgentStorage {
         self.reporting(request, &NoSteps, context).await
     }
 
+    /// As [`Self::change`], for a request with an answer of its own.
+    async fn answer(&self, request: Request, context: &RequestContext) -> Result<Response, AdminError> {
+        let request_id = context.request_id.as_deref().and_then(|id| RequestId::parse(id).ok());
+        let answer = self
+            .transport
+            .call_reporting(request, request_id, &|_: &str, _: Option<u8>| {})
+            .await
+            .map_err(|error| PortError::new(WHAT, error))?;
+        match answer {
+            Response::Error { code: ErrorCode::Forbidden, message } => Err(AdminError::Refused(message)),
+            Response::Error { code: ErrorCode::Conflict, .. } => Err(AdminError::Conflict),
+            Response::Error { code, message } => Err(super::agent_error(code, &message).into()),
+            other => Ok(other),
+        }
+    }
+
     /// As [`Self::change`], passing on the steps the agent reports.
     async fn reporting(
         &self,
@@ -131,6 +148,37 @@ impl AgentStorage {
             Response::Error { code: ErrorCode::Forbidden, message } => Err(AdminError::Refused(message)),
             Response::Error { code: ErrorCode::Conflict, .. } => Err(AdminError::Conflict),
             Response::Error { code, message } => Err(super::agent_error(code, &message).into()),
+            other => Err(unexpected(other).into()),
+        }
+    }
+}
+
+fn removable_id(id: &str) -> Result<RemovableId, AdminError> {
+    RemovableId::parse(id).map_err(|_| invalid("removable drive"))
+}
+
+#[async_trait]
+impl RemovableHost for AgentStorage {
+    async fn mount(&self, drive: &RemovableDrive, context: &RequestContext) -> Result<bool, AdminError> {
+        let request = Request::MountRemovable { id: removable_id(&drive.id)? };
+        match self.answer(request, context).await? {
+            Response::RemovableMounted { read_only } => Ok(read_only),
+            other => Err(unexpected(other).into()),
+        }
+    }
+
+    async fn eject(
+        &self,
+        drive: &RemovableDrive,
+        power_off: bool,
+        context: &RequestContext,
+    ) -> Result<(), AdminError> {
+        self.change(Request::EjectRemovable { id: removable_id(&drive.id)?, power_off }, context).await
+    }
+
+    async fn clean(&self, context: &RequestContext) -> Result<Vec<String>, AdminError> {
+        match self.answer(Request::CleanRemovable {}, context).await? {
+            Response::RemovableCleaned { ids } => Ok(ids.into_iter().map(String::from).collect()),
             other => Err(unexpected(other).into()),
         }
     }
@@ -229,7 +277,9 @@ impl PlanTokens for RandomPlanTokens {
 #[cfg(test)]
 mod tests {
     use zendiloos_sim::SimulatedAgent;
-    use zendiloos_storage::domain::{DiskUsage, Health, VdevState, disks, resolve_pool_disks, volumes};
+    use zendiloos_storage::domain::{
+        DiskUsage, Health, VdevState, disks, removable_drives, resolve_pool_disks, volumes,
+    };
 
     use super::*;
 
@@ -273,6 +323,56 @@ mod tests {
         assert_eq!(smart("sde").await.unwrap(), SmartReport::Standby);
         assert_eq!(health(smart("nvme1n1").await.unwrap()), Some(Health::Good));
         assert_eq!(storage.arrays(&context).await.unwrap(), []);
+    }
+
+    #[tokio::test]
+    async fn the_simulated_stick_is_mounted_and_ejected_through_the_agent() {
+        let storage = AgentStorage::new(Arc::new(SimulatedAgent::new()));
+        let context = RequestContext::default();
+        let drives = || async { removable_drives(&storage.block_devices(&context).await.unwrap()) };
+        let stick = drives().await.remove(0);
+        assert_eq!(
+            (stick.id.as_str(), stick.label.as_deref(), stick.is_mounted()),
+            ("1A2B-3C4D", Some("STICK"), false)
+        );
+
+        assert!(!storage.mount(&stick, &context).await.unwrap(), "writable");
+        assert_eq!(drives().await[0].mount_point.as_deref(), Some("/run/zendiloos-removable/1A2B-3C4D"));
+        assert_eq!(storage.clean(&context).await.unwrap(), Vec::<String>::new());
+        storage.eject(&stick, true, &context).await.unwrap();
+        assert_eq!(drives().await, []);
+        let gone = storage.mount(&stick, &context).await;
+        assert!(matches!(gone, Err(AdminError::Refused(ref why)) if why.contains("no drive")), "{gone:?}");
+    }
+
+    #[tokio::test]
+    async fn a_drive_in_use_is_a_conflict_and_odd_ids_never_reach_the_agent() {
+        let context = RequestContext::default();
+        let busy = AgentStorage::new(Arc::new(Scripted::refusing(ErrorCode::Conflict, "in use: files open")));
+        let drive = |id: &str| RemovableDrive {
+            id: id.into(),
+            device: "sdf1".into(),
+            disk: "sdf".into(),
+            label: None,
+            filesystem: zendiloos_storage::domain::RemovableFilesystem::Fat,
+            size_bytes: 1,
+            model: None,
+            read_only: false,
+            mount_point: None,
+            space: None,
+        };
+        assert!(matches!(busy.eject(&drive("1A2B-3C4D"), true, &context).await, Err(AdminError::Conflict)));
+        let refused = AgentStorage::new(Arc::new(Scripted::refusing(ErrorCode::Forbidden, "on a SATA disk")));
+        let why = refused.mount(&drive("1A2B-3C4D"), &context).await;
+        assert!(matches!(why, Err(AdminError::Refused(ref why)) if why == "on a SATA disk"), "{why:?}");
+        let agent = Arc::new(Scripted::default());
+        let storage = AgentStorage::new(agent.clone());
+        assert!(matches!(storage.mount(&drive("../etc"), &context).await, Err(AdminError::Port(_))));
+        assert!(matches!(storage.eject(&drive("-o"), false, &context).await, Err(AdminError::Port(_))));
+        assert_eq!(agent.asked(), []);
+        let odd = AgentStorage::new(Arc::new(Scripted::answering([Response::Done, Response::Done])));
+        assert!(matches!(odd.mount(&drive("A"), &context).await, Err(AdminError::Port(_))));
+        assert!(matches!(odd.clean(&context).await, Err(AdminError::Port(_))));
     }
 
     use crate::agent::scripted::Scripted;

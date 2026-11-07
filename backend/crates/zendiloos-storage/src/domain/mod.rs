@@ -5,6 +5,7 @@ mod events;
 mod overview;
 mod plan;
 mod pool;
+mod removable;
 mod self_test;
 mod smart;
 mod volume;
@@ -21,6 +22,9 @@ pub use plan::{
 pub use pool::{
     Occupant, Pool, PoolDevice, PoolLayout, PoolSpace, Replacing, Scan, ScanEstimate, ScanKind, ScanPass,
     ScanState, VdevState, VolumeNumber, resolve_pool_disks,
+};
+pub use removable::{
+    REMOVABLE_PLACE, RemovableDrive, RemovableFilesystem, is_removable_id, removable_drives, removable_place,
 };
 pub use self_test::{
     InvalidSelfTestPlan, MAX_PLAN_DISKS, SELF_TEST_WINDOW_HOURS, ScheduledSelfTest, SelfTestFrequency,

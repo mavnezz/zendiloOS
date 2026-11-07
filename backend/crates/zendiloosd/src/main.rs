@@ -49,6 +49,7 @@ use zendiloos_notify::channels::Channels;
 use zendiloos_sharing::application::{FilesUseCases, SharingPorts, SharingUseCases};
 use zendiloos_sim::SimulatedAgent;
 use zendiloos_storage::application::monitor::StorageMonitor;
+use zendiloos_storage::application::removable::RemovableDrives;
 use zendiloos_storage::application::self_tests::SelfTestSchedule;
 use zendiloos_storage::application::{StoragePorts, StorageUseCases};
 use zendiloos_system::application::{SystemPorts, SystemUseCases};
@@ -175,6 +176,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         arrays: agent_storage.clone(),
         zfs: agent_storage.clone(),
         occupants: Arc::new(Occupants::new(database.clone(), agent_storage.clone())),
+        removable: agent_storage.clone(),
         admin: agent_storage,
         jobs: jobs.clone(),
         audit: audit.clone(),
@@ -183,7 +185,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         notifier: notifier.clone(),
         self_test_plans: Arc::new(SqliteSelfTestPlans::new(database.clone())),
     });
-    let monitor = spawn_storage_monitor(Arc::clone(&storage.monitor));
+    let monitor = spawn_storage_monitor(Arc::clone(&storage.monitor), Arc::clone(&storage.removable));
     let sharing_store = Arc::new(SqliteShares::new(database.clone()));
     let sharing_ports = SharingPorts {
         shares: sharing_store.clone(),
@@ -442,13 +444,17 @@ async fn announce_setup(config: &Config, identity: &IdentityUseCases) -> anyhow:
     Ok(Some(code))
 }
 
-/// Looks at pools and disks every minute and notifies about changes.
-fn spawn_storage_monitor(monitor: Arc<StorageMonitor>) -> JoinHandle<()> {
+/// Looks at pools and disks every minute and notifies about changes;
+/// mounts removable drives plugged in meanwhile and lets go of those
+/// pulled out (the file explorer has them looked at more often while it
+/// is open, by listing them).
+fn spawn_storage_monitor(monitor: Arc<StorageMonitor>, removable: Arc<RemovableDrives>) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut every_minute = tokio::time::interval(Duration::from_secs(60));
         loop {
             every_minute.tick().await;
             monitor.check().await;
+            removable.watch().await;
         }
     })
 }

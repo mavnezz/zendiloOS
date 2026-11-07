@@ -1637,6 +1637,9 @@ fn openapi_documents_every_route() {
             "/api/v1/storage/pools/{name}/replace/plan",
             "/api/v1/storage/pools/{name}/scrub",
             "/api/v1/storage/pools/{name}/scrub/stop",
+            "/api/v1/storage/removable",
+            "/api/v1/storage/removable/{id}/eject",
+            "/api/v1/storage/removable/{id}/mount",
             "/api/v1/storage/self-test-plans",
             "/api/v1/storage/volumes",
             "/api/v1/system/info",
@@ -2140,6 +2143,97 @@ async fn pools_are_destroyed_replaced_and_scrubbed_by_admins_only() {
     let viewer = h.sign_in("bob", Role::ReadOnly).await;
     let denied = h.send(empty(with_csrf(post("/api/v1/storage/pools/tank/scrub"), &viewer))).await;
     assert_problem(&denied, StatusCode::FORBIDDEN, "forbidden");
+}
+
+#[tokio::test]
+async fn a_stick_plugged_in_is_mounted_when_listed_and_ejected_by_admins_only() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let list = || h.send(empty(with_cookie(get("/api/v1/storage/removable"), &admin)));
+    let eject = |id: &str, body: Value| {
+        h.send(json(with_csrf(post(&format!("/api/v1/storage/removable/{id}/eject")), &admin), body))
+    };
+    let mount =
+        |id: &str| h.send(empty(with_csrf(post(&format!("/api/v1/storage/removable/{id}/mount")), &admin)));
+    assert_eq!(list().await.body, json!([]));
+    h.storage.plug_stick();
+
+    let listed = list().await;
+
+    assert_eq!(listed.status, StatusCode::OK, "{:?}", listed.body);
+    assert_eq!(
+        listed.body,
+        json!([{
+            "id": "1A2B-3C4D", "label": "STICK", "filesystem": "fat", "device": "sdf1", "disk": "sdf",
+            "model": "TEST Stick", "size_bytes": 32_015_998_976_u64, "state": "mounted", "read_only": false,
+            "path": "/run/zendiloos-removable/1A2B-3C4D", "used_bytes": null, "available_bytes": null,
+            "problem": null,
+        }])
+    );
+    // Mounted now: what it holds is known from the next look on.
+    assert_eq!(list().await.body[0]["available_bytes"], 24_600_000_000_u64);
+
+    // In use: refused, still mounted.
+    *h.storage.stick_busy.lock().unwrap() = true;
+    assert_problem(&eject("1A2B-3C4D", json!({})).await, StatusCode::CONFLICT, "drive_in_use");
+    assert_eq!(list().await.body[0]["state"], "mounted");
+    *h.storage.stick_busy.lock().unwrap() = false;
+
+    // Ejected without powering it off: it stays, not mounted, until asked.
+    assert_eq!(eject("1A2B-3C4D", json!({ "power_off": false })).await.status, StatusCode::NO_CONTENT);
+    assert_eq!(list().await.body[0]["state"], "ejected");
+    let again = mount("1A2B-3C4D").await;
+    assert_eq!((again.status, again.body["state"].clone()), (StatusCode::OK, json!("mounted")));
+
+    // Ejected for good (the default): gone from the bus.
+    assert_eq!(eject("1A2B-3C4D", json!({})).await.status, StatusCode::NO_CONTENT);
+    assert_eq!(list().await.body, json!([]));
+    assert_problem(&eject("1A2B-3C4D", json!({})).await, StatusCode::NOT_FOUND, "not_found");
+    assert_problem(&mount("..").await, StatusCode::NOT_FOUND, "not_found");
+    assert_eq!(
+        h.storage.calls(),
+        [
+            "mount 1A2B-3C4D",
+            "eject 1A2B-3C4D true",
+            "eject 1A2B-3C4D false",
+            "mount 1A2B-3C4D",
+            "eject 1A2B-3C4D true",
+        ]
+    );
+    let actions: Vec<_> = h
+        .identity
+        .audit
+        .entries()
+        .into_iter()
+        .filter(|e| e.action.contains("removable"))
+        .map(|e| (e.action, e.outcome))
+        .collect();
+    assert_eq!(
+        actions,
+        [
+            ("storage.eject_removable", Outcome::Failure),
+            ("storage.eject_removable", Outcome::Success),
+            ("storage.mount_removable", Outcome::Success),
+            ("storage.eject_removable", Outcome::Success),
+        ]
+    );
+    let unknown = eject("1A2B-3C4D", json!({ "power_off": true, "force": true })).await;
+    assert_eq!(unknown.status, StatusCode::UNPROCESSABLE_ENTITY, "{:?}", unknown.body);
+}
+
+#[tokio::test]
+async fn removable_drives_are_for_administrators_only() {
+    let h = Harness::new();
+    h.storage.plug_stick();
+    let viewer = h.sign_in("bob", Role::ReadOnly).await;
+    let listed = h.send(empty(with_cookie(get("/api/v1/storage/removable"), &viewer))).await;
+    assert_problem(&listed, StatusCode::FORBIDDEN, "forbidden");
+    for action in ["mount", "eject"] {
+        let uri = format!("/api/v1/storage/removable/1A2B-3C4D/{action}");
+        let reply = h.send(json(with_csrf(post(&uri), &viewer), json!({}))).await;
+        assert_problem(&reply, StatusCode::FORBIDDEN, "forbidden");
+    }
+    assert_eq!(h.storage.calls(), Vec::<String>::new(), "nothing was mounted for a viewer");
 }
 
 #[tokio::test]

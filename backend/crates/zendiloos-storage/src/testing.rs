@@ -11,8 +11,8 @@ use zendiloos_kernel::{AuditLog, Clock, PortError, RequestContext};
 
 use crate::application::StoragePorts;
 use crate::application::ports::{
-    AdminError, ArraySource, BlockDeviceSource, NewPool, PlanTokens, PoolAdmin, SelfTestPlanStore,
-    SmartSource, Steps, VolumeOccupants, ZfsSource,
+    AdminError, ArraySource, BlockDeviceSource, NewPool, PlanTokens, PoolAdmin, RemovableHost,
+    SelfTestPlanStore, SmartSource, Steps, VolumeOccupants, ZfsSource,
 };
 use crate::domain::{
     Array, ArrayMember, BlockDevice, DeviceKind, Filesystem, MemberState, Occupant, Pool, PoolDevice,
@@ -32,8 +32,16 @@ pub struct FakeStorage {
     pub testing: Mutex<Vec<String>>,
     /// What other contexts keep on each volume.
     pub occupants: Mutex<Vec<(u16, Occupant)>>,
+    /// A USB stick (`sdf`, FAT, id [`STICK_ID`]) while plugged in, and
+    /// whether it is mounted.
+    pub stick: Mutex<Option<bool>>,
+    /// Ejecting the stick fails as for open files while set.
+    pub stick_busy: Mutex<bool>,
     tokens: AtomicU64,
 }
+
+/// The id of the stick [`FakeStorage::plug_stick`] plugs in.
+pub const STICK_ID: &str = "1A2B-3C4D";
 
 impl FakeStorage {
     pub fn ports(
@@ -60,8 +68,14 @@ impl FakeStorage {
             notifier,
             self_test_plans: Arc::new(MemorySelfTestPlans::default()),
             occupants: fake.clone(),
+            removable: fake.clone(),
         };
         (ports, fake)
+    }
+
+    /// Plugs the USB stick in, not mounted.
+    pub fn plug_stick(&self) {
+        *self.stick.lock().unwrap() = Some(false);
     }
 
     pub fn calls(&self) -> Vec<String> {
@@ -146,6 +160,71 @@ impl PoolAdmin for FakeStorage {
             scan.state = ScanState::Canceled;
         }
         Ok(())
+    }
+}
+
+fn stick(mounted: bool) -> BlockDevice {
+    let space =
+        SpaceUsage { size_bytes: 32_000_000_000, used_bytes: 7_400_000_000, available_bytes: 24_600_000_000 };
+    let partition = BlockDevice {
+        filesystem: Some(Filesystem {
+            kind: "vfat".to_owned(),
+            label: Some("STICK".to_owned()),
+            uuid: Some(STICK_ID.to_owned()),
+            space: mounted.then_some(space),
+        }),
+        mount_points: if mounted { vec![crate::domain::removable_place(STICK_ID)] } else { Vec::new() },
+        size_bytes: 32_015_998_976,
+        rotational: false,
+        ..device("sdf1", DeviceKind::Partition)
+    };
+    BlockDevice {
+        model: Some("TEST Stick".to_owned()),
+        serial: Some("U1".to_owned()),
+        transport: Some("usb".to_owned()),
+        removable: true,
+        rotational: false,
+        size_bytes: 32_017_047_552,
+        children: vec![partition],
+        ..device("sdf", DeviceKind::Disk)
+    }
+}
+
+#[async_trait]
+impl RemovableHost for FakeStorage {
+    async fn mount(
+        &self,
+        drive: &crate::domain::RemovableDrive,
+        _: &RequestContext,
+    ) -> Result<bool, AdminError> {
+        self.record(format!("mount {}", drive.id));
+        let mut stick = self.stick.lock().unwrap();
+        match stick.as_mut() {
+            Some(mounted) if drive.id == STICK_ID => {
+                *mounted = true;
+                Ok(false)
+            }
+            _ => Err(AdminError::Refused(format!("there is no drive {}", drive.id))),
+        }
+    }
+
+    async fn eject(
+        &self,
+        drive: &crate::domain::RemovableDrive,
+        power_off: bool,
+        _: &RequestContext,
+    ) -> Result<(), AdminError> {
+        self.record(format!("eject {} {power_off}", drive.id));
+        if *self.stick_busy.lock().unwrap() {
+            return Err(AdminError::Conflict);
+        }
+        let mut stick = self.stick.lock().unwrap();
+        *stick = if power_off { None } else { Some(false) };
+        Ok(())
+    }
+
+    async fn clean(&self, _: &RequestContext) -> Result<Vec<String>, AdminError> {
+        Ok(Vec::new())
     }
 }
 
@@ -239,14 +318,18 @@ impl BlockDeviceSource for FakeStorage {
             ..device("sdc", DeviceKind::Disk)
         };
         let sdd_serial = self.sdd_serial.lock().unwrap().clone();
-        Ok(vec![
+        let mut devices = vec![
             member("sda", "T1"),
             member("sdb", "T2"),
             zfs_disk,
             unused("sdd", &sdd_serial),
             unused("sde", "T5"),
             system,
-        ])
+        ];
+        if let Some(mounted) = *self.stick.lock().unwrap() {
+            devices.push(stick(mounted));
+        }
+        Ok(devices)
     }
 }
 

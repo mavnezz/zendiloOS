@@ -7,8 +7,8 @@ use async_trait::async_trait;
 use zendiloos_kernel::{PortError, RequestContext, Timestamp};
 
 use crate::domain::{
-    Array, BlockDevice, Occupant, Pool, PoolLayout, PoolName, ScheduledSelfTest, SelfTestKind, SelfTestPlan,
-    SmartReport, VolumeNumber,
+    Array, BlockDevice, Occupant, Pool, PoolLayout, PoolName, RemovableDrive, ScheduledSelfTest,
+    SelfTestKind, SelfTestPlan, SmartReport, VolumeNumber,
 };
 
 /// The host's block device tree.
@@ -121,6 +121,28 @@ pub trait PoolAdmin: Send + Sync {
 
     /// Stops the pool's scrub; what it checked so far stays checked.
     async fn stop_scrub(&self, pool: &PoolName, context: &RequestContext) -> Result<(), AdminError>;
+}
+
+/// Mounting and ejecting removable drives; needs the privileged agent,
+/// which checks every drive again before it mounts it or powers its disk
+/// off. [`AdminError::Conflict`] means the drive is in use.
+#[async_trait]
+pub trait RemovableHost: Send + Sync {
+    /// Mounts `drive` at its place; whether it is read-only there (it may
+    /// be when it cannot be written).
+    async fn mount(&self, drive: &RemovableDrive, context: &RequestContext) -> Result<bool, AdminError>;
+
+    /// Unmounts `drive` and, with `power_off`, takes its disk off the bus.
+    async fn eject(
+        &self,
+        drive: &RemovableDrive,
+        power_off: bool,
+        context: &RequestContext,
+    ) -> Result<(), AdminError>;
+
+    /// Lets go of drives pulled out without being ejected and of empty
+    /// places; the ids let go of.
+    async fn clean(&self, context: &RequestContext) -> Result<Vec<String>, AdminError>;
 }
 
 /// Unguessable tokens for confirming plans.

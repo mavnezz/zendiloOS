@@ -34,6 +34,11 @@ pub enum StorageError {
     NotTesting,
     #[error(transparent)]
     InvalidSelfTestPlan(#[from] InvalidSelfTestPlan),
+    #[error("there is no removable drive with this id")]
+    RemovableNotFound,
+    /// Files on the drive are open: it cannot be ejected now.
+    #[error("the drive is in use")]
+    DriveBusy,
     /// Shares, apps, the personal folders or Docker's data live on the pool.
     #[error("the pool holds data of shares, apps or Docker")]
     PoolInUse(Vec<Occupant>),
