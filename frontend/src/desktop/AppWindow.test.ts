@@ -92,6 +92,10 @@ describe('a window', () => {
     bar.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
     await settle()
     expect(window().maximized).toBe(true)
+    // Without a size of its own, it fills the desktop rather than collapse.
+    const section = wrapper.element as HTMLElement
+    expect(section.classList).toContain('inset-0')
+    expect(section.style.width).toBe('')
     const x = window().geometry.x
     bar.dispatchEvent(at('pointerdown', 10, 10))
     bar.dispatchEvent(at('pointermove', 90, 90))

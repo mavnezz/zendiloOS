@@ -92,7 +92,7 @@ const control =
       cn(
         'absolute flex flex-col overflow-hidden text-foreground outline-none motion-safe:animate-window-in',
         compact ? 'inset-0 bg-background' : 'glass',
-        !compact && (fills ? 'rounded-none border-0' : 'rounded-window'),
+        !compact && (fills ? 'inset-0 rounded-none border-0' : 'rounded-window'),
         !compact && active && 'glass-lifted',
       )
     "
