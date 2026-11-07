@@ -140,7 +140,9 @@ async function create(): Promise<void> {
           <span class="min-w-0 flex-1 truncate text-muted-foreground">
             {{ disk.model ?? t('storage.unknownModel') }} · {{ formatBytes(disk.size_bytes) }}
           </span>
-          <span v-if="hasData(disk)" class="text-xs text-destructive">{{ usageLabel(disk) }}</span>
+          <span v-if="hasData(disk)" class="shrink-0 text-xs text-destructive">{{
+            usageLabel(disk)
+          }}</span>
         </label>
       </fieldset>
 

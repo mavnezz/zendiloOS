@@ -276,4 +276,9 @@
   body {
     @apply bg-background font-sans text-foreground antialiased;
   }
+  /* Browsers give a fieldset the width of its widest content, so a long
+     disk model would widen a dialog instead of being cut short. */
+  fieldset {
+    min-width: 0;
+  }
 }
