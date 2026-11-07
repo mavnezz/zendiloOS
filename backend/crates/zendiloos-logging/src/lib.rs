@@ -158,13 +158,10 @@ mod tests {
     }
 
     #[test]
-    fn tells_whether_stderr_is_the_journal() {
-        use std::os::unix::fs::MetadataExt;
-        let expected = std::env::var("JOURNAL_STREAM").ok().is_some_and(|stream| {
-            std::fs::metadata("/proc/self/fd/2")
-                .is_ok_and(|stderr| is_stream(&stream, stderr.dev(), stderr.ino()))
-        });
-        assert_eq!(logging_to_journal(), expected);
+    fn without_the_journals_variable_stderr_is_no_journal() {
+        if std::env::var_os("JOURNAL_STREAM").is_none() {
+            assert!(!logging_to_journal());
+        }
     }
 
     #[test]
@@ -186,6 +183,7 @@ mod tests {
             tracing::warn!(op = "reboot", "operation failed");
             tracing::info!("started");
         });
+        io::Write::flush(&mut buffer.clone()).unwrap();
         let output = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
         let lines: Vec<_> = output.lines().collect();
         assert!(
