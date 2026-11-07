@@ -2,10 +2,10 @@ import type { VueWrapper } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ref } from 'vue'
 
-import { click, mountApp, page, press, settle, submit, type } from '@/desktop/testing/mount'
-import { called, on, problem, reset } from '@/desktop/testing/server'
-import type { Job } from '@/shared/api/types'
-import type { AppSource, CatalogApp, CatalogAppDetail, DockerSetup, InstalledApp } from '@/shared/api/types'
+import { click, mountApp, page, press, settle, submit, type } from '@/shared/test-support/mount'
+import { called, on, problem, reset } from '@/shared/test-support/server'
+import type { components } from '@/shared/api/schema'
+import type { AppSource, CatalogApp, CatalogAppDetail, InstalledApp } from '@/shared/api/types'
 import { i18n } from '@/shared/i18n'
 import { useJobsStore } from '@/shared/jobs/store'
 import { WINDOW_SECTION } from '@/shared/lib/window-section'
@@ -13,7 +13,7 @@ import { WINDOW_SECTION } from '@/shared/lib/window-section'
 import AppsApp from './AppsApp.vue'
 
 vi.mock('@/shared/api/client', async (original) =>
-  (await import('@/desktop/testing/server')).routed(await original()),
+  (await import('@/shared/test-support/server')).routed(await original()),
 )
 
 const t = (key: string, values: Record<string, unknown> = {}) => i18n.global.t(key, values)
@@ -46,8 +46,22 @@ function detail(id: string, extra: Partial<CatalogAppDetail> = {}): CatalogAppDe
     notes: 'First paragraph.\n\nSecond paragraph.',
     ports: [{ id: 'web', label: 'Web', default: 8096, fixed: false }],
     settings: [
-      { id: 'admin', label: 'Admin name', kind: 'text', generate: false, required: true, default: 'admin' },
-      { id: 'secret', label: 'Secret', kind: 'password', generate: true, required: true, length: 32 },
+      {
+        id: 'admin',
+        label: 'Admin name',
+        kind: 'text',
+        generate: false,
+        required: true,
+        default: 'admin',
+      },
+      {
+        id: 'secret',
+        label: 'Secret',
+        kind: 'password',
+        generate: true,
+        required: true,
+        length: 32,
+      },
     ],
     shares: [{ id: 'media', label: 'Media', description: 'Films and music', read_write: false }],
     source_code: 'https://example.org/src',
@@ -80,7 +94,7 @@ function installed(id: string, extra: Partial<InstalledApp> = {}): InstalledApp 
   }
 }
 
-const ready: DockerSetup = {
+const ready: components['schemas']['DockerSetup'] = {
   installed: true,
   running: true,
   version: '27.5',
@@ -124,7 +138,15 @@ beforeEach(() => {
   on('GET', '/api/v1/apps/docker', ready)
   on('GET', '/api/v1/apps/sources', [
     official,
-    { id: 2, address: 'https://apps.example.org', official: false, added_at: 0, refreshed_at: null, skipped: 2, refresh_error: 'unreachable' },
+    {
+      id: 2,
+      address: 'https://apps.example.org',
+      official: false,
+      added_at: 0,
+      refreshed_at: null,
+      skipped: 2,
+      refresh_error: 'unreachable',
+    },
   ])
 })
 
@@ -147,7 +169,15 @@ describe('the App Center', () => {
   })
 
   it('shows an app in full and installs it', async () => {
-    on('GET', '/api/v1/apps/catalog/2/immich', detail('immich', { official: false, source_id: 2, permissions: { ...none, devices: ['/dev/dri'] } }))
+    on(
+      'GET',
+      '/api/v1/apps/catalog/2/immich',
+      detail('immich', {
+        official: false,
+        source_id: 2,
+        permissions: { ...none, devices: ['/dev/dri'] },
+      }),
+    )
     const wrapper = await open('all')
     wrapper.findComponent({ name: 'StoreSection' }).vm.$emit('open', { source_id: 2, id: 'immich' })
     await settle()
@@ -172,14 +202,20 @@ describe('the App Center', () => {
     let asked = 0
     on('POST', '/api/v1/apps/installed/jellyfin/update', () => {
       asked += 1
-      return asked === 1 ? problem(409, 'permissions_not_confirmed', 'sha256:new') : { id: 9, kind: 'apps.update', state: 'running' }
+      return asked === 1
+        ? problem(409, 'permissions_not_confirmed', 'sha256:new')
+        : { id: 9, kind: 'apps.update', state: 'running' }
     })
     const wrapper = await open('all')
-    wrapper.findComponent({ name: 'StoreSection' }).vm.$emit('open', { source_id: 1, id: 'jellyfin' })
+    wrapper
+      .findComponent({ name: 'StoreSection' })
+      .vm.$emit('open', { source_id: 1, id: 'jellyfin' })
     await settle()
 
     await click(t('appStore.installed.update'))
-    const confirmation = wrapper.findAllComponents({ name: 'ConfirmDialog' }).find((d) => d.props('open'))!
+    const confirmation = wrapper
+      .findAllComponents({ name: 'ConfirmDialog' })
+      .find((d) => d.props('open'))!
     confirmation.vm.$emit('confirm')
     await settle()
     expect(called('POST', '/api/v1/apps/installed/jellyfin/update').map((c) => c.body)).toEqual([
@@ -192,7 +228,9 @@ describe('the App Center', () => {
     on('GET', '/api/v1/apps/installed', [installed('jellyfin', { web: null })])
     on('GET', '/api/v1/apps/catalog/1/jellyfin', detail('jellyfin', { web: null }))
     const wrapper = await open('all')
-    wrapper.findComponent({ name: 'StoreSection' }).vm.$emit('open', { source_id: 1, id: 'jellyfin' })
+    wrapper
+      .findComponent({ name: 'StoreSection' })
+      .vm.$emit('open', { source_id: 1, id: 'jellyfin' })
     await settle()
     await click(t('appStore.isInstalled'))
     expect(section.value).toBe('installed')
@@ -200,7 +238,15 @@ describe('the App Center', () => {
 
   it('installs Docker on a pool first', async () => {
     on('GET', '/api/v1/apps/docker', { ...ready, installed: false, running: false, volume: null })
-    on('POST', '/api/v1/apps/docker/install', { id: 4, kind: 'apps.docker_install', state: 'running', step: 'packages', target: null, created_at: 0, updated_at: 0 })
+    on('POST', '/api/v1/apps/docker/install', {
+      id: 4,
+      kind: 'apps.docker_install',
+      state: 'running',
+      step: 'packages',
+      target: null,
+      created_at: 0,
+      updated_at: 0,
+    })
     await open('all')
     expect(section.value).toBe('all')
     section.value = 'docker'
@@ -232,7 +278,12 @@ describe('the App Center', () => {
   })
 
   it('adds, refreshes and removes catalogs', async () => {
-    on('POST', '/api/v1/apps/sources', { ...official, id: 3, address: 'https://more.example.org', official: false })
+    on('POST', '/api/v1/apps/sources', {
+      ...official,
+      id: 3,
+      address: 'https://more.example.org',
+      official: false,
+    })
     on('POST', '/api/v1/apps/sources/refresh', [])
     on('DELETE', '/api/v1/apps/sources/2', problem(409, 'app_installed', 'immich'))
     await open('sources')
@@ -242,7 +293,9 @@ describe('the App Center', () => {
     ;(document.querySelector('form input[type="checkbox"]') as HTMLInputElement).click()
     await settle()
     await submit('form')
-    expect(called('POST', '/api/v1/apps/sources')[0]?.body).toEqual({ address: 'https://more.example.org' })
+    expect(called('POST', '/api/v1/apps/sources')[0]?.body).toEqual({
+      address: 'https://more.example.org',
+    })
     await click(new RegExp(t('appStore.sources.refresh')))
     expect(called('POST', '/api/v1/apps/sources/refresh')).toHaveLength(1)
     await press(t('appStore.sources.remove'))
@@ -258,7 +311,11 @@ describe('the App Center', () => {
     on('POST', '/api/v1/apps/installed/jellyfin/stop', null)
     on('POST', '/api/v1/apps/installed/immich/start', problem(502, 'host_failed', 'no engine'))
     on('GET', '/api/v1/apps/installed/jellyfin/logs', { text: 'jellyfin-1  | started\n' })
-    on('DELETE', '/api/v1/apps/installed/jellyfin', { id: 5, kind: 'apps.remove', state: 'running' })
+    on('DELETE', '/api/v1/apps/installed/jellyfin', {
+      id: 5,
+      kind: 'apps.remove',
+      state: 'running',
+    })
     const wrapper = await open('installed')
     const menus = () => wrapper.findAllComponents({ name: 'ActionMenu' })
 
@@ -275,7 +332,9 @@ describe('the App Center', () => {
     await settle()
     await type('#remove-confirm', 'jellyfin')
     await submit('[role="dialog"] form')
-    expect(called('DELETE', '/api/v1/apps/installed/jellyfin')[0]?.body).toEqual({ confirm: 'jellyfin' })
+    expect(called('DELETE', '/api/v1/apps/installed/jellyfin')[0]?.body).toEqual({
+      confirm: 'jellyfin',
+    })
   })
 
   it('updates all, retries a failed one and says what went wrong', async () => {
@@ -301,19 +360,25 @@ describe('the App Center', () => {
       step: 'pulling',
       created_at: 0,
       updated_at: 0,
-    } as Job)
+    })
     await settle()
     expect(page()).toContain(t('appStore.installed.steps.pulling'))
 
     await click(t('appStore.installed.updateAll'))
-    const confirmation = wrapper.findAllComponents({ name: 'ConfirmDialog' }).find((d) => d.props('open'))!
+    const confirmation = wrapper
+      .findAllComponents({ name: 'ConfirmDialog' })
+      .find((d) => d.props('open'))!
     confirmation.vm.$emit('confirm')
     await settle()
     expect(called('POST', '/api/v1/apps/installed/jellyfin/update')).toHaveLength(2)
     await click(t('appStore.installed.retry'))
     expect(called('POST', '/api/v1/apps/installed/immich/retry')).toHaveLength(1)
 
-    const row = wrapper.findAll('li').find((li) => li.text().includes('Jellyfin') && li.findComponent({ name: 'ActionMenu' }).exists())!
+    const row = wrapper
+      .findAll('li')
+      .find(
+        (li) => li.text().includes('Jellyfin') && li.findComponent({ name: 'ActionMenu' }).exists(),
+      )!
     const menu = row.findComponent({ name: 'ActionMenu' })
     menu.vm.$emit('select', 'logs')
     await settle()

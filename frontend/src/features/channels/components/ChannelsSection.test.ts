@@ -1,14 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { click, mountApp, page, press, settle } from '@/desktop/testing/mount'
-import { called, on, problem, reset } from '@/desktop/testing/server'
+import { click, mountApp, page, press, settle } from '@/shared/test-support/mount'
+import { called, on, problem, reset } from '@/shared/test-support/server'
 import type { NotificationChannel } from '@/shared/api/types'
 import { i18n } from '@/shared/i18n'
 
 import ChannelsSection from './ChannelsSection.vue'
 
 vi.mock('@/shared/api/client', async (original) =>
-  (await import('@/desktop/testing/server')).routed(await original()),
+  (await import('@/shared/test-support/server')).routed(await original()),
 )
 
 const t = (key: string, values: Record<string, unknown> = {}) => i18n.global.t(key, values)
@@ -41,13 +41,21 @@ const hook: NotificationChannel = {
   language: 'de',
   last_delivery_at: null,
   last_error: 'timed out',
-} as NotificationChannel
+}
 
 beforeEach(() => {
   reset()
-  on('GET', '/api/v1/notification-channels', [mail, hook, { ...hook, id: 3, name: 'Odd', target: { kind: 'webhook', url: 'not a url', format: 'json' } }])
+  on('GET', '/api/v1/notification-channels', [
+    mail,
+    hook,
+    { ...hook, id: 3, name: 'Odd', target: { kind: 'webhook', url: 'not a url', format: 'json' } },
+  ])
   on('POST', '/api/v1/notification-channels/1/test', null)
-  on('POST', '/api/v1/notification-channels/2/test', problem(502, 'delivery_failed', 'connection refused'))
+  on(
+    'POST',
+    '/api/v1/notification-channels/2/test',
+    problem(502, 'delivery_failed', 'connection refused'),
+  )
   on('DELETE', '/api/v1/notification-channels/1', problem(409, 'refused', 'in use'))
 })
 
@@ -82,10 +90,14 @@ describe('the notification channels', () => {
     )!
     change.click()
     await settle()
-    expect(wrapper.findComponent({ name: 'ChannelDialog' }).props('channel')).toMatchObject({ id: 1 })
+    expect(wrapper.findComponent({ name: 'ChannelDialog' }).props('channel')).toMatchObject({
+      id: 1,
+    })
     await press(t('desktop.close'))
 
-    document.querySelectorAll<HTMLButtonElement>(`button[aria-label="${t('channels.remove')}"]`)[0]!.click()
+    document
+      .querySelectorAll<HTMLButtonElement>(`button[aria-label="${t('channels.remove')}"]`)[0]!
+      .click()
     await settle()
     wrapper.findComponent({ name: 'ConfirmDialog' }).vm.$emit('confirm')
     await settle()

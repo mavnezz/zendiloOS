@@ -1,15 +1,17 @@
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { live } from '@/desktop/testing/live'
-import { called, on, problem, reset } from '@/desktop/testing/server'
+import { live } from '@/shared/test-support/live'
+import { called, on, problem, reset } from '@/shared/test-support/server'
 
 import { usePower } from './power'
 
 vi.mock('@/shared/api/client', async (original) =>
-  (await import('@/desktop/testing/server')).routed(await original()),
+  (await import('@/shared/test-support/server')).routed(await original()),
 )
-vi.mock('@/shared/api/live', async () => ({ live: (await import('@/desktop/testing/live')).live }))
+vi.mock('@/shared/api/live', async () => ({
+  live: (await import('@/shared/test-support/live')).live,
+}))
 
 const reload = vi.fn()
 const original = window.location
@@ -46,7 +48,9 @@ describe('restarting and shutting down', () => {
       'fetch',
       vi.fn(() => {
         const up = answers.shift() ?? true
-        return up ? Promise.resolve(new Response('{}', { status: 200 })) : Promise.reject(new Error('down'))
+        return up
+          ? Promise.resolve(new Response('{}', { status: 200 }))
+          : Promise.reject(new Error('down'))
       }),
     )
     const power = usePower()
@@ -61,7 +65,10 @@ describe('restarting and shutting down', () => {
   it('reloads anyway when the restart went by unnoticed', async () => {
     vi.useFakeTimers()
     on('POST', '/api/v1/system/power', null)
-    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('{}', { status: 200 }))))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(new Response('{}', { status: 200 }))),
+    )
     await usePower().request('reboot')
     await vi.advanceTimersByTimeAsync(60_000)
     expect(reload).not.toHaveBeenCalled()

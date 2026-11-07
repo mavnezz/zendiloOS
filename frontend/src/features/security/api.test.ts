@@ -1,14 +1,14 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { click, mountApp, page, press, settle, submit, type } from '@/desktop/testing/mount'
-import { called, on, reset } from '@/desktop/testing/server'
+import { click, mountApp, page, press, settle, submit, type } from '@/shared/test-support/mount'
+import { called, on, reset } from '@/shared/test-support/server'
 import { i18n } from '@/shared/i18n'
 
 import AccountActivityDialog from './components/AccountActivityDialog.vue'
 import SecurityPage from './components/SecurityPage.vue'
 
 vi.mock('@/shared/api/client', async (original) =>
-  (await import('@/desktop/testing/server')).routed(await original()),
+  (await import('@/shared/test-support/server')).routed(await original()),
 )
 
 const t = (key: string, values: Record<string, unknown> = {}) => i18n.global.t(key, values)
@@ -24,15 +24,52 @@ describe('security', () => {
   it('lists sessions and logins and ends a session', async () => {
     reset()
     on('GET', '/api/v1/security/sessions', [
-      { id: 1, account: 'alice', address: '192.168.1.5', user_agent: 'Mozilla/5.0 (X11; Linux x86_64) Firefox/140.0', created_at: 1_790_000_000, last_seen_at: 1_790_000_100, current: true },
-      { id: 2, account: 'bob', address: null, user_agent: null, created_at: 1_790_000_000, last_seen_at: 1_790_000_100, current: false },
+      {
+        id: 1,
+        account: 'alice',
+        address: '192.168.1.5',
+        user_agent: 'Mozilla/5.0 (X11; Linux x86_64) Firefox/140.0',
+        created_at: 1_790_000_000,
+        last_seen_at: 1_790_000_100,
+        current: true,
+      },
+      {
+        id: 2,
+        account: 'bob',
+        address: null,
+        user_agent: null,
+        created_at: 1_790_000_000,
+        last_seen_at: 1_790_000_100,
+        current: false,
+      },
     ])
     on('DELETE', '/api/v1/security/sessions/2', null)
     on('GET', '/api/v1/logs/audit', {
       entries: [
-        { id: 3, at: 1_790_000_000, action: 'auth.login', outcome: 'success', actor: 'alice', client_ip: '192.168.1.5' },
-        { id: 2, at: 1_790_000_000, action: 'auth.login', outcome: 'failure', actor: 'bob', reason: 'wrong_password' },
-        { id: 1, at: 1_790_000_000, action: 'auth.login', outcome: 'failure', actor: 'eve', reason: 'something_else' },
+        {
+          id: 3,
+          at: 1_790_000_000,
+          action: 'auth.login',
+          outcome: 'success',
+          actor: 'alice',
+          client_ip: '192.168.1.5',
+        },
+        {
+          id: 2,
+          at: 1_790_000_000,
+          action: 'auth.login',
+          outcome: 'failure',
+          actor: 'bob',
+          reason: 'wrong_password',
+        },
+        {
+          id: 1,
+          at: 1_790_000_000,
+          action: 'auth.login',
+          outcome: 'failure',
+          actor: 'eve',
+          reason: 'something_else',
+        },
       ],
       older: null,
     })
@@ -57,8 +94,15 @@ describe('security', () => {
     on('PUT', '/api/v1/security/settings', (call: { body: unknown }) => call.body)
     on('GET', '/api/v1/system/tls', { minimum: 'tls1_2' })
     on('PUT', '/api/v1/system/tls', (call: { body: unknown }) => call.body)
-    on('GET', '/api/v1/security/blocked', [{ address: '203.0.113.9', blocked_at: 1_800_000_000, until: null, automatic: true }])
-    on('POST', '/api/v1/security/blocked', { address: '198.51.100.7', blocked_at: 1, until: null, automatic: false })
+    on('GET', '/api/v1/security/blocked', [
+      { address: '203.0.113.9', blocked_at: 1_800_000_000, until: null, automatic: true },
+    ])
+    on('POST', '/api/v1/security/blocked', {
+      address: '198.51.100.7',
+      blocked_at: 1,
+      until: null,
+      automatic: false,
+    })
     on('POST', '/api/v1/security/unblock', null)
     const { wrapper } = await mountApp(SecurityPage)
     await type('#security-idle', '45')
@@ -73,7 +117,10 @@ describe('security', () => {
 
     await click(new RegExp(t('security.manageBlocks')))
     expect(page()).toContain('203.0.113.9')
-    await type(`[role="dialog"] input[aria-label="${t('security.blocks.address')}"]`, '198.51.100.7')
+    await type(
+      `[role="dialog"] input[aria-label="${t('security.blocks.address')}"]`,
+      '198.51.100.7',
+    )
     await submit('[role="dialog"] form')
     expect(called('POST', '/api/v1/security/blocked')[0]?.body).toEqual({ address: '198.51.100.7' })
     await press(t('security.blocks.lift'))

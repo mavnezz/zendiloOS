@@ -3,7 +3,7 @@
  * and keeps every request. Tests route the client to it with
  *
  *     vi.mock('@/shared/api/client', async (original) =>
- *       (await import('@/desktop/testing/server')).routed(await original()))
+ *       (await import('@/shared/test-support/server')).routed(await original()))
  */
 
 export interface Call {
@@ -13,8 +13,8 @@ export interface Call {
   body: unknown
 }
 
-type Answer = unknown
-type Reply = Answer | ((call: Call) => Answer | Promise<Answer>)
+/** What a route answers: a body, a `Response`, `null` for none, or a function of the request. */
+type Reply = unknown
 
 const routes = new Map<string, Reply>()
 export const calls: Call[] = []
@@ -63,18 +63,22 @@ export async function answer(request: Request): Promise<Response> {
   calls.push(call)
   const reply = routes.get(`${call.method} ${call.path}`)
   if (reply === undefined) return problem(404, 'not_found')
-  const result: unknown = typeof reply === 'function' ? await (reply as (call: Call) => Answer)(call) : reply
+  const result: unknown =
+    typeof reply === 'function' ? await (reply as (call: Call) => unknown)(call) : reply
   if (result instanceof Response) return result
   if (result === null) return new Response(null, { status: 204 })
   return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } })
 }
 
 /** The client module with its `api` answered here. */
-export function routed<T extends { createApiClient: (options: { baseUrl?: string; fetch?: typeof fetch }) => unknown }>(
-  real: T,
-): T {
+export function routed<
+  T extends { createApiClient: (options: { baseUrl?: string; fetch?: typeof fetch }) => unknown },
+>(real: T): T {
   return {
     ...real,
-    api: real.createApiClient({ baseUrl: 'http://nas.test', fetch: (input) => answer(input as Request) }),
+    api: real.createApiClient({
+      baseUrl: 'http://nas.test',
+      fetch: (input) => answer(input as Request),
+    }),
   }
 }

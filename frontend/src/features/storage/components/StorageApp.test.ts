@@ -2,8 +2,8 @@ import type { VueWrapper } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ref } from 'vue'
 
-import { click, mountApp, page, press, settle, submit, type } from '@/desktop/testing/mount'
-import { called, on, problem, reset } from '@/desktop/testing/server'
+import { click, mountApp, page, press, settle, submit, type } from '@/shared/test-support/mount'
+import { called, on, problem, reset } from '@/shared/test-support/server'
 import type { Disk, Pool, PoolDevice, RaidArray, Volume } from '@/shared/api/types'
 import { i18n } from '@/shared/i18n'
 import { WINDOW_SECTION } from '@/shared/lib/window-section'
@@ -11,7 +11,7 @@ import { WINDOW_SECTION } from '@/shared/lib/window-section'
 import StorageApp from './StorageApp.vue'
 
 vi.mock('@/shared/api/client', async (original) =>
-  (await import('@/desktop/testing/server')).routed(await original()),
+  (await import('@/shared/test-support/server')).routed(await original()),
 )
 
 const t = (key: string, values: Record<string, unknown> = {}) => i18n.global.t(key, values)
@@ -98,7 +98,12 @@ const array: RaidArray = {
     { device: 'sdc1', index: 0, state: 'active' },
     { device: 'sdd1', index: 1, state: 'replacement' },
   ],
-  sync: { operation: 'recovery', percent: 42.5, remaining_seconds: 600, speed_bytes_per_second: 1e8 },
+  sync: {
+    operation: 'recovery',
+    percent: 42.5,
+    remaining_seconds: 600,
+    speed_bytes_per_second: 1e8,
+  },
 }
 
 const section = ref('overview')
@@ -122,12 +127,27 @@ beforeEach(() => {
     disk('sda', { usage: 'pool_member', pool: 'tank' }),
     disk('sdb', { usage: 'pool_member', pool: 'tank', media: 'solid_state', transport: 'nvme' }),
     disk('sdc'),
-    disk('sdd', { usage: 'foreign', partitions: [{ name: 'sdd1', size_bytes: 4e12, filesystem: 'ext4', label: 'old', mount_points: [] }] }),
+    disk('sdd', {
+      usage: 'foreign',
+      partitions: [
+        { name: 'sdd1', size_bytes: 4e12, filesystem: 'ext4', label: 'old', mount_points: [] },
+      ],
+    }),
     disk('sde', { usage: 'system', id_link: null }),
   ])
   on('GET', '/api/v1/storage/pools', [
     pool('tank', {
-      scan: { kind: 'scrub', state: 'running', percent: 40, paused: false, bytes_per_second: 2e8, seconds_left: 3600, errors: 0, started_at: 1_790_000_000, finished_at: null },
+      scan: {
+        kind: 'scrub',
+        state: 'running',
+        percent: 40,
+        paused: false,
+        bytes_per_second: 2e8,
+        seconds_left: 3600,
+        errors: 0,
+        started_at: 1_790_000_000,
+        finished_at: null,
+      },
       data_errors: 2,
     }),
     pool('cold', {
@@ -135,13 +155,46 @@ beforeEach(() => {
       layout_name: 'raidz1',
       volume: 2,
       state: 'degraded',
-      devices: [device('sdf', { state: 'faulted', read_errors: 3 }), device('sdg', { replacing: 'new' })],
-      scan: { kind: 'resilver', state: 'finished', percent: 100, paused: false, errors: 1, started_at: 1_790_000_000, finished_at: 1_790_003_600 },
+      devices: [
+        device('sdf', { state: 'faulted', read_errors: 3 }),
+        device('sdg', { replacing: 'new' }),
+      ],
+      scan: {
+        kind: 'resilver',
+        state: 'finished',
+        percent: 100,
+        paused: false,
+        errors: 1,
+        started_at: 1_790_000_000,
+        finished_at: 1_790_003_600,
+      },
     }),
-    pool('foreign', { volume: null, scan: { kind: 'scrub', state: 'canceled', percent: 10, paused: false, errors: 0, started_at: 1, finished_at: 2 } }),
+    pool('foreign', {
+      volume: null,
+      scan: {
+        kind: 'scrub',
+        state: 'canceled',
+        percent: 10,
+        paused: false,
+        errors: 0,
+        started_at: 1,
+        finished_at: 2,
+      },
+    }),
   ])
   on('GET', '/api/v1/storage/arrays', [array])
-  on('GET', '/api/v1/storage/volumes', [volume, { ...volume, id: 'v2', label: null, size_bytes: null, used_bytes: null, pool: null, mount_points: [] }])
+  on('GET', '/api/v1/storage/volumes', [
+    volume,
+    {
+      ...volume,
+      id: 'v2',
+      label: null,
+      size_bytes: null,
+      used_bytes: null,
+      pool: null,
+      mount_points: [],
+    },
+  ])
   on('GET', '/api/v1/storage/self-test-plans', {
     plans: [{ kind: 'short', frequency: 'weekly', hour: 3, disks: [] }],
   })
@@ -195,25 +248,54 @@ describe('the storage app', () => {
       token: 'plan-1',
       expires_at: 2_000_000_000,
       disks: [
-        { name: 'sdc', id_link: '/dev/disk/by-id/ata-sdc', size_bytes: 4e12, model: 'Disk sdc', serial: 'S-sdc', erases: [] },
-        { name: 'sdd', id_link: '/dev/disk/by-id/ata-sdd', size_bytes: 4e12, model: 'Disk sdd', serial: 'S-sdd', erases: ['sdd1 (ext4, old)'] },
+        {
+          name: 'sdc',
+          id_link: '/dev/disk/by-id/ata-sdc',
+          size_bytes: 4e12,
+          model: 'Disk sdc',
+          serial: 'S-sdc',
+          erases: [],
+        },
+        {
+          name: 'sdd',
+          id_link: '/dev/disk/by-id/ata-sdd',
+          size_bytes: 4e12,
+          model: 'Disk sdd',
+          serial: 'S-sdd',
+          erases: ['sdd1 (ext4, old)'],
+        },
       ],
       warnings: [{ code: 'erases_data' }, { code: 'mixed_sizes', unused_bytes: 1e9 }],
     })
-    on('POST', '/api/v1/storage/pools', { id: 1, kind: 'storage.create_pool', state: 'running', created_at: 0, updated_at: 0 })
+    on('POST', '/api/v1/storage/pools', {
+      id: 1,
+      kind: 'storage.create_pool',
+      state: 'running',
+      created_at: 0,
+      updated_at: 0,
+    })
     await open('pools')
     await click(new RegExp(t('storage.create.button')))
     await type('#pool-name', 'fast')
-    for (const box of document.querySelectorAll<HTMLInputElement>('[role="dialog"] input[type="checkbox"]')) {
+    for (const box of document.querySelectorAll<HTMLInputElement>(
+      '[role="dialog"] input[type="checkbox"]',
+    )) {
       box.click()
       await settle()
     }
     await submit('[role="dialog"] form')
-    expect(called('POST', '/api/v1/storage/pools/plan')[0]?.body).toEqual({ name: 'fast', layout: 'mirror', disks: ['sdc', 'sdd'] })
+    expect(called('POST', '/api/v1/storage/pools/plan')[0]?.body).toEqual({
+      name: 'fast',
+      layout: 'mirror',
+      disks: ['sdc', 'sdd'],
+    })
     expect(page()).toContain('sdd1 (ext4, old)')
     await type('#pool-confirm', 'fast')
     await submit('[role="dialog"] form')
-    expect(called('POST', '/api/v1/storage/pools')[0]?.body).toEqual({ token: 'plan-1', confirm: 'fast' })
+    expect(called('POST', '/api/v1/storage/pools')[0]?.body).toEqual({
+      token: 'plan-1',
+      confirm: 'fast',
+    })
   })
 
   it('goes back from a plan and shows a refused one', async () => {
@@ -230,11 +312,17 @@ describe('the storage app', () => {
   it('destroys a pool once its name is typed', async () => {
     on('POST', '/api/v1/storage/pools/tank/destroy', problem(409, 'pool_in_use', 'share photos'))
     await open('pools')
-    document.querySelectorAll<HTMLButtonElement>(`button[aria-label="${t('storage.destroy.button')}"]`)[0]!.click()
+    document
+      .querySelectorAll<HTMLButtonElement>(
+        `button[aria-label="${t('storage.destroy.button')}"]`,
+      )[0]!
+      .click()
     await settle()
     await type('#destroy-confirm', 'tank')
     await submit('[role="dialog"] form')
-    expect(called('POST', '/api/v1/storage/pools/tank/destroy')[0]?.body).toEqual({ confirm: 'tank' })
+    expect(called('POST', '/api/v1/storage/pools/tank/destroy')[0]?.body).toEqual({
+      confirm: 'tank',
+    })
     expect(page()).toContain('share photos')
   })
 
@@ -245,20 +333,38 @@ describe('the storage app', () => {
       device_name: 'sda',
       token: 'replace-1',
       expires_at: 2_000_000_000,
-      disk: { name: 'sdc', id_link: '/dev/disk/by-id/ata-sdc', size_bytes: 4e12, model: 'Disk sdc', serial: 'S-sdc', erases: [] },
+      disk: {
+        name: 'sdc',
+        id_link: '/dev/disk/by-id/ata-sdc',
+        size_bytes: 4e12,
+        model: 'Disk sdc',
+        serial: 'S-sdc',
+        erases: [],
+      },
       warnings: [],
     })
-    on('POST', '/api/v1/storage/pools/tank/replace', { id: 2, kind: 'storage.replace_disk', state: 'running', created_at: 0, updated_at: 0 })
+    on('POST', '/api/v1/storage/pools/tank/replace', {
+      id: 2,
+      kind: 'storage.replace_disk',
+      state: 'running',
+      created_at: 0,
+      updated_at: 0,
+    })
     await open('pools')
     await press(t('storage.replaceDisk.button'))
     document.querySelector<HTMLInputElement>('[role="dialog"] input[type="radio"]')!.click()
     await settle()
     await submit('[role="dialog"] form')
-    expect(called('POST', '/api/v1/storage/pools/tank/replace/plan')[0]?.body).toEqual({ device: 'g-sda', disk: 'sdc' })
+    expect(called('POST', '/api/v1/storage/pools/tank/replace/plan')[0]?.body).toEqual({
+      device: 'g-sda',
+      disk: 'sdc',
+    })
     document.querySelector<HTMLInputElement>('[role="dialog"] input[type="checkbox"]')!.click()
     await settle()
     await submit('[role="dialog"] form')
-    expect(called('POST', '/api/v1/storage/pools/tank/replace')[0]?.body).toEqual({ token: 'replace-1' })
+    expect(called('POST', '/api/v1/storage/pools/tank/replace')[0]?.body).toEqual({
+      token: 'replace-1',
+    })
   })
 
   it('lists disks, opens one and plans self-tests', async () => {
@@ -269,7 +375,9 @@ describe('the storage app', () => {
     await click(new RegExp(t('storage.selfTestPlans.button')))
     expect(wrapper.findComponent({ name: 'SelfTestPlansDialog' }).props('open')).toBe(true)
 
-    const rows = [...document.querySelectorAll<HTMLElement>('tr')].filter((row) => row.textContent?.includes('Disk sdc'))
+    const rows = [...document.querySelectorAll<HTMLElement>('tr')].filter((row) =>
+      row.textContent?.includes('Disk sdc'),
+    )
     rows[0]!.click()
     await settle()
     expect(wrapper.findComponent({ name: 'DiskDetail' }).exists()).toBe(true)

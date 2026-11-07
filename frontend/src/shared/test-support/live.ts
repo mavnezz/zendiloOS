@@ -2,7 +2,7 @@
  * A stand-in for the live connection in component tests: what is
  * subscribed, and samples pushed by the test. Tests route to it with
  *
- *     vi.mock('@/shared/api/live', async () => ({ live: (await import('@/desktop/testing/live')).live }))
+ *     vi.mock('@/shared/api/live', async () => ({ live: (await import('@/shared/test-support/live')).live }))
  */
 
 import type { Metrics } from '@/shared/api/types'
@@ -59,5 +59,5 @@ export function sample(at: number, extra: Partial<Metrics> = {}): Metrics {
     ],
     uptime_seconds: 90_000,
     ...extra,
-  } as Metrics
+  }
 }

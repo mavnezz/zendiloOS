@@ -3,16 +3,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ref } from 'vue'
 
 import { click, mountApp, page, settle, type } from '@/desktop/testing/mount'
-import { called, on, problem, reset } from '@/desktop/testing/server'
+import { called, on, problem, reset } from '@/shared/test-support/server'
 import { i18n } from '@/shared/i18n'
 import { WINDOW_SECTION } from '@/shared/lib/window-section'
 
 import SettingsApp from './SettingsApp.vue'
 
 vi.mock('@/shared/api/client', async (original) =>
-  (await import('@/desktop/testing/server')).routed(await original()),
+  (await import('@/shared/test-support/server')).routed(await original()),
 )
-vi.mock('@/shared/api/live', async () => ({ live: (await import('@/desktop/testing/live')).live }))
+vi.mock('@/shared/api/live', async () => ({
+  live: (await import('@/shared/test-support/live')).live,
+}))
 
 const t = (key: string, values: Record<string, unknown> = {}) => i18n.global.t(key, values)
 const section = ref('device')
@@ -45,8 +47,20 @@ beforeEach(() => {
   })
   on('GET', '/api/v1/network', {
     interfaces: [
-      { name: 'lo', kind: 'loopback', state: 'up', mtu: 65536, addresses: [{ address: '127.0.0.1', prefix: 8, scope: 'host', dynamic: false }] },
-      { name: 'eth0', kind: 'ethernet', state: 'up', mtu: 1500, addresses: [{ address: '192.168.1.20', prefix: 24, scope: 'global', dynamic: false }] },
+      {
+        name: 'lo',
+        kind: 'loopback',
+        state: 'up',
+        mtu: 65536,
+        addresses: [{ address: '127.0.0.1', prefix: 8, scope: 'host', dynamic: false }],
+      },
+      {
+        name: 'eth0',
+        kind: 'ethernet',
+        state: 'up',
+        mtu: 1500,
+        addresses: [{ address: '192.168.1.20', prefix: 24, scope: 'global', dynamic: false }],
+      },
     ],
     default_routes: [],
     name_servers: [],
@@ -72,7 +86,9 @@ describe('the control panel', () => {
   it('chooses the theme and the language', async () => {
     const wrapper = await open('appearance')
     await click(new RegExp(t('appearance.themes.dark')))
-    expect(document.querySelector('[role="radio"][aria-checked="true"]')?.textContent).toContain(t('appearance.themes.dark'))
+    expect(document.querySelector('[role="radio"][aria-checked="true"]')?.textContent).toContain(
+      t('appearance.themes.dark'),
+    )
     await click(new RegExp(t('appearance.themes.light')))
     const wallpapers = document.querySelectorAll<HTMLButtonElement>('[role="radio"]')
     wallpapers[wallpapers.length - 1]!.click()

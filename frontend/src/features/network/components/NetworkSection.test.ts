@@ -1,14 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { click, mountApp, page, press, settle, submit, type } from '@/desktop/testing/mount'
-import { called, on, problem, reset } from '@/desktop/testing/server'
+import { click, mountApp, page, press, settle, submit, type } from '@/shared/test-support/mount'
+import { called, on, problem, reset } from '@/shared/test-support/server'
 import type { NetworkInfo } from '@/shared/api/types'
 import { i18n } from '@/shared/i18n'
 
 import NetworkSection from './NetworkSection.vue'
 
 vi.mock('@/shared/api/client', async (original) =>
-  (await import('@/desktop/testing/server')).routed(await original()),
+  (await import('@/shared/test-support/server')).routed(await original()),
 )
 
 const t = (key: string, values: Record<string, unknown> = {}) => i18n.global.t(key, values)
@@ -27,8 +27,24 @@ const network: NetworkInfo = {
         { address: 'fe80::1', prefix: 64, scope: 'link', dynamic: false },
       ],
     },
-    { name: 'wlan0', kind: 'wireless', state: 'no_carrier', mac: null, mtu: 1500, member_of: null, addresses: [] },
-    { name: 'docker0', kind: 'bridge-ish', state: 'down', mac: null, mtu: 1500, member_of: null, addresses: [] },
+    {
+      name: 'wlan0',
+      kind: 'wireless',
+      state: 'no_carrier',
+      mac: null,
+      mtu: 1500,
+      member_of: null,
+      addresses: [],
+    },
+    {
+      name: 'docker0',
+      kind: 'bridge-ish',
+      state: 'down',
+      mac: null,
+      mtu: 1500,
+      member_of: null,
+      addresses: [],
+    },
     {
       name: 'eth1',
       kind: 'ethernet',
@@ -60,10 +76,15 @@ describe('the network', () => {
   })
 
   it('changes an interface to a static address and confirms it', async () => {
-    on('PUT', '/api/v1/network/interfaces/eth1', { interface: 'eth1', revert_at: Date.now() / 1000 + 120 })
+    on('PUT', '/api/v1/network/interfaces/eth1', {
+      interface: 'eth1',
+      revert_at: Date.now() / 1000 + 120,
+    })
     on('POST', '/api/v1/network/confirm', null)
     await mountApp(NetworkSection, { props: { canManage: true } })
-    const change = document.querySelectorAll<HTMLButtonElement>(`button[aria-label="${t('network.change.button')}"]`)
+    const change = document.querySelectorAll<HTMLButtonElement>(
+      `button[aria-label="${t('network.change.button')}"]`,
+    )
     change[1]!.click()
     await settle()
     await type('#net-mode', 'static')
@@ -72,7 +93,10 @@ describe('the network', () => {
     await type('#net-gateway', '10.0.0.1')
     await type('#net-dns', '1.1.1.1, 9.9.9.9')
     await type('#net-ipv6', 'off')
-    on('GET', '/api/v1/network/setup', { managed: true, pending: { interface: 'eth1', revert_at: Date.now() / 1000 + 120 } })
+    on('GET', '/api/v1/network/setup', {
+      managed: true,
+      pending: { interface: 'eth1', revert_at: Date.now() / 1000 + 120 },
+    })
     await submit('[role="dialog"] form')
     expect(called('PUT', '/api/v1/network/interfaces/eth1')[0]?.body).toEqual({
       ipv4: { mode: 'static', address: '10.0.0.9', prefix: 8, gateway: '10.0.0.1' },
@@ -86,9 +110,16 @@ describe('the network', () => {
   })
 
   it('starts from DHCP and says when a change is refused', async () => {
-    on('PUT', '/api/v1/network/interfaces/eth0', problem(409, 'refused', 'eth0 carries the default route'))
+    on(
+      'PUT',
+      '/api/v1/network/interfaces/eth0',
+      problem(409, 'refused', 'eth0 carries the default route'),
+    )
     on('POST', '/api/v1/network/confirm', problem(409, 'refused', 'nothing to confirm'))
-    on('GET', '/api/v1/network/setup', { managed: true, pending: { interface: 'eth0', revert_at: Date.now() / 1000 + 60 } })
+    on('GET', '/api/v1/network/setup', {
+      managed: true,
+      pending: { interface: 'eth0', revert_at: Date.now() / 1000 + 60 },
+    })
     await mountApp(NetworkSection, { props: { canManage: true } })
     on('GET', '/api/v1/network/setup', { managed: true, pending: null })
     await click(t('network.pending.confirm'))

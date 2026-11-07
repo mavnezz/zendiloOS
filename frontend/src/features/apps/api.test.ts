@@ -1,13 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
 import { defineComponent, h } from 'vue'
 
-import { mountApp } from '@/desktop/testing/mount'
-import { called, on, reset } from '@/desktop/testing/server'
+import { mountApp } from '@/shared/test-support/mount'
+import { called, on, reset } from '@/shared/test-support/server'
 
 import { listFolders, makeFolder, useInstallActions, useShareList } from './api'
 
 vi.mock('@/shared/api/client', async (original) =>
-  (await import('@/desktop/testing/server')).routed(await original()),
+  (await import('@/shared/test-support/server')).routed(await original()),
 )
 
 describe('the App Center’s requests', () => {
@@ -26,7 +26,9 @@ describe('the App Center’s requests', () => {
     expect(await listFolders(3, 'Library')).toEqual({ names: ['Albums', 'Photos'], writable: true })
     expect(called('GET', '/api/v1/files/shares/3/folder')[0]?.query).toEqual({ path: 'Library' })
     await makeFolder(3, 'Library/New')
-    expect(called('POST', '/api/v1/files/shares/3/folders')[0]?.body).toEqual({ path: 'Library/New' })
+    expect(called('POST', '/api/v1/files/shares/3/folders')[0]?.body).toEqual({
+      path: 'Library/New',
+    })
   })
 
   it('offer the shares by name and install, retry and stop apps', async () => {

@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { push, sample } from '@/desktop/testing/live'
-import { mountApp, page, settle } from '@/desktop/testing/mount'
-import { on, reset } from '@/desktop/testing/server'
+import { push, sample } from '@/shared/test-support/live'
+import { mountApp, page, settle } from '@/shared/test-support/mount'
+import { on, reset } from '@/shared/test-support/server'
 import type { SystemInfo } from '@/shared/api/types'
 import { i18n } from '@/shared/i18n'
 
@@ -10,9 +10,11 @@ import DashboardApp from './DashboardApp.vue'
 import DeviceInfoPage from './DeviceInfoPage.vue'
 
 vi.mock('@/shared/api/client', async (original) =>
-  (await import('@/desktop/testing/server')).routed(await original()),
+  (await import('@/shared/test-support/server')).routed(await original()),
 )
-vi.mock('@/shared/api/live', async () => ({ live: (await import('@/desktop/testing/live')).live }))
+vi.mock('@/shared/api/live', async () => ({
+  live: (await import('@/shared/test-support/live')).live,
+}))
 
 const t = (key: string, values: Record<string, unknown> = {}) => i18n.global.t(key, values)
 
@@ -33,7 +35,7 @@ const info: SystemInfo = {
   product: 'NAS 4',
   version: '0.1.1',
   uptime_seconds: 3600,
-} as SystemInfo
+}
 
 beforeEach(() => {
   reset()
@@ -74,10 +76,25 @@ describe('the dashboard', () => {
   })
 
   it('does without temperatures, interfaces and disks', async () => {
-    on('GET', '/api/v1/system/info', { ...info, cpu_model: null, cpu_cores: null, board: null, firmware: null, os_name: null })
+    on('GET', '/api/v1/system/info', {
+      ...info,
+      cpu_model: null,
+      cpu_cores: null,
+      board: null,
+      firmware: null,
+      os_name: null,
+    })
     on('GET', '/api/v1/system/metrics/history', { at: [] })
     const { wrapper } = await mountApp(DashboardApp)
-    push('metrics', sample(5, { temperatures: [], network: [], disks: [], memory: { total_bytes: 0, used_bytes: 0, available_bytes: 0 } }))
+    push(
+      'metrics',
+      sample(5, {
+        temperatures: [],
+        network: [],
+        disks: [],
+        memory: { total_bytes: 0, used_bytes: 0, available_bytes: 0 },
+      }),
+    )
     await settle()
     expect(page()).toContain('x86_64')
     for (const tab of ['cpu', 'network', 'disks']) {
@@ -107,7 +124,17 @@ describe('the device page', () => {
   })
 
   it('does with little', async () => {
-    on('GET', '/api/v1/system/info', { ...info, vendor: null, product: null, cpu_cores: null, swap_total_bytes: 0, board: null, firmware: null, cpu_model: null, os_name: null })
+    on('GET', '/api/v1/system/info', {
+      ...info,
+      vendor: null,
+      product: null,
+      cpu_cores: null,
+      swap_total_bytes: 0,
+      board: null,
+      firmware: null,
+      cpu_model: null,
+      os_name: null,
+    })
     await mountApp(DeviceInfoPage)
     expect(page()).toContain('x86_64')
     expect(page()).toContain('Linux')

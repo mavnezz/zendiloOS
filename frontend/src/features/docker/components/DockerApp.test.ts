@@ -2,8 +2,17 @@ import type { VueWrapper } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ref } from 'vue'
 
-import { button, click, mountApp, page, press, settle, submit, type } from '@/desktop/testing/mount'
-import { called, on, problem, reset } from '@/desktop/testing/server'
+import {
+  button,
+  click,
+  mountApp,
+  page,
+  press,
+  settle,
+  submit,
+  type,
+} from '@/shared/test-support/mount'
+import { called, on, problem, reset } from '@/shared/test-support/server'
 import type { DockerContainer, DockerProject } from '@/shared/api/types'
 import { i18n } from '@/shared/i18n'
 import { WINDOW_SECTION } from '@/shared/lib/window-section'
@@ -11,7 +20,7 @@ import { WINDOW_SECTION } from '@/shared/lib/window-section'
 import DockerApp from './DockerApp.vue'
 
 vi.mock('@/shared/api/client', async (original) =>
-  (await import('@/desktop/testing/server')).routed(await original()),
+  (await import('@/shared/test-support/server')).routed(await original()),
 )
 
 const t = (key: string, values: Record<string, unknown> = {}) => i18n.global.t(key, values)
@@ -25,14 +34,22 @@ function container(name: string, extra: Partial<DockerContainer> = {}): DockerCo
     state: 'running',
     created_at: 1_790_000_000,
     started_at: 1_790_000_100,
-    mounts: [{ kind: 'bind', source: '/volume1/web', destination: '/usr/share/nginx', read_only: true }],
+    mounts: [
+      { kind: 'bind', source: '/volume1/web', destination: '/usr/share/nginx', read_only: true },
+    ],
     networks: ['tesla_default'],
     ports: [{ container_port: 80, host_port: 8080, protocol: 'tcp', host_ip: null }],
     project: 'tesla',
     service: 'web',
     restart_policy: 'unless-stopped',
     health: 'healthy',
-    usage: { cpu_percent: 2.5, memory_bytes: 50_000_000, memory_limit_bytes: 1_000_000_000, received_bytes: 10, sent_bytes: 20 },
+    usage: {
+      cpu_percent: 2.5,
+      memory_bytes: 50_000_000,
+      memory_limit_bytes: 1_000_000_000,
+      received_bytes: 10,
+      sent_bytes: 20,
+    },
     ...extra,
   }
 }
@@ -95,8 +112,30 @@ beforeEach(() => {
     memory_total_bytes: 4_000_000_000,
   })
   on('GET', '/api/v1/docker/usage', [
-    { at: 1_790_000_000, points: [{ container: 'tesla-web', cpu_percent: 2, memory_bytes: 1e6, received_per_second: 1, sent_per_second: 2 }] },
-    { at: 1_790_000_020, points: [{ container: 'tesla-web', cpu_percent: 4, memory_bytes: 2e6, received_per_second: 3, sent_per_second: 4 }] },
+    {
+      at: 1_790_000_000,
+      points: [
+        {
+          container: 'tesla-web',
+          cpu_percent: 2,
+          memory_bytes: 1e6,
+          received_per_second: 1,
+          sent_per_second: 2,
+        },
+      ],
+    },
+    {
+      at: 1_790_000_020,
+      points: [
+        {
+          container: 'tesla-web',
+          cpu_percent: 4,
+          memory_bytes: 2e6,
+          received_per_second: 3,
+          sent_per_second: 4,
+        },
+      ],
+    },
   ])
   on('GET', '/api/v1/docker/updates', {
     checked_at: 1_790_000_000,
@@ -129,8 +168,16 @@ describe('the Docker app', () => {
       project('stack', { kind: 'foreign', running: 0, containers: [] }),
     ])
     on('POST', '/api/v1/docker/projects/tesla/stop', null)
-    on('POST', '/api/v1/docker/projects/tesla/redeploy', { id: 3, kind: 'containers.project_redeploy', state: 'running' })
-    on('DELETE', '/api/v1/docker/projects/tesla', { id: 4, kind: 'containers.project_delete', state: 'running' })
+    on('POST', '/api/v1/docker/projects/tesla/redeploy', {
+      id: 3,
+      kind: 'containers.project_redeploy',
+      state: 'running',
+    })
+    on('DELETE', '/api/v1/docker/projects/tesla', {
+      id: 4,
+      kind: 'containers.project_delete',
+      state: 'running',
+    })
     const wrapper = await open('projects')
 
     expect(page()).toContain('tesla')
@@ -139,7 +186,9 @@ describe('the Docker app', () => {
     expect(page()).not.toContain('tesla')
     await type('input', '')
 
-    const stop = [...document.querySelectorAll('li')][0]!.querySelectorAll('button')[1] as HTMLButtonElement
+    const stop = [...document.querySelectorAll('li')][0]!.querySelectorAll(
+      'button',
+    )[1] as HTMLButtonElement
     stop.click()
     await settle()
     expect(called('POST', '/api/v1/docker/projects/tesla/stop')).toHaveLength(1)
@@ -178,7 +227,11 @@ describe('the Docker app', () => {
     on('GET', '/api/v1/docker/projects/tesla', project('tesla', { running: 0 }))
     on('POST', '/api/v1/docker/projects/tesla/start', null)
     on('POST', '/api/v1/docker/projects/tesla/restart', null)
-    on('DELETE', '/api/v1/docker/projects/tesla', { id: 4, kind: 'containers.project_delete', state: 'running' })
+    on('DELETE', '/api/v1/docker/projects/tesla', {
+      id: 4,
+      kind: 'containers.project_delete',
+      state: 'running',
+    })
     const wrapper = await open('projects')
     ;(document.querySelector('li') as HTMLElement).click()
     await settle()
@@ -194,8 +247,14 @@ describe('the Docker app', () => {
   })
 
   it('tells an app’s project from one made here', async () => {
-    on('GET', '/api/v1/docker/projects', [project('kuma', { kind: 'app', app: 'kuma', containers: [] })])
-    on('GET', '/api/v1/docker/projects/kuma', project('kuma', { kind: 'app', app: 'kuma', containers: [] }))
+    on('GET', '/api/v1/docker/projects', [
+      project('kuma', { kind: 'app', app: 'kuma', containers: [] }),
+    ])
+    on(
+      'GET',
+      '/api/v1/docker/projects/kuma',
+      project('kuma', { kind: 'app', app: 'kuma', containers: [] }),
+    )
     const wrapper = await open('projects')
     ;(document.querySelector('li') as HTMLElement).click()
     await settle()
@@ -244,10 +303,28 @@ describe('the Docker app', () => {
 
   it('pulls, removes and cleans up images', async () => {
     on('GET', '/api/v1/docker/images', [
-      { id: 'sha256:aaaaaaaaaaaa1111', references: ['nginx:1.27'], digests: [], size_bytes: 70_000_000, created_at: 1_790_000_000, used_by: ['tesla-web'] },
-      { id: 'sha256:bbbbbbbbbbbb2222', references: [], digests: [], size_bytes: 1_000, created_at: null, used_by: [] },
+      {
+        id: 'sha256:aaaaaaaaaaaa1111',
+        references: ['nginx:1.27'],
+        digests: [],
+        size_bytes: 70_000_000,
+        created_at: 1_790_000_000,
+        used_by: ['tesla-web'],
+      },
+      {
+        id: 'sha256:bbbbbbbbbbbb2222',
+        references: [],
+        digests: [],
+        size_bytes: 1_000,
+        created_at: null,
+        used_by: [],
+      },
     ])
-    on('POST', '/api/v1/docker/images/pull', { id: 5, kind: 'containers.image_pull', state: 'running' })
+    on('POST', '/api/v1/docker/images/pull', {
+      id: 5,
+      kind: 'containers.image_pull',
+      state: 'running',
+    })
     on('DELETE', '/api/v1/docker/images/sha256:bbbbbbbbbbbb2222', null)
     on('POST', '/api/v1/docker/images/prune', { text: 'Total reclaimed space: 1kB\n' })
     const wrapper = await open('images')
@@ -257,9 +334,15 @@ describe('the Docker app', () => {
     await click(t('docker.images.pull'))
     await type(`input[aria-label="${t('docker.images.reference')}"]`, 'postgres:17')
     await submit('[role="dialog"] form')
-    expect(called('POST', '/api/v1/docker/images/pull')[0]?.body).toEqual({ reference: 'postgres:17' })
+    expect(called('POST', '/api/v1/docker/images/pull')[0]?.body).toEqual({
+      reference: 'postgres:17',
+    })
 
-    const remove = [...document.querySelectorAll<HTMLButtonElement>(`button[aria-label="${t('docker.actions.delete')}"]`)]
+    const remove = [
+      ...document.querySelectorAll<HTMLButtonElement>(
+        `button[aria-label="${t('docker.actions.delete')}"]`,
+      ),
+    ]
     expect(remove.filter((b) => b.disabled)).toHaveLength(1)
     remove.find((b) => !b.disabled)!.click()
     await settle()
@@ -275,9 +358,39 @@ describe('the Docker app', () => {
 
   it('makes and removes networks', async () => {
     on('GET', '/api/v1/docker/networks', [
-      { id: 'n1', name: 'bridge', driver: 'bridge', built_in: true, internal: false, subnets: ['172.17.0.0/16'], gateways: ['172.17.0.1'], containers: [], project: null },
-      { id: 'n2', name: 'proxy', driver: 'bridge', built_in: false, internal: true, subnets: [], gateways: [], containers: [], project: 'tesla' },
-      { id: 'n3', name: 'used', driver: 'bridge', built_in: false, internal: false, subnets: [], gateways: [], containers: ['tesla-web'], project: null },
+      {
+        id: 'n1',
+        name: 'bridge',
+        driver: 'bridge',
+        built_in: true,
+        internal: false,
+        subnets: ['172.17.0.0/16'],
+        gateways: ['172.17.0.1'],
+        containers: [],
+        project: null,
+      },
+      {
+        id: 'n2',
+        name: 'proxy',
+        driver: 'bridge',
+        built_in: false,
+        internal: true,
+        subnets: [],
+        gateways: [],
+        containers: [],
+        project: 'tesla',
+      },
+      {
+        id: 'n3',
+        name: 'used',
+        driver: 'bridge',
+        built_in: false,
+        internal: false,
+        subnets: [],
+        gateways: [],
+        containers: ['tesla-web'],
+        project: null,
+      },
     ])
     on('POST', '/api/v1/docker/networks', { id: 'n3', name: 'backend' })
     on('DELETE', '/api/v1/docker/networks/proxy', null)
@@ -288,9 +401,17 @@ describe('the Docker app', () => {
     await type('#network-name', 'backend')
     await type('#network-subnet', '10.10.0.0/24')
     await submit('[role="dialog"] form')
-    expect(called('POST', '/api/v1/docker/networks')[0]?.body).toEqual({ name: 'backend', subnet: '10.10.0.0/24', gateway: null })
+    expect(called('POST', '/api/v1/docker/networks')[0]?.body).toEqual({
+      name: 'backend',
+      subnet: '10.10.0.0/24',
+      gateway: null,
+    })
 
-    const remove = [...document.querySelectorAll<HTMLButtonElement>(`button[aria-label="${t('docker.actions.delete')}"]`)]
+    const remove = [
+      ...document.querySelectorAll<HTMLButtonElement>(
+        `button[aria-label="${t('docker.actions.delete')}"]`,
+      ),
+    ]
     expect(remove.map((b) => b.disabled)).toEqual([true, false, true])
     remove[1]!.click()
     await settle()
@@ -301,8 +422,23 @@ describe('the Docker app', () => {
   it('shows what was done with Docker', async () => {
     on('GET', '/api/v1/logs/audit', {
       entries: [
-        { id: 2, at: 1_790_000_000, action: 'containers.project_create', outcome: 'success', actor: 'alice', target: 'tesla' },
-        { id: 1, at: 1_789_000_000, action: 'containers.something_new', outcome: 'failure', actor: 'bob', target: null, reason: 'agent_failed' },
+        {
+          id: 2,
+          at: 1_790_000_000,
+          action: 'containers.project_create',
+          outcome: 'success',
+          actor: 'alice',
+          target: 'tesla',
+        },
+        {
+          id: 1,
+          at: 1_789_000_000,
+          action: 'containers.something_new',
+          outcome: 'failure',
+          actor: 'bob',
+          target: null,
+          reason: 'agent_failed',
+        },
       ],
       older: null,
     })
@@ -317,7 +453,11 @@ describe('the Docker app', () => {
     on('GET', '/api/v1/docker/updates/settings', { check: true, schedule: null })
     on('PUT', '/api/v1/docker/updates/settings', (call: { body: unknown }) => call.body)
     on('POST', '/api/v1/docker/updates/check', { checked_at: 1_790_000_500, images: [] })
-    on('POST', '/api/v1/docker/updates/apply', { id: 6, kind: 'containers.update', state: 'running' })
+    on('POST', '/api/v1/docker/updates/apply', {
+      id: 6,
+      kind: 'containers.update',
+      state: 'running',
+    })
     on('GET', '/api/v1/docker/data', {
       current: { pool: 'tank', volume: 1, available_bytes: 1e12 },
       data_bytes: 5e9,
@@ -326,7 +466,11 @@ describe('the Docker app', () => {
         { pool: 'small', volume: 3, available_bytes: 1e6 },
       ],
     })
-    on('POST', '/api/v1/docker/data/move', { id: 7, kind: 'containers.data_move', state: 'running' })
+    on('POST', '/api/v1/docker/data/move', {
+      id: 7,
+      kind: 'containers.data_move',
+      state: 'running',
+    })
     const wrapper = await open('management')
 
     expect(page()).toContain('nginx:1.27')

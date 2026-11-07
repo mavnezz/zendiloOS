@@ -2,18 +2,20 @@ import type { VueWrapper } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { click, mountApp, page, settle } from '@/desktop/testing/mount'
-import { called, on, problem, reset } from '@/desktop/testing/server'
+import { called, on, problem, reset } from '@/shared/test-support/server'
 import type { UpdatesOverview } from '@/shared/api/types'
 import { i18n } from '@/shared/i18n'
 
 import UpdatePage from './UpdatePage.vue'
 
 vi.mock('@/shared/api/client', async (original) =>
-  (await import('@/desktop/testing/server')).routed(await original()),
+  (await import('@/shared/test-support/server')).routed(await original()),
 )
 
-const request = vi.fn((_action: string) => Promise.resolve())
-vi.mock('@/desktop/power', () => ({ usePower: () => ({ request: (action: string) => request(action) }) }))
+const request = vi.fn<(action: string) => Promise<void>>(() => Promise.resolve())
+vi.mock('@/desktop/power', () => ({
+  usePower: () => ({ request: (action: string) => request(action) }),
+}))
 
 const t = (key: string, values: Record<string, unknown> = {}) => i18n.global.t(key, values)
 
@@ -44,7 +46,7 @@ function overview(extra: Partial<UpdatesOverview> = {}): UpdatesOverview {
     settings: { channel: 'stable', check_daily: true },
     zfs_ready: true,
     ...extra,
-  } as UpdatesOverview
+  }
 }
 
 function confirm(wrapper: VueWrapper): void {
@@ -79,22 +81,26 @@ describe('the update page', () => {
   })
 
   it('follows a run and offers the restart it needs', async () => {
-    on('GET', '/api/v1/system/updates', overview({
-      restart_needed: true,
-      run: {
-        id: 'run1',
-        state: 'succeeded',
-        step: 'modules',
-        started_at: 1_790_000_000,
-        finished_at: 1_790_000_600,
-        zendiloos: '0.2.0',
+    on(
+      'GET',
+      '/api/v1/system/updates',
+      overview({
         restart_needed: true,
-        zfs_ready: true,
-        error: null,
-      },
-      packages: [],
-      release: null,
-    }))
+        run: {
+          id: 'run1',
+          state: 'succeeded',
+          step: 'modules',
+          started_at: 1_790_000_000,
+          finished_at: 1_790_000_600,
+          zendiloos: '0.2.0',
+          restart_needed: true,
+          zfs_ready: true,
+          error: null,
+        },
+        packages: [],
+        release: null,
+      }),
+    )
     const { wrapper } = await mountApp(UpdatePage)
     expect(page()).toContain(t('updates.runTitle'))
     await click(new RegExp(t('updates.restartNow')))
@@ -104,23 +110,27 @@ describe('the update page', () => {
   })
 
   it('says what went wrong, and that the ZFS module is not ready', async () => {
-    on('GET', '/api/v1/system/updates', overview({
-      phase: 'failed',
-      phase_error: 'download failed',
-      release_error: 'GitHub unreachable',
-      packages_error: 'apt failed',
-      run: {
-        id: 'run2',
-        state: 'failed',
-        step: 'debian',
-        started_at: 1_790_000_000,
-        finished_at: 1_790_000_600,
-        zendiloos: null,
-        restart_needed: false,
-        zfs_ready: false,
-        error: 'dpkg was interrupted',
-      },
-    }))
+    on(
+      'GET',
+      '/api/v1/system/updates',
+      overview({
+        phase: 'failed',
+        phase_error: 'download failed',
+        release_error: 'GitHub unreachable',
+        packages_error: 'apt failed',
+        run: {
+          id: 'run2',
+          state: 'failed',
+          step: 'debian',
+          started_at: 1_790_000_000,
+          finished_at: 1_790_000_600,
+          zendiloos: null,
+          restart_needed: false,
+          zfs_ready: false,
+          error: 'dpkg was interrupted',
+        },
+      }),
+    )
     on('POST', '/api/v1/system/updates/apply', problem(409, 'jobs_running', 'files.copy photos'))
     const { wrapper } = await mountApp(UpdatePage)
     expect(page()).toContain('download failed')
@@ -169,7 +179,10 @@ describe('the update page', () => {
     expect(page()).toContain(t('updates.developmentWarning'))
     wrapper.findComponent({ name: 'PageFooter' }).vm.$emit('apply')
     await settle()
-    expect(called('PUT', '/api/v1/system/updates/settings')[0]?.body).toEqual({ channel: 'development', check_daily: true })
+    expect(called('PUT', '/api/v1/system/updates/settings')[0]?.body).toEqual({
+      channel: 'development',
+      check_daily: true,
+    })
 
     on('PUT', '/api/v1/system/updates/settings', problem(422, 'invalid_input', 'no such channel'))
     wrapper.findComponent({ name: 'RadioGroup' }).vm.$emit('update:modelValue', 'test')
