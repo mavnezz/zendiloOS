@@ -258,6 +258,48 @@ async fn creates_a_mirror_with_equal_partitions_and_a_mount_unit() {
 }
 
 #[tokio::test]
+async fn a_pools_making_reports_its_steps_to_the_client() {
+    use std::os::unix::fs::MetadataExt;
+    use std::sync::{Arc, Mutex};
+    use zendiloos_agent::{Server, serve};
+    use zendiloos_agent_proto::{AgentTransport, UnixTransport};
+
+    let Host { _dir, root, operations } = host(Erasable::Policy(ErasePolicy::Unused));
+    let socket = root.join("agent.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let our_uid = fs::metadata(&root).unwrap().uid();
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    tokio::spawn(serve(listener, Server::new(operations, our_uid), async {
+        let _ = stopped.await;
+    }));
+    let steps = Arc::new(Mutex::new(Vec::new()));
+    let heard = Arc::clone(&steps);
+    let report =
+        move |step: &str, percent: Option<u8>| heard.lock().unwrap().push((step.to_owned(), percent));
+
+    let client = UnixTransport::new(&socket, std::time::Duration::from_secs(30));
+    let response = client
+        .call_reporting(create("media", &["ata-FREE-1", "ata-FREE-2"], 2), None, &report)
+        .await
+        .unwrap();
+
+    assert_eq!(response, Response::Done);
+    let steps = steps.lock().unwrap().clone();
+    let expected = [
+        ("preparing_disks", Some(0)),
+        ("preparing_disks", Some(50)),
+        ("creating_pool", None),
+        ("mounting", None),
+    ];
+    assert_eq!(
+        steps,
+        expected.map(|(step, percent)| (step.to_owned(), percent)),
+        "in order, before the answer"
+    );
+    let _ = stop.send(());
+}
+
+#[tokio::test]
 async fn never_erases_a_disk_in_use() {
     let host = host(Erasable::Policy(ErasePolicy::Unused));
     for (disk, reason) in [

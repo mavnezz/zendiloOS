@@ -82,14 +82,27 @@ pub trait VolumeOccupants: Send + Sync {
 
 /// Changes to pools; needs the privileged agent, which checks every disk
 /// again before erasing it.
+/// Where a change that takes minutes reports the step it is at (a word the
+/// interface names, such as `creating_pool`), and how far in percent where
+/// that can be told.
+pub trait Steps: Send + Sync {
+    fn step(&self, step: &str, percent: Option<u8>);
+}
+
 #[async_trait]
 pub trait PoolAdmin: Send + Sync {
-    async fn create_pool(&self, pool: &NewPool, context: &RequestContext) -> Result<(), AdminError>;
+    async fn create_pool(
+        &self,
+        pool: &NewPool,
+        steps: &dyn Steps,
+        context: &RequestContext,
+    ) -> Result<(), AdminError>;
 
     async fn destroy_pool(
         &self,
         pool: &PoolName,
         volume: VolumeNumber,
+        steps: &dyn Steps,
         context: &RequestContext,
     ) -> Result<(), AdminError>;
 
@@ -100,6 +113,7 @@ pub trait PoolAdmin: Send + Sync {
         pool: &PoolName,
         device: &str,
         disk: &str,
+        steps: &dyn Steps,
         context: &RequestContext,
     ) -> Result<(), AdminError>;
 

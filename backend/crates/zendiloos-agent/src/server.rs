@@ -71,7 +71,7 @@ impl Server {
             tracing::warn!(uid, pid, "refused a connection from a foreign account");
             (error_response(ErrorCode::Forbidden, "not the zendiloosd account"), None)
         } else {
-            self.respond(BufReader::new(reader), uid, pid).await
+            self.respond(BufReader::new(reader), writer.as_ref(), uid, pid).await
         };
         if let Err(error) = write_message_with_file(writer.as_ref(), &response, file.as_ref()).await {
             tracing::debug!(%error, "cannot send the response");
@@ -81,6 +81,7 @@ impl Server {
     async fn respond(
         &self,
         mut reader: BufReader<impl tokio::io::AsyncRead + Unpin>,
+        writer: &UnixStream,
         uid: u32,
         pid: Option<i32>,
     ) -> (Response, Option<OwnedFd>) {
@@ -132,7 +133,8 @@ impl Server {
         let (gone_tx, gone) = watch::channel(false);
         let until = envelope.wait_ms.map(|ms| received + Duration::from_millis(ms) / 2);
         let turn = Turn::new(gone, self.stopping.subscribe(), until);
-        let work = turn.scope(async {
+        let (steps_out, mut steps) = tokio::sync::mpsc::unbounded_channel();
+        let work = turn.scope(crate::progress::scope(steps_out, async {
             // The user's own place first: a second long request of theirs
             // waits behind their first, not in a place of everybody's.
             let _own = match &own {
@@ -143,7 +145,7 @@ impl Server {
             Ok::<_, crate::operations::OperationError>(
                 self.operations.execute_with_file(&envelope.request).await,
             )
-        });
+        }));
         tokio::pin!(work);
         let mut more = [0u8; 1];
         let mut watching = true;
@@ -153,6 +155,13 @@ impl Server {
                 _ = reader.read(&mut more), if watching => {
                     watching = false;
                     let _ = gone_tx.send(true);
+                }
+                // Steps go out as they come; a client that hung up hears none.
+                Some((step, percent)) = steps.recv() => {
+                    if watching {
+                        let progress = Response::Progress { step: step.to_owned(), percent };
+                        let _ = write_message_with_file(writer, &progress, None).await;
+                    }
                 }
             }
         };

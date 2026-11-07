@@ -31,8 +31,8 @@ pub use apps::{
     InvalidAppCompose, InvalidAppFolder, InvalidAppManifest, InvalidAppName, InvalidAppSettingValue,
     MAX_LOG_LINES,
 };
-pub use client::{AgentTransport, TransportError, UnixTransport};
-pub use descriptor::{read_message_with_file, write_message_with_file};
+pub use client::{AgentTransport, Report, TransportError, UnixTransport};
+pub use descriptor::{MessageReader, read_message_with_file, write_message_with_file};
 pub use docker::{
     ComposeText, ContainerAction, ContainerId, ImageId, ImageReference, InvalidDockerName, NetworkName,
     ProjectAction, ProjectConfig, ProjectDirectory, ProjectName, Subnet,
@@ -699,6 +699,14 @@ pub enum Response {
     },
     /// The operation was carried out; it has no output.
     Done,
+    /// Before the answer of a long operation: the step it is at now (a
+    /// word for the interface to name, such as `creating_pool`), and how
+    /// far in percent where that can be told. Any number may come; the
+    /// answer follows them.
+    Progress {
+        step: String,
+        percent: Option<u8>,
+    },
     BlockDevices {
         lsblk_json: String,
     },

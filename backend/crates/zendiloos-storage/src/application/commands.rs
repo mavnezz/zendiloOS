@@ -12,7 +12,8 @@ use zendiloos_kernel::{Actor, AuditEntry, AuditLog, Clock, Outcome, RequestConte
 
 use crate::application::StorageError;
 use crate::application::ports::{
-    AdminError, BlockDeviceSource, NewPool, PlanTokens, PoolAdmin, SmartSource, VolumeOccupants, ZfsSource,
+    AdminError, BlockDeviceSource, NewPool, PlanTokens, PoolAdmin, SmartSource, Steps, VolumeOccupants,
+    ZfsSource,
 };
 use crate::application::queries::inventory;
 use crate::domain::{self, PoolLayout, PoolName, PoolPlan, ReplacePlan};
@@ -127,7 +128,8 @@ impl Context {
         }
     }
 
-    /// Runs `work` as a job, after other storage jobs, and audits its end.
+    /// Runs `work` as a job, after other storage jobs, and audits its end;
+    /// the steps it reports become the job's.
     async fn job<F, Fut>(
         self: &Arc<Self>,
         kind: &'static str,
@@ -137,7 +139,7 @@ impl Context {
         work: F,
     ) -> Result<Job, StorageError>
     where
-        F: FnOnce(Arc<dyn PoolAdmin>, RequestContext) -> Fut + Send + 'static,
+        F: FnOnce(Arc<dyn PoolAdmin>, Arc<dyn Steps>, RequestContext) -> Fut + Send + 'static,
         Fut: Future<Output = Result<(), AdminError>> + Send + 'static,
     {
         let context = Arc::clone(self);
@@ -147,13 +149,34 @@ impl Context {
             .start(kind, Some(target), Some(actor), move |progress| async move {
                 let _one_at_a_time = context.changes.lock().await;
                 progress.step("running", None).await;
-                let outcome = work(Arc::clone(&context.admin), request_owned.clone()).await;
+                // Reported from the agent's answer as it comes, kept in order.
+                let (sender, mut reported) = tokio::sync::mpsc::unbounded_channel::<(String, Option<u8>)>();
+                let forwarded = {
+                    let progress = progress.clone();
+                    tokio::spawn(async move {
+                        while let Some((step, percent)) = reported.recv().await {
+                            progress.step(&step, percent.map(|p| f32::from(p) / 100.0)).await;
+                        }
+                    })
+                };
+                let steps: Arc<dyn Steps> = Arc::new(JobSteps(sender));
+                let outcome = work(Arc::clone(&context.admin), steps, request_owned.clone()).await;
+                let _ = forwarded.await;
                 let audit_outcome = if outcome.is_ok() { Outcome::Success } else { Outcome::Failure };
                 context.audit(kind, audit_outcome, &target_owned, &actor_owned, &request_owned).await;
                 outcome.map_err(job_error)
             })
             .await?;
         Ok(job)
+    }
+}
+
+/// The steps of a job's work, on their way to the job.
+struct JobSteps(tokio::sync::mpsc::UnboundedSender<(String, Option<u8>)>);
+
+impl Steps for JobSteps {
+    fn step(&self, step: &str, percent: Option<u8>) {
+        let _ = self.0.send((step.to_owned(), percent));
     }
 }
 
@@ -260,7 +283,7 @@ impl CreatePool {
             plan.name.to_string(),
             actor,
             request,
-            move |admin, request| async move { admin.create_pool(&new, &request).await },
+            move |admin, steps, request| async move { admin.create_pool(&new, steps.as_ref(), &request).await },
         )
         .await
     }
@@ -301,9 +324,15 @@ impl DestroyPool {
         if !occupants.is_empty() {
             return Err(StorageError::PoolInUse(occupants));
         }
-        c.job("storage.destroy_pool", pool.to_owned(), actor, request, move |admin, request| async move {
-            admin.destroy_pool(&name, volume, &request).await
-        })
+        c.job(
+            "storage.destroy_pool",
+            pool.to_owned(),
+            actor,
+            request,
+            move |admin, steps, request| async move {
+                admin.destroy_pool(&name, volume, steps.as_ref(), &request).await
+            },
+        )
         .await
     }
 }
@@ -376,7 +405,9 @@ impl ReplaceDisk {
             plan.pool.to_string(),
             actor,
             request,
-            move |admin, request| async move { admin.replace_disk(&pool, &device, &disk, &request).await },
+            move |admin, steps, request| async move {
+                admin.replace_disk(&pool, &device, &disk, steps.as_ref(), &request).await
+            },
         )
         .await
     }
@@ -569,7 +600,9 @@ mod tests {
         assert!(matches!(wrong, Err(StorageError::ConfirmationMismatch)), "{wrong:?}");
         let job = s.storage.create_pool.execute(&planned.token, "media", &alice(), &request).await.unwrap();
         assert_eq!(job.kind, "storage.create_pool");
-        assert_eq!(finished(&s.jobs, job).await.state, JobState::Succeeded);
+        let done = finished(&s.jobs, job).await;
+        assert_eq!(done.state, JobState::Succeeded);
+        assert_eq!(done.step.as_deref(), Some("creating_pool"), "the step the host reported");
         assert_eq!(s.fake.calls(), ["create media Mirror ata-TEST_HDD_T4,ata-TEST_HDD_T5 2"]);
         let entry = s.audit.0.lock().unwrap().pop().unwrap();
         assert_eq!((entry.action, entry.target.as_deref()), ("storage.create_pool", Some("media")));

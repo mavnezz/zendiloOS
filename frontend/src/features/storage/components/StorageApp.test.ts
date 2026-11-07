@@ -271,6 +271,8 @@ describe('the storage app', () => {
       id: 1,
       kind: 'storage.create_pool',
       state: 'running',
+      step: 'preparing_disks',
+      progress: 0.5,
       created_at: 0,
       updated_at: 0,
     })
@@ -298,7 +300,7 @@ describe('the storage app', () => {
     })
     // While the pool is made, the section says so instead of staying empty.
     await settle()
-    expect(page()).toContain(t('storage.underway'))
+    expect(page()).toContain(`${t('storage.steps.preparing_disks')} (50`)
     expect(page()).toContain(`${t('jobs.kinds.storage_create_pool')}`)
   })
 

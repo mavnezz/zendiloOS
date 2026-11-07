@@ -327,7 +327,7 @@ frontend/src/
 |---|---|
 | Transport | Unix sockets created by systemd (`root:zendiloos 0660`), agents socket-activated: `/run/zendiloos/agent.sock` for the system agent (disks, ZFS, accounts, server configuration), `/run/zendiloos/files.sock` for the files agent (share contents); each refuses the other's requests |
 | Authentication | file permissions + `SO_PEERCRED`: only the UID of `zendiloos` is served |
-| Framing | one request per connection; JSON lines (NDJSON); size limits (requests 64 KiB, responses 16 MiB) |
+| Framing | one request per connection; JSON lines (NDJSON); size limits (requests 2 MiB, responses 16 MiB); before the answer of a long operation, any number of `progress` lines with the step it is at (`creating_pool`) and how far in percent, which become the job's step in zendiloosd and are named in the interface |
 | Operations | closed `enum Request` with typed arguments validated during deserialization; `deny_unknown_fields` |
 | Responses | a single response; **[Later]** a stream of frames (progress, logs) ending with a result |
 | Files | for downloads and uploads the files agent passes the opened file's descriptor via `SCM_RIGHTS`, attached to the response line (see 4.4) |

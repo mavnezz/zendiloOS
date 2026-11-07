@@ -8,7 +8,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use tokio::net::UnixStream;
 
-use crate::descriptor::{read_message_with_file, write_message_with_file};
+use crate::descriptor::{MessageReader, write_message_with_file};
 use crate::framing::FrameError;
 use crate::{Envelope, MAX_RESPONSE_BYTES, Request, RequestId, Response};
 
@@ -28,6 +28,24 @@ pub enum TransportError {
     Io(#[from] io::Error),
 }
 
+/// Where the steps the agent reports on the way go.
+pub trait Report: Send + Sync {
+    fn step(&self, step: &str, percent: Option<u8>);
+}
+
+impl<F: Fn(&str, Option<u8>) + Send + Sync> Report for F {
+    fn step(&self, step: &str, percent: Option<u8>) {
+        self(step, percent);
+    }
+}
+
+/// Hears nothing.
+struct Silent;
+
+impl Report for Silent {
+    fn step(&self, _: &str, _: Option<u8>) {}
+}
+
 /// A way to send requests to the agent: the real socket, or a simulation.
 #[async_trait]
 pub trait AgentTransport: Send + Sync {
@@ -42,6 +60,18 @@ pub trait AgentTransport: Send + Sync {
         request_id: Option<RequestId>,
     ) -> Result<(Response, Option<OwnedFd>), TransportError> {
         Ok((self.call(request, request_id).await?, None))
+    }
+
+    /// Like [`AgentTransport::call`], telling `report` each step the agent
+    /// reports on the way ([`Response::Progress`]).
+    async fn call_reporting(
+        &self,
+        request: Request,
+        request_id: Option<RequestId>,
+        report: &dyn Report,
+    ) -> Result<Response, TransportError> {
+        let _ = report;
+        self.call(request, request_id).await
     }
 }
 
@@ -67,12 +97,40 @@ impl UnixTransport {
         Self { long: Some(long), ..self }
     }
 
-    async fn exchange(&self, envelope: &Envelope) -> Result<(Response, Option<OwnedFd>), TransportError> {
+    /// Sends `envelope` and reads the answer; progress reports before it go
+    /// to `report`.
+    async fn exchange(
+        &self,
+        envelope: &Envelope,
+        report: &dyn Report,
+    ) -> Result<(Response, Option<OwnedFd>), TransportError> {
         let stream = UnixStream::connect(&self.socket)
             .await
             .map_err(|source| TransportError::Connect { path: self.socket.clone(), source })?;
         write_message_with_file(&stream, envelope, None).await?;
-        Ok(read_message_with_file(&stream, MAX_RESPONSE_BYTES).await?)
+        let mut reader = MessageReader::new(&stream);
+        let mut file = None;
+        loop {
+            let (response, received) = reader.next(MAX_RESPONSE_BYTES).await?;
+            file = file.or(received);
+            match response {
+                Response::Progress { step, percent } => report.step(&step, percent),
+                answer => return Ok((answer, file)),
+            }
+        }
+    }
+
+    async fn timed(
+        &self,
+        request: Request,
+        request_id: Option<RequestId>,
+        report: &dyn Report,
+    ) -> Result<(Response, Option<OwnedFd>), TransportError> {
+        let limit = if request.is_long() { self.long.unwrap_or(self.timeout) } else { self.timeout };
+        let envelope = Envelope::new(request, request_id).waiting(limit);
+        tokio::time::timeout(limit, self.exchange(&envelope, report))
+            .await
+            .map_err(|_| TransportError::Timeout(limit))?
     }
 }
 
@@ -92,10 +150,16 @@ impl AgentTransport for UnixTransport {
         request: Request,
         request_id: Option<RequestId>,
     ) -> Result<(Response, Option<OwnedFd>), TransportError> {
-        let limit = if request.is_long() { self.long.unwrap_or(self.timeout) } else { self.timeout };
-        let envelope = Envelope::new(request, request_id).waiting(limit);
-        tokio::time::timeout(limit, self.exchange(&envelope))
-            .await
-            .map_err(|_| TransportError::Timeout(limit))?
+        self.timed(request, request_id, &Silent).await
+    }
+
+    async fn call_reporting(
+        &self,
+        request: Request,
+        request_id: Option<RequestId>,
+        report: &dyn Report,
+    ) -> Result<Response, TransportError> {
+        // A descriptor nobody asked for is closed here.
+        Ok(self.timed(request, request_id, report).await?.0)
     }
 }

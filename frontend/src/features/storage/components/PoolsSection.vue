@@ -11,7 +11,7 @@ import {
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import type { Pool, PoolDevice, VdevState } from '@/shared/api/types'
+import type { Job, Pool, PoolDevice, VdevState } from '@/shared/api/types'
 import { jobTitle, useJobsStore } from '@/shared/jobs/store'
 import { problemMessage } from '@/shared/i18n'
 import {
@@ -37,7 +37,7 @@ import ReplaceDiskDialog from './ReplaceDiskDialog.vue'
 /** Whether the signed-in account may change pools (`storage.manage`). */
 const props = defineProps<{ canManage: boolean }>()
 
-const { t } = useI18n()
+const { t, te } = useI18n()
 const jobs = useJobsStore()
 const refresh = useRefreshStorage()
 const { data: pools, error, isPending } = usePools()
@@ -58,6 +58,16 @@ const now = ref(Date.now() / 1000)
 const ticking = setInterval(() => (now.value = Date.now() / 1000), 1000)
 onBeforeUnmount(() => clearInterval(ticking))
 const runningFor = (since: number) => formatDuration(Math.max(0, Math.round(now.value - since)))
+
+/** The step the agent reported, e.g. "Preparing the disks (50 %)", else a general word. */
+function stepOf(job: Job): string {
+  const key = `storage.steps.${job.step ?? ''}`
+  if (!job.step || !te(key)) return t('storage.underway')
+  const share = job.progress
+  return share !== null && share !== undefined && share > 0 && share < 1
+    ? `${t(key)} (${formatPercent(share * 100)})`
+    : t(key)
+}
 
 // Storage jobs change pools and disks: reload when one finishes.
 watch(
@@ -148,7 +158,7 @@ function scanLine(pool: Pool): string | null {
     >
       <LoaderCircle class="size-4 shrink-0 animate-spin text-primary" />
       <span class="font-medium">{{ jobTitle(job) }}</span>
-      <span class="flex-1 text-muted-foreground">{{ t('storage.underway') }}</span>
+      <span class="flex-1 text-muted-foreground">{{ stepOf(job) }}</span>
       <span class="text-xs text-muted-foreground tabular-nums">{{
         runningFor(job.created_at)
       }}</span>

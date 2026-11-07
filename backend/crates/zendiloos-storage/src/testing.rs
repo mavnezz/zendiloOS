@@ -12,7 +12,7 @@ use zendiloos_kernel::{AuditLog, Clock, PortError, RequestContext};
 use crate::application::StoragePorts;
 use crate::application::ports::{
     AdminError, ArraySource, BlockDeviceSource, NewPool, PlanTokens, PoolAdmin, SelfTestPlanStore,
-    SmartSource, VolumeOccupants, ZfsSource,
+    SmartSource, Steps, VolumeOccupants, ZfsSource,
 };
 use crate::domain::{
     Array, ArrayMember, BlockDevice, DeviceKind, Filesystem, MemberState, Occupant, Pool, PoolDevice,
@@ -85,7 +85,13 @@ fn unused(name: &str, serial: &str) -> BlockDevice {
 
 #[async_trait]
 impl PoolAdmin for FakeStorage {
-    async fn create_pool(&self, pool: &NewPool, _: &RequestContext) -> Result<(), AdminError> {
+    async fn create_pool(
+        &self,
+        pool: &NewPool,
+        steps: &dyn Steps,
+        _: &RequestContext,
+    ) -> Result<(), AdminError> {
+        steps.step("creating_pool", None);
         self.record(format!(
             "create {} {:?} {} {}",
             pool.name,
@@ -100,6 +106,7 @@ impl PoolAdmin for FakeStorage {
         &self,
         pool: &crate::domain::PoolName,
         volume: VolumeNumber,
+        _: &dyn Steps,
         _: &RequestContext,
     ) -> Result<(), AdminError> {
         self.record(format!("destroy {pool} {}", volume.get()));
@@ -111,6 +118,7 @@ impl PoolAdmin for FakeStorage {
         pool: &crate::domain::PoolName,
         device: &str,
         disk: &str,
+        _: &dyn Steps,
         _: &RequestContext,
     ) -> Result<(), AdminError> {
         self.record(format!("replace {pool} {device} {disk}"));

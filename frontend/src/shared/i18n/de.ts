@@ -1156,6 +1156,15 @@ const de: Messages = {
     pools: 'Pools',
     noPools: 'Noch keine Pools.',
     underway: 'Läuft; das kann einige Minuten dauern.',
+    steps: {
+      preparing_disks: 'Platten werden vorbereitet',
+      creating_pool: 'Pool wird angelegt',
+      mounting: 'Volume wird eingehängt',
+      unmounting: 'Volume und Freigaben werden ausgehängt',
+      destroying_pool: 'Pool wird gelöscht',
+      clearing_disks: 'Platten werden geleert',
+      replacing_disk: 'Neue Platte wird eingebunden',
+    },
     poolsUnavailable: 'ZFS ist nicht verfügbar, daher können keine Pools angezeigt werden.',
     notManaged: 'Nicht von zendiloOS verwaltet',
     redundancy:

@@ -252,7 +252,8 @@ impl Pools {
         let smallest = disks.iter().map(|d| d.size_bytes).min().unwrap_or(0);
         let size_mib = smallest.saturating_sub(START_BYTES + RESERVE_BYTES) / MIB;
         let mut partitions = Vec::new();
-        for disk in &disks {
+        for (done, disk) in disks.iter().enumerate() {
+            crate::progress::step("preparing_disks", crate::progress::percent(done, disks.len()));
             partitions.push(self.prepare(disk, size_mib).await?);
         }
 
@@ -264,8 +265,10 @@ impl Pools {
         args.push(name.as_str().to_owned());
         args.extend(layout.keyword().map(str::to_owned));
         args.extend(partitions);
+        crate::progress::step("creating_pool", None);
         run(&self.zpool, &args).await?;
 
+        crate::progress::step("mounting", None);
         self.mount(name, volume).await?;
         Ok(Response::Done)
     }
@@ -300,6 +303,7 @@ impl Pools {
         units.sort_unstable();
         units.push(unit_name(volume));
         units.retain(|unit| self.paths.units.join(unit).exists());
+        crate::progress::step("unmounting", None);
         self.release_nfs().await?;
         let mut stopped: Vec<&str> = Vec::new();
         for unit in &units {
@@ -317,11 +321,13 @@ impl Pools {
             }
             stopped.push(unit);
         }
+        crate::progress::step("destroying_pool", None);
         if let Err(error) = run(&self.zpool, &["destroy", name.as_str()]).await {
             self.mount_again(&stopped).await;
             return Err(error);
         }
         // The pool is gone; so go the units for its mounts.
+        crate::progress::step("clearing_disks", None);
         for unit in &units {
             self.remove_unit(unit).await?;
         }
@@ -369,7 +375,9 @@ impl Pools {
         if disk.size_bytes < START_BYTES + member_bytes + MIB {
             return Err(refused(format!("disk {} is smaller than the pool's members", disk.name)));
         }
+        crate::progress::step("preparing_disks", None);
         let partition = self.prepare(&disk, member_bytes / MIB).await?;
+        crate::progress::step("replacing_disk", None);
         run(&self.zpool, &["replace", pool.as_str(), &device.to_string(), &partition]).await?;
         Ok(Response::Done)
     }

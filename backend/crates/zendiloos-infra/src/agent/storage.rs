@@ -1,16 +1,18 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use zendiloos_agent_proto::{self as proto, AgentTransport, DiskId, DiskName, ErrorCode, Request, Response};
+use zendiloos_agent_proto::{
+    self as proto, AgentTransport, DiskId, DiskName, ErrorCode, Request, RequestId, Response,
+};
 use zendiloos_kernel::{PortError, RequestContext};
 use zendiloos_storage::application::ports::{
-    AdminError, ArraySource, BlockDeviceSource, NewPool, PlanTokens, PoolAdmin, SmartSource, ZfsSource,
+    AdminError, ArraySource, BlockDeviceSource, NewPool, PlanTokens, PoolAdmin, SmartSource, Steps, ZfsSource,
 };
 use zendiloos_storage::domain::{
     Array, BlockDevice, Pool, PoolLayout, PoolName, SelfTestKind, SmartReport, VolumeNumber,
 };
 
-use super::{WHAT, call, call_raw, unexpected};
+use super::{WHAT, call, unexpected};
 use crate::storage::{lsblk, mdstat, smartctl, zfs};
 
 /// The Storage context's sources, through the agent: it runs the tools,
@@ -107,7 +109,24 @@ impl AgentStorage {
     /// Changes: a refusal by the agent's own checks is not a failure of
     /// the agent, and the user should see its reason.
     async fn change(&self, request: Request, context: &RequestContext) -> Result<(), AdminError> {
-        match call_raw(self.transport.as_ref(), request, context).await? {
+        self.reporting(request, &NoSteps, context).await
+    }
+
+    /// As [`Self::change`], passing on the steps the agent reports.
+    async fn reporting(
+        &self,
+        request: Request,
+        steps: &dyn Steps,
+        context: &RequestContext,
+    ) -> Result<(), AdminError> {
+        let request_id = context.request_id.as_deref().and_then(|id| RequestId::parse(id).ok());
+        let report = |step: &str, percent: Option<u8>| steps.step(step, percent);
+        let answer = self
+            .transport
+            .call_reporting(request, request_id, &report)
+            .await
+            .map_err(|error| PortError::new(WHAT, error))?;
+        match answer {
             Response::Done => Ok(()),
             Response::Error { code: ErrorCode::Forbidden, message } => Err(AdminError::Refused(message)),
             Response::Error { code: ErrorCode::Conflict, .. } => Err(AdminError::Conflict),
@@ -115,6 +134,13 @@ impl AgentStorage {
             other => Err(unexpected(other).into()),
         }
     }
+}
+
+/// Where steps go that nobody follows.
+struct NoSteps;
+
+impl Steps for NoSteps {
+    fn step(&self, _: &str, _: Option<u8>) {}
 }
 
 fn invalid(what: &str) -> AdminError {
@@ -135,7 +161,12 @@ fn disk_id(link: &str) -> Result<DiskId, AdminError> {
 
 #[async_trait]
 impl PoolAdmin for AgentStorage {
-    async fn create_pool(&self, pool: &NewPool, context: &RequestContext) -> Result<(), AdminError> {
+    async fn create_pool(
+        &self,
+        pool: &NewPool,
+        steps: &dyn Steps,
+        context: &RequestContext,
+    ) -> Result<(), AdminError> {
         let layout = match pool.layout {
             PoolLayout::Single => proto::Layout::Single,
             PoolLayout::Mirror => proto::Layout::Mirror,
@@ -147,16 +178,18 @@ impl PoolAdmin for AgentStorage {
         let disks = pool.disks.iter().map(|link| disk_id(link)).collect::<Result<_, _>>()?;
         let request =
             Request::CreatePool { name: pool_name(&pool.name)?, layout, disks, volume: volume(pool.volume)? };
-        self.change(request, context).await
+        self.reporting(request, steps, context).await
     }
 
     async fn destroy_pool(
         &self,
         pool: &PoolName,
         number: VolumeNumber,
+        steps: &dyn Steps,
         context: &RequestContext,
     ) -> Result<(), AdminError> {
-        self.change(Request::DestroyPool { name: pool_name(pool)?, volume: volume(number)? }, context).await
+        let request = Request::DestroyPool { name: pool_name(pool)?, volume: volume(number)? };
+        self.reporting(request, steps, context).await
     }
 
     async fn replace_disk(
@@ -164,11 +197,12 @@ impl PoolAdmin for AgentStorage {
         pool: &PoolName,
         device: &str,
         disk: &str,
+        steps: &dyn Steps,
         context: &RequestContext,
     ) -> Result<(), AdminError> {
         let device = device.parse().map_err(|_| invalid("device GUID"))?;
         let request = Request::ReplaceDisk { pool: pool_name(pool)?, device, disk: disk_id(disk)? };
-        self.change(request, context).await
+        self.reporting(request, steps, context).await
     }
 
     async fn scrub(&self, pool: &PoolName, context: &RequestContext) -> Result<(), AdminError> {
@@ -247,6 +281,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_steps_the_agent_reports_reach_the_job() {
+        struct Reporting;
+        #[async_trait]
+        impl AgentTransport for Reporting {
+            async fn call(
+                &self,
+                _: Request,
+                _: Option<RequestId>,
+            ) -> Result<Response, zendiloos_agent_proto::TransportError> {
+                Ok(Response::Done)
+            }
+
+            async fn call_reporting(
+                &self,
+                _: Request,
+                _: Option<RequestId>,
+                report: &dyn zendiloos_agent_proto::Report,
+            ) -> Result<Response, zendiloos_agent_proto::TransportError> {
+                report.step("preparing_disks", Some(0));
+                report.step("creating_pool", None);
+                Ok(Response::Done)
+            }
+        }
+        #[derive(Default)]
+        struct Heard(std::sync::Mutex<Vec<(String, Option<u8>)>>);
+        impl Steps for Heard {
+            fn step(&self, step: &str, percent: Option<u8>) {
+                self.0.lock().unwrap().push((step.to_owned(), percent));
+            }
+        }
+        let storage = AgentStorage::new(Arc::new(Reporting));
+        let heard = Heard::default();
+        let pool = NewPool {
+            name: tank(),
+            layout: PoolLayout::Single,
+            disks: vec!["ata-DISK_1".into()],
+            volume: VolumeNumber::new(1).unwrap(),
+        };
+        storage.create_pool(&pool, &heard, &RequestContext::default()).await.unwrap();
+        let steps = heard.0.lock().unwrap().clone();
+        assert_eq!(steps, [("preparing_disks".to_owned(), Some(0)), ("creating_pool".to_owned(), None)]);
+    }
+
+    #[tokio::test]
     async fn pools_are_made_changed_and_destroyed_through_the_agent() {
         let agent = Arc::new(Scripted::default());
         let storage = AgentStorage::new(agent.clone());
@@ -260,10 +338,10 @@ mod tests {
             PoolLayout::Raidz { parity: 3 },
         ] {
             let pool = NewPool { name: tank(), layout, disks: vec!["ata-DISK_1".into()], volume: one };
-            storage.create_pool(&pool, &context).await.unwrap();
+            storage.create_pool(&pool, &NoSteps, &context).await.unwrap();
         }
-        storage.destroy_pool(&tank(), one, &context).await.unwrap();
-        storage.replace_disk(&tank(), "1234567890", "ata-DISK_2", &context).await.unwrap();
+        storage.destroy_pool(&tank(), one, &NoSteps, &context).await.unwrap();
+        storage.replace_disk(&tank(), "1234567890", "ata-DISK_2", &NoSteps, &context).await.unwrap();
         storage.scrub(&tank(), &context).await.unwrap();
         storage.stop_scrub(&tank(), &context).await.unwrap();
         let asked = agent.asked();
@@ -277,12 +355,20 @@ mod tests {
         // What zendiloos does not make, or cannot name, is never sent.
         let odd =
             |layout, disk: &str| NewPool { name: tank(), layout, disks: vec![disk.into()], volume: one };
-        assert!(storage.create_pool(&odd(PoolLayout::Raidz { parity: 4 }, "ata-1"), &context).await.is_err());
         assert!(
-            storage.create_pool(&odd(PoolLayout::Other("draid".into()), "ata-1"), &context).await.is_err()
+            storage
+                .create_pool(&odd(PoolLayout::Raidz { parity: 4 }, "ata-1"), &NoSteps, &context)
+                .await
+                .is_err()
         );
-        assert!(storage.create_pool(&odd(PoolLayout::Single, "../sda"), &context).await.is_err());
-        assert!(storage.replace_disk(&tank(), "not a number", "ata-1", &context).await.is_err());
+        assert!(
+            storage
+                .create_pool(&odd(PoolLayout::Other("draid".into()), "ata-1"), &NoSteps, &context)
+                .await
+                .is_err()
+        );
+        assert!(storage.create_pool(&odd(PoolLayout::Single, "../sda"), &NoSteps, &context).await.is_err());
+        assert!(storage.replace_disk(&tank(), "not a number", "ata-1", &NoSteps, &context).await.is_err());
         assert_eq!(agent.asked().len(), 9);
     }
 

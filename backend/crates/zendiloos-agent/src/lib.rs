@@ -19,6 +19,7 @@ mod operations;
 mod packages;
 pub mod passwd;
 mod pools;
+mod progress;
 mod projects;
 mod server;
 mod sharing;
