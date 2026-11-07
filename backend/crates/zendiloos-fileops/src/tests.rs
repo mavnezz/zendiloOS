@@ -513,3 +513,53 @@ fn an_archive_plan_stays_within_its_limits_while_it_reads() {
     let refused = v.share("photos").plan_archive(&path("links"), "links");
     assert!(matches!(refused, Err(FileError::Invalid(why)) if why.contains("too long")), "{refused:?}");
 }
+
+#[test]
+fn an_apps_data_and_a_personal_folder_are_roots_only_when_mounted() {
+    let v = Volumes::new();
+    let volume = VolumeNumber::new(1).unwrap();
+    let app = AppName::parse("kuma").unwrap();
+    let anna = zendiloos_agent_proto::UserName::parse("anna").unwrap();
+    assert!(matches!(ShareRoot::open_app_data(v.directory.path(), volume, &app), Err(FileError::NotFound)));
+    fs::create_dir_all(v.directory.path().join("volume1/@apps/kuma")).unwrap();
+    let unmounted = ShareRoot::open_app_data(v.directory.path(), volume, &app);
+    assert!(
+        matches!(unmounted, Err(FileError::Invalid(why)) if why.contains("not mounted")),
+        "{unmounted:?}"
+    );
+
+    assert!(matches!(ShareRoot::open_home(v.directory.path(), volume, &anna), Err(FileError::NotFound)));
+    fs::create_dir_all(v.directory.path().join("volume1").join(HOMES_DIRECTORY).join("anna")).unwrap();
+    let unmounted = ShareRoot::open_home(v.directory.path(), volume, &anna);
+    assert!(
+        matches!(unmounted, Err(FileError::Invalid(why)) if why.contains("not mounted")),
+        "{unmounted:?}"
+    );
+
+    let label = zendiloos_agent_proto::SnapshotLabel::parse("zdl-2026-11-07_08.00.00").unwrap();
+    let photos = ShareName::parse("photos").unwrap();
+    let snapshot = ShareRoot::open_snapshot(v.directory.path(), volume, &photos, &label);
+    assert!(matches!(snapshot, Err(FileError::Invalid(why)) if why.contains("not mounted")), "{snapshot:?}");
+}
+
+#[test]
+fn an_apps_folders_are_made_name_by_name_and_its_root_given_to_it() {
+    let v = Volumes::new();
+    let share = v.share("photos");
+    let (uid, gid) = (rustix::process::getuid().as_raw(), rustix::process::getgid().as_raw());
+
+    share.set_root_owner(uid, gid, 0o750).unwrap();
+    assert_eq!(
+        std::os::unix::fs::PermissionsExt::mode(&fs::metadata(v.share_path("photos")).unwrap().permissions())
+            & 0o777,
+        0o750
+    );
+    share.make_folders(&AppFolder::parse("config/cache").unwrap()).unwrap();
+    share.make_folders(&AppFolder::parse("config/cache").unwrap()).unwrap();
+    assert!(v.share_path("photos").join("config/cache").is_dir(), "made, and again without harm");
+    symlink("/etc", v.share_path("photos").join("escape")).unwrap();
+    let through = share.make_folders(&AppFolder::parse("escape/x").unwrap());
+    assert!(matches!(through, Err(FileError::Invalid(why)) if why.contains("link")), "{through:?}");
+    v.write("photos", "file", "");
+    assert!(share.make_folders(&AppFolder::parse("file/x").unwrap()).is_err(), "no folder");
+}

@@ -358,6 +358,28 @@ async fn refuses_requests_outside_the_protocol() {
 }
 
 #[tokio::test]
+async fn long_requests_walks_and_users_have_places_of_their_own() {
+    let agent = Agent::start(None, 0).await;
+    let location = json_location();
+    for request in [
+        // Long, in the system agent: refused by the pool's check after its place.
+        "{\"op\":\"destroy_pool\",\"name\":\"tank\",\"volume\":1}".to_owned(),
+        // The files agent's: they take their places, then the wrong agent refuses them.
+        format!("{{\"op\":\"copy_entry\",\"user\":\"anna\",\"from\":{location},\"to\":{location}}}"),
+        "{\"op\":\"set_share_access\",\"volume\":1,\"name\":\"media\",\"access\":[],\"removed\":[],\"recursive\":true}"
+            .to_owned(),
+    ] {
+        let request: Request = serde_json::from_str(&request).unwrap();
+        let answer = agent.client().call(request.clone(), None).await.unwrap();
+        assert!(matches!(answer, Response::Error { .. }), "{}: {answer:?}", request.name());
+    }
+}
+
+fn json_location() -> String {
+    "{\"volume\":1,\"root\":{\"share\":\"media\"},\"path\":\"a\"}".to_owned()
+}
+
+#[tokio::test]
 async fn the_client_reports_a_missing_agent() {
     let error = UnixTransport::new(Path::new("/nonexistent/agent.sock"), Duration::from_secs(1))
         .call(Request::Hello {}, None)

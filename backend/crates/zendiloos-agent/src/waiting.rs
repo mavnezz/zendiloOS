@@ -129,6 +129,16 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_watcher_gone_without_a_word_ends_no_wait() {
+        let (gone_tx, gone) = watch::channel(false);
+        let (stopping_tx, stopping) = watch::channel(false);
+        drop((gone_tx, stopping_tx));
+        let turn = Turn::new(gone, stopping, None);
+        let free = tokio::sync::Mutex::new(());
+        assert!(turn.scope(async { lock(&free).await.map(drop) }).await.is_ok());
+    }
+
+    #[tokio::test]
     async fn nothing_new_starts_once_the_agent_stops() {
         let (turn, _gone, stopping) = turn(None);
         stopping.send(true).unwrap();

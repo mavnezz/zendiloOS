@@ -958,6 +958,189 @@ mod tests {
         ShareAccess { principal, permission }
     }
 
+    /// The sharing of a host whose accounts are anna (2001) and ben (2002),
+    /// both in `family`, and the owner's own user (1000), unmanaged.
+    fn with_accounts(dir: &Path) -> Sharing {
+        fs::write(
+            dir.join("passwd"),
+            "root:x:0:0::/root:/bin/bash\ndebian:x:1000:1000::/home/debian:/bin/bash\n\
+             anna:x:2001:990::/nonexistent:/usr/sbin/nologin\nben:x:2002:990::/nonexistent:/usr/sbin/nologin\n",
+        )
+        .unwrap();
+        fs::write(dir.join("group"), "root:x:0:\nzendiloos-users:x:990:\nfamily:x:2100:anna,ben,debian\n")
+            .unwrap();
+        let accounts = crate::accounts::AccountFiles {
+            passwd: dir.join("passwd"),
+            group: dir.join("group"),
+            high_water: dir.join("high-water"),
+        };
+        Sharing::new(&Tools::default(), HostPaths::default(), accounts).unwrap()
+    }
+
+    fn user(name: &str) -> Principal {
+        Principal::User(UserName::parse(name).unwrap())
+    }
+
+    fn group(name: &str) -> Principal {
+        Principal::Group(GroupName::parse(name).unwrap())
+    }
+
+    #[test]
+    fn writers_are_the_managed_users_who_may_write_and_are_not_denied() {
+        let dir = tempfile::tempdir().unwrap();
+        let sharing = with_accounts(dir.path());
+        let denied = ShareAccess { principal: user("ben"), permission: SharePermission::Deny };
+        let writers =
+            sharing.writers(&[access(group("family"), true), denied, access(user("debian"), true)]).unwrap();
+        assert_eq!(writers, [("anna".to_owned(), 2001, 990)], "ben is denied, debian is no managed user");
+        assert!(sharing.writers(&[access(user("anna"), false)]).unwrap().is_empty(), "reading makes no bin");
+    }
+
+    #[test]
+    fn rules_name_their_subjects_by_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let sharing = with_accounts(dir.path());
+        let rules = sharing
+            .rules(
+                &[access(user("anna"), true), access(group("family"), false)],
+                &[user("ben"), user("anna"), user("gone")],
+            )
+            .unwrap();
+        assert_eq!(
+            rules.grant,
+            [(Who::User(2001), SharePermission::ReadWrite), (Who::Group(2100), SharePermission::Read)]
+        );
+        assert_eq!(rules.remove, [Who::User(2002)], "anna keeps hers, a gone user has none");
+        let unknown = sharing.rules(&[access(user("nobody"), true)], &[]).unwrap_err();
+        assert!(unknown.to_string().contains("nobody"), "{unknown}");
+        fs::remove_file(dir.path().join("group")).unwrap();
+        assert!(sharing.rules(&[], &[]).is_err(), "the accounts must be readable");
+        assert!(sharing.writers(&[]).is_err());
+    }
+
+    #[test]
+    fn a_personal_folder_of_an_earlier_account_is_moved_aside() {
+        let homes = tempfile::tempdir().unwrap();
+        let me = rustix::process::getuid().as_raw();
+        assert!(fresh_home(homes.path(), "anna", me).unwrap(), "made");
+        assert!(!fresh_home(homes.path(), "anna", me).unwrap(), "hers already");
+
+        // The same name, another account now.
+        assert!(fresh_home(homes.path(), "anna", me + 1).unwrap(), "made anew");
+        let aside = homes.path().join(format!("anna.previous-{me}"));
+        assert!(aside.is_dir(), "the earlier one's files are kept");
+
+        fs::write(homes.path().join("ben"), "not a folder").unwrap();
+        let refused = fresh_home(homes.path(), "ben", me).unwrap_err();
+        assert!(refused.to_string().contains("not a folder"), "{refused}");
+    }
+
+    #[test]
+    fn a_home_needs_the_personal_folders_dataset_mounted() {
+        let dir = tempfile::tempdir().unwrap();
+        let accounts = crate::accounts::AccountFiles::default();
+        let paths = HostPaths { volumes: dir.path().to_owned(), ..HostPaths::default() };
+        let sharing = Sharing::new(&Tools::default(), paths, accounts).unwrap();
+        let (volume, anna) = (VolumeNumber::new(1).unwrap(), UserName::parse("anna").unwrap());
+        let missing = sharing.make_home(volume, &anna).unwrap_err();
+        assert!(missing.to_string().contains("not set up"), "{missing}");
+        fs::create_dir_all(dir.path().join("volume1").join(HOMES_DIRECTORY)).unwrap();
+        let unmounted = sharing.make_home(volume, &anna).unwrap_err();
+        assert!(unmounted.to_string().contains("not mounted"), "{unmounted}");
+    }
+
+    /// Sharing with testparm and systemctl as scripts that record what they
+    /// are asked; testparm refuses while `refuse` is there.
+    fn applying(dir: &Path, exportfs: bool) -> Sharing {
+        let log = dir.join("calls.log");
+        let script = |name: &str, body: &str| {
+            let path = dir.join(name);
+            fs::write(&path, format!("#!/bin/sh\necho {name} \"$@\" >> {}\n{body}\n", log.display()))
+                .unwrap();
+            fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+            path
+        };
+        let tools = Tools {
+            testparm: script(
+                "testparm",
+                &format!("[ -f {} ] && exit 1; exit 0", dir.join("refuse").display()),
+            ),
+            systemctl: script("systemctl", ""),
+            exportfs: if exportfs { script("exportfs", "") } else { dir.join("no-exportfs") },
+            ..Tools::default()
+        };
+        let paths = HostPaths {
+            samba_config: dir.join("samba/zendiloos.conf"),
+            nfs_exports: dir.join("exports.d/zendiloos.exports"),
+            ..HostPaths::default()
+        };
+        Sharing::new(&tools, paths, crate::accounts::AccountFiles::default()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn what_samba_would_not_take_is_never_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let sharing = applying(dir.path(), true);
+        let share = |name: &str, time_machine: bool| SmbShare {
+            name: ShareName::parse(name).unwrap(),
+            volume: VolumeNumber::new(1).unwrap(),
+            comment: None,
+            access: vec![access(user("anna"), true)],
+            recycle_bin: false,
+            time_machine: time_machine.then_some(None),
+        };
+        let mut services = base_services();
+        services.mac_compat = false;
+        let refused = sharing.apply(&[share("backup", true)], &[], &services, None).await.unwrap_err();
+        assert!(refused.to_string().contains("macOS compatibility"), "{refused}");
+        let homes = HomesShare { volume: VolumeNumber::new(1).unwrap(), users: vec![] };
+        let refused =
+            sharing.apply(&[share("home", false)], &[], &base_services(), Some(&homes)).await.unwrap_err();
+        assert!(refused.to_string().contains("called home"), "{refused}");
+
+        fs::write(dir.path().join("refuse"), "").unwrap();
+        assert!(sharing.apply(&[share("media", false)], &[], &base_services(), None).await.is_err());
+        assert!(!dir.path().join("samba/zendiloos.conf").exists(), "not written");
+        assert!(!dir.path().join("samba/zendiloos.check").exists(), "the candidate goes");
+        fs::remove_file(dir.path().join("refuse")).unwrap();
+
+        // Everything off: the servers stop and stay off.
+        let mut off = base_services();
+        (off.smb, off.nfs, off.wsdd, off.bonjour) = (false, false, false, false);
+        assert_eq!(sharing.apply(&[], &[], &off, None).await.unwrap(), Response::Done);
+        let calls = fs::read_to_string(dir.path().join("calls.log")).unwrap();
+        for stopped in
+            ["disable --now smbd.service", "disable --now wsdd2.service", "disable --now nfs-server.service"]
+        {
+            assert!(calls.contains(stopped), "{stopped}: {calls}");
+        }
+    }
+
+    #[tokio::test]
+    async fn exports_need_the_nfs_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let sharing = applying(dir.path(), false);
+        let export = NfsExport {
+            name: ShareName::parse("media").unwrap(),
+            volume: VolumeNumber::new(1).unwrap(),
+            clients: vec![NfsClient { network: Network::parse("192.168.1.0/24").unwrap(), write: false }],
+        };
+        let mut services = base_services();
+        services.nfs = true;
+        let refused = sharing.apply(&[], std::slice::from_ref(&export), &services, None).await.unwrap_err();
+        assert!(refused.to_string().contains("not installed"), "{refused}");
+        // Without exports nothing is missing.
+        assert_eq!(sharing.apply(&[], &[], &services, None).await.unwrap(), Response::Done);
+
+        let installed = applying(dir.path(), true);
+        assert_eq!(installed.apply(&[], &[export], &services, None).await.unwrap(), Response::Done);
+        let calls = fs::read_to_string(dir.path().join("calls.log")).unwrap();
+        assert!(
+            calls.contains("enable --now nfs-server.service")
+                && calls.contains("reload-or-restart nfs-server")
+        );
+    }
+
     fn acl_of(path: &Path, name: &str) -> Option<Acl> {
         read_acl(path.to_str().unwrap(), name).unwrap()
     }

@@ -746,6 +746,9 @@ fn reach(root: &OwnedFd, folder: &AppFolder) -> Result<(), &'static str> {
 }
 
 #[cfg(test)]
+mod lifecycle_tests;
+
+#[cfg(test)]
 mod tests {
     use serde_json::json;
 
@@ -841,5 +844,35 @@ mod tests {
         assert_eq!(reach(&root, &AppFolder::parse("config/cache").unwrap()), Ok(()));
         assert!(reach(&root, &AppFolder::parse("evil").unwrap()).is_err());
         assert!(reach(&root, &AppFolder::parse("missing").unwrap()).is_err());
+    }
+
+    #[test]
+    fn another_file_system_on_the_way_is_not_reached() {
+        use rustix::fs::open;
+        // /dev/shm is a file system of its own below /dev.
+        let root = open("/dev", OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC, Mode::empty()).unwrap();
+        assert_eq!(
+            reach(&root, &AppFolder::parse("shm").unwrap()),
+            Err("another file system is mounted on the way")
+        );
+    }
+
+    #[test]
+    fn an_app_with_too_many_folders_or_without_services_is_left_alone() {
+        let volumes: Vec<Value> = (0..=AppFolder::MAX_COUNT)
+            .map(|n| json!({ "type": "bind", "source": format!("/volume1/@apps/demo/f{n}"), "target": format!("/f{n}") }))
+            .collect();
+        let many = json!({ "services": { "app": { "image": "x", "volumes": volumes } } });
+        assert!(folders(&many, "/volume1/@apps/demo").is_err());
+
+        let mut odd = json!({ "services": "none", "name": "demo" });
+        let before = odd.clone();
+        refuse_to_create(&mut odd, |_| true);
+        leave_out_missing_devices(&mut odd, Path::new("/dev"));
+        assert_eq!(odd, before);
+        let mut not_objects = json!({ "services": { "app": "x" } });
+        leave_out_missing_devices(&mut not_objects, Path::new("/dev"));
+        refuse_to_create(&mut not_objects, |_| true);
+        assert_eq!(not_objects, json!({ "services": { "app": "x" } }));
     }
 }

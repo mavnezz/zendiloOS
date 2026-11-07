@@ -45,6 +45,7 @@ case "$*" in
     if grep -q broken; then echo 'yaml: line 2: mapping values are not allowed' >&2; exit 15; fi
     echo '{{"name":"tesla"}}' ;;
   "logs "*) echo out; echo err >&2; echo again ;;
+  "compose --project-name broken logs"*) echo 'no such project'; exit 1 ;;
   "network rm "*) ;;
 esac
 "#,
@@ -159,6 +160,53 @@ async fn foreign_projects_come_up_from_the_file_compose_reports() {
              up --detach --remove-orphans --quiet-pull"
         )
     );
+}
+
+#[tokio::test]
+async fn foreign_projects_start_stop_pull_and_go_down_as_compose_knows_them() {
+    let host = Host::new();
+    let foreign = host.root.join("stack/compose.yaml").display().to_string();
+    let run = |action| Request::ControlProject { project: project("stack"), action };
+
+    for action in [ProjectAction::Start, ProjectAction::Stop, ProjectAction::Pull, ProjectAction::Down] {
+        assert_eq!(host.agent.execute(&run(action)).await, Response::Done, "{action:?}");
+    }
+    let calls = host.calls();
+    assert!(calls.contains(&format!("docker start {FIRST}")), "{calls:?}");
+    assert!(calls.contains(&format!("docker stop {FIRST}")));
+    assert!(
+        calls
+            .iter()
+            .any(|call| call.contains(&format!("--file {foreign}")) && call.ends_with("pull --quiet"))
+    );
+    assert_eq!(calls.last().unwrap(), "docker compose --project-name stack down --remove-orphans");
+    // Compose knows no file of it.
+    let unknown = Request::ControlProject { project: project("ghost"), action: ProjectAction::Up };
+    assert!(matches!(host.agent.execute(&unknown).await, Response::Error { .. }));
+}
+
+#[tokio::test]
+async fn what_a_project_cannot_show_or_remove_is_reported() {
+    let host = Host::new();
+    let logs = Request::ProjectLogs { project: project("broken"), lines: 10 };
+    let failed = host.agent.execute(&logs).await;
+    assert!(
+        matches!(&failed, Response::Error { message, .. } if message.contains("no such project")),
+        "{failed:?}"
+    );
+
+    // A Compose file grown beyond what is read.
+    fs::write(host.root.join("stack/compose.yaml"), "x".repeat(300 * 1024)).unwrap();
+    let files = host.agent.execute(&Request::ProjectFiles { project: project("stack") }).await;
+    assert!(
+        matches!(&files, Response::Error { message, .. } if message.contains("at most 256 KiB")),
+        "{files:?}"
+    );
+
+    // What deploying kept cannot be removed: reported, not left unsaid.
+    fs::create_dir_all(host.root.join("etc-projects/tesla.json/inside")).unwrap();
+    let down = Request::ControlProject { project: project("tesla"), action: ProjectAction::Down };
+    assert!(matches!(host.agent.execute(&down).await, Response::Error { .. }));
 }
 
 #[tokio::test]

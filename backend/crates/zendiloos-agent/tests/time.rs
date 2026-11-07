@@ -170,6 +170,24 @@ async fn the_clock_is_not_set_while_servers_keep_it() {
 }
 
 #[tokio::test]
+async fn a_drop_in_that_cannot_be_read_or_written_is_reported() {
+    let host = Host::new();
+    // A folder where the drop-in belongs.
+    fs::create_dir_all(host.root.join("timesyncd.conf.d/zendiloos.conf/inside")).unwrap();
+
+    let state = host.agent.execute(&Request::TimeState {}).await;
+    assert!(matches!(state, Response::Error { code: ErrorCode::Failed, .. }), "{state:?}");
+    let without = host.agent.execute(&set("Etc/UTC", false, &[], None)).await;
+    assert!(matches!(without, Response::Error { code: ErrorCode::Failed, .. }), "{without:?}");
+
+    // Its folder is a file.
+    fs::remove_dir_all(host.root.join("timesyncd.conf.d")).unwrap();
+    fs::write(host.root.join("timesyncd.conf.d"), "").unwrap();
+    let with = host.agent.execute(&set("Etc/UTC", true, &["ptb.de"], None)).await;
+    assert!(matches!(with, Response::Error { code: ErrorCode::Failed, .. }), "{with:?}");
+}
+
+#[tokio::test]
 async fn an_unknown_zone_changes_nothing_else() {
     let host = Host::new();
 

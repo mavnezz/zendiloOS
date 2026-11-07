@@ -194,6 +194,41 @@ async fn settings_sshd_refuses_give_way_to_the_previous_ones() {
     assert_eq!(host.calls().last().unwrap(), "sshd -t", "nothing restarted");
 }
 
+#[tokio::test]
+async fn a_first_file_sshd_refuses_goes_again() {
+    let host = Host::new();
+    let refused = host.agent.execute(&set(config(true, 4444, None))).await;
+    assert!(matches!(refused, Response::Error { code: ErrorCode::Failed, .. }), "{refused:?}");
+    assert!(host.config().is_none(), "no file was there, none stays");
+}
+
+#[tokio::test]
+async fn without_the_ssh_server_nothing_is_written() {
+    let host = Host::new();
+    fs::remove_file(host.root.join("sshd")).unwrap();
+
+    let Response::SshState { installed, .. } = host.agent.execute(&Request::SshState {}).await else {
+        panic!("no state")
+    };
+    assert!(!installed);
+    let refused = host.agent.execute(&set(config(true, 2222, None))).await;
+    assert!(
+        matches!(&refused, Response::Error { message, .. } if message.contains("not installed")),
+        "{refused:?}"
+    );
+    assert!(host.config().is_none());
+}
+
+#[tokio::test]
+async fn a_settings_file_that_cannot_be_read_is_reported() {
+    let host = Host::new();
+    fs::create_dir_all(host.root.join("sshd_config.d/00-zendiloos.conf/inside")).unwrap();
+    let state = host.agent.execute(&Request::SshState {}).await;
+    assert!(matches!(state, Response::Error { code: ErrorCode::Failed, .. }), "{state:?}");
+    let set = host.agent.execute(&set(config(true, 2222, None))).await;
+    assert!(matches!(set, Response::Error { code: ErrorCode::Failed, .. }), "{set:?}");
+}
+
 #[test]
 fn a_port_a_service_of_the_nas_uses_is_not_read() {
     let request = r#"{"op":"set_ssh","config":{"enabled":true,"port":445,"root_login":null,"password_login":null,"off_after":null}}"#;

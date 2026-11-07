@@ -299,5 +299,9 @@ mod tests {
         let file = networkd_file(&config(Ipv4Config::Dhcp, Ipv6Config::Off, &[]));
         assert!(file.contains("DHCP=ipv4\nIPv6AcceptRA=no\nLinkLocalAddressing=no\n"), "{file}");
         assert!(!file.contains("DNS") && !file.contains("Address="), "{file}");
+
+        // Name servers of its own replace those DHCP offers.
+        let file = networkd_file(&config(Ipv4Config::Dhcp, Ipv6Config::Off, &["9.9.9.9"]));
+        assert!(file.ends_with("DNS=9.9.9.9\n\n[DHCPv4]\nUseDNS=no\n"), "{file}");
     }
 }

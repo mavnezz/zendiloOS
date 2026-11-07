@@ -155,4 +155,26 @@ mod tests {
         assert!(toml::from_str::<Config>("[storage]\nerasable = \"all\"").is_err());
         assert!(toml::from_str::<Config>("[tools]\nsh = \"/bin/sh\"").is_err());
     }
+
+    #[test]
+    fn a_file_given_must_be_there_and_readable() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("agent.toml");
+        let missing = Config::load(Some(&file)).unwrap_err();
+        assert!(missing.to_string().contains("cannot read"), "{missing}");
+        std::fs::write(&file, "client_user = \"tester\"\n").unwrap();
+        assert_eq!(Config::load(Some(&file)).unwrap().client_user, "tester");
+        std::fs::write(&file, "colour = \"red\"\n").unwrap();
+        let invalid = Config::load(Some(&file)).unwrap_err();
+        assert!(invalid.to_string().contains("invalid"), "{invalid}");
+    }
+
+    #[test]
+    fn without_a_file_the_defaults_hold() {
+        // On a machine with zendiloOS installed the file is there and read.
+        if !Path::new(DEFAULT_PATH).exists() {
+            let config = Config::load(None).unwrap();
+            assert_eq!(config.tools.systemctl, Tools::default().systemctl);
+        }
+    }
 }

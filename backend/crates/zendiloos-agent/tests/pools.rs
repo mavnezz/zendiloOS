@@ -797,3 +797,295 @@ fn base_services() -> FileServices {
         bonjour: true,
     }
 }
+
+#[tokio::test]
+async fn a_disk_used_as_swap_is_never_erased() {
+    let host = host(Erasable::Policy(ErasePolicy::Unused));
+    fs::write(
+        host.path("swaps"),
+        format!(
+            "Filename\tType\tSize\tUsed\tPriority\n{}\tpartition\t8388604\t0\t-2\n",
+            host.path("dev/sda").display()
+        ),
+    )
+    .unwrap();
+    assert_refused(
+        host.run(create("swapped", &["ata-FREE-1", "ata-FREE-2"], 3)).await,
+        ErrorCode::Forbidden,
+        "swap",
+    );
+    assert!(!host.calls().iter().any(|call| call.starts_with("sgdisk")), "nothing erased");
+}
+
+#[tokio::test]
+async fn docker_gets_a_pool_only_when_installed_and_not_on_another_already() {
+    let host = host(Erasable::Policy(ErasePolicy::Unused));
+    fs::create_dir_all(host.path("etc-docker")).unwrap();
+    fs::write(host.path("etc-docker/daemon.json"), r#"{"data-root": "/volume2/@docker"}"#).unwrap();
+    let enable = Request::EnableDocker {
+        pool: PoolName::parse("tank").unwrap(),
+        volume: VolumeNumber::new(1).unwrap(),
+    };
+
+    assert_refused(host.run(enable.clone()).await, ErrorCode::Forbidden, "another pool already");
+    fs::remove_file(host.path("dockerd")).unwrap();
+    assert_refused(host.run(enable).await, ErrorCode::Forbidden, "not installed");
+    assert!(!host.calls().iter().any(|call| call.contains("restart docker")));
+}
+
+#[tokio::test]
+async fn an_apps_account_goes_with_its_group_and_nobody_elses_does() {
+    let host = host(Erasable::Policy(ErasePolicy::Unused));
+    fs::write(
+        host.path("passwd"),
+        "root:x:0:0::/root:/bin/bash\napp-kuma:x:2001:2001:zendiloOS app:/nonexistent:/usr/sbin/nologin\n\
+         app-paperless:x:2003:990::/nonexistent:/usr/sbin/nologin\n",
+    )
+    .unwrap();
+    fs::write(host.path("group"), "root:x:0:\nzendiloos-users:x:990:\napp-kuma:x:2001:\n").unwrap();
+    let delete = |app: &str| Request::DeleteAppAccount { app: AppName::parse(app).unwrap() };
+
+    assert_eq!(host.run(delete("kuma")).await, Response::Done);
+    let calls = host.calls();
+    assert!(calls.contains(&"userdel -- app-kuma".to_owned()), "{calls:?}");
+    assert!(calls.contains(&"groupdel -- app-kuma".to_owned()), "the group too: {calls:?}");
+    assert_refused(host.run(delete("paperless")).await, ErrorCode::Forbidden, "not managed");
+    assert_eq!(host.run(delete("gone")).await, Response::Done, "nothing to delete");
+}
+
+#[tokio::test]
+async fn accounts_need_the_users_group_and_an_apps_is_made_once() {
+    let host = host(Erasable::Policy(ErasePolicy::Unused));
+    fs::write(
+        host.path("passwd"),
+        "root:x:0:0::/root:/bin/bash\napp-kuma:x:2001:2001:zendiloOS app:/nonexistent:/usr/sbin/nologin\n",
+    )
+    .unwrap();
+    fs::write(host.path("group"), "root:x:0:\napp-kuma:x:2001:\n").unwrap();
+
+    let user = Request::CreateUser { name: zendiloos_agent_proto::UserName::parse("anna").unwrap() };
+    assert_refused(host.run(user).await, ErrorCode::Failed, "zendiloos-users is missing");
+    let prepare = Request::PrepareApp {
+        app: AppName::parse("kuma").unwrap(),
+        pool: PoolName::parse("tank").unwrap(),
+        volume: VolumeNumber::new(1).unwrap(),
+    };
+    assert_eq!(host.run(prepare).await, Response::Done);
+    assert!(
+        !host.calls().iter().any(|call| call.starts_with("useradd") || call.starts_with("groupadd")),
+        "kept"
+    );
+}
+
+#[tokio::test]
+async fn an_apps_group_goes_again_when_its_account_cannot_be_made() {
+    let host = host(Erasable::Policy(ErasePolicy::Unused));
+    let useradd = host.path("useradd");
+    fs::write(
+        &useradd,
+        format!("#!/bin/sh\necho useradd \"$@\" >> {}\nexit 9\n", host.path("calls.log").display()),
+    )
+    .unwrap();
+    let prepare = Request::PrepareApp {
+        app: AppName::parse("kuma").unwrap(),
+        pool: PoolName::parse("tank").unwrap(),
+        volume: VolumeNumber::new(1).unwrap(),
+    };
+
+    assert!(matches!(host.run(prepare).await, Response::Error { .. }));
+    let calls = host.calls();
+    let made = calls.iter().position(|call| call.starts_with("groupadd")).expect("the group is made first");
+    let removed = calls.iter().position(|call| call == "groupdel -- app-kuma").expect("and removed again");
+    assert!(made < removed, "{calls:?}");
+}
+
+/// zfs and systemctl for two pools zendiloOS made, `tank` (volume 1, with
+/// Docker's data and an app's) and `cold` (volume 2): a file `receive-fails`
+/// makes the copy fail, `start-fails` makes Docker not start.
+fn two_pools(host: &Host) {
+    let write = |name: &str, body: String| {
+        let path = host.path(name);
+        let log = host.path("calls.log");
+        fs::write(&path, format!("#!/bin/sh\necho {name} \"$@\" >> {}\n{body}\n", log.display())).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    write(
+        "zfs",
+        format!(
+            "case \"$*\" in\n\
+             'get -H -o value zendiloos:volume tank') echo 1 ;;\n\
+             'get -H -o value zendiloos:volume cold') echo 2 ;;\n\
+             'list -H -o name -d 1 cold') echo cold ;;\n\
+             'list -H -o name -d 1 tank') printf 'tank\\ntank/zendiloos.docker\\ntank/zendiloos.homes\\n' ;;\n\
+             'list -H -o name -d 2 tank') printf 'tank\\ntank/zendiloos.apps\\ntank/zendiloos.apps/kuma\\n' ;;\n\
+             send*) echo stream ;;\n\
+             receive*) cat > /dev/null; if [ -f {fails} ]; then echo 'out of space' >&2; exit 1; fi ;;\n\
+             *) echo - ;;\n\
+             esac",
+            fails = host.path("receive-fails").display()
+        ),
+    );
+    write(
+        "systemctl",
+        format!(
+            "[ -f {fails} ] && [ \"$1 $2\" = 'start docker.service' ] && {{ echo 'docker failed' >&2; exit 1; }}\nexit 0",
+            fails = host.path("start-fails").display()
+        ),
+    );
+    fs::create_dir_all(host.path("etc-docker")).unwrap();
+    fs::write(
+        host.path("etc-docker/daemon.json"),
+        r#"{"data-root": "/volume1/@docker", "log-driver": "local"}"#,
+    )
+    .unwrap();
+    fs::write(host.path("units/volume1-\\x40docker.mount"), "[Mount]\n").unwrap();
+}
+
+fn move_docker() -> Request {
+    Request::MoveDocker {
+        from_pool: PoolName::parse("tank").unwrap(),
+        from_volume: VolumeNumber::new(1).unwrap(),
+        to_pool: PoolName::parse("cold").unwrap(),
+        to_volume: VolumeNumber::new(2).unwrap(),
+    }
+}
+
+fn data_root(host: &Host) -> String {
+    let config: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(host.path("etc-docker/daemon.json")).unwrap()).unwrap();
+    config["data-root"].as_str().unwrap_or_default().to_owned()
+}
+
+#[tokio::test]
+async fn dockers_data_is_copied_switched_to_and_the_old_destroyed() {
+    let host = host(Erasable::Policy(ErasePolicy::Unused));
+    two_pools(&host);
+
+    assert_eq!(host.run(move_docker()).await, Response::Done);
+
+    let calls = host.calls();
+    let at = |call: &str| calls.iter().position(|c| c == call).unwrap_or_else(|| panic!("{call}: {calls:?}"));
+    assert!(at("systemctl stop docker.service") < at("zfs snapshot tank/zendiloos.docker@zendiloos-move"));
+    assert!(at("zfs send -R tank/zendiloos.docker@zendiloos-move") > at("systemctl stop docker.service"));
+    at("zfs receive -u -o mountpoint=legacy cold/zendiloos.docker");
+    assert!(
+        at("systemctl start docker.service") < at("zfs destroy -r tank/zendiloos.docker"),
+        "the old goes last"
+    );
+    assert_eq!(data_root(&host), "/volume2/@docker");
+    assert!(host.path("units/volume2-\\x40docker.mount").exists());
+    assert!(!host.path("units/volume1-\\x40docker.mount").exists());
+}
+
+#[tokio::test]
+async fn a_failed_copy_leaves_docker_on_its_data_running() {
+    let host = host(Erasable::Policy(ErasePolicy::Unused));
+    two_pools(&host);
+    fs::write(host.path("receive-fails"), "").unwrap();
+
+    assert_refused(host.run(move_docker()).await, ErrorCode::Failed, "out of space");
+
+    let calls = host.calls();
+    assert!(
+        calls.contains(&"zfs destroy -r cold/zendiloos.docker".to_owned()),
+        "the half copy goes: {calls:?}"
+    );
+    assert_eq!(calls.last().map(String::as_str), Some("systemctl start docker.service"), "{calls:?}");
+    assert_eq!(data_root(&host), "/volume1/@docker");
+    assert!(!calls.contains(&"zfs destroy -r tank/zendiloos.docker".to_owned()));
+}
+
+#[tokio::test]
+async fn a_failed_switch_points_docker_back_at_its_data() {
+    let host = host(Erasable::Policy(ErasePolicy::Unused));
+    two_pools(&host);
+    fs::write(host.path("start-fails"), "").unwrap();
+
+    assert_refused(host.run(move_docker()).await, ErrorCode::Failed, "docker failed");
+
+    assert_eq!(data_root(&host), "/volume1/@docker", "pointed back");
+    let calls = host.calls();
+    assert!(calls.contains(&"zfs destroy -r cold/zendiloos.docker".to_owned()), "{calls:?}");
+    assert!(!calls.contains(&"zfs destroy -r tank/zendiloos.docker".to_owned()), "the data stays");
+    assert!(!host.path("units/volume2-\\x40docker.mount").exists());
+}
+
+#[tokio::test]
+async fn docker_moves_only_where_its_data_is_said_to_be() {
+    let host = host(Erasable::Policy(ErasePolicy::Unused));
+    two_pools(&host);
+    fs::write(host.path("etc-docker/daemon.json"), r#"{"data-root": "/var/lib/docker"}"#).unwrap();
+    assert_refused(host.run(move_docker()).await, ErrorCode::Forbidden, "not on tank");
+
+    fs::write(host.path("etc-docker/daemon.json"), r#"{"data-root": "/volume1/@docker"}"#).unwrap();
+    let back = Request::MoveDocker {
+        from_pool: PoolName::parse("cold").unwrap(),
+        from_volume: VolumeNumber::new(2).unwrap(),
+        to_pool: PoolName::parse("tank").unwrap(),
+        to_volume: VolumeNumber::new(1).unwrap(),
+    };
+    assert_refused(host.run(back).await, ErrorCode::Forbidden, "not on cold");
+    fs::remove_file(host.path("dockerd")).unwrap();
+    assert_refused(host.run(move_docker()).await, ErrorCode::Forbidden, "not installed");
+    assert!(!host.calls().iter().any(|call| call.contains("stop docker")), "Docker kept running");
+}
+
+#[tokio::test]
+async fn personal_folders_get_a_dataset_and_quotas_per_user() {
+    let host = host(Erasable::Policy(ErasePolicy::Unused));
+    two_pools(&host);
+    let homes = |pool: &str, volume: u16| Request::PrepareHomes {
+        pool: PoolName::parse(pool).unwrap(),
+        volume: VolumeNumber::new(volume).unwrap(),
+    };
+
+    assert_eq!(host.run(homes("tank", 1)).await, Response::Done);
+    assert_eq!(host.run(homes("cold", 2)).await, Response::Done);
+    let calls = host.calls();
+    assert!(
+        !calls.iter().any(|call| call.contains("create") && call.contains("tank/zendiloos.homes")),
+        "kept"
+    );
+    assert!(
+        calls.iter().any(|call| call.contains("create") && call.ends_with("cold/zendiloos.homes")),
+        "{calls:?}"
+    );
+    let unit = fs::read_to_string(host.path("units/volume2-\\x40homes.mount")).unwrap();
+    assert!(unit.contains("What=cold/zendiloos.homes\nWhere=/volume2/@homes\n"), "{unit}");
+    assert_refused(host.run(homes("tank", 2)).await, ErrorCode::Forbidden, "not managed");
+
+    let quota = |bytes| Request::SetHomeQuota {
+        pool: PoolName::parse("tank").unwrap(),
+        volume: VolumeNumber::new(1).unwrap(),
+        user: zendiloos_agent_proto::UserName::parse("anna").unwrap(),
+        quota_bytes: bytes,
+    };
+    assert_eq!(host.run(quota(Some(1 << 30))).await, Response::Done);
+    assert_eq!(host.run(quota(None)).await, Response::Done);
+    let calls = host.calls();
+    assert!(
+        calls.contains(&"zfs set userquota@anna=1073741824 tank/zendiloos.homes".to_owned()),
+        "{calls:?}"
+    );
+    assert!(calls.contains(&"zfs set userquota@anna=none tank/zendiloos.homes".to_owned()));
+}
+
+#[tokio::test]
+async fn an_apps_dataset_goes_with_the_app() {
+    let host = host(Erasable::Policy(ErasePolicy::Unused));
+    two_pools(&host);
+    fs::write(host.path("units/volume1-\\x40apps-kuma.mount"), "[Mount]\n").unwrap();
+    let remove = |app: &str| Request::RemoveApp {
+        app: AppName::parse(app).unwrap(),
+        pool: PoolName::parse("tank").unwrap(),
+        volume: VolumeNumber::new(1).unwrap(),
+    };
+
+    // Never installed as far as Compose knows: only its dataset goes.
+    assert_eq!(host.run(remove("kuma")).await, Response::Done);
+    let calls = host.calls();
+    assert!(calls.contains(&"systemctl disable --now volume1-\\x40apps-kuma.mount".to_owned()), "{calls:?}");
+    assert!(calls.contains(&"zfs destroy -r tank/zendiloos.apps/kuma".to_owned()));
+    assert_eq!(host.run(remove("other")).await, Response::Done, "no dataset: nothing to destroy");
+    assert!(!host.calls().contains(&"zfs destroy -r tank/zendiloos.apps/other".to_owned()));
+}

@@ -779,4 +779,147 @@ mod tests {
             "apps' kept files stay as they were"
         );
     }
+
+    /// A folder of the test's own in `/dev/shm`, a mounted file system's
+    /// root below a real folder on every Linux: what a share is to the
+    /// agent. Removed when dropped.
+    struct Shm(PathBuf);
+
+    impl Shm {
+        fn new(tag: &str) -> Self {
+            let path = Path::new("/dev/shm").join(format!("zendiloos-shares-{}-{tag}", std::process::id()));
+            fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+
+        /// The folder's name, as a folder of the "share" `/dev/shm`.
+        fn folder(&self, below: &str) -> AppFolder {
+            let name = self.0.file_name().unwrap().to_str().unwrap();
+            AppFolder::parse(&if below.is_empty() { name.to_owned() } else { format!("{name}/{below}") })
+                .unwrap()
+        }
+    }
+
+    impl Drop for Shm {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn a_mounted_share_is_walked_and_its_folders_found() {
+        let shm = Shm::new("walk");
+        fs::create_dir_all(shm.0.join("Films")).unwrap();
+        fs::write(shm.0.join("notes.txt"), "").unwrap();
+        std::os::unix::fs::symlink("/etc", shm.0.join("escape")).unwrap();
+        let share = Path::new("/dev/shm");
+
+        assert!(walk(share, &shm.folder("Films")).is_ok());
+        assert!(walk(share, &shm.folder("escape")).is_err(), "never through a link");
+        assert_eq!(find(share, &shm.folder("Films")).unwrap(), Found::Folder);
+        assert_eq!(find(share, &shm.folder("notes.txt")).unwrap(), Found::File);
+        assert_eq!(find(share, &shm.folder("missing/deeper")).unwrap(), Found::Missing);
+        assert!(find(share, &shm.folder("escape")).is_err());
+    }
+
+    #[test]
+    fn a_pin_is_the_very_folder_the_walk_reaches() {
+        let shm = Shm::new("pinned");
+        fs::create_dir_all(shm.0.join("Films")).unwrap();
+        let share = Path::new("/dev/shm");
+        // `/dev/shm` itself stands for a pin of the share's root.
+        assert!(is_pinned(share, share, &AppFolder::whole()).is_ok());
+        let other = is_pinned(share, share, &shm.folder("Films")).unwrap_err();
+        assert!(other.to_string().contains("is not the folder"), "{other}");
+        let unmounted = is_pinned(&shm.0, share, &AppFolder::whole()).unwrap_err();
+        assert!(unmounted.to_string().contains("is not mounted"), "{unmounted}");
+    }
+
+    /// systemctl as a script recording its calls; it fails while `fail`
+    /// is there.
+    fn systemctl(dir: &Path) -> Program {
+        let path = dir.join("systemctl");
+        fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\necho \"$@\" >> {}\n[ -f {} ] && {{ echo 'Unit not found.' >&2; exit 5; }}\nexit 0\n",
+                dir.join("calls.log").display(),
+                dir.join("fail").display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        Program::new(&path).unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_pins_unit_is_placed_enabled_and_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = systemctl(dir.path());
+        let paths = HostPaths { units: dir.path().to_owned(), ..HostPaths::default() };
+        let owner = Owner::App(&app());
+        let pin = Pin {
+            share: "/volume1/media".into(),
+            folder: AppFolder::parse("Films").unwrap(),
+            at: "/run/zendiloos-app-shares/jellyfin/media".into(),
+            file: false,
+            create: false,
+        };
+        let unit = dir.path().join(owner.unit_name());
+
+        place_unit(&program, &paths, owner, &[pin.clone(), pin]).await.unwrap();
+        let text = fs::read_to_string(&unit).unwrap();
+        assert!(text.contains("RequiresMountsFor=/volume1/media\n"), "each share once: {text}");
+        repin(&program, owner).await.unwrap();
+        // No pins any more: the unit goes.
+        place_unit(&program, &paths, owner, &[]).await.unwrap();
+        assert!(!unit.exists());
+        remove_unit(&program, &paths, owner).await.unwrap();
+        let calls = fs::read_to_string(dir.path().join("calls.log")).unwrap();
+        assert_eq!(
+            calls,
+            "daemon-reload\nenable zendiloos-app-jellyfin-shares.service\n\
+             restart zendiloos-app-jellyfin-shares.service\n\
+             disable --now zendiloos-app-jellyfin-shares.service\ndaemon-reload\n",
+            "nothing to remove the second time"
+        );
+
+        fs::write(dir.path().join("fail"), "").unwrap();
+        let failed = repin(&program, owner).await.unwrap_err();
+        assert!(failed.to_string().contains("Unit not found."), "{failed}");
+    }
+
+    #[test]
+    fn unpinning_clears_the_places_and_pinning_wants_roots_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = HostPaths {
+            apps: dir.path().join("apps"),
+            app_shares: dir.path().join("app-shares"),
+            project_shares: dir.path().join("project-shares"),
+            ..HostPaths::default()
+        };
+        let places = dir.path().join("app-shares/jellyfin");
+        fs::create_dir_all(places.join("media")).unwrap();
+        fs::write(places.join("nginx.conf"), "").unwrap();
+
+        unpin_shares(&paths, &app()).unwrap();
+        assert!(!places.exists(), "every place goes");
+        unpin_shares(&paths, &app()).unwrap();
+        unpin_project(&paths, &project()).unwrap();
+
+        // Nothing kept: nothing to pin.
+        assert!(pin_shares(&paths, &app()).unwrap_err().contains("cannot read"));
+        fs::create_dir_all(&paths.apps).unwrap();
+        fs::write(paths.apps.join("jellyfin.json"), json!({ "services": {} }).to_string()).unwrap();
+        let theirs = pin_shares(&paths, &app());
+        if rustix::process::geteuid().is_root() {
+            assert!(theirs.is_ok(), "{theirs:?}");
+        } else {
+            // The places' folders are the test's, not root's.
+            assert!(theirs.unwrap_err().contains("others than root"));
+        }
+        fs::write(paths.apps.join("jellyfin.json"), "not json").unwrap();
+        assert!(pin_shares(&paths, &app()).unwrap_err().contains("cannot be read"));
+        assert!(pin_project(&paths, &project()).is_err(), "no kept project");
+    }
 }

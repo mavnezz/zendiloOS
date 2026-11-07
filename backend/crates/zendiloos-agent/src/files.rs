@@ -446,4 +446,90 @@ mod tests {
             assert!(matches!(refused, Err(OperationError::File(FileError::Invalid(_)))), "{refused:?}");
         }
     }
+
+    #[tokio::test]
+    async fn work_runs_on_a_thread_with_the_users_credentials_only() {
+        let (uid, gid) = (rustix::process::getuid().as_raw(), rustix::process::getgid().as_raw());
+        let identity = Identity { uid, gid, groups: vec![gid] };
+        let result = as_user(identity, || Ok(7)).await;
+        if rustix::process::geteuid().is_root() {
+            assert_eq!(result.unwrap(), 7);
+        } else {
+            // Without root a thread cannot even set its groups: nothing runs.
+            assert!(matches!(result, Err(OperationError::Credentials(_))), "{result:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn every_file_operation_wants_its_share_first() {
+        let directory = tempfile::tempdir().unwrap();
+        let files = files(directory.path());
+        let share = |path: &str| FileLocation {
+            volume: VolumeNumber::new(1).unwrap(),
+            root: FileRoot::Share(ShareName::parse("photos").unwrap()),
+            path: SharePath::parse(path).unwrap(),
+            snapshot: None,
+        };
+        let home = FileLocation { root: FileRoot::Home, ..share("a.txt") };
+        let snapshot = zendiloos_agent_proto::SnapshotLabel::parse("zdl-2026-11-05_19.40.01").unwrap();
+        let home_snapshot = FileLocation { snapshot: Some(snapshot.clone()), ..home.clone() };
+        let share_snapshot = FileLocation { snapshot: Some(snapshot), ..share("a.txt") };
+        let anna = user("anna");
+        for request in [
+            Request::OpenFile { user: anna.clone(), location: share("a.txt") },
+            Request::OpenFile { user: anna.clone(), location: home.clone() },
+            Request::OpenFile { user: anna.clone(), location: share_snapshot },
+            Request::MoveEntry { user: anna.clone(), from: share("a"), to: share("b"), replace: false },
+            Request::CopyEntry { user: anna.clone(), from: share("a"), to: share("b") },
+            Request::DiscardUpload { user: anna.clone(), location: share(".zendiloos-upload-1") },
+            Request::RestoreEntry { user: anna.clone(), location: share(".recycle/anna/a") },
+            Request::ArchiveFolder { user: anna.clone(), location: share("") },
+            Request::ArchiveFolder { user: anna.clone(), location: home },
+        ] {
+            let refused = files.execute(&request).await;
+            assert!(matches!(refused, Err(OperationError::File(_))), "{}: {refused:?}", request.name());
+        }
+        let no_snapshots =
+            files.execute(&Request::OpenFile { user: anna.clone(), location: home_snapshot }).await;
+        assert!(
+            matches!(no_snapshots, Err(OperationError::File(FileError::Invalid(why))) if why.contains("no snapshots"))
+        );
+        // A second folder download of anna's may start once the first ended.
+        let again = files.execute(&Request::ArchiveFolder { user: anna, location: share("") }).await;
+        assert!(matches!(again, Err(OperationError::File(_))), "{again:?}");
+        let other = files.execute(&Request::Reboot {}).await;
+        assert!(matches!(other, Err(OperationError::Refused(why)) if why.contains("not a file operation")));
+    }
+
+    #[tokio::test]
+    async fn an_apps_folders_are_made_only_for_its_own_account_and_data() {
+        let directory = tempfile::tempdir().unwrap();
+        let files = files(directory.path());
+        let app = zendiloos_agent_proto::AppName::parse("kuma").unwrap();
+        let folders = |count: usize| {
+            (0..count).map(|n| AppFolder::parse(&format!("f{n}")).unwrap()).collect::<Vec<_>>()
+        };
+        let make = |folders| Request::MakeAppFolders {
+            app: app.clone(),
+            volume: VolumeNumber::new(1).unwrap(),
+            folders,
+        };
+
+        let many = files.execute(&make(folders(AppFolder::MAX_COUNT + 1))).await;
+        assert!(matches!(many, Err(OperationError::Refused(_))), "{many:?}");
+        let no_account = files.execute(&make(folders(1))).await;
+        assert!(matches!(no_account, Err(OperationError::NotManaged(who)) if who == "app-kuma"));
+        let mut passwd = std::fs::read_to_string(directory.path().join("passwd")).unwrap();
+        passwd.push_str(&format!(
+            "app-kuma:x:2100:2100:{}:/nonexistent:/usr/sbin/nologin\n",
+            crate::accounts::APP_COMMENT
+        ));
+        std::fs::write(directory.path().join("passwd"), passwd).unwrap();
+        let mut group = std::fs::read_to_string(directory.path().join("group")).unwrap();
+        group.push_str("app-kuma:x:2100:\n");
+        std::fs::write(directory.path().join("group"), group).unwrap();
+        // Its account is there, its data is not.
+        let no_data = files.execute(&make(folders(1))).await;
+        assert!(matches!(no_data, Err(OperationError::File(_))), "{no_data:?}");
+    }
 }

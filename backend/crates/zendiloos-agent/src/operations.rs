@@ -436,3 +436,35 @@ impl OperationError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_failure_has_the_code_zendiloosd_acts_on() {
+        let io = || io::Error::other("x");
+        for (error, code) in [
+            (OperationError::Conflict, ErrorCode::Conflict),
+            (OperationError::NotManaged("user x".into()), ErrorCode::Forbidden),
+            (OperationError::Refused("no".into()), ErrorCode::Forbidden),
+            (OperationError::File(FileError::NotFound), ErrorCode::NotFound),
+            (OperationError::File(FileError::Denied), ErrorCode::Denied),
+            (OperationError::File(FileError::Exists), ErrorCode::Conflict),
+            (OperationError::File(FileError::Invalid("odd")), ErrorCode::InvalidRequest),
+            (OperationError::File(FileError::Io(io())), ErrorCode::Failed),
+            (OperationError::Credentials(io()), ErrorCode::Failed),
+            (OperationError::NotNow("later".into()), ErrorCode::Failed),
+        ] {
+            assert_eq!(error.code(), code, "{error}");
+        }
+    }
+
+    #[test]
+    fn programs_are_named_by_absolute_paths_only() {
+        let none = Erasable::Policy(crate::pools::ErasePolicy::None);
+        assert!(Operations::new(Role::System, &Tools::default(), none.clone()).is_ok());
+        let relative = Tools { lsblk: "lsblk".into(), ..Tools::default() };
+        assert!(Operations::new(Role::System, &relative, none).is_err(), "found through no PATH");
+    }
+}

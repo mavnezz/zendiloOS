@@ -1938,4 +1938,14 @@ mod tests {
             assert_eq!(RequestId::parse(bad), Err(InvalidRequestId), "{bad:?}");
         }
     }
+
+    #[test]
+    fn each_layout_takes_its_disks_and_its_keyword() {
+        let all = [Layout::Single, Layout::Mirror, Layout::Raidz1, Layout::Raidz2, Layout::Raidz3];
+        let keywords: Vec<Option<&str>> = all.iter().map(|layout| layout.keyword()).collect();
+        assert_eq!(keywords, [None, Some("mirror"), Some("raidz1"), Some("raidz2"), Some("raidz3")]);
+        let least: Vec<usize> = all.iter().map(|layout| *layout.disks().start()).collect();
+        assert_eq!(least, [1, 2, 3, 4, 5], "one more than the disks it may lose");
+        assert!(all.iter().all(|layout| *layout.disks().end() <= MAX_POOL_DISKS));
+    }
 }

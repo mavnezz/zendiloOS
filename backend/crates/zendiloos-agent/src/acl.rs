@@ -345,4 +345,16 @@ mod tests {
         let gone = default_without(Some(default), &rules(&[Who::User(1000)], &[])).unwrap();
         assert_eq!(gone, Acl::from_mode(0o750));
     }
+
+    #[test]
+    fn a_denied_file_gets_nothing_and_an_untouched_default_stays() {
+        let denied =
+            with(None, 0o755, false, &rules(&[], &[(Who::User(1000), SharePermission::Deny)])).unwrap();
+        assert_eq!(denied.named(Who::User(1000)), Some(0), "not even execute");
+        let default = Acl::from_mode(0o750);
+        assert!(
+            default_without(Some(default), &rules(&[Who::User(1000)], &[])).is_none(),
+            "nobody to remove"
+        );
+    }
 }

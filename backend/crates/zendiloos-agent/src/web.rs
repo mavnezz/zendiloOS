@@ -76,4 +76,37 @@ mod tests {
         assert!(tls_config(TlsMinimum::Tls12).ends_with("ssl_protocols TLSv1.2 TLSv1.3;\n"));
         assert!(tls_config(TlsMinimum::Tls13).ends_with("ssl_protocols TLSv1.3;\n"));
     }
+
+    /// nginx's settings in `dir`, with systemctl a script that fails while
+    /// `fail` is there.
+    fn web(dir: &std::path::Path) -> Web {
+        let systemctl = dir.join("systemctl");
+        fs::write(
+            &systemctl,
+            format!("#!/bin/sh\n[ -f {} ] && exit 1\nexit 0\n", dir.join("fail").display()),
+        )
+        .unwrap();
+        fs::set_permissions(&systemctl, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let tools = Tools { systemctl, ..Tools::default() };
+        Web::new(&tools, WebPaths { tls: dir.join("nginx/tls.conf") }).unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_oldest_version_is_written_and_nginx_reloaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let web = web(dir.path());
+        assert_eq!(web.state().unwrap(), Response::WebTlsState { config: String::new() }, "none yet");
+        assert_eq!(web.set_tls(TlsMinimum::Tls13).await.unwrap(), Response::Done);
+        let Response::WebTlsState { config } = web.state().unwrap() else { panic!() };
+        assert!(config.contains("TLSv1.3;"));
+
+        fs::write(dir.path().join("fail"), "").unwrap();
+        assert!(web.set_tls(TlsMinimum::Tls12).await.is_err(), "nginx did not take it");
+        fs::remove_dir_all(dir.path().join("nginx")).unwrap();
+        fs::write(dir.path().join("nginx"), "a file").unwrap();
+        assert!(web.set_tls(TlsMinimum::Tls12).await.is_err(), "no folder for it");
+        fs::remove_file(dir.path().join("nginx")).unwrap();
+        fs::create_dir_all(dir.path().join("nginx/tls.conf/inside")).unwrap();
+        assert!(web.state().is_err(), "not readable");
+    }
 }

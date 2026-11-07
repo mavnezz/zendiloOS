@@ -686,4 +686,174 @@ mod tests {
         let refused = take_release(&without_key, &release, &taken).unwrap_err();
         assert!(refused.contains("no key"), "{refused}");
     }
+
+    #[test]
+    fn a_release_needs_a_readable_signature_listing_it_and_a_key() {
+        let root = tempfile::tempdir().unwrap();
+        let spool = root.path().join("spool");
+        fs::create_dir_all(&spool).unwrap();
+        let key = root.path().join("release.pub");
+        let paths = HostPaths {
+            update_spool: spool.clone(),
+            release_keys: vec![key.clone()],
+            ..HostPaths::default()
+        };
+        let release = ReleasePackage::parse("zendiloos_9.9.9_amd64.deb").unwrap();
+        let taken = root.path().join("taken");
+        fs::write(spool.join(release.as_str()), PACKAGE).unwrap();
+        fs::write(spool.join(SUMS), SIGNED_SUMS).unwrap();
+
+        fs::write(&key, "no key at all").unwrap();
+        assert!(take_release(&paths, &release, &taken).unwrap_err().contains("holds no minisign key"));
+        // The key's second line alone is a key too.
+        fs::write(&key, KEY.lines().nth(1).unwrap()).unwrap();
+        fs::write(spool.join(SIGNATURE), "garbage").unwrap();
+        assert!(take_release(&paths, &release, &taken).unwrap_err().contains("cannot be read"));
+        fs::write(spool.join(SIGNATURE), SIGNED).unwrap();
+        assert!(take_release(&paths, &release, &taken).is_ok());
+
+        let other = ReleasePackage::parse("zendiloos_9.9.8_amd64.deb").unwrap();
+        fs::write(spool.join(other.as_str()), PACKAGE).unwrap();
+        assert!(take_release(&paths, &other, &taken).unwrap_err().contains("does not list"));
+    }
+
+    #[test]
+    fn a_signed_release_that_is_no_zendiloos_package_is_not_installed() {
+        let root = tempfile::tempdir().unwrap();
+        let spool = root.path().join("spool");
+        fs::create_dir_all(&spool).unwrap();
+        let key = root.path().join("release.pub");
+        fs::write(&key, KEY).unwrap();
+        let paths = HostPaths {
+            update_spool: spool.clone(),
+            release_keys: vec![key],
+            packages: root.path().join("packages"),
+            ..HostPaths::default()
+        };
+        let release = ReleasePackage::parse("zendiloos_9.9.9_amd64.deb").unwrap();
+        fs::write(spool.join(release.as_str()), PACKAGE).unwrap();
+        fs::write(spool.join(SUMS), SIGNED_SUMS).unwrap();
+        fs::write(spool.join(SIGNATURE), SIGNED).unwrap();
+
+        // Signed and listed, but no Debian package at all: dpkg-deb finds no
+        // name in it (or is not there to ask), and apt is never run.
+        let refused = install_release(&paths, &release).unwrap_err();
+        assert!(refused.contains("not zendiloos") || refused.contains("dpkg-deb"), "{refused}");
+    }
+
+    #[test]
+    fn a_copy_is_bounded_and_never_replaces_anything() {
+        let root = tempfile::tempdir().unwrap();
+        let from = root.path().join("from");
+        fs::write(&from, "0123456789").unwrap();
+        assert!(
+            copy_plain(&from, &root.path().join("small"), 4).unwrap_err().contains("no file of the release")
+        );
+        assert_eq!(copy_plain(&from, &root.path().join("ok"), 64).unwrap(), b"0123456789");
+        assert!(copy_plain(&from, &root.path().join("ok"), 64).is_err(), "the target is there already");
+        assert!(copy_plain(&root.path().join("missing"), &root.path().join("x"), 64).is_err());
+        let big = copy_plain(&from, &root.path().join("big"), MAX_SMALL + 1).unwrap();
+        assert!(big.is_empty(), "a package's content is not kept in memory");
+    }
+
+    #[test]
+    fn the_newest_kernel_with_modules_counts() {
+        if !Path::new("/usr/bin/dpkg").exists() {
+            eprintln!("skipped: dpkg orders the versions, and it is not here");
+            return;
+        }
+        let modules = tempfile::tempdir().unwrap();
+        assert_eq!(newest_kernel(&modules.path().join("missing")).unwrap(), None);
+        for (kernel, modules_dep) in
+            [("6.12.38+deb13-amd64", true), ("6.12.57+deb13-amd64", true), ("6.99.0-unpacked", false)]
+        {
+            fs::create_dir_all(modules.path().join(kernel)).unwrap();
+            if modules_dep {
+                fs::write(modules.path().join(kernel).join("modules.dep"), "").unwrap();
+            }
+        }
+        assert_eq!(newest_kernel(modules.path()).unwrap().as_deref(), Some("6.12.57+deb13-amd64"));
+        assert!(newer("1.10", "1.9").unwrap());
+        assert!(!newer("1.0~rc1", "1.0").unwrap());
+    }
+
+    /// The agent's side, with systemctl and systemd-run as scripts: a file
+    /// `active` makes the runner's unit active, `refuse` makes systemd-run
+    /// fail.
+    fn packages(root: &Path) -> Packages {
+        let script = |name: &str, body: &str| {
+            let path = root.join(name);
+            fs::write(
+                &path,
+                format!(
+                    "#!/bin/sh\necho \"$@\" >> {}\n{body}\n",
+                    root.join(name).with_extension("log").display()
+                ),
+            )
+            .unwrap();
+            fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+            Program::new(&path).unwrap()
+        };
+        let systemctl = script("systemctl", &format!("[ -f {} ]", root.join("active").display()));
+        let systemd_run = script(
+            "systemd-run",
+            &format!(
+                "[ -f {} ] && {{ echo 'unit exists' >&2; exit 1; }}; exit 0",
+                root.join("refuse").display()
+            ),
+        );
+        let paths = HostPaths { packages: root.join("state"), ..HostPaths::default() };
+        Packages::new(systemctl, systemd_run, paths)
+    }
+
+    #[tokio::test]
+    async fn a_run_starts_in_a_unit_of_its_own_once_at_a_time() {
+        let root = tempfile::tempdir().unwrap();
+        let packages = packages(root.path());
+
+        let Response::PackagesStarted { id } = packages.start(PackageTask::Check, None).await.unwrap() else {
+            panic!()
+        };
+        assert!(id.len() == 16 && id.bytes().all(|b| b.is_ascii_hexdigit()), "{id}");
+        let asked = fs::read_to_string(root.path().join("systemd-run.log")).unwrap();
+        assert!(
+            asked.contains(&format!("--unit={UNIT}")) && asked.contains(&format!("run-packages {id} check"))
+        );
+
+        fs::write(root.path().join("active"), "").unwrap();
+        assert!(packages.running().await);
+        let busy = packages.start(PackageTask::Update, None).await.unwrap_err();
+        assert!(busy.to_string().contains("busy"), "{busy}");
+        fs::remove_file(root.path().join("active")).unwrap();
+
+        fs::write(root.path().join("refuse"), "").unwrap();
+        let failed = packages.start(PackageTask::Update, None).await.unwrap_err();
+        assert!(failed.to_string().contains("unit exists"), "{failed}");
+
+        let release = ReleasePackage::parse("zendiloos_9.9.9_amd64.deb").unwrap();
+        let docker = packages.start(PackageTask::InstallDocker, Some(&release)).await.unwrap_err();
+        assert!(docker.to_string().contains("only an update"));
+        // No key here: the release is refused before anything runs.
+        let unchecked = packages.start(PackageTask::Update, Some(&release)).await.unwrap_err();
+        assert!(unchecked.to_string().contains("no key"), "{unchecked}");
+    }
+
+    #[tokio::test]
+    async fn a_run_that_stopped_unseen_is_reported_as_failed() {
+        let root = tempfile::tempdir().unwrap();
+        let packages = packages(root.path());
+        assert_eq!(packages.state().await.unwrap(), Response::Packages { run: None });
+
+        record(&root.path().join("state"), &run(PackageTask::Update)).unwrap();
+        fs::write(root.path().join("active"), "").unwrap();
+        let Response::Packages { run: Some(going) } = packages.state().await.unwrap() else { panic!() };
+        assert_eq!(going.state, PackageRunState::Running);
+        fs::remove_file(root.path().join("active")).unwrap();
+        let Response::Packages { run: Some(stopped) } = packages.state().await.unwrap() else { panic!() };
+        assert_eq!(stopped.state, PackageRunState::Failed);
+        assert!(stopped.error.unwrap().contains("restarted"));
+
+        fs::write(root.path().join("state").join(STATE_FILE), "{").unwrap();
+        assert!(packages.state().await.unwrap_err().to_string().contains("cannot be read"));
+    }
 }
