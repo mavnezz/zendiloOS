@@ -5,7 +5,10 @@
 #   1. a FAT, an exFAT, an NTFS and an ext4 drive are mounted when seen:
 #      under /run/zendiloos-removable, nosuid, nodev, noexec; FAT for the
 #      users' group, nothing runs from it
-#   2. a write-protected drive is mounted read only
+#   2. a write-protected drive is mounted read only; the explorer works on
+#      the drives: uploads, a file of a foreign UID on ext4, copies into a
+#      share that belong to the administrator with the share's ACL, a move
+#      out of a share, deletion; a user who is no administrator is refused
 #   3. a drive with a file open is not ejected; then it is, and is gone
 #   4. a drive pulled out unannounced is cleaned up and reported
 #   5. a disk that was part of a pool is never offered
@@ -26,6 +29,7 @@ user=${ZENDILOOS_USER:-admin}
 password=${ZENDILOOS_PASSWORD:-correct horse battery}
 work=$(mktemp -d)
 plugged=()
+share=removabletest
 
 say() { printf '\033[1m%s\033[0m\n' "$*"; }
 fail() { printf '\033[31mFAILED: %s\033[0m\n' "$*" >&2; exit 1; }
@@ -56,6 +60,30 @@ wait_for() {
     fail "timed out waiting for $what"
 }
 
+job_succeeded() {
+    local id=$1 state
+    [[ $id =~ ^[0-9]+$ ]] || fail "no job: $id"
+    wait_for "job $id" "[[ \$(call GET /jobs/$id | jq -r .state) != running ]]" 120
+    state=$(call GET "/jobs/$id" | jq -r '.state + " " + (.error_code // "") + " " + (.error_detail // "")')
+    [[ $state == succeeded* ]] || fail "job $id: $state"
+}
+
+# The status code of a raw upload of $3 as $2 into $1 (an API path).
+upload() {
+    curl -sk -o "$work/last" -w '%{http_code}' -b "$work/admin.jar" -X POST -H "Origin: $base" \
+        -H "X-CSRF-Token: $(cat "$work/admin.csrf")" -H 'Content-Type: application/octet-stream' \
+        --data-binary "@$3" "$api$1/upload?name=$2"
+}
+
+delete_share() {
+    local id
+    for id in $(call GET /shares | jq -r --arg s "$share" '.[] | select(.name == $s) | .id'); do
+        job_succeeded "$(call POST "/shares/$id/delete" "{\"confirm\":\"$share\"}" | jq -r .id)"
+    done
+    id=$(call GET /accounts | jq -r '.[] | select(.name == "rmuser") | .id')
+    [[ -z $id ]] || call DELETE "/accounts/$id" >/dev/null
+}
+
 plug() { "$root/scripts/vm.sh" removable-attach "$@"; plugged+=("$2"); }
 pull() {
     "$root/scripts/vm.sh" removable-detach "$1"
@@ -70,6 +98,7 @@ mounted() { drive "$1" | jq -e '.state == "mounted"'; }
 
 cleanup() {
     set +e
+    delete_share
     for id in "${plugged[@]}"; do "$root/scripts/vm.sh" removable-detach "$id" 2>/dev/null; done
     rm -rf "$work"
 }
@@ -79,6 +108,9 @@ say "Signing in as $user"
 curl -sk -c "$work/admin.jar" -H "Origin: $base" -H 'Content-Type: application/json' \
     -d "$(jq -n --arg name "$user" --arg password "$password" '{name: $name, password: $password}')" \
     "$api/auth/login" | jq -er .csrf_token >"$work/admin.csrf" || fail "cannot sign in"
+
+say "Cleaning up an earlier run"
+delete_share
 
 say "Images"
 truncate -s 64M "$work/fat.img" "$work/exfat.img" "$work/ro.img"
@@ -122,6 +154,58 @@ plug "$work/ro.img" zro ro
 wait_for "the protected drive" "mounted ZREADONLY" 90
 drive ZREADONLY | jq -e '.read_only == true' >/dev/null || fail "not read only: $(drive ZREADONLY)"
 [[ ,$(vm "findmnt -no OPTIONS '$(drive ZREADONLY | jq -er .path)'"), == *,ro,* ]] || fail "mounted writable"
+
+say "2b. Files on the drives, and into and out of a share"
+pool=$(call GET /storage/pools | jq -er '[.[] | select(.mounted != false)][0].name') || fail "no pool"
+volume=$(call GET /storage/pools | jq -r --arg p "$pool" '.[] | select(.name == $p) | .volume')
+me=$(call GET /auth/session | jq -er .account.id)
+share_id=$(call POST /shares "$(jq -n --arg n "$share" --arg pool "$pool" --argjson me "$me" \
+    '{name:$n,pool:$pool,shared:false,access:[{kind:"account",id:$me,access:"read_write"}]}')" | jq -er .id) || fail "share"
+shared="/volume$volume/$share"
+fat_id=$(drive ZFAT | jq -er .id) ext4_id=$(drive ZEXT4 | jq -er .id)
+fat=$(drive ZFAT | jq -er .path) ext4=$(drive ZEXT4 | jq -er .path)
+echo 'up on the stick' >"$work/up.txt"
+[[ $(upload "/files/removable/$fat_id" up.txt "$work/up.txt") =~ ^20 ]] || fail "upload: $(cat "$work/last")"
+[[ $(vm "sudo stat -c '%U:%G' '$fat/up.txt'") == root:zendiloos-users ]] || fail "the upload's owner on FAT"
+call GET "/files/removable/$fat_id/folder" | jq -e '.entries | map(.name) | index("up.txt")' >/dev/null \
+    || fail "the listing: $(call GET "/files/removable/$fat_id/folder")"
+[[ $(call GET "/files/removable/$fat_id/download?path=up.txt") == 'up on the stick' ]] || fail "download from FAT"
+# Formatted elsewhere: owned by someone this NAS does not know, for them alone.
+vm "echo secret | sudo tee '$ext4/foreign.txt' >/dev/null && sudo chown 4321:4321 '$ext4/foreign.txt' && sudo chmod 600 '$ext4/foreign.txt'"
+[[ $(call GET "/files/removable/$ext4_id/download?path=foreign.txt") == secret ]] || fail "ext4's foreign file"
+# Into the share: the administrator's, with the share's ACL, as an upload.
+job_succeeded "$(call POST "/files/removable/$fat_id/transfer" \
+    "{\"mode\":\"copy\",\"paths\":[\"up.txt\"],\"target_share\":$share_id,\"target_path\":\"\"}" | jq -r .id)"
+job_succeeded "$(call POST "/files/removable/$ext4_id/transfer" \
+    "{\"mode\":\"copy\",\"paths\":[\"foreign.txt\"],\"target_share\":$share_id,\"target_path\":\"\"}" | jq -r .id)"
+for name in up.txt foreign.txt; do
+    [[ $(vm "sudo stat -c %U '$shared/$name'") == "$user" ]] || fail "$name in the share is not the administrator's"
+    vm "sudo getfacl -p '$shared/$name' | grep -q '^user:$user:rw'" || fail "$name lacks the share's ACL"
+done
+[[ $(vm "sudo cat '$shared/foreign.txt'") == secret ]] || fail "the copied file's content"
+vm "sudo test -f '$fat/up.txt'" || fail "a copy took the original"
+# Out of the share onto the stick, moved.
+echo 'from the share' >"$work/back.txt"
+[[ $(upload "/files/shares/$share_id" back.txt "$work/back.txt") =~ ^20 ]] || fail "upload to the share: $(cat "$work/last")"
+job_succeeded "$(call POST "/files/shares/$share_id/transfer" \
+    "{\"mode\":\"move\",\"paths\":[\"back.txt\"],\"target_drive\":\"$fat_id\",\"target_path\":\"\"}" | jq -r .id)"
+[[ $(vm "sudo cat '$fat/back.txt'") == 'from the share' ]] || fail "the move did not reach the stick"
+vm "sudo test ! -e '$shared/back.txt'" || fail "the move left the source"
+# Deleting on a drive is for good: no bin there.
+job_succeeded "$(call POST "/files/removable/$fat_id/delete" '{"paths":["up.txt","back.txt"]}' | jq -r .id)"
+vm "sudo test ! -e '$fat/up.txt' && sudo test ! -e '$fat/back.txt' && sudo test ! -e '$fat/.recycle'" || fail "deleting on the stick"
+# Someone who is no administrator sees no drives.
+call POST /accounts '{"name":"rmuser","role":"user","password":"third secret phrase"}' | jq -er .id >/dev/null || fail "rmuser"
+curl -sk -c "$work/rmuser.jar" -H "Origin: $base" -H 'Content-Type: application/json' \
+    -d '{"name":"rmuser","password":"third secret phrase"}' "$api/auth/login" | jq -er .csrf_token >"$work/rmuser.csrf"
+curl -sk -b "$work/rmuser.jar" -c "$work/rmuser.jar" -X POST -H "Origin: $base" -H "X-CSRF-Token: $(cat "$work/rmuser.csrf")" \
+    -H 'Content-Type: application/json' -d '{"current_password":"third secret phrase","new_password":"fourth secret phrase"}' \
+    "$api/auth/password" >/dev/null
+for path in /storage/removable "/files/removable/$fat_id/folder"; do
+    code=$(curl -sk -o /dev/null -w '%{http_code}' -b "$work/rmuser.jar" -H "Origin: $base" "$api$path")
+    [[ $code == 403 ]] || fail "a user got $code for $path"
+done
+delete_share
 
 say "3. Eject: not while in use, then gone"
 id=$(drive ZEXFAT | jq -er .id) place=$(drive ZEXFAT | jq -er .path)
