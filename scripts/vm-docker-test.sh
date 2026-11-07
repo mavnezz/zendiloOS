@@ -152,7 +152,9 @@ call GET "/jobs/$pull_job" | jq -e '.output | map(select(test("[Pp]ull"))) | len
 
 say "2b. One container: its details, processes and a terminal"
 box=$(call GET "/docker/projects/$project" | jq -er '.containers[0].name') || fail "no container"
-call GET "/docker/containers/$box" | jq -e '.mounts | map(select(.destination == "/data")) | length == 1' >/dev/null \
+call GET "/docker/containers/$box" \
+    | jq -e --arg p "$project" '.container.project == $p and (.command | join(" ") | contains("sleep 3600"))
+        and (.attached_networks | length > 0) and .privileges.privileged == false' >/dev/null \
     || fail "the container's details: $(call GET "/docker/containers/$box" | jq -c .)"
 call GET "/docker/containers/$box/processes" | jq -e '[.. | strings | select(test("sleep 3600"))] | length > 0' >/dev/null \
     || fail "its processes: $(call GET "/docker/containers/$box/processes" | jq -c .)"
