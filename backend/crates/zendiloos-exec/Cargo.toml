@@ -8,7 +8,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-rustix = { workspace = true, features = ["process"] }
+rustix = { workspace = true, features = ["process", "pty", "termios", "fs"] }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["process", "io-util", "time", "net"] }
 

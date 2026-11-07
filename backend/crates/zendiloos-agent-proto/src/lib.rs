@@ -33,8 +33,8 @@ pub use apps::{
 pub use client::{AgentTransport, Report, TransportError, UnixTransport};
 pub use descriptor::{MessageReader, read_message_with_file, write_message_with_file};
 pub use docker::{
-    ComposeText, ContainerAction, ContainerId, ImageId, ImageReference, InvalidDockerName, NetworkName,
-    ProjectAction, ProjectConfig, ProjectDirectory, ProjectName, Subnet,
+    ComposeText, ContainerAction, ContainerId, ExecCommand, ImageId, ImageReference, InvalidDockerName,
+    NetworkName, ProjectAction, ProjectConfig, ProjectDirectory, ProjectName, Subnet, TerminalSize,
 };
 pub use files::{
     DirectoryEntry, EntryKind, FileLocation, FileRoot, FoundEntry, HOMES_DIRECTORY, InvalidSearchText,
@@ -303,6 +303,26 @@ pub enum Request {
     ContainerLogs {
         container: ContainerId,
         lines: u32,
+    },
+    /// `docker container inspect` of one container: a JSON array of one.
+    InspectContainer {
+        container: ContainerId,
+    },
+    /// The processes of a running container, `docker top` with fixed
+    /// columns: a table, its header first.
+    ContainerProcesses {
+        container: ContainerId,
+    },
+    /// Starts `command` in a running container on a terminal of its own
+    /// (`docker exec --interactive --tty`) and answers
+    /// [`Response::Terminal`], which carries the terminal's master side:
+    /// what is written to it is typed, what is read from it is what the
+    /// program wrote, its size is set on it. Closing it hangs up, which
+    /// ends the program; a session lasts a day at most.
+    OpenTerminal {
+        container: ContainerId,
+        command: ExecCommand,
+        size: TerminalSize,
     },
     RemoveImage {
         image: ImageId,
@@ -653,6 +673,9 @@ impl Request {
             Request::DockerDiskUsage {} => "docker_disk_usage",
             Request::ControlContainer { .. } => "control_container",
             Request::ContainerLogs { .. } => "container_logs",
+            Request::InspectContainer { .. } => "inspect_container",
+            Request::ContainerProcesses { .. } => "container_processes",
+            Request::OpenTerminal { .. } => "open_terminal",
             Request::RemoveImage { .. } => "remove_image",
             Request::PullImage { .. } => "pull_image",
             Request::PruneImages {} => "prune_images",
@@ -813,6 +836,9 @@ pub enum Response {
     DockerOutput {
         text: String,
     },
+    /// A terminal in a container was opened; its master side comes along
+    /// ([`Request::OpenTerminal`]).
+    Terminal {},
     WebTlsState {
         /// The settings file zendiloOS wrote; empty if none.
         config: String,

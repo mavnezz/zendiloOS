@@ -3247,6 +3247,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "jiff",
+ "rustix",
  "serde_json",
  "tempfile",
  "tokio",

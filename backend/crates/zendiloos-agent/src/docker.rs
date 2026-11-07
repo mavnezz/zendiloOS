@@ -12,13 +12,16 @@
 
 use std::fs;
 use std::io::Read;
+use std::os::fd::OwnedFd;
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use serde_json::{Map, Value};
 use zendiloos_agent_proto::{
-    ComposeText, ContainerAction, ContainerId, ImageId, ImageReference, NetworkName, ProjectAction,
-    ProjectDirectory, ProjectName, Response, Subnet,
+    ComposeText, ContainerAction, ContainerId, ExecCommand, ImageId, ImageReference, NetworkName,
+    ProjectAction, ProjectDirectory, ProjectName, Response, Subnet, TerminalSize,
 };
 use zendiloos_exec::{Limits, Output, Program, Surroundings};
 
@@ -38,6 +41,16 @@ const KEPT_BY_ZENDILOOS: &str = "/etc/zendiloos/";
 const PROJECT_LABEL: &str = "label=com.docker.compose.project=";
 /// Networks Docker itself has; they cannot be removed.
 const BUILT_IN_NETWORKS: [&str; 3] = ["bridge", "host", "none"];
+/// The columns `docker top` shows, for `ps`; the command with its
+/// arguments last, as it may hold spaces.
+const PROCESS_COLUMNS: &str = "pid,ppid,user,pcpu,pmem,rss,etime,args";
+/// Terminals open at once in all containers; more are refused.
+const MAX_TERMINALS: usize = 16;
+/// A terminal's program ends after a day at the latest.
+const TERMINAL_LIFETIME: Duration = Duration::from_secs(24 * 60 * 60);
+/// `docker exec` would leave the program running unseen on Ctrl-P Ctrl-Q,
+/// which shells use; a sequence nobody types instead.
+const DETACH_KEYS: &str = "--detach-keys=ctrl-@,ctrl-@,ctrl-@,ctrl-@";
 
 fn surroundings() -> Surroundings<'static> {
     Surroundings {
@@ -60,11 +73,14 @@ fn text(stdout: Vec<u8>) -> Result<String, OperationError> {
 #[derive(Debug)]
 pub(crate) struct Docker {
     docker: Program,
+    setsid: Program,
+    /// Terminals whose program has not ended yet.
+    terminals: Arc<AtomicUsize>,
 }
 
 impl Docker {
-    pub(crate) fn new(docker: Program) -> Self {
-        Self { docker }
+    pub(crate) fn new(docker: Program, setsid: Program) -> Self {
+        Self { docker, setsid, terminals: Arc::new(AtomicUsize::new(0)) }
     }
 
     async fn run(
@@ -170,6 +186,78 @@ impl Docker {
             )));
         }
         Ok(Self::output(printed))
+    }
+
+    pub(crate) async fn inspect_container(
+        &self,
+        container: &ContainerId,
+    ) -> Result<Response, OperationError> {
+        Ok(Self::output(self.printed(&["container", "inspect", container.as_str()], QUICK).await?))
+    }
+
+    pub(crate) async fn container_processes(
+        &self,
+        container: &ContainerId,
+    ) -> Result<Response, OperationError> {
+        let args = ["top", container.as_str(), "-eo", PROCESS_COLUMNS];
+        Ok(Self::output(self.printed(&args, QUICK).await?))
+    }
+
+    /// Starts `command` in the container on a terminal of its own, through
+    /// `docker exec`, and hands back the terminal's master side. The
+    /// program ends when zendiloosd closes it (a hang-up), after
+    /// [`TERMINAL_LIFETIME`] at the latest; it is waited for here.
+    pub(crate) async fn open_terminal(
+        &self,
+        container: &ContainerId,
+        command: &ExecCommand,
+        size: TerminalSize,
+    ) -> Result<(Response, OwnedFd), OperationError> {
+        let open = self.terminals.fetch_add(1, Ordering::SeqCst);
+        let release = Arc::clone(&self.terminals);
+        if open >= MAX_TERMINALS {
+            release.fetch_sub(1, Ordering::SeqCst);
+            return Err(OperationError::Refused(format!(
+                "{MAX_TERMINALS} terminals are open already; end one first"
+            )));
+        }
+        let mut args = vec![
+            "exec",
+            "--interactive",
+            "--tty",
+            DETACH_KEYS,
+            "--env",
+            "TERM=xterm-256color",
+            container.as_str(),
+        ];
+        args.extend(command.words().iter().map(String::as_str));
+        let size = TerminalSize::clamped(size.columns, size.rows);
+        let started = match zendiloos_exec::start_on_terminal(
+            &self.setsid,
+            &self.docker,
+            &args,
+            &surroundings(),
+            size.columns,
+            size.rows,
+        )
+        .await
+        {
+            Ok(started) => started,
+            Err(error) => {
+                release.fetch_sub(1, Ordering::SeqCst);
+                return Err(error.into());
+            }
+        };
+        let mut child = started.child;
+        tokio::spawn(async move {
+            if tokio::time::timeout(TERMINAL_LIFETIME, child.wait()).await.is_err() {
+                tracing::warn!("a terminal outlived its day; its program is ended");
+            }
+            // Killed with it if it still runs; reaped either way.
+            drop(child);
+            release.fetch_sub(1, Ordering::SeqCst);
+        });
+        Ok((Response::Terminal {}, started.master))
     }
 
     pub(crate) async fn remove_image(&self, image: &ImageId) -> Result<Response, OperationError> {

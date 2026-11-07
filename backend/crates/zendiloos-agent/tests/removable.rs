@@ -89,6 +89,7 @@ impl Host {
             timedatectl: any.clone(),
             sshd: any.clone(),
             docker: any.clone(),
+            setsid: "/usr/bin/setsid".into(),
             dockerd: any,
         };
         let host = HostPaths {

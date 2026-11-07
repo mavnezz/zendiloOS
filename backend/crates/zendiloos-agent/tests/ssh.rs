@@ -71,6 +71,7 @@ impl Host {
             busctl: any.clone(),
             timedatectl: any.clone(),
             docker: any.clone(),
+            setsid: "/usr/bin/setsid".into(),
             dockerd: any,
         };
         let paths = Paths { ssh: SshPaths { config }, ..Paths::default() };

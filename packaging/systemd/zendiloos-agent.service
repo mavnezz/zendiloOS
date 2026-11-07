@@ -46,6 +46,10 @@ ExecStart=/usr/libexec/zendiloos/zendiloos-agent
 #   the app's account (CAP_DAC_READ_SEARCH). Folders in shares an app was
 #   given are mounted by a unit per app (zendiloos-app-<app>-shares.service,
 #   this binary as `pin-shares`) in the host's namespace, as mount units are;
+#   a terminal in a container is `docker exec` on a pseudo terminal
+#   (/dev/ptmx and /dev/pts, which DevicePolicy=closed allows) whose master
+#   goes to zendiloosd, started through setsid as the leader of its own
+#   session;
 # - Debian's packages, Docker's among them, and zendiloOS's releases: apt
 #   runs outside this sandbox in a transient unit (systemd-run,
 #   zendiloos-packages.service, this binary as `run-packages`), which

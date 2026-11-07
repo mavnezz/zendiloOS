@@ -79,6 +79,7 @@ impl Agent {
             sshd: script("sshd", ""),
             systemd_run: script("systemd-run", ""),
             docker: script("docker", ""),
+            setsid: "/usr/bin/setsid".into(),
             dockerd: script("dockerd", ""),
             wipefs: script("wipefs", ""),
             udevadm: script("udevadm", ""),

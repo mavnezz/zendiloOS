@@ -13,6 +13,7 @@ zendiloos-fileops.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true
 jiff.workspace = true
+rustix = { workspace = true, features = ["pty", "termios", "fs"] }
 tracing.workspace = true
 
 [dev-dependencies]

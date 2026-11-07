@@ -9,8 +9,8 @@ use tempfile::TempDir;
 use zendiloos_agent::config::Tools;
 use zendiloos_agent::{Erasable, ErasePolicy, HostPaths, Operations, Paths};
 use zendiloos_agent_proto::{
-    ComposeText, ContainerAction, ContainerId, ErrorCode, NetworkName, ProjectAction, ProjectConfig,
-    ProjectDirectory, ProjectName, Request, Response, Role, Subnet,
+    ComposeText, ContainerAction, ContainerId, ErrorCode, ExecCommand, NetworkName, ProjectAction,
+    ProjectConfig, ProjectDirectory, ProjectName, Request, Response, Role, Subnet, TerminalSize,
 };
 
 const FIRST: &str = "d853eed323e74b49b6a84ea78784086ec720c3be10be36393589bfc80ad6ada1";
@@ -39,6 +39,11 @@ case "$*" in
   "ps --all --quiet --no-trunc --filter label=com.docker.compose.project=empty") ;;
   "ps --all --quiet --no-trunc --filter "*) echo {FIRST} ;;
   "container inspect "*) echo '[{{"Id":"{FIRST}"}}]' ;;
+  "top "*) printf 'PID PPID USER %%CPU %%MEM RSS ELAPSED COMMAND\n4242 4200 root 0.5 1.2 51200 01:02:03 nginx: master process\n' ;;
+  "exec "*)
+    [ -t 0 ] && echo "on a terminal: $*"
+    read line
+    echo "typed: $line" ;;
   "compose ls --all --format json")
     echo '[{{"Name":"stack","ConfigFiles":"{foreign}"}},{{"Name":"kuma","ConfigFiles":"/etc/zendiloos/apps/kuma.json"}},{{"Name":"shared","ConfigFiles":"/volume1/docker/shared/compose.yaml"}}]' ;;
   *" config --format json")
@@ -85,6 +90,7 @@ esac
             sshd: any.clone(),
             systemd_run: any.clone(),
             docker,
+            setsid: "/usr/bin/setsid".into(),
             dockerd: any,
         };
         let host = HostPaths {
@@ -130,6 +136,87 @@ async fn every_container_is_inspected_at_once() {
 
     assert!(text.contains(FIRST), "{text}");
     assert_eq!(host.calls().last().unwrap(), &format!("docker container inspect {FIRST} {SECOND}"));
+}
+
+#[tokio::test]
+async fn one_container_is_inspected_and_its_processes_listed() {
+    let host = Host::new();
+    let container = || ContainerId::parse(FIRST).unwrap();
+
+    let text = host.output(Request::InspectContainer { container: container() }).await;
+    assert!(text.contains(FIRST), "{text}");
+    let text = host.output(Request::ContainerProcesses { container: container() }).await;
+    assert!(text.contains("nginx: master process"), "{text}");
+    assert_eq!(
+        host.calls(),
+        [
+            format!("docker container inspect {FIRST}"),
+            format!("docker top {FIRST} -eo pid,ppid,user,pcpu,pmem,rss,etime,args"),
+        ]
+    );
+}
+
+/// Reads from a terminal's master until `wanted` came, or it ended.
+fn read_until(master: &std::os::fd::OwnedFd, wanted: &str) -> String {
+    let mut seen = Vec::new();
+    let mut buffer = [0u8; 256];
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::time::Instant::now() < deadline && !String::from_utf8_lossy(&seen).contains(wanted) {
+        match rustix::io::read(master, &mut buffer) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => seen.extend_from_slice(&buffer[..n]),
+        }
+    }
+    String::from_utf8_lossy(&seen).into_owned()
+}
+
+#[tokio::test]
+async fn a_terminal_runs_docker_exec_on_its_own_and_hands_over_its_master() {
+    let host = Host::new();
+    let open = || Request::OpenTerminal {
+        container: ContainerId::parse(FIRST).unwrap(),
+        command: ExecCommand::from_line("/bin/sh -l").unwrap(),
+        size: TerminalSize { columns: 120, rows: 40 },
+    };
+
+    let (answer, master) = host.agent.execute_with_file(&open()).await;
+    assert_eq!(answer, Response::Terminal {});
+    let master = master.expect("the terminal's master comes along");
+    let seen = read_until(&master, "/bin/sh -l");
+    assert!(
+        seen.contains(&format!(
+            "on a terminal: exec --interactive --tty --detach-keys=ctrl-@,ctrl-@,ctrl-@,ctrl-@ \
+             --env TERM=xterm-256color {FIRST} /bin/sh -l"
+        )),
+        "{seen:?}"
+    );
+    rustix::io::write(&master, b"ls\n").unwrap();
+    assert!(read_until(&master, "typed: ls").contains("typed: ls"));
+
+    // With the first, sixteen at once; the next is refused until one hangs
+    // up.
+    let mut open_ones = vec![master];
+    for _ in 0..15 {
+        let (answer, master) = host.agent.execute_with_file(&open()).await;
+        assert_eq!(answer, Response::Terminal {});
+        open_ones.push(master.unwrap());
+    }
+    let (refused, none) = host.agent.execute_with_file(&open()).await;
+    assert!(none.is_none());
+    assert!(
+        matches!(&refused, Response::Error { code: ErrorCode::Forbidden, message } if message.contains("16 terminals")),
+        "{refused:?}"
+    );
+    drop(open_ones.pop());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let (answer, _) = host.agent.execute_with_file(&open()).await;
+        if matches!(answer, Response::Terminal {}) {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "a terminal hung up is not counted any more");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
 }
 
 #[tokio::test]

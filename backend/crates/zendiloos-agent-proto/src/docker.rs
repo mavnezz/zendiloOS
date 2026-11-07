@@ -210,6 +210,78 @@ impl From<ProjectConfig> for String {
     }
 }
 
+/// What a terminal in a container runs: a program and its arguments, as an
+/// administrator typed them, split at spaces (`/bin/bash`, `sh -l`). Never
+/// a `docker exec` option: the first word does not start with `-`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "Vec<String>", into = "Vec<String>")]
+pub struct ExecCommand(Vec<String>);
+
+impl ExecCommand {
+    pub const MAX_WORDS: usize = 16;
+    pub const MAX_WORD_BYTES: usize = 256;
+
+    pub fn parse(words: Vec<String>) -> Result<Self, InvalidDockerName> {
+        let valid = (1..=Self::MAX_WORDS).contains(&words.len())
+            && words.first().is_some_and(|first| !first.starts_with('-'))
+            && words.iter().all(|word| {
+                (1..=Self::MAX_WORD_BYTES).contains(&word.len())
+                    && !word.chars().any(|c| c.is_control() || c.is_whitespace())
+            });
+        if valid { Ok(Self(words)) } else { Err(InvalidDockerName("command of up to 16 words")) }
+    }
+
+    /// The words of `line`, split at whitespace.
+    pub fn from_line(line: &str) -> Result<Self, InvalidDockerName> {
+        Self::parse(line.split_whitespace().map(str::to_owned).collect())
+    }
+
+    pub fn words(&self) -> &[String] {
+        &self.0
+    }
+
+    /// As typed, the words joined by spaces.
+    pub fn line(&self) -> String {
+        self.0.join(" ")
+    }
+}
+
+impl TryFrom<Vec<String>> for ExecCommand {
+    type Error = InvalidDockerName;
+
+    fn try_from(value: Vec<String>) -> Result<Self, Self::Error> {
+        Self::parse(value)
+    }
+}
+
+impl From<ExecCommand> for Vec<String> {
+    fn from(value: ExecCommand) -> Self {
+        value.0
+    }
+}
+
+/// A terminal's size in characters, each side 1 to 1000.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalSize {
+    pub columns: u16,
+    pub rows: u16,
+}
+
+impl TerminalSize {
+    pub const MAX: u16 = 1000;
+
+    /// Within 1 to [`TerminalSize::MAX`] on each side.
+    pub fn clamped(columns: u16, rows: u16) -> Self {
+        Self { columns: columns.clamp(1, Self::MAX), rows: rows.clamp(1, Self::MAX) }
+    }
+}
+
+impl Default for TerminalSize {
+    fn default() -> Self {
+        Self { columns: 80, rows: 24 }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ContainerAction {
@@ -276,6 +348,23 @@ mod tests {
         assert!(ImageReference::parse("postgres latest").is_err());
         assert!(NetworkName::parse("proxy_net").is_ok() && NetworkName::parse("-net").is_err());
         assert!(ProjectName::parse("teslamate").is_ok() && ProjectName::parse("Tesla").is_err());
+    }
+
+    #[test]
+    fn commands_are_words_and_never_options() {
+        let bash = ExecCommand::from_line("  /bin/bash  -l ").unwrap();
+        assert_eq!(bash.words(), ["/bin/bash", "-l"]);
+        assert_eq!(bash.line(), "/bin/bash -l");
+        for bad in ["", "   ", "--privileged sh", "-u root", "sh\u{0}", &"x".repeat(257)] {
+            assert!(ExecCommand::from_line(bad).is_err(), "{bad:?}");
+        }
+        assert!(ExecCommand::parse(vec!["sh".into(), "a b".into()]).is_err(), "no blanks within a word");
+        assert!(ExecCommand::parse(vec!["sh".into(), "\n".into()]).is_err());
+        assert!(ExecCommand::from_line(&vec!["a"; 17].join(" ")).is_err());
+        let json = serde_json::to_string(&bash).unwrap();
+        assert_eq!(json, r#"["/bin/bash","-l"]"#);
+        assert!(serde_json::from_str::<ExecCommand>(r#"["-it"]"#).is_err());
+        assert_eq!(TerminalSize::clamped(0, 5000), TerminalSize { columns: 1, rows: 1000 });
     }
 
     #[test]

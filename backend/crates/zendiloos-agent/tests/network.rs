@@ -64,6 +64,7 @@ impl Host {
             sshd: any.clone(),
             systemd_run: any.clone(),
             docker: any.clone(),
+            setsid: "/usr/bin/setsid".into(),
             dockerd: any,
         };
         Self { _dir: dir, root, tools }

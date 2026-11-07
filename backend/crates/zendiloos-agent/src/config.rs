@@ -80,6 +80,9 @@ pub struct Tools {
     /// Docker's daemon, from the `docker.io` package; the client above
     /// comes in a package of its own (`docker-cli`) and may stay without it.
     pub dockerd: PathBuf,
+    /// Starts a terminal's program as the leader of its own session
+    /// (util-linux): `docker exec` for a terminal in a container.
+    pub setsid: PathBuf,
 }
 
 impl Default for Tools {
@@ -111,6 +114,7 @@ impl Default for Tools {
             rmdir: PathBuf::from("/usr/bin/rmdir"),
             docker: PathBuf::from("/usr/bin/docker"),
             dockerd: PathBuf::from("/usr/sbin/dockerd"),
+            setsid: PathBuf::from("/usr/bin/setsid"),
         }
     }
 }

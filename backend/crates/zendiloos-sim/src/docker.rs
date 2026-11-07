@@ -151,7 +151,8 @@ impl SimDocker {
         let all = self.all(apps);
         let entries: Vec<Value> = all
             .iter()
-            .map(|c| {
+            .enumerate()
+            .map(|(n, c)| {
                 let mut labels = json!({});
                 if let Some(project) = &c.project {
                     labels = json!({"com.docker.compose.project": project, "com.docker.compose.service": c.service});
@@ -163,20 +164,68 @@ impl SimDocker {
                     None => json!({}),
                 };
                 let network = c.project.as_ref().map_or_else(|| "bridge".to_owned(), |p| format!("{p}_default"));
+                let host = n + 2;
+                let attached = if c.running {
+                    json!({"IPAddress": format!("172.19.0.{host}"), "Gateway": "172.19.0.1",
+                           "GlobalIPv6Address": "", "MacAddress": format!("02:42:ac:13:00:{host:02x}"),
+                           "Aliases": c.service.iter().collect::<Vec<_>>()})
+                } else {
+                    json!({"IPAddress": "", "Gateway": "", "GlobalIPv6Address": ""})
+                };
+                let database = c.image.starts_with("postgres");
+                let web = c.image.starts_with("nginx");
+                let mut env = vec!["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_owned(),
+                                   "TZ=Europe/Berlin".to_owned()];
+                if database {
+                    env.push("POSTGRES_PASSWORD=simulated-secret".to_owned());
+                }
+                let mounts = if database {
+                    json!([{"Type": "bind", "Source": "/volume1/docker/stack/data",
+                            "Destination": "/var/lib/postgresql/data", "RW": true}])
+                } else if web {
+                    json!([{"Type": "bind", "Source": "/volume1/docker/stack/html",
+                            "Destination": "/usr/share/nginx/html", "RW": false},
+                           {"Type": "volume", "Name": "stack_cache", "Source": "/var/lib/docker/volumes/stack_cache/_data",
+                            "Destination": "/var/cache/nginx", "RW": true}])
+                } else {
+                    json!([])
+                };
                 json!({
                     "Id": c.id,
                     "Created": jiff::Timestamp::from_second(c.created).map(|t| t.to_string()).unwrap_or_default(),
                     "Name": format!("/{}", c.name),
                     "Image": self.image_id(&c.image),
+                    "Path": if database { "docker-entrypoint.sh" } else { "/docker-entrypoint.sh" },
+                    "Args": if database { json!(["postgres"]) } else { json!(["nginx", "-g", "daemon off;"]) },
                     "State": {
                         "Status": if c.running { "running" } else { "exited" },
                         "ExitCode": if c.running { 0 } else { 137 },
                         "StartedAt": if c.running { "2026-11-06T08:00:00Z" } else { "0001-01-01T00:00:00Z" },
                     },
-                    "Config": {"Image": c.image, "Labels": labels},
-                    "HostConfig": {"RestartPolicy": {"Name": "unless-stopped"}},
-                    "NetworkSettings": {"Ports": ports, "Networks": {network: {}}},
-                    "Mounts": [],
+                    "Config": {
+                        "Image": c.image, "Labels": labels, "Env": env, "Hostname": &c.id[..12],
+                        "WorkingDir": "", "User": if database { "999:999" } else { "" },
+                        "Healthcheck": if database {
+                            json!({"Test": ["CMD-SHELL", "pg_isready -U postgres"], "Interval": 10_000_000_000_u64,
+                                   "Timeout": 5_000_000_000_u64, "Retries": 5})
+                        } else { Value::Null },
+                    },
+                    "HostConfig": {
+                        "RestartPolicy": {"Name": "unless-stopped", "MaximumRetryCount": 0},
+                        "NetworkMode": network,
+                        "Privileged": false,
+                        "CapAdd": if web { json!(["NET_BIND_SERVICE"]) } else { Value::Null },
+                        "CapDrop": if web { json!(["ALL"]) } else { Value::Null },
+                        "Devices": [],
+                        "SecurityOpt": if web { json!(["no-new-privileges:true"]) } else { Value::Null },
+                        "ReadonlyRootfs": false,
+                        "Memory": if database { 536_870_912_u64 } else { 0 },
+                        "MemoryReservation": 0,
+                        "NanoCpus": if database { 1_500_000_000_u64 } else { 0 },
+                        "PidsLimit": Value::Null,
+                    },
+                    "NetworkSettings": {"Ports": ports, "Networks": {network: attached}},
+                    "Mounts": mounts,
                 })
             })
             .collect();
@@ -302,6 +351,42 @@ impl SimDocker {
                     }
                 }
                 Some(Response::Done)
+            }
+            Request::InspectContainer { container } => {
+                let all = self.inspect(apps);
+                let found: Vec<Value> = all
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|entry| {
+                        entry["Id"].as_str() == Some(container.as_str())
+                            || entry["Name"].as_str().map(|n| n.trim_start_matches('/'))
+                                == Some(container.as_str())
+                    })
+                    .cloned()
+                    .collect();
+                if found.is_empty() {
+                    return Some(failed("Docker: Error: No such container"));
+                }
+                output(Value::from(found).to_string())
+            }
+            Request::ContainerProcesses { container } => {
+                let running = self
+                    .all(apps)
+                    .iter()
+                    .any(|c| (c.id == container.as_str() || c.name == container.as_str()) && c.running);
+                if !running {
+                    return Some(failed(&format!(
+                        "Docker: Error response from daemon: container {} is not running",
+                        container.as_str()
+                    )));
+                }
+                output(
+                    "PID   PPID  USER   %CPU %MEM RSS    ELAPSED  COMMAND\n\
+                     21012 20990 root   0.0  0.1  10240  02:14:07 /bin/sh /docker-entrypoint.sh\n\
+                     21040 21012 101    0.3  0.6  51200  02:14:05 nginx: worker process\n"
+                        .to_owned(),
+                )
             }
             Request::ContainerLogs { container, .. } => output(format!(
                 "2026-11-06T08:00:00.000000000Z {} simulated: started\n2026-11-06T08:00:01.000000000Z listening on :80\n",

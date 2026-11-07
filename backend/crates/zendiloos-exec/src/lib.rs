@@ -318,6 +318,73 @@ impl Lines {
     }
 }
 
+/// A program started on a terminal of its own ([`start_on_terminal`]).
+#[derive(Debug)]
+pub struct OnTerminal {
+    /// The terminal's master side: what is written to it is typed, what is
+    /// read from it is what the program wrote, its size is set on it.
+    /// Closing it hangs up the terminal.
+    pub master: std::os::fd::OwnedFd,
+    /// The program, to wait for; dropping it kills it.
+    pub child: tokio::process::Child,
+}
+
+/// Starts `program` with `args` on a new pseudo terminal of `columns` and
+/// `rows`, as the leader of a session of its own whose controlling
+/// terminal it is (through `setsid --ctty`, as no code here may run
+/// between fork and exec): its stdin, stdout and stderr are the terminal,
+/// it gets `SIGWINCH` when the size changes and `SIGHUP` when the master
+/// is closed. Same rules as the other ways: no shell, the environment and
+/// directory of `surroundings` only. No timeout: the caller waits for it.
+pub async fn start_on_terminal<I, A>(
+    setsid: &Program,
+    program: &Program,
+    args: I,
+    surroundings: &Surroundings<'_>,
+    columns: u16,
+    rows: u16,
+) -> Result<OnTerminal, ExecError>
+where
+    I: IntoIterator<Item = A>,
+    A: AsRef<OsStr>,
+{
+    use rustix::fs::{Mode, OFlags};
+    use rustix::pty::OpenptFlags;
+
+    let name = program.name();
+    let io_error = |source: io::Error| ExecError::Io { program: name.clone(), source };
+    let master = rustix::pty::openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY | OpenptFlags::CLOEXEC)
+        .map_err(|e| io_error(e.into()))?;
+    rustix::pty::grantpt(&master).map_err(|e| io_error(e.into()))?;
+    rustix::pty::unlockpt(&master).map_err(|e| io_error(e.into()))?;
+    let path = rustix::pty::ptsname(&master, Vec::new()).map_err(|e| io_error(e.into()))?;
+    let slave =
+        rustix::fs::open(path.as_c_str(), OFlags::RDWR | OFlags::NOCTTY | OFlags::CLOEXEC, Mode::empty())
+            .map_err(|e| io_error(e.into()))?;
+    let size = rustix::termios::Winsize { ws_row: rows, ws_col: columns, ws_xpixel: 0, ws_ypixel: 0 };
+    rustix::termios::tcsetwinsize(&master, size).map_err(|e| io_error(e.into()))?;
+    let slave = std::fs::File::from(slave);
+
+    let mut command = Command::new(setsid.path());
+    command
+        .arg("--ctty")
+        .arg(program.path())
+        .args(args)
+        .env_clear()
+        .envs(surroundings.variables.iter().map(|(name, value)| (name, value)))
+        .current_dir(surroundings.directory.unwrap_or(Path::new("/")))
+        .stdin(Stdio::from(slave.try_clone().map_err(io_error)?))
+        .stdout(Stdio::from(slave.try_clone().map_err(io_error)?))
+        .stderr(Stdio::from(slave))
+        .kill_on_drop(true);
+    let child =
+        spawn(&mut command).await.map_err(|source| ExecError::Spawn { program: name.clone(), source })?;
+    // The child holds the terminal's slave side now; ours is gone with
+    // `command`, so the master reads end of file once the program ended.
+    drop(command);
+    Ok(OnTerminal { master, child })
+}
+
 enum Stdin<'a> {
     Null,
     Bytes(&'a [u8]),
@@ -464,6 +531,64 @@ mod tests {
     /// Only tests use a shell, to script the behaviour under test.
     fn sh() -> Program {
         Program::new("/bin/sh").unwrap()
+    }
+
+    /// Reads from a terminal's master until `wanted` came, or it ended.
+    fn read_until(master: &std::os::fd::OwnedFd, wanted: &str) -> String {
+        let mut seen = Vec::new();
+        let mut buffer = [0u8; 256];
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            match rustix::io::read(master, &mut buffer) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => seen.extend_from_slice(&buffer[..n]),
+            }
+            if String::from_utf8_lossy(&seen).contains(wanted) {
+                break;
+            }
+        }
+        String::from_utf8_lossy(&seen).into_owned()
+    }
+
+    #[tokio::test]
+    async fn a_program_on_a_terminal_is_its_session_and_reads_what_is_typed() {
+        let setsid = Program::new("/usr/bin/setsid").unwrap();
+        let script = "stty size; [ -t 0 ] && echo on-a-terminal; read line; echo got:$line; \
+                      [ \"$(ps -o sid= -p $$ | tr -d ' ')\" = \"$$\" ] && echo leader";
+        let started = start_on_terminal(&setsid, &sh(), ["-c", script], &Surroundings::default(), 100, 30)
+            .await
+            .unwrap();
+        let master = started.master;
+        let mut child = started.child;
+        let seen = read_until(&master, "on-a-terminal");
+        assert!(seen.contains("30 100"), "{seen:?}");
+        rustix::io::write(&master, b"hello\n").unwrap();
+        let seen = read_until(&master, "leader");
+        assert!(seen.contains("got:hello"), "{seen:?}");
+        assert!(seen.contains("leader"), "the program leads a session of its own: {seen:?}");
+        let status = tokio::time::timeout(Duration::from_secs(10), child.wait()).await.unwrap().unwrap();
+        assert!(status.success());
+    }
+
+    #[tokio::test]
+    async fn closing_the_master_hangs_up_the_program() {
+        let setsid = Program::new("/usr/bin/setsid").unwrap();
+        let started = start_on_terminal(
+            &setsid,
+            &sh(),
+            ["-c", "echo ready; sleep 60"],
+            &Surroundings::default(),
+            80,
+            24,
+        )
+        .await
+        .unwrap();
+        let mut child = started.child;
+        let seen = read_until(&started.master, "ready");
+        assert!(seen.contains("ready"), "{seen:?}");
+        drop(started.master);
+        let status = tokio::time::timeout(Duration::from_secs(10), child.wait()).await.unwrap().unwrap();
+        assert!(!status.success(), "ended by the hangup: {status}");
     }
 
     #[tokio::test]

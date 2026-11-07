@@ -76,6 +76,7 @@ impl Host {
             sshd: p("sshd"),
             systemd_run: p("systemd-run"),
             docker: p("docker"),
+            setsid: "/usr/bin/setsid".into(),
             dockerd: p("dockerd"),
         };
         let at = |name: &str| self.path(name);

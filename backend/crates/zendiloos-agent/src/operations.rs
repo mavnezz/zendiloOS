@@ -96,7 +96,7 @@ impl Operations {
             time: Time::new(tools, paths.time)?,
             ssh: Ssh::new(tools, paths.ssh)?,
             web: Web::new(tools, paths.web)?,
-            docker: Docker::new(Program::new(&tools.docker)?),
+            docker: Docker::new(Program::new(&tools.docker)?, Program::new(&tools.setsid)?),
             projects: Projects::new(
                 Program::new(&tools.docker)?,
                 Program::new(&tools.systemctl)?,
@@ -216,6 +216,14 @@ impl Operations {
             }
             Request::ContainerLogs { container, lines } => {
                 self.docker.container_logs(container, *lines).await
+            }
+            Request::InspectContainer { container } => self.docker.inspect_container(container).await,
+            Request::ContainerProcesses { container } => self.docker.container_processes(container).await,
+            Request::OpenTerminal { container, command, size } => {
+                return match self.docker.open_terminal(container, command, *size).await {
+                    Ok((response, master)) => (response, Some(master)),
+                    Err(error) => (failure(&error), None),
+                };
             }
             Request::RemoveImage { image } => self.docker.remove_image(image).await,
             Request::PullImage { reference } => self.docker.pull_image(reference).await,

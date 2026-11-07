@@ -28,7 +28,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use zendiloos_agent_proto::{
     AgentTransport, DiskName, ErrorCode, FileLocation, FileRoot, Layout, PROTOCOL_VERSION, PackageReport,
-    PackageRun, PackageRunState, PackageTask, Report, Request, RequestId, Response, ShareName,
+    PackageRun, PackageRunState, PackageTask, Report, Request, RequestId, Response, ShareName, TerminalSize,
     TransportError, UpgradablePackage,
 };
 use zendiloos_fileops::{FileError, ShareRoot};
@@ -600,6 +600,8 @@ impl AgentTransport for SimulatedAgent {
             | Request::DockerDiskUsage {}
             | Request::ControlContainer { .. }
             | Request::ContainerLogs { .. }
+            | Request::InspectContainer { .. }
+            | Request::ContainerProcesses { .. }
             | Request::RemoveImage { .. }
             | Request::PullImage { .. }
             | Request::PruneImages {}
@@ -610,6 +612,10 @@ impl AgentTransport for SimulatedAgent {
             | Request::DeployProject { .. }
             | Request::ProjectLogs { .. }
             | Request::ProjectFiles { .. } => error(ErrorCode::Failed, "simulated Docker did not answer"),
+            // Its terminal comes with [`AgentTransport::call_with_file`].
+            Request::OpenTerminal { .. } => {
+                error(ErrorCode::InvalidRequest, "a terminal is opened with its descriptor")
+            }
             Request::AppLogs { app, .. } => Response::AppLogs {
                 text: format!(
                     "2026-11-06T12:00:00.000000000Z {}-app-1  | simulated: started\n",
@@ -847,6 +853,14 @@ impl AgentTransport for SimulatedAgent {
                 self.received.lock().unwrap_or_else(PoisonError::into_inner).push(request);
                 Ok(answer)
             }
+            Request::OpenTerminal { ref container, ref command, size } => {
+                let answer = match echo_terminal(container.as_str(), &command.line(), size) {
+                    Ok(master) => (Response::Terminal {}, Some(master)),
+                    Err(error) => (error_response(&error.to_string()), None),
+                };
+                self.received.lock().unwrap_or_else(PoisonError::into_inner).push(request);
+                Ok(answer)
+            }
             other => Ok((self.call(other, request_id).await?, None)),
         }
     }
@@ -864,6 +878,44 @@ impl AgentTransport for SimulatedAgent {
         }
         self.call(request, request_id).await
     }
+}
+
+fn error_response(message: &str) -> Response {
+    error(ErrorCode::Failed, message)
+}
+
+/// A terminal whose other side answers each line typed, instead of a
+/// program in a container: the simulation runs nothing. Its master is
+/// handed out; closing it ends the answering thread.
+fn echo_terminal(container: &str, command: &str, size: TerminalSize) -> std::io::Result<OwnedFd> {
+    use std::io::{BufRead, BufReader, Write};
+
+    use rustix::fs::{Mode, OFlags};
+    use rustix::pty::OpenptFlags;
+
+    let master = rustix::pty::openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY | OpenptFlags::CLOEXEC)?;
+    rustix::pty::grantpt(&master)?;
+    rustix::pty::unlockpt(&master)?;
+    let path = rustix::pty::ptsname(&master, Vec::new())?;
+    let slave =
+        rustix::fs::open(path.as_c_str(), OFlags::RDWR | OFlags::NOCTTY | OFlags::CLOEXEC, Mode::empty())?;
+    let winsize =
+        rustix::termios::Winsize { ws_row: size.rows, ws_col: size.columns, ws_xpixel: 0, ws_ypixel: 0 };
+    rustix::termios::tcsetwinsize(&master, winsize)?;
+    let mut writer = std::fs::File::from(slave);
+    let reader = BufReader::new(writer.try_clone()?);
+    let (container, command) = (container.to_owned(), command.to_owned());
+    std::thread::spawn(move || {
+        let _ = write!(writer, "simulated terminal in {container}, running {command}\n$ ");
+        for line in reader.lines() {
+            let Ok(line) = line else { break };
+            if line.trim() == "exit" {
+                break;
+            }
+            let _ = write!(writer, "simulated: {line}\n$ ");
+        }
+    });
+    Ok(master)
 }
 
 /// smartctl's answer for each simulated disk, with its exit status.
@@ -888,6 +940,58 @@ fn smart(device: &DiskName) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Reads from a terminal's master until `wanted` came, or it ended.
+    fn read_until(master: &OwnedFd, wanted: &str) -> String {
+        let mut seen = Vec::new();
+        let mut buffer = [0u8; 256];
+        while !String::from_utf8_lossy(&seen).contains(wanted) {
+            match rustix::io::read(master, &mut buffer) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => seen.extend_from_slice(&buffer[..n]),
+            }
+        }
+        String::from_utf8_lossy(&seen).into_owned()
+    }
+
+    #[tokio::test]
+    async fn one_container_is_shown_its_processes_listed_and_a_terminal_answers() {
+        use zendiloos_agent_proto::{ContainerId, ExecCommand};
+
+        let agent = SimulatedAgent::new();
+        let web = || ContainerId::parse("stack-web-1").unwrap();
+        let Response::DockerOutput { text } =
+            agent.call(Request::InspectContainer { container: web() }, None).await.unwrap()
+        else {
+            panic!("no output")
+        };
+        let inspected: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(inspected[0]["Name"], "/stack-web-1");
+        assert_eq!(inspected[0]["HostConfig"]["CapDrop"][0], "ALL");
+        let Response::DockerOutput { text } =
+            agent.call(Request::ContainerProcesses { container: web() }, None).await.unwrap()
+        else {
+            panic!("no output")
+        };
+        assert!(text.contains("nginx: worker process"), "{text}");
+        let stopped = Request::ContainerProcesses { container: ContainerId::parse("lonely").unwrap() };
+        assert!(matches!(agent.call(stopped, None).await.unwrap(), Response::Error { .. }));
+        let unknown = Request::InspectContainer { container: ContainerId::parse("ghost").unwrap() };
+        assert!(matches!(agent.call(unknown, None).await.unwrap(), Response::Error { .. }));
+
+        let open = Request::OpenTerminal {
+            container: web(),
+            command: ExecCommand::from_line("/bin/sh").unwrap(),
+            size: TerminalSize::default(),
+        };
+        let (answer, master) = agent.call_with_file(open.clone(), None).await.unwrap();
+        assert_eq!(answer, Response::Terminal {});
+        let master = master.unwrap();
+        assert!(read_until(&master, "$ ").contains("simulated terminal in stack-web-1, running /bin/sh"));
+        rustix::io::write(&master, b"ls\n").unwrap();
+        assert!(read_until(&master, "simulated: ls").contains("simulated: ls"));
+        assert!(matches!(agent.call(open, None).await.unwrap(), Response::Error { .. }));
+    }
 
     #[tokio::test]
     async fn answers_like_the_agent_without_doing_anything() {
