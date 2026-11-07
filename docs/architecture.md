@@ -136,7 +136,7 @@ tests in `zendiloos-architecture` catch, as part of `cargo test`.
 | `zendiloos-system` | system information, metrics, power, logs | kernel |
 | `zendiloos-storage` | disks, SMART, ZFS pools and volumes, plans for erasing disks, monitoring; mdadm arrays read-only | kernel, jobs, notify |
 | `zendiloos-sharing` | SMB and NFS shares, share permissions, and the file manager (share contents as the signed-in user) | kernel, jobs, notify |
-| `zendiloos-apps` | app catalogs and their sources, installed apps (Docker Compose projects under the policy of 4.9) | kernel, jobs |
+| `zendiloos-apps` | app catalogs and their sources, their apps filled in as templates of administrators' projects, apps installed the earlier way (4.9) | kernel, jobs |
 | `zendiloos-containers` | the Docker engine as administrators see it: containers, images, networks, Compose projects (administrators' own with their file in a share), use over time, newer images on a schedule, moving Docker's data (4.9) | kernel, jobs |
 | `zendiloos-updates` | updates of the NAS: Debian's packages and zendiloOS's releases from GitHub by channel, checked daily, installed on request (4.10) | kernel, notify |
 | `zendiloos-network` | interfaces, addresses, default routes, name servers (read-only until M6); later IP configuration, DNS, hostname | kernel |
@@ -848,7 +848,15 @@ directory) and virtual disks in the Debian VM (`just vm-storage-test`).
 ### 4.9 Apps (Docker)
 
 Access to the Docker socket is equivalent to root. `zendiloosd` never
-reaches it; the agent does, and only to run apps that pass a policy.
+reaches it; the agent does, and only to run what an administrator
+confirmed.
+
+**The App Center is a way into Docker.** An app of a catalog is the
+template of an administrator's own Compose project: the App Center fills
+in its Compose file with what the administrator gives and makes it a
+project in a folder they pick, which is theirs from then on, changed,
+updated and removed in the Docker app like any other (see *Installing*
+below). Apps installed before it worked so keep running as they were.
 
 **Catalogs.** Apps come from catalogs in the format of the
 [community catalog](https://github.com/mavnezz/zendiloOS.community.applications)
@@ -874,26 +882,27 @@ commit of the catalog (`renovate.json`), CI checks it, a maintainer merges
 it, the next release ships it. The apps themselves are read live from the
 index, so new apps need no release. Within `format: 1` the catalog stays
 readable by released versions of zendiloOS; what they cannot read gets a
-new index (`/v2/`) beside the old one. The policy allows by name: images
-following a tag of their developers, bind mounts only from the app's data
-folder and the shares the administrator picks, published ports from
-variables, no Docker volumes, no `privileged`, no host namespaces; devices
-of the kinds the format lists (graphics, VPN, serial, cameras, sound,
-Coral TPUs; passed only when the machine has them), extra capabilities
-(`NET_ADMIN`, `SYS_NICE`), the host network and the Docker socket only as
-permissions the app declares and the administrator confirms. The Docker
-socket hands an app control over the whole NAS, and the interface says so;
-the agent binds it only for an app whose kept compose file records the
-permission, and only when `/run/docker.sock` is root's socket. Generated
-secrets take the length and alphabet the catalog asks for (32 letters and
-digits otherwise).
+new index (`/v2/`) beside the old one. The policy decides which apps a
+catalog offers: images following a tag of their developers, bind mounts
+only from the app's data folder and the shares the administrator picks,
+published ports from variables, no Docker volumes, no `privileged`, no
+host namespaces; devices of the kinds the format lists (graphics, VPN,
+serial, cameras, sound, Coral TPUs), extra capabilities (`NET_ADMIN`,
+`SYS_NICE`), the host network and the Docker socket only as permissions
+the app declares. An app made into a project is then the administrator's
+file: what it lets its containers do beyond themselves (those
+permissions among it) is confirmed like any project's, see *What runs is
+what was confirmed*. Generated secrets take the length and alphabet the
+catalog asks for (32 letters and digits otherwise).
 
 **The Docker app** (context `zendiloos-containers`) shows the engine as
 it is: every container, image, network and Compose project, whoever made
 them; containers and projects made elsewhere are started, stopped,
-restarted, updated and removed here, an app of a catalog only started,
-stopped and restarted (the App Center changes it, and its Compose file
-holds generated settings, so the agent shows it to no one). The agent
+restarted, updated and removed here, an app installed the earlier way
+only started, stopped and restarted (the App Center removes it, and its
+Compose file holds generated settings, so the agent shows it to no one).
+A project made from an app of a catalog is an administrator's own and
+names the app it came from (`template`). The agent
 runs `docker` with fixed arguments and checked names (`ContainerId`,
 `ImageReference`, `ProjectName`, …) and hands back what it printed;
 zendiloosd reads it. Container logs are both streams in the order they
@@ -913,7 +922,11 @@ no seccomp or AppArmor, settings not known as harmless, and what takes in
 files whoever may write the share can change (`build`, built from the
 share at every deployment; `env_file`, `extends`, `include`, read when it
 is saved). Each must be confirmed, then and on every change;
-the audit log records `risks_accepted`. Deploying (pull, then
+the audit log records `risks_accepted`. The folders inside the project's
+folder its binds mount (`./config`) are made, as far as they are missing,
+through the file manager with the administrator's permissions when the
+file is saved: Docker would make them as root, and a container run as
+the administrator could not write to them. Deploying (pull, then
 `up --detach --remove-orphans`) and removing (`down`; images, data and the
 folder stay) are jobs.
 
@@ -977,43 +990,60 @@ Debian (`docker.io`, `docker-compose`, recommended by the package); its
 data from before stays where it was, unused. Verified in the second test
 VM, across a restart.
 
-**Installing** is recorded with the app's values, then a job takes the
-steps, each through an agent:
+**Installing** an app of a catalog makes it an administrator's project,
+in three steps of the install dialog:
 
-1. *Prepare* (system agent): the dataset `<pool>/zendiloos.apps/<id>` on
-   the pool chosen in the store's "choose a location" step (Docker's pool
-   unless another is picked; a browser can keep the choice for every
-   install), mounted by its own unit at
-   `/volume<N>/@apps/<id>` before Docker starts (a parent
-   `zendiloos.apps` that is never mounted holds them); and the app's
-   account `app-<id>`, a user with a group of its own and IDs never handed
-   out before, told from people's accounts by its comment, so no request
-   for people or groups touches it. App ids have at most 28 characters
-   for that.
-2. *Shares*: the Sharing context keeps what each app's account may do on
-   which share (`share_app_access`) and writes it into the share's ACL
-   beside the people's rules, on everything in the share too; Samba never
-   learns of it, and a share an app uses cannot be deleted. Instead of a
-   whole share, the administrator may pick a folder in it (`media/Films`,
-   from a folder tree in the install dialog); the account's access is
-   still the share's, but the container sees the folder only.
-3. *Check* (system agent): it reads the manifest and the Compose file
-   itself and does what `docs/format.md` section 8 of the catalog
-   requires: `check_source` first, then `docker compose config` twice,
-   from stdin, with nothing in the environment but the values (setting
-   names Docker, Compose, Go or the C library read are refused),
-   `--env-file /dev/null` and an empty project folder; `check_variables`
-   and the policy on the stand-in form, the policy again on the real one.
-   Devices the machine lacks are left out. Only this normalized form is
-   kept, readable by root only (`/etc/zendiloos/apps/<id>.json`), and
-   ever started.
-4. *Folders* (files agent): the bind-mount sources below the data folder,
-   made name by name without following a link, as the app's account.
-5. *Pull* and *start* (system agent, with a timeout of 30 minutes for
-   images): before every start the agent walks each folder an app mounts
-   again, refusing links and other file systems on the way.
+1. *Where*: a share the administrator may write to (the Docker app's
+   places), a base folder in it (`docker/<app>` unless changed) and the
+   project's name (the app's id unless changed; one Compose allows and no
+   other project has).
+2. *What it gets*: ports (checked against zendiloOS's own, those of apps
+   installed the earlier way and those something listens on now,
+   `/proc/net/{tcp,udp}*`), the shares or folders in them it sees, picked
+   from those the administrator may use as the app does (only writable
+   ones where it writes, since it runs as them), and its settings;
+   generated ones are made then. `POST /apps/catalog/{source}/{app}/compose`
+   fills the template in: `APP_DATA` is the project's folder, written
+   relative (`./config`); `SHARE_<ID>` the picked folder's path on the
+   machine; `PUID`/`PGID` the administrator's UID and primary GID and `TZ`
+   the time zone, both from the system agent (`HostFacts`, which also says
+   which of the app's devices the machine has; the lines of the others are
+   commented out, so the app still runs without a GPU or a Zigbee stick).
+   Every value is filled in where Compose would interpolate it, in the
+   values of the YAML read with their places in the text, quoted so that
+   it reads back as exactly that value and with `$` doubled; comments and
+   the rest of the file stay as written, and the result is read again and
+   must hold the same document with the values in.
+3. *The file*: shown in an editor, to read and change, then made a project
+   with `POST /docker/projects` naming the app as its `template`: checked
+   as Compose reads it, what reaches beyond the containers confirmed,
+   written to the folder, its bind folders made by the administrator, and
+   deployed. Generated secrets stand in the file as any password an
+   administrator writes into a Compose file: whoever may read the share
+   reads them.
 
-**Folders in shares are pinned.** A share's root is a dataset's mount
+From then on the App Center only finds the project again by its template
+(`GET /apps/projects`): it shows the app as installed, opens its web
+interface where the containers publish the port the template put the
+app's web port on (a fixed port where it always is), and leads to the
+project in the Docker app. A newer version of the app in its catalog
+changes nothing: the images are updated with the Docker app's image
+updates, the file by the administrator.
+
+**Apps installed the earlier way** each got a dataset of their own
+(`<pool>/zendiloos.apps/<id>` at `/volume<N>/@apps/<id>`), an account
+`app-<id>` with access to the shares picked, kept by the Sharing context
+(`share_app_access`), and a Compose file the agent checked against the
+policy and keeps, normalized, readable by root only
+(`/etc/zendiloos/apps/<id>.json`). They keep running: they are started
+(the agent walks each folder they mount again first), stopped and
+removed, no longer installed, tried again or updated so. One whose
+installation did not finish is *failed*, to be removed. Removing takes
+the containers, images and kept file, destroys the dataset with the data,
+then takes the account's share access and finally the account.
+
+**Folders in shares are pinned**, for the apps installed the earlier way
+as for administrators' projects. A share's root is a dataset's mount
 point, which only root can move; a folder in it can be swapped for a link
 by anyone who may write to the share (an NFS client, another app), and
 Docker follows links in a bind mount's source every time it starts a
@@ -1036,20 +1066,6 @@ the pin is the folder the walk reaches now (same device and inode). A
 folder swapped for a link keeps the running app on the folder it had and
 makes the next start fail with the folder named. Verified in the second
 test VM, across a reboot (`just vm-app-folders-test`).
-
-The account, `PUID`/`PGID`, the time zone and the data folder come from
-the agent, not from `zendiloosd`. Ports are checked against zendiloOS's
-own, the other apps' and those something listens on now
-(`/proc/net/{tcp,udp}*`). Generated settings are 32 letters and digits,
-made once and kept across updates. A failed step leaves the app *failed*:
-it is tried again with the same values, or removed. Removing takes the
-containers, images and kept file, destroys the dataset with the data, then
-takes the account's share access and finally the account. An update is
-offered when the app's `digest` in its catalog changes; it keeps the
-values, gives new ports their default and new generated settings a value,
-and asks again only for permissions beyond the old version's. Verified in
-the second test VM (an app with and one without a share, removal, a
-restart).
 
 ### 4.10 Updates and Debian's packages
 

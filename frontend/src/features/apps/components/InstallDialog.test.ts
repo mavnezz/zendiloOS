@@ -1,38 +1,53 @@
 import { flushPromises, mount } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ref } from 'vue'
 
-import type { CatalogAppDetail, InstallAppRequest } from '@/shared/api/types'
+import type { CatalogAppDetail, ComposeRisk, FillTemplateRequest } from '@/shared/api/types'
 import { i18n } from '@/shared/i18n'
+import { useJobsStore } from '@/shared/jobs/store'
 
 import InstallDialog from './InstallDialog.vue'
 
-const install = vi.fn<(request: InstallAppRequest) => Promise<void>>(() => Promise.resolve())
+const fillTemplate = vi.fn<(app: unknown, values: FillTemplateRequest) => Promise<string>>(() =>
+  Promise.resolve('services:\n  immich: {}\n'),
+)
+const checkCompose = vi.fn<(body: unknown) => Promise<ComposeRisk[]>>(() => Promise.resolve([]))
+const createProject = vi.fn((body: unknown) =>
+  Promise.resolve({
+    body,
+    id: 9,
+    kind: 'containers.project_deploy',
+    target: 'photos',
+    state: 'running' as const,
+    created_at: 0,
+    updated_at: 0,
+  }),
+)
+const refresh = vi.fn(() => Promise.resolve())
 const listFolders = vi.fn((_share: number, path: string) =>
   Promise.resolve({ names: path === '' ? ['2024', 'Old'] : [], writable: true }),
 )
 
 vi.mock('../api', () => ({
-  useInstallActions: () => ({ install: (request: InstallAppRequest) => install(request) }),
+  fillTemplate: (app: unknown, values: FillTemplateRequest) => fillTemplate(app, values),
+  checkCompose: (body: unknown) => checkCompose(body),
+  createProject: (body: unknown) => createProject(body),
+  useInstallActions: () => ({ refresh }),
+  usePlaces: () => ({
+    data: ref([
+      { share_id: 4, share: 'docker' },
+      { share_id: 1, share: 'family' },
+    ]),
+  }),
   useShareList: () => ({
     data: ref([
-      { id: 1, name: 'family' },
-      { id: 2, name: 'media' },
+      { id: 1, name: 'family', writable: true },
+      { id: 2, name: 'media', writable: false },
     ]),
   }),
   listFolders: (share: number, path: string) => listFolders(share, path),
   makeFolder: () => Promise.resolve(),
-  useDocker: () => ({
-    data: ref({
-      installed: true,
-      running: true,
-      volume: { pool: 'tank', number: 1 },
-      volumes: [
-        { pool: 'tank', number: 1 },
-        { pool: 'backup', number: 2 },
-      ],
-    }),
-  }),
 }))
 
 const immich: CatalogAppDetail = {
@@ -57,7 +72,7 @@ const immich: CatalogAppDetail = {
   source_code: 'https://github.com/immich-app/immich',
   license: 'AGPL-3.0',
   architectures: ['amd64'],
-  notes: null,
+  notes: 'Create the first account in the browser.',
   web: { port: 'web', path: '/', https: false },
   ports: [{ id: 'web', label: 'Web interface', default: 2283, fixed: false }],
   shares: [{ id: 'photos', label: 'Photos', description: null, read_write: true }],
@@ -97,26 +112,24 @@ async function type(id: string, value: string): Promise<void> {
   await flushPromises()
 }
 
-function installButton(): HTMLButtonElement {
-  const button = [...document.body.querySelectorAll('button')].find(
-    (b) => b.textContent?.trim() === 'Install',
-  )
-  if (!button) throw new Error('no install button')
-  return button
-}
-
-beforeEach(() => {
-  i18n.global.locale.value = 'en'
-  install.mockClear()
-  window.localStorage.clear()
-})
-
 function button(text: string): HTMLButtonElement {
   const found = [...document.body.querySelectorAll('button')].find(
     (b) => b.textContent?.trim() === text,
   )
-  if (!found) throw new Error(`no button ${text}`)
+  if (!found) throw new Error(`no button ${text}: ${document.body.textContent}`)
   return found
+}
+
+async function press(text: string): Promise<void> {
+  button(text).click()
+  await flushPromises()
+}
+
+/** The folders of the picker's top level: the shares offered. */
+function sharesOffered(): string[] {
+  return [...document.body.querySelectorAll('[role=treeitem]')].map(
+    (row) => row.textContent?.trim() ?? '',
+  )
 }
 
 /** Opens the picker of `id` and picks the folder `path`, opening folder by folder. */
@@ -133,82 +146,120 @@ async function pickFolder(id: string, path: string[]): Promise<void> {
     else choose!.click()
     await flushPromises()
   }
-  button('Confirm').click()
-  await flushPromises()
+  await press('Confirm')
 }
+
+async function opened() {
+  const pinia = createPinia()
+  setActivePinia(pinia)
+  const wrapper = mount(InstallDialog, {
+    props: { open: false, app: immich },
+    global: { plugins: [i18n, pinia] },
+    attachTo: document.body,
+  })
+  await wrapper.setProps({ open: true })
+  await flushPromises()
+  return wrapper
+}
+
+/** Through the first two steps, with a folder of `family` for the photos. */
+async function toTheFile(): Promise<void> {
+  await press('Next')
+  await pickFolder('share-photos', ['family', '2024'])
+  await type('setting-ADMIN_EMAIL', 'me@example.org')
+  await type('port-web', '2300')
+  await press('Next')
+}
+
+beforeEach(() => {
+  i18n.global.locale.value = 'en'
+  for (const mock of [fillTemplate, checkCompose, createProject, refresh, listFolders])
+    mock.mockClear()
+})
 
 afterEach(() => {
   document.body.innerHTML = ''
 })
 
 describe('the install dialog', () => {
-  it('asks for shares, settings and the permissions before installing', async () => {
-    const wrapper = mount(InstallDialog, {
-      props: { open: false, app: immich },
-      global: { plugins: [i18n] },
-      attachTo: document.body,
-    })
-    await wrapper.setProps({ open: true })
-    await flushPromises()
+  it('makes the app a project in a folder of a share, from its file filled in', async () => {
+    const wrapper = await opened()
 
-    expect(document.body.textContent).toContain('Choose a location')
-    expect((field('install-pool') as HTMLSelectElement).value).toBe('tank')
-    await type('install-pool', 'backup')
-    button('Next').click()
-    await flushPromises()
+    expect(document.body.textContent).toContain('Where the project goes')
+    expect(field('install-name').value).toBe('immich')
+    expect(field('install-folder').value).toBe('docker/immich')
+    await type('install-name', 'photos')
+    expect(field('install-folder').value).toBe('docker/photos')
+    await press('Next')
 
-    expect(document.body.textContent).toContain('location: Volume 2 (backup)')
+    expect(document.body.textContent).toContain('Immich · folder: docker/docker/photos')
     expect(document.body.textContent).toContain('zendiloOS makes up: Database password')
-    expect(field('port-web').value).toBe('2283')
-    expect(installButton().disabled).toBe(true)
-
+    expect(document.body.textContent).toContain('Create the first account in the browser.')
+    expect(button('Next').disabled).toBe(true)
     await pickFolder('share-photos', ['family', '2024'])
     expect(listFolders).toHaveBeenCalledWith(1, '')
-    expect(field('share-photos').textContent).toContain('family/2024')
     await type('setting-ADMIN_EMAIL', 'me@example.org')
     await type('port-web', '2300')
-    expect(installButton().disabled).toBe(true)
-    const confirm = [
-      ...document.body.querySelectorAll<HTMLInputElement>('input[type=checkbox]'),
-    ].at(-1)!
-    confirm.click()
-    await flushPromises()
-    expect(installButton().disabled).toBe(false)
+    await press('Next')
 
-    document.body.querySelector('form')?.dispatchEvent(new Event('submit'))
-    await flushPromises()
-    expect(install).toHaveBeenCalledWith({
-      source: 1,
-      app: 'immich',
+    expect(fillTemplate).toHaveBeenCalledWith(immich, {
       ports: { web: 2300 },
       shares: { photos: 'family/2024' },
       settings: { ADMIN_EMAIL: 'me@example.org' },
-      confirm_permissions: true,
-      digest: 'sha256:immich',
-      pool: 'backup',
     })
-    expect(wrapper.emitted('installed')).toEqual([['immich']])
+    expect(document.body.textContent).toContain('The Compose file')
+    expect(document.body.textContent).toContain('docker/docker/photos/compose.yaml')
+    const editor = document.body.querySelector('textarea')!
+    expect(editor.value).toBe('services:\n  immich: {}\n')
+    editor.value = 'services:\n  immich: { restart: always }\n'
+    editor.dispatchEvent(new Event('input'))
+    await press('Install')
+
+    const place = { name: 'photos', share_id: 4, folder: 'docker/photos' }
+    const compose = 'services:\n  immich: { restart: always }\n'
+    expect(checkCompose).toHaveBeenCalledWith({ ...place, compose })
+    expect(createProject).toHaveBeenCalledWith({
+      ...place,
+      compose,
+      accept_risks: false,
+      template: { source_id: 1, app: 'immich' },
+    })
+    expect(useJobsStore().running.map((job) => job.id)).toEqual([9])
+    expect(refresh).toHaveBeenCalled()
+    expect(wrapper.emitted('installed')).toEqual([['photos']])
   })
 
-  it('asks no more where apps go once that is to stay', async () => {
-    const wrapper = mount(InstallDialog, {
-      props: { open: false, app: immich },
-      global: { plugins: [i18n] },
-      attachTo: document.body,
-    })
-    await wrapper.setProps({ open: true })
-    await flushPromises()
-    await type('install-pool', 'backup')
-    const always = document.body.querySelector<HTMLInputElement>('input[type=checkbox]')!
-    always.click()
-    button('Next').click()
-    await flushPromises()
+  it('asks before what reaches beyond the containers runs', async () => {
+    await opened()
+    checkCompose.mockResolvedValueOnce([{ service: 'immich', kind: 'devices', detail: '/dev/dri' }])
+    await toTheFile()
 
-    await wrapper.setProps({ open: false })
-    await wrapper.setProps({ open: true })
-    await flushPromises()
+    await press('Install')
+    expect(createProject).not.toHaveBeenCalled()
+    expect(document.body.textContent).toContain('Containers with access to the system')
+    await press('Deploy anyway')
 
-    expect(document.body.textContent).not.toContain('Choose a location')
-    expect(document.body.textContent).toContain('location: Volume 2 (backup)')
+    expect(createProject).toHaveBeenCalledWith(expect.objectContaining({ accept_risks: true }))
+  })
+
+  it('offers only shares the app may write to where it writes, and says what failed', async () => {
+    await opened()
+    await type('install-name', 'Not A Name')
+    expect(button('Next').disabled).toBe(true)
+    await type('install-name', 'photos')
+    await press('Next')
+
+    field('share-photos').dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushPromises()
+    expect(sharesOffered()).toEqual(['family'])
+    await pickFolder('share-photos', ['family'])
+    await type('setting-ADMIN_EMAIL', 'me@example.org')
+    fillTemplate.mockRejectedValueOnce(new Error('offline'))
+    await press('Next')
+    expect(document.body.querySelector('[role=alert]')).not.toBeNull()
+    expect(document.body.textContent).not.toContain('The Compose file')
+
+    await press('Back')
+    expect(document.body.textContent).toContain('Where the project goes')
   })
 })

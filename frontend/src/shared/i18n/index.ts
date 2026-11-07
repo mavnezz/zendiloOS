@@ -148,6 +148,7 @@ export function problemMessage(error: unknown): string {
     'not_a_catalog',
     'catalog_unreachable',
     'invalid_app_value',
+    'template_unfillable',
     'host_failed',
     'share_used_by_apps',
     'share_used_by_projects',

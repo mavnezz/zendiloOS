@@ -11,9 +11,9 @@ import { CodeEditor } from '@/shared/ui/code-editor'
 import { Input } from '@/shared/ui/input'
 import { Label } from '@/shared/ui/label'
 import { NativeSelect } from '@/shared/ui/native-select'
+import { RisksDialog } from '@/shared/ui/risks-dialog'
 
 import { checkCompose, useChangeCompose, useCreateProject, usePlaces } from '../api'
-import RisksDialog from './RisksDialog.vue'
 
 /** Without `name`, a new project; with it, that project's file to change. */
 const props = defineProps<{ name?: string; compose?: string }>()

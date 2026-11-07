@@ -86,7 +86,6 @@ function installed(id: string, extra: Partial<InstalledApp> = {}): InstalledApp 
     ports: { web: 8096 },
     shares: {},
     permissions: none,
-    update: null,
     pool: 'tank',
     installed_at: 0,
     updated_at: 0,
@@ -135,6 +134,9 @@ beforeEach(() => {
     app('immich', { categories: ['photos'], official: false, source_id: 2 }),
   ])
   on('GET', '/api/v1/apps/installed', [])
+  on('GET', '/api/v1/apps/projects', [])
+  on('GET', '/api/v1/docker/places', [{ share_id: 1, share: 'docker' }])
+  on('GET', '/api/v1/files/shares', [{ id: 1, name: 'docker', access: 'read_write', home: false }])
   on('GET', '/api/v1/apps/docker', ready)
   on('GET', '/api/v1/apps/sources', [
     official,
@@ -196,32 +198,36 @@ describe('the App Center', () => {
     expect(wrapper.findComponent({ name: 'AppDetail' }).exists()).toBe(false)
   })
 
-  it('offers an installed app’s update and asks again for more permissions', async () => {
-    on('GET', '/api/v1/apps/installed', [installed('jellyfin', { update: { version: '1.1' } })])
-    on('GET', '/api/v1/apps/catalog/1/jellyfin', detail('jellyfin', { version: '1.1' }))
-    let asked = 0
-    on('POST', '/api/v1/apps/installed/jellyfin/update', () => {
-      asked += 1
-      return asked === 1
-        ? problem(409, 'permissions_not_confirmed', 'sha256:new')
-        : { id: 9, kind: 'apps.update', state: 'running' }
-    })
+  it('opens an app made into a project, and makes another from it', async () => {
+    on('GET', '/api/v1/apps/projects', [
+      {
+        project: 'media',
+        source_id: 1,
+        id: 'jellyfin',
+        name: 'Jellyfin',
+        tagline: '',
+        translations: {},
+        digest: 'sha256:jellyfin',
+        run_state: 'running',
+        web: { port: 9000, path: '/', https: false },
+        created_at: 0,
+      },
+    ])
+    on('GET', '/api/v1/apps/catalog/1/jellyfin', detail('jellyfin'))
     const wrapper = await open('all')
+    expect(page()).toContain(t('appStore.installed.open'))
     wrapper
       .findComponent({ name: 'StoreSection' })
       .vm.$emit('open', { source_id: 1, id: 'jellyfin' })
     await settle()
 
-    await click(t('appStore.installed.update'))
-    const confirmation = wrapper
-      .findAllComponents({ name: 'ConfirmDialog' })
-      .find((d) => d.props('open'))!
-    confirmation.vm.$emit('confirm')
-    await settle()
-    expect(called('POST', '/api/v1/apps/installed/jellyfin/update').map((c) => c.body)).toEqual([
-      { confirm_permissions: false, digest: null },
-      { confirm_permissions: true, digest: 'sha256:new' },
-    ])
+    const opener = [...document.querySelectorAll('a')].find(
+      (a) => a.textContent?.trim() === t('appStore.installed.open'),
+    )!
+    expect(opener.getAttribute('href')).toBe(`http://${window.location.hostname}:9000/`)
+    await click(t('appStore.installAgain'))
+    expect(wrapper.findComponent({ name: 'InstallDialog' }).props('open')).toBe(true)
+    expect(page()).toContain(t('appStore.placeTitle'))
   })
 
   it('leads from an installed app without a web interface to the installed ones', async () => {
@@ -262,12 +268,12 @@ describe('the App Center', () => {
 
   it('puts Docker’s data on a pool once it is installed', async () => {
     on('GET', '/api/v1/apps/docker', { ...ready, volume: null })
-    on('POST', '/api/v1/apps/docker', problem(409, 'docker_not_ready'))
+    on('POST', '/api/v1/apps/docker', problem(409, 'refused', 'Docker is missing'))
     await open('docker')
     await click(t('appStore.docker.choosePlace'))
     await submit('#docker-place')
     expect(called('POST', '/api/v1/apps/docker')[0]?.body).toEqual({ pool: 'tank' })
-    expect(page()).toContain(t('errors.docker_not_ready'))
+    expect(page()).toContain(t('errors.refused'))
   })
 
   it('sends a ready engine to the store', async () => {
@@ -285,7 +291,7 @@ describe('the App Center', () => {
       official: false,
     })
     on('POST', '/api/v1/apps/sources/refresh', [])
-    on('DELETE', '/api/v1/apps/sources/2', problem(409, 'app_installed', 'immich'))
+    on('DELETE', '/api/v1/apps/sources/2', problem(409, 'official_source'))
     await open('sources')
     expect(page()).toContain('unreachable')
 
@@ -300,7 +306,7 @@ describe('the App Center', () => {
     expect(called('POST', '/api/v1/apps/sources/refresh')).toHaveLength(1)
     await press(t('appStore.sources.remove'))
     expect(called('DELETE', '/api/v1/apps/sources/2')).toHaveLength(1)
-    expect(page()).toContain(t('errors.app_installed'))
+    expect(page()).toContain(t('errors.official_source'))
   })
 
   it('runs, reads and removes installed apps', async () => {
@@ -337,42 +343,27 @@ describe('the App Center', () => {
     })
   })
 
-  it('updates all, retries a failed one and says what went wrong', async () => {
+  it('names the step of a removal and says what went wrong', async () => {
     on('GET', '/api/v1/apps/installed', [
-      installed('jellyfin', { update: { version: '1.1' } }),
+      installed('jellyfin'),
       installed('immich', { state: 'failed', run_state: 'stopped' }),
-      installed('kuma', { state: 'installing', run_state: null }),
+      installed('kuma', { state: 'removing', run_state: null }),
     ])
-    let asked = 0
-    on('POST', '/api/v1/apps/installed/jellyfin/update', () => {
-      asked += 1
-      return asked === 1 ? problem(409, 'permissions_not_confirmed', 'sha256:new') : { id: 9 }
-    })
-    on('POST', '/api/v1/apps/installed/immich/retry', { id: 10 })
     on('GET', '/api/v1/apps/installed/jellyfin/logs', problem(502, 'host_failed', 'gone'))
     on('DELETE', '/api/v1/apps/installed/jellyfin', problem(422, 'confirmation_mismatch'))
     const wrapper = await open('installed')
     useJobsStore().update({
       id: 1,
-      kind: 'apps.install',
+      kind: 'apps.uninstall',
       target: 'kuma',
       state: 'running',
-      step: 'pulling',
+      step: 'account',
       created_at: 0,
       updated_at: 0,
     })
     await settle()
-    expect(page()).toContain(t('appStore.installed.steps.pulling'))
-
-    await click(t('appStore.installed.updateAll'))
-    const confirmation = wrapper
-      .findAllComponents({ name: 'ConfirmDialog' })
-      .find((d) => d.props('open'))!
-    confirmation.vm.$emit('confirm')
-    await settle()
-    expect(called('POST', '/api/v1/apps/installed/jellyfin/update')).toHaveLength(2)
-    await click(t('appStore.installed.retry'))
-    expect(called('POST', '/api/v1/apps/installed/immich/retry')).toHaveLength(1)
+    expect(page()).toContain(t('appStore.installed.steps.account'))
+    expect(page()).toContain(t('appStore.installed.states.failed'))
 
     const row = wrapper
       .findAll('li')

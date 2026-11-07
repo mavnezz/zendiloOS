@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { Box, Boxes, Disc3, LayoutDashboard, Network, ScrollText, Settings2 } from 'lucide-vue-next'
-import { computed, ref, watch } from 'vue'
+import { computed, inject, nextTick, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import { useWindowSection } from '@/shared/lib/window-section'
+import { useWindowSection, WINDOW_SECTION } from '@/shared/lib/window-section'
 import { AppFrame, type NavGroup } from '@/shared/ui/frame'
 
 import ActivitySection from './ActivitySection.vue'
@@ -25,6 +25,8 @@ const SECTIONS = [
   'activity',
   'management',
 ] as const
+/** A page that is a project: `project:<name>`. */
+const PROJECT = 'project:'
 
 const { t } = useI18n()
 const icons = {
@@ -52,6 +54,20 @@ type View =
   | { kind: 'edit'; name: string; compose: string }
 const view = ref<View>({ kind: 'list' })
 watch(section, () => (view.value = { kind: 'list' }))
+
+// Another app (the App Center) opens a project here as `project:<name>`.
+const frame = inject(WINDOW_SECTION, null)
+watch(
+  () => frame?.section.value,
+  (asked) => {
+    if (!asked?.startsWith(PROJECT)) return
+    const name = asked.slice(PROJECT.length)
+    section.value = 'projects'
+    // After the change of page, which shows the list.
+    void nextTick(() => (view.value = { kind: 'detail', name }))
+  },
+  { immediate: true },
+)
 </script>
 
 <!-- Docker: what runs on the engine, whoever started it, and the projects made here. -->

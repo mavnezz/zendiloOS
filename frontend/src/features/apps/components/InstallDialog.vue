@@ -1,53 +1,52 @@
 <script setup lang="ts">
-import { ChevronDown, Eye, EyeOff, Folder } from 'lucide-vue-next'
+import { Eye, EyeOff, Folder } from 'lucide-vue-next'
 import { computed, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import type { CatalogAppDetail } from '@/shared/api/types'
+import type { CatalogAppDetail, ComposeRisk } from '@/shared/api/types'
 import { problemMessage } from '@/shared/i18n'
+import { useJobsStore } from '@/shared/jobs/store'
 import { Alert } from '@/shared/ui/alert'
 import { Button } from '@/shared/ui/button'
+import { CodeEditor } from '@/shared/ui/code-editor'
 import { ModalDialog } from '@/shared/ui/dialog'
 import { Input } from '@/shared/ui/input'
 import { Label } from '@/shared/ui/label'
+import { NativeSelect } from '@/shared/ui/native-select'
+import { RisksDialog } from '@/shared/ui/risks-dialog'
 
-import { useDocker, useInstallActions, useShareList } from '../api'
+import {
+  checkCompose,
+  createProject,
+  fillTemplate,
+  useInstallActions,
+  usePlaces,
+  useShareList,
+} from '../api'
 import { appText, asksForMore, paragraphs } from '../texts'
 import FolderPicker from './FolderPicker.vue'
 import PermissionList from './PermissionList.vue'
 
 const props = defineProps<{ app: CatalogAppDetail }>()
 const open = defineModel<boolean>('open', { default: false })
-const emit = defineEmits<{ installed: [id: string] }>()
+const emit = defineEmits<{ installed: [project: string] }>()
+
+/** A Compose project's name, as Docker Compose allows it. */
+const NAME = /^[a-z0-9][a-z0-9_-]{0,62}$/
 
 const { t, locale } = useI18n()
 const actions = useInstallActions()
+const jobs = useJobsStore()
+const { data: places } = usePlaces()
 const { data: shareList } = useShareList()
-const { data: docker } = useDocker()
 
-/** Where this browser remembers the volume apps always go on. */
-const REMEMBERED = 'zendiloos.apps.pool'
-function remembered(): string | null {
-  try {
-    return window.localStorage.getItem(REMEMBERED)
-  } catch {
-    return null
-  }
-}
-function remember(pool: string): void {
-  try {
-    window.localStorage.setItem(REMEMBERED, pool)
-  } catch {
-    // Without storage, the question comes again next time.
-  }
-}
-
-/** First where the app goes, then what it gets. */
-const step = ref<'place' | 'values'>('place')
-const pool = ref('')
-const always = ref(false)
-const volumes = computed(() => docker.value?.volumes ?? [])
-const place = computed(() => volumes.value.find((volume) => volume.pool === pool.value))
+/** Where the project goes, what the app gets, then the file it becomes. */
+const step = ref<'place' | 'values' | 'review'>('place')
+const name = ref('')
+const shareId = ref(0)
+const folder = ref('')
+/** The folder follows the name until it is typed in itself. */
+const folderTouched = ref(false)
 
 const ports = reactive<Record<string, string>>({})
 const shares = reactive<Record<string, string>>({})
@@ -56,51 +55,63 @@ const settings = reactive<Record<string, string>>({})
 const picking = ref<string | null>(null)
 /** Secrets shown in clear while typing. */
 const revealed = reactive<Record<string, boolean>>({})
-const understood = ref(false)
+/** The app's Compose file filled in, as it will be written; it can still be changed. */
+const compose = ref('')
 const busy = ref(false)
 const failure = ref<string | null>(null)
+const risks = ref<ComposeRisk[]>([])
+const confirming = ref(false)
 
 const asked = computed(() => props.app.settings.filter((setting) => !setting.generate))
 const generated = computed(() => props.app.settings.filter((setting) => setting.generate))
 const permissions = computed(() => props.app.permissions)
 const asksMore = computed(() => asksForMore(permissions.value))
 const notes = computed(() => paragraphs(appText(props.app, 'notes', locale.value)))
-/** What reaches beyond the rules is installed only once read. */
-const risky = computed(() => asksMore.value || !props.app.official)
-const ready = computed(
+const shareName = computed(
+  () => places.value?.find((place) => place.share_id === shareId.value)?.share ?? '',
+)
+const nameValid = computed(() => NAME.test(name.value))
+const placed = computed(
   () =>
-    !busy.value &&
-    (!risky.value || understood.value) &&
+    nameValid.value && shareId.value > 0 && folder.value.trim().replace(/^\/+|\/+$/g, '') !== '',
+)
+const filledIn = computed(
+  () =>
     props.app.shares.every((share) => shares[share.id]) &&
     asked.value.every((setting) => !setting.required || settings[setting.id]?.trim()),
 )
+const picked = computed(() => props.app.shares.find((share) => share.id === picking.value))
 
 /** Fresh values whenever the dialog opens. */
 watch(
   open,
   (isOpen) => {
     if (!isOpen) return
+    name.value = props.app.id
+    folder.value = `docker/${props.app.id}`
+    folderTouched.value = false
     for (const port of props.app.ports) ports[port.id] = String(port.default)
     for (const share of props.app.shares) shares[share.id] = ''
     for (const setting of asked.value) {
       settings[setting.id] = setting.default ?? (setting.kind === 'boolean' ? 'false' : '')
       revealed[setting.id] = false
     }
-    understood.value = false
+    compose.value = ''
     failure.value = null
-    const kept = remembered()
-    const known = volumes.value.some((volume) => volume.pool === kept)
-    pool.value = known && kept ? kept : (docker.value?.volume?.pool ?? volumes.value[0]?.pool ?? '')
-    always.value = false
-    step.value = known ? 'values' : 'place'
+    step.value = 'place'
   },
   { immediate: true },
 )
-
-function next(): void {
-  if (always.value) remember(pool.value)
-  step.value = 'values'
-}
+watch(
+  places,
+  (list) => {
+    if (!shareId.value && list?.length) shareId.value = list[0]!.share_id
+  },
+  { immediate: true },
+)
+watch(name, (value) => {
+  if (!folderTouched.value) folder.value = value ? `docker/${value}` : ''
+})
 
 function inputType(kind: string, id: string): string {
   if (kind === 'password') return revealed[id] ? 'text' : 'password'
@@ -111,26 +122,25 @@ function toggle(id: string, event: Event): void {
   settings[id] = (event.target as HTMLInputElement).checked ? 'true' : 'false'
 }
 
-async function install(): Promise<void> {
-  if (!ready.value) return
+function back(): void {
+  failure.value = null
+  step.value = step.value === 'review' ? 'values' : 'place'
+}
+
+/** The app's file filled in with what was given: shown before anything is made. */
+async function fill(): Promise<void> {
+  if (!filledIn.value || busy.value) return
   busy.value = true
   failure.value = null
   try {
-    await actions.install({
-      source: props.app.source_id,
-      app: props.app.id,
+    compose.value = await fillTemplate(props.app, {
       ports: Object.fromEntries(props.app.ports.map((port) => [port.id, Number(ports[port.id])])),
       shares: { ...shares },
       settings: Object.fromEntries(
         asked.value.map((setting) => [setting.id, settings[setting.id] ?? '']),
       ),
-      confirm_permissions: asksMore.value && understood.value,
-      // The permissions shown were this version's.
-      digest: props.app.digest,
-      pool: pool.value || null,
     })
-    open.value = false
-    emit('installed', props.app.id)
+    step.value = 'review'
   } catch (problem) {
     failure.value = problemMessage(problem)
   } finally {
@@ -138,52 +148,134 @@ async function install(): Promise<void> {
   }
 }
 
+const place = () => ({ name: name.value, share_id: shareId.value, folder: folder.value.trim() })
+
+/** Checks the file as Docker reads it; what reaches beyond the containers is confirmed first. */
+async function deploy(): Promise<void> {
+  if (busy.value || !compose.value.trim()) return
+  busy.value = true
+  failure.value = null
+  try {
+    risks.value = await checkCompose({ ...place(), compose: compose.value })
+    if (risks.value.length) confirming.value = true
+    else await make(false)
+  } catch (problem) {
+    failure.value = problemMessage(problem)
+  } finally {
+    busy.value = false
+  }
+}
+
+async function make(accept: boolean): Promise<void> {
+  busy.value = true
+  failure.value = null
+  try {
+    const job = await createProject({
+      ...place(),
+      compose: compose.value,
+      accept_risks: accept,
+      template: { source_id: props.app.source_id, app: props.app.id },
+    })
+    if (job) jobs.update(job)
+    await actions.refresh()
+    open.value = false
+    emit('installed', name.value)
+  } catch (problem) {
+    failure.value = problemMessage(problem)
+  } finally {
+    busy.value = false
+  }
+}
+
+const titles = {
+  place: 'appStore.placeTitle',
+  values: 'appStore.configTitle',
+  review: 'appStore.reviewTitle',
+} as const
 const filled =
   'h-10 w-full rounded-lg border-transparent bg-foreground/[0.05] px-3 text-sm shadow-none'
-const select = `${filled} appearance-none pr-9 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50`
 const label = 'gap-1 text-sm font-semibold'
 const hint = 'text-xs leading-relaxed text-muted-foreground'
 const required = 'text-destructive'
 </script>
 
 <!--
-  Asked once before an app is installed: first the volume it goes on, then
-  what it gets from the NAS, with what to know before.
+  An app of a catalog made into a Docker project of one's own: its place
+  in a share, what it gets from the NAS, then the Compose file it becomes,
+  which is written there and runs like any other project.
 -->
 <template>
   <ModalDialog
     v-model:open="open"
-    :title="step === 'place' ? t('appStore.placeTitle') : t('appStore.configTitle')"
+    :title="t(titles[step])"
     :description="
       step === 'place'
         ? undefined
         : t('appStore.configFor', {
             name: appText(app, 'name', locale),
-            place: place
-              ? t('appStore.placeVolume', { number: place.number, pool: place.pool })
-              : pool,
+            place: `${shareName}/${folder.trim()}`,
           })
     "
     :close-label="t('desktop.close')"
+    :wide="step === 'review'"
   >
-    <form v-if="step === 'place'" id="install-place" class="grid gap-3" @submit.prevent="next">
-      <Label for="install-pool" class="leading-normal font-normal">{{
-        t('appStore.placeQuestion')
-      }}</Label>
-      <div class="relative">
-        <select id="install-pool" v-model="pool" :class="select">
-          <option v-for="volume in volumes" :key="volume.pool" :value="volume.pool">
-            {{ t('appStore.placeVolume', { number: volume.number, pool: volume.pool }) }}
-          </option>
-        </select>
-        <ChevronDown
-          class="pointer-events-none absolute top-1/2 right-3 size-4 -translate-y-1/2 text-muted-foreground"
+    <form
+      v-if="step === 'place'"
+      id="install-place"
+      class="grid gap-5"
+      @submit.prevent="step = 'values'"
+    >
+      <p :class="hint">{{ t('appStore.placeHint') }}</p>
+      <div class="grid gap-2">
+        <Label for="install-name" :class="label">{{ t('appStore.projectName') }}</Label>
+        <Input
+          id="install-name"
+          v-model="name"
+          :class="filled"
+          class="font-mono"
+          autocomplete="off"
+          spellcheck="false"
+          :aria-invalid="name !== '' && !nameValid"
         />
+        <p :class="name !== '' && !nameValid ? 'text-xs text-destructive' : hint">
+          {{ t('appStore.projectNameHint') }}
+        </p>
       </div>
-      <p :class="hint" class="pb-6">{{ t('appStore.placeHint') }}</p>
+      <div class="grid gap-2">
+        <Label for="install-folder" :class="label">{{ t('appStore.baseFolder') }}</Label>
+        <div class="flex min-w-0 gap-2">
+          <NativeSelect
+            v-model.number="shareId"
+            class="w-36 shrink-0"
+            :aria-label="t('appStore.baseShare')"
+          >
+            <option v-for="choice in places" :key="choice.share_id" :value="choice.share_id">
+              {{ choice.share }}
+            </option>
+          </NativeSelect>
+          <Input
+            id="install-folder"
+            v-model="folder"
+            :class="filled"
+            class="min-w-0 flex-1 font-mono"
+            autocomplete="off"
+            spellcheck="false"
+            @input="folderTouched = true"
+          />
+        </div>
+        <p v-if="places && !places.length" class="text-xs text-destructive">
+          {{ t('appStore.noPlace') }}
+        </p>
+        <p v-else :class="hint">{{ t('appStore.baseFolderHint') }}</p>
+      </div>
     </form>
 
-    <form v-else id="install-values" class="grid gap-5" @submit.prevent="install">
+    <form
+      v-else-if="step === 'values'"
+      id="install-values"
+      class="grid gap-5"
+      @submit.prevent="fill"
+    >
       <div v-for="share in app.shares" :key="`share-${share.id}`" class="grid gap-2">
         <Label :for="`share-${share.id}`" :class="label">
           <span :class="required" aria-hidden="true">*</span>{{ share.label }}
@@ -287,7 +379,7 @@ const required = 'text-destructive'
       </p>
 
       <section
-        v-if="notes.length || risky"
+        v-if="notes.length || asksMore || !app.official"
         class="grid gap-2 rounded-lg bg-amber-500/[0.07] p-4 text-sm"
         :aria-label="t('appStore.notice')"
       >
@@ -301,39 +393,47 @@ const required = 'text-destructive'
           </template>
         </div>
       </section>
-      <label v-if="risky" class="flex items-start gap-2 text-sm">
-        <input v-model="understood" type="checkbox" class="mt-0.5 size-4 accent-primary" />
-        <span>{{ t('appStore.understood') }}</span>
-      </label>
-
-      <Alert v-if="failure" variant="destructive">{{ failure }}</Alert>
     </form>
+
+    <form v-else id="install-review" class="grid gap-3" @submit.prevent="deploy">
+      <p :class="hint">
+        {{ t('appStore.reviewHint', { file: `${shareName}/${folder.trim()}/compose.yaml` }) }}
+      </p>
+      <CodeEditor v-model="compose" :label="t('appStore.compose')" :min-rows="16" />
+    </form>
+
+    <Alert v-if="failure" variant="destructive" class="whitespace-pre-wrap">{{ failure }}</Alert>
 
     <FolderPicker
       :open="picking !== null"
       :value="picking ? (shares[picking] ?? '') : ''"
+      :writable="picked?.read_write ?? false"
       @update:open="(value: boolean) => !value && (picking = null)"
       @pick="(path: string) => picking && (shares[picking] = path)"
     />
+    <RisksDialog v-model:open="confirming" :risks="risks" @confirm="make(true)" />
 
     <template #footer>
       <template v-if="step === 'place'">
-        <label class="mr-auto flex min-w-0 flex-1 items-center gap-2 text-sm">
-          <input v-model="always" type="checkbox" class="size-4 shrink-0 accent-primary" />
-          {{ t('appStore.placeAlways') }}
-        </label>
         <Button type="button" variant="secondary" @click="open = false">{{
           t('desktop.cancel')
         }}</Button>
-        <Button type="submit" form="install-place" :disabled="!pool">{{
+        <Button type="submit" form="install-place" :disabled="!placed">{{
           t('appStore.next')
         }}</Button>
       </template>
       <template v-else>
-        <Button type="button" variant="secondary" @click="step = 'place'">{{
+        <Button type="button" variant="secondary" :disabled="busy" @click="back">{{
           t('desktop.back')
         }}</Button>
-        <Button type="submit" form="install-values" :disabled="!ready">{{
+        <Button
+          v-if="step === 'values'"
+          type="submit"
+          form="install-values"
+          :disabled="!filledIn || busy"
+          >{{ t('appStore.next') }}</Button
+        >
+        <Button v-else type="submit" form="install-review" :disabled="busy || !compose.trim()">{{
           t('appStore.install')
         }}</Button>
       </template>

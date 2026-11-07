@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import { computed, type Ref } from 'vue'
 
 import { api, unwrap } from '@/shared/api/client'
-import type { CatalogApp, InstallAppRequest } from '@/shared/api/types'
+import type { CatalogApp, FillTemplateRequest } from '@/shared/api/types'
 
 export function useCatalog() {
   return useQuery({
@@ -81,12 +81,65 @@ export async function installDocker(pool: string) {
   return unwrap(api.POST('/api/v1/apps/docker/install', { body: { pool } }))
 }
 
-/** The installed apps, with what Docker makes of them. */
+/** The apps installed the earlier way, with what Docker makes of them. */
 export function useInstalled() {
   return useQuery({
     queryKey: ['apps', 'installed'],
     queryFn: () => unwrap(api.GET('/api/v1/apps/installed')),
   })
+}
+
+/** The Docker projects made from apps of a catalog, with where they answer. */
+export function useAppProjects() {
+  return useQuery({
+    queryKey: ['apps', 'projects'],
+    queryFn: () => unwrap(api.GET('/api/v1/apps/projects')),
+  })
+}
+
+/** The app's Compose file filled in with `values`, for the signed-in administrator. */
+export async function fillTemplate(
+  app: { source_id: number; id: string },
+  values: FillTemplateRequest,
+): Promise<string> {
+  const filled = await unwrap(
+    api.POST('/api/v1/apps/catalog/{source}/{app}/compose', {
+      params: { path: { source: app.source_id, app: app.id } },
+      body: values,
+    }),
+  )
+  return filled.compose
+}
+
+/** The shares a project's folder can go in: those the administrator may write. */
+export function usePlaces() {
+  return useQuery({
+    queryKey: ['docker', 'places'],
+    queryFn: () => unwrap(api.GET('/api/v1/docker/places')),
+  })
+}
+
+/** What a Compose file in `folder` of a share would let its containers do. */
+export async function checkCompose(body: {
+  name: string
+  compose: string
+  share_id: number
+  folder: string
+}) {
+  return (await unwrap(api.POST('/api/v1/docker/compose/check', { body }))).risks
+}
+
+/** Makes the filled-in file a Docker project and deploys it; the job that does. */
+export async function createProject(body: {
+  name: string
+  share_id: number
+  folder: string
+  compose: string
+  accept_risks: boolean
+  template: { source_id: number; app: string }
+}) {
+  const made = await unwrap(api.POST('/api/v1/docker/projects', { body: { ...body, start: true } }))
+  return made.job ?? null
 }
 
 /** Where the app's web interface is, on the address the NAS was reached at. */
@@ -100,10 +153,17 @@ export function webUrl(
   return `${scheme}://${bracketed}:${app.web.port}${app.web.path}`
 }
 
-/** Installing, running and removing apps; each reads the list again. */
+/**
+ * Running and removing the apps installed the earlier way; each reads the
+ * list again. `refresh` reads the projects made from apps again too.
+ */
 export function useInstallActions() {
   const client = useQueryClient()
-  const refresh = () => client.invalidateQueries({ queryKey: ['apps', 'installed'] })
+  const refresh = () =>
+    Promise.all([
+      client.invalidateQueries({ queryKey: ['apps', 'installed'] }),
+      client.invalidateQueries({ queryKey: ['apps', 'projects'] }),
+    ])
   async function refreshing<T>(request: Promise<T>): Promise<T> {
     try {
       return await request
@@ -113,20 +173,6 @@ export function useInstallActions() {
   }
   const path = (id: string) => ({ params: { path: { id } } })
   return {
-    install: (request: InstallAppRequest) =>
-      refreshing(unwrap(api.POST('/api/v1/apps/installed', { body: request }))),
-    retry: (id: string) =>
-      refreshing(unwrap(api.POST('/api/v1/apps/installed/{id}/retry', path(id)))),
-    /** `confirmed`: the digest whose permissions were confirmed, if any. */
-    update: (id: string, confirmed: string | null) =>
-      refreshing(
-        unwrap(
-          api.POST('/api/v1/apps/installed/{id}/update', {
-            ...path(id),
-            body: { confirm_permissions: confirmed !== null, digest: confirmed },
-          }),
-        ),
-      ),
     start: (id: string) =>
       refreshing(unwrap(api.POST('/api/v1/apps/installed/{id}/start', path(id)))),
     stop: (id: string) =>
@@ -143,14 +189,22 @@ export function useInstallActions() {
   }
 }
 
-/** The shares an app can be given (the same list the Shares window shows). */
+/**
+ * The shares an app can be given: those the signed-in administrator may
+ * use, as the file manager has them; the app runs as them.
+ */
 export function useShareList() {
   return useQuery({
-    queryKey: ['shares'],
-    queryFn: () => unwrap(api.GET('/api/v1/shares')),
+    queryKey: ['files', 'shares'],
+    queryFn: () => unwrap(api.GET('/api/v1/files/shares')),
     select: (shares) =>
       shares
-        .map((share) => ({ id: share.id, name: share.name }))
+        .filter((share) => !share.home)
+        .map((share) => ({
+          id: share.id,
+          name: share.name,
+          writable: share.access === 'read_write',
+        }))
         .sort((a, b) => a.name.localeCompare(b.name)),
   })
 }

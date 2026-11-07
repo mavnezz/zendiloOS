@@ -7,7 +7,7 @@ import { useWindowSection } from '@/shared/lib/window-section'
 import { AppFrame, type NavGroup } from '@/shared/ui/frame'
 import { Input } from '@/shared/ui/input'
 
-import { useCatalog, useDocker, useInstalled } from '../api'
+import { useAppProjects, useCatalog, useDocker, useInstalled } from '../api'
 import AppDetail from './AppDetail.vue'
 import DockerSection from './DockerSection.vue'
 import InstalledSection from './InstalledSection.vue'
@@ -17,6 +17,7 @@ import StoreSection from './StoreSection.vue'
 const { t } = useI18n()
 const { data: catalog } = useCatalog()
 const { data: installed } = useInstalled()
+const { data: projects } = useAppProjects()
 const { data: docker } = useDocker()
 const dockerReady = computed(() => Boolean(docker.value?.installed && docker.value.volume))
 
@@ -53,8 +54,11 @@ const groups = computed<NavGroup[]>(() => [
         id: 'installed',
         label: t('appStore.sections.installed'),
         icon: Download,
-        count: installed.value?.length,
-        alert: installed.value?.some((app) => app.update || app.state === 'failed'),
+        count:
+          installed.value && projects.value
+            ? installed.value.length + projects.value.length
+            : undefined,
+        alert: installed.value?.some((app) => app.state === 'failed'),
       },
     ],
   },

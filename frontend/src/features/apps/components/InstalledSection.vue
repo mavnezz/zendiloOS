@@ -1,33 +1,33 @@
 <script setup lang="ts">
-import { LoaderCircle, Play, RotateCcw, ScrollText, Square, Trash2 } from 'lucide-vue-next'
+import { Boxes, LoaderCircle, Play, ScrollText, Square, Trash2 } from 'lucide-vue-next'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import type { InstalledApp } from '@/shared/api/types'
+import type { AppProject, InstalledApp } from '@/shared/api/types'
 import { problemMessage } from '@/shared/i18n'
 import { useJobsStore } from '@/shared/jobs/store'
 import { useNotifications } from '@/shared/lib/notifications'
+import { useOpenApp } from '@/shared/lib/window-section'
 import { type Action, ActionMenu } from '@/shared/ui/action-menu'
 import { Alert } from '@/shared/ui/alert'
 import { Button } from '@/shared/ui/button'
-import { ConfirmDialog } from '@/shared/ui/confirm-dialog'
 import { ModalDialog } from '@/shared/ui/dialog'
 import { Input } from '@/shared/ui/input'
 import { Label } from '@/shared/ui/label'
 
-import { iconUrl, useInstallActions, useInstalled, webUrl } from '../api'
-import { useAppUpdates } from '../lib/update'
+import { iconUrl, useAppProjects, useInstallActions, useInstalled, webUrl } from '../api'
 import { appText } from '../texts'
 import AppRow from './AppRow.vue'
 
-const emit = defineEmits<{ open: [app: InstalledApp]; store: [] }>()
+const emit = defineEmits<{ open: [app: { source_id: number; id: string }]; store: [] }>()
 
 const { t, locale } = useI18n()
-const { data: apps, error, isPending, refetch } = useInstalled()
+const projects = useAppProjects()
+const earlier = useInstalled()
 const actions = useInstallActions()
-const updates = useAppUpdates()
 const notifications = useNotifications()
 const jobs = useJobsStore()
+const openApp = useOpenApp()
 
 const busy = ref<string | null>(null)
 const logsOf = ref<InstalledApp | null>(null)
@@ -38,23 +38,29 @@ const confirm = ref('')
 const removeError = ref<string | null>(null)
 
 // What Docker reports changes without a job: look again now and then.
-const timer = window.setInterval(() => void refetch(), 15_000)
+const timer = window.setInterval(() => void actions.refresh(), 15_000)
 onBeforeUnmount(() => window.clearInterval(timer))
 watch(
-  () => jobs.list.filter((job) => job.kind.startsWith('apps.') && job.state !== 'running').length,
-  () => void refetch(),
+  () =>
+    jobs.list.filter(
+      (job) =>
+        (job.kind.startsWith('apps.') || job.kind.startsWith('containers.project')) &&
+        job.state !== 'running',
+    ).length,
+  () => void actions.refresh(),
 )
 
-const updatable = computed(() =>
-  (apps.value ?? []).filter((app) => app.update && app.state === 'installed'),
-)
-const sorted = computed(() =>
-  [...(apps.value ?? [])].sort((a, b) =>
+const error = computed(() => projects.error.value ?? earlier.error.value)
+const pending = computed(() => projects.isPending.value || earlier.isPending.value)
+const byName = <T extends { name: string; translations: AppProject['translations'] }>(list: T[]) =>
+  [...list].sort((a, b) =>
     appText(a, 'name', locale.value).localeCompare(appText(b, 'name', locale.value)),
-  ),
-)
+  )
+const made = computed(() => byName(projects.data.value ?? []))
+const before = computed(() => byName(earlier.data.value ?? []))
+const count = computed(() => made.value.length + before.value.length)
 
-/** The running job of an app, if any, for its step. */
+/** The running job of an app installed the earlier way, if any, for its step. */
 const runningJobs = computed(
   () =>
     new Map(
@@ -62,12 +68,23 @@ const runningJobs = computed(
     ),
 )
 
+/** A project made from an app: what Docker says, and which project it is. */
+function projectState(project: AppProject): string {
+  const run = t(`appStore.installed.run.${project.run_state}`)
+  return project.project === project.id ? run : `${run} · ${project.project}`
+}
+
+/** The icon of a project's app, while its catalog still has it. */
+function projectIcon(project: AppProject): string | undefined {
+  return project.digest ? iconUrl({ ...project, digest: project.digest }) : undefined
+}
+
 function state(app: InstalledApp): string {
-  if (app.state === 'installing') {
+  if (app.state === 'removing') {
     const step = runningJobs.value.get(app.id)?.step
-    return step ? t(`appStore.installed.steps.${step}`) : t('appStore.installed.states.installing')
+    return step ? t(`appStore.installed.steps.${step}`) : t('appStore.installed.states.removing')
   }
-  if (app.state === 'removing' || app.state === 'failed')
+  if (app.state === 'installing' || app.state === 'failed')
     return t(`appStore.installed.states.${app.state}`)
   return t(`appStore.installed.run.${app.run_state ?? 'unknown'}`)
 }
@@ -138,76 +155,28 @@ async function remove(): Promise<void> {
   }
 }
 
-function confirmUpdate(): void {
-  const app = updates.asking.value
-  updates.asking.value = null
-  if (app) void updates.update(app, true)
-}
-
 const pill = 'h-7 rounded-full px-4 text-[13px] font-medium'
 const heading = 'flex items-center gap-2 text-xl font-semibold'
-const count =
+const counter =
   'rounded-full bg-foreground/[0.07] px-2 text-sm font-normal text-muted-foreground tabular-nums'
 </script>
 
-<!-- The apps on this NAS: those with a newer version first, then all of them. -->
+<!--
+  The apps on this NAS: the Docker projects made from them, managed in the
+  Docker app, and those installed the earlier way, which are only run and
+  removed.
+-->
 <template>
   <div class="grid gap-6">
     <Alert v-if="error" variant="destructive">{{ problemMessage(error) }}</Alert>
 
-    <section v-if="updatable.length" class="grid">
-      <div class="flex flex-wrap items-center gap-3">
-        <h2 :class="heading">
-          {{ t('appStore.installed.updatable') }} <span :class="count">{{ updatable.length }}</span>
-        </h2>
-        <button
-          type="button"
-          class="ml-auto text-sm font-medium text-primary hover:underline disabled:opacity-50"
-          :disabled="updates.busy.value !== null"
-          @click="updates.updateAll(updatable)"
-        >
-          {{ t('appStore.installed.updateAll') }}
-        </button>
-      </div>
-      <ul class="grid gap-x-10 @2xl:grid-cols-2 @5xl:grid-cols-3">
-        <li v-for="app in updatable" :key="app.id" class="border-b pb-3">
-          <AppRow
-            :name="appText(app, 'name', locale)"
-            :subtitle="
-              app.update?.version
-                ? t('appStore.installed.newVersion', { version: app.update.version })
-                : t('appStore.installed.newRelease')
-            "
-            :icon="iconUrl(app)"
-            plain
-            @open="emit('open', app)"
-          >
-            <Button
-              variant="secondary"
-              :class="pill"
-              class="text-primary"
-              :disabled="updates.busy.value === app.id"
-              @click="updates.update(app)"
-              >{{ t('appStore.installed.update') }}</Button
-            >
-          </AppRow>
-          <p v-if="app.update?.version && app.version" class="text-sm">
-            <span class="font-medium">{{ app.update.version }}</span>
-            <span class="ml-2 text-muted-foreground">{{
-              t('appStore.installed.fromVersion', { version: app.version })
-            }}</span>
-          </p>
-        </li>
-      </ul>
-    </section>
-
     <section class="grid">
       <h2 :class="heading">
-        {{ t('appStore.sections.installed') }} <span :class="count">{{ apps?.length ?? 0 }}</span>
+        {{ t('appStore.sections.installed') }} <span :class="counter">{{ count }}</span>
       </h2>
-      <div v-if="isPending" class="mt-4 h-40 animate-pulse rounded-xl bg-muted" />
+      <div v-if="pending" class="mt-4 h-40 animate-pulse rounded-xl bg-muted" />
       <div
-        v-else-if="!apps?.length"
+        v-else-if="!count"
         class="grid justify-items-start gap-2 py-6 text-sm text-muted-foreground"
       >
         <p>{{ t('appStore.installed.empty') }}</p>
@@ -215,8 +184,51 @@ const count =
           t('appStore.installed.toStore')
         }}</Button>
       </div>
+      <p v-else-if="made.length" class="mt-1 text-sm text-muted-foreground">
+        {{ t('appStore.installed.projectsHint') }}
+      </p>
       <ul class="grid gap-x-10 @2xl:grid-cols-2 @5xl:grid-cols-3">
-        <li v-for="app in sorted" :key="app.id">
+        <li v-for="project in made" :key="project.project">
+          <AppRow
+            :name="appText(project, 'name', locale)"
+            :subtitle="projectState(project)"
+            :icon="projectIcon(project)"
+            @open="emit('open', project)"
+          >
+            <Button
+              v-if="webUrl(project)"
+              as="a"
+              variant="secondary"
+              :class="pill"
+              class="text-primary"
+              :href="webUrl(project) ?? undefined"
+              target="_blank"
+              rel="noopener noreferrer"
+              >{{ t('appStore.installed.open') }}</Button
+            >
+            <Button
+              v-if="openApp"
+              variant="ghost"
+              size="icon"
+              class="size-7"
+              :aria-label="t('appStore.installed.inDocker')"
+              :title="t('appStore.installed.inDocker')"
+              @click="openApp('docker', `project:${project.project}`)"
+            >
+              <Boxes />
+            </Button>
+          </AppRow>
+        </li>
+      </ul>
+    </section>
+
+    <section v-if="before.length" class="grid">
+      <h2 :class="heading">
+        {{ t('appStore.installed.earlier') }} <span :class="counter">{{ before.length }}</span>
+      </h2>
+      <p class="mt-1 text-sm text-muted-foreground">{{ t('appStore.installed.earlierHint') }}</p>
+      <ul class="grid gap-x-10 @2xl:grid-cols-2 @5xl:grid-cols-3">
+        <li v-for="app in before" :key="app.id">
           <AppRow
             :name="appText(app, 'name', locale)"
             :subtitle="state(app)"
@@ -228,18 +240,7 @@ const count =
               class="size-4 animate-spin text-muted-foreground"
             />
             <Button
-              v-else-if="app.state === 'failed'"
-              variant="secondary"
-              :class="pill"
-              class="text-primary"
-              :disabled="busy === app.id"
-              @click="act(app, () => actions.retry(app.id))"
-            >
-              <RotateCcw />
-              {{ t('appStore.installed.retry') }}
-            </Button>
-            <Button
-              v-else-if="webUrl(app) && app.run_state !== 'stopped'"
+              v-else-if="app.state === 'installed' && webUrl(app) && app.run_state !== 'stopped'"
               as="a"
               variant="secondary"
               :class="pill"
@@ -250,7 +251,7 @@ const count =
               >{{ t('appStore.installed.open') }}</Button
             >
             <Button
-              v-else-if="app.run_state === 'stopped'"
+              v-else-if="app.state === 'installed' && app.run_state === 'stopped'"
               variant="secondary"
               :class="pill"
               class="text-primary"
@@ -316,15 +317,5 @@ const count =
         </div>
       </form>
     </ModalDialog>
-
-    <ConfirmDialog
-      :open="updates.asking.value !== null"
-      :title="t('appStore.installed.updatePermissionsTitle')"
-      :description="t('appStore.installed.updatePermissionsHint')"
-      :confirm-label="t('appStore.installed.update')"
-      :cancel-label="t('desktop.cancel')"
-      @update:open="(value: boolean) => !value && (updates.asking.value = null)"
-      @confirm="confirmUpdate"
-    />
   </div>
 </template>

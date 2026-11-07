@@ -4,7 +4,15 @@ import { defineComponent, h } from 'vue'
 import { mountApp } from '@/shared/test-support/mount'
 import { called, on, reset } from '@/shared/test-support/server'
 
-import { listFolders, makeFolder, useInstallActions, useShareList } from './api'
+import {
+  checkCompose,
+  createProject,
+  fillTemplate,
+  listFolders,
+  makeFolder,
+  useInstallActions,
+  useShareList,
+} from './api'
 
 vi.mock('@/shared/api/client', async (original) =>
   (await import('@/shared/test-support/server')).routed(await original()),
@@ -31,14 +39,14 @@ describe('the App Center’s requests', () => {
     })
   })
 
-  it('offer the shares by name and install, retry and stop apps', async () => {
+  it('offer the shares the administrator may use, by name, and stop apps', async () => {
     reset()
-    on('GET', '/api/v1/shares', [
-      { id: 2, name: 'photos' },
-      { id: 1, name: 'media' },
+    on('GET', '/api/v1/files/shares', [
+      { id: 2, name: 'photos', access: 'read', home: false },
+      { id: 0, name: 'home', access: 'read_write', home: true },
+      { id: 1, name: 'media', access: 'read_write', home: false },
     ])
-    on('POST', '/api/v1/apps/installed', { job: { id: 1 } })
-    on('POST', '/api/v1/apps/installed/jellyfin/retry', { id: 2 })
+    on('POST', '/api/v1/apps/installed/jellyfin/stop', null)
     let shares: ReturnType<typeof useShareList> | undefined
     let actions: ReturnType<typeof useInstallActions> | undefined
     const Host = defineComponent({
@@ -51,20 +59,38 @@ describe('the App Center’s requests', () => {
     await mountApp(Host)
 
     expect(shares!.data.value).toEqual([
-      { id: 1, name: 'media' },
-      { id: 2, name: 'photos' },
+      { id: 1, name: 'media', writable: true },
+      { id: 2, name: 'photos', writable: false },
     ])
-    await actions!.install({
-      source: 1,
-      app: 'jellyfin',
-      ports: {},
-      shares: {},
-      settings: {},
-      confirm_permissions: false,
-      pool: null,
+    await actions!.stop('jellyfin')
+    expect(called('POST', '/api/v1/apps/installed/jellyfin/stop')).toHaveLength(1)
+  })
+
+  it('fill in an app and make it a project named after it', async () => {
+    reset()
+    on('POST', '/api/v1/apps/catalog/1/jellyfin/compose', { compose: 'services: {}\n' })
+    on('POST', '/api/v1/docker/compose/check', { risks: [] })
+    on('POST', '/api/v1/docker/projects', { job: { id: 7, kind: 'containers.project_deploy' } })
+    const app = { source_id: 1, id: 'jellyfin' }
+
+    const compose = await fillTemplate(app, { ports: { web: 8097 } })
+    const place = { name: 'media', share_id: 3, folder: 'docker/media', compose }
+    expect(await checkCompose(place)).toEqual([])
+    const job = await createProject({
+      ...place,
+      accept_risks: false,
+      template: { source_id: 1, app: 'jellyfin' },
     })
-    await actions!.retry('jellyfin')
-    expect(called('POST', '/api/v1/apps/installed')[0]?.body).toMatchObject({ app: 'jellyfin' })
-    expect(called('POST', '/api/v1/apps/installed/jellyfin/retry')).toHaveLength(1)
+
+    expect(compose).toBe('services: {}\n')
+    expect(called('POST', '/api/v1/apps/catalog/1/jellyfin/compose')[0]?.body).toEqual({
+      ports: { web: 8097 },
+    })
+    expect(called('POST', '/api/v1/docker/projects')[0]?.body).toMatchObject({
+      name: 'media',
+      start: true,
+      template: { source_id: 1, app: 'jellyfin' },
+    })
+    expect(job).toMatchObject({ id: 7 })
   })
 })

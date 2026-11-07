@@ -246,6 +246,16 @@ describe('the Docker app', () => {
     expect(wrapper.findComponent({ name: 'ProjectsSection' }).exists()).toBe(true)
   })
 
+  it('opens the project another app asks for', async () => {
+    on('GET', '/api/v1/docker/projects', [project('tesla')])
+    on('GET', '/api/v1/docker/projects/tesla', project('tesla'))
+    const wrapper = await open('project:tesla')
+    await settle()
+
+    expect(section.value).toBe('projects')
+    expect(wrapper.findComponent({ name: 'ProjectDetail' }).props('name')).toBe('tesla')
+  })
+
   it('tells an app’s project from one made here', async () => {
     on('GET', '/api/v1/docker/projects', [
       project('kuma', { kind: 'app', app: 'kuma', containers: [] }),

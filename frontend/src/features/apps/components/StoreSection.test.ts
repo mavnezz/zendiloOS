@@ -3,7 +3,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ref } from 'vue'
 
-import type { CatalogApp, InstalledApp } from '@/shared/api/types'
+import type { AppProject, CatalogApp, InstalledApp } from '@/shared/api/types'
 import { i18n } from '@/shared/i18n'
 
 import { appText, permissionKeys } from '../texts'
@@ -27,13 +27,13 @@ function app(id: string, name: string, extra: Partial<CatalogApp> = {}): Catalog
 
 const apps = ref<CatalogApp[]>([])
 const installed = ref<Partial<InstalledApp>[]>([])
-const update = vi.fn(() => Promise.resolve())
+const projects = ref<Partial<AppProject>[]>([])
 
 vi.mock('../api', async (original) => ({
   webUrl: (await original<typeof import('../api')>()).webUrl,
   useCatalog: () => ({ data: apps, error: ref(null), isPending: ref(false) }),
   useInstalled: () => ({ data: installed }),
-  useInstallActions: () => ({ update }),
+  useAppProjects: () => ({ data: projects }),
   iconUrl: (a: CatalogApp) => `/icon/${a.id}`,
   useDocker: () => ({
     data: ref({ installed: true, running: true, volume: { pool: 'tank', number: 1 }, volumes: [] }),
@@ -51,22 +51,15 @@ function store(props: { category?: string | null; search?: string } = {}) {
 beforeEach(() => {
   setActivePinia(createPinia())
   i18n.global.locale.value = 'en'
-  update.mockClear()
+  // Immich as a project that does not answer; Paperless installed the earlier way.
+  projects.value = [
+    { project: 'photos', source_id: 1, id: 'immich', run_state: 'stopped', web: null },
+  ]
   installed.value = [
-    {
-      id: 'immich',
-      name: 'Immich',
-      translations: {},
-      state: 'installed',
-      run_state: 'running',
-      update: { version: '2.1' },
-      web: null,
-    },
     {
       id: 'paperless',
       state: 'installed',
       run_state: 'running',
-      update: null,
       web: { port: 8000, path: '/', https: false },
     },
   ]
@@ -97,7 +90,7 @@ describe('the app store', () => {
     expect(rows).toHaveLength(3)
     expect(rows[0]).toContain('Immich')
     expect(rows[0]).toContain('Photos · Backup')
-    expect(rows[0]).toContain('Update')
+    expect(rows[0]).toContain('Installed')
     expect(rows[1]).toContain('Jellyfin')
     expect(rows[1]).toContain('Install')
     expect(wrapper.findAll('li')[2]!.find('a').attributes('href')).toContain(':8000/')
@@ -111,9 +104,31 @@ describe('the app store', () => {
     await wrapper
       .findAll('li')[0]!
       .findAll('button')
-      .find((b) => b.text() === 'Update')!
+      .find((b) => b.text() === 'Installed')!
       .trigger('click')
-    expect(update).toHaveBeenCalledWith('immich', null)
+    expect(wrapper.emitted('installed')).toHaveLength(1)
+  })
+
+  it('opens what a project made from an app answers on, and says what the earlier way left', () => {
+    projects.value = [
+      { project: 'photos', source_id: 1, id: 'immich', run_state: 'running', web: null },
+      {
+        project: 'photos-2',
+        source_id: 1,
+        id: 'immich',
+        run_state: 'running',
+        web: { port: 2284, path: '/', https: false },
+      },
+    ]
+    installed.value = [
+      { id: 'jellyfin', state: 'removing' },
+      { id: 'paperless', state: 'failed' },
+    ]
+    const rows = store().findAll('li')
+
+    expect(rows[0]!.find('a').attributes('href')).toContain(':2284/')
+    expect(rows[1]!.text()).toContain('Being installed')
+    expect(rows[2]!.text()).toContain('Failed')
   })
 
   it('shows one category, or what the search finds', () => {

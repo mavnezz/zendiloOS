@@ -1,12 +1,23 @@
 import { computed, inject, type InjectionKey, type Ref, ref, type WritableComputedRef } from 'vue'
 
-/** What the window an app runs in offers it: the page it shows. */
+/** What the window an app runs in offers it: the page it shows, and other apps. */
 export interface WindowSection {
   section: Readonly<Ref<string | undefined>>
   navigate: (section: string) => void
+  /** Opens (or brings forward) another app, on one of its pages. */
+  openApp?: (app: string, section?: string) => void
 }
 
 export const WINDOW_SECTION: InjectionKey<WindowSection> = Symbol('window section')
+
+/**
+ * How an app opens another one, such as the App Center the Docker app on
+ * a project; `null` outside a window (tests), where there is nothing to
+ * open.
+ */
+export function useOpenApp(): ((app: string, section?: string) => void) | null {
+  return inject(WINDOW_SECTION, null)?.openApp ?? null
+}
 
 /**
  * The page of an app with a navigation: kept by its window, so the launcher

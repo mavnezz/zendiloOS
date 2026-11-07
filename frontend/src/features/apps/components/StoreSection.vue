@@ -3,15 +3,14 @@ import { Container, LoaderCircle, Search } from 'lucide-vue-next'
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import type { CatalogApp, InstalledApp } from '@/shared/api/types'
+import type { CatalogApp } from '@/shared/api/types'
 import { problemMessage } from '@/shared/i18n'
 import { Alert } from '@/shared/ui/alert'
 import { Button } from '@/shared/ui/button'
-import { ConfirmDialog } from '@/shared/ui/confirm-dialog'
 import { Input } from '@/shared/ui/input'
 
-import { iconUrl, useCatalog, useDocker, useInstalled, webUrl } from '../api'
-import { useAppUpdates } from '../lib/update'
+import { iconUrl, useCatalog, useDocker } from '../api'
+import { usePresence } from '../lib/presence'
 import { appText } from '../texts'
 import AppRow from './AppRow.vue'
 
@@ -26,9 +25,8 @@ const emit = defineEmits<{
 
 const { t, locale } = useI18n()
 const { data: apps, error, isPending } = useCatalog()
-const { data: installed } = useInstalled()
 const { data: docker } = useDocker()
-const updates = useAppUpdates()
+const action = usePresence()
 /** Typed here when the side's search is hidden in a narrow window. */
 const own = ref('')
 
@@ -46,7 +44,6 @@ const shown = computed(() =>
       appText(a, 'name', locale.value).localeCompare(appText(b, 'name', locale.value)),
     ),
 )
-const byId = computed(() => new Map((installed.value ?? []).map((app) => [app.id, app])))
 const title = computed(() =>
   props.category ? t(`appStore.categories.${props.category}`) : t('appStore.allApps'),
 )
@@ -55,26 +52,10 @@ function kinds(app: CatalogApp): string {
   return app.categories.map((category) => t(`appStore.categories.${category}`)).join(' · ')
 }
 
-/** What the list offers for `app`, by whether and how it is installed. */
-function action(app: CatalogApp): {
-  kind: 'install' | 'update' | 'open' | 'busy' | 'failed' | 'installed'
-  present?: InstalledApp
-} {
-  const present = byId.value.get(app.id)
-  if (!present) return { kind: 'install' }
-  if (present.state === 'installing' || present.state === 'removing')
-    return { kind: 'busy', present }
-  if (present.state === 'failed') return { kind: 'failed', present }
-  if (present.update) return { kind: 'update', present }
-  if (present.state === 'installed' && webUrl(present) && present.run_state !== 'stopped')
-    return { kind: 'open', present }
-  return { kind: 'installed', present }
-}
-
-function confirmUpdate(): void {
-  const app = updates.asking.value
-  updates.asking.value = null
-  if (app) void updates.update(app, true)
+/** Where a project made from `app` answers, if one does. */
+function url(app: CatalogApp): string | undefined {
+  const presence = action(app)
+  return presence.kind === 'open' ? presence.url : undefined
 }
 
 const pill = 'h-7 rounded-full px-4 text-[13px] font-medium'
@@ -142,21 +123,12 @@ const pill = 'h-7 rounded-full px-4 text-[13px] font-medium'
             >
           </template>
           <Button
-            v-else-if="action(app).kind === 'update'"
-            variant="secondary"
-            :class="pill"
-            class="text-primary"
-            :disabled="updates.busy.value === app.id"
-            @click="updates.update(action(app).present!)"
-            >{{ t('appStore.installed.update') }}</Button
-          >
-          <Button
             v-else-if="action(app).kind === 'open'"
             as="a"
             variant="secondary"
             :class="pill"
             class="text-primary"
-            :href="webUrl(action(app).present!) ?? undefined"
+            :href="url(app)"
             target="_blank"
             rel="noopener noreferrer"
             >{{ t('appStore.installed.open') }}</Button
@@ -182,15 +154,5 @@ const pill = 'h-7 rounded-full px-4 text-[13px] font-medium'
         </AppRow>
       </li>
     </ul>
-
-    <ConfirmDialog
-      :open="updates.asking.value !== null"
-      :title="t('appStore.installed.updatePermissionsTitle')"
-      :description="t('appStore.installed.updatePermissionsHint')"
-      :confirm-label="t('appStore.installed.update')"
-      :cancel-label="t('desktop.cancel')"
-      @update:open="(value: boolean) => !value && (updates.asking.value = null)"
-      @confirm="confirmUpdate"
-    />
   </div>
 </template>

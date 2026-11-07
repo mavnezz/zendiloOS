@@ -11,13 +11,17 @@ import { Input } from '@/shared/ui/input'
 
 import { listFolders, makeFolder, useShareList } from '../api'
 
-/** `value`: the folder picked before, `share/folder/…`. */
-const props = defineProps<{ value: string }>()
+/** `value`: the folder picked before, `share/folder/…`; `writable`: only shares the app may write to. */
+const props = defineProps<{ value: string; writable?: boolean }>()
 const open = defineModel<boolean>('open', { default: false })
 const emit = defineEmits<{ pick: [path: string] }>()
 
 const { t } = useI18n()
-const { data: shares } = useShareList()
+const { data: allShares } = useShareList()
+/** The shares to pick from: where the app writes, those the administrator may write. */
+const shares = computed(() =>
+  (allShares.value ?? []).filter((share) => !props.writable || share.writable),
+)
 
 /** What is known of one folder: its folders once read. */
 interface Known {

@@ -31,15 +31,25 @@ const de: Messages = {
       'Die App folgt dem laufenden Image ihrer Entwickler; ein Update holt die neuesten Images.',
     versionIs: 'Version {version}',
     runsOn: 'Läuft auf {architectures}',
-    installedVersion: 'Installiert ist Version {version}.',
     moreInfo: 'Weitere Informationen',
     showCompose: 'Compose-Datei anzeigen',
     hideCompose: 'Compose-Datei ausblenden',
-    placeTitle: 'Speicherort auswählen',
-    placeQuestion: 'Bitte wählen Sie den Ort, an dem die App installiert werden soll',
+    placeTitle: 'Wohin das Projekt kommt',
     placeVolume: 'Volume {number} ({pool})',
-    placeHint: 'Dort liegen ihre Daten in einem eigenen Ordner; Docker selbst bleibt, wo es ist.',
-    placeAlways: 'Anwendungen immer auf diesem Volume installieren',
+    placeHint:
+      'Die App wird zu Ihrem eigenen Docker-Projekt: Ihre Compose-Datei und ihre Daten liegen in diesem Ordner, und Sie verwalten sie in der Docker-App wie jedes andere.',
+    projectName: 'Projektname',
+    projectNameHint: 'Kleinbuchstaben, Ziffern, - und _: ihr Name in Docker.',
+    baseFolder: 'Basisordner',
+    baseShare: 'Freigabe',
+    baseFolderHint:
+      'Ein Ordner in einer Freigabe, in die Sie schreiben dürfen; fehlt er, wird er angelegt. Die App legt ihre Daten in Ordnern darin ab, etwa ./config.',
+    noPlace:
+      'Sie dürfen in keine Freigabe schreiben. Legen Sie unter Freigaben eine an oder lassen Sie sich Schreibrechte geben.',
+    reviewTitle: 'Die Compose-Datei',
+    reviewHint:
+      'Diese Datei wird als {file} gespeichert und gestartet. Sie gehört Ihnen: Ändern Sie sie jetzt oder später in der Docker-App.',
+    installAgain: 'Noch einmal installieren',
     next: 'Weiter',
     sections: { store: 'Store', installed: 'Installiert', sources: 'Kataloge' },
     search: 'Apps suchen',
@@ -65,7 +75,7 @@ const de: Messages = {
       'Noch keine Apps. Die Kataloge werden beim Start von zendiloOS und alle sechs Stunden gelesen; unter Kataloge können Sie sie jetzt lesen.',
     unofficial: 'Anderer Katalog',
     unofficialHint:
-      'Diese App stammt aus einem Katalog, den Sie hinzugefügt haben, nicht aus dem zendiloOS-Community-Katalog: Dort hat sie niemand geprüft. Beim Installieren gelten dieselben Regeln: kein Zugriff aufs System, Daten nur in ihrem Ordner und in den Freigaben, die Sie wählen.',
+      'Diese App stammt aus einem Katalog, den Sie hinzugefügt haben, nicht aus dem zendiloOS-Community-Katalog: Dort hat sie niemand geprüft. Lesen Sie ihre Compose-Datei, bevor sie läuft.',
     permissions: {
       gpu: 'Grafikkarte',
       tun: 'VPN-Gerät',
@@ -87,7 +97,7 @@ const de: Messages = {
     installFailed: 'Fehlgeschlagen',
     dockerFirst: 'Installieren Sie zuerst Docker (Menüpunkt Docker).',
     configTitle: 'Installationskonfiguration',
-    configFor: '{name} · Speicherort: {place}',
+    configFor: '{name} · Ordner: {place}',
     pleaseChoose: 'Bitte auswählen',
     pleaseEnter: 'Bitte eingeben',
     pickFolder: 'Ordner auswählen',
@@ -106,30 +116,25 @@ const de: Messages = {
     fixedHint: 'Die App lauscht selbst auf diesem Port; er lässt sich nicht verlegen.',
     optional: 'optional',
     notice: 'Hinweis',
-    understood: 'Ich habe den Text gelesen und die Installationsrisiken verstanden',
     showValue: 'Eingabe zeigen',
     hideValue: 'Eingabe verbergen',
     installed: {
-      updatable: 'Aktualisierbar',
-      updateAll: 'Ein-Klick-Update',
-      newRelease: 'Neue Fassung verfügbar',
-      newVersion: 'Version {version} verfügbar',
-      fromVersion: 'statt {version}',
       empty: 'Noch keine Apps installiert.',
       toStore: 'Zum Store',
+      projectsHint:
+        'Jede läuft als Ihr eigenes Docker-Projekt: Ändern, aktualisieren und entfernen Sie sie in der Docker-App.',
+      inDocker: 'In Docker zeigen',
+      earlier: 'Auf die frühere Art installiert',
+      earlierHint:
+        'Diese Apps wurden installiert, bevor das App Center Docker-Projekte anlegte. Sie laufen weiter; um eine zu ändern, entfernen Sie sie und installieren Sie sie neu.',
       states: {
         installing: 'Wird installiert',
         failed: 'Nicht installiert',
         removing: 'Wird entfernt',
       },
       steps: {
-        preparing: 'Ordner und Konto anlegen',
-        shares: 'Zugriff auf Freigaben geben',
-        checking: 'Gegen die Regeln prüfen',
-        folders: 'Ordner anlegen',
-        pulling: 'Images laden',
-        starting: 'Starten',
         removing: 'Container und Daten entfernen',
+        shares: 'Zugriff auf Freigaben nehmen',
         account: 'Konto entfernen',
       },
       run: {
@@ -139,14 +144,9 @@ const de: Messages = {
         stopped: 'Gestoppt',
         unknown: 'Docker nicht erreichbar',
       },
-      updateAvailable: 'Version {version} verfügbar',
-      port: 'Port {id}: {port}',
-      share: 'Freigabe {id}: {share}',
       open: 'Öffnen',
       start: 'Starten',
       stop: 'Stoppen',
-      update: 'Aktualisieren',
-      retry: 'Erneut versuchen',
       logs: 'Protokoll',
       remove: 'Entfernen',
       logsTitle: 'Protokoll von {name}',
@@ -157,10 +157,6 @@ const de: Messages = {
         'Container, Images und alle Daten der App werden gelöscht. Die Freigaben, die sie nutzte, behalten ihre Dateien.',
       removeConfirm: 'Zum Bestätigen {id} eingeben',
       removingNotice: '{name} wird entfernt',
-      updating: '{name} wird aktualisiert',
-      updatePermissionsTitle: 'Die neue Version verlangt mehr',
-      updatePermissionsHint:
-        'Sie braucht Geräte, Rechte oder das Netz des Hosts, die die installierte Version nicht hatte. Was genau, steht im Store.',
     },
     needs: 'Was sie braucht',
     port: '{label}: Port {port}',
@@ -170,7 +166,7 @@ const de: Messages = {
     readWrite: 'lesen und schreiben',
     setting: 'Sie geben ein: {label}',
     generated: 'zendiloOS erzeugt: {labels} | zendiloOS erzeugt: {labels}',
-    permissionsTitle: 'Braucht mehr, als die Regeln erlauben',
+    permissionsTitle: 'Reicht über ihre Container hinaus',
     permissionText: {
       gpu: 'Die Grafikkarte ({device}) für Videobeschleunigung',
       tun: 'Das VPN-Gerät ({device}) für Tunnel',
@@ -1983,8 +1979,6 @@ const de: Messages = {
     project_exists: 'Ein Projekt dieses Namens gibt es schon.',
     app_project: 'Diese App verwaltet das App-Center.',
     not_own_project: 'Die Compose-Datei dieses Projekts liegt nicht in zendiloOS.',
-    app_changed:
-      'Die App hat sich im Katalog geändert, seit Sie sie angesehen haben: Sehen Sie sie vor dem Bestätigen noch einmal an.',
     jobs_running:
       'Es laufen noch Aufgaben im Hintergrund, die sonst mittendrin abbrächen; warten Sie, bis sie beendet sind',
     pool_in_use:
@@ -2000,14 +1994,9 @@ const de: Messages = {
     snapshot_taken:
       'In dieser Sekunde wurde schon ein Snapshot aufgenommen. Bitte noch einmal versuchen.',
     refused: 'Das System hat aus Sicherheitsgründen abgelehnt.',
-    app_installed: 'Diese App ist schon installiert.',
-    app_id_too_long: 'Die Kennung dieser App ist zu lang, um sie mit zendiloOS zu installieren.',
-    docker_not_ready:
-      'Docker läuft nicht mit seinen Daten auf einem Pool. Richten Sie das zuerst im Store ein.',
-    permissions_not_confirmed: 'Bestätigen Sie, was die App über die Regeln hinaus verlangt.',
     invalid_app_value: 'Ein Wert lässt sich nicht verwenden',
+    template_unfillable: 'Die Compose-Datei der App lässt sich nicht ausfüllen',
     app_busy: 'Die App ist beschäftigt oder nicht in dem Zustand dafür.',
-    up_to_date: 'Die App ist aktuell.',
     host_failed: 'Docker konnte es nicht ausführen',
     share_used_by_apps: 'Apps nutzen diese Freigabe; entfernen Sie sie zuerst',
     share_used_by_projects:

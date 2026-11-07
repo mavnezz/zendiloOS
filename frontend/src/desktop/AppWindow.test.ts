@@ -4,6 +4,7 @@ import { defineComponent, h } from 'vue'
 
 import { mountApp, press, settle } from '@/desktop/testing/mount'
 import { i18n } from '@/shared/i18n'
+import { useOpenApp } from '@/shared/lib/window-section'
 
 import { type AppDefinition, findApp } from './apps'
 import AppWindow from './AppWindow.vue'
@@ -18,9 +19,17 @@ const t = (key: string) => i18n.global.t(key)
 // jsdom does not capture pointers.
 HTMLElement.prototype.setPointerCapture = () => undefined
 
+/** How the app in the window opens another, as it got it. */
+let openApp: ReturnType<typeof useOpenApp> = null
+
 const app: AppDefinition = {
   ...findApp('logs')!,
-  component: defineComponent({ render: () => h('p', 'the app') }),
+  component: defineComponent({
+    setup() {
+      openApp = useOpenApp()
+      return () => h('p', 'the app')
+    },
+  }),
 }
 
 /** A pointer event at `x`, `y`. */
@@ -95,5 +104,19 @@ describe('a window', () => {
     expect(wrapper.text()).toContain('the app')
     await press(t('desktop.back'))
     expect(window().minimized).toBe(true)
+  })
+
+  it('lets its app open another one on a page', async () => {
+    const { windows } = await opened()
+    await settle()
+
+    openApp!('docker', 'project:media')
+    openApp!('no-such-app')
+
+    const apps = windows.state.windows.map((entry) => [entry.appId, entry.section])
+    expect(apps).toEqual([
+      ['logs', undefined],
+      ['docker', 'project:media'],
+    ])
   })
 })

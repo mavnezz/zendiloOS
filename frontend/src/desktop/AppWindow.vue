@@ -6,7 +6,7 @@ import { useI18n } from 'vue-i18n'
 import { cn } from '@/shared/lib/utils'
 import { WINDOW_SECTION } from '@/shared/lib/window-section'
 
-import type { AppDefinition } from './apps'
+import { type AppDefinition, findApp } from './apps'
 import AppTile from './AppTile.vue'
 import { type Geometry, shownGeometry, type WindowState } from './windowManager'
 import { useWindows } from './windows'
@@ -28,6 +28,10 @@ const windows = useWindows()
 provide(WINDOW_SECTION, {
   section: computed(() => props.window.section),
   navigate: (section: string) => windows.navigate(props.app.id, section),
+  openApp: (id: string, section?: string) => {
+    const other = findApp(id)
+    if (other) windows.open(other, section)
+  },
 })
 const title = computed(() => t(`apps.${props.app.id}`))
 const fills = computed(() => props.compact || props.window.maximized)

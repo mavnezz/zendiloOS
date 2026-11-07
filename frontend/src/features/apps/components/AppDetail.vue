@@ -7,10 +7,9 @@ import { problemMessage } from '@/shared/i18n'
 import { Alert } from '@/shared/ui/alert'
 import { Badge } from '@/shared/ui/badge'
 import { Button } from '@/shared/ui/button'
-import { ConfirmDialog } from '@/shared/ui/confirm-dialog'
 
-import { iconUrl, useCatalogApp, useDocker, useInstalled, useSources, webUrl } from '../api'
-import { useAppUpdates } from '../lib/update'
+import { iconUrl, useCatalogApp, useDocker, useSources } from '../api'
+import { usePresence } from '../lib/presence'
 import { appText, asksForMore, paragraphs } from '../texts'
 import InstallDialog from './InstallDialog.vue'
 import PermissionList from './PermissionList.vue'
@@ -22,16 +21,15 @@ const emit = defineEmits<{ back: []; installed: [] }>()
 const { t, locale } = useI18n()
 const which = computed(() => ({ source: props.source, id: props.id }))
 const { data: app, error } = useCatalogApp(which)
-const { data: installed } = useInstalled()
 const { data: docker } = useDocker()
 const { data: sources } = useSources()
-const updates = useAppUpdates()
+const presenceOf = usePresence()
 const installing = ref(false)
 const brokenIcon = ref(false)
 const showCompose = ref(false)
 
-/** The app installed from any catalog: one app per id on the NAS. */
-const present = computed(() => installed.value?.find((other) => other.id === props.id))
+/** Whether a project was made from the app here, or it was installed the earlier way. */
+const presence = computed(() => presenceOf({ source_id: props.source, id: props.id }))
 const dockerReady = computed(() => Boolean(docker.value?.volume && docker.value.running))
 const catalog = computed(() => {
   if (app.value?.official) return t('appStore.sources.official')
@@ -51,16 +49,10 @@ const asksMore = computed(() => Boolean(app.value) && asksForMore(app.value!.per
 watch(
   [app, dockerReady],
   ([known, ready]) => {
-    if (props.install && known && ready && !present.value) installing.value = true
+    if (props.install && known && ready) installing.value = true
   },
   { immediate: true },
 )
-
-function confirmUpdate(): void {
-  const asking = updates.asking.value
-  updates.asking.value = null
-  if (asking) void updates.update(asking, true)
-}
 
 const fact = 'grid gap-1 px-3 text-center not-first:border-l'
 const heading = 'text-base font-semibold'
@@ -100,44 +92,37 @@ const heading = 'text-base font-semibold'
           </h2>
           <p class="text-sm text-muted-foreground">{{ kinds }}</p>
         </div>
-        <template v-if="present">
+        <div class="flex flex-wrap items-center gap-2">
           <Button
-            v-if="present.update"
-            size="lg"
-            class="rounded-full px-6"
-            :disabled="updates.busy.value === app.id"
-            @click="updates.update(present)"
-            >{{ t('appStore.installed.update') }}</Button
-          >
-          <Button
-            v-else-if="present.state === 'installed' && webUrl(present)"
+            v-if="presence.kind === 'open'"
             as="a"
             size="lg"
             class="rounded-full px-6"
-            :href="webUrl(present) ?? undefined"
+            :href="presence.url"
             target="_blank"
             rel="noopener noreferrer"
             >{{ t('appStore.installed.open') }}</Button
           >
           <Button
-            v-else
+            v-else-if="presence.kind !== 'install'"
             size="lg"
             variant="outline"
             class="rounded-full px-6"
             @click="emit('installed')"
             >{{ t('appStore.isInstalled') }}</Button
           >
-        </template>
-        <Button
-          v-else
-          size="lg"
-          class="rounded-full px-6"
-          :disabled="!dockerReady"
-          :title="dockerReady ? undefined : t('appStore.dockerFirst')"
-          @click="installing = true"
-        >
-          {{ t('appStore.install') }}
-        </Button>
+          <!-- A project of one's own: another can be made from the same app. -->
+          <Button
+            size="lg"
+            :variant="presence.kind === 'install' ? 'default' : 'ghost'"
+            class="rounded-full px-6"
+            :disabled="!dockerReady"
+            :title="dockerReady ? undefined : t('appStore.dockerFirst')"
+            @click="installing = true"
+          >
+            {{ presence.kind === 'install' ? t('appStore.install') : t('appStore.installAgain') }}
+          </Button>
+        </div>
       </header>
 
       <dl class="grid grid-cols-2 gap-y-4 border-y py-4 text-sm @2xl:grid-cols-5">
@@ -213,12 +198,6 @@ const heading = 'text-base font-semibold'
             t('appStore.runsOn', { architectures: app.architectures.join(', ') })
           }}</span>
         </p>
-        <p
-          v-if="present?.version && app.version && present.version !== app.version"
-          class="text-sm text-muted-foreground"
-        >
-          {{ t('appStore.installedVersion', { version: present.version }) }}
-        </p>
       </section>
 
       <section class="grid gap-2 border-b pb-6 text-sm">
@@ -286,15 +265,6 @@ const heading = 'text-base font-semibold'
       </section>
 
       <InstallDialog v-model:open="installing" :app="app" @installed="emit('installed')" />
-      <ConfirmDialog
-        :open="updates.asking.value !== null"
-        :title="t('appStore.installed.updatePermissionsTitle')"
-        :description="t('appStore.installed.updatePermissionsHint')"
-        :confirm-label="t('appStore.installed.update')"
-        :cancel-label="t('desktop.cancel')"
-        @update:open="(value: boolean) => !value && (updates.asking.value = null)"
-        @confirm="confirmUpdate"
-      />
     </template>
   </div>
 </template>
