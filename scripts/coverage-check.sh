@@ -2,20 +2,26 @@
 # Checks the backend's test coverage against the thresholds CI holds, from
 # the summary cargo-llvm-cov writes (just coverage-backend):
 #
-#   - all crates together: at least 80 % of lines
-#   - every bounded context: at least 90 %
-#   - the domain layers together: at least 95 %
+#   - all crates together: at least 92 % of lines
+#   - every crate: at least 90 %, but zendiloosd, whose rest is the glue
+#     of the binary (systemd's notifications, the log's set-up)
+#   - every bounded context: at least 93 %
+#   - the domain layers together: at least 97 %
 #
-# The thresholds sit just below what the tests reach (11/2026): coverage may
-# rise, but not fall unnoticed. Prints the coverage of every crate.
+# The binaries' main.rs are not measured (justfile). The thresholds sit
+# just below what the tests reach (11/2026: 93.4 %, every crate 90 % or
+# more, contexts 94 % or more, domains 98.5 %): coverage may rise, but not
+# fall unnoticed. Prints the coverage of every crate.
 #
 # Usage: scripts/coverage-check.sh REPORT.json
 set -euo pipefail
 
 report=${1:?usage: $0 REPORT.json}
-total_min=80
-context_min=90
-domain_min=95
+total_min=92
+crate_min=90
+context_min=93
+domain_min=97
+glue=(zendiloosd)
 contexts=(identity system storage sharing apps containers updates network)
 
 summary=$(jq -r '
@@ -44,6 +50,12 @@ domain=$(percent domain)
 printf '%-28s %17s%%\n%-28s %17s%%\n' "all crates" "$total" "domain layers" "$domain"
 below "$total" "$total_min" && failed+=("all crates: $total % < $total_min %")
 below "$domain" "$domain_min" && failed+=("domain layers: $domain % < $domain_min %")
+while IFS=$'\t' read -r crate count covered; do
+    [[ $crate == zendiloos* ]] || continue
+    [[ " ${glue[*]} " == *" $crate "* ]] && continue
+    value=$(awk -v c="$covered" -v n="$count" 'BEGIN { printf "%.1f", (n ? 100 * c / n : 100) }')
+    below "$value" "$crate_min" && failed+=("$crate: $value % < $crate_min %")
+done <<<"$summary"
 for context in "${contexts[@]}"; do
     value=$(percent "zendiloos-$context")
     [[ -n $value ]] || { failed+=("zendiloos-$context: not in the report"); continue; }
