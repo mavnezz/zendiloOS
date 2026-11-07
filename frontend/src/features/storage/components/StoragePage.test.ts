@@ -1,14 +1,12 @@
 import type { VueWrapper } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { ref } from 'vue'
 
 import { click, mountApp, page, press, settle, submit, type } from '@/shared/test-support/mount'
 import { called, on, problem, reset } from '@/shared/test-support/server'
 import type { Disk, Pool, PoolDevice, RaidArray, Volume } from '@/shared/api/types'
 import { i18n } from '@/shared/i18n'
-import { WINDOW_SECTION } from '@/shared/lib/window-section'
 
-import StorageApp from './StorageApp.vue'
+import StoragePage from './StoragePage.vue'
 
 vi.mock('@/shared/api/client', async (original) =>
   (await import('@/shared/test-support/server')).routed(await original()),
@@ -106,18 +104,10 @@ const array: RaidArray = {
   },
 }
 
-const section = ref('overview')
+type Page = 'overview' | 'volumes' | 'pools' | 'disks'
 
-async function open(name: string, canManage = true): Promise<VueWrapper> {
-  section.value = name
-  const { wrapper } = await mountApp(StorageApp, {
-    props: { canManage },
-    global: {
-      provide: {
-        [WINDOW_SECTION as symbol]: { section, navigate: (next: string) => (section.value = next) },
-      },
-    },
-  })
+async function open(page: Page, canManage = true): Promise<VueWrapper> {
+  const { wrapper } = await mountApp(StoragePage, { props: { page, canManage } })
   return wrapper
 }
 
@@ -208,7 +198,7 @@ beforeEach(() => {
   })
 })
 
-describe('the storage app', () => {
+describe('the storage pages', () => {
   it('shows the volumes and their use', async () => {
     await open('volumes')
     expect(page()).toContain('/volume1')
@@ -387,7 +377,7 @@ describe('the storage app', () => {
     rows[0]!.click()
     await settle()
     expect(wrapper.findComponent({ name: 'DiskDetail' }).exists()).toBe(true)
-    section.value = 'overview'
+    await wrapper.setProps({ page: 'overview' })
     await settle()
     expect(wrapper.findComponent({ name: 'DiskDetail' }).exists()).toBe(false)
   })

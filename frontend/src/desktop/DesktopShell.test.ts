@@ -8,6 +8,7 @@ import { called, on, reset } from '@/shared/test-support/server'
 import { i18n } from '@/shared/i18n'
 
 import DesktopShell from './DesktopShell.vue'
+import { useWindows } from './windows'
 
 vi.mock('@/shared/api/client', async (original) =>
   (await import('@/shared/test-support/server')).routed(await original()),
@@ -115,12 +116,18 @@ describe('the desktop', () => {
   it('opens apps from the launcher and the icons, and manages their windows', async () => {
     await shell()
     await press(t('desktop.launcher'))
-    await type(`input[aria-label="${t('desktop.search')}"]`, t('apps.dashboard'))
+    // The resource monitor is a page of the control panel now.
+    await type(`input[aria-label="${t('desktop.search')}"]`, t('controlPanel.monitor'))
     document
       .querySelector<HTMLInputElement>(`input[aria-label="${t('desktop.search')}"]`)!
       .dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }))
     await settle()
-    expect(document.querySelector(`[aria-label="${t('apps.dashboard')}"]`)).not.toBeNull()
+    expect(
+      document.querySelector(`section[role="dialog"][aria-label="${t('apps.settings')}"]`),
+    ).not.toBeNull()
+    expect(
+      useWindows().state.windows.map((window) => [window.appId, window.section]),
+    ).toContainEqual(['settings', 'monitor'])
     await press(t('desktop.maximize'))
     await press(t('desktop.restore'))
     await press(t('desktop.minimize'))

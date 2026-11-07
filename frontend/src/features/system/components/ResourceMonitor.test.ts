@@ -6,7 +6,7 @@ import { on, reset } from '@/shared/test-support/server'
 import type { SystemInfo } from '@/shared/api/types'
 import { i18n } from '@/shared/i18n'
 
-import DashboardApp from './DashboardApp.vue'
+import ResourceMonitor from './ResourceMonitor.vue'
 import DeviceInfoPage from './DeviceInfoPage.vue'
 
 vi.mock('@/shared/api/client', async (original) =>
@@ -51,9 +51,9 @@ beforeEach(() => {
   })
 })
 
-describe('the dashboard', () => {
+describe('the resource monitor', () => {
   it('waits for the first sample, then shows every tab', async () => {
-    const { wrapper } = await mountApp(DashboardApp)
+    const { wrapper } = await mountApp(ResourceMonitor)
     push('metrics', sample(3))
     push('metrics', sample(4, { cpu_percent: 40 }))
     await settle()
@@ -61,7 +61,7 @@ describe('the dashboard', () => {
     expect(page()).toContain('71')
     expect(page()).toContain('AMD Ryzen 5')
 
-    const tabs = wrapper.findComponent({ name: 'PanelTabs' })
+    const tabs = wrapper.findComponent({ name: 'PageTabs' })
     for (const tab of ['cpu', 'memory', 'network', 'disks', 'overview']) {
       tabs.vm.$emit('update:modelValue', tab)
       await settle()
@@ -85,7 +85,7 @@ describe('the dashboard', () => {
       os_name: null,
     })
     on('GET', '/api/v1/system/metrics/history', { at: [] })
-    const { wrapper } = await mountApp(DashboardApp)
+    const { wrapper } = await mountApp(ResourceMonitor)
     push(
       'metrics',
       sample(5, {
@@ -98,7 +98,7 @@ describe('the dashboard', () => {
     await settle()
     expect(page()).toContain('x86_64')
     for (const tab of ['cpu', 'network', 'disks']) {
-      wrapper.findComponent({ name: 'PanelTabs' }).vm.$emit('update:modelValue', tab)
+      wrapper.findComponent({ name: 'PageTabs' }).vm.$emit('update:modelValue', tab)
       await settle()
     }
   })

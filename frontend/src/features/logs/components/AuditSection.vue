@@ -38,8 +38,7 @@ function outcome(record: AuditRecord): string {
 
 <template>
   <div class="grid gap-3">
-    <div class="flex items-center justify-between gap-2">
-      <p class="text-sm text-muted-foreground">{{ t('logs.auditIntro') }}</p>
+    <div class="flex items-center justify-end gap-2">
       <Button variant="outline" size="sm" @click="audit.refetch()">
         <RefreshCw />
         {{ t('storage.refresh') }}

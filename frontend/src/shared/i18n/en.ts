@@ -5,11 +5,8 @@ const en = {
   },
   apps: {
     files: 'Files',
-    dashboard: 'Resource monitor',
     settings: 'Control panel',
-    storage: 'Storage',
     users: 'Users',
-    logs: 'Logs',
     apps: 'Apps',
     docker: 'Docker',
   },
@@ -260,9 +257,12 @@ const en = {
   },
   controlPanel: {
     groupGeneral: 'General',
+    groupStorage: 'Storage',
     groupAccounts: 'Accounts',
     groupServices: 'Connectivity & access',
+    groupMonitoring: 'Monitoring',
     groupSecurity: 'Security',
+    monitor: 'Resource monitor',
     device: 'Info',
     appearance: 'Appearance',
     network: 'Network',
@@ -861,6 +861,7 @@ const en = {
     swap: '{size} swap',
   },
   dashboard: {
+    description: 'What the NAS is doing now and in the last minutes.',
     waiting: 'Waiting for the first measurement…',
     system: 'System',
     host: 'Host',
@@ -1036,6 +1037,24 @@ const en = {
     version: 'zendiloOS version',
   },
   storage: {
+    pages: {
+      overview: {
+        title: 'Storage overview',
+        description: 'How the pools, volumes and disks are doing, and what needs attention.',
+      },
+      volumes: {
+        title: 'Volumes',
+        description: 'Where the data lies: one volume for each pool, with its folders.',
+      },
+      pools: {
+        title: 'Pools',
+        description: 'Disks joined into pools; the layout decides how many may fail.',
+      },
+      disks: {
+        title: 'Disks',
+        description: 'Every disk in the NAS: its health, its self-tests and what it is used for.',
+      },
+    },
     columns: {
       device: 'Device',
       model: 'Model',
@@ -1187,7 +1206,6 @@ const en = {
       new: 'Replacement',
     },
     otherArrays: 'Other RAID arrays (read only)',
-    overview: 'Overview',
     verdict: {
       good: 'Everything is fine',
       goodDetail: 'The pools are healthy and no disk shows signs of wear.',
@@ -1213,9 +1231,7 @@ const en = {
       no_redundancy: 'Pool {pool} has no redundancy: if its disk fails, the data is lost.',
       scrub_overdue: 'The data on pool {pool} was last checked {days} days ago.',
     },
-    volumes: 'Volumes',
     arrays: 'RAID arrays',
-    disks: 'Disks',
     refresh: 'Refresh',
     noVolumes: 'No data volumes yet.',
     noArrays: 'No RAID arrays.',
@@ -1508,6 +1524,10 @@ const en = {
       journal: 'System log',
       audit: 'Audit log',
     },
+    descriptions: {
+      journal: 'What the system and zendiloOS wrote to the journal.',
+      audit: 'Sign-ins and every change made through zendiloOS.',
+    },
     source: 'Source',
     sources: {
       system: 'Everything',
@@ -1530,7 +1550,6 @@ const en = {
     loading: 'Loading…',
     empty: 'No entries.',
     older: 'Load older entries',
-    auditIntro: 'Sign-ins and every change made through zendiloOS.',
     time: 'Time',
     actor: 'Who',
     action: 'What',

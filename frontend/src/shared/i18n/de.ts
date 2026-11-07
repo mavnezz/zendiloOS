@@ -6,11 +6,8 @@ const de: Messages = {
   },
   apps: {
     files: 'Dateien',
-    dashboard: 'Ressourcenmonitor',
     settings: 'Systemsteuerung',
-    storage: 'Speicher',
     users: 'Benutzer',
-    logs: 'Protokolle',
     apps: 'Apps',
     docker: 'Docker',
   },
@@ -267,9 +264,12 @@ const de: Messages = {
   },
   controlPanel: {
     groupGeneral: 'Allgemein',
+    groupStorage: 'Speicher',
     groupAccounts: 'Konten',
     groupServices: 'Konnektivität & Zugriff',
+    groupMonitoring: 'Überwachung',
     groupSecurity: 'Sicherheit',
+    monitor: 'Ressourcenmonitor',
     device: 'Info',
     appearance: 'Darstellung',
     network: 'Netzwerk',
@@ -881,6 +881,7 @@ const de: Messages = {
     swap: '{size} Auslagerung',
   },
   dashboard: {
+    description: 'Was das NAS gerade tut und in den letzten Minuten getan hat.',
     waiting: 'Warte auf die erste Messung…',
     system: 'System',
     host: 'Host',
@@ -1056,6 +1057,26 @@ const de: Messages = {
     version: 'zendiloOS-Version',
   },
   storage: {
+    pages: {
+      overview: {
+        title: 'Speicherübersicht',
+        description: 'Wie es Pools, Volumes und Datenträgern geht, und was Aufmerksamkeit braucht.',
+      },
+      volumes: {
+        title: 'Volumes',
+        description: 'Wo die Daten liegen: ein Volume je Pool, mit seinen Ordnern.',
+      },
+      pools: {
+        title: 'Pools',
+        description:
+          'Zu Pools verbundene Datenträger; die Anordnung entscheidet, wie viele ausfallen dürfen.',
+      },
+      disks: {
+        title: 'Laufwerke',
+        description:
+          'Jedes Laufwerk im NAS: sein Zustand, seine Selbsttests und wofür es verwendet wird.',
+      },
+    },
     columns: {
       device: 'Gerät',
       model: 'Modell',
@@ -1209,7 +1230,6 @@ const de: Messages = {
       new: 'Ersatz',
     },
     otherArrays: 'Andere RAID-Verbünde (nur lesend)',
-    overview: 'Übersicht',
     verdict: {
       good: 'Alles in Ordnung',
       goodDetail: 'Die Pools sind gesund und keine Platte zeigt Verschleiß.',
@@ -1239,9 +1259,7 @@ const de: Messages = {
         'Pool {pool} hat keine Redundanz: Fällt seine Platte aus, sind die Daten verloren.',
       scrub_overdue: 'Die Daten auf Pool {pool} wurden zuletzt vor {days} Tagen geprüft.',
     },
-    volumes: 'Volumes',
     arrays: 'RAID-Verbünde',
-    disks: 'Laufwerke',
     refresh: 'Aktualisieren',
     noVolumes: 'Noch keine Daten-Volumes.',
     noArrays: 'Keine RAID-Verbünde.',
@@ -1536,6 +1554,10 @@ const de: Messages = {
       journal: 'Systemprotokoll',
       audit: 'Änderungsprotokoll',
     },
+    descriptions: {
+      journal: 'Was das System und zendiloOS ins Journal geschrieben haben.',
+      audit: 'Anmeldungen und jede Änderung über zendiloOS.',
+    },
     source: 'Quelle',
     sources: {
       system: 'Alles',
@@ -1558,7 +1580,6 @@ const de: Messages = {
     loading: 'Wird geladen…',
     empty: 'Keine Einträge.',
     older: 'Ältere Einträge laden',
-    auditIntro: 'Anmeldungen und jede Änderung über zendiloOS.',
     time: 'Zeit',
     actor: 'Wer',
     action: 'Was',

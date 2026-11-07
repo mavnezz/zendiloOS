@@ -6,19 +6,22 @@ import { useI18n } from 'vue-i18n'
 import UsersPage from '@/features/accounts/components/UsersPage.vue'
 import { useSessionStore } from '@/features/auth/store'
 import ChannelsSection from '@/features/channels/components/ChannelsSection.vue'
+import LogsPage from '@/features/logs/components/LogsPage.vue'
 import { useNetwork } from '@/features/network/api'
 import NetworkSection from '@/features/network/components/NetworkSection.vue'
 import SecurityPage from '@/features/security/components/SecurityPage.vue'
+import StoragePage from '@/features/storage/components/StoragePage.vue'
 import FileServicesPage from '@/features/files/components/sharing/FileServicesPage.vue'
 import { useSystemInfo } from '@/features/system/api'
 import DeviceInfoPage from '@/features/system/components/DeviceInfoPage.vue'
+import ResourceMonitor from '@/features/system/components/ResourceMonitor.vue'
 import TerminalPage from '@/features/system/components/TerminalPage.vue'
 import { api, unwrap } from '@/shared/api/client'
 import { useWindowSection } from '@/shared/lib/window-section'
 import { AppFrame, type NavGroup } from '@/shared/ui/frame'
 import { ComingLater, PageDescription, PageHeader } from '@/shared/ui/page'
 
-import { SETTINGS_SECTIONS } from '../apps'
+import { MONITOR_SECTION, SETTINGS_SECTIONS } from '../apps'
 import AccountPage from './settings/AccountPage.vue'
 import AppearancePage from './settings/AppearancePage.vue'
 import LocalePage from './settings/LocalePage.vue'
@@ -61,6 +64,19 @@ const address = computed(
       .find((entry) => entry.address.includes('.') && entry.scope !== 'host')?.address,
 )
 
+/** The storage page a `storage-…` section shows. */
+const STORAGE_PAGES = {
+  'storage-overview': 'overview',
+  'storage-volumes': 'volumes',
+  'storage-pools': 'pools',
+  'storage-disks': 'disks',
+} as const
+const storagePage = computed(() =>
+  section.value in STORAGE_PAGES
+    ? STORAGE_PAGES[section.value as keyof typeof STORAGE_PAGES]
+    : null,
+)
+
 const { data: pools } = useQuery({
   queryKey: ['storage', 'pools'],
   queryFn: () => unwrap(api.GET('/api/v1/storage/pools')),
@@ -78,6 +94,13 @@ const { data: pools } = useQuery({
       :description="t(`controlPanel.soon.${current.id}`)"
     />
     <DeviceInfoPage v-else-if="section === 'device'" :pools="pools" />
+    <StoragePage
+      v-else-if="storagePage"
+      :page="storagePage"
+      :can-manage="session.can('storage.manage')"
+    />
+    <ResourceMonitor v-else-if="section === MONITOR_SECTION" />
+    <LogsPage v-else-if="section === 'journal' || section === 'audit'" :page="section" />
     <AppearancePage v-else-if="section === 'appearance'" />
     <div v-else-if="section === 'network'">
       <PageHeader

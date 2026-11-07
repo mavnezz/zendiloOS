@@ -36,7 +36,7 @@ import { type Component, defineAsyncComponent } from 'vue'
 
 import type { Size } from './windowManager'
 
-export type AppId = 'storage' | 'dashboard' | 'logs' | 'settings' | 'files' | 'apps' | 'docker'
+export type AppId = 'settings' | 'files' | 'apps' | 'docker'
 
 /** A page inside an app: found by the launcher's search, opened directly. */
 export interface AppSection {
@@ -72,6 +72,8 @@ export interface AppDefinition {
 
 export const SETTINGS_APP: AppId = 'settings'
 export const ACCOUNT_SECTION = 'account'
+/** The resource monitor's page in the control panel. */
+export const MONITOR_SECTION = 'monitor'
 
 /** The control panel's pages, grouped as its navigation shows them. */
 export const SETTINGS_SECTIONS: AppSection[] = [
@@ -109,6 +111,34 @@ export const SETTINGS_SECTIONS: AppSection[] = [
     permission: 'system.manage',
   },
   {
+    id: 'storage-overview',
+    label: 'storage.pages.overview.title',
+    icon: Gauge,
+    group: 'controlPanel.groupStorage',
+    permission: 'storage.view',
+  },
+  {
+    id: 'storage-volumes',
+    label: 'storage.pages.volumes.title',
+    icon: Database,
+    group: 'controlPanel.groupStorage',
+    permission: 'storage.view',
+  },
+  {
+    id: 'storage-pools',
+    label: 'storage.pages.pools.title',
+    icon: Layers,
+    group: 'controlPanel.groupStorage',
+    permission: 'storage.view',
+  },
+  {
+    id: 'storage-disks',
+    label: 'storage.pages.disks.title',
+    icon: HardDrive,
+    group: 'controlPanel.groupStorage',
+    permission: 'storage.view',
+  },
+  {
     id: 'accounts',
     label: 'controlPanel.accounts',
     icon: UserRound,
@@ -143,6 +173,27 @@ export const SETTINGS_SECTIONS: AppSection[] = [
     soon: true,
   },
   {
+    id: MONITOR_SECTION,
+    label: 'controlPanel.monitor',
+    icon: Activity,
+    group: 'controlPanel.groupMonitoring',
+    permission: 'system.view',
+  },
+  {
+    id: 'journal',
+    label: 'logs.sections.journal',
+    icon: ScrollText,
+    group: 'controlPanel.groupMonitoring',
+    permission: 'logs.view',
+  },
+  {
+    id: 'audit',
+    label: 'logs.sections.audit',
+    icon: ShieldCheck,
+    group: 'controlPanel.groupMonitoring',
+    permission: 'logs.view',
+  },
+  {
     id: 'security',
     label: 'controlPanel.security',
     icon: Shield,
@@ -161,48 +212,12 @@ export const SETTINGS_SECTIONS: AppSection[] = [
 /** Every app of the desktop, in the order of its icons. Features provide the pages; this puts them in windows. */
 export const APPS: AppDefinition[] = [
   {
-    id: 'storage',
-    icon: Database,
-    tile: 'bg-linear-to-br from-violet-400 to-indigo-600',
-    permission: 'storage.view',
-    size: { width: 1080, height: 720 },
-    minimum: { width: 360, height: 320 },
-    sections: [
-      { id: 'overview', label: 'storage.overview', icon: Gauge },
-      { id: 'volumes', label: 'storage.volumes', icon: Database },
-      { id: 'pools', label: 'storage.pools', icon: Layers },
-      { id: 'disks', label: 'storage.disks', icon: HardDrive },
-    ],
-    component: defineAsyncComponent(() => import('./apps/StorageApp.vue')),
-  },
-  {
-    id: 'dashboard',
-    icon: Activity,
-    tile: 'bg-linear-to-br from-emerald-400 to-teal-600',
-    permission: 'system.view',
-    size: { width: 1080, height: 740 },
-    minimum: { width: 360, height: 280 },
-    component: defineAsyncComponent(() => import('@/features/system/components/DashboardApp.vue')),
-  },
-  {
-    id: 'logs',
-    icon: ScrollText,
-    tile: 'bg-linear-to-br from-slate-400 to-slate-600',
-    permission: 'logs.view',
-    size: { width: 1000, height: 640 },
-    minimum: { width: 360, height: 320 },
-    sections: [
-      { id: 'journal', label: 'logs.sections.journal', icon: ScrollText },
-      { id: 'audit', label: 'logs.sections.audit', icon: ShieldCheck },
-    ],
-    component: defineAsyncComponent(() => import('@/features/logs/components/LogsApp.vue')),
-  },
-  {
     id: 'settings',
     icon: Settings,
     tile: 'bg-linear-to-br from-sky-400 to-blue-600',
     permission: 'account.self',
-    size: { width: 1100, height: 740 },
+    // Room beside the navigation for the storage tables and the monitor's charts.
+    size: { width: 1160, height: 760 },
     minimum: { width: 360, height: 320 },
     sections: SETTINGS_SECTIONS,
     component: defineAsyncComponent(() => import('./apps/SettingsApp.vue')),

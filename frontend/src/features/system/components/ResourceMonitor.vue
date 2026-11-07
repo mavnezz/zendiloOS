@@ -6,8 +6,8 @@ import { useI18n } from 'vue-i18n'
 import { formatBytes, formatDuration, formatPercent, formatRate } from '@/shared/lib/format'
 import { cn } from '@/shared/lib/utils'
 import { TimeChart } from '@/shared/ui/chart'
-import { AppFrame, PanelTabs, type TabItem } from '@/shared/ui/frame'
 import { InfoList } from '@/shared/ui/info-list'
+import { PageHeader, PageTabs } from '@/shared/ui/page'
 import { PanelSection } from '@/shared/ui/section'
 import { Sparkline } from '@/shared/ui/sparkline'
 import { StatTile } from '@/shared/ui/stat'
@@ -23,7 +23,7 @@ const { latest, history, interfaces, disks } = useLiveMetrics()
 const { data: info } = useSystemInfo()
 
 const tab = ref<Tab>('overview')
-const tabs = computed<TabItem[]>(() =>
+const tabs = computed(() =>
   (['overview', 'cpu', 'memory', 'network', 'disks'] as const).map((id) => ({
     id,
     label: t(`dashboard.tabs.${id}`),
@@ -99,16 +99,15 @@ const percent = (value: number) => `${value.toFixed(0)} %`
 const chart = { capacity: HISTORY, interval: 2 }
 </script>
 
-<!-- What the NAS is doing now and in the last minutes. -->
+<!-- What the NAS is doing now and in the last minutes: a page of the control panel. -->
 <template>
-  <AppFrame>
-    <template #tabs>
-      <PanelTabs v-model="tab" :tabs="tabs">
-        <span v-if="uptime !== undefined" class="text-xs text-muted-foreground tabular-nums">
-          {{ t('dashboard.upFor', { time: formatDuration(uptime) }) }}
-        </span>
-      </PanelTabs>
-    </template>
+  <div>
+    <PageHeader :title="t('controlPanel.monitor')" :description="t('dashboard.description')">
+      <span v-if="uptime !== undefined" class="text-xs text-muted-foreground tabular-nums">
+        {{ t('dashboard.upFor', { time: formatDuration(uptime) }) }}
+      </span>
+    </PageHeader>
+    <PageTabs v-model="tab" :tabs="tabs" :label="t('controlPanel.monitor')" />
 
     <p v-if="!latest" class="flex items-center gap-2 text-sm text-muted-foreground" role="status">
       <LoaderCircle class="size-4 animate-spin" />
@@ -116,7 +115,7 @@ const chart = { capacity: HISTORY, interval: 2 }
     </p>
 
     <div v-else-if="tab === 'overview'" class="grid gap-5">
-      <div class="grid gap-3 @lg/panel:grid-cols-2 @3xl/panel:grid-cols-4">
+      <div class="grid gap-3 @lg:grid-cols-2 @3xl:grid-cols-4">
         <button
           v-for="tile in [
             {
@@ -177,7 +176,7 @@ const chart = { capacity: HISTORY, interval: 2 }
         </button>
       </div>
 
-      <div class="grid gap-5 @3xl/panel:grid-cols-[3fr_2fr]">
+      <div class="grid gap-5 @3xl:grid-cols-[3fr_2fr]">
         <PanelSection :title="t('dashboard.system')">
           <InfoList :items="system" />
         </PanelSection>
@@ -204,7 +203,7 @@ const chart = { capacity: HISTORY, interval: 2 }
         </PanelSection>
       </div>
 
-      <div class="grid gap-5 @3xl/panel:grid-cols-2">
+      <div class="grid gap-5 @3xl:grid-cols-2">
         <PanelSection :title="t('dashboard.interfaces')">
           <Table v-if="latest.network.length">
             <TableHeader>
@@ -255,7 +254,7 @@ const chart = { capacity: HISTORY, interval: 2 }
     </div>
 
     <div v-else-if="tab === 'cpu'" class="grid gap-5">
-      <div class="grid grid-cols-2 gap-4 @2xl/panel:grid-cols-4">
+      <div class="grid grid-cols-2 gap-4 @2xl:grid-cols-4">
         <StatTile
           :label="t('dashboard.usage')"
           :value="formatPercent(latest.cpu_percent)"
@@ -291,7 +290,7 @@ const chart = { capacity: HISTORY, interval: 2 }
     </div>
 
     <div v-else-if="tab === 'memory' && memory" class="grid gap-5">
-      <div class="grid grid-cols-2 gap-4 @2xl/panel:grid-cols-4">
+      <div class="grid grid-cols-2 gap-4 @2xl:grid-cols-4">
         <StatTile
           :label="t('dashboard.used')"
           :value="formatBytes(memory.used_bytes)"
@@ -328,7 +327,7 @@ const chart = { capacity: HISTORY, interval: 2 }
     </div>
 
     <div v-else-if="tab === 'network'" class="grid gap-6">
-      <div class="grid grid-cols-2 gap-4 @2xl/panel:grid-cols-4">
+      <div class="grid grid-cols-2 gap-4 @2xl:grid-cols-4">
         <StatTile
           :label="`↓ ${t('dashboard.received')}`"
           :value="formatRate(received)"
@@ -375,7 +374,7 @@ const chart = { capacity: HISTORY, interval: 2 }
     </div>
 
     <div v-else-if="tab === 'disks'" class="grid gap-6">
-      <div class="grid grid-cols-2 gap-4 @2xl/panel:grid-cols-4">
+      <div class="grid grid-cols-2 gap-4 @2xl:grid-cols-4">
         <StatTile :label="t('dashboard.read')" :value="formatRate(read)" tone="chart-2" />
         <StatTile :label="t('dashboard.written')" :value="formatRate(written)" tone="chart-4" />
         <StatTile :label="t('dashboard.devices')" :value="String(latest.disks.length)" />
@@ -416,5 +415,5 @@ const chart = { capacity: HISTORY, interval: 2 }
         />
       </PanelSection>
     </div>
-  </AppFrame>
+  </div>
 </template>

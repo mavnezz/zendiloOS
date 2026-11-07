@@ -75,7 +75,34 @@ describe('the control panel', () => {
     await open('device', ['files.read'])
     expect(page()).toContain('x86_64')
     expect(page()).not.toContain(t('controlPanel.power'))
+    expect(page()).not.toContain(t('controlPanel.groupStorage'))
+    expect(page()).not.toContain(t('controlPanel.monitor'))
+    expect(page()).not.toContain(t('logs.sections.journal'))
     expect(called('GET', '/api/v1/storage/pools')).toHaveLength(0)
+  })
+
+  it('holds storage, the resource monitor and the logs as pages of its own', async () => {
+    on('GET', '/api/v1/storage/disks', [])
+    on('GET', '/api/v1/storage/self-test-plans', [])
+    const wrapper = await open('storage-pools')
+    expect(page()).toContain(t('controlPanel.groupStorage'))
+    expect(page()).toContain(t('controlPanel.groupMonitoring'))
+    expect(wrapper.findComponent({ name: 'StoragePage' }).props('page')).toBe('pools')
+    // No second frame: the control panel's navigation is the only one.
+    expect(wrapper.findAllComponents({ name: 'AppFrame' })).toHaveLength(1)
+    section.value = 'storage-disks'
+    await settle()
+    expect(wrapper.findComponent({ name: 'StoragePage' }).props('page')).toBe('disks')
+    section.value = 'monitor'
+    await settle()
+    expect(wrapper.findComponent({ name: 'ResourceMonitor' }).exists()).toBe(true)
+    section.value = 'journal'
+    await settle()
+    expect(wrapper.findComponent({ name: 'LogsPage' }).props('page')).toBe('journal')
+    section.value = 'audit'
+    await settle()
+    expect(wrapper.findComponent({ name: 'LogsPage' }).props('page')).toBe('audit')
+    expect(wrapper.findAllComponents({ name: 'AppFrame' })).toHaveLength(1)
   })
 
   it('shows the pools on the device page to those who may see storage', async () => {

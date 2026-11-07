@@ -17,6 +17,8 @@ export const ADMIN = [
   'apps.manage',
   'files.read',
   'files.write',
+  'logs.view',
+  'account.self',
 ]
 
 /** Signs `permissions` in, for components that ask the session. */

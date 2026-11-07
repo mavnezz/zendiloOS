@@ -278,6 +278,14 @@ frontend/src/
 - Features do not import from each other, only from `shared/`.
   `desktop/apps.ts` composes feature pages into apps; features know nothing
   about windows. Enforced with an ESLint rule (`import/no-restricted-paths`).
+- The desktop's apps are the file explorer, the App Center, Docker and the
+  control panel. Storage (overview, volumes, pools, disks), the resource
+  monitor and the logs (system log, audit log) are pages of the control
+  panel, in its groups *Storage* and *Monitoring*, each shown to the
+  accounts with the permission it needs (`storage.view`, `system.view`,
+  `logs.view`); features hand them over as pages, never with a frame of
+  their own, so a window has one navigation. The dock's resource meters
+  open the monitor's page.
 - Pages adapt to the window size with **container queries**, not to the
   screen size.
 - On phones there are no windows: the desktop becomes a home screen and apps
@@ -463,7 +471,7 @@ bundle permissions, so the model can change in one place.
 
 | Permission | admin | user | readonly |
 |---|:-:|:-:|:-:|
-| `system.view` (dashboard, information) | ✓ | ✓ | ✓ |
+| `system.view` (resource monitor, information) | ✓ | ✓ | ✓ |
 | `system.manage` (settings, power, updates) | ✓ | | |
 | `logs.view` | ✓ | | ✓ |
 | `users.manage` | ✓ | | |

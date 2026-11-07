@@ -6,7 +6,7 @@ import { useI18n } from 'vue-i18n'
 import { formatPercent, formatRate } from '@/shared/lib/format'
 import { Gauge } from '@/shared/ui/gauge'
 
-import { ACCOUNT_SECTION, type AppDefinition, findApp, SETTINGS_APP } from './apps'
+import { ACCOUNT_SECTION, type AppDefinition, findApp, MONITOR_SECTION, SETTINGS_APP } from './apps'
 import AppTile from './AppTile.vue'
 import DockButton from './DockButton.vue'
 import { memoryRatio, networkRates, useLatestMetrics } from './liveMetrics'
@@ -81,7 +81,11 @@ function openApp(id: string, section?: string): void {
 
     <span class="my-1 h-px w-8 bg-foreground/15" />
     <div v-if="latest" class="flex flex-col items-center gap-2">
-      <DockButton fit :label="t('desktop.resources')" @click="openApp('dashboard')">
+      <DockButton
+        fit
+        :label="t('desktop.resources')"
+        @click="openApp(SETTINGS_APP, MONITOR_SECTION)"
+      >
         <span class="flex flex-col items-center gap-1">
           <span class="flex flex-col items-center gap-0.5">
             <Gauge

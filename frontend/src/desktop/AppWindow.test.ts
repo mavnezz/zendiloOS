@@ -23,7 +23,7 @@ HTMLElement.prototype.setPointerCapture = () => undefined
 let openApp: ReturnType<typeof useOpenApp> = null
 
 const app: AppDefinition = {
-  ...findApp('logs')!,
+  ...findApp('files')!,
   component: defineComponent({
     setup() {
       openApp = useOpenApp()
@@ -119,7 +119,7 @@ describe('a window', () => {
 
     const apps = windows.state.windows.map((entry) => [entry.appId, entry.section])
     expect(apps).toEqual([
-      ['logs', undefined],
+      ['files', undefined],
       ['docker', 'project:media'],
     ])
   })

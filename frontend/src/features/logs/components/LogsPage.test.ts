@@ -1,29 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { ref } from 'vue'
 
 import { click, mountApp, page, settle } from '@/shared/test-support/mount'
 import { called, on, reset } from '@/shared/test-support/server'
 import { i18n } from '@/shared/i18n'
-import { WINDOW_SECTION } from '@/shared/lib/window-section'
 
-import LogsApp from './LogsApp.vue'
+import LogsPage from './LogsPage.vue'
 
 vi.mock('@/shared/api/client', async (original) =>
   (await import('@/shared/test-support/server')).routed(await original()),
 )
 
 const t = (key: string, values: Record<string, unknown> = {}) => i18n.global.t(key, values)
-const section = ref('journal')
-
-async function open(name: string) {
-  section.value = name
-  return mountApp(LogsApp, {
-    global: {
-      provide: {
-        [WINDOW_SECTION as symbol]: { section, navigate: (next: string) => (section.value = next) },
-      },
-    },
-  })
+async function open(page: 'journal' | 'audit') {
+  return mountApp(LogsPage, { props: { page } })
 }
 
 const levels = ['emergency', 'error', 'warning', 'notice', 'debug'] as const
@@ -100,6 +89,7 @@ beforeEach(() => {
 describe('the logs', () => {
   it('read the journal by source and level, and older entries on request', async () => {
     await open('journal')
+    expect(page()).toContain(t('logs.sections.journal'))
     expect(page()).toContain('error from system')
     const [source, priority] = document.querySelectorAll<HTMLSelectElement>('select')
     source!.value = 'sharing'
@@ -118,6 +108,8 @@ describe('the logs', () => {
 
   it('read the audit log', async () => {
     await open('audit')
+    expect(page()).toContain(t('logs.sections.audit'))
+    expect(page()).toContain(t('logs.descriptions.audit'))
     expect(page()).toContain('tank')
     expect(page()).toContain('brand.new')
     expect(page()).toContain('unheard')
