@@ -1,0 +1,79 @@
+import { answer, cleanup, mountApp, on, problem } from '@/shared/testing/server'
+
+import { beforeEach, describe, expect, it } from 'vitest'
+
+import { useSessionStore } from '@/features/auth/store'
+import type { SessionInfo } from '@/shared/api/types'
+
+import App from './App.vue'
+import { installNavigationGuard } from './navigation'
+import { createAppRouter } from './router'
+
+const session: SessionInfo = {
+  account: {
+    id: 1,
+    name: 'admin',
+    full_name: null,
+    role: 'admin',
+    permissions: ['system.view'],
+    password_change_required: false,
+    password_locked: false,
+  },
+  csrf_token: 'csrf-1',
+  expires_at: 0,
+}
+
+beforeEach(() => cleanup())
+
+describe('the way to each page', () => {
+  async function start(path: string) {
+    const router = createAppRouter()
+    installNavigationGuard(router, useSessionStore())
+    await router.push(path)
+    await router.isReady()
+    return router
+  }
+
+  it('sends a browser without a session to the setup while it is needed, else to the sign-in', async () => {
+    on('GET', '/api/v1/auth/session', () => problem(401, 'unauthenticated'))
+    answer('GET', '/api/v1/setup', { required: true })
+    mountApp(App, { global: { plugins: [] } })
+    let router = await start('/')
+    expect(router.currentRoute.value.name).toBe('setup')
+
+    cleanup()
+    on('GET', '/api/v1/auth/session', () => problem(401, 'unauthenticated'))
+    answer('GET', '/api/v1/setup', { required: false })
+    mountApp(App)
+    router = await start('/password')
+    expect(router.currentRoute.value.name).toBe('login')
+  })
+
+  it('sends a signed-in account to choose its password, or to the desktop', async () => {
+    answer('GET', '/api/v1/auth/session', {
+      ...session,
+      account: { ...session.account, password_change_required: true },
+    })
+    mountApp(App)
+    const router = await start('/login')
+    expect(router.currentRoute.value.name).toBe('password')
+    expect(useSessionStore().can('system.view')).toBe(true)
+    expect(useSessionStore().can('users.manage')).toBe(false)
+  })
+
+  it('shows the sign-in when the server cannot be reached', async () => {
+    on('GET', '/api/v1/auth/session', () => problem(502, 'bad_gateway'))
+    mountApp(App)
+    const router = await start('/')
+    expect(router.currentRoute.value.name).toBe('login')
+  })
+
+  it('signs out even when the server does not answer', async () => {
+    on('POST', '/api/v1/auth/logout', () => problem(502, 'bad_gateway'))
+    mountApp(App)
+    const store = useSessionStore()
+    store.start(session)
+    await expect(store.signOut()).rejects.toThrow()
+    expect(store.signedIn).toBe(false)
+  })
+})
