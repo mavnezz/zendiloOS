@@ -10,6 +10,7 @@ const calls = vi.hoisted(() => ({
   list: { notifications: [] as unknown[], read_up_to: 0 },
   posted: [] as { path: string; body: unknown }[],
   live: null as ((notification: unknown) => void) | null,
+  reconnected: null as (() => void) | null,
 }))
 
 vi.mock('@/shared/api/client', () => ({
@@ -28,6 +29,10 @@ vi.mock('@/shared/api/live', () => ({
     subscribe: (_topic: string, listener: (notification: unknown) => void) => {
       calls.live = listener
       return () => (calls.live = null)
+    },
+    onReconnect: (listener: () => void) => {
+      calls.reconnected = listener
+      return () => (calls.reconnected = null)
     },
   },
 }))
@@ -71,6 +76,19 @@ describe('server notifications', () => {
       { path: '/api/v1/notifications/read', body: { up_to: 6 } },
       { path: '/api/v1/notifications/clear', body: { up_to: 6 } },
     ])
+  })
+
+  it('shows what came while the connection was down once it is back', async () => {
+    calls.list = { notifications: [notice(1)], read_up_to: 0 }
+    const notices = useServerNotices()
+    await notices.start()
+
+    calls.list = { notifications: [notice(3), notice(2), notice(1)], read_up_to: 0 }
+    calls.reconnected?.()
+    await vi.waitFor(() => expect(useNotifications().items).toHaveLength(3))
+
+    notices.stop()
+    expect(calls.reconnected).toBeNull()
   })
 
   it('sends nothing while nothing was shown', async () => {

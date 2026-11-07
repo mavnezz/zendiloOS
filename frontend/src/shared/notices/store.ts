@@ -40,6 +40,7 @@ export function wording(notification: ServerNotification): { title: string; body
  */
 export const useServerNotices = defineStore('server-notices', () => {
   let unsubscribe: (() => void) | null = null
+  let offReconnect: (() => void) | null = null
   const shown = new Set<number>()
   let newest = 0
 
@@ -58,11 +59,8 @@ export const useServerNotices = defineStore('server-notices', () => {
     })
   }
 
-  async function start(): Promise<void> {
-    if (unsubscribe) return
-    unsubscribe = live.subscribe('notifications', (notification) =>
-      show(notification, { toast: true, read: false }),
-    )
+  /** The recent ones from the server; those shown already stay as they are. */
+  async function load(): Promise<void> {
     try {
       const list = await unwrap(
         api.GET('/api/v1/notifications', { params: { query: { limit: 50 } } }),
@@ -73,6 +71,17 @@ export const useServerNotices = defineStore('server-notices', () => {
     } catch {
       // Live notices still arrive.
     }
+  }
+
+  /** Shows the recent ones and follows new ones, also across reconnects. */
+  async function start(): Promise<void> {
+    if (unsubscribe) return
+    unsubscribe = live.subscribe('notifications', (notification) =>
+      show(notification, { toast: true, read: false }),
+    )
+    // What came while the connection was down was not delivered live.
+    offReconnect = live.onReconnect(() => void load())
+    await load()
   }
 
   /** Everything shown so far counts as read, in every browser. */
@@ -98,6 +107,8 @@ export const useServerNotices = defineStore('server-notices', () => {
   function stop(): void {
     unsubscribe?.()
     unsubscribe = null
+    offReconnect?.()
+    offReconnect = null
     shown.clear()
     newest = 0
   }

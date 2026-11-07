@@ -131,8 +131,10 @@ export const TEXT_PREVIEW_BYTES = 256 * 1024
 /** The beginning of a text file, and whether there is more. */
 export async function textPreview(url: string): Promise<{ text: string; more: boolean }> {
   const response = await fetch(url, { headers: { Range: `bytes=0-${TEXT_PREVIEW_BYTES - 1}` } })
-  if (!response.ok) throw new ApiProblem(response.status, 'unknown')
   const range = response.headers.get('Content-Range')
+  // No byte of an empty file can be asked for: the server says so (416).
+  if (response.status === 416 && range === 'bytes */0') return { text: '', more: false }
+  if (!response.ok) throw new ApiProblem(response.status, 'unknown')
   const total = range ? Number(range.split('/')[1]) : null
   const text = new TextDecoder().decode(await response.arrayBuffer())
   return { text, more: total !== null && total > TEXT_PREVIEW_BYTES }

@@ -102,6 +102,30 @@ describe('LiveClient', () => {
     expect(sockets).toHaveLength(1)
   })
 
+  it('says when it is back after a drop, so lists are loaded again', () => {
+    const back = vi.fn()
+    const off = client.onReconnect(back)
+    client.connect()
+    sockets[0]!.opened()
+    expect(back).not.toHaveBeenCalled()
+
+    sockets[0]!.dropped()
+    vi.advanceTimersByTime(1000)
+    sockets[1]!.opened()
+    expect(back).toHaveBeenCalledOnce()
+
+    // A new connection after disconnecting is a first one again.
+    client.disconnect()
+    client.connect()
+    sockets[2]!.opened()
+    expect(back).toHaveBeenCalledOnce()
+    off()
+    sockets[2]!.dropped()
+    vi.advanceTimersByTime(1000)
+    sockets[3]!.opened()
+    expect(back).toHaveBeenCalledOnce()
+  })
+
   it('does not reconnect after disconnecting', () => {
     client.connect()
     client.disconnect()

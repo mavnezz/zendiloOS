@@ -1,15 +1,15 @@
 <script setup lang="ts">
-import { useQuery } from '@tanstack/vue-query'
+import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 
+import { forgetAccount } from '@/shared/lib/forget'
 import { useSessionStore } from '@/features/auth/store'
 import { api, unwrap } from '@/shared/api/client'
 import { live } from '@/shared/api/live'
 import { useJobsStore } from '@/shared/jobs/store'
 import { useCompactLayout } from '@/shared/lib/media'
-import { useNotifications } from '@/shared/lib/notifications'
 import { useServerNotices } from '@/shared/notices/store'
 import { usePreferences } from '@/shared/preferences/store'
 import { BrandMark } from '@/shared/ui/brand'
@@ -30,9 +30,9 @@ const WIDGETS_KEY = 'zendiloos.widgets.open'
 
 const { t } = useI18n()
 const router = useRouter()
+const queryClient = useQueryClient()
 const session = useSessionStore()
 const windows = useWindows()
-const notifications = useNotifications()
 const jobs = useJobsStore()
 const notices = useServerNotices()
 const preferences = usePreferences()
@@ -123,7 +123,7 @@ async function signOut(): Promise<void> {
     await session.signOut()
   } finally {
     windows.forget()
-    notifications.clear()
+    forgetAccount(queryClient)
     await router.push({ name: 'login' })
   }
 }

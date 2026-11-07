@@ -26,7 +26,7 @@ use zendiloos_kernel::Secret;
 use zendiloos_system::application::ports::MetricsSubscription;
 use zendiloos_system::domain::MetricsSample;
 
-use zendiloos_identity::application::AuthContext;
+use zendiloos_identity::application::{AuthContext, IdentityError};
 
 use crate::auth::{Auth, check_same_origin, session_token};
 use crate::error::ApiError;
@@ -37,6 +37,9 @@ use crate::state::ApiState;
 const SESSION_CHECK: Duration = Duration::from_secs(60);
 /// Close code sent when the session has ended (4000-4999: application codes).
 const CLOSE_SESSION_ENDED: u16 = 4401;
+/// Close code sent when the session could not be checked (the database did
+/// not answer): the client connects again rather than signing out.
+const CLOSE_TRY_AGAIN: u16 = 1011;
 /// Client messages are tiny; refuse anything larger.
 const MAX_CLIENT_MESSAGE: usize = 4 * 1024;
 
@@ -211,6 +214,17 @@ async fn next_sample(subscription: &mut Option<Box<dyn MetricsSubscription>>) ->
     }
 }
 
+/// How a connection ends when its session check fails: only a session that
+/// is really gone signs the browser out (4401).
+fn closing(error: &IdentityError) -> CloseFrame {
+    match error {
+        IdentityError::Unauthenticated => {
+            CloseFrame { code: CLOSE_SESSION_ENDED, reason: "session ended".into() }
+        }
+        _ => CloseFrame { code: CLOSE_TRY_AGAIN, reason: "session not checked".into() },
+    }
+}
+
 async fn send(socket: &mut WebSocket, message: &LiveMessage) -> bool {
     let text = serde_json::to_string(message).expect("live messages serialize");
     socket.send(Message::Text(text.into())).await.is_ok()
@@ -309,9 +323,8 @@ async fn serve(mut socket: WebSocket, state: ApiState, token: Secret, mut viewer
                     }
                     true
                 }
-                Err(_) => {
-                    let frame = CloseFrame { code: CLOSE_SESSION_ENDED, reason: "session ended".into() };
-                    let _ = socket.send(Message::Close(Some(frame))).await;
+                Err(error) => {
+                    let _ = socket.send(Message::Close(Some(closing(&error)))).await;
                     break;
                 }
             },
@@ -319,5 +332,19 @@ async fn serve(mut socket: WebSocket, state: ApiState, token: Secret, mut viewer
         if !delivered {
             break;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use zendiloos_kernel::PortError;
+
+    use super::*;
+
+    #[test]
+    fn only_a_session_that_is_gone_signs_out() {
+        assert_eq!(closing(&IdentityError::Unauthenticated).code, CLOSE_SESSION_ENDED);
+        let unanswered = IdentityError::Port(PortError::new("sessions", "database is locked"));
+        assert_eq!(closing(&unanswered).code, CLOSE_TRY_AGAIN, "the browser connects again");
     }
 }

@@ -1524,7 +1524,7 @@ const de: Messages = {
   passwordChange: {
     title: 'Eigenes Passwort wählen',
     intro:
-      'Ein Administrator hat das Passwort von {name} gesetzt. Wählen Sie ein eigenes, bevor es weitergeht; es gilt auch für SMB-Freigaben.',
+      'Das Passwort von {name} muss geändert werden, bevor es weitergeht: Ein Administrator hat es gesetzt, oder es hat sein Höchstalter erreicht. Wählen Sie ein neues; es gilt auch für SMB-Freigaben.',
   },
   logs: {
     sections: {
@@ -1948,6 +1948,18 @@ const de: Messages = {
     not_scrubbing: 'Der Pool wird gerade nicht geprüft.',
     self_test_unsupported: 'Diese Platte kann sich nicht selbst testen.',
     self_test_running: 'Die Platte testet sich bereits.',
+    disk_not_found: 'Eine gewählte Platte ist nicht mehr da. Laden Sie neu und wählen Sie erneut.',
+    duplicate_disk: 'Eine Platte ist doppelt gewählt.',
+    no_volume_number:
+      'Alle Volume-Nummern sind vergeben: Es kann kein weiterer Pool angelegt werden.',
+    unsupported_layout: 'Pools mit diesem Aufbau legt zendiloOS nicht an.',
+    device_not_found: 'Diese Platte gehört nicht zum Pool.',
+    docker_installed: 'Docker ist bereits installiert.',
+    not_checked: 'Suchen Sie zuerst nach Updates.',
+    nothing_to_update: 'Es gibt nichts zu aktualisieren.',
+    update_busy: 'Es läuft bereits ein Update oder eine Suche nach Updates.',
+    password_locked:
+      'Das Passwort dieses Kontos lässt sich hier nicht ändern; wenden Sie sich an einen Administrator.',
     not_testing: 'Die Platte testet sich gerade nicht.',
     delivery_failed: 'Die Nachricht ging nicht hinaus',
     change_pending: 'Eine andere Änderung wartet auf Bestätigung.',

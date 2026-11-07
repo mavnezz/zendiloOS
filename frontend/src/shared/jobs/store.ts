@@ -22,6 +22,7 @@ export function jobTitle(job: Job): string {
 export const useJobsStore = defineStore('jobs', () => {
   const jobs = ref(new Map<number, Job>())
   let unsubscribe: (() => void) | null = null
+  let offReconnect: (() => void) | null = null
 
   const list = computed(() => [...jobs.value.values()].sort((a, b) => b.id - a.id))
   const running = computed(() => list.value.filter((job) => job.state === 'running'))
@@ -53,21 +54,36 @@ export const useJobsStore = defineStore('jobs', () => {
     }
   }
 
-  /** Loads recent jobs and follows changes; idempotent. */
-  async function start(): Promise<void> {
-    if (unsubscribe) return
-    unsubscribe = live.subscribe('jobs', update)
+  /**
+   * The recent jobs as the server has them. After a reconnect, a job known
+   * as running that ended meanwhile is announced as if its end had come
+   * live.
+   */
+  async function reload(): Promise<void> {
     try {
       const recent = await unwrap(api.GET('/api/v1/jobs', { params: { query: { limit: 50 } } }))
-      for (const job of recent) if (!jobs.value.has(job.id)) jobs.value.set(job.id, job)
+      for (const job of recent) {
+        if (jobs.value.has(job.id)) update(job)
+        else jobs.value.set(job.id, job)
+      }
     } catch {
       // Without the list, live updates still arrive.
     }
   }
 
+  /** Loads recent jobs and follows changes, also across reconnects; idempotent. */
+  async function start(): Promise<void> {
+    if (unsubscribe) return
+    unsubscribe = live.subscribe('jobs', update)
+    offReconnect = live.onReconnect(() => void reload())
+    await reload()
+  }
+
   function stop(): void {
     unsubscribe?.()
     unsubscribe = null
+    offReconnect?.()
+    offReconnect = null
     jobs.value.clear()
   }
 

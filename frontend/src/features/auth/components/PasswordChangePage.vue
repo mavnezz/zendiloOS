@@ -1,7 +1,9 @@
 <script setup lang="ts">
+import { useQueryClient } from '@tanstack/vue-query'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 
+import { forgetAccount } from '@/shared/lib/forget'
 import { Button } from '@/shared/ui/button'
 
 import { fetchSession } from '../api'
@@ -11,6 +13,7 @@ import ChangePasswordForm from './ChangePasswordForm.vue'
 
 const { t } = useI18n()
 const router = useRouter()
+const queryClient = useQueryClient()
 const session = useSessionStore()
 
 async function changed(): Promise<void> {
@@ -21,12 +24,19 @@ async function changed(): Promise<void> {
 }
 
 async function signOut(): Promise<void> {
-  await session.signOut()
-  await router.push({ name: 'login' })
+  try {
+    await session.signOut()
+  } finally {
+    forgetAccount(queryClient)
+    await router.push({ name: 'login' })
+  }
 }
 </script>
 
-<!-- An administrator set this account's password; it must choose its own. -->
+<!--
+  The account must choose a new password first: an administrator set it,
+  or it reached its maximum age.
+-->
 <template>
   <AuthFrame>
     <div class="grid gap-6 rounded-xl border bg-card p-6 shadow-sm">

@@ -11,6 +11,7 @@ import { useSessionStore } from '@/features/auth/store'
 import { ApiProblem, configureApi } from '@/shared/api/client'
 import { live } from '@/shared/api/live'
 import { i18n } from '@/shared/i18n'
+import { forgetAccount } from '@/shared/lib/forget'
 import { applyTheme, followSystemTheme } from '@/shared/lib/theme'
 import { applyWallpaper, storedWallpaper } from '@/shared/lib/wallpapers'
 
@@ -37,7 +38,7 @@ const session = useSessionStore(pinia)
 
 function sessionEnded(): void {
   session.clear()
-  queryClient.clear()
+  forgetAccount(queryClient)
   void router.push({ name: 'login' })
 }
 

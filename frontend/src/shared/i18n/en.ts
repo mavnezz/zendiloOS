@@ -1497,7 +1497,7 @@ const en = {
   passwordChange: {
     title: 'Choose your password',
     intro:
-      'An administrator set the password of {name}. Choose your own before you continue; it is also your password for SMB shares.',
+      'The password of {name} has to be changed before you continue: an administrator set it, or it reached its maximum age. Choose a new one; it is also your password for SMB shares.',
   },
   logs: {
     sections: {
@@ -1912,6 +1912,16 @@ const en = {
     self_test_unsupported: 'This disk cannot test itself.',
     self_test_running: 'The disk is testing itself already.',
     not_testing: 'The disk is not testing itself.',
+    disk_not_found: 'A chosen disk is not there any more. Reload and choose again.',
+    duplicate_disk: 'A disk is chosen twice.',
+    no_volume_number: 'Every volume number is taken: no further pool can be made.',
+    unsupported_layout: 'zendiloOS does not make pools of this layout.',
+    device_not_found: 'The pool has no such disk.',
+    docker_installed: 'Docker is installed already.',
+    not_checked: 'Look for updates first.',
+    nothing_to_update: 'There is nothing to update.',
+    update_busy: 'An update or a look for updates is going on already.',
+    password_locked: 'The password of this account cannot be changed here; ask an administrator.',
     delivery_failed: 'The message did not go out',
     change_pending: 'Another change waits for confirmation.',
     not_installed: 'The SSH server is not installed.',

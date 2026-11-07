@@ -31,7 +31,10 @@ export interface SocketLike {
 export class LiveClient {
   private socket: SocketLike | null = null
   private readonly listeners = new Map<LiveTopic, Set<Listener<LiveTopic>>>()
+  private readonly reconnectListeners = new Set<() => void>()
   private wanted = false
+  /** Whether a socket of this connection was open before: the next one is a reconnect. */
+  private wasOpen = false
   private retries = 0
   private retryTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -50,6 +53,7 @@ export class LiveClient {
 
   disconnect(): void {
     this.wanted = false
+    this.wasOpen = false
     clearTimeout(this.retryTimer)
     this.socket?.close()
     this.socket = null
@@ -73,12 +77,24 @@ export class LiveClient {
     }
   }
 
+  /**
+   * Calls `listener` whenever the connection is back after it dropped:
+   * what happened in between was not delivered, so lists are to be loaded
+   * again. Until the returned function is called.
+   */
+  onReconnect(listener: () => void): () => void {
+    this.reconnectListeners.add(listener)
+    return () => this.reconnectListeners.delete(listener)
+  }
+
   private dial(): void {
     const socket = this.open(this.url())
     this.socket = socket
     socket.onopen = () => {
       this.retries = 0
       for (const topic of this.listeners.keys()) this.send({ type: 'subscribe', topic })
+      if (this.wasOpen) for (const listener of this.reconnectListeners) listener()
+      this.wasOpen = true
     }
     socket.onmessage = (event) => this.dispatch(event.data)
     socket.onclose = (event) => {

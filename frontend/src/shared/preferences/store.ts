@@ -93,6 +93,17 @@ export const usePreferences = defineStore('preferences', () => {
     void save({ desktop_icons: next })
   }
 
+  /**
+   * After signing out: another account may sign in next, and nothing of
+   * this one's is kept to be saved for it. Language, scheme and background
+   * stay as this browser shows them.
+   */
+  function reset(): void {
+    saved = { language: null, theme: null }
+    widgets.value = [...DEFAULT_WIDGETS]
+    desktopIcons.value = []
+  }
+
   return {
     theme,
     wallpaper,
@@ -104,5 +115,6 @@ export const usePreferences = defineStore('preferences', () => {
     chooseWallpaper,
     chooseWidgets,
     arrangeIcons,
+    reset,
   }
 })

@@ -65,4 +65,14 @@ describe('previews', () => {
 
     expect(await textPreview('/x')).toEqual({ text: 'short', more: false })
   })
+
+  it('show an empty text as empty, not as an error', async () => {
+    const answer = (range: string) =>
+      Promise.resolve(new Response(null, { status: 416, headers: { 'Content-Range': range } }))
+    vi.stubGlobal('fetch', () => answer('bytes */0'))
+    expect(await textPreview('/x')).toEqual({ text: '', more: false })
+
+    vi.stubGlobal('fetch', () => answer('bytes */10'))
+    await expect(textPreview('/x')).rejects.toThrow()
+  })
 })
