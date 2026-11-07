@@ -241,9 +241,7 @@ function scanLine(pool: Pool): string | null {
           <TableRow>
             <TableHead>{{ t('storage.columns.device') }}</TableHead>
             <TableHead>{{ t('storage.columns.model') }}</TableHead>
-            <TableHead class="hidden @3xl/panel:table-cell">{{
-              t('storage.columns.member')
-            }}</TableHead>
+            <TableHead class="hidden @3xl:table-cell">{{ t('storage.columns.member') }}</TableHead>
             <TableHead class="text-right">{{ t('storage.columns.readErrors') }}</TableHead>
             <TableHead class="text-right">{{ t('storage.columns.writeErrors') }}</TableHead>
             <TableHead class="text-right">{{ t('storage.columns.checksumErrors') }}</TableHead>
@@ -260,7 +258,7 @@ function scanLine(pool: Pool): string | null {
               {{ (device.disk && models.get(device.disk)) ?? '–' }}
             </TableCell>
             <TableCell
-              class="hidden max-w-72 truncate font-mono text-[11px] text-muted-foreground @3xl/panel:table-cell"
+              class="hidden max-w-72 truncate font-mono text-[11px] text-muted-foreground @3xl:table-cell"
               :title="device.name"
             >
               {{ device.name }}

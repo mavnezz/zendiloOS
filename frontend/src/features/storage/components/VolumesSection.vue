@@ -26,15 +26,13 @@ const share = (used: number, size: number) => (size > 0 ? used / size : 0)
         <TableRow>
           <TableHead>{{ t('storage.columns.volume') }}</TableHead>
           <TableHead>{{ t('storage.columns.mount') }}</TableHead>
-          <TableHead class="hidden @2xl/panel:table-cell">{{
+          <TableHead class="hidden @2xl:table-cell">{{
             t('storage.columns.filesystem')
           }}</TableHead>
           <TableHead class="w-48">{{ t('storage.columns.used') }}</TableHead>
           <TableHead class="text-right">{{ t('storage.columns.size') }}</TableHead>
           <TableHead class="text-right">{{ t('storage.columns.free') }}</TableHead>
-          <TableHead class="hidden @3xl/panel:table-cell">{{
-            t('storage.columns.disks')
-          }}</TableHead>
+          <TableHead class="hidden @3xl:table-cell">{{ t('storage.columns.disks') }}</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -47,7 +45,7 @@ const share = (used: number, size: number) => (size > 0 ? used / size : 0)
               volume.mount_points.length ? volume.mount_points.join(', ') : t('storage.notMounted')
             }}
           </TableCell>
-          <TableCell class="hidden text-muted-foreground @2xl/panel:table-cell">
+          <TableCell class="hidden text-muted-foreground @2xl:table-cell">
             {{ volume.filesystem }}{{ volume.array ? ` · ${volume.array}` : '' }}
           </TableCell>
           <TableCell>
@@ -70,7 +68,7 @@ const share = (used: number, size: number) => (size > 0 ? used / size : 0)
           <TableCell class="text-right tabular-nums">
             {{ volume.available_bytes != null ? formatBytes(volume.available_bytes) : '–' }}
           </TableCell>
-          <TableCell class="hidden font-mono text-xs text-muted-foreground @3xl/panel:table-cell">
+          <TableCell class="hidden font-mono text-xs text-muted-foreground @3xl:table-cell">
             {{ volume.disks.join(', ') }}
           </TableCell>
         </TableRow>

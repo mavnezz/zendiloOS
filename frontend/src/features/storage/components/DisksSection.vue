@@ -60,11 +60,9 @@ function usage(disk: Disk): string {
         <TableRow>
           <TableHead>{{ t('storage.columns.device') }}</TableHead>
           <TableHead>{{ t('storage.columns.model') }}</TableHead>
-          <TableHead class="hidden @4xl/panel:table-cell">{{
-            t('storage.columns.serial')
-          }}</TableHead>
+          <TableHead class="hidden @4xl:table-cell">{{ t('storage.columns.serial') }}</TableHead>
           <TableHead class="text-right">{{ t('storage.columns.size') }}</TableHead>
-          <TableHead class="hidden @2xl/panel:table-cell">{{ t('storage.columns.bus') }}</TableHead>
+          <TableHead class="hidden @2xl:table-cell">{{ t('storage.columns.bus') }}</TableHead>
           <TableHead>{{ t('storage.columns.usage') }}</TableHead>
           <TableHead class="text-right">{{ t('storage.columns.temperature') }}</TableHead>
           <TableHead class="text-right">{{ t('storage.columns.age') }}</TableHead>
@@ -93,11 +91,11 @@ function usage(disk: Disk): string {
           <TableCell class="max-w-56 truncate">{{
             disk.model ?? t('storage.unknownModel')
           }}</TableCell>
-          <TableCell class="hidden font-mono text-xs text-muted-foreground @4xl/panel:table-cell">
+          <TableCell class="hidden font-mono text-xs text-muted-foreground @4xl:table-cell">
             {{ disk.serial ?? '–' }}
           </TableCell>
           <TableCell class="text-right tabular-nums">{{ formatBytes(disk.size_bytes) }}</TableCell>
-          <TableCell class="hidden text-muted-foreground @2xl/panel:table-cell">
+          <TableCell class="hidden text-muted-foreground @2xl:table-cell">
             {{ t(`storage.transport.${disk.transport}`) }}
           </TableCell>
           <TableCell class="text-muted-foreground">{{ usage(disk) }}</TableCell>

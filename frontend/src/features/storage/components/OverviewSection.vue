@@ -86,7 +86,7 @@ function wording(concern: StorageConcern): string {
         </div>
       </section>
 
-      <div class="grid grid-cols-2 gap-4 @2xl/panel:grid-cols-4">
+      <div class="grid grid-cols-2 gap-4 @2xl:grid-cols-4">
         <StatTile
           :label="t('storage.summary.pools')"
           :value="String(overview.pools)"
@@ -128,7 +128,7 @@ function wording(concern: StorageConcern): string {
       </PanelSection>
 
       <PanelSection v-if="pools?.length" :title="t('storage.pools')">
-        <ul class="grid gap-3 @3xl/panel:grid-cols-2">
+        <ul class="grid gap-3 @3xl:grid-cols-2">
           <li
             v-for="pool in pools"
             :key="pool.guid"
