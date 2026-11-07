@@ -44,6 +44,7 @@ export function share(id: number, name: string, extra: Partial<Share> = {}): Sha
     pool: 'tank',
     volume: 1,
     path: `/volume1/${name}`,
+    shared: true,
     recycle_bin: true,
     access: [],
     nfs: [],

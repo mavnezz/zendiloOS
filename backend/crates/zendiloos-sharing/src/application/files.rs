@@ -73,6 +73,24 @@ pub struct UsableShare {
     pub access: Access,
 }
 
+/// A volume as the file manager shows it, with its folders the user sees.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileVolume {
+    pub pool: String,
+    pub number: u16,
+    pub mounted: bool,
+    /// By name.
+    pub folders: Vec<VolumeFolder>,
+}
+
+/// A folder directly on a volume, and what the user may do in it: `None`
+/// for one an administrator who manages shares sees but cannot open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VolumeFolder {
+    pub share: Share,
+    pub access: Option<Access>,
+}
+
 /// What the rules give `account`, directly or by a group.
 fn access_of(share: &Share, account: i64, groups: &[i64]) -> Option<Access> {
     domain::effective(&share.access, account, groups)
@@ -179,6 +197,49 @@ impl FilesUseCases {
             .filter_map(|share| {
                 let access = access_of(&share, actor.account_id, &groups)?;
                 Some(UsableShare { share, access })
+            })
+            .collect())
+    }
+
+    /// The volumes and their folders: with `everything` (someone who
+    /// manages shares) every volume and every folder on it, also those the
+    /// user cannot open; otherwise only the folders the user may use, and
+    /// the volumes that have one. zendiloOS's own datasets are no folders.
+    pub async fn volumes(
+        &self,
+        actor: &Actor,
+        everything: bool,
+        context: &RequestContext,
+    ) -> Result<Vec<FileVolume>, FilesError> {
+        let groups = self.ports.directory.memberships(actor.account_id).await?;
+        let shares = self.ports.shares.list().await?;
+        // Without the agent, the volumes the shares are on still show.
+        let mut volumes: Vec<(String, u16, bool)> = match self.ports.volumes.volumes(context).await {
+            Ok(volumes) => volumes.into_iter().map(|v| (v.pool, v.number, v.mounted)).collect(),
+            Err(error) => {
+                tracing::warn!(%error, "cannot read the volumes; showing those of the shares");
+                Vec::new()
+            }
+        };
+        for share in &shares {
+            if !volumes.iter().any(|(pool, ..)| *pool == share.pool) {
+                volumes.push((share.pool.clone(), share.volume, true));
+            }
+        }
+        volumes.sort_by_key(|(_, number, _)| *number);
+        Ok(volumes
+            .into_iter()
+            .filter_map(|(pool, number, mounted)| {
+                let folders: Vec<VolumeFolder> = shares
+                    .iter()
+                    .filter(|share| share.pool == pool)
+                    .map(|share| VolumeFolder {
+                        share: share.clone(),
+                        access: access_of(share, actor.account_id, &groups),
+                    })
+                    .filter(|folder| everything || folder.access.is_some())
+                    .collect();
+                (everything || !folders.is_empty()).then_some(FileVolume { pool, number, mounted, folders })
             })
             .collect())
     }

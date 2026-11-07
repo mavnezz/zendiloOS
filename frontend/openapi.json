@@ -4112,6 +4112,34 @@
         ]
       }
     },
+    "/api/v1/files/volumes": {
+      "get": {
+        "tags": [
+          "files"
+        ],
+        "summary": "The volumes with their folders, for the file manager's tree. Someone\nwho manages shares (`shares.manage`) sees every volume and every folder\non it, those they may not open marked; everyone else only the folders\nthey may use, and the volumes holding one. Needs `files.read`.",
+        "operationId": "file_volumes",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/FileVolumeDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/groups": {
       "get": {
         "tags": [
@@ -5869,7 +5897,7 @@
         "tags": [
           "shares"
         ],
-        "summary": "Creates a share: a dataset on the volume with its permissions, offered\nover SMB (and NFS, if clients are given). Needs `shares.manage`.",
+        "summary": "Creates a folder directly on a volume: a dataset with its permissions,\noffered over SMB (and NFS, if clients are given) while shared. Needs\n`shares.manage`.",
         "operationId": "create_share",
         "requestBody": {
           "content": {
@@ -6088,6 +6116,16 @@
           },
           "404": {
             "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`refused`: rules being applied to the files, or off the network while Macs back up to it",
             "content": {
               "application/json": {
                 "schema": {
@@ -9184,6 +9222,10 @@
                 "type": "null"
               }
             ]
+          },
+          "shared": {
+            "type": "boolean",
+            "description": "Offered on the network at once (the default); `false`: a folder on\nthe volume used on the NAS only, shared later if wanted."
           }
         },
         "additionalProperties": false
@@ -10150,6 +10192,37 @@
             "type": "integer",
             "format": "int64",
             "description": "Unix seconds."
+          }
+        }
+      },
+      "FileVolumeDto": {
+        "type": "object",
+        "description": "A volume and its folders the signed-in user sees.",
+        "required": [
+          "volume",
+          "pool",
+          "mounted",
+          "folders"
+        ],
+        "properties": {
+          "folders": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VolumeFolderDto"
+            },
+            "description": "By name."
+          },
+          "mounted": {
+            "type": "boolean"
+          },
+          "pool": {
+            "type": "string"
+          },
+          "volume": {
+            "type": "integer",
+            "format": "int32",
+            "description": "`1` for `/volume1`.",
+            "minimum": 0
           }
         }
       },
@@ -13051,6 +13124,7 @@
           "pool",
           "volume",
           "path",
+          "shared",
           "recycle_bin",
           "settings",
           "access",
@@ -13110,6 +13184,10 @@
           },
           "settings": {
             "$ref": "#/components/schemas/ShareSettingsDto"
+          },
+          "shared": {
+            "type": "boolean",
+            "description": "Offered on the network, over SMB and to its NFS clients; otherwise\nused on the NAS only, with the same permissions."
           },
           "updated_at": {
             "type": "integer",
@@ -14418,6 +14496,13 @@
                 "type": "null"
               }
             ]
+          },
+          "shared": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "On or off the network; the folder, its data and permissions stay.\nRefused off while Macs back up to it (`refused`)."
           }
         },
         "additionalProperties": false
@@ -14680,6 +14765,51 @@
             ],
             "format": "int64",
             "minimum": 0
+          }
+        }
+      },
+      "VolumeFolderDto": {
+        "type": "object",
+        "description": "A folder directly on a volume: a share, whether shared on the network\nor not.",
+        "required": [
+          "id",
+          "name",
+          "shared",
+          "recycle_bin"
+        ],
+        "properties": {
+          "access": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ShareAccessLevel",
+                "description": "What the signed-in user may do in it; `null`: listed for someone\nwho manages shares, but they may not open it."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The share's ID, which the file routes take."
+          },
+          "name": {
+            "type": "string"
+          },
+          "recycle_bin": {
+            "type": "boolean",
+            "description": "Deleted entries go to `.recycle/<user>` in it."
+          },
+          "shared": {
+            "type": "boolean",
+            "description": "Offered on the network (SMB, NFS); otherwise used on the NAS only."
           }
         }
       },

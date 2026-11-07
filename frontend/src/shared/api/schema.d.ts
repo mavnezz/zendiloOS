@@ -1201,6 +1201,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/files/volumes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The volumes with their folders, for the file manager's tree. Someone
+         *     who manages shares (`shares.manage`) sees every volume and every folder
+         *     on it, those they may not open marked; everyone else only the folders
+         *     they may use, and the volumes holding one. Needs `files.read`.
+         */
+        get: operations["file_volumes"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/groups": {
         parameters: {
             query?: never;
@@ -1739,8 +1761,9 @@ export interface paths {
         get: operations["list_shares"];
         put?: never;
         /**
-         * Creates a share: a dataset on the volume with its permissions, offered
-         *     over SMB (and NFS, if clients are given). Needs `shares.manage`.
+         * Creates a folder directly on a volume: a dataset with its permissions,
+         *     offered over SMB (and NFS, if clients are given) while shared. Needs
+         *     `shares.manage`.
          */
         post: operations["create_share"];
         delete?: never;
@@ -2873,6 +2896,11 @@ export interface components {
             pool: string;
             recycle_bin?: boolean;
             settings?: components["schemas"]["ShareSettingsDto"] | null;
+            /**
+             * @description Offered on the network at once (the default); `false`: a folder on
+             *     the volume used on the NAS only, shared later if wanted.
+             */
+            shared?: boolean;
         };
         CurrentAccount: {
             full_name?: string | null;
@@ -3189,6 +3217,18 @@ export interface components {
              * @description Unix seconds.
              */
             taken_at: number;
+        };
+        /** @description A volume and its folders the signed-in user sees. */
+        FileVolumeDto: {
+            /** @description By name. */
+            folders: components["schemas"]["VolumeFolderDto"][];
+            mounted: boolean;
+            pool: string;
+            /**
+             * Format: int32
+             * @description `1` for `/volume1`.
+             */
+            volume: number;
         };
         FillTemplateRequest: {
             /** @description Port id → host port; missing ones get their default. */
@@ -4183,6 +4223,11 @@ export interface components {
             pool: string;
             recycle_bin: boolean;
             settings: components["schemas"]["ShareSettingsDto"];
+            /**
+             * @description Offered on the network, over SMB and to its NFS clients; otherwise
+             *     used on the NAS only, with the same permissions.
+             */
+            shared: boolean;
             /** Format: int64 */
             updated_at: number;
             /**
@@ -4618,6 +4663,11 @@ export interface components {
             nfs?: components["schemas"]["NfsRule"][] | null;
             recycle_bin?: boolean | null;
             settings?: components["schemas"]["ShareSettingsDto"] | null;
+            /**
+             * @description On or off the network; the folder, its data and permissions stay.
+             *     Refused off while Macs back up to it (`refused`).
+             */
+            shared?: boolean | null;
         };
         UpdatesOverview: {
             /**
@@ -4700,6 +4750,24 @@ export interface components {
             size_bytes?: number | null;
             /** Format: int64 */
             used_bytes?: number | null;
+        };
+        /**
+         * @description A folder directly on a volume: a share, whether shared on the network
+         *     or not.
+         */
+        VolumeFolderDto: {
+            access?: components["schemas"]["ShareAccessLevel"] | null;
+            description?: string | null;
+            /**
+             * Format: int64
+             * @description The share's ID, which the file routes take.
+             */
+            id: number;
+            name: string;
+            /** @description Deleted entries go to `.recycle/<user>` in it. */
+            recycle_bin: boolean;
+            /** @description Offered on the network (SMB, NFS); otherwise used on the NAS only. */
+            shared: boolean;
         };
         WebTls: {
             /** @description TLS 1.2 serves older clients too; 1.3 alone refuses them. */
@@ -7650,6 +7718,25 @@ export interface operations {
             };
         };
     };
+    file_volumes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FileVolumeDto"][];
+                };
+            };
+        };
+    };
     list_groups: {
         parameters: {
             query?: never;
@@ -9067,6 +9154,15 @@ export interface operations {
             };
             /** @description `not_found` */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `refused`: rules being applied to the files, or off the network while Macs back up to it */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

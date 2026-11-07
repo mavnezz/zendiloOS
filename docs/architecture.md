@@ -501,6 +501,22 @@ rustls with ring and the system's certificate authorities
 
 ### 4.4 Share and File Permissions
 
+- **Folders on a volume:** what lies directly on a volume is a share in
+  this sense, whatever it is called on screen: its own dataset
+  `<pool>/<name>` at `/volume<N>/<name>`, with its permissions, recycle
+  bins, snapshots, quota, compression and record size. The file manager
+  makes one with "new folder" on a volume (an administrator who manages
+  shares; the creator may read and write, nobody else yet). Its
+  permissions hold everywhere: in the file manager, for apps and projects,
+  over SMB and NFS. **Shared** is a flag of its own: only a shared folder
+  goes into Samba's configuration and NFS's exports; one not shared is used
+  on the NAS alone (a project's folder people may look into, say), keeps
+  its NFS clients for when it is shared again, and loses nothing when
+  shared or not. Time Machine needs one that is shared. Folders deeper
+  down are plain folders and never shared on their own. Folders on a
+  volume are not renamed: the dataset, its mount unit, Samba's and NFS's
+  sections, the snapshots' names and whatever mounts its path (apps,
+  projects, uploads under way) would all have to follow at once.
 - Share permissions (per account or group: no rule, deny, read, read and
   write) live in the database and are applied twice: in the Samba
   configuration (`valid users`, `invalid users`, `read only = yes`,

@@ -197,6 +197,7 @@ mod tests {
                 description: None,
                 pool: "tank".into(),
                 volume: 1,
+                shared: true,
                 recycle_bin: false,
                 settings: ShareSettings::default(),
                 access: vec![AccessRule { subject: Subject::Account(1), permission }],

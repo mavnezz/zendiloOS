@@ -80,6 +80,8 @@ pub struct NewShareInput {
     pub description: Option<String>,
     /// Name of the pool (volume) to create it on.
     pub pool: String,
+    /// Offered on the network at once.
+    pub shared: bool,
     pub recycle_bin: bool,
     pub access: Vec<AccessRule>,
     /// Networks as typed; validated here.
@@ -91,6 +93,8 @@ pub struct NewShareInput {
 #[derive(Default)]
 pub struct ShareChanges {
     pub description: Option<Option<String>>,
+    /// On or off the network; folder, data and permissions stay.
+    pub shared: Option<bool>,
     pub recycle_bin: Option<bool>,
     pub access: Option<Vec<AccessRule>>,
     pub nfs: Option<Vec<(String, bool)>>,
@@ -199,7 +203,8 @@ pub(super) fn acl(
     acl
 }
 
-/// What the servers should offer for `shares`.
+/// What the servers should offer for `shares`: those shared on the
+/// network; the others are not offered at all.
 pub fn config(
     shares: &[Share],
     names: &Names,
@@ -211,6 +216,7 @@ pub fn config(
         homes,
         smb: shares
             .iter()
+            .filter(|share| share.shared)
             .map(|share| SmbSpec {
                 name: share.name.clone(),
                 volume: share.volume,
@@ -225,7 +231,7 @@ pub fn config(
             .collect(),
         nfs: shares
             .iter()
-            .filter(|share| !share.nfs.is_empty())
+            .filter(|share| share.shared && !share.nfs.is_empty())
             .map(|share| NfsSpec {
                 name: share.name.clone(),
                 volume: share.volume,
@@ -417,10 +423,14 @@ impl SharingUseCases {
     ) -> Result<FileServices, SharingError> {
         let services = services.checked()?;
         let _changes = self.changes.lock().await;
-        if let Some(machine) = services.time_machine
-            && self.ports.shares.find(machine.share).await?.is_none()
-        {
-            return Err(SharingError::ShareNotFound);
+        if let Some(machine) = services.time_machine {
+            let share = self.ports.shares.find(machine.share).await?.ok_or(SharingError::ShareNotFound)?;
+            if !share.shared {
+                return Err(SharingError::Refused(format!(
+                    "{} is not shared on the network; Macs cannot back up to it",
+                    share.name.as_str()
+                )));
+            }
         }
         let previous = self.ports.shares.file_services().await?;
         self.ports.shares.set_file_services(&services).await?;
@@ -498,6 +508,7 @@ impl SharingUseCases {
                 description,
                 pool: input.pool.clone(),
                 volume,
+                shared: input.shared,
                 recycle_bin: input.recycle_bin,
                 settings: input.settings,
                 access: input.access,
@@ -566,6 +577,15 @@ impl SharingUseCases {
                 before.into_iter().map(|(p, _)| p).filter(|p| !now.iter().any(|(q, _)| q == p)).collect();
             access_change = Some((access, now, removed));
         }
+        if changes.shared == Some(false) && share.shared {
+            let services = self.ports.shares.file_services().await?;
+            if services.time_machine.is_some_and(|machine| machine.share == share.id) {
+                return Err(SharingError::Refused(format!(
+                    "Macs back up to {}; choose another share for Time Machine first",
+                    share.name.as_str()
+                )));
+            }
+        }
         let mut settings_change = None;
         if let Some(settings) = changes.settings
             && settings != share.settings
@@ -615,6 +635,9 @@ impl SharingUseCases {
         }
         if let Some(recycle_bin) = changes.recycle_bin {
             share.recycle_bin = recycle_bin;
+        }
+        if let Some(shared) = changes.shared {
+            share.shared = shared;
         }
         if let Some(nfs) = nfs {
             share.nfs = nfs;

@@ -17,7 +17,7 @@ use utoipa::{IntoParams, ToSchema};
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 use zendiloos_identity::domain::Permission;
-use zendiloos_sharing::application::{FilesError, Transfer, Upload, UsableShare};
+use zendiloos_sharing::application::{FileVolume, FilesError, Transfer, Upload, UsableShare, VolumeFolder};
 use zendiloos_sharing::domain::{self as sharing, FilePath, ShareId};
 
 use crate::auth::Auth;
@@ -30,6 +30,7 @@ use crate::state::ApiState;
 pub(super) fn routes() -> OpenApiRouter<ApiState> {
     OpenApiRouter::new()
         .routes(routes!(my_shares))
+        .routes(routes!(file_volumes))
         .routes(routes!(favourites, set_favourites))
         .routes(routes!(list_folder))
         .routes(routes!(download))
@@ -124,6 +125,80 @@ async fn my_shares(auth: Auth, State(state): State<ApiState>) -> Result<Json<Vec
     }
     listed.extend(state.files.shares(&actor).await?.into_iter().map(FileShare::from));
     Ok(Json(listed))
+}
+
+/// A folder directly on a volume: a share, whether shared on the network
+/// or not.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct VolumeFolderDto {
+    /// The share's ID, which the file routes take.
+    pub id: i64,
+    pub name: String,
+    pub description: Option<String>,
+    /// Offered on the network (SMB, NFS); otherwise used on the NAS only.
+    pub shared: bool,
+    /// What the signed-in user may do in it; `null`: listed for someone
+    /// who manages shares, but they may not open it.
+    pub access: Option<ShareAccessLevel>,
+    /// Deleted entries go to `.recycle/<user>` in it.
+    pub recycle_bin: bool,
+}
+
+impl From<VolumeFolder> for VolumeFolderDto {
+    fn from(folder: VolumeFolder) -> Self {
+        Self {
+            id: folder.share.id.get(),
+            name: folder.share.name.to_string(),
+            description: folder.share.description,
+            shared: folder.share.shared,
+            access: folder.access.map(ShareAccessLevel::from),
+            recycle_bin: folder.share.recycle_bin,
+        }
+    }
+}
+
+/// A volume and its folders the signed-in user sees.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct FileVolumeDto {
+    /// `1` for `/volume1`.
+    pub volume: u16,
+    pub pool: String,
+    pub mounted: bool,
+    /// By name.
+    pub folders: Vec<VolumeFolderDto>,
+}
+
+impl From<FileVolume> for FileVolumeDto {
+    fn from(volume: FileVolume) -> Self {
+        Self {
+            volume: volume.number,
+            pool: volume.pool,
+            mounted: volume.mounted,
+            folders: volume.folders.into_iter().map(VolumeFolderDto::from).collect(),
+        }
+    }
+}
+
+/// The volumes with their folders, for the file manager's tree. Someone
+/// who manages shares (`shares.manage`) sees every volume and every folder
+/// on it, those they may not open marked; everyone else only the folders
+/// they may use, and the volumes holding one. Needs `files.read`.
+#[utoipa::path(
+    get,
+    path = "/files/volumes",
+    tag = "files",
+    security(("session" = [])),
+    responses((status = OK, body = Vec<FileVolumeDto>)),
+)]
+async fn file_volumes(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+) -> Result<Json<Vec<FileVolumeDto>>, ApiError> {
+    auth.require(Permission::FilesRead)?;
+    let everything = auth.0.can(Permission::SharesManage);
+    let volumes = state.files.volumes(&auth.0.actor(), everything, &client).await?;
+    Ok(Json(volumes.into_iter().map(FileVolumeDto::from).collect()))
 }
 
 #[derive(Debug, Clone, Copy, Serialize, ToSchema)]

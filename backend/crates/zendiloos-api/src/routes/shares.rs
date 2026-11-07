@@ -152,6 +152,9 @@ pub struct Share {
     pub volume: u16,
     /// E.g. `/volume1/photos`.
     pub path: String,
+    /// Offered on the network, over SMB and to its NFS clients; otherwise
+    /// used on the NAS only, with the same permissions.
+    pub shared: bool,
     pub recycle_bin: bool,
     pub settings: ShareSettingsDto,
     /// What the share holds; absent while its volume is not there.
@@ -238,6 +241,7 @@ impl From<sharing::Share> for Share {
             description: share.description,
             pool: share.pool,
             volume: share.volume,
+            shared: share.shared,
             recycle_bin: share.recycle_bin,
             settings: share.settings.into(),
             used_bytes: None,
@@ -311,6 +315,10 @@ pub struct CreateShareRequest {
     pub description: Option<String>,
     /// The pool (volume) to create it on.
     pub pool: String,
+    /// Offered on the network at once (the default); `false`: a folder on
+    /// the volume used on the NAS only, shared later if wanted.
+    #[serde(default = "yes")]
+    pub shared: bool,
     #[serde(default = "yes")]
     pub recycle_bin: bool,
     #[serde(default)]
@@ -326,8 +334,9 @@ fn yes() -> bool {
     true
 }
 
-/// Creates a share: a dataset on the volume with its permissions, offered
-/// over SMB (and NFS, if clients are given). Needs `shares.manage`.
+/// Creates a folder directly on a volume: a dataset with its permissions,
+/// offered over SMB (and NFS, if clients are given) while shared. Needs
+/// `shares.manage`.
 #[utoipa::path(
     post,
     path = "/shares",
@@ -351,6 +360,7 @@ async fn create_share(
         name: request.name,
         description: request.description,
         pool: request.pool,
+        shared: request.shared,
         recycle_bin: request.recycle_bin,
         access: request.access.into_iter().map(Into::into).collect(),
         nfs: request.nfs.into_iter().map(|c| (c.network, c.write)).collect(),
@@ -366,6 +376,9 @@ async fn create_share(
 pub struct UpdateShareRequest {
     /// An empty string removes the description.
     pub description: Option<String>,
+    /// On or off the network; the folder, its data and permissions stay.
+    /// Refused off while Macs back up to it (`refused`).
+    pub shared: Option<bool>,
     pub recycle_bin: Option<bool>,
     /// Replaces all rules.
     pub access: Option<Vec<ShareRule>>,
@@ -395,6 +408,7 @@ pub struct ShareUpdate {
     responses(
         (status = OK, body = ShareUpdate),
         (status = NOT_FOUND, body = Problem, description = "`not_found`"),
+        (status = CONFLICT, body = Problem, description = "`refused`: rules being applied to the files, or off the network while Macs back up to it"),
         (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_input`, `unknown_subject`, `duplicate_rule`"),
     )
 )]
@@ -408,6 +422,7 @@ async fn update_share(
     auth.require(Permission::SharesManage)?;
     let changes = ShareChanges {
         description: request.description.map(Some),
+        shared: request.shared,
         recycle_bin: request.recycle_bin,
         access: request.access.map(|rules| rules.into_iter().map(Into::into).collect()),
         nfs: request.nfs.map(|clients| clients.into_iter().map(|c| (c.network, c.write)).collect()),

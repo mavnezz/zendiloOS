@@ -1588,6 +1588,7 @@ fn openapi_documents_every_route() {
             "/api/v1/files/shares/{id}/snapshots/{label}/restore",
             "/api/v1/files/shares/{id}/transfer",
             "/api/v1/files/shares/{id}/upload",
+            "/api/v1/files/volumes",
             "/api/v1/groups",
             "/api/v1/groups/{id}",
             "/api/v1/health",
@@ -2334,6 +2335,59 @@ async fn personal_folders_are_switched_on_and_given_to_accounts() {
     assert_problem(&refused, StatusCode::FORBIDDEN, "forbidden");
     let off = put("/api/v1/homes".into(), json!({ "pool": null })).await;
     assert_eq!(off.body["location"], Value::Null);
+}
+
+#[tokio::test]
+async fn folders_on_a_volume_go_on_and_off_the_network_and_show_in_the_file_manager() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let bob_session = h.sign_in("bob", Role::User).await;
+    let bob = h.identity.accounts.all().into_iter().find(|a| a.name.as_str() == "bob").unwrap().id.get();
+    let create = |body| h.send(json(with_csrf(post("/api/v1/shares"), &admin), body));
+    let docker = create(json!({
+        "name": "docker",
+        "description": null,
+        "pool": "tank",
+        "shared": false,
+        "access": [{ "kind": "account", "id": bob, "access": "read" }],
+    }))
+    .await;
+    assert_eq!(docker.status, StatusCode::CREATED, "{:?}", docker.body);
+    assert_eq!(docker.body["shared"], false);
+    let private = create(json!({ "name": "private", "description": null, "pool": "tank" })).await;
+    assert_eq!(private.body["shared"], true, "on the network unless asked otherwise");
+
+    let all = h.send(empty(with_cookie(get("/api/v1/files/volumes"), &admin))).await;
+    assert_eq!(all.status, StatusCode::OK, "{:?}", all.body);
+    let tank = all.body.as_array().unwrap().iter().find(|v| v["pool"] == "tank").unwrap();
+    assert_eq!(tank["volume"], 1);
+    let folders: Vec<_> = tank["folders"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| (f["name"].as_str().unwrap(), f["shared"].as_bool().unwrap(), f["access"].clone()))
+        .collect();
+    assert_eq!(
+        folders,
+        [("docker", false, Value::Null), ("private", true, Value::Null)],
+        "listed, not to open"
+    );
+    let bobs = h.send(empty(with_cookie(get("/api/v1/files/volumes"), &bob_session))).await;
+    let bobs = bobs.body.as_array().unwrap();
+    assert_eq!(bobs.len(), 1);
+    assert_eq!(
+        bobs[0]["folders"],
+        json!([{
+            "id": docker.body["id"], "name": "docker", "description": null, "shared": false,
+            "access": "read", "recycle_bin": true
+        }])
+    );
+
+    let uri = format!("/api/v1/shares/{}", docker.body["id"]);
+    let shared =
+        h.send(json(with_csrf(changing(Method::PATCH, &uri), &admin), json!({ "shared": true }))).await;
+    assert_eq!(shared.status, StatusCode::OK, "{:?}", shared.body);
+    assert_eq!((&shared.body["share"]["shared"], &shared.body["job"]), (&json!(true), &Value::Null));
 }
 
 #[tokio::test]

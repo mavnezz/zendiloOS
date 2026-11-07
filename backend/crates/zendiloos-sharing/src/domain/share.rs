@@ -277,6 +277,11 @@ pub struct ShareUsage {
     pub available_bytes: u64,
 }
 
+/// A folder directly on a volume: its own dataset, with its permissions,
+/// which hold in the file manager and for apps as everywhere. Shared, it is
+/// also offered on the network, over SMB and, with clients, NFS; not
+/// shared, it is used on the NAS only. Deeper folders are plain folders and
+/// never shared on their own.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Share {
     pub id: ShareId,
@@ -285,6 +290,8 @@ pub struct Share {
     /// The pool it lives on and the pool's volume number.
     pub pool: String,
     pub volume: u16,
+    /// Offered on the network: over SMB, and over NFS to its clients.
+    pub shared: bool,
     pub recycle_bin: bool,
     pub settings: ShareSettings,
     pub access: Vec<AccessRule>,
@@ -311,6 +318,7 @@ pub struct NewShare {
     pub description: Option<String>,
     pub pool: String,
     pub volume: u16,
+    pub shared: bool,
     pub recycle_bin: bool,
     pub settings: ShareSettings,
     pub access: Vec<AccessRule>,

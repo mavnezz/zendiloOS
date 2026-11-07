@@ -111,6 +111,7 @@ impl ShareRepository for Shares {
             description: new.description,
             pool: new.pool,
             volume: new.volume,
+            shared: new.shared,
             recycle_bin: new.recycle_bin,
             settings: new.settings,
             access: new.access,

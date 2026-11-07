@@ -126,6 +126,7 @@ fn input(name: &str, pool: &str) -> NewShareInput {
         name: name.into(),
         description: Some(" Holiday photos ".into()),
         pool: pool.into(),
+        shared: true,
         recycle_bin: true,
         access: vec![rule(Subject::Group(10), Access::ReadWrite), rule(Subject::Account(2), Access::Read)],
         nfs: vec![("192.168.1.0/24".into(), false)],
@@ -640,6 +641,7 @@ async fn photos(s: &Setup) -> ShareId {
         name: "photos".into(),
         description: None,
         pool: "tank".into(),
+        shared: true,
         recycle_bin: true,
         access: vec![rule(Subject::Account(1), Access::ReadWrite)],
         nfs: vec![],
@@ -1215,4 +1217,78 @@ async fn members_of_a_denied_group_change_only_once_its_shares_walk_has_ended() 
     s.host.let_walks_on.notify_one();
     finished(&s.jobs, jobs[0].clone()).await;
     assert_eq!(s.sharing.group_members_changed(10, &[1, 2], &alice(), &request).await.unwrap().len(), 1);
+}
+
+// Folders on a volume: on the network or on the NAS only
+
+#[tokio::test]
+async fn a_folder_off_the_network_keeps_its_permissions_and_is_offered_nowhere() {
+    let s = setup();
+    let request = RequestContext::default();
+    let mut new = input("docker", "tank");
+    new.shared = false;
+    let share = s.sharing.create(new, &alice(), &request).await.unwrap();
+    assert!(!share.shared);
+    assert!(
+        s.host.calls().contains(&"access 1 docker [@family:rw,bob:r] -[]".to_owned()),
+        "permissions hold"
+    );
+    let config = s.host.configs.lock().unwrap().last().unwrap().clone();
+    assert!(config.smb.is_empty() && config.nfs.is_empty(), "neither SMB nor NFS offers it");
+    assert_eq!(s.files.shares(&bob()).await.unwrap()[0].access, Access::Read, "the file manager does");
+
+    let shared = ShareChanges { shared: Some(true), ..ShareChanges::default() };
+    let (share, job) = s.sharing.update(share.id, shared, &alice(), &request).await.unwrap();
+    assert!(share.shared && job.is_none(), "sharing it changes no permission");
+    let config = s.host.configs.lock().unwrap().last().unwrap().clone();
+    assert_eq!((config.smb.len(), config.nfs.len()), (1, 1));
+
+    let off = ShareChanges { shared: Some(false), ..ShareChanges::default() };
+    let (share, _) = s.sharing.update(share.id, off, &alice(), &request).await.unwrap();
+    assert!(!share.shared && !share.nfs.is_empty(), "its NFS clients stay for when it is shared again");
+    assert!(s.host.configs.lock().unwrap().last().unwrap().smb.is_empty());
+}
+
+#[tokio::test]
+async fn macs_back_up_only_to_a_folder_on_the_network() {
+    let s = setup();
+    let request = RequestContext::default();
+    let mut new = input("backup", "tank");
+    new.shared = false;
+    let id = s.sharing.create(new, &alice(), &request).await.unwrap().id;
+    let machine = |share| FileServices {
+        time_machine: Some(crate::domain::TimeMachine { share, max_bytes: None }),
+        ..FileServices::default()
+    };
+    assert!(matches!(
+        s.sharing.set_file_services(machine(id), &alice(), &request).await,
+        Err(SharingError::Refused(_))
+    ));
+    let on = ShareChanges { shared: Some(true), ..ShareChanges::default() };
+    s.sharing.update(id, on, &alice(), &request).await.unwrap();
+    s.sharing.set_file_services(machine(id), &alice(), &request).await.unwrap();
+    let off = ShareChanges { shared: Some(false), ..ShareChanges::default() };
+    assert!(matches!(s.sharing.update(id, off, &alice(), &request).await, Err(SharingError::Refused(_))));
+    assert!(s.files.shares(&alice()).await.unwrap()[0].share.shared, "it stays on the network");
+}
+
+#[tokio::test]
+async fn the_volumes_show_everyone_their_folders_and_those_who_manage_all() {
+    let s = setup();
+    let request = RequestContext::default();
+    with_photos(&s).await;
+    let mut secret = input("secret", "tank");
+    secret.access = vec![rule(Subject::Account(1), Access::ReadWrite)];
+    s.sharing.create(secret, &alice(), &request).await.unwrap();
+
+    let all = s.files.volumes(&bob(), true, &request).await.unwrap();
+    let volumes: Vec<_> = all.iter().map(|v| (v.pool.as_str(), v.number, v.mounted)).collect();
+    assert_eq!(volumes, [("tank", 1, true), ("cold", 2, false)]);
+    let folders: Vec<_> = all[0].folders.iter().map(|f| (f.share.name.as_str(), f.access)).collect();
+    assert_eq!(folders, [("photos", Some(Access::Read)), ("secret", None)], "shown, but not to be opened");
+
+    let bobs = s.files.volumes(&bob(), false, &request).await.unwrap();
+    assert_eq!(bobs.len(), 1, "a volume without a folder of theirs is left out");
+    assert_eq!(bobs[0].folders.iter().map(|f| f.share.name.as_str()).collect::<Vec<_>>(), ["photos"]);
+    assert!(s.files.volumes(&carol(), false, &request).await.unwrap().is_empty());
 }

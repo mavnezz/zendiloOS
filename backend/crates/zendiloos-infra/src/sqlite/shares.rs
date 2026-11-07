@@ -38,6 +38,7 @@ struct ShareRow {
     description: Option<String>,
     pool: String,
     volume: i64,
+    shared: bool,
     recycle_bin: bool,
     quota_bytes: Option<i64>,
     compression: String,
@@ -153,6 +154,7 @@ impl SqliteShares {
                     description: row.description,
                     pool: row.pool,
                     volume: u16::try_from(row.volume).map_err(|_| stored("volume"))?,
+                    shared: row.shared,
                     recycle_bin: row.recycle_bin,
                     settings,
                     access: access.remove(&row.id).unwrap_or_default(),
@@ -170,7 +172,8 @@ impl ShareRepository for SqliteShares {
     async fn list(&self) -> Result<Vec<Share>, PortError> {
         let rows = sqlx::query_as!(
             ShareRow,
-            r#"SELECT id AS "id!", name, description, pool, volume, recycle_bin AS "recycle_bin: bool",
+            r#"SELECT id AS "id!", name, description, pool, volume, shared AS "shared: bool",
+                      recycle_bin AS "recycle_bin: bool",
                       quota_bytes, compression, record_size, created_at, updated_at
                FROM shares WHERE deleting = 0 ORDER BY name"#
         )
@@ -192,7 +195,8 @@ impl ShareRepository for SqliteShares {
     async fn deleting(&self) -> Result<Vec<Share>, PortError> {
         let rows = sqlx::query_as!(
             ShareRow,
-            r#"SELECT id AS "id!", name, description, pool, volume, recycle_bin AS "recycle_bin: bool",
+            r#"SELECT id AS "id!", name, description, pool, volume, shared AS "shared: bool",
+                      recycle_bin AS "recycle_bin: bool",
                       quota_bytes, compression, record_size, created_at, updated_at
                FROM shares WHERE deleting = 1 ORDER BY name"#
         )
@@ -268,8 +272,8 @@ impl ShareRepository for SqliteShares {
         let mut tx = self.db.pool().begin().await.map_err(db_error)?;
         let id = sqlx::query_scalar!(
             r#"INSERT INTO shares (name, description, pool, volume, recycle_bin, quota_bytes, compression, record_size,
-                                   created_at, updated_at)
-               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
+                                   created_at, updated_at, shared)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?10)
                ON CONFLICT (name) DO NOTHING
                RETURNING id AS "id!""#,
             name,
@@ -280,7 +284,8 @@ impl ShareRepository for SqliteShares {
             quota,
             compression,
             record_size,
-            at
+            at,
+            new.shared
         )
         .fetch_optional(&mut *tx)
         .await
@@ -294,6 +299,7 @@ impl ShareRepository for SqliteShares {
             description: new.description,
             pool: new.pool,
             volume: new.volume,
+            shared: new.shared,
             recycle_bin: new.recycle_bin,
             settings: new.settings,
             access: new.access,
@@ -309,7 +315,7 @@ impl ShareRepository for SqliteShares {
         let mut tx = self.db.pool().begin().await.map_err(db_error)?;
         sqlx::query!(
             "UPDATE shares SET description = ?, recycle_bin = ?, quota_bytes = ?, compression = ?, record_size = ?,
-                               updated_at = ?
+                               updated_at = ?, shared = ?
              WHERE id = ?",
             share.description,
             share.recycle_bin,
@@ -317,6 +323,7 @@ impl ShareRepository for SqliteShares {
             compression,
             record_size,
             at,
+            share.shared,
             id
         )
         .execute(&mut *tx)
@@ -768,6 +775,7 @@ mod tests {
             description: Some("Pictures".into()),
             pool: "tank".into(),
             volume: 1,
+            shared: false,
             recycle_bin: true,
             access: vec![
                 AccessRule { subject: Subject::Group(family.id.get()), permission: Permission::ReadWrite },
@@ -790,7 +798,9 @@ mod tests {
         assert_eq!(shares.memberships(alice.id.get()).await.unwrap(), [family.id.get()]);
         assert!(shares.memberships(alice.id.get() + 1).await.unwrap().is_empty());
 
+        assert!(!share.shared, "kept off the network");
         share.nfs.clear();
+        share.shared = true;
         share.recycle_bin = false;
         share.settings = ShareSettings::default();
         shares.update(&share).await.unwrap();

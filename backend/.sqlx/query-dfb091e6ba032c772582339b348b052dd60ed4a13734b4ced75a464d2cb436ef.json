@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE shares SET description = ?, recycle_bin = ?, quota_bytes = ?, compression = ?, record_size = ?,\n                               updated_at = ?, shared = ?\n             WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 8
+    },
+    "nullable": []
+  },
+  "hash": "dfb091e6ba032c772582339b348b052dd60ed4a13734b4ced75a464d2cb436ef"
+}
