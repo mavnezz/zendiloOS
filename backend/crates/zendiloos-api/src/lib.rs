@@ -16,7 +16,7 @@ mod tests;
 use axum::Router;
 use axum::extract::{FromRequestParts, State};
 use axum::http::Request;
-use axum::middleware::{Next, from_fn_with_state};
+use axum::middleware::{Next, from_fn, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
@@ -90,6 +90,7 @@ pub fn router(state: ApiState) -> Router {
         .merge(routes::live::router())
         .fallback(|| async { ApiError::NotFound })
         .method_not_allowed_fallback(|| async { ApiError::MethodNotAllowed })
+        .layer(from_fn(run_to_the_end))
         .layer(from_fn_with_state(state.clone(), refuse_blocked))
         .with_state(state)
         // Layers wrap everything added before them: the request ID is set
@@ -103,6 +104,23 @@ pub fn router(state: ApiState) -> Router {
             tracing::info_span!("request", method = %request.method(), path = %request.uri().path(), request_id)
         }))
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
+}
+
+/// Runs a request that changes something to its end even if its client
+/// hangs up meanwhile (a tab closed; nginx gives up after a minute): hyper
+/// drops the handler then, and a change cut off halfway would leave the
+/// host and the records apart, a Linux account without its record, say.
+/// Requests that only read (and WebSocket upgrades, which are GETs) go with
+/// their client.
+async fn run_to_the_end(request: axum::extract::Request, next: Next) -> Response {
+    if request.method().is_safe() {
+        return next.run(request).await;
+    }
+    match tokio::spawn(next.run(request)).await {
+        Ok(response) => response,
+        Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
+        Err(error) => ApiError::internal(error).into_response(),
+    }
 }
 
 /// Refuses every request from an address the web interface blocks; the
@@ -124,5 +142,41 @@ async fn refuse_blocked(
         Ok(false) => next.run(axum::extract::Request::from_parts(parts, body)).await,
         Ok(true) => ApiError::address_blocked().into_response(),
         Err(error) => ApiError::internal(error).into_response(),
+    }
+}
+
+#[cfg(test)]
+mod to_the_end {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    use axum::routing::post;
+    use tower::ServiceExt;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn a_change_runs_to_its_end_when_the_client_hangs_up_a_read_does_not() {
+        let (changed, read) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+        let slow = |flag: Arc<AtomicBool>| {
+            move || async move {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                flag.store(true, Ordering::SeqCst);
+            }
+        };
+        let app = Router::new()
+            .route("/x", post(slow(changed.clone())).get(slow(read.clone())))
+            .layer(from_fn(run_to_the_end));
+        for method in ["POST", "GET"] {
+            let request =
+                axum::http::Request::builder().method(method).uri("/x").body(axum::body::Body::empty());
+            // The client gives up after 10 ms.
+            let _ =
+                tokio::time::timeout(Duration::from_millis(10), app.clone().oneshot(request.unwrap())).await;
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(changed.load(Ordering::SeqCst), "the change went on");
+        assert!(!read.load(Ordering::SeqCst), "the read went with its client");
     }
 }

@@ -52,7 +52,14 @@ impl Agent {
             path
         };
         let tools = Tools {
-            systemctl: script("systemctl", &format!("exit {exit_code}")),
+            // No run of apt goes on unless the file `updating` is there.
+            systemctl: script(
+                "systemctl",
+                &format!(
+                    "[ \"$1\" = is-active ] && {{ [ -f {} ]; exit $?; }}\nexit {exit_code}",
+                    dir.path().join("updating").display()
+                ),
+            ),
             lsblk: script(
                 "lsblk",
                 &format!(
@@ -173,7 +180,22 @@ async fn reboots_and_powers_off_through_systemctl() {
     let agent = Agent::start(None, 0).await;
     assert_eq!(agent.client().call(Request::Reboot {}, id("req-1")).await.unwrap(), Response::Done);
     assert_eq!(agent.client().call(Request::PowerOff {}, None).await.unwrap(), Response::Done);
-    assert_eq!(agent.calls(), "systemctl reboot\nsystemctl poweroff\n");
+    let asked = "systemctl is-active --quiet zendiloos-packages.service\n";
+    assert_eq!(agent.calls(), format!("{asked}systemctl reboot\n{asked}systemctl poweroff\n"));
+}
+
+#[tokio::test]
+async fn neither_reboots_nor_powers_off_while_an_update_installs() {
+    let agent = Agent::start(None, 0).await;
+    fs::write(agent.dir.path().join("updating"), "").unwrap();
+    for request in [Request::Reboot {}, Request::PowerOff {}] {
+        let answer = agent.client().call(request, None).await.unwrap();
+        assert!(
+            matches!(&answer, Response::Error { message, .. } if message.contains("update")),
+            "{answer:?}"
+        );
+    }
+    assert!(!agent.calls().contains("systemctl reboot") && !agent.calls().contains("poweroff"));
 }
 
 #[tokio::test]
@@ -408,6 +430,20 @@ userdel -- alice
 }
 
 #[tokio::test]
+async fn deleting_what_is_gone_already_is_done() {
+    let agent = Agent::start(None, 0).await;
+    assert_eq!(
+        agent.client().call(Request::DeleteUser { name: user("nobody") }, None).await.unwrap(),
+        Response::Done
+    );
+    assert_eq!(
+        agent.client().call(Request::DeleteGroup { name: group("gone") }, None).await.unwrap(),
+        Response::Done
+    );
+    assert_eq!(agent.calls(), "", "nothing ran");
+}
+
+#[tokio::test]
 async fn never_touches_what_zendiloos_does_not_manage() {
     let agent = Agent::start(None, 0).await;
     let password = || Password::new("correct horse battery").unwrap();
@@ -415,7 +451,6 @@ async fn never_touches_what_zendiloos_does_not_manage() {
         Request::DeleteUser { name: user("debian") },
         Request::DeleteUser { name: user("root") },
         Request::DeleteUser { name: user("zendiloos") },
-        Request::DeleteUser { name: user("nobody") },
         Request::SetSmbPassword { name: user("debian"), password: password() },
         Request::SetUserEnabled { name: user("root"), enabled: false },
         Request::DeleteGroup { name: group("sudo") },

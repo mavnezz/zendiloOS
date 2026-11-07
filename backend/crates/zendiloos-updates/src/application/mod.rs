@@ -230,8 +230,9 @@ impl Updates {
     /// copy, a share's permissions, a pool's change), for hours maybe.
     pub async fn apply(&self, actor: &Actor, request: &RequestContext) -> Result<(), UpdatesError> {
         let busy = Arc::clone(&self.busy).try_lock_owned().map_err(|_| UpdatesError::Busy)?;
-        let running = self.ports.work.running();
+        let running = self.ports.work.running().await;
         if !running.is_empty() {
+            self.audit("system.update", Outcome::Denied, actor, request, "").await;
             return Err(UpdatesError::JobsRunning(running.join(", ")));
         }
         let latest = self.ports.host.latest(request).await?;
@@ -255,6 +256,11 @@ impl Updates {
             let started = async {
                 if let Some(release) = &release {
                     this.ports.releases.download(release).await.map_err(HostError::Failed)?;
+                }
+                // A job may have started while the release came.
+                let running = this.ports.work.running().await;
+                if !running.is_empty() {
+                    return Err(HostError::Refused(format!("background work runs: {}", running.join(", "))));
                 }
                 this.ports.host.start(release.as_ref(), &context).await
             }
@@ -316,6 +322,21 @@ impl Updates {
             }
         }
         Ok(())
+    }
+
+    /// Whether an update is under way here: started, its release coming,
+    /// or a run of apt installing. A reboot would cut it off.
+    async fn under_way(&self) -> bool {
+        if self.busy.try_lock().is_err() || self.phase() == Phase::Downloading {
+            return true;
+        }
+        match self.ports.host.latest(&RequestContext::default()).await {
+            Ok(run) => run.is_some_and(|run| run.state == RunState::Running),
+            Err(error) => {
+                tracing::warn!(%error, "updates: cannot tell whether a run goes on");
+                false
+            }
+        }
     }
 
     async fn say_available(&self, check: &CheckResult) {
@@ -380,6 +401,14 @@ impl Updates {
     }
 }
 
+/// An update under way is background work: reboots wait for it.
+#[async_trait::async_trait]
+impl RunningWork for Updates {
+    async fn running(&self) -> Vec<String> {
+        if self.under_way().await { vec!["system.update".to_owned()] } else { Vec::new() }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use async_trait::async_trait;
@@ -407,8 +436,9 @@ mod tests {
 
     #[derive(Default)]
     struct Work(std::sync::Mutex<Vec<String>>);
+    #[async_trait]
     impl RunningWork for Work {
-        fn running(&self) -> Vec<String> {
+        async fn running(&self) -> Vec<String> {
             self.0.lock().unwrap().clone()
         }
     }
@@ -521,6 +551,49 @@ mod tests {
 
         s.work.0.lock().unwrap().clear();
         s.updates.apply(&alice(), &request).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_update_under_way_is_background_work() {
+        let s = setup();
+        assert!(RunningWork::running(&s.updates).await.is_empty(), "nothing goes on");
+        *s.host.run.lock().unwrap() = Some(UpdateRun {
+            id: "run1".into(),
+            installs: true,
+            state: RunState::Running,
+            step: "debian".into(),
+            started_at: Timestamp::from_unix_seconds(100),
+            finished_at: None,
+            error: None,
+            zendiloos: None,
+            report: None,
+        });
+        assert_eq!(RunningWork::running(&s.updates).await, ["system.update"], "apt installs");
+        s.host.run.lock().unwrap().take();
+        let busy = s.updates.busy.clone().try_lock_owned().unwrap();
+        assert_eq!(RunningWork::running(&s.updates).await, ["system.update"], "being started");
+        drop(busy);
+        assert!(RunningWork::running(&s.updates).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_job_started_while_the_release_came_stops_the_update() {
+        let s = setup();
+        let request = RequestContext::default();
+        s.updates.check(None, &request).await.unwrap();
+        // apply returns once the download began; the job comes meanwhile.
+        s.updates.apply(&alice(), &request).await.unwrap();
+        *s.work.0.lock().unwrap() = vec!["files.copy photos".into()];
+        let mut phase = Phase::Idle;
+        for _ in 0..100 {
+            phase = s.updates.overview(&request).await.unwrap().phase;
+            if matches!(phase, Phase::Failed(_)) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(matches!(phase, Phase::Failed(ref why) if why.contains("files.copy")), "{phase:?}");
+        assert!(s.host.started.lock().unwrap().is_empty(), "the run did not start");
     }
 
     #[tokio::test]

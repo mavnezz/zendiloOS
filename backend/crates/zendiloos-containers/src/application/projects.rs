@@ -359,7 +359,10 @@ impl Containers {
             .start("containers.project_delete", Some(name.clone()), Some(actor), move |progress| async move {
                 progress.step("removing", None).await;
                 let mut done: Result<(), ContainersError> = Ok(());
-                if !project.containers.is_empty() {
+                // A project made here goes down even without containers: a
+                // deployment that failed at pulling left the kept file and
+                // the pins' unit, which only going down removes.
+                if !project.containers.is_empty() || own.is_some() {
                     done = this
                         .ports
                         .engine

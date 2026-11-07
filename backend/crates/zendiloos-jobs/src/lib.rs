@@ -114,6 +114,9 @@ pub trait JobRepository: Send + Sync {
     /// The most recent jobs, newest first.
     async fn recent(&self, limit: u32) -> Result<Vec<Job>, PortError>;
 
+    /// The most recent jobs started by the account `account`, newest first.
+    async fn recent_of(&self, account: i64, limit: u32) -> Result<Vec<Job>, PortError>;
+
     /// Marks every running job as interrupted; returns how many.
     async fn interrupt_running(&self, at: Timestamp) -> Result<u64, PortError>;
 }
@@ -257,6 +260,12 @@ impl Jobs {
         self.inner.repository.recent(limit.clamp(1, 200)).await
     }
 
+    /// As [`Jobs::recent`], of one account's own: by its id, as a name may
+    /// be another account's later.
+    pub async fn recent_of(&self, account: i64, limit: u32) -> Result<Vec<Job>, PortError> {
+        self.inner.repository.recent_of(account, limit.clamp(1, 200)).await
+    }
+
     pub async fn find(&self, id: JobId) -> Result<Option<Job>, PortError> {
         self.inner.repository.find(id).await
     }
@@ -267,9 +276,10 @@ impl Jobs {
     }
 }
 
+#[async_trait]
 impl RunningWork for Jobs {
     /// Each as `kind target`, e.g. `sharing.apply_access photos`.
-    fn running(&self) -> Vec<String> {
+    async fn running(&self) -> Vec<String> {
         Jobs::running(self)
             .into_iter()
             .map(|(kind, target)| match target {
@@ -351,11 +361,11 @@ mod tests {
         for _ in 0..3 {
             next(&mut events).await;
         }
-        assert_eq!(RunningWork::running(&jobs), ["sharing.apply_access photos"]);
+        assert_eq!(RunningWork::running(&jobs).await, ["sharing.apply_access photos"]);
 
         finish.send(()).unwrap();
         assert_eq!(next(&mut events).await.state, JobState::Succeeded);
-        assert!(RunningWork::running(&jobs).is_empty());
+        assert!(RunningWork::running(&jobs).await.is_empty());
     }
 
     #[tokio::test]

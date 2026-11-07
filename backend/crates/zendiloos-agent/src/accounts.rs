@@ -175,7 +175,13 @@ impl Accounts {
 
     pub(crate) async fn delete_user(&self, name: &UserName) -> Result<Response, OperationError> {
         let _serial = crate::waiting::lock(&self.serial).await?;
-        self.require_managed_user(name).await?;
+        let (passwd, group) = self.read_files().await?;
+        // Gone already (a deletion whose answer was lost): deleted, so a
+        // second try can end what the first began.
+        if passwd::lookup(&passwd, name.as_str()).is_none() {
+            return Ok(Response::Done);
+        }
+        require_managed(&passwd, &group, name)?;
         // The Samba entry may be missing, e.g. after a failed creation.
         if let Err(error) = run(&self.smbpasswd, &["-x", name.as_str()]).await {
             tracing::info!(user = name.as_str(), %error, "no Samba entry removed");
@@ -232,6 +238,9 @@ impl Accounts {
     pub(crate) async fn delete_group(&self, name: &GroupName) -> Result<Response, OperationError> {
         let _serial = crate::waiting::lock(&self.serial).await?;
         let (passwd, group) = self.read_files().await?;
+        if passwd::group_id(&group, name.as_str()).is_none() {
+            return Ok(Response::Done);
+        }
         require_managed_group(&passwd, &group, name)?;
         run(&self.groupdel, &["--", name.as_str()]).await?;
         Ok(Response::Done)

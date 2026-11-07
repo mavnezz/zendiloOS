@@ -54,6 +54,20 @@ impl ChangePassword {
             return Err(IdentityError::WrongPassword);
         }
 
+        // From here one with administrators' changes: a reset or a lock in
+        // between would leave Samba with one password and the web with
+        // another. Verified above outside, as Argon2 takes a while.
+        let _changes = c.changes.lock().await;
+        let now_stored =
+            c.ports.accounts.find_by_id(account.id).await?.ok_or(IdentityError::Unauthenticated)?;
+        if now_stored.password_locked {
+            return Err(IdentityError::PasswordLocked);
+        }
+        if now_stored.password_hash != account.password_hash || now_stored.disabled {
+            // Reset or disabled meanwhile; that ended this session too.
+            return Err(IdentityError::Unauthenticated);
+        }
+
         // SMB first: if the agent fails, the old password still works everywhere.
         c.ports.system.set_password(&account.name, password.secret(), request).await?;
         let hash = c.ports.hasher.hash(password.secret()).await?;

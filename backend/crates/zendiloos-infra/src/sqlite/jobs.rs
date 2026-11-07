@@ -152,6 +152,24 @@ impl JobRepository for SqliteJobs {
         .collect()
     }
 
+    async fn recent_of(&self, account: i64, limit: u32) -> Result<Vec<Job>, PortError> {
+        let limit = i64::from(limit);
+        sqlx::query_as!(
+            JobRow,
+            r#"SELECT id AS "id!", kind, target, state, step, progress, error_code, error_detail,
+                      account_id, actor, created_at, updated_at, finished_at
+               FROM jobs WHERE account_id = ? ORDER BY id DESC LIMIT ?"#,
+            account,
+            limit
+        )
+        .fetch_all(self.db.pool())
+        .await
+        .map_err(db_error)?
+        .into_iter()
+        .map(Job::try_from)
+        .collect()
+    }
+
     async fn interrupt_running(&self, at: Timestamp) -> Result<u64, PortError> {
         let at = at.unix_seconds();
         let result = sqlx::query!(

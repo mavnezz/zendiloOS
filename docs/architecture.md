@@ -294,6 +294,10 @@ frontend/src/
   them in the viewer's locale. Errors use RFC 9457
   (`application/problem+json`) with a stable `code` for the frontend;
   internal details go to the log only.
+- **A change is seen through:** a request that is not safe (POST, PUT,
+  PATCH, DELETE) runs to its end in a task of its own even when its client
+  hangs up (a closed tab; nginx gives up after a minute), so the host and
+  the records never part halfway; reading requests go with their client.
 - **Versioning:** the path carries the major version. The OpenAPI document
   is generated, checked in, and verified in CI against unintended changes.
   A breaking change means `/api/v2` alongside `/api/v1`.
@@ -774,9 +778,12 @@ directory) and virtual disks in the Debian VM (`just vm-storage-test`).
   attempts. Every context writes it through the shared `AuditLog` port of
   the kernel. Actions that may end the process (reboot, power off) are
   recorded before they are carried out, and a failure is recorded after.
-  While background jobs run they are refused (`jobs_running`, recorded as
+  While background jobs run, or an update is being installed (its release
+  coming, apt running), they are refused (`jobs_running`, recorded as
   denied): a copy, a share's permissions or a pool's change would stop
-  halfway, and the agents would hold the shutdown until they saw it through.
+  halfway, dpkg cut off would leave packages half done, and the agents would
+  hold the shutdown until they saw it through. The system agent refuses
+  them itself while `zendiloos-packages.service` runs.
   The request ID also appears in the agent's journal.
 - Structured logs through `tracing` (journald in production, readable during
   development). Passwords, tokens and cookies never appear in logs; the types
@@ -1009,8 +1016,9 @@ back. A run outlives a restart of the agent and of zendiloosd, which matters
 when it installs zendiloOS: the package's maintainer scripts restart both,
 and the page follows the run from its record once zendiloosd is back. An
 update does not start while background jobs run (`jobs_running`, the
-detail names them): a stopping agent first sees its running operations
-through, and the upgrade would wait for that, for hours maybe. The
+detail names them, recorded as denied; asked again once the release has
+come): a stopping agent first sees its running operations through, and
+the upgrade would wait for that, for hours maybe. The
 record is one file, which the next check replaces: so before a check or an
 update starts, zendiloosd says how the last update went (once) and keeps
 that run in its database, where the page still finds it. Tasks

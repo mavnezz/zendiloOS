@@ -733,6 +733,45 @@ async fn a_failing_schedule_is_reported_once_until_it_works_again() {
 // Settings
 
 #[tokio::test]
+async fn a_change_refused_halfway_changes_nothing_on_the_host() {
+    use crate::domain::{MIN_QUOTA_BYTES, ShareSettings};
+    let s = setup();
+    let request = RequestContext::default();
+    let share = s.sharing.create(input("photos", "tank"), &alice(), &request).await.unwrap();
+    let before = s.host.calls().len();
+    s.host.used_bytes.store(3 * MIN_QUOTA_BYTES, std::sync::atomic::Ordering::Relaxed);
+
+    // New rules and a quota below what the share holds, in one save.
+    let changes = ShareChanges {
+        access: Some(vec![rule(Subject::Account(1), Access::ReadWrite)]),
+        settings: Some(ShareSettings { quota_bytes: Some(2 * MIN_QUOTA_BYTES), ..ShareSettings::default() }),
+        ..ShareChanges::default()
+    };
+    let refused = s.sharing.update(share.id, changes, &alice(), &request).await;
+    assert!(matches!(refused, Err(SharingError::InvalidSettings(_))), "{refused:?}");
+    assert_eq!(
+        s.host.calls().len(),
+        before,
+        "the folder's rules were not touched: {:?}",
+        &s.host.calls()[before..]
+    );
+
+    // The rules cannot be set: the properties go back as they were.
+    s.host.refuse_access.store(true, std::sync::atomic::Ordering::Relaxed);
+    let changes = ShareChanges {
+        access: Some(vec![rule(Subject::Account(1), Access::ReadWrite)]),
+        settings: Some(ShareSettings { quota_bytes: Some(4 * MIN_QUOTA_BYTES), ..ShareSettings::default() }),
+        ..ShareChanges::default()
+    };
+    assert!(s.sharing.update(share.id, changes, &alice(), &request).await.is_err());
+    let properties: Vec<String> =
+        s.host.calls()[before..].iter().filter(|call| call.starts_with("properties")).cloned().collect();
+    assert_eq!(properties.len(), 2, "{properties:?}");
+    assert!(properties[1].contains("refquota=none"), "undone: {properties:?}");
+    assert_eq!(s.sharing.list().await.unwrap()[0].settings, ShareSettings::default());
+}
+
+#[tokio::test]
 async fn settings_go_to_the_dataset_and_a_quota_never_below_what_is_there() {
     use crate::domain::{Compression, MIN_QUOTA_BYTES, RecordSize, ShareSettings};
     let s = setup();

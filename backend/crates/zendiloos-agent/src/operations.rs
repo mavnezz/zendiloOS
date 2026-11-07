@@ -139,6 +139,11 @@ impl Operations {
                 agent_version: env!("CARGO_PKG_VERSION").to_owned(),
             }),
             // systemctl returns once the job is queued; the shutdown follows.
+            // Not while apt runs: dpkg cut off leaves packages half done,
+            // a kernel maybe without its ZFS module.
+            Request::Reboot {} | Request::PowerOff {} if self.packages.running().await => Err(
+                OperationError::Refused("an update is being installed; wait until it has finished".into()),
+            ),
             Request::Reboot {} => self.systemctl("reboot").await,
             Request::PowerOff {} => self.systemctl("poweroff").await,
             Request::ListBlockDevices {} => self.list_block_devices().await,

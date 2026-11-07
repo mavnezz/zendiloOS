@@ -207,6 +207,17 @@ async fn an_own_projects_file_is_changed_and_deployed_again() {
 }
 
 #[tokio::test]
+async fn an_own_project_without_containers_still_goes_down_when_deleted() {
+    let (t, _) = setup();
+    let plain = "services:\n  app:\n    image: nginx\n";
+    let resting = NewProject { start: false, ..new_project("tesla", plain, false) };
+    t.containers.create_project(resting, &alice(), &context()).await.unwrap();
+
+    t.containers.delete_project("tesla", &alice(), &context()).await.unwrap();
+    asked(&t, "project down tesla").await;
+}
+
+#[tokio::test]
 async fn a_file_changed_in_the_share_does_not_run() {
     let (t, _) = setup();
     let plain = "services:\n  app:\n    image: nginx\n";

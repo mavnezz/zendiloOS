@@ -45,7 +45,7 @@ impl RequestPowerAction {
     ) -> Result<(), PowerError> {
         let entry =
             |outcome| AuditEntry::new(self.clock.now(), action.audit_action(), outcome, request).by(actor);
-        let running = self.work.running();
+        let running = self.work.running().await;
         if !running.is_empty() {
             self.audit.record(entry(Outcome::Denied).reason("jobs_running")).await?;
             return Err(PowerError::JobsRunning(running.join(", ")));
@@ -78,8 +78,9 @@ mod tests {
         running: Vec<String>,
     }
 
+    #[async_trait]
     impl RunningWork for Recorder {
-        fn running(&self) -> Vec<String> {
+        async fn running(&self) -> Vec<String> {
             self.running.clone()
         }
     }

@@ -56,9 +56,11 @@ fn arguments(query: &JournalQuery) -> Vec<String> {
     ];
     let units: &[&str] = match query.source {
         LogSource::System | LogSource::Kernel => &[],
-        LogSource::Zendiloos => &["zendiloosd.service", "zendiloos-agent.service"],
+        // Both agents, the update runner, the pins' and the other units of
+        // zendiloOS (journalctl takes the pattern itself).
+        LogSource::Zendiloos => &["zendiloosd.service", "zendiloos-*"],
         LogSource::Storage => &["mdmonitor.service", "smartmontools.service"],
-        LogSource::Sharing => &["smbd.service", "nmbd.service"],
+        LogSource::Sharing => &["smbd.service", "nmbd.service", "nfs-server.service", "wsdd2.service"],
     };
     args.extend(units.iter().map(|unit| format!("--unit={unit}")));
     if query.source == LogSource::Kernel {
@@ -195,6 +197,8 @@ mod tests {
                 "--output-fields=MESSAGE,PRIORITY,_SYSTEMD_UNIT,SYSLOG_IDENTIFIER,_PID",
                 "--unit=smbd.service",
                 "--unit=nmbd.service",
+                "--unit=nfs-server.service",
+                "--unit=wsdd2.service",
                 "--after-cursor=s=07;i=1",
             ]
         );

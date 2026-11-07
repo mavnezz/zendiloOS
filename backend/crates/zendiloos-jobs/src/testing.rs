@@ -57,6 +57,17 @@ impl JobRepository for MemoryJobs {
         Ok(jobs.iter().rev().take(limit as usize).cloned().collect())
     }
 
+    async fn recent_of(&self, account: i64, limit: u32) -> Result<Vec<Job>, PortError> {
+        let jobs = self.jobs.lock().unwrap();
+        Ok(jobs
+            .iter()
+            .rev()
+            .filter(|job| job.account_id == Some(account))
+            .take(limit as usize)
+            .cloned()
+            .collect())
+    }
+
     async fn interrupt_running(&self, at: Timestamp) -> Result<u64, PortError> {
         let mut count = 0;
         for job in self.jobs.lock().unwrap().iter_mut().filter(|j| j.state == JobState::Running) {

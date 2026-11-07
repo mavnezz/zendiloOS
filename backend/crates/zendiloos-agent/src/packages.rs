@@ -123,6 +123,11 @@ impl Packages {
         Ok(Response::Packages { run: Some(run) })
     }
 
+    /// Whether a run of apt goes on now.
+    pub(crate) async fn running(&self) -> bool {
+        self.active().await
+    }
+
     async fn active(&self) -> bool {
         zendiloos_exec::run(&self.systemctl, ["is-active", "--quiet", UNIT], LIMITS)
             .await

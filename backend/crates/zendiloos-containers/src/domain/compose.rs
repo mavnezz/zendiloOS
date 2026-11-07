@@ -189,7 +189,30 @@ pub fn file_reads(text: &str) -> Vec<Risk> {
             }
         }
     }
+    // Elsewhere too (an anchor merged into services, flow style): named
+    // without a service, once.
+    for setting in ["env_file", "extends"] {
+        let named =
+            found.iter().any(|risk| matches!(risk, Risk::FromShare { setting: s, .. } if s == setting));
+        if !named && text.lines().any(|line| has_key(line, setting)) {
+            found.push(Risk::FromShare { service: String::new(), setting: setting.to_owned() });
+        }
+    }
     found
+}
+
+/// Whether `line` (outside a comment) sets `key`, in block or flow style.
+fn has_key(line: &str, key: &str) -> bool {
+    let line = line.split(" #").next().unwrap_or_default();
+    if line.trim_start().starts_with('#') {
+        return false;
+    }
+    line.match_indices(key).any(|(at, _)| {
+        let before = line[..at].trim_end_matches(['"', '\'']);
+        let after = line[at + key.len()..].trim_start_matches(['"', '\'']).trim_start();
+        let starts = before.is_empty() || before.ends_with([' ', '{', ',', '-', '\t']);
+        starts && after.starts_with(':')
+    })
 }
 
 /// Settings of a service that cannot reach beyond its container, as
@@ -369,6 +392,14 @@ volumes:
             ]
         );
         assert!(file_reads("services:\n  app:\n    image: nginx\n").is_empty());
+        let anchored =
+            "x-base: &base\n  env_file: shared.env\nservices:\n  app:\n    <<: *base\n    image: nginx\n";
+        let found: Vec<_> =
+            file_reads(anchored).iter().map(|r| (r.service().to_owned(), r.detail())).collect();
+        assert_eq!(found, [(String::new(), Some("env_file".into()))], "from an anchor");
+        let flow = "services: {app: {image: nginx, extends: {file: base.yaml, service: b}}}\n";
+        assert_eq!(file_reads(flow).len(), 1, "flow style");
+        assert!(file_reads("services:\n  app:\n    image: nginx # env_file: no\n").is_empty(), "a comment");
 
         let model = ComposeModel {
             services: vec![ComposeService {

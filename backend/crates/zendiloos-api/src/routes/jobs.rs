@@ -114,14 +114,21 @@ async fn list_jobs(
     ApiQuery(params): ApiQuery<JobsParams>,
 ) -> Result<Json<Vec<Job>>, ApiError> {
     auth.require(Permission::SystemView)?;
-    let jobs = state.jobs.recent(params.limit.unwrap_or(50)).await?;
+    let limit = params.limit.unwrap_or(50);
+    // Their own for those who see only theirs: else the newest of everybody
+    // could hide them.
+    let jobs = if auth.0.can(Permission::StorageView) {
+        state.jobs.recent(limit).await?
+    } else {
+        state.jobs.recent_of(auth.0.account.id.get(), limit).await?
+    };
     Ok(Json(jobs.into_iter().filter(|job| sees_job(&auth.0, job)).map(Job::from).collect()))
 }
 
 /// Everybody sees their own jobs; those who may look at the storage see
 /// all of them, with what tools reported.
 pub(crate) fn sees_job(viewer: &AuthContext, job: &jobs::Job) -> bool {
-    viewer.can(Permission::StorageView) || job.actor.as_deref() == Some(viewer.account.name.as_str())
+    viewer.can(Permission::StorageView) || job.account_id == Some(viewer.account.id.get())
 }
 
 /// Notifications are about pools, disks and shares: for those who may look

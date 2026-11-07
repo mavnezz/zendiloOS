@@ -40,7 +40,7 @@ use zendiloos_infra::sqlite::{
 };
 use zendiloos_infra::updates::GitHubReleases;
 use zendiloos_jobs::Jobs;
-use zendiloos_kernel::{AuditLog, RequestContext};
+use zendiloos_kernel::{AllWork, AuditLog, RequestContext};
 use zendiloos_network::application::NetworkUseCases;
 use zendiloos_notify::Notifier;
 use zendiloos_notify::channels::Channels;
@@ -110,11 +110,29 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     if interrupted > 0 {
         tracing::warn!(interrupted, "jobs of the previous run were interrupted");
     }
+    let notifier = Notifier::new(Arc::new(SqliteNotifications::new(database.clone())), Arc::new(SystemClock));
+    let updates = Updates::new(
+        UpdatesPorts {
+            releases: Arc::new(GitHubReleases::new(
+                &config.updates.api,
+                &config.updates.repository,
+                config.update_dir(),
+            )),
+            host: Arc::new(AgentUpdates::new(agent.clone())),
+            store: Arc::new(SqliteSystemUpdates::new(database.clone())),
+            notifier: notifier.clone(),
+            work: Arc::new(jobs.clone()),
+            audit: audit.clone(),
+            clock: Arc::new(SystemClock),
+        },
+        zendiloos_kernel::VERSION,
+    );
     let system = SystemUseCases::new(SystemPorts {
         info: Arc::new(HostSystemInfo),
         metrics: Arc::new(metrics),
         power: Arc::new(AgentPowerControl::new(agent.clone())),
-        work: Arc::new(jobs.clone()),
+        // A reboot waits for jobs and for an update being installed.
+        work: Arc::new(AllWork(vec![Arc::new(jobs.clone()), Arc::new(updates.clone())])),
         time: Arc::new(AgentTime::new(agent.clone())),
         ssh: Arc::new(AgentSsh::new(agent.clone())),
         listening: Arc::new(ProcListening::default()),
@@ -124,7 +142,6 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         audit_reader: Arc::new(SqliteAuditLog::new(database.clone())),
         clock: Arc::new(SystemClock),
     });
-    let notifier = Notifier::new(Arc::new(SqliteNotifications::new(database.clone())), Arc::new(SystemClock));
     // Notifications also go out by email and to webhooks, named after the host.
     let host_name = std::fs::read_to_string("/proc/sys/kernel/hostname")
         .map(|name| name.trim().to_owned())
@@ -246,22 +263,6 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     });
     let container_sampler = spawn_container_sampler(containers.clone());
     let image_updates = spawn_image_updates(containers.clone());
-    let updates = Updates::new(
-        UpdatesPorts {
-            releases: Arc::new(GitHubReleases::new(
-                &config.updates.api,
-                &config.updates.repository,
-                config.update_dir(),
-            )),
-            host: Arc::new(AgentUpdates::new(agent.clone())),
-            store: Arc::new(SqliteSystemUpdates::new(database.clone())),
-            notifier: notifier.clone(),
-            work: Arc::new(jobs.clone()),
-            audit: audit.clone(),
-            clock: Arc::new(SystemClock),
-        },
-        zendiloos_kernel::VERSION,
-    );
     let update_checks = spawn_update_checks(updates.clone());
 
     let snapshots = spawn_snapshot_schedules(sharing.clone());

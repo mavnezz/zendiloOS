@@ -465,7 +465,9 @@ impl SharingUseCases {
         let _changes = self.changes.lock().await;
         let mut share = self.ports.shares.find(id).await?.ok_or(SharingError::ShareNotFound)?;
         let names = self.ports.directory.names().await?;
-        let mut follow_up = None;
+        // Everything is checked before anything changes: a change refused
+        // halfway would leave the share's folder with rules nobody recorded.
+        let mut access_change = None;
         if let Some(access) = changes.access
             && access != share.access
         {
@@ -475,10 +477,9 @@ impl SharingUseCases {
             let before = acl(&share.access, &names, share.id, &apps);
             let removed: Vec<Principal> =
                 before.into_iter().map(|(p, _)| p).filter(|p| !now.iter().any(|(q, _)| q == p)).collect();
-            self.ports.host.set_access(share.volume, &share.name, &now, &removed, false, request).await?;
-            share.access = access;
-            follow_up = Some((now, removed));
+            access_change = Some((access, now, removed));
         }
+        let mut settings_change = None;
         if let Some(settings) = changes.settings
             && settings != share.settings
         {
@@ -491,10 +492,35 @@ impl SharingUseCases {
                 .find(|u| u.pool == share.pool && u.name == share.name)
                 .map_or(0, |u| u.used_bytes);
             settings.check_against(used)?;
-            self.ports
-                .host
-                .set_properties(&share.pool, share.volume, &share.name, &settings, request)
-                .await?;
+            settings_change = Some(settings);
+        }
+        // Then the host: the dataset's properties, undone if the folder's
+        // rules cannot be set; then the records.
+        if let Some(settings) = &settings_change {
+            self.ports.host.set_properties(&share.pool, share.volume, &share.name, settings, request).await?;
+        }
+        let mut follow_up = None;
+        if let Some((access, now, removed)) = access_change {
+            let set =
+                self.ports.host.set_access(share.volume, &share.name, &now, &removed, false, request).await;
+            if let Err(error) = set {
+                if settings_change.is_some() {
+                    let back = &share.settings;
+                    if let Err(undo) = self
+                        .ports
+                        .host
+                        .set_properties(&share.pool, share.volume, &share.name, back, request)
+                        .await
+                    {
+                        tracing::error!(share = share.name.as_str(), error = %undo, "the share's properties are not as recorded");
+                    }
+                }
+                return Err(error.into());
+            }
+            share.access = access;
+            follow_up = Some((now, removed));
+        }
+        if let Some(settings) = settings_change {
             share.settings = settings;
         }
         if let Some(description) = description {
