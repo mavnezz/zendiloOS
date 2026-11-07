@@ -5,7 +5,8 @@
 #   1. a new port and rules reach sshd; the old port closes
 #   2. a port another program listens on is refused
 #   3. turned off, SSH takes no new connections, open sessions stay
-#   4. turned on from off, with a timer that turns it off again by itself
+#   4. turned on from off, with a timer that turns it off again by itself,
+#      enabled only until the next boot
 #   5. back on port 22 with the system's rules, as before the test
 #
 # While the port moves or SSH is off, new connections fail: the test runs
@@ -116,6 +117,9 @@ say "4. On from off, and off again by itself"
 call PUT /system/ssh '{"enabled":true,"port":2222,"off_after_minutes":1}' \
     | jq -e '.running and .off_at != null' >/dev/null || fail "not on: $(call GET /system/ssh)"
 vm 'systemctl list-timers --all zendiloos-ssh-off.timer' | grep -q zendiloos-ssh-off || fail "no timer"
+# Only until the next boot: a restart drops the timer, so it must drop SSH too.
+[[ $(vm 'systemctl is-enabled ssh') == enabled-runtime ]] || fail "on for a while, yet enabled for good"
+vm 'test ! -e /etc/systemd/system/multi-user.target.wants/ssh.service' || fail "a boot would start SSH"
 wait_for "the timer to turn SSH off" "call GET /system/ssh | jq -e '(.running or .enabled or .off_at) | not'" 100
 vm true || fail "the open session ended"
 

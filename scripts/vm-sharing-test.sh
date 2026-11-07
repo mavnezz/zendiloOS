@@ -12,7 +12,8 @@
 #      the share, and neither `..` nor a symbolic link leads out of it
 #   5. ben loses access: the change reaches existing files in a job and
 #      SMB refuses him
-#   6. deleting over SMB moves files to each writer's own recycle bin
+#   6. deleting over SMB moves files to each writer's own recycle bin;
+#      turned to read only again, ben owns nothing in the share any more
 #   7. the share and the pool are deleted again
 #   8. Windows (WS-Discovery) and macOS (Bonjour) can find the NAS
 #
@@ -268,6 +269,27 @@ smb_ok ben "$ben_pw" 'put ~$report.docx; del ~$report.docx'
 vm "sudo test ! -e '$path/.recycle/ben/~\$report.docx'" || fail "a lock file went to the recycle bin"
 vm "sudo test -f $path/.recycle/ben/ben.txt" || fail "ben's file is not in his recycle bin"
 smb_denied ben "$ben_pw" 'ls .recycle/anna/*'
+
+say "6b. Read only again: what ben owns is no longer his"
+# The kernel lets an owner write whatever a named entry says, and chmod;
+# so a reader owns nothing in the share.
+vm "echo 'ben wrote this' > /tmp/ben-own.txt"
+smb_ok ben "$ben_pw" 'put ben-own.txt'
+[[ $(vm "sudo stat -c '%U' $path/ben-own.txt") == ben ]] || fail "ben's upload is not his"
+update=$(call PATCH "/shares/$share_id" "{\"access\":[{\"kind\":\"account\",\"id\":$anna,\"access\":\"read_write\"},{\"kind\":\"account\",\"id\":$ben,\"access\":\"read\"}]}")
+job_succeeded "$(jq -er .job.id <<<"$update")"
+[[ $(vm "sudo stat -c '%U' $path/ben-own.txt") == root ]] || fail "a reader still owns his file"
+[[ $(vm "sudo stat -c '%U' $path/.recycle/ben") == root ]] || fail "a reader still owns his bin"
+vm "sudo -u ben cat $path/ben-own.txt" >/dev/null || fail "ben cannot read his file any more"
+vm "! sudo -u ben sh -c 'echo more >> $path/ben-own.txt' 2>/dev/null" || fail "a reader wrote his own file"
+vm "! sudo -u ben chmod 666 $path/ben-own.txt 2>/dev/null" || fail "a reader changed his file's mode"
+# Writing again: through his named entry, the file stays root's; a new bin.
+update=$(call PATCH "/shares/$share_id" "{\"access\":[{\"kind\":\"account\",\"id\":$anna,\"access\":\"read_write\"},{\"kind\":\"account\",\"id\":$ben,\"access\":\"read_write\"}]}")
+job_succeeded "$(jq -er .job.id <<<"$update")"
+vm "sudo -u ben sh -c 'echo more >> $path/ben-own.txt'" || fail "a writer cannot write the file"
+[[ $(vm "sudo stat -c '%U' $path/.recycle/ben") == ben ]] || fail "ben got no bin of his own again"
+smb_ok ben "$ben_pw" 'del ben-own.txt'
+vm "sudo test -f $path/.recycle/ben/ben-own.txt" || fail "ben's deletion is not in his new bin"
 
 say "Snapshots are Previous Versions"
 snapshot=$(call POST "/shares/$share_id/snapshots" '{"note":"from the test"}' | jq -er .label) || fail "no snapshot"
