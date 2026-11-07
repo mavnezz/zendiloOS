@@ -1155,6 +1155,7 @@ const de: Messages = {
     },
     pools: 'Pools',
     noPools: 'Noch keine Pools.',
+    underway: 'Läuft; das kann einige Minuten dauern.',
     poolsUnavailable: 'ZFS ist nicht verfügbar, daher können keine Pools angezeigt werden.',
     notManaged: 'Nicht von zendiloOS verwaltet',
     redundancy:

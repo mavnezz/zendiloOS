@@ -296,6 +296,10 @@ describe('the storage app', () => {
       token: 'plan-1',
       confirm: 'fast',
     })
+    // While the pool is made, the section says so instead of staying empty.
+    await settle()
+    expect(page()).toContain(t('storage.underway'))
+    expect(page()).toContain(`${t('jobs.kinds.storage_create_pool')}`)
   })
 
   it('goes back from a plan and shows a refused one', async () => {

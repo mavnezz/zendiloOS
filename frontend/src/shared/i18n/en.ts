@@ -1135,6 +1135,7 @@ const en = {
     },
     pools: 'Pools',
     noPools: 'No pools yet.',
+    underway: 'Under way; this may take a few minutes.',
     poolsUnavailable: 'ZFS is not available, so pools cannot be shown.',
     notManaged: 'Not managed by zendiloOS',
     redundancy: 'no redundancy | survives one disk failure | survives {count} disk failures',

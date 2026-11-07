@@ -1,10 +1,18 @@
 <script setup lang="ts">
-import { CircleStop, Database, Plus, Replace, ShieldCheck, Trash2 } from 'lucide-vue-next'
-import { computed, ref, watch } from 'vue'
+import {
+  CircleStop,
+  Database,
+  LoaderCircle,
+  Plus,
+  Replace,
+  ShieldCheck,
+  Trash2,
+} from 'lucide-vue-next'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import type { Pool, PoolDevice, VdevState } from '@/shared/api/types'
-import { useJobsStore } from '@/shared/jobs/store'
+import { jobTitle, useJobsStore } from '@/shared/jobs/store'
 import { problemMessage } from '@/shared/i18n'
 import {
   formatBytes,
@@ -42,6 +50,14 @@ const replacing = ref<{ pool: string; device: PoolDevice } | null>(null)
 const actionError = ref<string | null>(null)
 
 const managed = (pool: Pool) => props.canManage && pool.volume !== null && pool.volume !== undefined
+
+/** Pool jobs under way: creating takes a minute or more, with nothing to show yet. */
+const POOL_JOBS = ['storage.create_pool', 'storage.destroy_pool', 'storage.replace_disk']
+const underway = computed(() => jobs.running.filter((job) => POOL_JOBS.includes(job.kind)))
+const now = ref(Date.now() / 1000)
+const ticking = setInterval(() => (now.value = Date.now() / 1000), 1000)
+onBeforeUnmount(() => clearInterval(ticking))
+const runningFor = (since: number) => formatDuration(Math.max(0, Math.round(now.value - since)))
 
 // Storage jobs change pools and disks: reload when one finishes.
 watch(
@@ -118,9 +134,25 @@ function scanLine(pool: Pool): string | null {
     <Alert v-if="error" variant="destructive">
       {{ t('storage.poolsUnavailable') }} {{ problemMessage(error) }}
     </Alert>
-    <p v-else-if="!isPending && !pools?.length" class="text-sm text-muted-foreground">
+    <p
+      v-else-if="!isPending && !pools?.length && !underway.length"
+      class="text-sm text-muted-foreground"
+    >
       {{ t('storage.noPools') }}
     </p>
+    <section
+      v-for="job in underway"
+      :key="job.id"
+      class="flex items-center gap-3 rounded-lg border border-dashed p-4 text-sm"
+      aria-live="polite"
+    >
+      <LoaderCircle class="size-4 shrink-0 animate-spin text-primary" />
+      <span class="font-medium">{{ jobTitle(job) }}</span>
+      <span class="flex-1 text-muted-foreground">{{ t('storage.underway') }}</span>
+      <span class="text-xs text-muted-foreground tabular-nums">{{
+        runningFor(job.created_at)
+      }}</span>
+    </section>
     <section v-for="pool in pools" :key="pool.guid" class="grid gap-3 rounded-lg border p-4">
       <header class="flex flex-wrap items-center gap-x-3 gap-y-1">
         <Database class="size-4 shrink-0 text-muted-foreground" />

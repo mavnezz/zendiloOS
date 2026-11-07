@@ -9,6 +9,7 @@ import { Button } from '@/shared/ui/button'
 import { ModalDialog } from '@/shared/ui/dialog'
 import { Input } from '@/shared/ui/input'
 import { Label } from '@/shared/ui/label'
+import { useJobsStore } from '@/shared/jobs/store'
 
 import { destroyPool } from '../api'
 
@@ -17,6 +18,7 @@ const open = defineModel<boolean>('open', { default: false })
 const emit = defineEmits<{ started: [] }>()
 
 const { t } = useI18n()
+const jobs = useJobsStore()
 const confirm = ref('')
 const error = ref<string | null>(null)
 const pending = ref(false)
@@ -30,7 +32,7 @@ async function destroy(): Promise<void> {
   pending.value = true
   error.value = null
   try {
-    await destroyPool(props.pool.name, confirm.value)
+    jobs.update(await destroyPool(props.pool.name, confirm.value))
     emit('started')
     open.value = false
   } catch (failure) {

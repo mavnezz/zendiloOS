@@ -10,6 +10,7 @@ import { Button } from '@/shared/ui/button'
 import { ModalDialog } from '@/shared/ui/dialog'
 import { Input } from '@/shared/ui/input'
 import { Label } from '@/shared/ui/label'
+import { useJobsStore } from '@/shared/jobs/store'
 
 import { createPool, planPool, useDisks } from '../api'
 import { usageLabel } from '../format'
@@ -19,6 +20,7 @@ const open = defineModel<boolean>('open', { default: false })
 const emit = defineEmits<{ started: [] }>()
 
 const { t } = useI18n()
+const jobs = useJobsStore()
 const { data: disks } = useDisks()
 
 const LAYOUTS: { layout: NewPoolLayout; minimum: number; maximum: number }[] = [
@@ -85,7 +87,7 @@ async function create(): Promise<void> {
   pending.value = true
   error.value = null
   try {
-    await createPool(plan.value.token, confirm.value)
+    jobs.update(await createPool(plan.value.token, confirm.value))
     emit('started')
     open.value = false
   } catch (failure) {
