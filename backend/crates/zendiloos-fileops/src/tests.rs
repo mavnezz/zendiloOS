@@ -515,29 +515,6 @@ fn deep_trees_archive_with_one_name_per_entry() {
 }
 
 #[test]
-fn app_folders_are_made_name_by_name_and_never_through_a_link() {
-    let v = Volumes::new();
-    let root = v.share("photos");
-    root.make_folders(&AppFolder::parse("config/cache").unwrap()).unwrap();
-    root.make_folders(&AppFolder::parse("config").unwrap()).unwrap();
-    assert!(v.share_path("photos").join("config/cache").is_dir());
-
-    symlink("/etc", v.share_path("photos").join("evil")).unwrap();
-    let refused = root.make_folders(&AppFolder::parse("evil/inside").unwrap());
-    assert!(matches!(refused, Err(FileError::Invalid(_))), "{refused:?}");
-    assert!(!Path::new("/etc/inside").exists());
-}
-
-#[test]
-fn app_data_needs_its_own_dataset() {
-    let v = Volumes::new();
-    fs::create_dir_all(v.directory.path().join("volume1/@apps/demo")).unwrap();
-    let app = AppName::parse("demo").unwrap();
-    let refused = ShareRoot::open_app_data(v.directory.path(), VolumeNumber::new(1).unwrap(), &app);
-    assert!(matches!(refused, Err(FileError::Invalid(_))), "{refused:?}");
-}
-
-#[test]
 fn a_failed_copy_into_another_file_system_leaves_nothing_behind() {
     // As a copy into another share: the target on another file system.
     let Ok(target) = tempfile::tempdir_in("/dev/shm") else { return };
@@ -644,19 +621,10 @@ fn an_archive_plan_stays_within_its_limits_while_it_reads() {
 }
 
 #[test]
-fn an_apps_data_and_a_personal_folder_are_roots_only_when_mounted() {
+fn a_personal_folder_and_a_snapshot_are_roots_only_when_mounted() {
     let v = Volumes::new();
     let volume = VolumeNumber::new(1).unwrap();
-    let app = AppName::parse("kuma").unwrap();
     let anna = zendiloos_agent_proto::UserName::parse("anna").unwrap();
-    assert!(matches!(ShareRoot::open_app_data(v.directory.path(), volume, &app), Err(FileError::NotFound)));
-    fs::create_dir_all(v.directory.path().join("volume1/@apps/kuma")).unwrap();
-    let unmounted = ShareRoot::open_app_data(v.directory.path(), volume, &app);
-    assert!(
-        matches!(unmounted, Err(FileError::Invalid(why)) if why.contains("not mounted")),
-        "{unmounted:?}"
-    );
-
     assert!(matches!(ShareRoot::open_home(v.directory.path(), volume, &anna), Err(FileError::NotFound)));
     fs::create_dir_all(v.directory.path().join("volume1").join(HOMES_DIRECTORY).join("anna")).unwrap();
     let unmounted = ShareRoot::open_home(v.directory.path(), volume, &anna);
@@ -669,28 +637,6 @@ fn an_apps_data_and_a_personal_folder_are_roots_only_when_mounted() {
     let photos = ShareName::parse("photos").unwrap();
     let snapshot = ShareRoot::open_snapshot(v.directory.path(), volume, &photos, &label);
     assert!(matches!(snapshot, Err(FileError::Invalid(why)) if why.contains("not mounted")), "{snapshot:?}");
-}
-
-#[test]
-fn an_apps_folders_are_made_name_by_name_and_its_root_given_to_it() {
-    let v = Volumes::new();
-    let share = v.share("photos");
-    let (uid, gid) = (rustix::process::getuid().as_raw(), rustix::process::getgid().as_raw());
-
-    share.set_root_owner(uid, gid, 0o750).unwrap();
-    assert_eq!(
-        std::os::unix::fs::PermissionsExt::mode(&fs::metadata(v.share_path("photos")).unwrap().permissions())
-            & 0o777,
-        0o750
-    );
-    share.make_folders(&AppFolder::parse("config/cache").unwrap()).unwrap();
-    share.make_folders(&AppFolder::parse("config/cache").unwrap()).unwrap();
-    assert!(v.share_path("photos").join("config/cache").is_dir(), "made, and again without harm");
-    symlink("/etc", v.share_path("photos").join("escape")).unwrap();
-    let through = share.make_folders(&AppFolder::parse("escape/x").unwrap());
-    assert!(matches!(through, Err(FileError::Invalid(why)) if why.contains("link")), "{through:?}");
-    v.write("photos", "file", "");
-    assert!(share.make_folders(&AppFolder::parse("file/x").unwrap()).is_err(), "no folder");
 }
 
 #[test]

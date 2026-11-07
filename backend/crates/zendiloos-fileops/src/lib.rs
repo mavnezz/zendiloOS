@@ -25,9 +25,9 @@ use rustix::fs::{
 use rustix::io::Errno;
 use rustix::rand::{GetRandomFlags, getrandom};
 use zendiloos_agent_proto::{
-    AppFolder, AppName, DirectoryEntry, EntryKind, FoundEntry, HOMES_DIRECTORY, MAX_DIRECTORY_ENTRIES,
-    MAX_SEARCH_RESULTS, RemovableId, SearchStop, SearchText, ShareName, SharePath, SnapshotLabel, UserName,
-    VolumeNumber, is_file_name,
+    DirectoryEntry, EntryKind, FoundEntry, HOMES_DIRECTORY, MAX_DIRECTORY_ENTRIES, MAX_SEARCH_RESULTS,
+    RemovableId, SearchStop, SearchText, ShareName, SharePath, SnapshotLabel, UserName, VolumeNumber,
+    is_file_name,
 };
 
 mod archive;
@@ -37,9 +37,6 @@ pub use archive::{ArchivePlan, MAX_ARCHIVE_ENTRIES, MAX_ARCHIVE_NAME_BYTES};
 pub use stream::{PIECES_IN_FLIGHT, Piece, Sent, Taken, copy_through, settle};
 
 pub use zendiloos_agent_proto::RECYCLE_DIRECTORY;
-/// Where apps keep their data on a volume: `/volume<N>/@apps/<app>`, each
-/// a dataset of its own. A share's name cannot start with `@`.
-pub const APPS_DIRECTORY: &str = "@apps";
 /// Uploads are written to hidden files with this prefix, then renamed.
 pub const UPLOAD_PREFIX: &str = ".zendiloos-upload-";
 /// Deepest directory nesting copied or removed.
@@ -410,21 +407,6 @@ impl ShareRoot {
         Ok(Self { directory, file_system: device(&stat), inode: inode(&stat) })
     }
 
-    /// An app's data folder, `<volumes>/volume<N>/@apps/<app>`, as a root:
-    /// only with the app's own dataset mounted there.
-    pub fn open_app_data(volumes: &Path, volume: VolumeNumber, app: &AppName) -> Result<Self, FileError> {
-        let flags = OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-        let base = open(volumes, flags, Mode::empty())?;
-        let volume_directory = openat(&base, format!("volume{}", volume.get()), flags, Mode::empty())?;
-        let apps = openat(&volume_directory, APPS_DIRECTORY, flags, Mode::empty())?;
-        let directory = openat(&apps, app.as_str(), flags, Mode::empty())?;
-        let stat = fstat(&directory)?;
-        if device(&stat) == device(&fstat(&apps)?) {
-            return Err(FileError::Invalid("the app's dataset is not mounted"));
-        }
-        Ok(Self { directory, file_system: device(&stat), inode: inode(&stat) })
-    }
-
     /// The personal folder of `user`, `<volumes>/volume<N>/@homes/<user>`,
     /// as a root: only with the homes' dataset mounted at `@homes`, and only
     /// a folder in that dataset itself.
@@ -457,40 +439,6 @@ impl ShareRoot {
             return Err(FileError::Invalid("the drive is not mounted"));
         }
         Ok(Self { directory, file_system: device(&stat), inode: inode(&stat) })
-    }
-
-    /// Gives the root directory to `uid:gid` with `mode`. Needs the right
-    /// to change owners (root).
-    pub fn set_root_owner(&self, uid: u32, gid: u32, mode: u32) -> Result<(), FileError> {
-        let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-        let root = openat(&self.directory, ".", flags, Mode::empty())?;
-        rustix::fs::fchown(
-            &root,
-            Some(rustix::fs::Uid::from_raw(uid)),
-            Some(rustix::fs::Gid::from_raw(gid)),
-        )?;
-        rustix::fs::fchmod(&root, Mode::from_raw_mode(mode))?;
-        Ok(())
-    }
-
-    /// Makes `folder` and the folders on its way, name by name: a link or
-    /// another file system on the way is refused, never followed.
-    pub fn make_folders(&self, folder: &AppFolder) -> Result<(), FileError> {
-        let flags = OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-        let mut current = openat(&self.directory, ".", flags, Mode::empty())?;
-        for name in folder.names() {
-            match mkdirat(&current, name, Mode::from_raw_mode(0o755)) {
-                Ok(()) | Err(Errno::EXIST) => {}
-                Err(error) => return Err(error.into()),
-            }
-            let next = openat(&current, name, flags, Mode::empty())
-                .map_err(|_| FileError::Invalid("a folder of the app is a link or no folder"))?;
-            if device(&fstat(&next)?) != self.file_system {
-                return Err(FileError::Invalid("a file system is mounted inside"));
-            }
-            current = next;
-        }
-        Ok(())
     }
 
     fn same_as(&self, other: &ShareRoot) -> bool {
