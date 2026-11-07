@@ -16,6 +16,21 @@ if (typeof globalThis.ResizeObserver === 'undefined') {
   } as unknown as typeof ResizeObserver
 }
 
+/** What the screen is like for `matchMedia`: a phone when `compact`. */
+export const screen = { compact: false, dark: false }
+
+// jsdom has no matchMedia either.
+window.matchMedia = ((query: string) => ({
+  matches: query.includes('max-width') ? screen.compact : query.includes('dark') ? screen.dark : false,
+  media: query,
+  onchange: null,
+  addEventListener: () => undefined,
+  removeEventListener: () => undefined,
+  addListener: () => undefined,
+  removeListener: () => undefined,
+  dispatchEvent: () => false,
+})) as unknown as typeof window.matchMedia
+
 // Each test's components go after it, then whatever is left in the
 // document (hooks after a test run last registered first).
 afterEach(() => {
