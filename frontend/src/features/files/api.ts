@@ -2,7 +2,7 @@ import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/vue-query'
 import { computed, type Ref, ref } from 'vue'
 
 import { ApiProblem, api, csrfToken, unwrap } from '@/shared/api/client'
-import type { Favourite, Folder, Job, TransferRequest } from '@/shared/api/types'
+import type { Favourite, Folder, Job, SearchResults, TransferRequest } from '@/shared/api/types'
 
 import { isDrive, type Place } from './lib/location'
 
@@ -36,6 +36,62 @@ export function listFolder(
     : unwrap(
         api.GET('/api/v1/files/shares/{id}/folder', { params: { path: { id: place }, query } }),
       )
+}
+
+/**
+ * Names containing `text` in the folder `path` of a place and below it, as
+ * the server finds them (at most 500, within a few seconds); `signal`
+ * calls it off.
+ */
+export function searchFolder(
+  place: Place,
+  search: { path: string; text: string; hidden: boolean; snapshot: string | null },
+  signal?: AbortSignal,
+): Promise<SearchResults> {
+  const query = {
+    path: search.path,
+    text: search.text,
+    ...(search.hidden ? { hidden: true } : {}),
+    ...(search.snapshot ? { snapshot: search.snapshot } : {}),
+  }
+  return isDrive(place)
+    ? unwrap(
+        api.GET('/api/v1/files/removable/{drive}/search', {
+          params: { path: { drive: place }, query },
+          signal,
+        }),
+      )
+    : unwrap(
+        api.GET('/api/v1/files/shares/{id}/search', {
+          params: { path: { id: place }, query },
+          signal,
+        }),
+      )
+}
+
+/**
+ * The server's search of the folder shown, while `text` is not empty; a
+ * search overtaken by another (or left) is called off.
+ */
+export function useFolderSearch(
+  place: Ref<Place | null>,
+  path: Ref<string>,
+  snapshot: Ref<string | null>,
+  text: Ref<string>,
+  hidden: Ref<boolean>,
+) {
+  return useQuery({
+    queryKey: ['files', 'search', place, path, snapshot, text, hidden],
+    queryFn: ({ signal }) =>
+      searchFolder(
+        place.value ?? 0,
+        { path: path.value, text: text.value, hidden: hidden.value, snapshot: snapshot.value },
+        signal,
+      ),
+    enabled: computed(() => place.value !== null && text.value !== ''),
+    retry: false,
+    staleTime: 10_000,
+  })
 }
 
 /** How often the drives are looked at while the explorer is shown. */

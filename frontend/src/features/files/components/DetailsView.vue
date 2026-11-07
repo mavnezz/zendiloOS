@@ -22,8 +22,10 @@ const props = defineProps<{
   selected: Set<string>
   sort: { key: SortKey; descending: boolean }
   typeOf: (item: Item) => string
-  /** Where each entry was deleted from: the recycle bin view. */
+  /** Where each entry was deleted from (the recycle bin view), or is (a search's findings). */
   showOrigin: boolean
+  /** The heading of that column. */
+  originLabel?: string
 }>()
 const emit = defineEmits<{
   sort: [key: SortKey]
@@ -102,7 +104,7 @@ function pointerUp(item: Item, event: PointerEvent): void {
           </button>
         </th>
         <th v-if="showOrigin" class="hidden p-2 font-medium @xl:table-cell">
-          {{ t('explorer.columns.origin') }}
+          {{ originLabel ?? t('explorer.columns.origin') }}
         </th>
       </tr>
     </thead>

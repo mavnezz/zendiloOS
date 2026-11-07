@@ -1785,7 +1785,18 @@ const de: Messages = {
     entries: 'Einträge',
     back: 'Zurück',
     forward: 'Vor',
-    search: 'In diesem Ordner suchen',
+    search: {
+      placeholder: 'In diesem Ordner suchen',
+      busy: 'Suche nach „{text}“ in diesem Ordner und darunter …',
+      failed: 'Die Suche ist fehlgeschlagen: {problem}',
+      found:
+        'Nichts heißt wie „{text}“ unter diesem Ordner | Ein Eintrag heißt wie „{text}“ unter diesem Ordner | {count} Einträge heißen wie „{text}“ unter diesem Ordner',
+      stoppedResults: 'Die ersten {count} Treffer; grenze die Suche ein, um den Rest zu sehen.',
+      stoppedTime:
+        'Die Suche hat zu lange gedauert; das hat sie bis dahin gefunden. | Die Suche hat zu lange gedauert; diese {count} hat sie bis dahin gefunden.',
+      nothing: 'Unter diesem Ordner nichts gefunden.',
+      clear: 'Suche löschen',
+    },
     volume: 'Volume {n} ({pool})',
     expand: 'Ordner in {name} zeigen',
     collapse: 'Ordner in {name} verbergen',
@@ -1810,6 +1821,7 @@ const de: Messages = {
       type: 'Typ',
       size: 'Größe',
       origin: 'Gelöscht aus',
+      folder: 'Im Ordner',
     },
     types: {
       folder: 'Ordner',
@@ -1823,6 +1835,7 @@ const de: Messages = {
     },
     actions: {
       open: 'Öffnen',
+      openLocation: 'Seinen Ordner öffnen',
       download: 'Herunterladen',
       newFolder: 'Neuer Ordner',
       upload: 'Hochladen',

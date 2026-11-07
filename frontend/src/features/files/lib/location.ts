@@ -23,8 +23,11 @@ export type Location =
   | { kind: 'volume'; volume: number }
   /** A folder in a folder on a volume or on a drive (`share`), or in the personal one. */
   | { kind: 'folder'; share: Place; path: string; snapshot: string | null }
-  /** The signed-in person's recycle bins, of every folder, together. */
-  | { kind: 'bin' }
+  /**
+   * The signed-in person's recycle bins: of every folder together, or with
+   * `share` the person's bin of that folder, `path` a folder inside it.
+   */
+  | { kind: 'bin'; share?: Place; path?: string }
 
 export function folderAt(share: Place, path = '', snapshot: string | null = null): Location {
   return { kind: 'folder', share, path, snapshot }
@@ -34,6 +37,9 @@ export function sameLocation(a: Location, b: Location): boolean {
   if (a.kind === 'volume' && b.kind === 'volume') return a.volume === b.volume
   if (a.kind === 'folder' && b.kind === 'folder') {
     return a.share === b.share && a.path === b.path && a.snapshot === b.snapshot
+  }
+  if (a.kind === 'bin' && b.kind === 'bin') {
+    return a.share === b.share && (a.path ?? '') === (b.path ?? '')
   }
   return a.kind === b.kind
 }
@@ -55,6 +61,13 @@ export function ownBin(user: string | undefined): string | null {
 
 export function inBin(path: string): boolean {
   return path.split('/')[0] === RECYCLE_BIN
+}
+
+/** `path` inside the person's own bin `bin`, if it is in there: `.recycle/anna/a/b` → `a/b`. */
+export function withinBin(bin: string | null, path: string): string | null {
+  if (bin === null) return null
+  if (path === bin) return ''
+  return path.startsWith(`${bin}/`) ? path.slice(bin.length + 1) : null
 }
 
 /** Back and forward, as a browser has them. */

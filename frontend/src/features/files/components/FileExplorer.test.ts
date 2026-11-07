@@ -354,6 +354,64 @@ describe('browsing', () => {
   })
 })
 
+describe('searching', () => {
+  /** Types `text` and waits until the NAS is asked. */
+  async function search(text: string): Promise<void> {
+    await type('input[type="search"]', text)
+    await new Promise((resolve) => setTimeout(resolve, 350))
+    await settle()
+  }
+  function found(path: string) {
+    const name = path.split('/').pop()!
+    return { path, ...entry(name, name.includes('.') ? 'file' : 'directory') }
+  }
+
+  it('looks below the folder on the NAS and opens what it found where it is', async () => {
+    serve()
+    on('GET', '/api/v1/files/shares/1/search', ({ query }) => ({
+      path: query.get('path'),
+      entries:
+        query.get('text') === 'many'
+          ? [found('Album/c.png')]
+          : [found('Album/beach.jpg'), found('Album/2024/Beach'), found('a.jpg')],
+      stopped: query.get('text') === 'many' ? 'results' : null,
+    }))
+    await show()
+    await goTo('photos')
+
+    await search('beach')
+    const asked = callsTo('GET', '/api/v1/files/shares/1/search').at(-1)!.query
+    expect([asked.get('path'), asked.get('text'), asked.get('hidden')]).toEqual(['', 'beach', null])
+    expect(names()).toEqual(['Beach', 'a.jpg', 'beach.jpg'])
+    expect(page()).toContain('In folder')
+    expect(page()).toContain('3 entries named like “beach” below this folder')
+    expect(row('beach.jpg').textContent).toContain('Album')
+
+    await fire(row('beach.jpg'), 'click')
+    await menu(row('beach.jpg'), 'Open its folder')
+    expect(callsTo('GET', '/api/v1/files/shares/1/folder').at(-1)!.query.get('path')).toBe('Album')
+    expect((document.body.querySelector('input[type="search"]') as HTMLInputElement).value).toBe('')
+
+    await press('Show hidden files')
+    await search('many')
+    const again = callsTo('GET', '/api/v1/files/shares/1/search').at(-1)!.query
+    expect([again.get('path'), again.get('hidden')]).toEqual(['Album', 'true'])
+    expect(page()).toContain('The first 1 found')
+    await click('Clear the search')
+    expect(names()).toContain('c.png')
+  })
+
+  it('says when the search fails, and filters what is shown meanwhile', async () => {
+    serve()
+    on('GET', '/api/v1/files/shares/1/search', () => problem(422, 'invalid_operation'))
+    await show()
+    await goTo('photos')
+    await search('a.j')
+    expect(page()).toContain('The search failed')
+    expect(names()).toEqual(['a.jpg'])
+  })
+})
+
 describe('choosing and acting', () => {
   it('chooses with clicks, Ctrl, Shift and Ctrl+A; the toolbar follows', async () => {
     serve()
@@ -546,6 +604,56 @@ describe('recycle bins and previous versions', () => {
     expect(callsTo('POST', '/api/v1/files/shares/1/delete')[0]!.body).toEqual({
       paths: ['.recycle/anna/old.txt'],
     })
+  })
+
+  it('opens folders in a bin, restores and deletes at any depth, and goes back up', async () => {
+    serve()
+    on('GET', '/api/v1/files/shares/0/folder', ({ query }) =>
+      query.get('path') === '.recycle/anna' ? problem(404, 'not_found') : folder('', []),
+    )
+    on('GET', '/api/v1/files/shares/1/folder', ({ query }) => {
+      const path = query.get('path')
+      if (path === '.recycle/anna') return folder(path, [entry('Album', 'directory')])
+      if (path === '.recycle/anna/Album') return folder(path, [entry('2024', 'directory')])
+      if (path === '.recycle/anna/Album/2024') return folder(path, [entry('deep.jpg')])
+      return folder(path ?? '', [])
+    })
+    await show()
+    await goTo('Recycle bin')
+    await fire(row('Album'), 'dblclick')
+    expect(callsTo('GET', '/api/v1/files/shares/1/folder').at(-1)!.query.get('path')).toBe(
+      '.recycle/anna/Album',
+    )
+    await fire(row('2024'), 'dblclick')
+    expect(names()).toEqual(['deep.jpg'])
+    expect(row('deep.jpg').textContent).toContain('photos/Album/2024')
+    const crumbs = document.body.querySelector('[aria-label="Location"]')!.textContent
+    expect(crumbs).toContain('Recycle bin')
+    expect(crumbs).toContain('photos')
+    expect(crumbs).toContain('2024')
+
+    await fire(row('deep.jpg'), 'click')
+    expect(() => tool('Empty the recycle bin')).not.toThrow()
+    expect(tool('Empty the recycle bin').disabled).toBe(true)
+    await use('Restore')
+    expect(callsTo('POST', '/api/v1/files/shares/1/restore')[0]!.body).toEqual({
+      paths: ['.recycle/anna/Album/2024/deep.jpg'],
+    })
+    await fire(row('deep.jpg'), 'click')
+    await use('Delete')
+    await confirm('Delete')
+    expect(callsTo('POST', '/api/v1/files/shares/1/delete')[0]!.body).toEqual({
+      paths: ['.recycle/anna/Album/2024/deep.jpg'],
+    })
+
+    await press('Up one folder')
+    expect(names()).toEqual(['2024'])
+    await press('Up one folder')
+    await press('Up one folder')
+    expect(names()).toEqual(['Album'])
+    expect(document.body.querySelector('[aria-label="Location"]')!.textContent?.trim()).toBe(
+      'Recycle bin',
+    )
   })
 
   it('looks into a snapshot and copies back from it', async () => {

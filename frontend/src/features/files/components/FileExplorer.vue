@@ -11,6 +11,7 @@ import {
   EyeOff,
   FolderOpen,
   FolderPlus,
+  FolderSearch,
   History,
   Info,
   Network,
@@ -26,11 +27,11 @@ import {
   Upload,
   X,
 } from 'lucide-vue-next'
-import { computed, provide, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, provide, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import { ApiProblem, api, unwrap } from '@/shared/api/client'
-import type { FileEntry, Folder } from '@/shared/api/types'
+import type { FileEntry, Folder, FoundFile } from '@/shared/api/types'
 import { problemMessage } from '@/shared/i18n'
 import { useJobsStore } from '@/shared/jobs/store'
 import { formatDateTime } from '@/shared/lib/format'
@@ -55,6 +56,7 @@ import {
   useFileActions,
   useFileVolumes,
   useFolder,
+  useFolderSearch,
   useMyShares,
   useRemovableDrives,
   useSetFavourites,
@@ -83,6 +85,7 @@ import {
   type Place,
   RECYCLE_BIN,
   useHistory,
+  withinBin,
 } from '../lib/location'
 import { EXPLORER, folderItem } from '../lib/tree'
 import { useShareActions, useShares } from '../sharing'
@@ -180,9 +183,20 @@ watch(drives, (list) => {
   if (list.find((d) => d.id === at.share)?.state !== 'mounted') history.replace(startLocation())
 })
 
-// What is shown.
-const shareRef = computed(() => (location.value.kind === 'folder' ? location.value.share : null))
-const pathRef = computed(() => (location.value.kind === 'folder' ? location.value.path : ''))
+// What is shown: a folder, or a folder in one of the person's bins.
+const binShare = computed(() =>
+  location.value.kind === 'bin' && bin.value ? (location.value.share ?? null) : null,
+)
+const shareRef = computed(() =>
+  location.value.kind === 'folder' ? location.value.share : binShare.value,
+)
+const pathRef = computed(() => {
+  const at = location.value
+  if (at.kind === 'folder') return at.path
+  return binShare.value !== null && bin.value && at.kind === 'bin'
+    ? joinPath(bin.value, at.path ?? '')
+    : ''
+})
 const snapshotRef = computed(() =>
   location.value.kind === 'folder' ? location.value.snapshot : null,
 )
@@ -197,6 +211,65 @@ const { data: snapshots } = useShareSnapshots(
 const showHidden = ref(false)
 const search = ref('')
 const sort = ref<{ key: SortKey; descending: boolean }>({ key: 'name', descending: false })
+
+/** Typing pauses this long before the folder is searched on the NAS. */
+const SEARCH_DELAY_MS = 300
+// What is typed filters the entries shown at once; in a folder, the NAS
+// then looks through everything below it, and its findings take their place.
+const searchText = ref('')
+let searchTimer: ReturnType<typeof setTimeout> | undefined
+watch(search, (value) => {
+  clearTimeout(searchTimer)
+  const text = value.trim()
+  if (!text) searchText.value = ''
+  else searchTimer = setTimeout(() => (searchText.value = text), SEARCH_DELAY_MS)
+})
+onBeforeUnmount(() => clearTimeout(searchTimer))
+const searchShare = computed(() => (location.value.kind === 'folder' ? location.value.share : null))
+const found = useFolderSearch(
+  searchShare,
+  pathRef,
+  snapshotRef,
+  computed(() => (location.value.kind === 'folder' ? searchText.value : '')),
+  showHidden,
+)
+/** What the NAS found below the folder shown, while a search is typed. */
+const results = computed(() =>
+  location.value.kind === 'folder' && searchText.value ? found.data.value : undefined,
+)
+const searchError = computed(() =>
+  location.value.kind === 'folder' && searchText.value ? found.error.value : null,
+)
+const searchBusy = computed(
+  () => location.value.kind === 'folder' && searchText.value !== '' && found.isFetching.value,
+)
+
+/** What the search line says: under way, failed, found, or stopped early. */
+const searchStatus = computed(() => {
+  if (searchError.value) {
+    return t('explorer.search.failed', { problem: problemMessage(searchError.value) })
+  }
+  const done = results.value
+  if (!done) return t('explorer.search.busy', { text: searchText.value })
+  const count = done.entries.length
+  if (done.stopped === 'results') return t('explorer.search.stoppedResults', { count })
+  if (done.stopped === 'time') return t('explorer.search.stoppedTime', { count }, count)
+  return t('explorer.search.found', { count, text: searchText.value }, count)
+})
+
+function foundItem(share: Place, entry: FoundFile): Item {
+  return {
+    key: `${share}:${entry.path}`,
+    name: entry.name,
+    kind: entry.kind,
+    size: entry.kind === 'file' ? entry.size : null,
+    modified: entry.modified,
+    unreadable: entry.unreadable,
+    share,
+    path: entry.path,
+    origin: parentPath(entry.path) || folderName(share),
+  }
+}
 
 function entryItem(share: Place, parent: string, entry: FileEntry, origin?: string): Item {
   const path = joinPath(parent, entry.name)
@@ -215,7 +288,7 @@ function entryItem(share: Place, parent: string, entry: FileEntry, origin?: stri
 
 // The recycle bins: the person's own in every folder that has one.
 const binPlaces = computed(() =>
-  location.value.kind === 'bin' && bin.value
+  location.value.kind === 'bin' && location.value.share === undefined && bin.value
     ? (places.value ?? []).filter((p) => p.recycle_bin)
     : [],
 )
@@ -252,6 +325,13 @@ const allItems = computed<Item[]>(() => {
       volumeFolder: { shared: f.shared, access: f.access ?? null },
     }))
   }
+  if (at.kind === 'bin' && at.share !== undefined) {
+    const share = at.share
+    const where = at.path ? `${folderName(share)}/${at.path}` : folderName(share)
+    return (folder.value?.entries ?? []).map((entry) =>
+      entryItem(share, pathRef.value, entry, where),
+    )
+  }
   if (at.kind === 'bin') {
     return binPlaces.value.flatMap((p, index) =>
       (bins.value[index]?.data?.entries ?? []).map((entry) =>
@@ -262,6 +342,14 @@ const allItems = computed<Item[]>(() => {
   return (folder.value?.entries ?? []).map((entry) => entryItem(at.share, at.path, entry))
 })
 const items = computed(() => {
+  const at = location.value
+  if (at.kind === 'folder' && results.value) {
+    return sortItems(
+      results.value.entries.map((entry) => foundItem(at.share, entry)),
+      sort.value.key,
+      sort.value.descending,
+    )
+  }
   const needle = search.value.trim().toLowerCase()
   return sortItems(
     allItems.value
@@ -275,10 +363,13 @@ const items = computed(() => {
 // Choosing entries.
 const selected = ref(new Set<string>())
 let anchor: string | null = null
+/** An entry to choose where the explorer goes next: one a search found, in its folder. */
+let revealing: string | null = null
 watch(location, () => {
-  selected.value = new Set()
+  selected.value = revealing ? new Set([revealing]) : new Set()
+  anchor = revealing
+  revealing = null
   search.value = ''
-  anchor = null
 })
 const chosen = computed(() => items.value.filter((i) => !i.unreadable && selected.value.has(i.key)))
 
@@ -381,11 +472,12 @@ function situation(target: Target): Situation {
     shareFolder ?? (inFolder && !isDrive(at.share) && at.share !== HOME ? at.share : null)
   return {
     kind: at.kind,
+    searching: isHere && results.value !== undefined,
     writable,
     snapshot: inFolder && at.snapshot !== null,
     ownBin: own,
     binToEmpty:
-      (at.kind === 'bin' && allItems.value.length > 0) ||
+      (at.kind === 'bin' && !at.path && allItems.value.length > 0) ||
       (own && isHere && at.path === bin.value && allItems.value.length > 0),
     shareWritable: access === 'read_write',
     canManage: props.canManage === true,
@@ -401,6 +493,7 @@ function situation(target: Target): Situation {
 
 const ICONS: Record<ActionId, MenuAction['icon']> = {
   open: FolderOpen,
+  openLocation: FolderSearch,
   download: Download,
   newFolder: FolderPlus,
   upload: Upload,
@@ -505,7 +598,10 @@ function open(item: Item): void {
   if (item.drive && item.drive.state !== 'mounted') return
   const at = location.value
   const snapshot = at.kind === 'folder' ? at.snapshot : null
-  if (item.kind === 'directory') go(folderAt(item.share, item.path, snapshot))
+  const inside = at.kind === 'bin' ? withinBin(bin.value, item.path) : null
+  if (item.kind === 'directory' && inside !== null)
+    go({ kind: 'bin', share: item.share, path: inside })
+  else if (item.kind === 'directory') go(folderAt(item.share, item.path, snapshot))
   else if (item.kind === 'file' && previewKind(item.name)) {
     previewing.value = { share: item.share, path: item.path, snapshot }
   } else save(downloadUrl(item.share, item.path, snapshot))
@@ -719,6 +815,12 @@ function run(id: ActionId, target: Target): void {
   switch (id) {
     case 'open':
       if (one) open(one)
+      return
+    case 'openLocation':
+      if (one) {
+        revealing = one.key
+        go(folderAt(one.share, parentPath(one.path), at.kind === 'folder' ? at.snapshot : null))
+      }
       return
     case 'download':
       if (!one) return
@@ -964,6 +1066,11 @@ function keydown(event: KeyboardEvent): void {
 
 function up(): void {
   const at = location.value
+  if (at.kind === 'bin') {
+    if (at.share === undefined) return
+    go(at.path ? { kind: 'bin', share: at.share, path: parentPath(at.path) } : { kind: 'bin' })
+    return
+  }
   if (at.kind !== 'folder') return
   if (at.path) go(folderAt(at.share, parentPath(at.path), at.snapshot))
   else {
@@ -974,6 +1081,7 @@ function up(): void {
 
 const canUp = computed(() => {
   const at = location.value
+  if (at.kind === 'bin') return at.share !== undefined
   return (
     at.kind === 'folder' &&
     (at.path !== '' || (at.share !== HOME && volumeOf(at.share) !== undefined))
@@ -982,7 +1090,22 @@ const canUp = computed(() => {
 
 const crumbs = computed<{ label: string; location: Location }[]>(() => {
   const at = location.value
-  if (at.kind === 'bin') return [{ label: t('files.recycleBin'), location: at }]
+  if (at.kind === 'bin') {
+    const crumbsOfBin: { label: string; location: Location }[] = [
+      { label: t('files.recycleBin'), location: { kind: 'bin' } },
+    ]
+    const share = at.share
+    if (share === undefined) return crumbsOfBin
+    crumbsOfBin.push({ label: folderName(share), location: { kind: 'bin', share, path: '' } })
+    const inside = at.path ? at.path.split('/') : []
+    inside.forEach((name, index) => {
+      crumbsOfBin.push({
+        label: name,
+        location: { kind: 'bin', share, path: inside.slice(0, index + 1).join('/') },
+      })
+    })
+    return crumbsOfBin
+  }
   if (at.kind === 'volume') {
     const volume = volumes.value?.find((v) => v.volume === at.volume)
     return [
@@ -1017,13 +1140,14 @@ const snapshotTaken = computed(() => {
 
 const binEmpty = computed(
   () =>
-    location.value.kind === 'folder' &&
-    inBin(location.value.path) &&
+    ((location.value.kind === 'folder' && inBin(location.value.path)) || binShare.value !== null) &&
     folderError.value instanceof ApiProblem &&
     folderError.value.status === 404,
 )
 const viewError = computed(() => {
-  if (location.value.kind === 'folder') return binEmpty.value ? null : folderError.value
+  if (location.value.kind === 'folder' || binShare.value !== null) {
+    return binEmpty.value ? null : folderError.value
+  }
   if (location.value.kind === 'bin') return bins.value.find((q) => q.error)?.error ?? null
   return volumesError.value
 })
@@ -1149,8 +1273,9 @@ provide(EXPLORER, {
             v-model="search"
             type="search"
             class="h-8 w-44 rounded-md border bg-background pr-2 pl-8 text-sm"
-            :placeholder="t('explorer.search')"
-            :aria-label="t('explorer.search')"
+            :placeholder="t('explorer.search.placeholder')"
+            :aria-label="t('explorer.search.placeholder')"
+            @keydown.escape="search = ''"
           />
         </label>
         <Button
@@ -1184,6 +1309,17 @@ provide(EXPLORER, {
         }}</Button>
       </div>
       <div
+        v-if="location.kind === 'folder' && searchText"
+        class="flex items-center gap-2 border-b px-3 py-1.5 text-xs text-muted-foreground"
+        role="status"
+      >
+        <FolderSearch class="size-4 shrink-0" />
+        <span class="flex-1">{{ searchStatus }}</span>
+        <Button size="sm" variant="ghost" class="h-7" @click="search = ''">{{
+          t('explorer.search.clear')
+        }}</Button>
+      </div>
+      <div
         v-if="clipboard"
         class="flex items-center gap-2 border-b px-3 py-1.5 text-xs text-muted-foreground"
       >
@@ -1210,7 +1346,7 @@ provide(EXPLORER, {
         <div
           class="relative min-h-0 flex-1 overflow-auto outline-none"
           tabindex="0"
-          :aria-busy="isFetching"
+          :aria-busy="isFetching || searchBusy"
           :aria-label="t('explorer.entries')"
           @keydown="keydown"
           @contextmenu.capture="aimed = null"
@@ -1245,7 +1381,10 @@ provide(EXPLORER, {
               :selected="selected"
               :sort="sort"
               :type-of="typeOf"
-              :show-origin="location.kind === 'bin'"
+              :show-origin="location.kind === 'bin' || results !== undefined"
+              :origin-label="
+                results !== undefined ? t('explorer.columns.folder') : t('explorer.columns.origin')
+              "
               @sort="
                 (key) => (sort = { key, descending: sort.key === key ? !sort.descending : false })
               "
@@ -1259,11 +1398,13 @@ provide(EXPLORER, {
             />
             <p v-if="!items.length" class="p-6 text-sm text-muted-foreground">
               {{
-                location.kind === 'bin' || (location.kind === 'folder' && inBin(location.path))
-                  ? t('explorer.binEmpty')
-                  : location.kind === 'volume'
-                    ? t('explorer.volumeEmpty')
-                    : t('files.empty')
+                results !== undefined
+                  ? t('explorer.search.nothing')
+                  : location.kind === 'bin' || (location.kind === 'folder' && inBin(location.path))
+                    ? t('explorer.binEmpty')
+                    : location.kind === 'volume'
+                      ? t('explorer.volumeEmpty')
+                      : t('files.empty')
               }}
             </p>
             <p

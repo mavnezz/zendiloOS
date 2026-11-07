@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest'
 
 import { actionsFor, extension, type Item, type Situation, shortcut, sortItems } from './actions'
-import { folderAt, inBin, ownBin, parentPath, sameLocation, useHistory } from './location'
+import {
+  folderAt,
+  inBin,
+  ownBin,
+  parentPath,
+  sameLocation,
+  useHistory,
+  withinBin,
+} from './location'
 
 function item(name: string, extra: Partial<Item> = {}): Item {
   return {
@@ -20,6 +28,7 @@ function item(name: string, extra: Partial<Item> = {}): Item {
 function situation(extra: Partial<Situation> = {}): Situation {
   return {
     kind: 'folder',
+    searching: false,
     writable: true,
     snapshot: false,
     ownBin: false,
@@ -55,6 +64,12 @@ describe('the actions', () => {
     expect(ids(situation({ kind: 'volume' }))).not.toContain('newFolder')
     expect(ids(situation({ kind: 'volume', canManage: true }))).toContain('newFolder')
     expect(ids(situation({ canManage: true, shareTarget: { shared: true } }))).toContain('share')
+    expect(ids(situation())).not.toContain('openLocation')
+    expect(ids(situation({ searching: true }))).toContain('openLocation')
+    expect(enabled(situation({ searching: true }))).not.toContain('openLocation')
+    expect(enabled(situation({ searching: true, items: [item('a/b.txt')] }))).toContain(
+      'openLocation',
+    )
   })
 
   it('are enabled for what is chosen', () => {
@@ -163,6 +178,15 @@ describe('locations', () => {
     expect(sameLocation(folderAt(1, 'a'), folderAt(1, 'a', 'snap'))).toBe(false)
     expect(sameLocation({ kind: 'volume', volume: 1 }, { kind: 'volume', volume: 2 })).toBe(false)
     expect(sameLocation({ kind: 'bin' }, { kind: 'bin' })).toBe(true)
+    expect(sameLocation({ kind: 'bin' }, { kind: 'bin', share: 1, path: '' })).toBe(false)
+    expect(sameLocation({ kind: 'bin', share: 1 }, { kind: 'bin', share: 1, path: '' })).toBe(true)
+    expect(sameLocation({ kind: 'bin', share: 1, path: 'a' }, { kind: 'bin', share: 1 })).toBe(
+      false,
+    )
+    expect(withinBin('.recycle/anna', '.recycle/anna/a/b')).toBe('a/b')
+    expect(withinBin('.recycle/anna', '.recycle/anna')).toBe('')
+    expect(withinBin('.recycle/anna', '.recycle/annabel/x')).toBeNull()
+    expect(withinBin(null, '.recycle/anna/x')).toBeNull()
     expect(parentPath('a/b')).toBe('a')
     expect(parentPath('a')).toBe('')
     expect(ownBin('anna')).toBe('.recycle/anna')

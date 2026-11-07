@@ -5,6 +5,7 @@ import type { Place } from './location'
 /** Everything the toolbar and the context menu offer, in their order. */
 export const ACTIONS = [
   'open',
+  'openLocation',
   'download',
   'newFolder',
   'upload',
@@ -54,7 +55,7 @@ export interface Item {
     /** Why it is not mounted, if it could not be. */
     problem: string | null
   }
-  /** In the recycle bin view: the folder it was deleted from. */
+  /** In the recycle bin view the folder it was deleted from; found by a search, the folder it is in. */
   origin?: string
 }
 
@@ -74,6 +75,8 @@ export interface EntryInfo {
 /** What the explorer is looking at, and what is chosen there. */
 export interface Situation {
   kind: 'volume' | 'folder' | 'bin'
+  /** What is shown is what a search below the folder found. */
+  searching: boolean
   /** Entries can be made, changed and removed here. */
   writable: boolean
   /** Looking into a snapshot: read only, entries can be copied back. */
@@ -111,6 +114,8 @@ export interface ActionState {
 
 function relevant(id: ActionId, s: Situation): boolean {
   switch (id) {
+    case 'openLocation':
+      return s.searching
     case 'restore':
     case 'emptyBin':
       return s.kind === 'bin' || s.ownBin
@@ -148,6 +153,8 @@ function enabled(id: ActionId, s: Situation): boolean {
   // A drive itself, in the tree: opened while mounted, otherwise only ejected or mounted.
   const drives = s.items.some((item) => item.drive !== undefined)
   switch (id) {
+    case 'openLocation':
+      return one !== undefined
     case 'open':
       return (
         one !== undefined &&

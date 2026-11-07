@@ -1753,7 +1753,18 @@ const en = {
     entries: 'Entries',
     back: 'Back',
     forward: 'Forward',
-    search: 'Search this folder',
+    search: {
+      placeholder: 'Search this folder',
+      busy: 'Looking for “{text}” in this folder and below it …',
+      failed: 'The search failed: {problem}',
+      found:
+        'Nothing named like “{text}” below this folder | One entry named like “{text}” below this folder | {count} entries named like “{text}” below this folder',
+      stoppedResults: 'The first {count} found; narrow the search to see the rest.',
+      stoppedTime:
+        'The search took too long; this is what it found by then. | The search took too long; these {count} are what it found by then.',
+      nothing: 'Nothing found below this folder.',
+      clear: 'Clear the search',
+    },
     volume: 'Volume {n} ({pool})',
     expand: 'Show the folders in {name}',
     collapse: 'Hide the folders in {name}',
@@ -1778,6 +1789,7 @@ const en = {
       type: 'Type',
       size: 'Size',
       origin: 'Deleted from',
+      folder: 'In folder',
     },
     types: {
       folder: 'Folder',
@@ -1791,6 +1803,7 @@ const en = {
     },
     actions: {
       open: 'Open',
+      openLocation: 'Open its folder',
       download: 'Download',
       newFolder: 'New folder',
       upload: 'Upload',

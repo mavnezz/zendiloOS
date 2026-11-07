@@ -694,9 +694,15 @@ rustls with ring and the system's certificate authorities
   volumes (the Shares app of before is part of it): on the left a tree of
   places (the personal folder, the favourites, each volume with its folders
   down to any depth, the removable drives plugged in, and one recycle bin
-  view that gathers the person's bins of every folder), on the right the details
-  view (name, modified, type, size; sorted; chosen with clicks, Ctrl,
-  Shift and Ctrl+A). The toolbar and the context menu (a right click, or a
+  view that gathers the person's bins of every folder, each entry with the
+  folder it was deleted from; folders in it open to any depth, and what is
+  in them is restored or deleted for good from there too), on the right the
+  details view (name, modified, type, size; sorted; chosen with clicks,
+  Ctrl, Shift and Ctrl+A). What is typed into the address bar's search
+  filters what is shown at once; in a folder, the NAS then looks through
+  everything below it (see Search above), and what it found takes its
+  place, each entry with the folder it is in and "Open its folder", which
+  goes there with the entry chosen; Escape or "Clear the search" goes back. The toolbar and the context menu (a right click, or a
   long press on a touch screen, on an entry, on empty space or on a node of
   the tree) offer the same actions, from one list that says which belong
   where the explorer is and which the choice allows: open, download, new
