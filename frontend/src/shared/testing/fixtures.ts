@@ -95,5 +95,12 @@ export function entry(
   kind: FileEntry['kind'] = 'file',
   extra: Partial<FileEntry> = {},
 ): FileEntry {
-  return { name, kind, size: kind === 'file' ? 2048 : 0, modified: 1_700_000_000, ...extra }
+  return {
+    name,
+    kind,
+    size: kind === 'file' ? 2048 : 0,
+    modified: 1_700_000_000,
+    unreadable: false,
+    ...extra,
+  }
 }

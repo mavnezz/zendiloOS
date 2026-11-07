@@ -103,6 +103,7 @@ impl FileHost for AgentFiles {
                         },
                         size: entry.size,
                         modified: Timestamp::from_unix_seconds(entry.modified),
+                        unreadable: entry.unreadable,
                     })
                     .collect(),
                 truncated,
@@ -223,6 +224,8 @@ impl FileHost for AgentFiles {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::ffi::OsStrExt;
+
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use zendiloos_agent_proto::{PoolName, ShareName as ProtoShare, VolumeNumber};
     use zendiloos_sharing::domain::ShareName;
@@ -264,6 +267,16 @@ mod tests {
         let mut names: Vec<_> = listing.entries.iter().map(|e| e.name.as_str()).collect();
         names.sort_unstable();
         assert_eq!(names, ["report (2).txt", "report.txt"]);
+        assert!(listing.entries.iter().all(|e| !e.unreadable));
+        let odd = std::ffi::OsStr::from_bytes(b"odd-\xFF.txt");
+        std::fs::write(root.path().join("volume1/docs").join(odd), "x").unwrap();
+        let listing = files.list("anna", &at(""), &context).await.unwrap();
+        let odd = listing.entries.iter().find(|e| e.name == "odd-\u{FFFD}.txt").unwrap();
+        assert!(odd.unreadable, "flagged on its way through the agent");
+        std::fs::remove_file(
+            root.path().join("volume1/docs").join(std::ffi::OsStr::from_bytes(b"odd-\xFF.txt")),
+        )
+        .unwrap();
         assert!(matches!(files.open("anna", &at("nope"), &context).await, Err(FileHostError::NotFound)));
         assert!(matches!(
             files.move_entry("anna", &at("report.txt"), &at("report (2).txt"), false, &context).await,

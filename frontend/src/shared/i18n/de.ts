@@ -1793,6 +1793,8 @@ const de: Messages = {
     noTrailingDot: 'Ein Name darf nicht auf einen Punkt enden: Windows könnte ihn nicht öffnen.',
     empty: 'Dieser Ordner ist leer.',
     binEmpty: 'Ihr Papierkorb in dieser Freigabe ist leer.',
+    unreadableName:
+      'Dieser Name ist kein gültiger Text und lässt sich hier nicht von anderen Namen unterscheiden. Benennen Sie ihn über SMB oder NFS um, um damit zu arbeiten.',
     truncated: 'Nur die ersten {count} Einträge werden gezeigt.',
     started: {
       copy: '{count} Element wird kopiert | {count} Elemente werden kopiert',

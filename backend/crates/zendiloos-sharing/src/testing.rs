@@ -499,6 +499,7 @@ impl FileHost for Files {
             kind: EntryKind::File,
             size: 3,
             modified: Timestamp::from_unix_seconds(1),
+            unreadable: false,
         };
         Ok(Listing { entries: vec![entry], truncated: false, writable: true })
     }

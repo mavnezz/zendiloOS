@@ -598,7 +598,11 @@ rustls with ring and the system's certificate authorities
   follows a link. New names (uploads, new folders, renames) must not
   contain control characters, begin or end with a space or end with a
   dot, which Windows could not reach; files written over SMB or NFS keep
-  their names and stay reachable. For downloads and uploads the agent passes the opened
+  their names and stay reachable. A name that is not UTF-8 (written in
+  another encoding) is listed as it looks, with replacement characters,
+  and marked: the interface does nothing with it, since a request with
+  that text would reach another entry of exactly that name; it is renamed
+  over SMB or NFS. For downloads and uploads the agent passes the opened
   file back via `SCM_RIGHTS` and `zendiloosd` streams the data; the root
   process never handles file contents. An upload is written to a hidden
   file in the target folder and renamed when complete, so a broken upload

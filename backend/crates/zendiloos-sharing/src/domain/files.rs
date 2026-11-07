@@ -117,10 +117,14 @@ pub enum EntryKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
+    /// For a name that is not UTF-8, only what it looks like.
     pub name: String,
     pub kind: EntryKind,
     pub size: u64,
     pub modified: Timestamp,
+    /// The name is not UTF-8: another entry may look exactly alike, and
+    /// `name` reaches that one. Shown, never acted on.
+    pub unreadable: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

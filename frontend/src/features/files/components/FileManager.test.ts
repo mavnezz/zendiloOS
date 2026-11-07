@@ -200,6 +200,37 @@ describe('browsing', () => {
     expect(page()).not.toContain('selected')
   })
 
+  it('shows a name that is not UTF-8 but offers nothing to do with it', async () => {
+    on('GET', '/api/v1/files/shares/1/folder', () =>
+      folder('', [entry('file-�.bin', 'file', { unreadable: true }), entry('file-�.bin')]),
+    )
+    on('POST', '/api/v1/files/shares/1/delete', () => job(6, 'files.delete'))
+    await show()
+    const boxes = document.body.querySelectorAll('input[aria-label="file-�.bin"]')
+    expect(boxes).toHaveLength(1)
+    expect(page()).toContain('file-�.bin')
+    const marked = document.body.querySelector('[title^="This name is not valid text"]')!
+    expect(marked.textContent).toContain('file-�.bin')
+    expect(marked.querySelector('a, button')).toBeNull()
+    const links = [...document.body.querySelectorAll<HTMLAnchorElement>('a[download]')]
+    expect(links.filter((a) => a.textContent?.includes('file-'))).toHaveLength(1)
+
+    await press('Select all')
+    expect(page()).toContain('1 selected')
+    const highlighted = document.body.querySelectorAll('tr.bg-accent\\/60')
+    expect(highlighted).toHaveLength(1)
+    expect(highlighted[0]!.querySelector('[title]')).toBeNull()
+    await click('Delete')
+    const confirm = [
+      ...document.body.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button'),
+    ].find((b) => b.textContent?.trim() === 'Delete')!
+    confirm.click()
+    await settle()
+    expect(callsTo('POST', '/api/v1/files/shares/1/delete')[0]!.body).toEqual({
+      paths: ['file-�.bin'],
+    })
+  })
+
   it('reads the folder again when a files job ends', async () => {
     await show()
     const before = callsTo('GET', '/api/v1/files/shares/1/folder').length
@@ -346,6 +377,29 @@ describe('the recycle bin', () => {
     await settle()
     expect(callsTo('POST', '/api/v1/files/shares/1/delete')[0]!.body).toEqual({
       paths: ['.recycle/anna/old.txt', '.recycle/anna/older.txt'],
+    })
+  })
+
+  it('leaves out a name that is not UTF-8 when it empties itself', async () => {
+    on('GET', '/api/v1/files/shares/1/folder', ({ query }) =>
+      query.get('path') === '.recycle/anna'
+        ? folder('.recycle/anna', [
+            entry('old�.txt', 'file', { unreadable: true }),
+            entry('old.txt'),
+          ])
+        : folder(''),
+    )
+    on('POST', '/api/v1/files/shares/1/delete', () => job(7, 'files.delete'))
+    await show()
+    await press('Recycle bin')
+    await click('Empty the recycle bin')
+    const confirm = [
+      ...document.body.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button'),
+    ].find((b) => b.textContent?.trim() === 'Empty the recycle bin')!
+    confirm.click()
+    await settle()
+    expect(callsTo('POST', '/api/v1/files/shares/1/delete')[0]!.body).toEqual({
+      paths: ['.recycle/anna/old.txt'],
     })
   })
 

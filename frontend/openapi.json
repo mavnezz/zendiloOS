@@ -9987,7 +9987,8 @@
           "name",
           "kind",
           "size",
-          "modified"
+          "modified",
+          "unreadable"
         ],
         "properties": {
           "kind": {
@@ -10005,6 +10006,10 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          },
+          "unreadable": {
+            "type": "boolean",
+            "description": "The name is not UTF-8: `name` is only what it looks like, another\nentry may have exactly that name, and a request with it reaches that\none. Shown, never acted on; rename it over SMB or NFS."
           }
         }
       },

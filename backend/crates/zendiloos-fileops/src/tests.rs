@@ -563,3 +563,24 @@ fn an_apps_folders_are_made_name_by_name_and_its_root_given_to_it() {
     v.write("photos", "file", "");
     assert!(share.make_folders(&AppFolder::parse("file/x").unwrap()).is_err(), "no folder");
 }
+
+#[test]
+fn a_name_that_is_not_utf8_is_flagged_not_taken_for_another() {
+    use std::os::unix::ffi::OsStrExt;
+    let v = Volumes::new();
+    let root = v.share_path("photos");
+    let raw = root.join(std::ffi::OsStr::from_bytes(b"file-\xFF.txt"));
+    fs::write(&raw, "bytes").unwrap();
+    fs::write(root.join("file-\u{FFFD}.txt"), "text").unwrap();
+
+    let listing = v.share("photos").list(&SharePath::root()).unwrap();
+    assert_eq!(names(&listing), ["file-\u{FFFD}.txt", "file-\u{FFFD}.txt"], "both read alike");
+    let flagged: Vec<bool> = listing.entries.iter().map(|e| e.unreadable).collect();
+    assert_eq!(flagged.iter().filter(|u| **u).count(), 1, "only the one that is not UTF-8: {flagged:?}");
+    assert!(!listing.entries.iter().any(|e| e.unreadable && e.kind != EntryKind::File));
+
+    // Removing by the name shown takes the file that has it, never the other.
+    v.share("photos").remove(&path("file-\u{FFFD}.txt"), None).unwrap();
+    assert_eq!(fs::read_to_string(&raw).unwrap(), "bytes");
+    assert!(!v.exists("photos", "file-\u{FFFD}.txt"));
+}

@@ -1763,6 +1763,8 @@ const en = {
     noTrailingDot: 'A name cannot end with a dot: Windows could not open it.',
     empty: 'This folder is empty.',
     binEmpty: 'Your recycle bin in this share is empty.',
+    unreadableName:
+      'This name is not valid text, so it cannot be told apart from other names here. Rename it over SMB or NFS to work with it.',
     truncated: 'Only the first {count} entries are shown.',
     started: {
       copy: 'Copying {count} item | Copying {count} items',

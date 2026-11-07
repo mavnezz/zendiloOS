@@ -17,6 +17,7 @@ import {
   Scissors,
   Star,
   Trash2,
+  TriangleAlert,
   Upload,
   X,
 } from 'lucide-vue-next'
@@ -138,13 +139,21 @@ const crumbs = computed(() => {
   const names = path.value ? path.value.split('/') : []
   return names.map((name, index) => ({ name, path: names.slice(0, index + 1).join('/') }))
 })
+/**
+ * Entries that can be acted on: a name that is not UTF-8 only looks like
+ * its text, which may be another entry's name exactly.
+ */
+const usable = computed(() => entries.value.filter((entry) => !entry.unreadable))
 const allSelected = computed(
-  () => entries.value.length > 0 && entries.value.every((e) => selected.value.has(e.name)),
+  () => usable.value.length > 0 && usable.value.every((e) => selected.value.has(e.name)),
 )
 const selectedPaths = computed(() => [...selected.value].map((name) => joinPath(path.value, name)))
 const single = computed(() =>
-  selected.value.size === 1 ? entries.value.find((e) => selected.value.has(e.name)) : undefined,
+  selected.value.size === 1 ? usable.value.find((e) => selected.value.has(e.name)) : undefined,
 )
+function isSelected(entry: FileEntry): boolean {
+  return !entry.unreadable && selected.value.has(entry.name)
+}
 
 function open(target: string): void {
   path.value = target
@@ -211,7 +220,7 @@ function toggle(name: string): void {
 }
 
 function toggleAll(): void {
-  selected.value = allSelected.value ? new Set() : new Set(entries.value.map((e) => e.name))
+  selected.value = allSelected.value ? new Set() : new Set(usable.value.map((e) => e.name))
 }
 
 function fail(failure: unknown): void {
@@ -285,7 +294,9 @@ const emptying = ref(false)
 async function emptyRecycleBin(): Promise<void> {
   const bin = ownBin.value
   if (shareId.value === null || !bin) return
-  const paths = (folder.value?.entries ?? []).map((entry) => joinPath(bin, entry.name))
+  const paths = (folder.value?.entries ?? [])
+    .filter((entry) => !entry.unreadable)
+    .map((entry) => joinPath(bin, entry.name))
   if (!paths.length) return
   try {
     await actions.remove(shareId.value, paths.slice(0, 1000))
@@ -733,23 +744,36 @@ function icon(entry: FileEntry) {
               </thead>
               <tbody>
                 <tr
-                  v-for="entry in entries"
-                  :key="entry.name"
+                  v-for="(entry, index) in entries"
+                  :key="entry.unreadable ? `unreadable:${index}` : entry.name"
                   class="border-b last:border-b-0 hover:bg-accent/50"
-                  :class="selected.has(entry.name) ? 'bg-accent/60' : ''"
+                  :class="isSelected(entry) ? 'bg-accent/60' : ''"
                 >
                   <td class="p-2">
                     <input
+                      v-if="!entry.unreadable"
                       type="checkbox"
                       class="size-4 accent-primary"
-                      :checked="selected.has(entry.name)"
+                      :checked="isSelected(entry)"
                       :aria-label="entry.name"
                       @change="toggle(entry.name)"
                     />
                   </td>
                   <td class="max-w-0 p-2">
+                    <span
+                      v-if="entry.unreadable"
+                      class="flex min-w-0 items-center gap-2 text-muted-foreground"
+                      :title="t('files.unreadableName')"
+                    >
+                      <TriangleAlert
+                        class="size-4 shrink-0 text-amber-600 dark:text-amber-400"
+                        aria-hidden="true"
+                      />
+                      <span class="truncate">{{ entry.name }}</span>
+                      <span class="sr-only">{{ t('files.unreadableName') }}</span>
+                    </span>
                     <button
-                      v-if="entry.kind === 'directory'"
+                      v-else-if="entry.kind === 'directory'"
                       type="button"
                       class="flex w-full min-w-0 items-center gap-2 text-left hover:underline"
                       @click="open(joinPath(path, entry.name))"

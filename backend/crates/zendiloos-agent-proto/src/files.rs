@@ -150,12 +150,17 @@ pub enum EntryKind {
 #[serde(deny_unknown_fields)]
 pub struct DirectoryEntry {
     /// Names that are not UTF-8 arrive with replacement characters and
-    /// cannot be addressed.
+    /// cannot be addressed: see `unreadable`.
     pub name: String,
     pub kind: EntryKind,
     pub size: u64,
     /// Last modification, Unix seconds.
     pub modified: i64,
+    /// The name is not UTF-8, so `name` is only what it looks like: another
+    /// entry may have exactly that name, and a request with it reaches that
+    /// one. Shown, never acted on by its name.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unreadable: bool,
 }
 
 #[cfg(test)]
@@ -190,5 +195,22 @@ mod tests {
         assert!(path.starts_with(&SharePath::root()));
         assert!(!path.starts_with(&SharePath::parse("photo").unwrap()));
         assert_eq!(path.to_string(), "/photos/2024/beach.jpg");
+    }
+
+    #[test]
+    fn only_an_unreadable_name_says_so() {
+        let entry = DirectoryEntry {
+            name: "a".into(),
+            kind: EntryKind::File,
+            size: 1,
+            modified: 2,
+            unreadable: false,
+        };
+        let text = serde_json::to_string(&entry).unwrap();
+        assert!(!text.contains("unreadable"), "{text}");
+        assert_eq!(serde_json::from_str::<DirectoryEntry>(&text).unwrap(), entry);
+        let odd = DirectoryEntry { unreadable: true, ..entry };
+        let text = serde_json::to_string(&odd).unwrap();
+        assert_eq!(serde_json::from_str::<DirectoryEntry>(&text).unwrap(), odd);
     }
 }

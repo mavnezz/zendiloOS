@@ -129,6 +129,7 @@ fn entry(name: &[u8], stat: &Stat) -> DirectoryEntry {
         },
         size: u64::try_from(stat.st_size).unwrap_or(0),
         modified: i64::from(stat.st_mtime),
+        unreadable: std::str::from_utf8(name).is_err(),
     }
 }
 

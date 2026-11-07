@@ -142,6 +142,10 @@ pub struct FileEntry {
     pub size: u64,
     /// Last modification, Unix seconds.
     pub modified: i64,
+    /// The name is not UTF-8: `name` is only what it looks like, another
+    /// entry may have exactly that name, and a request with it reaches that
+    /// one. Shown, never acted on; rename it over SMB or NFS.
+    pub unreadable: bool,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -206,6 +210,7 @@ async fn list_folder(
                 },
                 size: entry.size,
                 modified: entry.modified.unix_seconds(),
+                unreadable: entry.unreadable,
             })
             .collect(),
         truncated: listing.truncated,

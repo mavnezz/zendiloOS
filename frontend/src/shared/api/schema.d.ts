@@ -3091,6 +3091,12 @@ export interface components {
             name: string;
             /** Format: int64 */
             size: number;
+            /**
+             * @description The name is not UTF-8: `name` is only what it looks like, another
+             *     entry may have exactly that name, and a request with it reaches that
+             *     one. Shown, never acted on; rename it over SMB or NFS.
+             */
+            unreadable: boolean;
         };
         /** @enum {string} */
         FileKind: "file" | "directory" | "symlink" | "other";
