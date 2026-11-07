@@ -185,9 +185,7 @@ pub(crate) async fn place_unit(
     shares.sort_unstable();
     shares.dedup();
     let content = unit(&paths.agent, owner, &shares);
-    let temporary = path.with_extension("service.new");
-    fs::write(&temporary, content).map_err(|e| OperationError::Write(temporary.clone(), e))?;
-    fs::rename(&temporary, &path).map_err(|e| OperationError::Write(path.clone(), e))?;
+    crate::durable::replace(&path, content.as_bytes())?;
     systemctl(program, &["daemon-reload"]).await?;
     systemctl(program, &["enable", &name]).await
 }

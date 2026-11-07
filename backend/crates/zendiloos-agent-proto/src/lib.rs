@@ -61,6 +61,10 @@ pub use time::{
 };
 pub use web::TlsMinimum;
 
+/// The recycle bin at a share's root: `.recycle/<user>` per user, as
+/// Samba's `vfs_recycle` keeps it.
+pub const RECYCLE_DIRECTORY: &str = ".recycle";
+
 /// Agent and API come from the same release; any difference is refused.
 pub const PROTOCOL_VERSION: u32 = 1;
 /// Largest request the agent reads: room for the largest project's
@@ -974,7 +978,6 @@ impl Request {
         match self {
             Request::CopyEntry { .. }
             | Request::MoveEntry { .. }
-            | Request::RemoveEntry { .. }
             // Planning walks the whole folder.
             | Request::ArchiveFolder { .. }
             // Restarts Docker.
@@ -990,8 +993,17 @@ impl Request {
             | Request::CreatePool { .. }
             | Request::DestroyPool { .. }
             | Request::ReplaceDisk { .. }
-            | Request::DestroyShare { .. } => true,
+            | Request::DestroyShare { .. }
+            // Images fetched, projects brought up or down: up to half an hour.
+            | Request::PullImage { .. }
+            | Request::PruneImages {}
+            | Request::ControlProject { .. } => true,
             Request::SetShareAccess { recursive, .. } => *recursive,
+            // Into the user's recycle bin it is a rename; for good (what is
+            // in the bin already, or without one) it walks the tree.
+            Request::RemoveEntry { location, recycle, .. } => {
+                !*recycle || location.path.names().next() == Some(RECYCLE_DIRECTORY)
+            }
             _ => false,
         }
     }
@@ -1688,7 +1700,10 @@ mod tests {
         };
         assert!(!Request::ListDirectory { user: user(), location: location.clone() }.is_long());
         assert!(!Request::ScrubPool { pool: PoolName::parse("tank").unwrap() }.is_long());
-        assert!(Request::RemoveEntry { user: user(), location, recycle: true }.is_long());
+        let bin = FileLocation { path: SharePath::parse(".recycle/anna/a.txt").unwrap(), ..location.clone() };
+        assert!(!Request::RemoveEntry { user: user(), location: location.clone(), recycle: true }.is_long());
+        assert!(Request::RemoveEntry { user: user(), location: location.clone(), recycle: false }.is_long());
+        assert!(Request::RemoveEntry { user: user(), location: bin, recycle: true }.is_long(), "for good");
         assert!(Request::DestroyPool { name: PoolName::parse("tank").unwrap(), volume }.is_long());
         let access = |recursive| Request::SetShareAccess {
             volume,

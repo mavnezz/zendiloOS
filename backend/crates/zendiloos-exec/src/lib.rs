@@ -192,9 +192,11 @@ where
         .stdin(Stdio::null())
         .stdout(Stdio::from(writer.try_clone().map_err(io_error)?))
         .stderr(Stdio::from(writer))
+        .process_group(0)
         .kill_on_drop(true);
     let mut child =
         spawn(&mut command).await.map_err(|source| ExecError::Spawn { program: name.clone(), source })?;
+    let mut group = Group::of(&child);
     // Only the child may hold the writing end, or reading never ends.
     drop(command);
     let reader = tokio::net::unix::pipe::Receiver::from_owned_fd(std::os::fd::OwnedFd::from(reader))
@@ -206,6 +208,7 @@ where
             return Err(ExecError::OutputTooLarge { program: name.clone(), limit: limits.max_stdout });
         }
         let status = child.wait().await.map_err(io_error)?;
+        group.ended();
         Ok(Output { status, stdout, stderr: String::new() })
     };
     match tokio::time::timeout(limits.timeout, finished).await {
@@ -264,10 +267,13 @@ where
         })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        // Dropping the child (on timeout or error) kills the program.
+        // Dropping the child (on timeout or error) kills the program, and
+        // the group of its own what it started.
+        .process_group(0)
         .kill_on_drop(true);
     let mut child =
         spawn(&mut command).await.map_err(|source| ExecError::Spawn { program: name.clone(), source })?;
+    let mut group = Group::of(&child);
 
     let mut stdin = child.stdin.take();
     let stdout = child.stdout.take().expect("stdout is piped");
@@ -282,17 +288,22 @@ where
             drop(stdin.take());
             Ok::<_, io::Error>(())
         };
-        let (fed, stdout, stderr) =
-            tokio::join!(feed, read_limited(stdout, limits.max_stdout), read_limited(stderr, MAX_STDERR));
-        fed.map_err(io_error)?;
-        let stdout = stdout.map_err(io_error)?;
-        let stderr = stderr.map_err(io_error)?;
-        if stdout.len() > limits.max_stdout {
-            return Err(ExecError::OutputTooLarge { program: name.clone(), limit: limits.max_stdout });
-        }
+        // Output over the limit ends it at once: the program would wait for
+        // its pipe to be read, and the others for the program.
+        let too_large = || ExecError::OutputTooLarge { program: name.clone(), limit: limits.max_stdout };
+        let capped = async {
+            let stdout = read_limited(stdout, limits.max_stdout).await.map_err(io_error)?;
+            if stdout.len() > limits.max_stdout { Err(too_large()) } else { Ok(stdout) }
+        };
+        let (_, stdout, stderr) = tokio::try_join!(async { feed.await.map_err(io_error) }, capped, async {
+            read_draining(stderr, MAX_STDERR).await.map_err(io_error)
+        },)?;
         let status = child.wait().await.map_err(io_error)?;
+        group.ended();
         let mut stderr = String::from_utf8_lossy(&stderr).into_owned();
-        stderr.truncate(MAX_STDERR);
+        // Replacement characters may have made it longer; cut between
+        // characters.
+        stderr.truncate(stderr.floor_char_boundary(MAX_STDERR));
         Ok(Output { status, stdout, stderr })
     };
 
@@ -300,6 +311,41 @@ where
         Ok(result) => result,
         Err(_) => Err(ExecError::Timeout { program: name.clone(), after: limits.timeout }),
     }
+}
+
+/// The process group a program was started in (its own), killed when this
+/// is dropped before the program ended: with the program, what it started.
+struct Group(Option<rustix::process::Pid>);
+
+impl Group {
+    fn of(child: &tokio::process::Child) -> Self {
+        Self(child.id().and_then(|id| rustix::process::Pid::from_raw(id.cast_signed())))
+    }
+
+    /// The program ended: what it left running is its business.
+    fn ended(&mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for Group {
+    fn drop(&mut self) {
+        // Before the child is dropped and reaped, so the group's ID is
+        // still taken and cannot be anybody else's.
+        if let Some(group) = self.0 {
+            let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
+        }
+    }
+}
+
+/// Reads up to `limit` bytes and throws the rest away until the end, so
+/// the program is never kept waiting on its pipe.
+async fn read_draining(reader: impl AsyncRead + Unpin, limit: usize) -> io::Result<Vec<u8>> {
+    let mut reader = reader;
+    let mut buffer = Vec::new();
+    (&mut reader).take(limit as u64).read_to_end(&mut buffer).await?;
+    tokio::io::copy(&mut reader, &mut tokio::io::sink()).await?;
+    Ok(buffer)
 }
 
 /// Reads up to `limit + 1` bytes, so the caller can tell "exactly at the
@@ -317,6 +363,56 @@ mod tests {
     /// Only tests use a shell, to script the behaviour under test.
     fn sh() -> Program {
         Program::new("/bin/sh").unwrap()
+    }
+
+    #[tokio::test]
+    async fn output_over_the_limit_ends_it_at_once() {
+        let started = std::time::Instant::now();
+        let limits = Limits { timeout: Duration::from_secs(20), max_stdout: 1024 };
+        let script = "while :; do echo xxxxxxxxxxxxxxxx; done";
+        let error = run(&sh(), ["-c", script], limits).await.unwrap_err();
+        assert!(matches!(error, ExecError::OutputTooLarge { .. }), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(10), "not after the timeout");
+    }
+
+    #[tokio::test]
+    async fn much_said_on_stderr_does_not_keep_a_program_waiting() {
+        let script = "i=0; while [ $i -lt 4000 ]; do \
+            echo 'a line of complaint that goes on and on and on and on and on' >&2; i=$((i+1)); done; \
+            printf '\\377\\377' >&2; echo done";
+        let limits = Limits { timeout: Duration::from_secs(20), ..Limits::default() };
+        let output = run(&sh(), ["-c", script], limits).await.unwrap();
+        assert_eq!(output.stdout, b"done\n");
+        assert!(
+            output.stderr.len() <= MAX_STDERR && output.stderr.starts_with("a line"),
+            "{}",
+            output.stderr.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_program_killed_takes_what_it_started_along() {
+        let dir = std::env::temp_dir().join(format!("zendiloos-exec-group-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("pid");
+        let script = format!("sleep 30 & echo $! > {}; wait", file.display());
+        let limits = Limits { timeout: Duration::from_millis(500), ..Limits::default() };
+        let error = run(&sh(), ["-c", &script], limits).await.unwrap_err();
+        assert!(matches!(error, ExecError::Timeout { .. }), "{error}");
+        let pid: u32 = std::fs::read_to_string(&file).unwrap().trim().parse().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        let alive = || {
+            std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+                stat.rsplit(')').next().is_some_and(|rest| !rest.trim_start().starts_with('Z'))
+            })
+        };
+        for _ in 0..50 {
+            if !alive() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("what the program started still runs");
     }
 
     #[tokio::test]

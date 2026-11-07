@@ -31,9 +31,7 @@ mod archive;
 
 pub use archive::{ArchivePlan, MAX_ARCHIVE_ENTRIES};
 
-/// The recycle bin at a share's root: `.recycle/<user>` per user, as
-/// Samba's `vfs_recycle` keeps it.
-pub const RECYCLE_DIRECTORY: &str = ".recycle";
+pub use zendiloos_agent_proto::RECYCLE_DIRECTORY;
 /// Where apps keep their data on a volume: `/volume<N>/@apps/<app>`, each
 /// a dataset of its own. A share's name cannot start with `@`.
 pub const APPS_DIRECTORY: &str = "@apps";

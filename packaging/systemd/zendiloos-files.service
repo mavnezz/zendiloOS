@@ -6,8 +6,11 @@ After=zendiloos-files.socket
 
 # Started on demand through zendiloos-files.socket; no [Install] section.
 [Service]
-# Operations under way are seen through when it is asked to stop.
+# Operations under way are seen through when it is asked to stop: only
+# the agent is told to (mixed), not the programs it runs for them, which
+# systemd would otherwise stop at once; what is left at the end is killed.
 TimeoutStopSec=2h
+KillMode=mixed
 ExecStart=/usr/libexec/zendiloos/zendiloos-agent --role files
 
 # The same program as zendiloos-agent, serving only requests about the

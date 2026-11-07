@@ -342,7 +342,10 @@ simple to audit.
 - **Programs** only through `zendiloos-exec`: absolute paths from a fixed
   list in the agent configuration, no shell, arguments as a list, empty
   environment, no stdin except for secrets (passwords never on the command
-  line), timeout, output limit. Currently: `systemctl`, `lsblk`, `smartctl`,
+  line), timeout, output limit (output over it ends the program at once;
+  what it says on stderr past its limit is read and dropped, so it never
+  waits on its pipe), each in a process group of its own, killed whole on a
+  timeout. Currently: `systemctl`, `lsblk`, `smartctl`,
   `zpool`, `zfs`, `sgdisk`, `wipefs`, `udevadm`, `useradd`, `userdel`,
   `groupadd`, `groupdel`, `gpasswd`, `smbpasswd`, `testparm`, `exportfs`,
   `setfacl`.
@@ -672,7 +675,8 @@ rustls with ring and the system's certificate authorities
   never carried out later. The client says how long it waits (`wait_ms`);
   the agent waits for the turn half of that at most, so what was asked has
   time to run and be answered, and refuses what has not started once it is
-  asked to stop. zendiloosd waits two minutes for a quick system request
+  asked to stop; what has started is seen through (`KillMode=mixed`: the
+  programs it runs are not stopped with it, `TimeoutStopSec=2h`). zendiloosd waits two minutes for a quick system request
   and two hours for a long one, ten minutes and a day for files requests
   (copies, moves, permissions of a whole share), so once begun, a change is
   seen through and its outcome reported.

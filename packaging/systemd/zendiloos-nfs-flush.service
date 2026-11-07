@@ -2,6 +2,8 @@
 Description=zendiloOS: make the NFS server release unexported file systems
 Documentation=https://github.com/mavnezz/zendiloOS
 After=nfs-server.service
+# Without the NFS server there is nothing to flush.
+ConditionPathExists=/usr/sbin/exportfs
 
 # Started by zendiloos-agent before it unmounts a share or a volume. The
 # kernel's NFS server keeps its export cache per network namespace, and the

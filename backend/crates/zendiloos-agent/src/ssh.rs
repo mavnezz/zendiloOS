@@ -200,9 +200,7 @@ impl Ssh {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| OperationError::Write(parent.to_owned(), e))?;
         }
-        let temporary = path.with_extension("new");
-        fs::write(&temporary, content).map_err(|e| OperationError::Write(temporary.clone(), e))?;
-        fs::rename(&temporary, path).map_err(|e| OperationError::Write(path.clone(), e))
+        crate::durable::replace(path, content.as_bytes())
     }
 
     async fn run(&self, program: &Program, args: &[&str]) -> Result<(), OperationError> {
