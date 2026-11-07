@@ -173,6 +173,8 @@ call GET "/files/removable/$fat_id/folder" | jq -e '.entries | map(.name) | inde
 # Formatted elsewhere: owned by someone this NAS does not know, for them alone.
 vm "echo secret | sudo tee '$ext4/foreign.txt' >/dev/null && sudo chown 4321:4321 '$ext4/foreign.txt' && sudo chmod 600 '$ext4/foreign.txt'"
 [[ $(call GET "/files/removable/$ext4_id/download?path=foreign.txt") == secret ]] || fail "ext4's foreign file"
+call GET "/files/removable/$ext4_id/search?path=&text=FOREIGN" | jq -e '[.entries[].path] | index("foreign.txt")' >/dev/null \
+    || fail "the search on the drive: $(call GET "/files/removable/$ext4_id/search?path=&text=FOREIGN")"
 # Into the share: the administrator's, with the share's ACL, as an upload.
 job_succeeded "$(call POST "/files/removable/$fat_id/transfer" \
     "{\"mode\":\"copy\",\"paths\":[\"up.txt\"],\"target_share\":$share_id,\"target_path\":\"\"}" | jq -r .id)"

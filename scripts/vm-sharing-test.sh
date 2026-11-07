@@ -211,6 +211,19 @@ jq -e '.entries | map(.name) | index("hello.txt") and index("album")' <<<"$listi
     || fail "ben's listing: $listing"
 [[ $(jq .writable <<<"$listing") == false ]] || fail "ben's folder is writable: $listing"
 [[ $(call_as ben GET "$files/download?path=hello.txt") == 'hello from anna' ]] || fail "ben's download"
+# The search looks below the folder, as each may: case does not matter,
+# links are not followed, bins and hidden names stay out unless asked for.
+vm "sudo ln -sfn /etc $path/album/etc-link && sudo touch $path/.hidden-web-note"
+for who in anna ben; do
+    found=$(call_as "$who" GET "$files/search?path=&text=WEB")
+    jq -e '[.entries[].path] | index("album/from-web.txt")' <<<"$found" >/dev/null || fail "$who's search: $found"
+    jq -e '[.entries[].path] | map(select(startswith(".recycle") or startswith(".hidden") or test("^album/etc-link/"))) | length == 0' \
+        <<<"$found" >/dev/null || fail "$who's search went too far: $found"
+done
+call_as anna GET "$files/search?path=&text=web&hidden=true" | jq -e '[.entries[].path] | index(".hidden-web-note")' >/dev/null \
+    || fail "a hidden name is not found when asked for"
+[[ $(call_as anna GET "$files/search?path=&text=passwd" | jq '.entries | length') == 0 ]] || fail "the search followed a link"
+vm "sudo rm $path/album/etc-link $path/.hidden-web-note"
 # Through nginx: a byte range resumes a download; text may be shown inline,
 # sandboxed, HTML never.
 headers=$(curl -sk -D - -o "$work/part" -b "$work/ben.jar" -H 'Range: bytes=6-' "$api$files/download?path=hello.txt")
