@@ -200,9 +200,9 @@ vm-security-test:
 vm-docker-test:
     scripts/vm-docker-test.sh
 
-# An app given a folder in a share: pinned, safe from links, across a reboot
-vm-app-folders-test:
-    scripts/vm-app-folders-test.sh
+# The App Center in the second VM: an app of the catalog as a project of one's own
+vm-app-center-test:
+    scripts/vm-app-center-test.sh
 
 # Administrators' projects in the VM: what runs is what was confirmed, binds pinned
 vm-project-pins-test:

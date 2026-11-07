@@ -1065,7 +1065,7 @@ stopped; it goes with the app. Before a start the agent also checks that
 the pin is the folder the walk reaches now (same device and inode). A
 folder swapped for a link keeps the running app on the folder it had and
 makes the next start fail with the folder named. Verified in the second
-test VM, across a reboot (`just vm-app-folders-test`).
+test VM, across a reboot, while apps were still installed this way.
 
 ### 4.10 Updates and Debian's packages
 
