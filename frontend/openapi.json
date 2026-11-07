@@ -3458,6 +3458,16 @@
                 }
               }
             }
+          },
+          "422": {
+            "description": "`invalid_input`, `invalid_operation` (also more than 1000 entries)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4048,7 +4058,7 @@
             }
           },
           "422": {
-            "description": "`invalid_input`, `invalid_operation`",
+            "description": "`invalid_input`, `invalid_operation` (also more than 1000 entries)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4135,6 +4145,16 @@
               }
             }
           },
+          "400": {
+            "description": "`bad_request`: the upload did not complete",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "403": {
             "description": "`permission_denied`",
             "content": {
@@ -4157,6 +4177,16 @@
           },
           "409": {
             "description": "`name_taken`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`: no valid name or folder",
             "content": {
               "application/json": {
                 "schema": {

@@ -2,8 +2,9 @@
 
 use std::collections::BTreeMap;
 
+use crate::extract::ApiPath as Path;
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Query, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};

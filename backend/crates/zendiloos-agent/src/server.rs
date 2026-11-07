@@ -23,6 +23,9 @@ const MAX_CONCURRENT: usize = 4;
 /// at once. They have places of their own, so one user's large copies never
 /// keep everyone else from listing, downloading or uploading.
 const MAX_CONCURRENT_LONG: usize = 2;
+/// Changes of whole shares' permissions running at once, beside the long
+/// ones.
+const MAX_CONCURRENT_WALKS: usize = 2;
 
 /// Accepts connections from one account and answers one request each.
 #[derive(Debug, Clone)]
@@ -31,6 +34,9 @@ pub struct Server {
     client_uid: u32,
     permits: Arc<Semaphore>,
     long_permits: Arc<Semaphore>,
+    walk_permits: Arc<Semaphore>,
+    /// One long place per user at a time.
+    users: Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<Semaphore>>>>,
     /// Set once the agent is asked to stop: what has not started yet does
     /// not start any more.
     stopping: Arc<watch::Sender<bool>>,
@@ -43,6 +49,8 @@ impl Server {
             client_uid,
             permits: Arc::new(Semaphore::new(MAX_CONCURRENT)),
             long_permits: Arc::new(Semaphore::new(MAX_CONCURRENT_LONG)),
+            walk_permits: Arc::new(Semaphore::new(MAX_CONCURRENT_WALKS)),
+            users: Arc::default(),
             stopping: Arc::new(watch::channel(false).0),
         }
     }
@@ -108,7 +116,14 @@ impl Server {
             return (error_response(ErrorCode::VersionMismatch, message), None);
         }
 
-        let permits = if envelope.request.is_long() { &self.long_permits } else { &self.permits };
+        let permits = if envelope.request.is_walk() {
+            &self.walk_permits
+        } else if envelope.request.is_long() {
+            &self.long_permits
+        } else {
+            &self.permits
+        };
+        let own = envelope.request.acting_user().map(|user| self.user_place(user.as_str()));
         // The request is read whole, so the connection says nothing more
         // until the client closes it: it gave up (zendiloosd's own timeout)
         // and reported a failure. While the request waits for a place or a
@@ -118,6 +133,12 @@ impl Server {
         let until = envelope.wait_ms.map(|ms| received + Duration::from_millis(ms) / 2);
         let turn = Turn::new(gone, self.stopping.subscribe(), until);
         let work = turn.scope(async {
+            // The user's own place first: a second long request of theirs
+            // waits behind their first, not in a place of everybody's.
+            let _own = match &own {
+                Some(place) => Some(crate::waiting::wait(place.acquire()).await?),
+                None => None,
+            };
             let _permit = crate::waiting::wait(permits.acquire()).await?;
             Ok::<_, crate::operations::OperationError>(
                 self.operations.execute_with_file(&envelope.request).await,
@@ -149,6 +170,11 @@ impl Server {
             _ => tracing::info!(request_id, op, uid, pid, "operation done"),
         }
         (response, file)
+    }
+
+    fn user_place(&self, user: &str) -> Arc<Semaphore> {
+        let mut users = self.users.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        Arc::clone(users.entry(user.to_owned()).or_insert_with(|| Arc::new(Semaphore::new(1))))
     }
 
     /// Nothing that has not started yet starts any more.

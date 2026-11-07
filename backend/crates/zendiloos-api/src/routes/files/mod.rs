@@ -4,9 +4,10 @@
 
 mod download;
 
+use crate::extract::ApiPath as Path;
 use axum::Json;
 use axum::body::{Body, Bytes};
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt;
@@ -400,9 +401,11 @@ pub struct UploadedFile {
     request_body(content = Vec<u8>, content_type = "application/octet-stream"),
     responses(
         (status = CREATED, body = UploadedFile),
+        (status = BAD_REQUEST, body = Problem, description = "`bad_request`: the upload did not complete"),
         (status = CONFLICT, body = Problem, description = "`name_taken`"),
         (status = FORBIDDEN, body = Problem, description = "`permission_denied`"),
         (status = NOT_FOUND, body = Problem, description = "`not_found`"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_input`: no valid name or folder"),
     )
 )]
 async fn upload(
@@ -548,7 +551,7 @@ pub struct TransferRequest {
         (status = ACCEPTED, body = Job),
         (status = FORBIDDEN, body = Problem, description = "`permission_denied`"),
         (status = NOT_FOUND, body = Problem, description = "`not_found`"),
-        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_input`, `invalid_operation`"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_input`, `invalid_operation` (also more than 1000 entries)"),
     )
 )]
 async fn transfer_entries(
@@ -598,6 +601,7 @@ pub struct DeleteEntriesRequest {
         (status = ACCEPTED, body = Job),
         (status = FORBIDDEN, body = Problem, description = "`permission_denied`"),
         (status = NOT_FOUND, body = Problem, description = "`not_found`"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_input`, `invalid_operation` (also more than 1000 entries)"),
     )
 )]
 async fn delete_entries(

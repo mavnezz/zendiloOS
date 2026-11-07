@@ -40,6 +40,21 @@ impl<T: DeserializeOwned, S: Send + Sync> FromRequestParts<S> for ApiQuery<T> {
     }
 }
 
+/// `axum::extract::Path`, but failures (an id that is no number) are
+/// answered as problem details. Routes import it as `Path`.
+pub struct ApiPath<T>(pub T);
+
+impl<T: DeserializeOwned + Send, S: Send + Sync> FromRequestParts<S> for ApiPath<T> {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        match axum::extract::Path::<T>::from_request_parts(parts, state).await {
+            Ok(axum::extract::Path(value)) => Ok(Self(value)),
+            Err(rejection) => Err(ApiError::BadRequest(rejection.body_text())),
+        }
+    }
+}
+
 /// Where the request came from, for audit and throttling.
 pub struct Client(pub RequestContext);
 

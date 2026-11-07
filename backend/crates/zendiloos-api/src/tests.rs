@@ -584,6 +584,15 @@ async fn what_the_person_does_keeps_the_session_alive() {
 }
 
 #[tokio::test]
+async fn a_path_parameter_that_is_no_number_is_a_problem() {
+    let h = Harness::new();
+    let session = h.sign_in("alice", Role::Admin).await;
+    let reply = h.send(empty(with_cookie(get("/api/v1/jobs/abc"), &session))).await;
+    assert_problem(&reply, StatusCode::BAD_REQUEST, "bad_request");
+    assert_eq!(reply.headers[header::CONTENT_TYPE], "application/problem+json");
+}
+
+#[tokio::test]
 async fn responses_carry_a_request_id() {
     let reply = Harness::new().send(empty(get("/api/v1/health"))).await;
     assert_eq!(reply.header("x-request-id").len(), 36, "a UUID");

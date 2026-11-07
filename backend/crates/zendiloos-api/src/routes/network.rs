@@ -1,8 +1,9 @@
 //! How the machine is connected (`system.view`), and changing an
 //! interface's settings with confirmation (`system.manage`).
 
+use crate::extract::ApiPath as Path;
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;

@@ -1016,6 +1016,24 @@ impl Request {
         }
     }
 
+    /// The user a long files request acts as: each has one such place at a
+    /// time, so nobody takes them all.
+    pub fn acting_user(&self) -> Option<&UserName> {
+        match self {
+            Request::CopyEntry { user, .. }
+            | Request::MoveEntry { user, .. }
+            | Request::RemoveEntry { user, .. }
+            | Request::ArchiveFolder { user, .. } => self.is_long().then_some(user),
+            _ => None,
+        }
+    }
+
+    /// An administrator's change of a whole share's permissions: it has
+    /// places of its own, so users' copies never hold it up for hours.
+    pub fn is_walk(&self) -> bool {
+        matches!(self, Request::SetShareAccess { recursive: true, .. })
+    }
+
     pub fn role(&self) -> Role {
         match self {
             Request::SetShareAccess { .. }
@@ -1712,7 +1730,18 @@ mod tests {
         let bin = FileLocation { path: SharePath::parse(".recycle/anna/a.txt").unwrap(), ..location.clone() };
         assert!(!Request::RemoveEntry { user: user(), location: location.clone(), recycle: true }.is_long());
         assert!(Request::RemoveEntry { user: user(), location: location.clone(), recycle: false }.is_long());
-        assert!(Request::RemoveEntry { user: user(), location: bin, recycle: true }.is_long(), "for good");
+        assert!(
+            Request::RemoveEntry { user: user(), location: bin.clone(), recycle: true }.is_long(),
+            "for good"
+        );
+        let removing = Request::RemoveEntry { user: user(), location: bin.clone(), recycle: true };
+        assert_eq!(removing.acting_user(), Some(&user()), "one long place each");
+        let recycling = Request::RemoveEntry {
+            user: user(),
+            location: FileLocation { path: SharePath::parse("a.txt").unwrap(), ..bin },
+            recycle: true,
+        };
+        assert_eq!(recycling.acting_user(), None, "a quick one takes no long place");
         assert!(Request::DestroyPool { name: PoolName::parse("tank").unwrap(), volume }.is_long());
         let access = |recursive| Request::SetShareAccess {
             volume,
@@ -1723,6 +1752,8 @@ mod tests {
         };
         assert!(access(true).is_long());
         assert!(!access(false).is_long());
+        assert!(access(true).is_walk() && !access(false).is_walk());
+        assert_eq!(access(true).acting_user(), None, "an administrator's, in places of its own");
     }
     #[test]
     fn has_a_stable_wire_format() {

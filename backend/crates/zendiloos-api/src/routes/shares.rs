@@ -1,7 +1,8 @@
 //! Shares and who may use them (`shares.manage`).
 
+use crate::extract::ApiPath as Path;
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;

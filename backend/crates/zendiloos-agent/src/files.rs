@@ -34,21 +34,49 @@ const CONCURRENT_ARCHIVES: usize = 4;
 /// An archive nobody reads for this long is given up.
 const ARCHIVE_STALL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
+/// Least an archive's reader takes in every [`ARCHIVE_STALL`]: one that
+/// reads a trickle would keep its place for ever.
+const ARCHIVE_MIN_BYTES: u64 = 1024 * 1024;
+
 /// The writing end of an archive's pipe (non-blocking), giving up when
-/// the reader takes nothing for a while ([`ARCHIVE_STALL`]).
-struct PatientPipe(OwnedFd, std::time::Duration);
+/// the reader takes nothing for a while ([`ARCHIVE_STALL`]), or less than
+/// [`ARCHIVE_MIN_BYTES`] in that time.
+struct PatientPipe {
+    fd: OwnedFd,
+    stall: std::time::Duration,
+    window: std::time::Instant,
+    taken: u64,
+    least: u64,
+}
+
+impl PatientPipe {
+    fn new(fd: OwnedFd, stall: std::time::Duration, least: u64) -> Self {
+        Self { fd, stall, window: std::time::Instant::now(), taken: 0, least }
+    }
+
+    fn took(&mut self, written: usize) -> io::Result<usize> {
+        self.taken += written as u64;
+        if self.window.elapsed() >= self.stall {
+            if self.taken < self.least {
+                return Err(io::Error::new(io::ErrorKind::TimedOut, "the archive is read too slowly"));
+            }
+            (self.window, self.taken) = (std::time::Instant::now(), 0);
+        }
+        Ok(written)
+    }
+}
 
 impl io::Write for PatientPipe {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
         loop {
-            match rustix::io::write(&self.0, buffer) {
-                Ok(written) => return Ok(written),
+            match rustix::io::write(&self.fd, buffer) {
+                Ok(written) => return self.took(written),
                 Err(rustix::io::Errno::INTR) => {}
                 Err(rustix::io::Errno::AGAIN) => {
-                    let mut ready = [rustix::event::PollFd::new(&self.0, rustix::event::PollFlags::OUT)];
+                    let mut ready = [rustix::event::PollFd::new(&self.fd, rustix::event::PollFlags::OUT)];
                     let wait = rustix::event::Timespec {
-                        tv_sec: self.1.as_secs().try_into().unwrap_or(i64::MAX),
-                        tv_nsec: self.1.subsec_nanos().into(),
+                        tv_sec: self.stall.as_secs().try_into().unwrap_or(i64::MAX),
+                        tv_nsec: self.stall.subsec_nanos().into(),
                     };
                     if rustix::event::poll(&mut ready, Some(&wait))? == 0 {
                         return Err(io::Error::new(io::ErrorKind::TimedOut, "nobody reads the archive"));
@@ -273,8 +301,10 @@ impl Files {
                 // zendiloosd stops reading (the pipe breaks).
                 tokio::spawn(async move {
                     let written = as_user(identity, move || {
-                        let mut out =
-                            std::io::BufWriter::with_capacity(256 * 1024, PatientPipe(writer, ARCHIVE_STALL));
+                        let mut out = std::io::BufWriter::with_capacity(
+                            256 * 1024,
+                            PatientPipe::new(writer, ARCHIVE_STALL, ARCHIVE_MIN_BYTES),
+                        );
                         share.write_archive(&path, &plan, &mut out)
                     })
                     .await;
@@ -355,11 +385,32 @@ mod tests {
     }
 
     #[test]
+    fn an_archive_read_too_slowly_is_given_up() {
+        let (mut reader, writer) = std::io::pipe().unwrap();
+        let writer = OwnedFd::from(writer);
+        rustix::io::ioctl_fionbio(&writer, true).unwrap();
+        let mut pipe = PatientPipe::new(writer, std::time::Duration::from_millis(100), 1024 * 1024);
+        let reading = std::thread::spawn(move || io::copy(&mut reader, &mut io::sink()));
+        let started = std::time::Instant::now();
+
+        // A trickle: 1 KiB at a time, well below a mebibyte per 100 ms.
+        let slow = (0..1000).try_for_each(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            io::Write::write_all(&mut pipe, &[0u8; 1024])
+        });
+
+        assert_eq!(slow.unwrap_err().kind(), io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        drop(pipe);
+        reading.join().unwrap().unwrap();
+    }
+
+    #[test]
     fn an_archive_nobody_reads_is_given_up() {
         let (reader, writer) = std::io::pipe().unwrap();
         let writer = OwnedFd::from(writer);
         rustix::io::ioctl_fionbio(&writer, true).unwrap();
-        let mut pipe = PatientPipe(writer, std::time::Duration::from_millis(50));
+        let mut pipe = PatientPipe::new(writer, std::time::Duration::from_millis(50), 0);
         let chunk = [0u8; 64 * 1024];
 
         let stalled = (0..64).try_for_each(|_| io::Write::write_all(&mut pipe, &chunk));

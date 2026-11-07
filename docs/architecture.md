@@ -690,7 +690,11 @@ rustls with ring and the system's certificate authorities
   trees, permissions of a whole share, preparing and destroying pools,
   fetching and running apps and projects, moving Docker's data) have two
   places of their own; quick ones have four. One user's large copies never
-  keep others from listing, downloading or uploading.
+  keep others from listing, downloading or uploading. Each user has one
+  long place at a time (a second copy waits behind the first, not in a
+  place of everybody's), changes of whole shares' permissions have two of
+  their own, and a folder download read at less than a mebibyte in five
+  minutes is given up.
 - **Nothing happens behind a caller's back:** a request still waiting for
   its turn, a place or a lock another operation holds, when its client
   gives up (zendiloosd's own timeout, its connection closed) is dropped,

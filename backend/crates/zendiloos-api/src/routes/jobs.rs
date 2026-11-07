@@ -1,7 +1,8 @@
 //! Long-running operations and their progress (`system.view`).
 
+use crate::extract::ApiPath as Path;
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};

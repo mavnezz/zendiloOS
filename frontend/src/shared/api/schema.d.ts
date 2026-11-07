@@ -7234,6 +7234,15 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
+            /** @description `invalid_input`, `invalid_operation` (also more than 1000 entries) */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
         };
     };
     download: {
@@ -7613,7 +7622,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description `invalid_input`, `invalid_operation` */
+            /** @description `invalid_input`, `invalid_operation` (also more than 1000 entries) */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -7654,6 +7663,15 @@ export interface operations {
                     "application/json": components["schemas"]["UploadedFile"];
                 };
             };
+            /** @description `bad_request`: the upload did not complete */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
             /** @description `permission_denied` */
             403: {
                 headers: {
@@ -7674,6 +7692,15 @@ export interface operations {
             };
             /** @description `name_taken` */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input`: no valid name or folder */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
