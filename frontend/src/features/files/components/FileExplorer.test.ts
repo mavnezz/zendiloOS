@@ -19,6 +19,7 @@ import { useJobsStore } from '@/shared/jobs/store'
 import { useNotifications } from '@/shared/lib/notifications'
 import { entry, fileShare, job, share } from '@/shared/testing/fixtures'
 
+import { FOLDER_POLL_MS, VOLUMES_POLL_MS } from '../api'
 import FileExplorer from './FileExplorer.vue'
 
 /** XMLHttpRequest as uploads use it, answered by the test. */
@@ -685,6 +686,24 @@ describe('recycle bins and previous versions', () => {
     useJobsStore().update(job(1, 'files.copy', { state: 'succeeded' }))
     await settle()
     expect(callsTo('GET', '/api/v1/files/shares/0/folder').length).toBeGreaterThan(before)
+  })
+
+  it('reads the folder shown and the volumes again by themselves', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      serve()
+      await show()
+      const folders = callsTo('GET', '/api/v1/files/shares/0/folder').length
+      const volumes = callsTo('GET', '/api/v1/files/volumes').length
+      await vi.advanceTimersByTimeAsync(FOLDER_POLL_MS)
+      await settle()
+      expect(callsTo('GET', '/api/v1/files/shares/0/folder').length).toBeGreaterThan(folders)
+      await vi.advanceTimersByTimeAsync(VOLUMES_POLL_MS)
+      await settle()
+      expect(callsTo('GET', '/api/v1/files/volumes').length).toBeGreaterThan(volumes)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 

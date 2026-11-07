@@ -98,6 +98,15 @@ export function useFolderSearch(
 export const REMOVABLE_POLL_MS = 4000
 
 /**
+ * How often the folder shown is read again while the explorer is shown, so
+ * what changed over SMB, NFS or in another window appears by itself.
+ */
+export const FOLDER_POLL_MS = 15_000
+
+/** How often the volumes and their folders are read again. */
+export const VOLUMES_POLL_MS = 30_000
+
+/**
  * The removable drives plugged in, for someone who manages storage: looked
  * at every few seconds while the explorer is open and shown, so a drive
  * plugged in appears (and is mounted) by itself.
@@ -148,6 +157,8 @@ export function useFileVolumes() {
   return useQuery({
     queryKey: ['files', 'volumes'],
     queryFn: () => unwrap(api.GET('/api/v1/files/volumes')),
+    refetchInterval: VOLUMES_POLL_MS,
+    refetchIntervalInBackground: false,
   })
 }
 
@@ -189,6 +200,9 @@ export function useFolder(
     enabled: computed(() => share.value !== null),
     placeholderData: keepPreviousData,
     retry: false,
+    // A snapshot does not change.
+    refetchInterval: () => (snapshot.value ? false : FOLDER_POLL_MS),
+    refetchIntervalInBackground: false,
   })
 }
 
