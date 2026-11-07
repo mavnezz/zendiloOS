@@ -1022,6 +1022,43 @@ runs `docker` with fixed arguments and checked names (`ContainerId`,
 zendiloosd reads it. Container logs are both streams in the order they
 were written.
 
+**A container's page** (its name opens it, in the list or in a project)
+shows it as `docker container inspect` tells it (`InspectContainer`):
+command, user, environment (values hidden until shown: they hold
+passwords), networks with its addresses, published ports, mounts, what
+reaches beyond it (privileged, capabilities added and dropped, devices,
+security options, a read-only root, the machine's processes or shared
+memory), limits, restart policy and health check, and its use now and
+over time. A bind of a project made here is a pin Docker sees; the page
+names the folder the confirmed file names for that target instead
+(`/volume1/media/Films`, shown as the share's folder `media/Films`). Its
+processes come from `docker top` with fixed columns
+(`ContainerProcesses`). Its log is asked again every three seconds while
+it is followed, searched in the browser and saved as a file.
+
+**A terminal in a container** runs what the administrator types, split
+at spaces into at most 16 words, the first no option of `docker exec`
+(`ExecCommand`). The agent starts `docker exec --interactive --tty` on a
+pseudo terminal of its own (`OpenTerminal`), as the leader of its own
+session through `setsid --ctty` (no code may run between fork and exec
+here), with Ctrl-P Ctrl-Q no longer leaving the program running unseen,
+and hands the terminal's master to zendiloosd with the answer
+(`SCM_RIGHTS`); it waits for the program itself and ends it after a day at
+the latest; sixteen at once. zendiloosd relays the master to a WebSocket,
+`/api/v1/docker/containers/{id}/terminal`, of the same origin and for
+`containers.manage` only: binary frames both ways, a new size as text,
+set on the terminal (the program gets `SIGWINCH`). Closing the socket
+closes the master, which hangs the terminal up and so ends the program
+(one that ignores the hang-up may outlive it in the container, as with
+`docker exec` anywhere). A terminal ends when its program does, after half
+an hour without input, or when the session behind it ends or loses the
+permission (checked every minute); the socket is pinged every 30 seconds
+so nginx keeps it. Four per account; each is recorded in the audit log
+(`containers.container_terminal`, with the command). Any running container
+gets one, an app installed the earlier way too: a terminal changes nothing
+of how a container was made, and administrators are as good as root here
+anyway.
+
 **Administrators' own projects** have no policy: an administrator may run
 any Compose file, which makes an administrator's account as good as root
 on the machine. The file lives in a share (`compose.yaml` in a folder such
@@ -1103,7 +1140,14 @@ pull counted), and compares it with the image's digests. On a schedule
 (days of the week and a time, the machine's local time) or by hand,
 projects with a newer image are pulled and brought up again; containers
 outside a project are only pulled for, apps of catalogs left to the App
-Center, images pinned by digest never looked at.
+Center, images pinned by digest never looked at. A container with a newer
+image says so in the list, which also says how many can be updated; one
+is updated by itself the same way, in a job (its project pulled and
+brought up again, which makes its containers anew; outside a project only
+its image fetched; an app installed the earlier way refused). The
+interface asks first, saying how it goes for that container and that it
+stops meanwhile and loses what is not in a mounted folder or volume,
+unless the browser was told not to ask again.
 
 **Moving Docker's data** to another pool zendiloOS made: Docker stops, the
 dataset is copied with `zfs send -R | zfs receive -u` (up to six hours,
