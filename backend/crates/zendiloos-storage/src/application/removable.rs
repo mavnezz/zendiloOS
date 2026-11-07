@@ -40,6 +40,11 @@ struct Watched {
     mounted: BTreeMap<String, Option<String>>,
     /// Plugged in, not to be mounted by themselves.
     held: BTreeMap<String, Hold>,
+    /// Whether each mounted drive is mounted read only, as the agent said
+    /// when it mounted it or when asked: the disks show a write-protected
+    /// device, not a drive the agent had to mount read only because it
+    /// could not be written (NTFS that Windows left hibernated).
+    read_only: BTreeMap<String, bool>,
     /// Whether the places of drives from before zendiloosd started were
     /// cleaned up.
     cleaned: bool,
@@ -95,6 +100,7 @@ impl RemovableDrives {
             .collect();
         watched.mounted.retain(|id, _| present.contains(id));
         watched.held.retain(|id, _| present.contains(id));
+        watched.read_only.retain(|id, _| present.contains(id));
         if !pulled.is_empty() || !watched.cleaned {
             match self.host.clean(context).await {
                 Ok(ids) => {
@@ -116,13 +122,17 @@ impl RemovableDrives {
         for drive in &mut drives {
             if !drive.is_mounted() && !watched.held.contains_key(&drive.id) {
                 match self.host.mount(drive, context).await {
-                    Ok(read_only) => mounted(drive, read_only),
+                    Ok(read_only) => {
+                        mounted(drive, read_only);
+                        watched.read_only.insert(drive.id.clone(), read_only);
+                    }
                     Err(error) => {
                         tracing::warn!(id = %drive.id, %error, "removable drive cannot be mounted");
                         watched.held.insert(drive.id.clone(), Hold::Failed(reason(error)));
                     }
                 }
             }
+            self.how_mounted(watched, drive, context).await;
             if drive.is_mounted() {
                 watched.mounted.insert(drive.id.clone(), drive.label.clone());
             } else {
@@ -150,7 +160,9 @@ impl RemovableDrives {
             self.record("storage.mount_removable", outcome.is_ok(), id, actor, context).await;
             let read_only = outcome.map_err(removable_error)?;
             mounted(&mut drive, read_only);
+            watched.read_only.insert(drive.id.clone(), read_only);
         }
+        self.how_mounted(&mut watched, &mut drive, context).await;
         watched.held.remove(id);
         watched.mounted.insert(drive.id.clone(), drive.label.clone());
         Ok(ListedDrive { drive, hold: None })
@@ -173,6 +185,7 @@ impl RemovableDrives {
         self.record("storage.eject_removable", outcome.is_ok(), id, actor, context).await;
         outcome.map_err(removable_error)?;
         watched.mounted.remove(id);
+        watched.read_only.remove(id);
         watched.held.insert(id.to_owned(), Hold::Ejected);
         Ok(())
     }
@@ -184,10 +197,36 @@ impl RemovableDrives {
         id: &str,
         context: &RequestContext,
     ) -> Result<Option<RemovableDrive>, StorageError> {
+        let mut watched = self.watched.lock().await;
         match self.find(id, context).await {
-            Ok(drive) => Ok(drive.is_mounted().then_some(drive)),
-            Err(StorageError::RemovableNotFound) => Ok(None),
+            Ok(mut drive) if drive.is_mounted() => {
+                self.how_mounted(&mut watched, &mut drive, context).await;
+                Ok(Some(drive))
+            }
+            Ok(_) | Err(StorageError::RemovableNotFound) => Ok(None),
             Err(error) => Err(error),
+        }
+    }
+
+    /// Marks a mounted drive read only if it is mounted so; for one mounted
+    /// before zendiloosd looked (it restarted meanwhile) the agent is asked,
+    /// which mounts nothing again but says how the drive is mounted.
+    async fn how_mounted(&self, watched: &mut Watched, drive: &mut RemovableDrive, context: &RequestContext) {
+        if !drive.is_mounted() {
+            return;
+        }
+        if !watched.read_only.contains_key(&drive.id) {
+            match self.host.mount(drive, context).await {
+                Ok(read_only) => {
+                    watched.read_only.insert(drive.id.clone(), read_only);
+                }
+                Err(error) => {
+                    tracing::warn!(id = %drive.id, %error, "removable drive: cannot ask how it is mounted")
+                }
+            }
+        }
+        if watched.read_only.get(&drive.id) == Some(&true) {
+            drive.read_only = true;
         }
     }
 
@@ -254,6 +293,8 @@ mod tests {
     struct Fake {
         plugged: Mutex<bool>,
         mounted: Mutex<bool>,
+        /// Mounted read only although the device is not write-protected.
+        fell_back: Mutex<bool>,
         refuse: Mutex<Option<AdminError>>,
         calls: Mutex<Vec<String>>,
     }
@@ -318,7 +359,7 @@ mod tests {
                 return Err(error);
             }
             *self.mounted.lock().unwrap() = true;
-            Ok(false)
+            Ok(*self.fell_back.lock().unwrap())
         }
 
         async fn eject(
@@ -473,5 +514,34 @@ mod tests {
         assert!(matches!(unknown, Err(StorageError::RemovableNotFound)), "{unknown:?}");
         *fake.refuse.lock().unwrap() = Some(AdminError::Refused("no".into()));
         drives.eject(ID, false, &admin(), &context()).await.unwrap_err();
+    }
+
+    #[tokio::test]
+    async fn a_drive_mounted_read_only_for_want_of_writing_stays_read_only() {
+        let fake = Arc::new(Fake::default());
+        let (drives, _) = drives(&fake);
+        *fake.plugged.lock().unwrap() = true;
+        *fake.fell_back.lock().unwrap() = true;
+
+        let listed = drives.list(&context()).await.unwrap();
+        assert!(listed[0].drive.read_only, "as mounted");
+        let again = drives.list(&context()).await.unwrap();
+        assert!(again[0].drive.read_only, "and when looked at again, though the device is writable");
+        assert!(drives.mounted(ID, &context()).await.unwrap().unwrap().read_only, "for the explorer too");
+        assert_eq!(fake.calls(), ["clean", "mount 1A2B-3C4D"], "asked once");
+    }
+
+    #[tokio::test]
+    async fn a_drive_mounted_before_a_restart_is_asked_how_it_is_mounted() {
+        let fake = Arc::new(Fake::default());
+        *fake.plugged.lock().unwrap() = true;
+        *fake.mounted.lock().unwrap() = true;
+        *fake.fell_back.lock().unwrap() = true;
+        let (drives, _) = drives(&fake);
+
+        let drive = drives.mounted(ID, &context()).await.unwrap().unwrap();
+        assert!(drive.read_only);
+        assert!(drives.list(&context()).await.unwrap()[0].drive.read_only);
+        assert_eq!(fake.calls(), ["mount 1A2B-3C4D", "clean"], "asked once, mounted nothing anew");
     }
 }
