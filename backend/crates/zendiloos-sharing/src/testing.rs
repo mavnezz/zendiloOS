@@ -52,6 +52,8 @@ pub struct Shares(
     Mutex<(Option<crate::domain::HomesLocation>, Vec<crate::domain::Home>)>,
     /// Shares hidden while their data goes.
     Mutex<std::collections::HashSet<ShareId>>,
+    /// Uploads under way, with when they began.
+    pub Mutex<Vec<(ports::PendingUpload, Timestamp)>>,
 );
 
 #[async_trait]
@@ -78,6 +80,27 @@ impl ShareRepository for Shares {
     async fn deleting(&self) -> Result<Vec<Share>, PortError> {
         let hidden = self.6.lock().unwrap();
         Ok(self.0.lock().unwrap().iter().filter(|s| hidden.contains(&s.id)).cloned().collect())
+    }
+
+    async fn add_upload(&self, user: &str, at: &FileLocation, started: Timestamp) -> Result<i64, PortError> {
+        let mut uploads = self.7.lock().unwrap();
+        let id = uploads.iter().map(|(upload, _)| upload.id).max().unwrap_or(0) + 1;
+        uploads.push((ports::PendingUpload { id, user: user.to_owned(), at: at.clone() }, started));
+        Ok(id)
+    }
+
+    async fn remove_upload(&self, id: i64) -> Result<(), PortError> {
+        self.7.lock().unwrap().retain(|(upload, _)| upload.id != id);
+        Ok(())
+    }
+
+    async fn uploads_before(&self, before: Timestamp) -> Result<Vec<ports::PendingUpload>, PortError> {
+        let uploads = self.7.lock().unwrap();
+        Ok(uploads
+            .iter()
+            .filter(|(_, started)| *started < before)
+            .map(|(upload, _)| upload.clone())
+            .collect())
     }
 
     async fn create(&self, new: NewShare) -> Result<Option<Share>, PortError> {
@@ -548,6 +571,15 @@ impl FileHost for Files {
     ) -> Result<(), FileHostError> {
         let recycle = if recycle { " recycle" } else { "" };
         self.record(format!("remove {user} {}{recycle}", place(at)), at)
+    }
+
+    async fn discard_upload(
+        &self,
+        user: &str,
+        at: &FileLocation,
+        _: &RequestContext,
+    ) -> Result<(), FileHostError> {
+        self.record(format!("discard {user} {}", place(at)), at)
     }
 
     /// The ten letters every file holds, as the archive.

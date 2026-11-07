@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::ffi::{CStr, CString, OsStr};
 use std::fmt::Write as _;
 use std::fs;
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -368,20 +368,11 @@ impl Sharing {
             return Err(OperationError::NotManaged(user.as_str().to_owned()));
         }
         let home = homes.join(user.as_str());
-        match fs::create_dir(&home) {
-            Ok(()) => {
-                std::os::unix::fs::chown(&home, Some(uid), Some(gid))
-                    .map_err(|e| OperationError::Write(home.clone(), e))?;
-                fs::set_permissions(&home, std::os::unix::fs::PermissionsExt::from_mode(0o700))
-                    .map_err(|e| OperationError::Write(home.clone(), e))?;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                let meta = fs::symlink_metadata(&home).map_err(|e| OperationError::Read(home.clone(), e))?;
-                if !meta.is_dir() {
-                    return Err(OperationError::Refused(format!("{} is not a folder", home.display())));
-                }
-            }
-            Err(error) => return Err(OperationError::Write(home, error)),
+        if fresh_home(&homes, user.as_str(), uid)? {
+            std::os::unix::fs::chown(&home, Some(uid), Some(gid))
+                .map_err(|e| OperationError::Write(home.clone(), e))?;
+            fs::set_permissions(&home, std::os::unix::fs::PermissionsExt::from_mode(0o700))
+                .map_err(|e| OperationError::Write(home.clone(), e))?;
         }
         Ok(Response::Done)
     }
@@ -478,6 +469,7 @@ impl Sharing {
         )
         .await?
         .success(&self.setfacl)?;
+        sticky(&directory).map_err(|e| OperationError::Write(bin.clone(), e.into()))?;
 
         // Each writer's own bin, made here: otherwise one writer could make
         // another's first and read what lands in it, which Samba does not
@@ -496,6 +488,46 @@ impl Sharing {
         }
         Ok(Response::Done)
     }
+}
+
+/// Makes the bins' folder sticky: every writer may make their bin in it,
+/// but only a bin's owner may rename or remove it, so nobody takes away
+/// another's bin and puts one of their own in its place to get what lands
+/// there (Samba does not check whose a bin is). With an ACL the group bits
+/// are its mask, so they are kept as they are.
+fn sticky(directory: &fs::File) -> Result<(), Errno> {
+    let mode = rustix::fs::fstat(directory)?.st_mode;
+    rustix::fs::fchmod(directory, Mode::from_raw_mode((mode & 0o777) | 0o1000))
+}
+
+/// Makes `user`'s folder in `homes` unless the user (`uid`) has it already;
+/// says whether it was made (and so still needs its owner and mode). A
+/// folder of that name of another UID is left by an earlier account of the
+/// same name: moved aside (`<user>.previous-<uid>`), its files kept for an
+/// administrator, so the new account gets a folder it can use instead of
+/// one it is locked out of. Only root writes `homes`.
+fn fresh_home(homes: &Path, user: &str, uid: u32) -> Result<bool, OperationError> {
+    let home = homes.join(user);
+    for _ in 0..2 {
+        match fs::create_dir(&home) {
+            Ok(()) => return Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let meta = fs::symlink_metadata(&home).map_err(|e| OperationError::Read(home.clone(), e))?;
+                if !meta.is_dir() {
+                    return Err(OperationError::Refused(format!("{} is not a folder", home.display())));
+                }
+                if meta.uid() == uid {
+                    return Ok(false);
+                }
+                let aside = homes.join(format!("{user}.previous-{}", meta.uid()));
+                rustix::fs::renameat_with(CWD, &home, CWD, &aside, rustix::fs::RenameFlags::NOREPLACE)
+                    .map_err(|e| OperationError::Write(home.clone(), e.into()))?;
+                tracing::warn!(user, aside = %aside.display(), "a personal folder of an earlier account was moved aside");
+            }
+            Err(error) => return Err(OperationError::Write(home, error)),
+        }
+    }
+    Err(OperationError::Refused(format!("{} keeps being taken", home.display())))
 }
 
 /// The share's `.recycle`, made if missing, opened without following a
@@ -637,8 +669,9 @@ fn prepare_bin(bin: &fs::File, user: &str, uid: u32, gid: u32) -> Result<(), Ope
     Ok(())
 }
 
-/// Folders deeper than this are not looked into.
-const MAX_DEPTH: usize = 256;
+/// Folders deeper than this are not looked into; what is below counts as
+/// not changed.
+const MAX_DEPTH: usize = if cfg!(test) { 8 } else { 256 };
 /// Entries that may fail before a change of a whole tree gives up.
 const MAX_FAILURES: usize = 100;
 
@@ -652,9 +685,13 @@ struct Failures {
 impl Failures {
     /// Notes one; too many end the change.
     fn note(&mut self, path: &Path, error: Errno) -> Result<(), OperationError> {
+        self.note_why(path, std::io::Error::from(error))
+    }
+
+    fn note_why(&mut self, path: &Path, why: impl std::fmt::Display) -> Result<(), OperationError> {
         self.count += 1;
         if self.first.is_none() {
-            self.first = Some(format!("{}: {}", path.display(), std::io::Error::from(error)));
+            self.first = Some(format!("{}: {why}", path.display()));
         }
         if self.count > MAX_FAILURES { Err(self.error()) } else { Ok(()) }
     }
@@ -686,7 +723,9 @@ enum Pass {
 /// the recycle bins, and every other private folder with what is in it (a
 /// folder not root's that only its owner may enter: renamed bins among
 /// them, which nobody else could reach anyway). Only the folders on the way
-/// down are open at a time. An entry that cannot be changed does not stop
+/// down are open at a time, each read as it goes, never held whole: a
+/// folder of millions of entries must not take the agent's memory. An entry
+/// that cannot be changed, or a folder too deep to look into, does not stop
 /// the others; the change fails at the end, naming one of them.
 fn change_tree(root: &Path, rules: &Rules) -> Result<(), OperationError> {
     let mut failures = Failures::default();
@@ -701,26 +740,58 @@ fn change_tree(root: &Path, rules: &Rules) -> Result<(), OperationError> {
 
 const FOLDER: OFlags = OFlags::RDONLY.union(OFlags::DIRECTORY).union(OFlags::NOFOLLOW).union(OFlags::CLOEXEC);
 
-/// A folder on the way down: its descriptor, what in it is still to do.
+/// A folder on the way down, read as the walk goes: changing permissions
+/// adds and removes no names, so reading while changing misses nothing.
 struct Level {
-    folder: OwnedFd,
-    names: std::vec::IntoIter<CString>,
+    folder: rustix::fs::Dir,
     path: PathBuf,
+    /// The share's root, where the recycle bins are left out (`set_access`
+    /// sets their own folder).
+    top: bool,
+}
+
+impl Level {
+    /// The next name to look at; `None` once the folder is read.
+    fn next_name(&mut self) -> Option<Result<CString, Errno>> {
+        loop {
+            let entry = match self.folder.next()? {
+                Ok(entry) => entry,
+                Err(error) => return Some(Err(error)),
+            };
+            let name = entry.file_name();
+            let own = name == c"." || name == c"..";
+            let bin = self.top && name.to_bytes() == RECYCLE_DIRECTORY.as_bytes();
+            if !own && !bin {
+                return Some(Ok(name.to_owned()));
+            }
+        }
+    }
 }
 
 fn walk(root: &Path, rules: &Rules, pass: Pass, failures: &mut Failures) -> Result<(), OperationError> {
     let unreadable = |e: Errno| OperationError::Read(root.to_owned(), e.into());
     let top = openat(CWD, root, FOLDER, Mode::empty()).map_err(unreadable)?;
     let device = rustix::fs::fstat(&top).map_err(unreadable)?.st_dev;
-    let listed = names(&top, true).map_err(unreadable)?;
-    let mut stack = vec![Level { folder: top, names: listed.into_iter(), path: root.to_owned() }];
+    let top = rustix::fs::Dir::new(top).map_err(unreadable)?;
+    let mut stack = vec![Level { folder: top, path: root.to_owned(), top: true }];
     while let Some(level) = stack.last_mut() {
-        let Some(name) = level.names.next() else {
-            stack.pop();
-            continue;
+        let name = match level.next_name() {
+            Some(Ok(name)) => name,
+            Some(Err(error)) => {
+                // What is left of this folder cannot be read.
+                let path = level.path.clone();
+                stack.pop();
+                failures.note(&path, error)?;
+                continue;
+            }
+            None => {
+                stack.pop();
+                continue;
+            }
         };
         let path = level.path.join(OsStr::from_bytes(name.as_bytes()));
-        let (entry, folder, mode) = match open_entry(&level.folder, &name, device) {
+        let opened = level.folder.fd().and_then(|fd| open_entry(fd, &name, device));
+        let (entry, folder, mode) = match opened {
             Ok(Some(found)) => found,
             Ok(None) => continue,
             Err(error) => {
@@ -731,35 +802,25 @@ fn walk(root: &Path, rules: &Rules, pass: Pass, failures: &mut Failures) -> Resu
         if let Err(error) = change_entry(&entry, folder, mode, rules, pass) {
             failures.note(&path, error)?;
         }
-        if folder && stack.len() < MAX_DEPTH {
-            match names(&entry, false) {
-                Ok(listed) => stack.push(Level { folder: entry, names: listed.into_iter(), path }),
-                Err(error) => failures.note(&path, error)?,
-            }
+        if !folder {
+            continue;
+        }
+        if stack.len() >= MAX_DEPTH {
+            failures.note_why(&path, "folders are nested too deeply to look into")?;
+            continue;
+        }
+        match rustix::fs::Dir::new(entry) {
+            Ok(inner) => stack.push(Level { folder: inner, path, top: false }),
+            Err(error) => failures.note(&path, error)?,
         }
     }
     Ok(())
 }
 
-/// What is in `folder`, without `.` and `..`, and at the top without the
-/// recycle bins (whose own folder `set_access` sets).
-fn names(folder: &OwnedFd, top: bool) -> Result<Vec<CString>, Errno> {
-    let mut names = Vec::new();
-    for entry in rustix::fs::Dir::read_from(folder)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        let own = name == c"." || name == c"..";
-        let bin = top && name.to_bytes() == RECYCLE_DIRECTORY.as_bytes();
-        if !own && !bin {
-            names.push(name.to_owned());
-        }
-    }
-    Ok(names)
-}
-
 /// `name` in `folder` opened, with whether it is a folder and its mode;
 /// `None` for what is left alone, or went or changed since it was listed.
-fn open_entry(folder: &OwnedFd, name: &CStr, device: u64) -> Result<Option<(OwnedFd, bool, u32)>, Errno> {
+fn open_entry(folder: impl AsFd, name: &CStr, device: u64) -> Result<Option<(OwnedFd, bool, u32)>, Errno> {
+    let folder = folder.as_fd();
     use rustix::fs::FileType;
     let stat = match rustix::fs::statat(folder, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW) {
         Ok(stat) => stat,
@@ -966,6 +1027,62 @@ mod tests {
         for n in [0, 749, 1499] {
             assert_eq!(acl_of(&root.join(format!("{n}/inner")), acl::ACCESS).unwrap().named(anna), Some(5));
         }
+    }
+
+    #[test]
+    fn what_lies_too_deep_to_look_into_fails_the_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("share");
+        let mut deep = root.clone();
+        for n in 0..MAX_DEPTH + 2 {
+            deep = deep.join(format!("d{n}"));
+        }
+        fs::create_dir_all(&deep).unwrap();
+        let anna = Who::User(4243);
+
+        let failed =
+            change_tree(&root, &Rules { remove: vec![], grant: vec![(anna, SharePermission::Read)] });
+
+        let error = failed.unwrap_err().to_string();
+        assert!(error.contains("nested too deeply") && error.contains("1 entries"), "{error}");
+        assert_eq!(acl_of(&root.join("d0"), acl::ACCESS).unwrap().named(anna), Some(5), "above it: changed");
+    }
+
+    #[test]
+    fn the_bins_folder_is_sticky_and_keeps_its_mask() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join(RECYCLE_DIRECTORY);
+        fs::create_dir(&bin).unwrap();
+        let mut acl = Acl::from_mode(0o770);
+        acl.set(Who::User(4243), 7);
+        acl.fix_mask();
+        rustix::fs::setxattr(&bin, acl::ACCESS, &acl.to_bytes(), rustix::fs::XattrFlags::empty()).unwrap();
+        let folder = fs::File::open(&bin).unwrap();
+
+        sticky(&folder).unwrap();
+
+        let mode = fs::metadata(&bin).unwrap().mode();
+        assert_eq!(mode & 0o7777, 0o1770, "{mode:o}");
+        assert_eq!(acl_of(&bin, acl::ACCESS).unwrap().named(Who::User(4243)), Some(7));
+    }
+
+    #[test]
+    fn a_personal_folder_of_an_earlier_account_of_the_name_is_moved_aside() {
+        let dir = tempfile::tempdir().unwrap();
+        let homes = dir.path();
+        let me = fs::metadata(homes).unwrap().uid();
+        assert!(fresh_home(homes, "alice", me).unwrap(), "made");
+        fs::write(homes.join("alice/diary.txt"), "old").unwrap();
+        assert!(!fresh_home(homes, "alice", me).unwrap(), "hers already");
+
+        // A new account of the name has another UID.
+        assert!(fresh_home(homes, "alice", me + 1).unwrap(), "made anew");
+        assert_eq!(fs::read_dir(homes.join("alice")).unwrap().count(), 0, "fresh");
+        let aside = homes.join(format!("alice.previous-{me}"));
+        assert_eq!(fs::read_to_string(aside.join("diary.txt")).unwrap(), "old", "the old files stay");
+
+        fs::write(homes.join("bob"), "").unwrap();
+        assert!(fresh_home(homes, "bob", me).is_err(), "not a folder");
     }
 
     #[test]

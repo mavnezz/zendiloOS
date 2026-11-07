@@ -228,6 +228,12 @@ impl Files {
                 as_user(identity, move || share.remove(&path, bin_owner.as_deref())).await?;
                 Ok((Response::Done, None))
             }
+            Request::DiscardUpload { user, location } => {
+                let (identity, share, path) =
+                    (self.identity(user)?, self.writable(location, user)?, location.path.clone());
+                as_user(identity, move || share.discard_upload(&path)).await?;
+                Ok((Response::Done, None))
+            }
             Request::RestoreEntry { user, location } => {
                 let (identity, share, path) =
                     (self.identity(user)?, self.writable(location, user)?, location.path.clone());

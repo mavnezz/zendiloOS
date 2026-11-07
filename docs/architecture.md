@@ -518,7 +518,9 @@ rustls with ring and the system's certificate authorities
   `invalid users` and follows its members. When a denied group's members
   change, or the group is deleted, the Sharing context hears it from the
   Identity context (`GroupObserver`, bridged in infrastructure) and
-  rewrites the entries of the shares that deny it, existing files in a job.
+  rewrites the entries of the shares that deny it, existing files in a job;
+  where the group may write, the share's folder is set again, which makes
+  the new members' recycle bins.
 - **Personal folders:** one dataset `<pool>/zendiloos.homes` on one pool,
   mounted at `/volume<N>/@homes` (root, 0711); each account given one has
   `@homes/<name>` (its own, 0700) and a ZFS `userquota`. Samba offers them
@@ -527,18 +529,24 @@ rustls with ring and the system's certificate authorities
   therefore no longer free for shares. In the file manager it is share 0,
   which the files agent resolves to the folder of the user it acts as and
   nobody else's. Turning them off, or taking one away, leaves the files.
+  A folder of the name that belongs to another UID (an earlier account of
+  the same name) is moved aside (`<name>.previous-<uid>`) and a fresh one
+  made, so the new account is never locked out of its own folder.
 - Changed rules apply to the share's directory at once and to existing
   files in a job, except the users' recycle bins. Access is taken away
   from the whole tree before any is given, so a revocation holds even if
   adding fails; the job may run for hours. The files agent walks the tree
   itself, depth first, by descriptor (`O_NOFOLLOW`, only the folders on the
-  way down open), and changes each ACL through its descriptor
+  way down open, each read as it goes, never held whole: a folder of
+  millions of entries takes no more memory than a small one), and changes
+  each ACL through its descriptor
   (`system.posix_acl_*` via `/proc/self/fd`, the edits of `setfacl -x/-m`
   with the mask recomputed), so a folder swapped for a link meanwhile
   changes nothing. Links, other file systems, what is neither folder nor
   file, and private folders (not root's, only their owner may enter: a
   bin a writer renamed among them) are left alone; an entry that cannot be
-  changed does not stop the others, the job fails at the end naming one.
+  changed, or a folder nested deeper than 256 to look into, does not stop
+  the others, the job fails at the end naming one.
   One change per share runs at a time; a change of a share's folder waits
   15 seconds at most for one going through its files, then is refused
   ("try again"), while other shares are not held up. Something not a
@@ -574,7 +582,14 @@ rustls with ring and the system's certificate authorities
   file back via `SCM_RIGHTS` and `zendiloosd` streams the data; the root
   process never handles file contents. An upload is written to a hidden
   file in the target folder and renamed when complete, so a broken upload
-  never replaces a file. New files belong to the user and inherit the
+  never replaces a file. One given up is removed only as a file, never a
+  folder: whoever may write the folder could rename one of the user's
+  folders to the upload's name. zendiloosd records each upload under way
+  (`pending_uploads`); what one left when zendiloosd stopped in the middle
+  is removed when it starts again, as that user. Likewise a move between
+  shares removes its source only if it still is what was copied (device
+  and inode), and a failed copy removes only the folder it made; folders
+  are emptied in batches, never read whole. New files belong to the user and inherit the
   share's ACLs, exactly as over SMB. Copies, moves and deletions run as
   jobs. Verified end to end in the test VM (`just vm-sharing-test`).
 - **Downloads and previews.** A download answers one byte range
@@ -697,13 +712,16 @@ rustls with ring and the system's certificate authorities
   throttle.
 - Recycle bins: when a share's permissions are applied, the files agent
   makes each writer's `.recycle/<user>` (directly or through a group):
-  the user's own, mode 0700, without ACL entries. Something of that name
+  the user's own, mode 0700, without ACL entries. `.recycle` is sticky
+  (1770 with the share's ACL): every writer makes their bin there, but
+  only its owner may rename or remove it. Something of that name
   another writer made first is moved aside (`.<user>.not-theirs-…`), so
   it never receives the user's deletions; Samba itself does not check who
   owns a bin. The file manager also refuses a bin that is not the user's
   own and private, and empties a bin without removing it.
 - Folder downloads are planned before the first byte (each entry once,
-  its name and its folder's index, at most 100 000 entries), one at a
+  its name and its folder's index, at most 100 000 entries and 32 MiB of
+  names and link targets, both counted while each folder is read), one at a
   time per user and four in all, and given up when nobody reads for five
   minutes; the files agent may use 512 MiB (`MemoryMax`).
 - Validated types are the only form in which values reach a command line

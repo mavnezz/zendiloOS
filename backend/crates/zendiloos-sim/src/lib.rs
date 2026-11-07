@@ -309,6 +309,7 @@ impl SimulatedAgent {
             | Request::MoveEntry { user, .. }
             | Request::CopyEntry { user, .. }
             | Request::RemoveEntry { user, .. }
+            | Request::DiscardUpload { user, .. }
             | Request::RestoreEntry { user, .. }
             | Request::ArchiveFolder { user, .. } => Some(user.as_str()),
             _ => None,
@@ -360,6 +361,10 @@ impl SimulatedAgent {
                 }
                 Request::RemoveEntry { user, location, recycle } => {
                     share(location)?.remove(&location.path, recycle.then_some(user.as_str()))?;
+                    (Response::Done, None)
+                }
+                Request::DiscardUpload { location, .. } => {
+                    share(location)?.discard_upload(&location.path)?;
                     (Response::Done, None)
                 }
                 Request::RestoreEntry { user, location } => {
@@ -792,6 +797,7 @@ impl AgentTransport for SimulatedAgent {
             | Request::MoveEntry { .. }
             | Request::CopyEntry { .. }
             | Request::RemoveEntry { .. }
+            | Request::DiscardUpload { .. }
             | Request::RestoreEntry { .. }
             | Request::ArchiveFolder { .. } => self.file_operation(&request).0,
             // Without files kept, an app's folders are nowhere to be made.

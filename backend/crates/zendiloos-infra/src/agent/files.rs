@@ -185,6 +185,15 @@ impl FileHost for AgentFiles {
             .await
     }
 
+    async fn discard_upload(
+        &self,
+        user_name: &str,
+        at: &FileLocation,
+        context: &RequestContext,
+    ) -> Result<(), FileHostError> {
+        self.done(Request::DiscardUpload { user: user(user_name)?, location: location(at)? }, context).await
+    }
+
     async fn archive(
         &self,
         user_name: &str,

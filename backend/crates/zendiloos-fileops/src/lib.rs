@@ -29,7 +29,7 @@ use zendiloos_agent_proto::{
 
 mod archive;
 
-pub use archive::{ArchivePlan, MAX_ARCHIVE_ENTRIES};
+pub use archive::{ArchivePlan, MAX_ARCHIVE_ENTRIES, MAX_ARCHIVE_NAME_BYTES};
 
 pub use zendiloos_agent_proto::RECYCLE_DIRECTORY;
 /// Where apps keep their data on a volume: `/volume<N>/@apps/<app>`, each
@@ -154,10 +154,18 @@ fn original_name(name: &str) -> &str {
         .map_or(name, |(_, original)| original)
 }
 
-/// Names in a directory opened for reading, without `.` and `..`.
-fn names(directory: impl AsFd) -> Result<Vec<CString>, FileError> {
+/// Names read at once while a folder is emptied: removing while reading
+/// can skip entries, and a folder of millions must not be held whole.
+const BATCH: usize = 4096;
+
+/// Up to `limit` names in a directory opened for reading, from its start,
+/// without `.` and `..`.
+fn some_names(directory: impl AsFd, limit: usize) -> Result<Vec<CString>, FileError> {
     let mut names = Vec::new();
     for entry in Dir::read_from(directory)? {
+        if names.len() == limit {
+            break;
+        }
         let entry = entry?;
         let name = entry.file_name();
         if name != c"." && name != c".." {
@@ -165,6 +173,11 @@ fn names(directory: impl AsFd) -> Result<Vec<CString>, FileError> {
         }
     }
     Ok(names)
+}
+
+/// What a file or folder is, whatever its name is by now.
+fn identity(stat: &Stat) -> (u64, u64) {
+    (device(stat), inode(stat))
 }
 
 fn open_beneath_flags(base: BorrowedFd<'_>, name: &CStr, flags: OFlags) -> Result<OwnedFd, FileError> {
@@ -192,19 +205,31 @@ fn copy_new(
             }
             let from = open_beneath_flags(source, name, OFlags::RDONLY | OFlags::DIRECTORY)?;
             mkdirat(target, target_name, Mode::from_raw_mode(0o777))?;
-            // Where the copy is, for cleaning up after a failure: a copy into
-            // another share lies on another file system than its source.
-            let copy_on = device(&statat(target, target_name, AtFlags::SYMLINK_NOFOLLOW)?);
+            // Whoever may write the target could put a folder of their own
+            // (or of the user's) in the new one's place: only an empty
+            // folder is filled, and only the folder opened here is removed
+            // again after a failure, never whatever has the name by then.
+            let to = open_beneath_flags(target, target_name, OFlags::RDONLY | OFlags::DIRECTORY)?;
+            let made = fstat(&to)?;
+            if !some_names(&to, 1)?.is_empty() {
+                return Err(nested(FileError::Exists));
+            }
             let filled = (|| {
-                let to = open_beneath_flags(target, target_name, OFlags::PATH | OFlags::DIRECTORY)?;
-                for child in names(&from)? {
-                    copy_new(from.as_fd(), &child, to.as_fd(), &child, file_system, depth + 1)
+                // Read as it goes: what is copied lands in another folder.
+                for entry in Dir::read_from(&from)? {
+                    let entry = entry?;
+                    let child = entry.file_name();
+                    if child == c"." || child == c".." {
+                        continue;
+                    }
+                    copy_new(from.as_fd(), child, to.as_fd(), child, file_system, depth + 1)
                         .map_err(nested)?;
                 }
                 Ok(())
             })();
             if let Err(error) = filled {
-                let _ = remove_tree(target, target_name, copy_on, 0);
+                // A copy into another share lies on another file system.
+                let _ = remove_entry(target, target_name, device(&made), 0, Some(identity(&made)));
                 return Err(nested(error));
             }
         }
@@ -245,10 +270,29 @@ fn remove_tree(
     file_system: u64,
     depth: u32,
 ) -> Result<(), FileError> {
+    remove_entry(directory, name, file_system, depth, None)
+}
+
+/// Removes `name` from `directory`, with everything in it; with
+/// `expected`, only if it still is the file or folder of that identity
+/// (device and inode). Whoever may write `directory` can swap names: what
+/// is emptied is the folder opened and checked, and only its emptied self
+/// goes by name at the end, which removes nothing but an empty folder.
+fn remove_entry(
+    directory: BorrowedFd<'_>,
+    name: &CStr,
+    file_system: u64,
+    depth: u32,
+    expected: Option<(u64, u64)>,
+) -> Result<(), FileError> {
+    let replaced = || FileError::Invalid("it was replaced meanwhile; nothing else was removed");
     let stat = match statat(directory, name, AtFlags::SYMLINK_NOFOLLOW) {
         Err(Errno::NOENT) if depth > 0 => return Ok(()),
         other => other?,
     };
+    if expected.is_some_and(|expected| expected != identity(&stat)) {
+        return Err(replaced());
+    }
     if kind(&stat) == FileType::Directory {
         if device(&stat) != file_system {
             return Err(FileError::Invalid("a file system is mounted inside"));
@@ -257,9 +301,20 @@ fn remove_tree(
             return Err(FileError::Invalid("folders are nested too deeply"));
         }
         let inner = open_beneath_flags(directory, name, OFlags::RDONLY | OFlags::DIRECTORY)?;
-        // All names first: removing while reading can skip entries.
-        for child in names(&inner)? {
-            remove_tree(inner.as_fd(), &child, file_system, depth + 1)?;
+        let opened = identity(&fstat(&inner)?);
+        if expected.is_some_and(|expected| expected != opened) {
+            return Err(replaced());
+        }
+        // In batches, from the start each time: removing while reading can
+        // skip entries.
+        loop {
+            let batch = some_names(&inner, BATCH)?;
+            if batch.is_empty() {
+                break;
+            }
+            for child in batch {
+                remove_entry(inner.as_fd(), &child, file_system, depth + 1, None)?;
+            }
         }
         unlinkat(directory, name, AtFlags::REMOVEDIR)?;
     } else {
@@ -474,6 +529,19 @@ impl ShareRoot {
         Err(FileError::Exists)
     }
 
+    /// Removes an upload's hidden file that was given up. Only a file of
+    /// such a name goes, never a folder: whoever may write the folder can
+    /// rename one of the user's folders to the upload's name, and removing
+    /// it with everything in it would delete it with the user's rights.
+    pub fn discard_upload(&self, path: &SharePath) -> Result<(), FileError> {
+        let (parent, name) = self.parent(path)?;
+        if !name.starts_with(UPLOAD_PREFIX) {
+            return Err(FileError::Invalid("not an upload"));
+        }
+        // A folder gives EISDIR and stays.
+        Ok(unlinkat(&parent, name, AtFlags::empty())?)
+    }
+
     pub fn make_directory(&self, path: &SharePath) -> Result<(), FileError> {
         let (parent, name) = self.parent(path)?;
         Ok(mkdirat(&parent, name, Mode::from_raw_mode(0o777))?)
@@ -511,8 +579,12 @@ impl ShareRoot {
             // Another share is another file system.
             Err(Errno::XDEV) => {
                 let (from_name, to_name) = (c_name(from_name)?, c_name(to_name)?);
+                // Only what was there before the copy goes after it: whoever
+                // may write the folder could put something else in its place
+                // meanwhile, which the user's rights would then delete.
+                let source = identity(&statat(&from_parent, &from_name, AtFlags::SYMLINK_NOFOLLOW)?);
                 copy_new(from_parent.as_fd(), &from_name, to_parent.as_fd(), &to_name, self.file_system, 0)?;
-                remove_tree(from_parent.as_fd(), &from_name, self.file_system, 0)
+                remove_entry(from_parent.as_fd(), &from_name, self.file_system, 0, Some(source))
             }
             other => Ok(other?),
         }

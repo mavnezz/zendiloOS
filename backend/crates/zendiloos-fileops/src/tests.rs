@@ -435,3 +435,81 @@ fn a_failed_copy_into_another_file_system_leaves_nothing_behind() {
     assert!(copied.is_err(), "an unreadable file was copied");
     assert!(!target.path().join("album").exists(), "the half copy stayed");
 }
+
+#[test]
+fn a_given_up_upload_is_discarded_only_as_a_file() {
+    let v = Volumes::new();
+    let share = v.share("photos");
+    let (file, name) = share.create_upload(&path("")).unwrap();
+    drop(file);
+    share.discard_upload(&path(&name)).unwrap();
+    assert!(!v.exists("photos", &name), "the upload went");
+
+    // Somebody who may write the folder put the user's folder in its place.
+    v.write("photos", "Private/diary.txt", "mine");
+    let (file, name) = share.create_upload(&path("")).unwrap();
+    drop(file);
+    fs::remove_file(v.share_path("photos").join(&name)).unwrap();
+    fs::rename(v.share_path("photos").join("Private"), v.share_path("photos").join(&name)).unwrap();
+    let refused = share.discard_upload(&path(&name));
+    assert!(refused.is_err(), "{refused:?}");
+    assert_eq!(v.read("photos", &format!("{name}/diary.txt")), "mine", "the folder stays");
+
+    v.write("photos", "notes.txt", "x");
+    assert!(matches!(share.discard_upload(&path("notes.txt")), Err(FileError::Invalid(_))), "not an upload");
+    assert!(v.exists("photos", "notes.txt"));
+}
+
+#[test]
+fn what_replaced_the_folder_meant_is_not_removed() {
+    let v = Volumes::new();
+    v.write("photos", "album/a.jpg", "a");
+    v.write("photos", "Private/diary.txt", "mine");
+    let directory =
+        rustix::fs::open(v.share_path("photos"), OFlags::RDONLY | OFlags::DIRECTORY, Mode::empty()).unwrap();
+    let album = identity(&statat(&directory, c"album", AtFlags::SYMLINK_NOFOLLOW).unwrap());
+    let file_system = device(&fstat(&directory).unwrap());
+    // Swapped after its identity was taken, as during a move between shares.
+    let at = |name: &str| v.share_path("photos").join(name);
+    fs::rename(at("album"), at("elsewhere")).unwrap();
+    fs::rename(at("Private"), at("album")).unwrap();
+
+    let refused = remove_entry(directory.as_fd(), c"album", file_system, 0, Some(album));
+
+    assert!(matches!(refused, Err(FileError::Invalid(_))), "{refused:?}");
+    assert_eq!(v.read("photos", "album/diary.txt"), "mine");
+    fs::rename(at("album"), at("Private")).unwrap();
+    fs::rename(at("elsewhere"), at("album")).unwrap();
+    remove_entry(directory.as_fd(), c"album", file_system, 0, Some(album)).unwrap();
+    assert!(!v.exists("photos", "album"));
+}
+
+#[test]
+fn large_folders_are_copied_and_removed_without_reading_them_whole() {
+    let v = Volumes::new();
+    let big = v.share_path("photos").join("big");
+    fs::create_dir_all(&big).unwrap();
+    let count = BATCH * 2 + 17;
+    for n in 0..count {
+        fs::write(big.join(format!("{n:05}.txt")), "").unwrap();
+    }
+    let share = v.share("photos");
+    let copied = share.copy_entry(&path("big"), &v.share("photos"), &path("copy")).unwrap();
+    assert_eq!(fs::read_dir(v.share_path("photos").join(copied.as_str())).unwrap().count(), count);
+    share.remove(&path("big"), None).unwrap();
+    assert!(!v.exists("photos", "big"));
+}
+
+#[test]
+fn an_archive_plan_stays_within_its_limits_while_it_reads() {
+    let v = Volumes::new();
+    let links = v.share_path("photos").join("links");
+    fs::create_dir_all(&links).unwrap();
+    let target = "t".repeat(4000);
+    // Enough long link targets to go over the budget.
+    for n in 0..(MAX_ARCHIVE_NAME_BYTES / 4000 + 2) {
+        symlink(&target, links.join(format!("{n:05}"))).unwrap();
+    }
+    let refused = v.share("photos").plan_archive(&path("links"), "links");
+    assert!(matches!(refused, Err(FileError::Invalid(why)) if why.contains("too long")), "{refused:?}");
+}

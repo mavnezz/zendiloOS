@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
-use zendiloos_kernel::{PortError, RequestContext};
+use zendiloos_kernel::{PortError, RequestContext, Timestamp};
 
 use crate::domain::{
     Access, AppAccess, Favourite, FileLocation, FilePath, FileServices, Frequency, Home, HomesLocation,
@@ -33,6 +33,16 @@ pub trait ShareRepository: Send + Sync {
 
     /// Shares hidden for deletion whose data has not gone yet.
     async fn deleting(&self) -> Result<Vec<Share>, PortError>;
+
+    /// Remembers an upload under way, its hidden file at `at` written as
+    /// `user`, so that what one left when zendiloosd stopped in the middle
+    /// is removed when it starts again. Returns the record's id.
+    async fn add_upload(&self, user: &str, at: &FileLocation, started: Timestamp) -> Result<i64, PortError>;
+
+    async fn remove_upload(&self, id: i64) -> Result<(), PortError>;
+
+    /// The uploads remembered that began before `before`.
+    async fn uploads_before(&self, before: Timestamp) -> Result<Vec<PendingUpload>, PortError>;
 
     /// The share's snapshot schedules, ordered by frequency.
     async fn snapshot_schedules(&self, id: ShareId) -> Result<Vec<SnapshotSchedule>, PortError>;
@@ -83,6 +93,14 @@ pub struct Names {
     pub groups: HashMap<i64, String>,
     /// The accounts in each group, by ID.
     pub members: HashMap<i64, Vec<i64>>,
+}
+
+/// An upload remembered by [`ShareRepository::add_upload`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingUpload {
+    pub id: i64,
+    pub user: String,
+    pub at: FileLocation,
 }
 
 #[async_trait]
@@ -303,6 +321,14 @@ pub trait FileHost: Send + Sync {
         user: &str,
         at: &FileLocation,
         recycle: bool,
+        context: &RequestContext,
+    ) -> Result<(), FileHostError>;
+
+    /// Removes an upload's hidden file that was given up; never a folder.
+    async fn discard_upload(
+        &self,
+        user: &str,
+        at: &FileLocation,
         context: &RequestContext,
     ) -> Result<(), FileHostError>;
 

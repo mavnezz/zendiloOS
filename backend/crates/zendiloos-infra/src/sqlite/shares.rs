@@ -2,11 +2,11 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use zendiloos_kernel::{PortError, Timestamp};
-use zendiloos_sharing::application::ports::{Directory, Names, ShareRepository};
+use zendiloos_sharing::application::ports::{Directory, Names, PendingUpload, ShareRepository};
 use zendiloos_sharing::domain::{
-    Access, AccessRule, AppAccess, Compression, Favourite, FilePath, FileServices, Frequency, Home,
-    HomesLocation, NewShare, NfsClient, Permission, RecordSize, Share, ShareId, ShareName, ShareSettings,
-    SmbEncryption, SmbProtocol, SmbSigning, SnapshotSchedule, Subject, TimeMachine,
+    Access, AccessRule, AppAccess, Compression, Favourite, FileLocation, FilePath, FileRoot, FileServices,
+    Frequency, Home, HomesLocation, NewShare, NfsClient, Permission, RecordSize, Share, ShareId, ShareName,
+    ShareSettings, SmbEncryption, SmbProtocol, SmbSigning, SnapshotSchedule, Subject, TimeMachine,
 };
 
 use super::Database;
@@ -204,6 +204,62 @@ impl ShareRepository for SqliteShares {
 
     async fn find(&self, id: ShareId) -> Result<Option<Share>, PortError> {
         Ok(self.list().await?.into_iter().find(|share| share.id == id))
+    }
+
+    async fn add_upload(&self, user: &str, at: &FileLocation, started: Timestamp) -> Result<i64, PortError> {
+        let share = match &at.root {
+            FileRoot::Share(share) => share.as_str(),
+            FileRoot::Home => "",
+        };
+        let result = sqlx::query(
+            "INSERT INTO pending_uploads (user, volume, share, path, started_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(user)
+        .bind(i64::from(at.volume))
+        .bind(share)
+        .bind(at.path.as_str())
+        .bind(started.unix_seconds())
+        .execute(self.db.pool())
+        .await
+        .map_err(db_error)?;
+        Ok(result.last_insert_rowid())
+    }
+
+    async fn remove_upload(&self, id: i64) -> Result<(), PortError> {
+        sqlx::query("DELETE FROM pending_uploads WHERE id = ?")
+            .bind(id)
+            .execute(self.db.pool())
+            .await
+            .map_err(db_error)?;
+        Ok(())
+    }
+
+    async fn uploads_before(&self, before: Timestamp) -> Result<Vec<PendingUpload>, PortError> {
+        let rows: Vec<(i64, String, i64, String, String)> = sqlx::query_as(
+            "SELECT id, user, volume, share, path FROM pending_uploads WHERE started_at < ? ORDER BY id",
+        )
+        .bind(before.unix_seconds())
+        .fetch_all(self.db.pool())
+        .await
+        .map_err(db_error)?;
+        rows.into_iter()
+            .map(|(id, user, volume, share, path)| {
+                let root = if share.is_empty() {
+                    FileRoot::Home
+                } else {
+                    FileRoot::Share(
+                        ShareName::parse(&share).map_err(|_| stored(format!("upload {id}: share")))?,
+                    )
+                };
+                let at = FileLocation {
+                    volume: u16::try_from(volume).map_err(|_| stored(format!("upload {id}: volume")))?,
+                    root,
+                    path: FilePath::parse(&path).map_err(|_| stored(format!("upload {id}: path")))?,
+                    snapshot: None,
+                };
+                Ok(PendingUpload { id, user, at })
+            })
+            .collect()
     }
 
     async fn create(&self, new: NewShare) -> Result<Option<Share>, PortError> {
@@ -629,6 +685,30 @@ mod tests {
     use super::*;
     use crate::sqlite::tests::temporary_database;
     use crate::sqlite::{SqliteAccounts, SqliteGroups};
+
+    #[tokio::test]
+    async fn uploads_under_way_are_remembered_until_they_end() {
+        let (_dir, db) = temporary_database().await;
+        let shares = SqliteShares::new(db);
+        let at = |root, path: &str| FileLocation {
+            volume: 1,
+            root,
+            path: FilePath::parse(path).unwrap(),
+            snapshot: None,
+        };
+        let photos = at(FileRoot::Share(ShareName::parse("photos").unwrap()), "2024/.zendiloos-upload-1");
+        let home = at(FileRoot::Home, ".zendiloos-upload-2");
+        let first = shares.add_upload("alice", &photos, Timestamp::from_unix_seconds(100)).await.unwrap();
+        shares.add_upload("bob", &home, Timestamp::from_unix_seconds(200)).await.unwrap();
+
+        let before = shares.uploads_before(Timestamp::from_unix_seconds(150)).await.unwrap();
+        assert_eq!(before, [PendingUpload { id: first, user: "alice".into(), at: photos }]);
+        let all = shares.uploads_before(Timestamp::from_unix_seconds(201)).await.unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!((all[1].user.as_str(), &all[1].at), ("bob", &home), "a personal folder");
+        shares.remove_upload(first).await.unwrap();
+        assert_eq!(shares.uploads_before(Timestamp::from_unix_seconds(201)).await.unwrap().len(), 1);
+    }
 
     #[tokio::test]
     async fn file_services_are_the_defaults_until_set() {

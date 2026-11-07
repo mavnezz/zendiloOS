@@ -474,13 +474,33 @@ async fn uploads_get_their_name_at_the_end() {
             "move alice photos:2024/.zendiloos-upload-1 -> photos:2024/a.jpg",
             "create_upload alice photos:2024",
             "move alice photos:2024/.zendiloos-upload-1 -> photos:2024/taken.jpg",
-            "remove alice photos:2024/.zendiloos-upload-1",
+            "discard alice photos:2024/.zendiloos-upload-1",
         ]
     );
     for name in ["", "..", "a/b", ".zendiloos-upload-2"] {
         let upload = s.files.begin_upload(&alice, id, FilePath::root(), name, false, &request).await;
         assert!(matches!(upload, Err(FilesError::InvalidName)), "{name:?}");
     }
+}
+
+#[tokio::test]
+async fn what_an_interrupted_upload_left_goes_when_zendiloos_starts_again() {
+    use zendiloos_kernel::Clock;
+    let s = setup();
+    let id = with_photos(&s).await;
+    let (request, alice) = (RequestContext::default(), alice());
+    let done = s.files.begin_upload(&alice, id, file("2024"), "a.jpg", false, &request).await.unwrap();
+    s.files.finish_upload(&alice, done.ticket, &request).await.unwrap();
+    // Cut off by a stop of zendiloosd: neither finished nor removed.
+    let _cut = s.files.begin_upload(&alice, id, file("2024"), "b.jpg", false, &request).await.unwrap();
+
+    let same_second = s.clock.now();
+    assert_eq!(s.files.discard_leftover_uploads(same_second, &request).await.unwrap(), 0, "may be under way");
+    s.clock.advance(1);
+    let started = s.clock.now();
+    assert_eq!(s.files.discard_leftover_uploads(started, &request).await.unwrap(), 1);
+    assert_eq!(s.file_host.calls().last().unwrap(), "discard alice photos:2024/.zendiloos-upload-1");
+    assert_eq!(s.files.discard_leftover_uploads(started, &request).await.unwrap(), 0, "forgotten");
 }
 
 #[tokio::test]
@@ -923,6 +943,28 @@ async fn members_who_leave_a_denied_group_lose_their_entry() {
     assert!(
         s.sharing.group_members_changed(77, &[1], &alice(), &request).await.unwrap().is_empty(),
         "denied nowhere"
+    );
+}
+
+#[tokio::test]
+async fn new_members_of_a_group_that_writes_get_their_recycle_bins() {
+    let s = setup();
+    let request = RequestContext::default();
+    let photos = alices_photos(&s).await;
+    s.sharing
+        .set_subject_access(Subject::Group(10), &[(photos, Some(Permission::ReadWrite))], &alice(), &request)
+        .await
+        .unwrap();
+    let before = s.host.calls().len();
+
+    let jobs = s.sharing.group_members_changed(10, &[1], &alice(), &request).await.unwrap();
+
+    assert!(jobs.is_empty(), "the group entry covers the files already");
+    let calls = s.host.calls();
+    assert_eq!(
+        calls[before..],
+        ["access 1 photos [alice:rw,@family:rw] -[]".to_owned()],
+        "the folder set again"
     );
 }
 

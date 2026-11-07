@@ -214,6 +214,16 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     let setup_code = announce_setup(&config, &identity).await?;
     let purge = spawn_session_purge(identity.purge_expired_sessions.clone());
     let files = FilesUseCases::new(sharing_ports);
+    // Uploads that began before now were cut off when zendiloosd stopped:
+    // their hidden files go.
+    let leftover = (files.clone(), zendiloos_kernel::Clock::now(&SystemClock));
+    tokio::spawn(async move {
+        match leftover.0.discard_leftover_uploads(leftover.1, &RequestContext::default()).await {
+            Ok(0) => {}
+            Ok(removed) => tracing::info!(removed, "files: removed what interrupted uploads left"),
+            Err(error) => tracing::warn!(%error, "files: cannot remove what interrupted uploads left"),
+        }
+    });
     let installs = Installs::new(InstallPorts {
         catalogs: apps.clone(),
         installed: Arc::new(SqliteInstalledApps::new(database.clone())),

@@ -89,7 +89,10 @@ impl SharingUseCases {
     /// The members of `group` changed from `before`. Where the group is
     /// denied, members who left lose their entry and new ones get one;
     /// where it has a grant, the group entry covers them already, and
-    /// Samba follows the group itself.
+    /// Samba follows the group itself. Where it may write, the share's
+    /// folder is set again, which makes the new members' recycle bins:
+    /// a writer whose bin is not made first could have one made by
+    /// another writer, who would then see what lands in it.
     pub async fn group_members_changed(
         &self,
         group: i64,
@@ -102,7 +105,13 @@ impl SharingUseCases {
         let apps = self.ports.shares.app_access().await?;
         let mut jobs = Vec::new();
         for share in self.ports.shares.list().await? {
-            if share.rule_of(Subject::Group(group)) != Some(Permission::Deny) {
+            let rule = share.rule_of(Subject::Group(group));
+            if rule == Some(Permission::ReadWrite) {
+                let now = acl(&share.access, &names, share.id, &apps);
+                self.ports.host.set_access(share.volume, &share.name, &now, &[], false, request).await?;
+                continue;
+            }
+            if rule != Some(Permission::Deny) {
                 continue;
             }
             let now = acl(&share.access, &names, share.id, &apps);

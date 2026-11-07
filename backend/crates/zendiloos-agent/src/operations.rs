@@ -289,6 +289,7 @@ impl Operations {
             | Request::MoveEntry { .. }
             | Request::CopyEntry { .. }
             | Request::RemoveEntry { .. }
+            | Request::DiscardUpload { .. }
             | Request::RestoreEntry { .. }
             | Request::ArchiveFolder { .. }
             | Request::MakeAppFolders { .. } => {

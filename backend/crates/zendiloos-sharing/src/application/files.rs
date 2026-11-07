@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use zendiloos_jobs::{Job, JobError};
-use zendiloos_kernel::{Actor, PortError, RequestContext};
+use zendiloos_kernel::{Actor, PortError, RequestContext, Timestamp};
 
 use super::SharingPorts;
 use super::ports::FileHostError;
@@ -155,6 +155,8 @@ pub struct UploadTicket {
     temporary: FileLocation,
     target: FileLocation,
     replace: bool,
+    /// Its record, until it is finished or removed.
+    record: i64,
 }
 
 /// All use cases of the file manager. Cheap to clone.
@@ -380,7 +382,17 @@ impl FilesUseCases {
         let folder = at(&share, directory.clone());
         let (file, temporary) = self.ports.files.create_upload(&actor.name, &folder, context).await?;
         let temporary = at(&share, directory.join(&temporary)?);
-        Ok(Upload { file, ticket: UploadTicket { temporary, target, replace } })
+        let started = self.ports.clock.now();
+        let record = match self.ports.shares.add_upload(&actor.name, &temporary, started).await {
+            Ok(record) => record,
+            Err(error) => {
+                if let Err(left) = self.ports.files.discard_upload(&actor.name, &temporary, context).await {
+                    tracing::warn!(error = %left, share = %temporary.root, "cannot remove an upload not begun");
+                }
+                return Err(error.into());
+            }
+        };
+        Ok(Upload { file, ticket: UploadTicket { temporary, target, replace, record } })
     }
 
     /// Gives the uploaded file its name. On failure, the upload is removed.
@@ -395,6 +407,7 @@ impl FilesUseCases {
         {
             Ok(()) => {
                 tracing::info!(user = actor.name, share = %ticket.target.root, "files: uploaded");
+                self.forget_upload(ticket.record).await;
                 Ok(ticket.target.path)
             }
             Err(error) => {
@@ -404,10 +417,42 @@ impl FilesUseCases {
         }
     }
 
+    /// Removes the upload's hidden file, as a file only: whoever may write
+    /// the folder could have put one of the user's folders in its place.
     pub async fn abort_upload(&self, actor: &Actor, ticket: UploadTicket, context: &RequestContext) {
-        if let Err(error) = self.ports.files.remove(&actor.name, &ticket.temporary, false, context).await {
+        if let Err(error) = self.ports.files.discard_upload(&actor.name, &ticket.temporary, context).await {
             tracing::warn!(%error, share = %ticket.temporary.root, "cannot remove an aborted upload");
         }
+        self.forget_upload(ticket.record).await;
+    }
+
+    async fn forget_upload(&self, record: i64) {
+        if let Err(error) = self.ports.shares.remove_upload(record).await {
+            tracing::warn!(%error, record, "cannot forget an upload");
+        }
+    }
+
+    /// Removes the hidden files of uploads that began before `before`, when
+    /// zendiloosd started, and were neither finished nor removed: it stopped
+    /// in the middle of them. Each goes as the user who uploaded it, and only
+    /// as a file. Says how many were removed.
+    pub async fn discard_leftover_uploads(
+        &self,
+        before: Timestamp,
+        context: &RequestContext,
+    ) -> Result<usize, FilesError> {
+        let mut removed = 0;
+        for upload in self.ports.shares.uploads_before(before).await? {
+            match self.ports.files.discard_upload(&upload.user, &upload.at, context).await {
+                Ok(()) => removed += 1,
+                Err(FileHostError::NotFound) => {}
+                Err(error) => {
+                    tracing::warn!(%error, share = %upload.at.root, "cannot remove a leftover upload")
+                }
+            }
+            self.forget_upload(upload.id).await;
+        }
+        Ok(removed)
     }
 
     pub async fn make_directory(

@@ -560,6 +560,13 @@ pub enum Request {
         location: FileLocation,
         recycle: bool,
     },
+    /// Removes the hidden file of an upload that was given up
+    /// (`.zendiloos-upload-…`): only a file of that name, never a folder,
+    /// which whoever may write there could have put in its place.
+    DiscardUpload {
+        user: UserName,
+        location: FileLocation,
+    },
     /// Moves an entry of the user's recycle bin back to where it was
     /// deleted from, or beside it if the name is taken. Answers
     /// [`Response::Restored`].
@@ -676,6 +683,7 @@ impl Request {
             Request::MoveEntry { .. } => "move_entry",
             Request::CopyEntry { .. } => "copy_entry",
             Request::RemoveEntry { .. } => "remove_entry",
+            Request::DiscardUpload { .. } => "discard_upload",
             Request::RestoreEntry { .. } => "restore_entry",
             Request::ArchiveFolder { .. } => "archive_folder",
         }
@@ -1019,6 +1027,7 @@ impl Request {
             | Request::MoveEntry { .. }
             | Request::CopyEntry { .. }
             | Request::RemoveEntry { .. }
+            | Request::DiscardUpload { .. }
             | Request::RestoreEntry { .. }
             | Request::ArchiveFolder { .. }
             | Request::MakeAppFolders { .. } => Role::Files,

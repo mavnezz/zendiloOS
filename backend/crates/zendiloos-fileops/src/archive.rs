@@ -13,20 +13,32 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 
-use rustix::fs::{AtFlags, FileType, OFlags, fstat, readlinkat, statat};
+use rustix::fs::{AtFlags, Dir, FileType, OFlags, fstat, readlinkat, statat};
 use zendiloos_agent_proto::SharePath;
 
 use super::{
-    FileError, MAX_DEPTH, RECYCLE_DIRECTORY, ShareRoot, UPLOAD_PREFIX, device, kind, names,
-    open_beneath_flags,
+    FileError, MAX_DEPTH, RECYCLE_DIRECTORY, ShareRoot, UPLOAD_PREFIX, device, kind, open_beneath_flags,
 };
 
 /// The most entries one archive holds.
 pub const MAX_ARCHIVE_ENTRIES: usize = 100_000;
+/// The most bytes of names and link targets one plan holds: whoever may
+/// write the folder could fill it with long names or links to long
+/// targets, and the plan must not take the files agent's memory.
+pub const MAX_ARCHIVE_NAME_BYTES: usize = 32 * 1024 * 1024;
 
 const BLOCK: u64 = 512;
 /// The largest size and time the ustar header's octal fields hold.
 const OCTAL_11: u64 = 0o77_777_777_777;
+
+/// Counts `length` more bytes of names and targets against the plan's limit.
+fn spend(bytes: &mut usize, length: usize) -> Result<(), FileError> {
+    *bytes += length;
+    if *bytes > MAX_ARCHIVE_NAME_BYTES {
+        return Err(FileError::Invalid("the names are too long for one download"));
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Kind {
@@ -103,7 +115,8 @@ impl ShareRoot {
             mode: stat.st_mode,
             modified: stat.st_mtime,
         }];
-        self.plan_folder(folder.as_fd(), 0, 0, path.is_root(), &mut entries)?;
+        let mut bytes = 0;
+        self.plan_folder(folder.as_fd(), 0, 0, path.is_root(), &mut entries, &mut bytes)?;
         let mut plan = ArchivePlan { root: name.as_bytes().to_vec(), entries, length: 2 * BLOCK };
         let length: u64 = (0..plan.entries.len()).map(|index| entry_length(&plan, index)).sum();
         plan.length += length;
@@ -117,21 +130,33 @@ impl ShareRoot {
         depth: u32,
         share_top: bool,
         entries: &mut Vec<Entry>,
+        bytes: &mut usize,
     ) -> Result<(), FileError> {
         if depth >= MAX_DEPTH {
             return Err(FileError::Invalid("folders are nested too deeply"));
         }
-        let mut children = names(folder)?;
-        children.sort();
-        for child in children {
-            let bytes = child.to_bytes();
-            if bytes.starts_with(UPLOAD_PREFIX.as_bytes())
-                || (share_top && bytes == RECYCLE_DIRECTORY.as_bytes())
-            {
+        let too_many = || FileError::Invalid("too many files for one download");
+        // The limits hold while the folder is read, not after.
+        let mut children = Vec::new();
+        for item in Dir::read_from(folder)? {
+            let item = item?;
+            let name = item.file_name();
+            let raw = name.to_bytes();
+            let skipped = raw.starts_with(UPLOAD_PREFIX.as_bytes())
+                || (share_top && raw == RECYCLE_DIRECTORY.as_bytes());
+            if name == c"." || name == c".." || skipped {
                 continue;
             }
+            if entries.len() + children.len() >= MAX_ARCHIVE_ENTRIES {
+                return Err(too_many());
+            }
+            spend(bytes, raw.len())?;
+            children.push(name.to_owned());
+        }
+        children.sort();
+        for child in children {
             if entries.len() >= MAX_ARCHIVE_ENTRIES {
-                return Err(FileError::Invalid("too many files for one download"));
+                return Err(too_many());
             }
             let stat = statat(folder, child.as_c_str(), AtFlags::SYMLINK_NOFOLLOW)?;
             let (mode, modified, parent) = (stat.st_mode, stat.st_mtime, Some(index));
@@ -140,7 +165,7 @@ impl ShareRoot {
                     let inner = open_beneath_flags(folder, &child, OFlags::RDONLY | OFlags::DIRECTORY)?;
                     entries.push(Entry { parent, name: child, kind: Kind::Directory, mode, modified });
                     let own = entries.len() - 1;
-                    self.plan_folder(inner.as_fd(), own, depth + 1, false, entries)?;
+                    self.plan_folder(inner.as_fd(), own, depth + 1, false, entries, bytes)?;
                 }
                 FileType::RegularFile => {
                     // Opened once now: what cannot be read refuses the archive.
@@ -150,6 +175,7 @@ impl ShareRoot {
                 }
                 FileType::Symlink => {
                     let target = readlinkat(folder, child.as_c_str(), Vec::new())?.into_bytes();
+                    spend(bytes, target.len())?;
                     entries.push(Entry {
                         parent,
                         name: child,

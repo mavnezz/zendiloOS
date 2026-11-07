@@ -2436,7 +2436,7 @@ async fn users_work_with_files_in_their_shares() {
             "move bob photos:2024/.zendiloos-upload-1 -> photos:2024/b.jpg",
             "create_upload bob photos:2024",
             "move bob photos:2024/.zendiloos-upload-1 -> photos:2024/taken.jpg",
-            "remove bob photos:2024/.zendiloos-upload-1",
+            "discard bob photos:2024/.zendiloos-upload-1",
             "open carol photos:2024/a.jpg",
             "mkdir bob photos:2025",
             "move bob photos:2024/b.jpg -> photos:2024/c.jpg",
