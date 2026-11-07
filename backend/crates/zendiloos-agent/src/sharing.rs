@@ -24,8 +24,6 @@ use crate::pools::{HostPaths, run};
 const LIMITS: Limits = Limits { timeout: Duration::from_secs(120), max_stdout: 1024 * 1024 };
 /// Permissions of a whole tree: large shares take a while, and a change of
 /// access must not die halfway.
-const TREE_LIMITS: Limits = Limits { timeout: Duration::from_secs(6 * 3600), max_stdout: 1024 * 1024 };
-
 pub use zendiloos_fileops::RECYCLE_DIRECTORY;
 const HEADER: &str = "# Written by zendiloOS. Changes here are overwritten; use the web interface.\n";
 /// WS-Discovery, so Windows lists the NAS; recommended, not required.
@@ -219,9 +217,7 @@ fn write_atomically(path: &Path, content: &str) -> Result<(), OperationError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| OperationError::Write(parent.to_owned(), e))?;
     }
-    let temporary = path.with_extension("new");
-    fs::write(&temporary, content).map_err(|e| OperationError::Write(temporary.clone(), e))?;
-    fs::rename(&temporary, path).map_err(|e| OperationError::Write(path.to_owned(), e))
+    crate::durable::replace(path, content.as_bytes())
 }
 
 impl Sharing {
@@ -468,14 +464,11 @@ impl Sharing {
         }
 
         if recursive {
-            let contents = tree_entries(&path)?;
             let mut modify = entries(false, true);
             modify.extend(entries(true, false));
             let removals: Vec<String> =
                 removed.iter().flat_map(|p| [acl_entry(p), format!("d:{}", acl_entry(p))]).collect();
-            for args in tree_commands(&contents, &removals, &modify) {
-                zendiloos_exec::run(&self.setfacl, &args, TREE_LIMITS).await?.success(&self.setfacl)?;
-            }
+            self.change_tree(&path, &removals, &modify).await?;
         }
         Ok(Response::Done)
     }
@@ -559,37 +552,92 @@ fn prepare_bin(bin: &fs::File, user: &str, uid: u32, gid: u32) -> Result<(), Ope
     Ok(())
 }
 
-/// What the recursive change of a share's permissions works on: the
-/// entries of its root, without the recycle bins and without links. As an
-/// argument, setfacl would follow a link anywhere (another share, the
-/// system).
-fn tree_entries(root: &Path) -> Result<Vec<String>, OperationError> {
-    Ok(fs::read_dir(root)
-        .map_err(|e| OperationError::Read(root.to_owned(), e))?
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_name() != RECYCLE_DIRECTORY)
-        .filter(|entry| entry.file_type().is_ok_and(|kind| !kind.is_symlink()))
-        .map(|entry| entry.path().to_string_lossy().into_owned())
-        .collect())
-}
+/// Folders deeper than this are not looked into.
+const MAX_DEPTH: usize = 256;
 
-/// The setfacl calls for `entries`: removing first, so access taken away is
-/// gone even if adding fails; `-P` skips links met inside folders; at most
-/// 256 paths per call.
-fn tree_commands(entries: &[String], removals: &[String], modify: &[String]) -> Vec<Vec<String>> {
-    let mut commands = Vec::new();
-    for (option, list) in [("-x", removals), ("-m", modify)] {
-        if list.is_empty() {
-            continue;
+impl Sharing {
+    /// Changes the permissions of everything below a share's root (not the
+    /// root, which is set on its own): access taken away first, so it is
+    /// gone even if giving fails. Each folder and file is reached by
+    /// descriptor and changed through it (`/proc/self/fd/0`), never by its
+    /// path: whoever may write the share could swap a folder for a link
+    /// while the change goes on, and setfacl's own walk (`-R`) would follow
+    /// it, onto other shares, the bins or `@docker`. Links, other file
+    /// systems and the recycle bins are left alone.
+    async fn change_tree(
+        &self,
+        root: &Path,
+        removals: &[String],
+        modify: &[String],
+    ) -> Result<(), OperationError> {
+        let folder_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        let unreadable = |e: rustix::io::Errno| OperationError::Read(root.to_owned(), e.into());
+        let top = openat(CWD, root, folder_flags, Mode::empty()).map_err(unreadable)?;
+        let device = rustix::fs::fstat(&top).map_err(unreadable)?.st_dev;
+        let mut folders = vec![(top, 0)];
+        while let Some((folder, depth)) = folders.pop() {
+            let mut names = Vec::new();
+            for entry in rustix::fs::Dir::read_from(&folder).map_err(unreadable)? {
+                let name = entry.map_err(unreadable)?.file_name().to_owned();
+                let own = name.as_c_str() == c"." || name.as_c_str() == c"..";
+                let bin = depth == 0 && name.as_bytes() == RECYCLE_DIRECTORY.as_bytes();
+                if !own && !bin {
+                    names.push(name);
+                }
+            }
+            for name in names {
+                // Gone, or swapped for a link, since it was listed: skipped.
+                let Ok(stat) = rustix::fs::statat(&folder, &name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW)
+                else {
+                    continue;
+                };
+                let kind = rustix::fs::FileType::from_raw_mode(stat.st_mode);
+                if kind == rustix::fs::FileType::Symlink || stat.st_dev != device {
+                    continue;
+                }
+                let is_folder = kind == rustix::fs::FileType::Directory;
+                let flags =
+                    if is_folder { folder_flags } else { OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC };
+                let Ok(entry) = openat(&folder, &name, flags, Mode::empty()) else { continue };
+                let opened = rustix::fs::fstat(&entry).map_err(unreadable)?;
+                let still = rustix::fs::FileType::from_raw_mode(opened.st_mode);
+                if still == rustix::fs::FileType::Symlink
+                    || opened.st_dev != device
+                    || (still == rustix::fs::FileType::Directory) != is_folder
+                {
+                    continue;
+                }
+                self.change_one(&entry, is_folder, removals, modify).await?;
+                if is_folder && depth + 1 < MAX_DEPTH {
+                    folders.push((entry, depth + 1));
+                }
+            }
         }
-        for chunk in entries.chunks(256) {
-            let mut args =
-                vec!["-R".to_owned(), "-P".to_owned(), option.to_owned(), list.join(","), "--".to_owned()];
-            args.extend(chunk.iter().cloned());
-            commands.push(args);
-        }
+        Ok(())
     }
-    commands
+
+    /// `setfacl -x` then `-m` on the entry behind `entry`; default entries
+    /// (`d:`) for folders only.
+    async fn change_one(
+        &self,
+        entry: &std::os::fd::OwnedFd,
+        folder: bool,
+        removals: &[String],
+        modify: &[String],
+    ) -> Result<(), OperationError> {
+        for (option, list) in [("-x", removals), ("-m", modify)] {
+            let kept: Vec<&str> =
+                list.iter().map(String::as_str).filter(|entry| folder || !entry.starts_with("d:")).collect();
+            if kept.is_empty() {
+                continue;
+            }
+            let file =
+                fs::File::from(entry.try_clone().map_err(|e| OperationError::Write(PathBuf::from("."), e))?);
+            let args = [option, &kept.join(","), "--", "/proc/self/fd/0"];
+            zendiloos_exec::run_on(&self.setfacl, args, file, LIMITS).await?.success(&self.setfacl)?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -651,41 +699,49 @@ mod tests {
         ShareAccess { principal, permission }
     }
 
-    #[test]
-    fn permission_changes_leave_links_and_the_recycle_bins_alone() {
+    #[tokio::test]
+    async fn a_tree_is_changed_entry_by_entry_through_descriptors() {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        fs::create_dir(root.join("album")).unwrap();
+        let root = dir.path().join("share");
+        fs::create_dir_all(root.join("album/2024")).unwrap();
+        fs::write(root.join("album/2024/a.jpg"), "x").unwrap();
         fs::write(root.join("notes.txt"), "x").unwrap();
-        fs::create_dir(root.join(RECYCLE_DIRECTORY)).unwrap();
-        std::os::unix::fs::symlink("/", root.join("everything")).unwrap();
-        std::os::unix::fs::symlink(root.join("album"), root.join("shortcut")).unwrap();
+        fs::create_dir_all(root.join(RECYCLE_DIRECTORY).join("anna")).unwrap();
+        let elsewhere = dir.path().join("elsewhere");
+        fs::create_dir(&elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, root.join("escape")).unwrap();
+        // setfacl as it is called: its arguments and what descriptor 0 is.
+        let log = dir.path().join("setfacl.log");
+        let setfacl = dir.path().join("setfacl");
+        fs::write(
+            &setfacl,
+            format!("#!/bin/sh\necho \"$* $(readlink /proc/self/fd/0)\" >> {}\n", log.display()),
+        )
+        .unwrap();
+        fs::set_permissions(&setfacl, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let tools = Tools { setfacl, ..Tools::default() };
+        let accounts = crate::accounts::AccountFiles::default();
+        let sharing = Sharing::new(&tools, HostPaths::default(), accounts).unwrap();
+        let removals = ["u:bob".to_owned(), "d:u:bob".to_owned()];
+        let modify = ["u:anna:rwX".to_owned(), "d:u:anna:rwX".to_owned()];
 
-        let mut found = tree_entries(root).unwrap();
-        found.sort();
+        sharing.change_tree(&root, &removals, &modify).await.unwrap();
 
-        let path = |name: &str| root.join(name).to_string_lossy().into_owned();
-        assert_eq!(found, [path("album"), path("notes.txt")]);
-    }
-
-    #[test]
-    fn access_is_taken_away_before_it_is_given() {
-        let entries = vec!["/volume1/photos/a".to_owned(), "/volume1/photos/b".to_owned()];
-        let removals = vec!["u:bob".to_owned(), "d:u:bob".to_owned()];
-        let modify = vec!["u:anna:rwX".to_owned()];
-
-        let commands = tree_commands(&entries, &removals, &modify);
-
-        let shown: Vec<String> = commands.iter().map(|c| c.join(" ")).collect();
-        assert_eq!(
-            shown,
-            [
-                "-R -P -x u:bob,d:u:bob -- /volume1/photos/a /volume1/photos/b",
-                "-R -P -m u:anna:rwX -- /volume1/photos/a /volume1/photos/b",
-            ]
-        );
-        let many: Vec<String> = (0..300).map(|i| format!("/v/{i}")).collect();
-        assert_eq!(tree_commands(&many, &[], &modify).len(), 2, "256 paths per call");
+        let shown = |path: &str| root.join(path).display().to_string();
+        let mut calls: Vec<String> = fs::read_to_string(&log).unwrap().lines().map(str::to_owned).collect();
+        calls.sort();
+        let mut expected = vec![
+            format!("-m u:anna:rwX,d:u:anna:rwX -- /proc/self/fd/0 {}", shown("album")),
+            format!("-m u:anna:rwX,d:u:anna:rwX -- /proc/self/fd/0 {}", shown("album/2024")),
+            format!("-m u:anna:rwX -- /proc/self/fd/0 {}", shown("album/2024/a.jpg")),
+            format!("-m u:anna:rwX -- /proc/self/fd/0 {}", shown("notes.txt")),
+            format!("-x u:bob,d:u:bob -- /proc/self/fd/0 {}", shown("album")),
+            format!("-x u:bob,d:u:bob -- /proc/self/fd/0 {}", shown("album/2024")),
+            format!("-x u:bob -- /proc/self/fd/0 {}", shown("album/2024/a.jpg")),
+            format!("-x u:bob -- /proc/self/fd/0 {}", shown("notes.txt")),
+        ];
+        expected.sort();
+        assert_eq!(calls, expected, "neither the link nor the bins, default entries on folders only");
     }
 
     #[test]

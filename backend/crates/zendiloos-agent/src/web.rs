@@ -58,10 +58,7 @@ impl Web {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| OperationError::Write(parent.to_owned(), e))?;
         }
-        let temporary = path.with_extension("new");
-        fs::write(&temporary, tls_config(minimum))
-            .map_err(|e| OperationError::Write(temporary.clone(), e))?;
-        fs::rename(&temporary, path).map_err(|e| OperationError::Write(path.clone(), e))?;
+        crate::durable::replace(path, tls_config(minimum).as_bytes())?;
         // Not running (a container, the simulator's host): nothing to reload.
         zendiloos_exec::run(&self.systemctl, &["try-reload-or-restart", "nginx.service"], LIMITS)
             .await?

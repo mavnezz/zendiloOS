@@ -256,6 +256,20 @@ async fn a_request_whose_client_gave_up_waiting_is_not_carried_out() {
 }
 
 #[tokio::test]
+async fn a_request_under_way_is_seen_through_when_the_agent_stops() {
+    let mut agent = Agent::start(None, 0).await;
+    fs::write(agent.dir.path().join("slow"), "").unwrap();
+    let client = agent.client();
+    let running = tokio::spawn(async move { client.call(Request::ListBlockDevices {}, None).await });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let _ = agent.stop.take().unwrap().send(());
+
+    let answer = running.await.unwrap();
+    assert!(matches!(answer, Ok(Response::BlockDevices { .. })), "{answer:?}");
+}
+
+#[tokio::test]
 async fn refuses_requests_outside_the_protocol() {
     let agent = Agent::start(None, 0).await;
     for request in [

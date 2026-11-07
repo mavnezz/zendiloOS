@@ -134,19 +134,29 @@ fn error_response(code: ErrorCode, message: &str) -> Response {
 /// Serves connections until `shutdown` resolves.
 pub async fn serve(listener: UnixListener, server: Server, shutdown: impl Future<Output = ()>) {
     tokio::pin!(shutdown);
+    let mut running = tokio::task::JoinSet::new();
     loop {
         tokio::select! {
             accepted = listener.accept() => match accepted {
                 Ok((stream, _)) => {
                     let server = server.clone();
-                    tokio::spawn(async move { server.handle(stream).await });
+                    running.spawn(async move { server.handle(stream).await });
                 }
                 Err(error) => {
                     tracing::warn!(%error, "accept failed");
                     tokio::time::sleep(Duration::from_millis(100)).await;
                 }
             },
+            Some(_) = running.join_next(), if !running.is_empty() => {}
             () = &mut shutdown => break,
         }
     }
+    // Asked to stop (a package upgrade, a restart): nothing new is taken,
+    // and what runs is seen through, or a pool's change or a copy of
+    // Docker's data would stop halfway. systemd's TimeoutStopSec bounds it.
+    drop(listener);
+    if !running.is_empty() {
+        tracing::info!(running = running.len(), "stopping once the running operations are done");
+    }
+    while running.join_next().await.is_some() {}
 }

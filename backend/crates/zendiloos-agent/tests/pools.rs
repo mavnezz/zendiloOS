@@ -700,6 +700,34 @@ async fn dockers_data_moves_only_between_pools_zendiloos_made() {
 }
 
 #[tokio::test]
+async fn a_group_left_by_an_interrupted_making_is_taken_over() {
+    let host = host(Erasable::Policy(ErasePolicy::Unused));
+    let prepare = |app: &str| Request::PrepareApp {
+        app: AppName::parse(app).unwrap(),
+        pool: PoolName::parse("tank").unwrap(),
+        volume: VolumeNumber::new(1).unwrap(),
+    };
+    // groupadd ran, useradd did not: a restart in between.
+    fs::write(
+        host.path("group"),
+        "root:x:0:\nzendiloos-users:x:990:\napp-kuma:x:2000:\napp-taken:x:2001:anna\napp-foreign:x:1500:\n",
+    )
+    .unwrap();
+
+    assert_eq!(host.run(prepare("kuma")).await, Response::Done);
+
+    let calls = host.calls();
+    assert!(!calls.iter().any(|call| call.starts_with("groupadd")), "the group is kept: {calls:?}");
+    let useradd = calls.iter().find(|call| call.starts_with("useradd")).expect("the user is made");
+    assert!(useradd.contains("--gid app-kuma"), "{useradd}");
+    // Not a group someone is in, nor one zendiloOS did not number.
+    for taken in ["taken", "foreign"] {
+        let Response::Error { code, .. } = host.run(prepare(taken)).await else { panic!("{taken} made") };
+        assert_eq!(code, ErrorCode::Conflict, "{taken}");
+    }
+}
+
+#[tokio::test]
 async fn an_app_gets_a_dataset_and_an_account_of_its_own() {
     let host = host(Erasable::Policy(ErasePolicy::Unused));
     let prepare = |app: &str| Request::PrepareApp {

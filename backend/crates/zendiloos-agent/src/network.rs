@@ -102,9 +102,7 @@ pub(crate) fn networkd_file(config: &NetworkConfig) -> String {
 }
 
 fn write_atomically(path: &Path, content: &str) -> Result<(), OperationError> {
-    let temporary = path.with_extension("zendiloos-new");
-    fs::write(&temporary, content).map_err(|e| OperationError::Write(temporary.clone(), e))?;
-    fs::rename(&temporary, path).map_err(|e| OperationError::Write(path.to_owned(), e))
+    crate::durable::replace(path, content.as_bytes())
 }
 
 impl Network {
@@ -233,7 +231,7 @@ impl Network {
         let restored = match fs::read_to_string(&previous) {
             Ok(content) if content == NO_FILE => fs::remove_file(&file)
                 .or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) }),
-            Ok(content) => fs::write(&file, content),
+            Ok(content) => crate::durable::replace(&file, content.as_bytes()).map_err(std::io::Error::other),
             Err(error) => Err(error),
         };
         match restored.and_then(|()| fs::remove_file(&previous)) {

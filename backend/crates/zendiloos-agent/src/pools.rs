@@ -549,10 +549,7 @@ impl Pools {
     }
 
     async fn install_unit(&self, unit: &str, content: &str) -> Result<(), OperationError> {
-        let path = self.paths.units.join(unit);
-        let temporary = path.with_extension("mount.new");
-        fs::write(&temporary, content).map_err(|e| OperationError::Write(temporary.clone(), e))?;
-        fs::rename(&temporary, &path).map_err(|e| OperationError::Write(path.clone(), e))?;
+        crate::durable::replace(&self.paths.units.join(unit), content.as_bytes())?;
         run(&self.systemctl, &["daemon-reload"]).await?;
         run(&self.systemctl, &["enable", "--now", unit]).await
     }
@@ -1171,9 +1168,7 @@ fn docker_config(
 }
 
 fn write_file(path: &std::path::Path, content: &str) -> Result<(), OperationError> {
-    let temporary = path.with_extension("zendiloos-new");
-    fs::write(&temporary, content).map_err(|e| OperationError::Write(temporary.clone(), e))?;
-    fs::rename(&temporary, path).map_err(|e| OperationError::Write(path.to_owned(), e))
+    crate::durable::replace(path, content.as_bytes())
 }
 
 pub(crate) fn share_unit_name(volume: VolumeNumber, share: &ShareName) -> String {

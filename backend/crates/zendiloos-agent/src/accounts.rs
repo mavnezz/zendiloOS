@@ -263,17 +263,31 @@ impl Accounts {
             return Ok(());
         }
         let name = app.account();
-        if passwd::lookup(&passwd, &name).is_some() || passwd::group_id(&group, &name).is_some() {
+        if passwd::lookup(&passwd, &name).is_some() {
+            return Err(OperationError::Conflict);
+        }
+        // A group of this name with no user is what a making stopped
+        // between groupadd and useradd leaves (a restart): taken over if
+        // zendiloOS gave it its ID and nobody is in it.
+        let left = passwd::group_id(&group, &name);
+        if left.is_some_and(|gid| !MANAGED_IDS.contains(&gid) || !passwd::members(&group, &name).is_empty()) {
             return Err(OperationError::Conflict);
         }
         let marks = self.read_high_water()?;
-        let gid = next_id(&group, &marks, IdKind::Group)
-            .ok_or_else(|| OperationError::Setup("no group IDs left".to_owned()))?;
-        let marks = set_high_water(&marks, IdKind::Group, gid);
+        let (gid, marks) = match left {
+            Some(gid) => (gid, marks),
+            None => {
+                let gid = next_id(&group, &marks, IdKind::Group)
+                    .ok_or_else(|| OperationError::Setup("no group IDs left".to_owned()))?;
+                (gid, set_high_water(&marks, IdKind::Group, gid))
+            }
+        };
         let uid = next_id(&passwd, &marks, IdKind::User)
             .ok_or_else(|| OperationError::Setup("no user IDs left".to_owned()))?;
         self.write_high_water(&set_high_water(&marks, IdKind::User, uid))?;
-        run(&self.groupadd, &["--gid", &gid.to_string(), "--", &name]).await?;
+        if left.is_none() {
+            run(&self.groupadd, &["--gid", &gid.to_string(), "--", &name]).await?;
+        }
         let args = [
             "--no-log-init",
             "--no-create-home",
@@ -333,9 +347,8 @@ impl Accounts {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| OperationError::Write(parent.to_owned(), e))?;
         }
-        let temporary = path.with_extension("new");
-        std::fs::write(&temporary, content).map_err(|e| OperationError::Write(temporary.clone(), e))?;
-        std::fs::rename(&temporary, path).map_err(|e| OperationError::Write(path.clone(), e))
+        // Lost in a power cut, a deleted account's IDs could be handed out again.
+        crate::durable::replace(path, content.as_bytes())
     }
 
     async fn read_files(&self) -> Result<(String, String), OperationError> {

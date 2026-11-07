@@ -11,6 +11,7 @@ mod apps;
 pub mod config;
 mod console;
 mod docker;
+mod durable;
 mod files;
 mod network;
 mod operations;

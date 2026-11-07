@@ -22,6 +22,9 @@
 # installed; ZENDILOOS_VM picks it, so the usual one can stay as it is.
 set -euo pipefail
 
+# The second VM unless told otherwise: the first holds a LAN test.
+export ZENDILOOS_VM=${ZENDILOOS_VM:-2}
+
 root=$(cd "$(dirname "$0")/.." && pwd)
 old=${1:?usage: $0 OLD.deb [NEW.deb]}
 new=${2:-$(ls -t "$root"/dist/zendiloos_*_amd64.deb 2>/dev/null | head -1)}

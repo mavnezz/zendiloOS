@@ -12,6 +12,9 @@
 # pool of its own; puts every setting back as a fresh install has it.
 set -euo pipefail
 
+# The second VM unless told otherwise: the first holds a LAN test.
+export ZENDILOOS_VM=${ZENDILOOS_VM:-2}
+
 root=$(cd "$(dirname "$0")/.." && pwd)
 base="https://127.0.0.1:${ZENDILOOS_HTTPS_PORT:-$((8442 + ${ZENDILOOS_VM:-1}))}"
 api="$base/api/v1"

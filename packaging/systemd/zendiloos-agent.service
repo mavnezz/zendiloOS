@@ -6,6 +6,8 @@ After=zendiloos-agent.socket
 
 # Started on demand through zendiloos-agent.socket; no [Install] section.
 [Service]
+# Operations under way are seen through when it is asked to stop.
+TimeoutStopSec=2h
 ExecStart=/usr/libexec/zendiloos/zendiloos-agent
 
 # Root, but with only what the operations need; each new operation widens
