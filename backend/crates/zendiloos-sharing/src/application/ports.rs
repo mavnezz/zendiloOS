@@ -107,6 +107,14 @@ pub trait Volumes: Send + Sync {
     async fn volumes(&self, context: &RequestContext) -> Result<Vec<Volume>, PortError>;
 }
 
+/// Administrators' Compose projects (the Containers context's) that live in
+/// a share or mount something of it.
+#[async_trait]
+pub trait ShareProjects: Send + Sync {
+    /// Their names, for the share `share` at `path` (`/volume<N>/<name>`).
+    async fn using(&self, share: ShareId, path: &str) -> Result<Vec<String>, PortError>;
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum HostError {
     /// A safety check on the host refused.

@@ -44,6 +44,10 @@ pub enum SharingError {
     /// Apps mount the share; they are named.
     #[error("apps use this share: {0}")]
     UsedByApps(String),
+    /// Administrators' projects live in the share or mount something of
+    /// it; they are named.
+    #[error("projects use this share: {0}")]
+    UsedByProjects(String),
     #[error("refused by the host: {0}")]
     Refused(String),
     #[error(transparent)]
@@ -614,6 +618,11 @@ impl SharingUseCases {
         if !users.is_empty() {
             return Err(SharingError::UsedByApps(users.join(", ")));
         }
+        let path = format!("/volume{}/{}", share.volume, share.name.as_str());
+        let projects = self.ports.projects.using(share.id, &path).await?;
+        if !projects.is_empty() {
+            return Err(SharingError::UsedByProjects(projects.join(", ")));
+        }
         // Offered no more before its data goes, but recorded until it has
         // gone: if applying fails, the share is back as it was; if its data
         // cannot go, that is tried again (finish_deletions).
@@ -634,12 +643,21 @@ impl SharingUseCases {
                 Some(actor),
                 move |progress| async move {
                     progress.step("destroying", None).await;
-                    let mut outcome = this
-                        .ports
-                        .host
-                        .destroy_dataset(&share.pool, share.volume, &share.name, &request_owned)
-                        .await
-                        .map_err(SharingError::from);
+                    let destroyed =
+                        this.ports.host.destroy_dataset(&share.pool, share.volume, &share.name, &request_owned).await;
+                    // Refused before anything went (something still uses it):
+                    // the share is offered again, not left to be deleted later.
+                    if let Err(HostError::Refused(reason)) = &destroyed {
+                        let _changes = this.changes.lock().await;
+                        let back = async {
+                            this.ports.shares.set_deleting(share.id, false).await?;
+                            this.apply_locked(&request_owned).await
+                        };
+                        if let Err(error) = back.await {
+                            tracing::error!(share = share.name.as_str(), %error, reason, "a share whose deletion was refused is not offered again");
+                        }
+                    }
+                    let mut outcome = destroyed.map_err(SharingError::from);
                     if outcome.is_ok() {
                         outcome = this.ports.shares.delete(share.id).await.map_err(SharingError::from);
                     }

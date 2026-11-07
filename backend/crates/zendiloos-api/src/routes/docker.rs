@@ -583,7 +583,9 @@ async fn places(auth: Auth, State(state): State<ApiState>) -> Result<Json<Vec<Pr
 pub struct ComposeRisk {
     pub service: String,
     /// `privileged`, `docker_socket`, `system_path`, `host_network`,
-    /// `host_namespace`, `devices`, `capabilities`, `unconfined`, `unusual`.
+    /// `host_namespace`, `devices`, `capabilities`, `unconfined`, `unusual`,
+    /// `from_share` (takes in files: `build`, `env_file`, `extends`,
+    /// `include`; `service` is empty for `include`).
     pub kind: String,
     /// The path, namespace, devices, capabilities or setting.
     pub detail: Option<String>,

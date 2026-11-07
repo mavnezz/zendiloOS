@@ -430,7 +430,10 @@ impl Apps {
         leave_out_missing_devices(&mut normalized, &self.paths.dev);
         let folders = folders(&normalized, &placement.app_data)?;
         let pinned: Vec<&str> = pins.iter().map(|pin| pin.at.as_str()).collect();
-        refuse_to_create(&mut normalized, &pinned);
+        // The app's own folders are made beforehand (MakeAppFolders).
+        refuse_to_create(&mut normalized, |source| {
+            pinned.contains(&source) || app_shares::on_a_volume(source)
+        });
         if let Some(root) = normalized.as_object_mut() {
             let shares: Vec<&String> = placement.shares.values().collect();
             root.insert(
@@ -672,9 +675,10 @@ fn bind_sources(normalized: &Value) -> Vec<String> {
         .collect()
 }
 
-/// Binds of `sources` fail when the source is missing, rather than Docker
-/// making an empty folder there: a pin that could not be made.
-fn refuse_to_create(normalized: &mut Value, sources: &[&str]) {
+/// Binds of the sources `refused` names fail when the source is missing,
+/// rather than Docker making an empty folder there: a pin that could not be
+/// made, or a volume not mounted yet.
+fn refuse_to_create(normalized: &mut Value, refused: impl Fn(&str) -> bool) {
     let Some(services) = normalized.get_mut("services").and_then(Value::as_object_mut) else {
         return;
     };
@@ -682,7 +686,7 @@ fn refuse_to_create(normalized: &mut Value, sources: &[&str]) {
         let Some(mounts) = service.get_mut("volumes").and_then(Value::as_array_mut) else { continue };
         for mount in mounts {
             let pinned = mount.get("type").and_then(Value::as_str) == Some("bind")
-                && mount.get("source").and_then(Value::as_str).is_some_and(|s| sources.contains(&s));
+                && mount.get("source").and_then(Value::as_str).is_some_and(&refused);
             if let (true, Some(mount)) = (pinned, mount.as_object_mut()) {
                 mount.insert("bind".to_owned(), serde_json::json!({ "create_host_path": false }));
             }
@@ -786,10 +790,18 @@ mod tests {
     #[test]
     fn pinned_folders_are_never_made_by_docker() {
         let mut normalized = normalized();
-        refuse_to_create(&mut normalized, &["/volume1/media"]);
+        refuse_to_create(&mut normalized, |source| source == "/volume1/media");
         let volumes = &normalized["services"]["app"]["volumes"];
         assert_eq!(volumes[2]["bind"], json!({ "create_host_path": false }));
         assert!(volumes[0].get("bind").is_none());
+
+        let mut normalized = self::normalized();
+        refuse_to_create(&mut normalized, app_shares::on_a_volume);
+        for (service, index) in [("app", 0), ("app", 1), ("app", 2), ("db", 0)] {
+            let bind = &normalized["services"][service]["volumes"][index]["bind"];
+            assert_eq!(bind["create_host_path"], false, "{service} {index}: nothing made on a volume");
+        }
+        assert!(normalized["services"]["app"]["volumes"][3].get("bind").is_none(), "not a bind");
     }
 
     #[test]

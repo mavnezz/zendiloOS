@@ -844,7 +844,10 @@ deployed, `docker compose config` reads it (from stdin, in that folder; a
 `.env` there does not count), and what reaches beyond the containers is
 named: `privileged`, the Docker socket, folders outside the volumes, the
 host's network, PID, IPC or user namespace, devices, extra capabilities,
-no seccomp or AppArmor. Each must be confirmed, then and on every change;
+no seccomp or AppArmor, settings not known as harmless, and what takes in
+files whoever may write the share can change (`build`, built from the
+share at every deployment; `env_file`, `extends`, `include`, read when it
+is saved). Each must be confirmed, then and on every change;
 the audit log records `risks_accepted`. Deploying (pull, then
 `up --detach --remove-orphans`) and removing (`down`; images, data and the
 folder stay) are jobs.
@@ -860,11 +863,17 @@ The copy in the share is for looking at. The agent pins every bind whose
 source lies in a volume, as for apps (the folder or file walked to without
 links, mounted under `/run/zendiloos-project-shares/<project>/`, a unit per
 project before Docker at boot; a missing folder a bind may create is made
-there, as Docker would), keeps the result as
+there, as Docker would; each pin is named by a hash of what it pins, so a
+bind whose source changed gets another and its container is made again),
+and no bind into a volume lets Docker make a missing folder (a pool not
+mounted yet would get it on the system's disk). It keeps the result as
 `/etc/zendiloos/projects/<project>.json` and runs Compose on that file with
 an empty `.env`; `down` removes it again. A project made before this was
 kept runs once its file is saved again. A project made elsewhere whose
 Compose file lies in a share is not deployed here, for the same reason.
+A share a project lives in or mounts something of is not deleted
+(`share_used_by_projects`; zendiloosd from the confirmed configurations,
+the agent again from the kept files, which then offers the share again).
 
 **Use over time:** zendiloosd samples `docker stats` every 20 seconds and
 keeps twelve hours in memory, by container name, with the network's rates

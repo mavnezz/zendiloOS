@@ -64,6 +64,11 @@ DeviceAllow=block-blkext rw
 DeviceAllow=block-virtblk rw
 DeviceAllow=char-nvme r
 DeviceAllow=/dev/zfs rw
+# What it runs (Docker Compose, zfs, apt's checks) needs little; a
+# Compose file that reads without end (in a share, a link to a device or a
+# pipe) must not take the machine's memory.
+MemoryHigh=768M
+MemoryMax=1G
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes

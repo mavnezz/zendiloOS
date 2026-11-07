@@ -28,6 +28,17 @@ impl ports::Volumes for Volumes {
     }
 }
 
+/// Administrators' projects: those named here use every share.
+#[derive(Default)]
+pub struct Projects(pub Mutex<Vec<String>>);
+
+#[async_trait]
+impl ports::ShareProjects for Projects {
+    async fn using(&self, _: ShareId, _: &str) -> Result<Vec<String>, PortError> {
+        Ok(self.0.lock().unwrap().clone())
+    }
+}
+
 /// What every file of the fake host holds.
 pub const FILE_CONTENT: &str = "abcdefghij";
 
@@ -199,6 +210,9 @@ pub struct Host {
     pub refuse_apply: std::sync::atomic::AtomicBool,
     /// Destroying a dataset fails, as when it is busy.
     pub refuse_destroy: std::sync::atomic::AtomicBool,
+    /// The agent refuses to destroy a dataset before doing anything, as
+    /// when a project mounts something of it.
+    pub deny_destroy: std::sync::atomic::AtomicBool,
 }
 
 impl Host {
@@ -235,8 +249,11 @@ impl ShareHost for Host {
         _: &RequestContext,
     ) -> Result<(), HostError> {
         self.calls.lock().unwrap().push(format!("destroy {pool} {volume} {name}"));
+        if self.deny_destroy.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(HostError::Refused("a project mounts something of it".into()));
+        }
         if self.refuse_destroy.load(std::sync::atomic::Ordering::Relaxed) {
-            return Err(HostError::Refused("dataset is busy".into()));
+            return Err(HostError::Port(PortError::new("agent", "dataset is busy")));
         }
         Ok(())
     }

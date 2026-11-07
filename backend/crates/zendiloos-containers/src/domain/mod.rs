@@ -4,7 +4,7 @@ mod history;
 mod project;
 mod updates;
 
-pub use compose::{ComposeModel, ComposeService, Risk, risks};
+pub use compose::{ComposeModel, ComposeService, Risk, file_reads, risks};
 pub use engine::{
     BUILT_IN_NETWORKS, ComposeListing, Container, ContainerAction, ContainerState, ContainerUsage, DiskUsage,
     Image, Mount, Network, PublishedPort, UsageSample, short_id,

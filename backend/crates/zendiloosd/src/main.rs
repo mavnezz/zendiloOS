@@ -35,7 +35,8 @@ use zendiloos_infra::notify::NetworkChannels;
 use zendiloos_infra::sqlite::{
     Database, Occupants, SqliteAccounts, SqliteAppSources, SqliteAuditLog, SqliteChannels, SqliteGroups,
     SqliteInstalledApps, SqliteJobs, SqliteNotifications, SqlitePreferences, SqliteProjects, SqliteSecurity,
-    SqliteSelfTestPlans, SqliteSessions, SqliteShares, SqliteSystemUpdates, SqliteUpdateSettings,
+    SqliteSelfTestPlans, SqliteSessions, SqliteShareProjects, SqliteShares, SqliteSystemUpdates,
+    SqliteUpdateSettings,
 };
 use zendiloos_infra::updates::GitHubReleases;
 use zendiloos_jobs::Jobs;
@@ -170,6 +171,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         shares: sharing_store.clone(),
         directory: sharing_store,
         volumes: agent_storage_for_sharing,
+        projects: Arc::new(SqliteShareProjects::new(database.clone())),
         host: Arc::new(AgentSharing::new(agent_for_sharing, files_agent.clone())),
         files: Arc::new(AgentFiles::new(files_agent.clone())),
         jobs: jobs.clone(),

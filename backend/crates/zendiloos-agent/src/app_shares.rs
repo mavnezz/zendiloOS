@@ -214,6 +214,15 @@ pub(crate) async fn repin(program: &Program, owner: Owner<'_>) -> Result<(), Ope
     systemctl(program, &["restart", &owner.unit_name()]).await
 }
 
+/// Whether `path` is a volume, `/volume<N>`, or lies in one: where Docker
+/// must never make a missing folder, for if the pool was not mounted yet it
+/// would make it on the system's disk and the containers fill that.
+pub(crate) fn on_a_volume(path: &str) -> bool {
+    let Some(rest) = path.strip_prefix("/volume") else { return false };
+    let number = rest.split('/').next().unwrap_or_default();
+    !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit())
+}
+
 /// Where the pin `id` of `owner` is mounted.
 pub(crate) fn pin_path(paths: &HostPaths, owner: Owner<'_>, id: &str) -> Result<PathBuf, OperationError> {
     let plain = !id.is_empty()
@@ -466,6 +475,37 @@ fn kept_pins(paths: &HostPaths, owner: Owner<'_>) -> Result<Vec<Pin>, OperationE
     pins_of(&normalized)
 }
 
+/// Who mounts something of the share at `share` (`/volume<N>/<name>`):
+/// `app <name>` and `project <name>`, from their kept files. A file that
+/// cannot be read counts as one that does: nothing is pulled from under it.
+pub(crate) fn pinned_from(paths: &HostPaths, share: &Path) -> Vec<String> {
+    let mut users = Vec::new();
+    for (kind, folder) in [("app", &paths.apps), ("project", &paths.projects)] {
+        let Ok(entries) = fs::read_dir(folder) else { continue };
+        let mut names: Vec<String> = entries
+            .filter_map(Result::ok)
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter_map(|name| name.strip_suffix(".json").map(str::to_owned))
+            .collect();
+        names.sort();
+        for name in names {
+            let path = folder.join(format!("{name}.json"));
+            let pins = fs::read_to_string(&path)
+                .ok()
+                .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+                .map(|normalized| pins_of(&normalized));
+            let uses = match pins {
+                Some(Ok(pins)) => pins.iter().any(|pin| Path::new(&pin.share) == share),
+                _ => true,
+            };
+            if uses {
+                users.push(format!("{kind} {name}"));
+            }
+        }
+    }
+    users
+}
+
 /// The pins in a normalized compose file's extension.
 pub(crate) fn pins_of(normalized: &serde_json::Value) -> Result<Vec<Pin>, OperationError> {
     let Some(pins) = normalized.get(crate::apps::EXTENSION).and_then(|e| e.get("pins")) else {
@@ -587,6 +627,38 @@ mod tests {
 
     fn project() -> ProjectName {
         ProjectName::parse("teslamate").unwrap()
+    }
+
+    #[test]
+    fn who_mounts_a_share_is_read_from_the_kept_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = HostPaths {
+            apps: dir.path().join("apps"),
+            projects: dir.path().join("projects"),
+            ..HostPaths::default()
+        };
+        fs::create_dir_all(&paths.apps).unwrap();
+        fs::create_dir_all(&paths.projects).unwrap();
+        let kept = |share: &str| {
+            json!({ "services": {}, crate::apps::EXTENSION: { "pins": [
+                { "share": share, "folder": "Films", "at": "/run/zendiloos-app-shares/x/1" }
+            ] } })
+            .to_string()
+        };
+        fs::write(paths.apps.join("jellyfin.json"), kept("/volume1/media")).unwrap();
+        fs::write(paths.apps.join("immich.json"), kept("/volume1/photos")).unwrap();
+        fs::write(paths.projects.join("teslamate.json"), kept("/volume1/media")).unwrap();
+        fs::write(paths.projects.join("broken.json"), "not json").unwrap();
+
+        assert_eq!(
+            pinned_from(&paths, Path::new("/volume1/media")),
+            ["app jellyfin", "project broken", "project teslamate"]
+        );
+        assert_eq!(
+            pinned_from(&paths, Path::new("/volume1/backup")),
+            ["project broken"],
+            "unread: kept safe"
+        );
     }
 
     #[test]

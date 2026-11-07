@@ -2772,7 +2772,9 @@ export interface components {
             detail?: string | null;
             /**
              * @description `privileged`, `docker_socket`, `system_path`, `host_network`,
-             *     `host_namespace`, `devices`, `capabilities`, `unconfined`, `unusual`.
+             *     `host_namespace`, `devices`, `capabilities`, `unconfined`, `unusual`,
+             *     `from_share` (takes in files: `build`, `env_file`, `extends`,
+             *     `include`; `service` is empty for `include`).
              */
             kind: string;
             service: string;
@@ -9141,6 +9143,15 @@ export interface operations {
             };
             /** @description `not_found` */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `share_used_by_apps`, `share_used_by_projects`: the detail names them */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

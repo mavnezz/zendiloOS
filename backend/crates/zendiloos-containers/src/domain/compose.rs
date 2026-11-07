@@ -75,6 +75,14 @@ pub enum Risk {
         service: String,
         setting: String,
     },
+    /// Takes in files when the project is saved or built (`build`,
+    /// `env_file`, `extends`, `include`): whoever may change them, anybody
+    /// who may write the share, decides what runs. `include` belongs to no
+    /// service (`service` is empty).
+    FromShare {
+        service: String,
+        setting: String,
+    },
 }
 
 impl Risk {
@@ -90,6 +98,7 @@ impl Risk {
             Risk::Capabilities { .. } => "capabilities",
             Risk::Unconfined { .. } => "unconfined",
             Risk::Unusual { .. } => "unusual",
+            Risk::FromShare { .. } => "from_share",
         }
     }
 
@@ -103,7 +112,8 @@ impl Risk {
             | Risk::Devices { service, .. }
             | Risk::Capabilities { service, .. }
             | Risk::Unconfined { service }
-            | Risk::Unusual { service, .. } => service,
+            | Risk::Unusual { service, .. }
+            | Risk::FromShare { service, .. } => service,
         }
     }
 
@@ -114,7 +124,7 @@ impl Risk {
             Risk::HostNamespace { namespace, .. } => Some((*namespace).to_owned()),
             Risk::Devices { devices, .. } => Some(devices.join(", ")),
             Risk::Capabilities { capabilities, .. } => Some(capabilities.join(", ")),
-            Risk::Unusual { setting, .. } => Some(setting.clone()),
+            Risk::Unusual { setting, .. } | Risk::FromShare { setting, .. } => Some(setting.clone()),
             Risk::Privileged { .. } | Risk::HostNetwork { .. } | Risk::Unconfined { .. } => None,
         }
     }
@@ -127,6 +137,61 @@ fn on_a_volume(path: &str) -> bool {
     })
 }
 
+/// Settings of a service that take in files, from the share the project
+/// lives in or wherever they point: `build` at every deployment, the
+/// others when the project is saved.
+const FROM_FILES: &[&str] = &["build", "env_file", "extends"];
+
+/// The settings of a Compose file as written that take in other files
+/// when Compose reads it: `include`, and a service's `extends` and
+/// `env_file`. Compose resolves them, so what it made of the file no longer
+/// shows them; what they bring in is checked there, but that they do is
+/// said too. Block style, as people write Compose files.
+pub fn file_reads(text: &str) -> Vec<Risk> {
+    let mut found = Vec::new();
+    let mut in_services = false;
+    let (mut service_indent, mut key_indent): (Option<usize>, Option<usize>) = (None, None);
+    let mut service = String::new();
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('-') {
+            continue;
+        }
+        let Some((key, _)) = trimmed.split_once(':') else { continue };
+        let key = key.trim().trim_matches(['"', '\'']);
+        let indent = line.len() - trimmed.len();
+        if indent == 0 {
+            in_services = key == "services";
+            (service_indent, key_indent) = (None, None);
+            if key == "include" {
+                found.push(Risk::FromShare { service: String::new(), setting: key.to_owned() });
+            }
+            continue;
+        }
+        if !in_services {
+            continue;
+        }
+        match service_indent {
+            Some(level) if indent < level => {}
+            Some(level) if indent > level => {
+                let level = *key_indent.get_or_insert(indent);
+                if indent == level && matches!(key, "extends" | "env_file") {
+                    let risk = Risk::FromShare { service: service.clone(), setting: key.to_owned() };
+                    if !found.contains(&risk) {
+                        found.push(risk);
+                    }
+                }
+            }
+            _ => {
+                service_indent = Some(indent);
+                key_indent = None;
+                service = key.to_owned();
+            }
+        }
+    }
+    found
+}
+
 /// Settings of a service that cannot reach beyond its container, as
 /// Compose writes them normalized; those that can are looked at one by one
 /// (`privileged`, binds, `devices`, `cap_add`, namespaces, `security_opt`).
@@ -134,7 +199,6 @@ const HARMLESS: &[&str] = &[
     "annotations",
     "attach",
     "blkio_config",
-    "build",
     "cap_drop",
     "command",
     "configs",
@@ -156,7 +220,6 @@ const HARMLESS: &[&str] = &[
     "dns_search",
     "domainname",
     "entrypoint",
-    "env_file",
     "environment",
     "expose",
     "external_links",
@@ -252,6 +315,10 @@ pub fn risks(model: &ComposeModel) -> Vec<Risk> {
             found.push(Risk::Unconfined { service: name() });
         }
         for key in &service.keys {
+            if FROM_FILES.contains(&key.as_str()) {
+                found.push(Risk::FromShare { service: name(), setting: key.clone() });
+                continue;
+            }
             let known = HARMLESS.contains(&key.as_str())
                 || LOOKED_AT.contains(&key.as_str())
                 || key.starts_with("x-");
@@ -266,6 +333,52 @@ pub fn risks(model: &ComposeModel) -> Vec<Risk> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn what_takes_in_files_is_named() {
+        let text = "\
+# a project
+include:
+  - other.yaml
+services:
+  app:
+    image: nginx
+    env_file: app.env
+    environment:
+      env_file: not a setting of the service
+    extends:
+      file: base.yaml
+      service: base
+  \"db\":
+    image: postgres
+    env_file:
+      - db.env
+volumes:
+  data:
+    env_file: not a service
+";
+        let found: Vec<(String, Option<String>)> =
+            file_reads(text).iter().map(|r| (r.service().to_owned(), r.detail())).collect();
+        assert_eq!(
+            found,
+            [
+                (String::new(), Some("include".into())),
+                ("app".into(), Some("env_file".into())),
+                ("app".into(), Some("extends".into())),
+                ("db".into(), Some("env_file".into())),
+            ]
+        );
+        assert!(file_reads("services:\n  app:\n    image: nginx\n").is_empty());
+
+        let model = ComposeModel {
+            services: vec![ComposeService {
+                name: "app".into(),
+                keys: vec!["image".into(), "build".into()],
+                ..ComposeService::default()
+            }],
+        };
+        assert_eq!(risks(&model), [Risk::FromShare { service: "app".into(), setting: "build".into() }]);
+    }
 
     #[test]
     fn a_plain_service_on_a_volume_asks_nothing() {

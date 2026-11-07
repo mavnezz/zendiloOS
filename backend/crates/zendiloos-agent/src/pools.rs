@@ -425,6 +425,13 @@ impl Pools {
     ) -> Result<Response, OperationError> {
         let _serial = crate::waiting::lock(&self.serial).await?;
         self.require_managed(pool, Some(volume)).await?;
+        // Its mount's stop would stop theirs, and their containers lose
+        // what they mount.
+        let share = self.paths.volumes.join(format!("volume{}", volume.get())).join(name.as_str());
+        let users = crate::app_shares::pinned_from(&self.paths, &share);
+        if !users.is_empty() {
+            return Err(refused(format!("{} mount folders of it", users.join(", "))));
+        }
         self.release_nfs().await?;
         self.remove_unit(&share_unit_name(volume, name)).await?;
         let dataset = format!("{}/{}", pool.as_str(), name.as_str());

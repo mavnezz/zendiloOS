@@ -575,6 +575,8 @@ const de: Messages = {
         capabilities: 'erhält zusätzliche Rechte',
         unconfined: 'ohne den üblichen Schutz durch den Kernel (seccomp/AppArmor)',
         unusual: 'nutzt eine Einstellung, die zendiloOS nicht als harmlos kennt',
+        from_share:
+          'liest beim Speichern oder Bauen weitere Dateien ein: Wer sie ändern darf, etwa jeder mit Schreibrecht auf der Freigabe, bestimmt, was läuft',
       },
     },
     containers: {
@@ -1984,6 +1986,8 @@ const de: Messages = {
     up_to_date: 'Die App ist aktuell.',
     host_failed: 'Docker konnte es nicht ausführen',
     share_used_by_apps: 'Apps nutzen diese Freigabe; entfernen Sie sie zuerst',
+    share_used_by_projects:
+      'Docker-Projekte liegen in dieser Freigabe oder binden Ordner daraus ein; entfernen Sie sie oder ändern Sie zuerst ihre Compose-Dateien',
     volume_not_found: 'Das Volume gibt es nicht oder es ist nicht eingehängt.',
     unknown_subject: 'Ein Konto oder eine Gruppe in den Rechten gibt es nicht.',
     duplicate_rule: 'Ein Konto, eine Gruppe oder ein Netz ist doppelt aufgeführt.',

@@ -17,7 +17,7 @@ use crate::domain::{
     Access, AccessRule, Favourite, FilePath, FileServices, Permission, Principal, ShareId, SmbProtocol,
     Subject,
 };
-use crate::testing::{Files, Host, Shares, Volumes};
+use crate::testing::{Files, Host, Projects, Shares, Volumes};
 
 struct Static;
 
@@ -72,6 +72,7 @@ struct Setup {
     files: FilesUseCases,
     host: Arc<Host>,
     file_host: Arc<Files>,
+    projects: Arc<Projects>,
     jobs: Jobs,
     clock: Arc<Moving>,
     notices: Arc<MemoryNotifications>,
@@ -83,10 +84,12 @@ fn setup() -> Setup {
     let jobs = Jobs::new(Arc::new(MemoryJobs::default()), Arc::new(FixedClock));
     let clock = Arc::new(Moving::default());
     let notices = Arc::new(MemoryNotifications::default());
+    let projects = Arc::new(Projects::default());
     let ports = SharingPorts {
         shares: Arc::new(Shares::default()),
         directory: Arc::new(Static),
         volumes: Arc::new(Volumes),
+        projects: projects.clone(),
         host: host.clone(),
         files: file_host.clone(),
         jobs: jobs.clone(),
@@ -99,6 +102,7 @@ fn setup() -> Setup {
         files: FilesUseCases::new(ports),
         host,
         file_host,
+        projects,
         jobs,
         clock,
         notices,
@@ -308,6 +312,30 @@ async fn data_that_cannot_go_now_goes_when_zendiloos_starts_again() {
     s.host.refuse_destroy.store(false, std::sync::atomic::Ordering::Relaxed);
     assert_eq!(s.sharing.finish_deletions(&request).await.unwrap(), 0);
     assert!(s.sharing.create(input("photos", "tank"), &alice(), &request).await.is_ok(), "free again");
+}
+
+#[tokio::test]
+async fn a_share_a_project_uses_stays() {
+    let s = setup();
+    let request = RequestContext::default();
+    let share = s.sharing.create(input("photos", "tank"), &alice(), &request).await.unwrap();
+    s.projects.0.lock().unwrap().push("teslamate".into());
+
+    let refused = s.sharing.delete(share.id, "photos", &alice(), &request).await;
+    assert!(matches!(refused, Err(SharingError::UsedByProjects(ref p)) if p == "teslamate"), "{refused:?}");
+    assert!(!s.host.calls().iter().any(|c| c.starts_with("destroy")));
+
+    // The agent knows of a project zendiloosd does not (one that mounts a
+    // folder of it): refused there, the share is offered again at once.
+    s.projects.0.lock().unwrap().clear();
+    s.host.deny_destroy.store(true, std::sync::atomic::Ordering::Relaxed);
+    let job = s.sharing.delete(share.id, "photos", &alice(), &request).await.unwrap();
+    assert_eq!(finished(&s.jobs, job).await.state, JobState::Failed);
+    assert_eq!(s.sharing.list().await.unwrap().len(), 1, "offered again");
+    assert_eq!(s.sharing.finish_deletions(&request).await.unwrap(), 0, "not to be deleted later");
+    let offered =
+        s.host.configs.lock().unwrap().last().unwrap().smb.iter().any(|spec| spec.name == share.name);
+    assert!(offered, "Samba offers it again");
 }
 
 #[tokio::test]

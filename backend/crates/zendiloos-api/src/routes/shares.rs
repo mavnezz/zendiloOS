@@ -56,6 +56,9 @@ impl From<SharingError> for ApiError {
             SharingError::UsedByApps(apps) => {
                 rejected(StatusCode::CONFLICT, "share_used_by_apps", Some(apps))
             }
+            SharingError::UsedByProjects(projects) => {
+                rejected(StatusCode::CONFLICT, "share_used_by_projects", Some(projects))
+            }
             SharingError::InvalidSettings(e) => ApiError::InvalidInput(e.to_string()),
             SharingError::InvalidSchedule(e) => ApiError::InvalidInput(e.to_string()),
             SharingError::InvalidNote(e) => ApiError::InvalidInput(e.to_string()),
@@ -446,6 +449,7 @@ pub struct DeleteShareRequest {
     responses(
         (status = ACCEPTED, body = Job),
         (status = NOT_FOUND, body = Problem, description = "`not_found`"),
+        (status = CONFLICT, body = Problem, description = "`share_used_by_apps`, `share_used_by_projects`: the detail names them"),
         (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`confirmation_mismatch`"),
     )
 )]

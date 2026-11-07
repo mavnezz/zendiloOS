@@ -101,6 +101,7 @@ const KNOWN_PROBLEMS = [
   'up_to_date',
   'host_failed',
   'share_used_by_apps',
+  'share_used_by_projects',
   'snapshot_taken',
   'volume_not_found',
   'unknown_subject',
@@ -137,6 +138,7 @@ export function problemMessage(error: unknown): string {
     'invalid_app_value',
     'host_failed',
     'share_used_by_apps',
+    'share_used_by_projects',
     'pool_in_use',
     'jobs_running',
   ]

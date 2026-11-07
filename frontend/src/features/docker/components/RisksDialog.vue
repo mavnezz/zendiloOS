@@ -29,8 +29,10 @@ const { t } = useI18n()
       <li v-for="(risk, index) in risks" :key="index" class="flex gap-2">
         <TriangleAlert class="mt-0.5 size-4 shrink-0 text-warning" />
         <span>
-          <span class="font-medium">{{ risk.service }}</span
-          >:
+          <template v-if="risk.service"
+            ><span class="font-medium">{{ risk.service }}</span
+            >:
+          </template>
           {{ t(`docker.risks.kinds.${risk.kind}`) }}
           <code v-if="risk.detail" class="ml-1 rounded bg-muted px-1 font-mono text-xs">{{
             risk.detail

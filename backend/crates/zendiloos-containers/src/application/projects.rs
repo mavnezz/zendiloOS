@@ -6,7 +6,9 @@ use zendiloos_kernel::{Actor, AuditEntry, Outcome, RequestContext};
 
 use super::ports::{EngineError, ProjectAction, ProjectPlace};
 use super::{Containers, ContainersError, job_error};
-use crate::domain::{COMPOSE_FILE, Origin, OwnProject, Project, ProjectName, Risk, assemble, risks};
+use crate::domain::{
+    COMPOSE_FILE, Origin, OwnProject, Project, ProjectName, Risk, assemble, file_reads, risks,
+};
 
 /// A project to make: its folder in a share and its Compose file.
 #[derive(Debug, Clone)]
@@ -120,7 +122,12 @@ impl Containers {
         context: &RequestContext,
     ) -> Result<(Vec<Risk>, String), ContainersError> {
         let checked = self.ports.engine.check_compose(name, directory, compose, context).await?;
-        let found = risks(&checked.model);
+        let mut found = risks(&checked.model);
+        for read in file_reads(compose) {
+            if !found.contains(&read) {
+                found.push(read);
+            }
+        }
         if !found.is_empty() && !accept {
             return Err(ContainersError::Risky(found));
         }

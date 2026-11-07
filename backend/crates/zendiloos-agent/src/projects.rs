@@ -152,7 +152,10 @@ fn pin_binds(
             Found::Missing if create => (false, true),
             Found::Missing => return Err(OperationError::Refused(format!("{source} does not exist"))),
         };
-        let at = places(&(pins.len() + 1).to_string())?.to_string_lossy().into_owned();
+        let at = places(&pin_id(&share, &folder, file))?.to_string_lossy().into_owned();
+        if pins.iter().any(|pin| pin.at == at) {
+            return Err(OperationError::Refused(format!("two binds would share the place {at}")));
+        }
         pins.push(Pin { share: share.to_string_lossy().into_owned(), folder, at: at.clone(), file, create });
         by_source.insert(source.to_owned(), at.clone());
         Ok(Some(at))
@@ -169,8 +172,14 @@ fn pin_binds(
                 continue;
             };
             let create = volume.pointer("/bind/create_host_path").and_then(Value::as_bool).unwrap_or(true);
-            if let Some(at) = pin(&source, create)? {
+            let pinned = pin(&source, create)?;
+            let on_a_volume = pinned.is_some() || app_shares::on_a_volume(&source);
+            if let Some(at) = pinned {
                 volume["source"] = Value::String(at);
+            }
+            // A pin is made before; a share's or volume's root is there once
+            // mounted, and Docker must not make it on the system's disk.
+            if on_a_volume {
                 let bind = volume.as_object_mut().map(|v| v.entry("bind").or_insert_with(|| json!({})));
                 if let Some(bind) = bind.and_then(Value::as_object_mut) {
                     bind.insert("create_host_path".into(), Value::Bool(false));
@@ -205,6 +214,19 @@ fn pin_binds(
         }
     }
     Ok(pins)
+}
+
+/// A pin's name: from what it pins, so that a bind whose source changed gets
+/// another pin and Docker Compose, seeing another source, makes its
+/// container again instead of keeping it on what it had mounted.
+fn pin_id(share: &Path, folder: &AppFolder, file: bool) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(share.as_os_str().as_encoded_bytes());
+    hasher.update(b"\0");
+    hasher.update(folder.as_str().as_bytes());
+    hasher.update(if file { "\0file" } else { "\0folder" });
+    hasher.finalize()[..8].iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// The mounted file system a source in a volume lies on (the share's
@@ -315,20 +337,15 @@ mod tests {
             .iter()
             .map(|v| v["source"].as_str().unwrap())
             .collect();
-        assert_eq!(
-            sources,
-            [
-                "/run/zendiloos-project-shares/app/1",
-                "/run/zendiloos-project-shares/app/2",
-                "/run/zendiloos-project-shares/app/3",
-                "/run/zendiloos-project-shares/app/1",
-            ],
-            "the same source is pinned once"
-        );
+        let at: Vec<&str> = pins.iter().map(|pin| pin.at.as_str()).collect();
+        assert_eq!(sources, [at[0], at[1], at[2], at[0]], "the same source is pinned once");
+        assert!(at.iter().all(|at| at.starts_with("/run/zendiloos-project-shares/app/")), "{at:?}");
         assert_eq!(normalized["services"]["web"]["volumes"][0]["bind"]["create_host_path"], false);
         let db = &normalized["services"]["db"]["volumes"];
         assert_eq!(db[1]["source"], "/etc/localtime", "outside the volumes: left alone");
         assert_eq!(db[2]["source"], "/volume1/docker", "a share's root cannot be swapped");
+        assert_eq!(db[2]["bind"]["create_host_path"], false, "nor made by Docker");
+        assert_eq!(db[1]["bind"]["create_host_path"], true, "outside the volumes as it was");
         assert_eq!(pins.len(), 3);
         assert_eq!(
             (pins[0].share.as_str(), pins[0].folder.as_str(), pins[0].file),
@@ -336,6 +353,22 @@ mod tests {
         );
         assert!(pins[1].file, "a file is pinned as a file");
         assert_eq!(pins[2].share, "/volume1/media");
+    }
+
+    #[test]
+    fn a_pin_is_named_by_what_it_pins_not_by_its_place_in_the_file() {
+        let at = |sources: &[&str]| -> Vec<String> {
+            let volumes = sources.iter().map(|source| bind(source)).collect::<Vec<_>>();
+            let (_, pins) =
+                pinned(json!({ "services": { "web": { "image": "nginx", "volumes": volumes } } })).unwrap();
+            pins.into_iter().map(|pin| pin.at).collect()
+        };
+        let before = at(&["/volume1/docker/app/data", "/volume1/media/Films"]);
+        let changed = at(&["/volume1/docker/app/other", "/volume1/media/Films"]);
+        let reordered = at(&["/volume1/media/Films", "/volume1/docker/app/data"]);
+        assert_ne!(before[0], changed[0], "another source, another pin: the container is made again");
+        assert_eq!(before[1], changed[1]);
+        assert_eq!((before[0].as_str(), before[1].as_str()), (reordered[1].as_str(), reordered[0].as_str()));
     }
 
     #[test]
@@ -381,14 +414,11 @@ mod tests {
             "configs": { "site": { "file": "/volume1/docker/app/nginx.conf" } },
         }))
         .unwrap();
-        assert_eq!(
-            normalized["volumes"]["data"]["driver_opts"]["device"],
-            "/run/zendiloos-project-shares/app/1"
-        );
-        assert_eq!(normalized["volumes"]["nfs"]["driver_opts"]["device"], ":/export");
-        assert_eq!(normalized["secrets"]["token"]["file"], "/run/zendiloos-project-shares/app/2");
-        assert_eq!(normalized["configs"]["site"]["file"], "/run/zendiloos-project-shares/app/3");
         assert_eq!(pins.len(), 3);
+        assert_eq!(normalized["volumes"]["data"]["driver_opts"]["device"], pins[0].at.as_str());
+        assert_eq!(normalized["volumes"]["nfs"]["driver_opts"]["device"], ":/export");
+        assert_eq!(normalized["secrets"]["token"]["file"], pins[1].at.as_str());
+        assert_eq!(normalized["configs"]["site"]["file"], pins[2].at.as_str());
     }
 
     #[test]

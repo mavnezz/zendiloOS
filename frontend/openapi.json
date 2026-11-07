@@ -6223,6 +6223,16 @@
               }
             }
           },
+          "409": {
+            "description": "`share_used_by_apps`, `share_used_by_projects`: the detail names them",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "422": {
             "description": "`confirmation_mismatch`",
             "content": {
@@ -8939,7 +8949,7 @@
           },
           "kind": {
             "type": "string",
-            "description": "`privileged`, `docker_socket`, `system_path`, `host_network`,\n`host_namespace`, `devices`, `capabilities`, `unconfined`, `unusual`."
+            "description": "`privileged`, `docker_socket`, `system_path`, `host_network`,\n`host_namespace`, `devices`, `capabilities`, `unconfined`, `unusual`,\n`from_share` (takes in files: `build`, `env_file`, `extends`,\n`include`; `service` is empty for `include`)."
           },
           "service": {
             "type": "string"

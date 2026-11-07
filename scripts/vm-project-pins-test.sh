@@ -11,8 +11,10 @@
 #   3. the bound folder becomes a link to /: a restart by Docker itself
 #      still shows the pinned folder, a redeploy is refused until the folder
 #      is back
-#   4. after a reboot the pins are there before Docker starts the project
-#   5. removing the project removes what deploying it kept; the share's
+#   4. the confirmed file binds another folder: the container is made again
+#      on another pin, and back
+#   5. after a reboot the pins are there before Docker starts the project
+#   6. removing the project removes what deploying it kept; the share's
 #      data stays
 #
 # Needs the VM running with the package installed and set up, Docker's data
@@ -132,8 +134,10 @@ request=$(jq -n --arg name "$project" --argjson share "$share_id" --arg folder "
 job_succeeded "$(jq -r .job.id "$work/last")"
 wait_for "the container" running 60
 [[ $(vm "sudo stat -c %a $kept") == 600 ]] || fail "$kept is not root's alone"
-[[ $(mounted /data) == "$pins/1" ]] || fail "/data comes from $(mounted /data)"
-[[ $(mounted /settings.conf) == "$pins/2" ]] || fail "/settings.conf comes from $(mounted /settings.conf)"
+first_pin=$(mounted /data)
+[[ $first_pin == "$pins"/* ]] || fail "/data comes from $first_pin"
+[[ $(mounted /settings.conf) == "$pins"/* && $(mounted /settings.conf) != "$first_pin" ]] \
+    || fail "/settings.conf comes from $(mounted /settings.conf)"
 [[ $(vm "systemctl is-enabled $unit") == enabled ]] || fail "$unit is not enabled"
 vm "sudo test -d $folder/data" || fail "the missing folder was not made"
 vm "sudo docker exec $container touch /data/from-container"
@@ -166,7 +170,26 @@ job_succeeded "$(jq -r .id "$work/last")"
 wait_for "the container" running 60
 [[ $(inside) == from-container ]] || fail "after the redeploy the container sees: $(inside)"
 
-say "4. A reboot: pinned before Docker starts the project"
+say "4. Another folder bound: the container is made again"
+change() {
+    [[ $(status PUT "/docker/projects/$project/compose" "$(jq -n --arg c "$1" '{compose:$c}')") == 202 ]] \
+        || fail "change: $(cat "$work/last")"
+    job_succeeded "$(jq -r .id "$work/last")"
+    wait_for "the container" running 60
+}
+change "${compose/.\/data:/.\/other:}"
+[[ $(mounted /data) == "$pins"/* && $(mounted /data) != "$first_pin" ]] || fail "/data still from $(mounted /data)"
+[[ -z $(inside) ]] || fail "the container still sees the old folder: $(inside)"
+vm "sudo test -d $folder/other" || fail "the new folder was not made"
+change "$compose"
+[[ $(mounted /data) == "$first_pin" ]] || fail "back: /data from $(mounted /data)"
+[[ $(inside) == from-container ]] || fail "back: the container sees $(inside)"
+
+[[ $(status POST "/shares/$share_id/delete" "{\"confirm\":\"$share\"}") == 409 ]] \
+    || fail "the share a project lives in went: $(cat "$work/last")"
+jq -e '.code == "share_used_by_projects"' "$work/last" >/dev/null || fail "the refusal: $(cat "$work/last")"
+
+say "5. A reboot: pinned before Docker starts the project"
 vm 'sudo systemctl reboot' || true
 sleep 15
 wait_for "SSH" "vm true" 300
@@ -178,7 +201,7 @@ pinned=$(vm "systemctl show -p ActiveEnterTimestampMonotonic --value $unit")
 docker=$(vm "systemctl show -p ActiveEnterTimestampMonotonic --value docker.service")
 (( pinned <= docker )) || fail "Docker started before the pins ($docker < $pinned)"
 
-say "5. The project goes, with what it kept"
+say "6. The project goes, with what it kept"
 remove_project
 vm "sudo test ! -e $kept" || fail "$kept stayed"
 vm "test ! -e $pins" || fail "the pins stayed"

@@ -565,6 +565,8 @@ const en = {
         capabilities: 'gets extra capabilities',
         unconfined: 'without the kernel’s usual protection (seccomp/AppArmor)',
         unusual: 'uses a setting zendiloOS does not know as harmless',
+        from_share:
+          'takes in files when it is saved or built: whoever may change them, such as anybody who may write the share, decides what runs',
       },
     },
     containers: {
@@ -1946,6 +1948,8 @@ const en = {
     up_to_date: 'The app is up to date.',
     host_failed: 'Docker could not do it',
     share_used_by_apps: 'Apps use this share; remove them first',
+    share_used_by_projects:
+      'Docker projects live in this share or mount folders of it; remove them or change their Compose files first',
     volume_not_found: 'The volume does not exist or is not mounted.',
     unknown_subject: 'An account or group in the permissions does not exist.',
     duplicate_rule: 'An account, group or network is listed twice.',

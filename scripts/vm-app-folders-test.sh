@@ -113,8 +113,10 @@ done
 volume=$(call GET /storage/pools | jq -r --arg p "$pool" '.[] | select(.name == $p) | .volume')
 path="/volume$volume/$share"
 vm "sudo touch $path/Library/Albums/in-albums $path/Other/elsewhere"
-request=$(jq -n --arg folder "$share/Library/Albums" \
-    '{source:1,app:"jellyfin",ports:{},shares:{data:$folder},settings:{},confirm_permissions:true,pool:null}')
+# Its permissions (/dev/dri) confirmed as shown: for this digest.
+digest=$(call GET /apps/catalog/1/jellyfin | jq -er .digest) || fail "Jellyfin is not in the catalog"
+request=$(jq -n --arg folder "$share/Library/Albums" --arg digest "$digest" \
+    '{source:1,app:"jellyfin",ports:{},shares:{data:$folder},settings:{},confirm_permissions:true,digest:$digest,pool:null}')
 [[ $(status POST /apps/installed "$request") == 202 ]] || fail "install: $(cat "$work/last")"
 job_succeeded "$(jq -r .job.id "$work/last")"
 call GET "/apps/installed/$app" | jq -e --arg f "$share/Library/Albums" '.shares.data == $f' >/dev/null \

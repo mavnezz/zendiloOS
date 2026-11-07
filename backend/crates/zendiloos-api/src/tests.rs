@@ -361,6 +361,7 @@ impl Harness {
             shares: Arc::new(zendiloos_sharing::testing::Shares::default()),
             directory: Arc::new(IdentityDirectory(identity.accounts.clone(), identity.groups.clone())),
             volumes: Arc::new(zendiloos_sharing::testing::Volumes),
+            projects: Arc::new(zendiloos_sharing::testing::Projects::default()),
             host: share_host.clone(),
             files: file_host.clone(),
             jobs: jobs.clone(),

@@ -18,7 +18,7 @@ use zendiloos_notify::Notifier;
 
 pub use files::{FilesError, FilesUseCases, Transfer, Upload, UploadTicket, UsableShare};
 pub use homes::HomesSettings;
-use ports::{Directory, FileHost, ShareHost, ShareRepository, Volumes};
+use ports::{Directory, FileHost, ShareHost, ShareProjects, ShareRepository, Volumes};
 pub use shares::{NewShareInput, ShareChanges, SharingError, SharingUseCases};
 pub use subjects::SubjectAccess;
 
@@ -29,6 +29,7 @@ pub struct SharingPorts {
     pub shares: Arc<dyn ShareRepository>,
     pub directory: Arc<dyn Directory>,
     pub volumes: Arc<dyn Volumes>,
+    pub projects: Arc<dyn ShareProjects>,
     pub host: Arc<dyn ShareHost>,
     pub files: Arc<dyn FileHost>,
     pub jobs: Jobs,
