@@ -3,10 +3,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use async_trait::async_trait;
-use zendiloos_kernel::{PortError, RequestContext, Timestamp};
+use zendiloos_kernel::{Actor, PortError, RequestContext, Timestamp};
 
 use crate::domain::{
-    AppVolume, CatalogApp, Containers, DockerHostState, InstalledApp, Refresh, SecretAlphabet, Source,
+    AppVolume, CatalogApp, Containers, DockerHostState, HostFacts, InstalledApp, Refresh, SecretAlphabet,
+    Source,
 };
 
 /// An app an index offered that failed the format or the policy.
@@ -127,58 +128,10 @@ pub enum AppHostError {
     Port(#[from] PortError),
 }
 
-/// A share picked for one of the app's shares, as the host finds it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HostShare {
-    pub volume: u16,
-    pub name: String,
-    /// The folder in it the app gets; empty for the whole share.
-    pub folder: String,
-}
-
-/// The values for the agent: shares with where they are.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct HostValues {
-    pub shares: BTreeMap<String, HostShare>,
-    pub ports: BTreeMap<String, u16>,
-    pub settings: BTreeMap<String, String>,
-}
-
-/// Apps on the host, through the agents: each step of installing,
-/// running and removing one. The agent checks the app against the
-/// catalog's policy again in [`AppHost::configure`].
+/// Apps installed the earlier way, on the host through the agent: running
+/// and removing one.
 #[async_trait]
 pub trait AppHost: Send + Sync {
-    /// The app's dataset on `volume` and its account.
-    async fn prepare(
-        &self,
-        app: &str,
-        volume: &AppVolume,
-        context: &RequestContext,
-    ) -> Result<(), AppHostError>;
-
-    /// Checks the app with `values` and keeps what Docker will run; the
-    /// folders below its data folder the containers mount.
-    async fn configure(
-        &self,
-        app: &str,
-        volume: u16,
-        manifest: &str,
-        compose: &str,
-        values: &HostValues,
-        context: &RequestContext,
-    ) -> Result<Vec<String>, AppHostError>;
-
-    async fn make_folders(
-        &self,
-        app: &str,
-        volume: u16,
-        folders: &[String],
-        context: &RequestContext,
-    ) -> Result<(), AppHostError>;
-
-    async fn pull(&self, app: &str, context: &RequestContext) -> Result<(), AppHostError>;
-
     async fn start(&self, app: &str, context: &RequestContext) -> Result<(), AppHostError>;
 
     async fn stop(&self, app: &str, context: &RequestContext) -> Result<(), AppHostError>;
@@ -199,18 +152,10 @@ pub trait AppHost: Send + Sync {
     async fn logs(&self, app: &str, lines: u32, context: &RequestContext) -> Result<String, AppHostError>;
 }
 
-/// A share apps can be given.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ShareChoice {
-    pub name: String,
-    pub volume: u16,
-}
-
-/// The shares, from the Sharing context.
+/// What apps installed the earlier way may do on shares, in the Sharing
+/// context.
 #[async_trait]
 pub trait AppShares: Send + Sync {
-    async fn shares(&self) -> Result<Vec<ShareChoice>, PortError>;
-
     /// Gives the app's `account` exactly `grants` (share name, write), on
     /// what is in the shares too; shares not named lose its access.
     async fn grant(
@@ -231,4 +176,65 @@ pub trait ListeningPorts: Send + Sync {
 pub trait Secrets: Send + Sync {
     /// `length` characters of `alphabet`.
     fn generate(&self, length: u8, alphabet: SecretAlphabet) -> String;
+}
+
+/// A share as the administrator who acts may use it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UsableShare {
+    pub name: String,
+    pub volume: u16,
+    pub writable: bool,
+}
+
+/// The shares an administrator may use, with their own permissions, as
+/// the file manager has them: an app made from a template runs as them.
+#[async_trait]
+pub trait UsableShares: Send + Sync {
+    async fn usable(&self, actor: &Actor) -> Result<Vec<UsableShare>, PortError>;
+}
+
+/// What the machine says for filling in a template, through the agent.
+#[async_trait]
+pub trait TemplateHost: Send + Sync {
+    /// The IDs of `user`, the time zone, and which of `devices` are there.
+    async fn facts(
+        &self,
+        user: &str,
+        devices: &[String],
+        context: &RequestContext,
+    ) -> Result<HostFacts, AppHostError>;
+}
+
+/// Compose files filled in.
+pub trait ComposeFiller: Send + Sync {
+    /// `compose` with every value interpolated with `variables` (as
+    /// [`crate::domain::interpolate`] does) and written so that Compose
+    /// reads it back as that value; the devices in `absent` left out. The
+    /// rest stays as written, comments too. Why it cannot, otherwise.
+    fn fill(
+        &self,
+        compose: &str,
+        variables: &BTreeMap<String, String>,
+        absent: &[String],
+    ) -> Result<String, String>;
+}
+
+/// An administrator's project made from an app of a catalog, as Docker
+/// has it now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TemplateProject {
+    /// The Compose project.
+    pub name: String,
+    pub source: i64,
+    pub app: String,
+    pub containers: Containers,
+    /// What its containers publish: (container port, host port).
+    pub published: Vec<(u16, u16)>,
+    pub created_at: Timestamp,
+}
+
+/// The projects made from apps of a catalog, from the Containers context.
+#[async_trait]
+pub trait AppProjects: Send + Sync {
+    async fn projects(&self, context: &RequestContext) -> Result<Vec<TemplateProject>, PortError>;
 }

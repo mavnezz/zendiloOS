@@ -7,7 +7,9 @@ use zendiloos_kernel::{Actor, AuditEntry, AuditLog, PortError, RequestContext};
 
 use super::ports::ProjectAction;
 use super::{ContainersError, NewProject};
-use crate::domain::{ContainerAction, Origin, Risk, UpdateSchedule, UpdateSettings, UpdateState};
+use crate::domain::{
+    ContainerAction, Origin, ProjectTemplate, Risk, UpdateSchedule, UpdateSettings, UpdateState,
+};
 use crate::testing::TestContainers;
 
 #[derive(Default)]
@@ -63,7 +65,29 @@ fn new_project(name: &str, compose: &str, accept_risks: bool) -> NewProject {
         compose: compose.into(),
         start: true,
         accept_risks,
+        template: None,
     }
+}
+
+#[tokio::test]
+async fn the_folders_a_project_mounts_are_made_by_whoever_deploys_it() {
+    let (t, _) = setup();
+    let compose = "services:\n  app:\n    image: nginx\n    volumes:\n      - ./config:/config\n      - ./data/db:/db\n";
+    let template = ProjectTemplate { source: 1, app: "jellyfin".into() };
+    let new = NewProject { template: Some(template.clone()), ..new_project("tesla", compose, false) };
+
+    t.containers.create_project(new, &alice(), &context()).await.unwrap();
+
+    let made = t.storage.folders.lock().unwrap().clone();
+    let by_alice = |path: &str| (1, path.to_owned(), "alice".to_owned());
+    assert_eq!(made, [by_alice("docker/tesla/config"), by_alice("docker/tesla/data/db")]);
+    let project = t.containers.project("tesla", &context()).await.unwrap();
+    let Origin::Own(own) = project.origin else { panic!("{:?}", project.origin) };
+    assert_eq!(own.template, Some(template), "the App Center finds it again");
+
+    let changed = format!("{compose}      - ./cache:/cache\n");
+    t.containers.change_compose("tesla", &changed, false, &alice(), &context()).await.unwrap();
+    assert!(t.storage.folders.lock().unwrap()[2..].contains(&by_alice("docker/tesla/cache")));
 }
 
 #[tokio::test]

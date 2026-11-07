@@ -374,7 +374,7 @@ impl Accounts {
     }
 }
 
-fn require_managed(passwd: &str, group: &str, name: &UserName) -> Result<(), OperationError> {
+pub(crate) fn require_managed(passwd: &str, group: &str, name: &UserName) -> Result<(), OperationError> {
     let users_gid = passwd::group_id(group, USERS_GROUP);
     match passwd::lookup(passwd, name.as_str()) {
         Some((uid, gid)) if MANAGED_IDS.contains(&uid) && Some(gid) == users_gid => Ok(()),

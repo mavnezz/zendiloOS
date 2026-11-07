@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
-use zendiloos_apps::application::{AppsError, InstallRequest, InstalledView, ListedApp};
+use zendiloos_apps::application::{AppProjectView, AppsError, FillRequest, InstalledView, ListedApp};
 use zendiloos_apps::domain as apps;
 use zendiloos_identity::domain::Permission;
 
@@ -29,12 +29,12 @@ pub(super) fn routes() -> OpenApiRouter<ApiState> {
         .routes(routes!(catalog))
         .routes(routes!(catalog_app))
         .routes(routes!(catalog_icon))
+        .routes(routes!(fill_template))
+        .routes(routes!(app_projects))
         .routes(routes!(docker, enable_docker))
         .routes(routes!(install_docker))
-        .routes(routes!(installed, install))
+        .routes(routes!(installed))
         .routes(routes!(installed_app, uninstall))
-        .routes(routes!(retry_app))
-        .routes(routes!(update_app))
         .routes(routes!(start_app))
         .routes(routes!(stop_app))
         .routes(routes!(app_logs))
@@ -57,22 +57,17 @@ impl From<AppsError> for ApiError {
             AppsError::PoolNotFound => ApiError::NotFound,
             AppsError::Refused(detail) => rejected(StatusCode::CONFLICT, "refused", Some(detail)),
             AppsError::NotInstalled => ApiError::NotFound,
-            AppsError::AlreadyInstalled => rejected(StatusCode::CONFLICT, "app_installed", None),
-            AppsError::IdTooLong => rejected(StatusCode::UNPROCESSABLE_ENTITY, "app_id_too_long", None),
-            AppsError::DockerNotReady => rejected(StatusCode::CONFLICT, "docker_not_ready", None),
             AppsError::DockerInstalled => rejected(StatusCode::CONFLICT, "docker_installed", None),
-            AppsError::PermissionsNotConfirmed { digest } => {
-                rejected(StatusCode::CONFLICT, "permissions_not_confirmed", Some(digest))
-            }
-            AppsError::Changed => rejected(StatusCode::CONFLICT, "app_changed", None),
             AppsError::InvalidValue(e) => {
                 rejected(StatusCode::UNPROCESSABLE_ENTITY, "invalid_app_value", Some(e.to_string()))
+            }
+            AppsError::Template(detail) => {
+                rejected(StatusCode::UNPROCESSABLE_ENTITY, "template_unfillable", Some(detail))
             }
             AppsError::Busy => rejected(StatusCode::CONFLICT, "app_busy", None),
             AppsError::ConfirmationMismatch => {
                 rejected(StatusCode::UNPROCESSABLE_ENTITY, "confirmation_mismatch", None)
             }
-            AppsError::UpToDate => rejected(StatusCode::CONFLICT, "up_to_date", None),
             AppsError::HostFailed(detail) => rejected(StatusCode::BAD_GATEWAY, "host_failed", Some(detail)),
             AppsError::Port(e) => ApiError::internal(e),
         }
@@ -215,13 +210,6 @@ fn permissions_dto(permissions: &apps::Permissions) -> AppPermissions {
     }
 }
 
-/// A newer state of an installed app.
-#[derive(Debug, Serialize, ToSchema)]
-pub struct AppUpdate {
-    /// The version its catalog names, if it names one.
-    pub version: Option<String>,
-}
-
 /// An app as the store lists it.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct CatalogApp {
@@ -296,8 +284,20 @@ pub struct CatalogAppDetail {
     pub ports: Vec<AppPort>,
     pub shares: Vec<AppShare>,
     pub settings: Vec<AppSetting>,
-    /// The Compose file as written; zendiloOS fills in the variables.
+    /// The Compose file as written: the template zendiloOS fills in.
     pub compose: String,
+}
+
+/// Translations of an app, for the API.
+fn texts_dto(translations: BTreeMap<String, apps::Translation>) -> BTreeMap<String, AppTexts> {
+    translations
+        .into_iter()
+        .map(|(language, t)| {
+            let texts =
+                AppTexts { name: t.name, tagline: t.tagline, description: t.description, notes: t.notes };
+            (language, texts)
+        })
+        .collect()
 }
 
 fn summary(listed: &ListedApp) -> CatalogApp {
@@ -311,19 +311,7 @@ fn summary(listed: &ListedApp) -> CatalogApp {
         tagline: app.tagline.clone(),
         categories: app.categories.clone(),
         permissions: permissions_dto(&app.permissions),
-        translations: app
-            .translations
-            .iter()
-            .map(|(language, t)| {
-                let texts = AppTexts {
-                    name: t.name.clone(),
-                    tagline: t.tagline.clone(),
-                    description: t.description.clone(),
-                    notes: t.notes.clone(),
-                };
-                (language.clone(), texts)
-            })
-            .collect(),
+        translations: texts_dto(app.translations.clone()),
         digest: app.digest.clone(),
     }
 }
@@ -438,6 +426,133 @@ async fn catalog_icon(
         (header::CONTENT_SECURITY_POLICY, HeaderValue::from_static("sandbox; default-src 'none'")),
     ];
     Ok((headers, png).into_response())
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FillTemplateRequest {
+    /// Share id → the share picked for it: its name, or a folder in it
+    /// (`media/Films`), which the app then mounts instead of the whole
+    /// share. One the caller may use as the app does (read or write).
+    #[serde(default)]
+    pub shares: BTreeMap<String, String>,
+    /// Port id → host port; missing ones get their default.
+    #[serde(default)]
+    pub ports: BTreeMap<String, u16>,
+    /// Setting id → value; missing ones get their default. Generated
+    /// settings are made by zendiloOS.
+    #[serde(default)]
+    pub settings: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct FilledTemplate {
+    /// The app's Compose file with the values in: to be made into a project
+    /// with `POST /docker/projects`, naming the app as its `template`. Its
+    /// data goes in the project's folder (`./config`), its containers run
+    /// as the caller.
+    pub compose: String,
+}
+
+/// Fills in an app's Compose file, its template, with the values given and
+/// the caller as the account its containers run as; the devices the machine
+/// lacks are left out. Nothing is made yet. Needs `containers.manage`.
+#[utoipa::path(
+    post,
+    path = "/apps/catalog/{source}/{app}/compose",
+    tag = "apps",
+    security(("session" = [])),
+    params(("source" = i64, Path), ("app" = String, Path)),
+    request_body = FillTemplateRequest,
+    responses(
+        (status = OK, body = FilledTemplate),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`: no such app"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_app_value`: the field and why; `template_unfillable`"),
+    )
+)]
+async fn fill_template(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path((source, app)): Path<(i64, String)>,
+    ApiJson(request): ApiJson<FillTemplateRequest>,
+) -> Result<Json<FilledTemplate>, ApiError> {
+    auth.require(Permission::ContainersManage)?;
+    let request =
+        FillRequest { source, app, shares: request.shares, ports: request.ports, settings: request.settings };
+    let compose = state.templates.fill(request, &auth.0.actor(), &client).await?;
+    Ok(Json(FilledTemplate { compose }))
+}
+
+/// A Docker project made from an app of a catalog.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AppProject {
+    /// The project, in the Docker app.
+    pub project: String,
+    pub source_id: i64,
+    /// The app's id in its catalog.
+    pub id: String,
+    /// The app's name as its catalog has it now; its id once it is gone
+    /// from there.
+    pub name: String,
+    pub tagline: String,
+    pub translations: BTreeMap<String, AppTexts>,
+    /// The app's digest in its catalog now, for its icon; `None` once it
+    /// is gone from there.
+    pub digest: Option<String>,
+    pub run_state: RunState,
+    /// Where its web interface answers, while it is published.
+    pub web: Option<AppWebAddress>,
+    pub created_at: i64,
+}
+
+fn run_state(containers: apps::Containers) -> RunState {
+    match containers.state() {
+        apps::RunState::Running => RunState::Running,
+        apps::RunState::Partly => RunState::Partly,
+        apps::RunState::Restarting => RunState::Restarting,
+        apps::RunState::Stopped => RunState::Stopped,
+    }
+}
+
+fn web_dto(web: apps::WebAddress) -> AppWebAddress {
+    AppWebAddress { port: web.port, path: web.path, https: web.scheme == apps::WebScheme::Https }
+}
+
+/// The Docker projects made from apps of a catalog, by name, with where
+/// they answer. Needs `containers.manage`.
+#[utoipa::path(get, path = "/apps/projects", tag = "apps", security(("session" = [])), responses((status = OK, body = Vec<AppProject>)))]
+async fn app_projects(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+) -> Result<Json<Vec<AppProject>>, ApiError> {
+    auth.require(Permission::ContainersManage)?;
+    let views = state.templates.projects(&client).await?;
+    Ok(Json(
+        views
+            .into_iter()
+            .map(|view| {
+                let AppProjectView { project, app, web } = view;
+                let (name, tagline, translations, digest) = match app {
+                    Some(app) => (app.name, app.tagline, texts_dto(app.translations), Some(app.digest)),
+                    None => (project.app.clone(), String::new(), BTreeMap::new(), None),
+                };
+                AppProject {
+                    project: project.name,
+                    source_id: project.source,
+                    id: project.app,
+                    name,
+                    tagline,
+                    translations,
+                    digest,
+                    run_state: run_state(project.containers),
+                    web: web.map(web_dto),
+                    created_at: project.created_at.unix_seconds(),
+                }
+            })
+            .collect(),
+    ))
 }
 
 /// A pool apps can keep Docker's data on.
@@ -561,7 +676,9 @@ pub struct AppWebAddress {
     pub https: bool,
 }
 
-/// An installed app.
+/// An app installed the earlier way, with a dataset and an account of its
+/// own: it is started, stopped and removed, no longer installed or
+/// updated so.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct InstalledApp {
     pub id: String,
@@ -584,8 +701,6 @@ pub struct InstalledApp {
     /// (`media/Films`).
     pub shares: BTreeMap<String, String>,
     pub permissions: AppPermissions,
-    /// What its catalog offers now, if it is newer.
-    pub update: Option<AppUpdate>,
     /// The pool its data and Docker's are on.
     pub pool: String,
     pub installed_at: i64,
@@ -593,18 +708,9 @@ pub struct InstalledApp {
 }
 
 fn installed_dto(view: InstalledView) -> InstalledApp {
-    let InstalledView { app, containers, update } = view;
-    let web = app.web().map(|web| AppWebAddress {
-        port: web.port,
-        path: web.path,
-        https: web.scheme == apps::WebScheme::Https,
-    });
-    let run_state = containers.map(|containers| match containers.state() {
-        apps::RunState::Running => RunState::Running,
-        apps::RunState::Partly => RunState::Partly,
-        apps::RunState::Restarting => RunState::Restarting,
-        apps::RunState::Stopped => RunState::Stopped,
-    });
+    let InstalledView { app, containers } = view;
+    let web = app.web().map(web_dto);
+    let run_state = containers.map(run_state);
     let catalog = app.app;
     InstalledApp {
         id: app.id,
@@ -612,15 +718,7 @@ fn installed_dto(view: InstalledView) -> InstalledApp {
         name: catalog.name,
         version: catalog.version,
         tagline: catalog.tagline,
-        translations: catalog
-            .translations
-            .into_iter()
-            .map(|(language, t)| {
-                let texts =
-                    AppTexts { name: t.name, tagline: t.tagline, description: t.description, notes: t.notes };
-                (language, texts)
-            })
-            .collect(),
+        translations: texts_dto(catalog.translations),
         digest: catalog.digest,
         state: app.state.as_str().to_owned(),
         run_state,
@@ -628,15 +726,14 @@ fn installed_dto(view: InstalledView) -> InstalledApp {
         ports: app.values.ports,
         shares: app.values.shares,
         permissions: permissions_dto(&catalog.permissions),
-        update: update.map(|update| AppUpdate { version: update.version }),
         pool: app.pool,
         installed_at: app.installed_at.unix_seconds(),
         updated_at: app.updated_at.unix_seconds(),
     }
 }
 
-/// The installed apps, with what Docker makes of them. Needs
-/// `containers.manage`.
+/// The apps installed the earlier way, with what Docker makes of them.
+/// Needs `containers.manage`.
 #[utoipa::path(get, path = "/apps/installed", tag = "apps", security(("session" = [])), responses((status = OK, body = Vec<InstalledApp>)))]
 async fn installed(
     auth: Auth,
@@ -645,80 +742,6 @@ async fn installed(
 ) -> Result<Json<Vec<InstalledApp>>, ApiError> {
     auth.require(Permission::ContainersManage)?;
     Ok(Json(state.installs.list(&client).await?.into_iter().map(installed_dto).collect()))
-}
-
-#[derive(Debug, Deserialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct InstallAppRequest {
-    pub source: i64,
-    pub app: String,
-    /// Share id → the share picked for it: its name, or a folder in it
-    /// (`media/Films`), which the app then mounts instead of the whole
-    /// share.
-    #[serde(default)]
-    pub shares: BTreeMap<String, String>,
-    /// Port id → host port; missing ones get their default.
-    #[serde(default)]
-    pub ports: BTreeMap<String, u16>,
-    /// Setting id → value; missing ones get their default. Generated
-    /// settings are made by zendiloOS.
-    #[serde(default)]
-    pub settings: BTreeMap<String, String>,
-    /// The administrator confirmed the app's permissions, for the version
-    /// with `digest` as shown.
-    #[serde(default)]
-    pub confirm_permissions: bool,
-    /// The app's `digest` as shown; with another one now, `app_changed`.
-    #[serde(default)]
-    pub digest: Option<String>,
-    /// The pool the app's data goes on, one of `volumes` of `/apps/docker`;
-    /// the one Docker's data is on if absent.
-    #[serde(default)]
-    pub pool: Option<String>,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct Installing {
-    pub app: InstalledApp,
-    pub job: Job,
-}
-
-/// Installs an app from a catalog: its data and Docker's on the same pool,
-/// an account of its own, access to the shares picked; the agent checks it
-/// against the catalog's policy before anything runs. Needs
-/// `containers.manage`.
-#[utoipa::path(
-    post,
-    path = "/apps/installed",
-    tag = "apps",
-    security(("session" = [])),
-    request_body = InstallAppRequest,
-    responses(
-        (status = ACCEPTED, body = Installing),
-        (status = NOT_FOUND, body = Problem, description = "`not_found`: no such app"),
-        (status = CONFLICT, body = Problem, description = "`app_installed`, `docker_not_ready`, `permissions_not_confirmed` (the detail: the digest to confirm), `app_changed`"),
-        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_app_value`, `app_id_too_long`"),
-    )
-)]
-async fn install(
-    auth: Auth,
-    State(state): State<ApiState>,
-    Client(client): Client,
-    ApiJson(request): ApiJson<InstallAppRequest>,
-) -> Result<(StatusCode, Json<Installing>), ApiError> {
-    auth.require(Permission::ContainersManage)?;
-    let request = InstallRequest {
-        source: request.source,
-        app: request.app,
-        shares: request.shares,
-        ports: request.ports,
-        settings: request.settings,
-        permissions_confirmed: confirmed(request.confirm_permissions, request.digest),
-        pool: request.pool,
-    };
-    let (app, job) = state.installs.install(request, &auth.0.actor(), &client).await?;
-    let view = InstalledView { app, containers: None, update: None };
-    Ok((StatusCode::ACCEPTED, Json(Installing { app: installed_dto(view), job: job.into() })))
 }
 
 /// One installed app. Needs `containers.manage`.
@@ -772,77 +795,6 @@ async fn uninstall(
 ) -> Result<(StatusCode, Json<Job>), ApiError> {
     auth.require(Permission::ContainersManage)?;
     let job = state.installs.uninstall(&id, &request.confirm, &auth.0.actor(), &client).await?;
-    Ok((StatusCode::ACCEPTED, Json(job.into())))
-}
-
-/// Installs a failed app again, with its values. Needs
-/// `containers.manage`.
-#[utoipa::path(
-    post,
-    path = "/apps/installed/{id}/retry",
-    tag = "apps",
-    security(("session" = [])),
-    params(("id" = String, Path)),
-    responses(
-        (status = ACCEPTED, body = Job),
-        (status = NOT_FOUND, body = Problem, description = "`not_found`"),
-        (status = CONFLICT, body = Problem, description = "`app_busy`: not failed"),
-    )
-)]
-async fn retry_app(
-    auth: Auth,
-    State(state): State<ApiState>,
-    Client(client): Client,
-    Path(id): Path<String>,
-) -> Result<(StatusCode, Json<Job>), ApiError> {
-    auth.require(Permission::ContainersManage)?;
-    let job = state.installs.retry(&id, &auth.0.actor(), &client).await?;
-    Ok((StatusCode::ACCEPTED, Json(job.into())))
-}
-
-#[derive(Debug, Default, Deserialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct UpdateAppRequest {
-    /// The administrator confirmed what the new version may do beyond the
-    /// old one, for the version with `digest`: the detail of the
-    /// `permissions_not_confirmed` that asked.
-    #[serde(default)]
-    pub confirm_permissions: bool,
-    #[serde(default)]
-    pub digest: Option<String>,
-}
-
-/// The digest whose permissions were confirmed, if they were.
-fn confirmed(confirm: bool, digest: Option<String>) -> Option<String> {
-    confirm.then(|| digest.unwrap_or_default())
-}
-
-/// Brings an app to the version its catalog offers now, keeping its
-/// values. Needs `containers.manage`.
-#[utoipa::path(
-    post,
-    path = "/apps/installed/{id}/update",
-    tag = "apps",
-    security(("session" = [])),
-    params(("id" = String, Path)),
-    request_body = UpdateAppRequest,
-    responses(
-        (status = ACCEPTED, body = Job),
-        (status = NOT_FOUND, body = Problem, description = "`not_found`: the app or its catalog entry"),
-        (status = CONFLICT, body = Problem, description = "`up_to_date`, `app_busy`, `permissions_not_confirmed` (the detail: the digest to confirm), `app_changed`"),
-        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_app_value`: the new version needs a value"),
-    )
-)]
-async fn update_app(
-    auth: Auth,
-    State(state): State<ApiState>,
-    Client(client): Client,
-    Path(id): Path<String>,
-    ApiJson(request): ApiJson<UpdateAppRequest>,
-) -> Result<(StatusCode, Json<Job>), ApiError> {
-    auth.require(Permission::ContainersManage)?;
-    let confirmed = confirmed(request.confirm_permissions, request.digest);
-    let job = state.installs.update(&id, confirmed, &auth.0.actor(), &client).await?;
     Ok((StatusCode::ACCEPTED, Json(job.into())))
 }
 

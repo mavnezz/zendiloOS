@@ -27,9 +27,9 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 pub use apps::{
-    AppCompose, AppFolder, AppManifest, AppName, AppSettingValue, AppShareChoice, AppValues,
+    AppCompose, AppFolder, AppManifest, AppName, AppSettingValue, AppShareChoice, AppValues, DevicePath,
     InvalidAppCompose, InvalidAppFolder, InvalidAppManifest, InvalidAppName, InvalidAppSettingValue,
-    MAX_LOG_LINES,
+    InvalidDevicePath, MAX_LOG_LINES,
 };
 pub use client::{AgentTransport, Report, TransportError, UnixTransport};
 pub use descriptor::{MessageReader, read_message_with_file, write_message_with_file};
@@ -268,6 +268,15 @@ pub enum Request {
     AppLogs {
         app: AppName,
         lines: u32,
+    },
+    /// What filling in an app of a catalog for an administrator's project
+    /// takes from the machine: the UID and primary GID of `user`, an
+    /// account zendiloOS manages, which the containers run as; the time
+    /// zone; and which of `devices` the machine has (at most
+    /// [`DevicePath::MAX_COUNT`]). Answers [`Response::HostFacts`].
+    HostFacts {
+        user: UserName,
+        devices: Vec<DevicePath>,
     },
     // The Docker engine, whoever started what runs on it. Each answers
     // [`Response::DockerOutput`] with what `docker` printed, or
@@ -629,6 +638,7 @@ impl Request {
             Request::DeleteAppAccount { .. } => "delete_app_account",
             Request::AppsStatus {} => "apps_status",
             Request::AppLogs { .. } => "app_logs",
+            Request::HostFacts { .. } => "host_facts",
             Request::MakeAppFolders { .. } => "make_app_folders",
             Request::DockerContainers {} => "docker_containers",
             Request::DockerStats {} => "docker_stats",
@@ -769,6 +779,15 @@ pub enum Response {
     AppLogs {
         /// With timestamps, oldest first; cut at the response's limit.
         text: String,
+    },
+    HostFacts {
+        uid: u32,
+        gid: u32,
+        /// From where `/etc/localtime` leads: `Europe/Berlin`; `UTC` if it
+        /// leads nowhere in the zone database.
+        time_zone: String,
+        /// Of the devices asked about, those the machine has.
+        devices: Vec<DevicePath>,
     },
     NetworkState {
         /// systemd-networkd manages the network: it can be changed here.

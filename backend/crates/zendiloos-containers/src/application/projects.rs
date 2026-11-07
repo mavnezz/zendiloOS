@@ -4,10 +4,11 @@
 use zendiloos_jobs::Job;
 use zendiloos_kernel::{Actor, AuditEntry, Outcome, RequestContext};
 
-use super::ports::{EngineError, ProjectAction, ProjectPlace};
+use super::ports::{CheckedCompose, EngineError, ProjectAction, ProjectPlace};
 use super::{Containers, ContainersError, job_error};
 use crate::domain::{
-    COMPOSE_FILE, Origin, OwnProject, Project, ProjectName, Risk, assemble, file_reads, risks,
+    COMPOSE_FILE, Origin, OwnProject, Project, ProjectName, ProjectTemplate, Risk, assemble, bind_folders,
+    file_reads, risks,
 };
 
 /// A project to make: its folder in a share and its Compose file.
@@ -22,6 +23,8 @@ pub struct NewProject {
     pub start: bool,
     /// The administrator accepted what the file lets containers do.
     pub accept_risks: bool,
+    /// The App Center filled the file in from an app of a catalog.
+    pub template: Option<ProjectTemplate>,
 }
 
 /// A project's Compose files and whether they are edited here.
@@ -120,7 +123,7 @@ impl Containers {
         compose: &str,
         accept: bool,
         context: &RequestContext,
-    ) -> Result<(Vec<Risk>, String), ContainersError> {
+    ) -> Result<(Vec<Risk>, CheckedCompose), ContainersError> {
         let checked = self.ports.engine.check_compose(name, directory, compose, context).await?;
         let mut found = risks(&checked.model);
         for read in file_reads(compose) {
@@ -131,7 +134,27 @@ impl Containers {
         if !found.is_empty() && !accept {
             return Err(ContainersError::Risky(found));
         }
-        Ok((found, checked.config))
+        Ok((found, checked))
+    }
+
+    /// Makes the folders in the project's own folder its binds mount, as
+    /// far as they are missing, with `actor`'s permissions: Docker would
+    /// make them as root, and a container run as the administrator could
+    /// not write to them.
+    async fn make_bind_folders(
+        &self,
+        project: &OwnProject,
+        checked: &CheckedCompose,
+        actor: &Actor,
+        context: &RequestContext,
+    ) -> Result<(), ContainersError> {
+        let binds: Vec<String> =
+            checked.model.services.iter().flat_map(|service| service.binds.iter().cloned()).collect();
+        for folder in bind_folders(&project.directory, &binds) {
+            let path = format!("{}/{folder}", project.folder);
+            self.ports.storage.make_folder(actor, project.share_id, &path, context).await?;
+        }
+        Ok(())
     }
 
     /// What `compose` would let the containers do, if Compose can read it:
@@ -186,9 +209,10 @@ impl Containers {
         }
         let storage = &self.ports.storage;
         let directory = storage.directory(actor, new.share_id, &folder).await?;
-        let (found, config) =
+        let (found, checked) =
             self.checked(&name, &directory, &new.compose, new.accept_risks, context).await?;
         storage.write(actor, new.share_id, &folder, COMPOSE_FILE, &new.compose, context).await?;
+        let config = checked.config.clone();
         let project = OwnProject {
             name: name.clone(),
             share_id: new.share_id,
@@ -197,9 +221,11 @@ impl Containers {
             directory,
             compose: Some(new.compose.clone()),
             config: Some(config.clone()),
+            template: new.template,
             created_at: self.now(),
             created_by: actor.name.clone(),
         };
+        self.make_bind_folders(&project, &checked, actor, context).await?;
         if !self.ports.projects.create(&project).await? {
             return Err(ContainersError::NameTaken);
         }
@@ -255,10 +281,12 @@ impl Containers {
         context: &RequestContext,
     ) -> Result<Job, ContainersError> {
         let project = self.own(name, context).await?;
-        let (found, config) =
+        let (found, checked) =
             self.checked(&project.name, &project.directory, compose, accept_risks, context).await?;
         let storage = &self.ports.storage;
         storage.write(actor, project.share_id, &project.folder, COMPOSE_FILE, compose, context).await?;
+        self.make_bind_folders(&project, &checked, actor, context).await?;
+        let config = checked.config;
         if !self.ports.projects.confirm(&project.name, compose, &config).await? {
             return Err(ContainersError::NotFound);
         }

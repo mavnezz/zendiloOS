@@ -44,6 +44,10 @@ axum-extra = { version = "0.12", features = ["cookie"] }
 base64 = "0.23"
 clap = { version = "4", features = ["derive"] }
 getrandom = "0.4"
+# YAML events with their places in the text: the App Center fills in a
+# template's values and leaves the rest of the file as written. The same
+# parser the catalog's YAML reader (serde-saphyr) is built on.
+granit-parser = "2.1"
 http-body-util = "0.1"
 # Notification channels: webhooks over hyper's own client, mail with
 # lettre; TLS by rustls with ring and the system's certificates.

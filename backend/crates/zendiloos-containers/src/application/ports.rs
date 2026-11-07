@@ -215,6 +215,16 @@ pub trait ProjectStorage: Send + Sync {
         path: &str,
         context: &RequestContext,
     ) -> Result<String, StorageError>;
+
+    /// Makes the folder `path` of the share and each one on the way, as far
+    /// as they are missing; what is there already stays as it is.
+    async fn make_folder(
+        &self,
+        actor: &Actor,
+        share_id: i64,
+        path: &str,
+        context: &RequestContext,
+    ) -> Result<(), StorageError>;
 }
 
 /// What registries publish.

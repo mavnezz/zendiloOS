@@ -387,6 +387,80 @@
         ]
       }
     },
+    "/api/v1/apps/catalog/{source}/{app}/compose": {
+      "post": {
+        "tags": [
+          "apps"
+        ],
+        "summary": "Fills in an app's Compose file, its template, with the values given and\nthe caller as the account its containers run as; the devices the machine\nlacks are left out. Nothing is made yet. Needs `containers.manage`.",
+        "operationId": "fill_template",
+        "parameters": [
+          {
+            "name": "source",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "app",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FillTemplateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FilledTemplate"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no such app",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_app_value`: the field and why; `template_unfillable`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/apps/catalog/{source}/{app}/icon": {
       "get": {
         "tags": [
@@ -594,7 +668,7 @@
         "tags": [
           "apps"
         ],
-        "summary": "The installed apps, with what Docker makes of them. Needs\n`containers.manage`.",
+        "summary": "The apps installed the earlier way, with what Docker makes of them.\nNeeds `containers.manage`.",
         "operationId": "installed",
         "responses": {
           "200": {
@@ -605,69 +679,6 @@
                   "items": {
                     "$ref": "#/components/schemas/InstalledApp"
                   }
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "session": []
-          }
-        ]
-      },
-      "post": {
-        "tags": [
-          "apps"
-        ],
-        "summary": "Installs an app from a catalog: its data and Docker's on the same pool,\nan account of its own, access to the shares picked; the agent checks it\nagainst the catalog's policy before anything runs. Needs\n`containers.manage`.",
-        "operationId": "install",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/InstallAppRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "202": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Installing"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "`not_found`: no such app",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "`app_installed`, `docker_not_ready`, `permissions_not_confirmed` (the detail: the digest to confirm), `app_changed`",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "`invalid_app_value`, `app_id_too_long`",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }
@@ -864,61 +875,6 @@
         ]
       }
     },
-    "/api/v1/apps/installed/{id}/retry": {
-      "post": {
-        "tags": [
-          "apps"
-        ],
-        "summary": "Installs a failed app again, with its values. Needs\n`containers.manage`.",
-        "operationId": "retry_app",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "202": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Job"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "`not_found`",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "`app_busy`: not failed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "session": []
-          }
-        ]
-      }
-    },
     "/api/v1/apps/installed/{id}/start": {
       "post": {
         "tags": [
@@ -1037,69 +993,22 @@
         ]
       }
     },
-    "/api/v1/apps/installed/{id}/update": {
-      "post": {
+    "/api/v1/apps/projects": {
+      "get": {
         "tags": [
           "apps"
         ],
-        "summary": "Brings an app to the version its catalog offers now, keeping its\nvalues. Needs `containers.manage`.",
-        "operationId": "update_app",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/UpdateAppRequest"
-              }
-            }
-          },
-          "required": true
-        },
+        "summary": "The Docker projects made from apps of a catalog, by name, with where\nthey answer. Needs `containers.manage`.",
+        "operationId": "app_projects",
         "responses": {
-          "202": {
+          "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Job"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "`not_found`: the app or its catalog entry",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "`up_to_date`, `app_busy`, `permissions_not_confirmed` (the detail: the digest to confirm), `app_changed`",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "`invalid_app_value`: the new version needs a value",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AppProject"
+                  }
                 }
               }
             }
@@ -8157,6 +8066,75 @@
           }
         }
       },
+      "AppProject": {
+        "type": "object",
+        "description": "A Docker project made from an app of a catalog.",
+        "required": [
+          "project",
+          "source_id",
+          "id",
+          "name",
+          "tagline",
+          "translations",
+          "run_state",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "digest": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The app's digest in its catalog now, for its icon; `None` once it\nis gone from there."
+          },
+          "id": {
+            "type": "string",
+            "description": "The app's id in its catalog."
+          },
+          "name": {
+            "type": "string",
+            "description": "The app's name as its catalog has it now; its id once it is gone\nfrom there."
+          },
+          "project": {
+            "type": "string",
+            "description": "The project, in the Docker app."
+          },
+          "run_state": {
+            "$ref": "#/components/schemas/RunState"
+          },
+          "source_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "tagline": {
+            "type": "string"
+          },
+          "translations": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/AppTexts"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "web": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AppWebAddress",
+                "description": "Where its web interface answers, while it is published."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
       "AppSetting": {
         "type": "object",
         "required": [
@@ -8309,19 +8287,6 @@
               "string",
               "null"
             ]
-          }
-        }
-      },
-      "AppUpdate": {
-        "type": "object",
-        "description": "A newer state of an installed app.",
-        "properties": {
-          "version": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "The version its catalog names, if it names one."
           }
         }
       },
@@ -8693,7 +8658,7 @@
               },
               "compose": {
                 "type": "string",
-                "description": "The Compose file as written; zendiloOS fills in the variables."
+                "description": "The Compose file as written: the template zendiloOS fills in."
               },
               "description": {
                 "type": "string"
@@ -9811,7 +9776,7 @@
               "string",
               "null"
             ],
-            "description": "For an app: its id in the App Center."
+            "description": "For an app installed the earlier way: its id in the App Center."
           },
           "containers": {
             "type": "array",
@@ -9861,6 +9826,17 @@
               "null"
             ],
             "format": "int64"
+          },
+          "template": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ProjectTemplate",
+                "description": "For a project made here from an app of a catalog: which."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -10177,6 +10153,56 @@
           }
         }
       },
+      "FillTemplateRequest": {
+        "type": "object",
+        "properties": {
+          "ports": {
+            "type": "object",
+            "description": "Port id → host port; missing ones get their default.",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "settings": {
+            "type": "object",
+            "description": "Setting id → value; missing ones get their default. Generated\nsettings are made by zendiloOS.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "shares": {
+            "type": "object",
+            "description": "Share id → the share picked for it: its name, or a folder in it\n(`media/Films`), which the app then mounts instead of the whole\nshare. One the caller may use as the app does (read or write).",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "FilledTemplate": {
+        "type": "object",
+        "required": [
+          "compose"
+        ],
+        "properties": {
+          "compose": {
+            "type": "string",
+            "description": "The app's Compose file with the values in: to be made into a project\nwith `POST /docker/projects`, naming the app as its `template`. Its\ndata goes in the project's folder (`./config`), its containers run\nas the caller."
+          }
+        }
+      },
       "Finding": {
         "type": "object",
         "description": "A reason behind the health verdict.",
@@ -10483,76 +10509,9 @@
           }
         }
       },
-      "InstallAppRequest": {
-        "type": "object",
-        "required": [
-          "source",
-          "app"
-        ],
-        "properties": {
-          "app": {
-            "type": "string"
-          },
-          "confirm_permissions": {
-            "type": "boolean",
-            "description": "The administrator confirmed the app's permissions, for the version\nwith `digest` as shown."
-          },
-          "digest": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "The app's `digest` as shown; with another one now, `app_changed`."
-          },
-          "pool": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "The pool the app's data goes on, one of `volumes` of `/apps/docker`;\nthe one Docker's data is on if absent."
-          },
-          "ports": {
-            "type": "object",
-            "description": "Port id → host port; missing ones get their default.",
-            "additionalProperties": {
-              "type": "integer",
-              "format": "int32",
-              "minimum": 0
-            },
-            "propertyNames": {
-              "type": "string"
-            }
-          },
-          "settings": {
-            "type": "object",
-            "description": "Setting id → value; missing ones get their default. Generated\nsettings are made by zendiloOS.",
-            "additionalProperties": {
-              "type": "string"
-            },
-            "propertyNames": {
-              "type": "string"
-            }
-          },
-          "shares": {
-            "type": "object",
-            "description": "Share id → the share picked for it: its name, or a folder in it\n(`media/Films`), which the app then mounts instead of the whole\nshare.",
-            "additionalProperties": {
-              "type": "string"
-            },
-            "propertyNames": {
-              "type": "string"
-            }
-          },
-          "source": {
-            "type": "integer",
-            "format": "int64"
-          }
-        },
-        "additionalProperties": false
-      },
       "InstalledApp": {
         "type": "object",
-        "description": "An installed app.",
+        "description": "An app installed the earlier way, with a dataset and an account of its\nown: it is started, stopped and removed, no longer installed or\nupdated so.",
         "required": [
           "id",
           "source_id",
@@ -10644,17 +10603,6 @@
               "type": "string"
             }
           },
-          "update": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/AppUpdate",
-                "description": "What its catalog offers now, if it is newer."
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "updated_at": {
             "type": "integer",
             "format": "int64"
@@ -10674,21 +10622,6 @@
                 "type": "null"
               }
             ]
-          }
-        }
-      },
-      "Installing": {
-        "type": "object",
-        "required": [
-          "app",
-          "job"
-        ],
-        "properties": {
-          "app": {
-            "$ref": "#/components/schemas/InstalledApp"
-          },
-          "job": {
-            "$ref": "#/components/schemas/Job"
           }
         }
       },
@@ -11548,6 +11481,17 @@
           "start": {
             "type": "boolean",
             "description": "Deploys it right away."
+          },
+          "template": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ProjectTemplate",
+                "description": "The App Center filled the file in from this app of a catalog\n(`/apps/catalog/{source}/{app}/compose`); it finds the project again\nby it."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "additionalProperties": false
@@ -12433,6 +12377,25 @@
             "format": "int64"
           }
         }
+      },
+      "ProjectTemplate": {
+        "type": "object",
+        "description": "The app of a catalog a project was made from in the App Center.",
+        "required": [
+          "source_id",
+          "app"
+        ],
+        "properties": {
+          "app": {
+            "type": "string"
+          },
+          "source_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The catalog; it may have been removed since."
+          }
+        },
+        "additionalProperties": false
       },
       "PublishedPort": {
         "type": "object",
@@ -14278,22 +14241,6 @@
               {
                 "type": "null"
               }
-            ]
-          }
-        },
-        "additionalProperties": false
-      },
-      "UpdateAppRequest": {
-        "type": "object",
-        "properties": {
-          "confirm_permissions": {
-            "type": "boolean",
-            "description": "The administrator confirmed what the new version may do beyond the\nold one, for the version with `digest`: the detail of the\n`permissions_not_confirmed` that asked."
-          },
-          "digest": {
-            "type": [
-              "string",
-              "null"
             ]
           }
         },

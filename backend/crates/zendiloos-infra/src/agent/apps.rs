@@ -1,5 +1,6 @@
-//! Apps on the host, through both agents: the system agent prepares,
-//! checks and runs them, the files agent makes their folders.
+//! Apps on the host, through the system agent: what filling in a template
+//! takes from the machine, and running and removing the apps installed the
+//! earlier way.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -7,11 +8,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::Value;
 use zendiloos_agent_proto::{
-    AgentTransport, AppCompose, AppFolder, AppManifest, AppName, AppSettingValue, AppShareChoice, AppValues,
-    ErrorCode, PoolName, Request, Response, ShareName, VolumeNumber,
+    AgentTransport, AppName, DevicePath, ErrorCode, PoolName, Request, Response, UserName, VolumeNumber,
 };
-use zendiloos_apps::application::ports::{AppHost, AppHostError, HostValues};
-use zendiloos_apps::domain::{AppVolume, Containers};
+use zendiloos_apps::application::ports::{AppHost, AppHostError, TemplateHost};
+use zendiloos_apps::domain::{AppVolume, Containers, HostFacts};
 use zendiloos_kernel::{PortError, RequestContext};
 
 use super::{WHAT, call_raw, unexpected};
@@ -20,17 +20,16 @@ use super::{WHAT, call_raw, unexpected};
 /// Compose projects are told from others.
 const APPS_CONFIGS: &str = "/etc/zendiloos/apps";
 
-/// [`AppHost`] through the system agent (with a timeout long enough to
-/// fetch images) and the files agent.
+/// [`AppHost`] and [`TemplateHost`] through the system agent (with a
+/// timeout long enough to stop and remove containers).
 #[derive(Clone)]
 pub struct AgentApps {
     system: Arc<dyn AgentTransport>,
-    files: Arc<dyn AgentTransport>,
 }
 
 impl AgentApps {
-    pub fn new(system: Arc<dyn AgentTransport>, files: Arc<dyn AgentTransport>) -> Self {
-        Self { system, files }
+    pub fn new(system: Arc<dyn AgentTransport>) -> Self {
+        Self { system }
     }
 }
 
@@ -133,76 +132,32 @@ fn plain(text: &str) -> String {
 }
 
 #[async_trait]
-impl AppHost for AgentApps {
-    async fn prepare(
+impl TemplateHost for AgentApps {
+    async fn facts(
         &self,
-        app: &str,
-        volume: &AppVolume,
+        user: &str,
+        devices: &[String],
         context: &RequestContext,
-    ) -> Result<(), AppHostError> {
-        let request = Request::PrepareApp {
-            app: app_name(app)?,
-            pool: PoolName::parse(&volume.pool).map_err(|_| invalid("pool name"))?,
-            volume: volume_number(volume.number)?,
-        };
-        done(self.system.as_ref(), request, context).await
-    }
-
-    async fn configure(
-        &self,
-        app: &str,
-        volume: u16,
-        manifest: &str,
-        compose: &str,
-        values: &HostValues,
-        context: &RequestContext,
-    ) -> Result<Vec<String>, AppHostError> {
-        let mut agent_values = AppValues { ports: values.ports.clone(), ..AppValues::default() };
-        for (id, share) in &values.shares {
-            let choice = AppShareChoice {
-                volume: volume_number(share.volume)?,
-                name: ShareName::parse(&share.name).map_err(|_| invalid("share name"))?,
-                folder: AppFolder::parse(&share.folder).map_err(|_| invalid("folder in a share"))?,
-            };
-            agent_values.shares.insert(id.clone(), choice);
-        }
-        for (id, value) in &values.settings {
-            let value = AppSettingValue::new(value.clone()).map_err(|_| invalid("setting value"))?;
-            agent_values.settings.insert(id.clone(), value);
-        }
-        let request = Request::ConfigureApp {
-            app: app_name(app)?,
-            volume: volume_number(volume)?,
-            manifest: AppManifest::new(manifest).map_err(|_| invalid("manifest"))?,
-            compose: AppCompose::new(compose).map_err(|_| invalid("compose file"))?,
-            values: agent_values,
-        };
-        match ask(self.system.as_ref(), request, context).await? {
-            Response::AppFolders { folders } => Ok(folders.into_iter().map(String::from).collect()),
+    ) -> Result<HostFacts, AppHostError> {
+        let user = UserName::parse(user).map_err(|_| invalid("user name"))?;
+        let devices = devices
+            .iter()
+            .map(|device| DevicePath::parse(device).map_err(|_| invalid("device")))
+            .collect::<Result<Vec<_>, _>>()?;
+        match ask(self.system.as_ref(), Request::HostFacts { user, devices }, context).await? {
+            Response::HostFacts { uid, gid, time_zone, devices } => Ok(HostFacts {
+                uid,
+                gid,
+                time_zone,
+                devices: devices.into_iter().map(String::from).collect(),
+            }),
             other => Err(unexpected(other).into()),
         }
     }
+}
 
-    async fn make_folders(
-        &self,
-        app: &str,
-        volume: u16,
-        folders: &[String],
-        context: &RequestContext,
-    ) -> Result<(), AppHostError> {
-        let folders = folders
-            .iter()
-            .map(|folder| AppFolder::parse(folder).map_err(|_| invalid("folder")))
-            .collect::<Result<Vec<_>, _>>()?;
-        let request =
-            Request::MakeAppFolders { app: app_name(app)?, volume: volume_number(volume)?, folders };
-        done(self.files.as_ref(), request, context).await
-    }
-
-    async fn pull(&self, app: &str, context: &RequestContext) -> Result<(), AppHostError> {
-        done(self.system.as_ref(), Request::PullApp { app: app_name(app)? }, context).await
-    }
-
+#[async_trait]
+impl AppHost for AgentApps {
     async fn start(&self, app: &str, context: &RequestContext) -> Result<(), AppHostError> {
         done(self.system.as_ref(), Request::StartApp { app: app_name(app)? }, context).await
     }
@@ -246,7 +201,6 @@ impl AppHost for AgentApps {
 
 #[cfg(test)]
 mod tests {
-    use zendiloos_apps::application::ports::HostShare;
     use zendiloos_sim::SimulatedAgent;
 
     use super::*;
@@ -273,32 +227,43 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_app_runs_through_the_agents() {
-        let agent = Arc::new(SimulatedAgent::new());
-        let apps = AgentApps::new(agent.clone(), agent);
+    async fn an_app_installed_before_runs_through_the_agent() {
+        let apps = AgentApps::new(Arc::new(SimulatedAgent::new().with_app("demo")));
         let context = RequestContext::default();
         let volume = AppVolume { pool: "tank".into(), number: 1 };
-        apps.prepare("demo", &volume, &context).await.unwrap();
-        let values = HostValues {
-            shares: BTreeMap::from([(
-                "media".into(),
-                HostShare { volume: 1, name: "family".into(), folder: "Films".into() },
-            )]),
-            ports: BTreeMap::from([("web".into(), 8080)]),
-            settings: BTreeMap::from([("PASSWORD".into(), "s3cret".into())]),
-        };
-        let other = apps.configure("demo", 1, r#"{"id":"other"}"#, "services: {}", &values, &context).await;
-        assert!(
-            matches!(other, Err(AppHostError::Refused(ref reason)) if reason == "the manifest is another app's")
-        );
-        let folders = apps.configure("demo", 1, r#"{"id":"demo"}"#, "services: {}", &values, &context).await;
-        assert_eq!(folders.unwrap(), Vec::<String>::new());
-        apps.pull("demo", &context).await.unwrap();
         apps.start("demo", &context).await.unwrap();
         assert_eq!(apps.status(&context).await.unwrap()["demo"].running, 1);
         assert!(apps.logs("demo", 10, &context).await.unwrap().contains("started"));
+        apps.stop("demo", &context).await.unwrap();
         apps.remove("demo", &volume, &context).await.unwrap();
+        apps.delete_account("demo", &context).await.unwrap();
         assert!(apps.status(&context).await.unwrap().is_empty());
-        assert!(matches!(apps.prepare("Demo!", &volume, &context).await, Err(AppHostError::Port(_))));
+        let unknown = apps.start("other", &context).await;
+        assert!(
+            matches!(unknown, Err(AppHostError::Refused(ref reason)) if reason == "other is not installed")
+        );
+        assert!(matches!(apps.start("Demo!", &context).await, Err(AppHostError::Port(_))));
+    }
+
+    #[tokio::test]
+    async fn the_machine_says_what_a_template_needs() {
+        let apps = AgentApps::new(Arc::new(SimulatedAgent::new()));
+        let context = RequestContext::default();
+        let devices = ["/dev/dri".to_owned(), "/dev/ttyUSB0".to_owned()];
+
+        let facts = apps.facts("alice", &devices, &context).await.unwrap();
+
+        assert_eq!(
+            facts,
+            HostFacts {
+                uid: 2000,
+                gid: 1500,
+                time_zone: "Europe/Berlin".into(),
+                devices: vec!["/dev/dri".into()]
+            }
+        );
+        assert!(matches!(apps.facts("Alice Smith", &[], &context).await, Err(AppHostError::Port(_))));
+        let odd = ["/etc/passwd".to_owned()];
+        assert!(matches!(apps.facts("alice", &odd, &context).await, Err(AppHostError::Port(_))));
     }
 }

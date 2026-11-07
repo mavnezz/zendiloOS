@@ -15,7 +15,7 @@ use tokio::signal::unix::{SignalKind, signal};
 use tokio::task::JoinHandle;
 use zendiloos_agent_proto::{AgentTransport, ConsoleSetupCode, Request, Response, UnixTransport};
 use zendiloos_api::{ApiState, UseCases};
-use zendiloos_apps::application::{Catalogs, Docker, InstallPorts, Installs};
+use zendiloos_apps::application::{Catalogs, Docker, InstallPorts, Installs, TemplatePorts, Templates};
 use zendiloos_containers::application::{Containers, ContainersPorts};
 use zendiloos_identity::application::commands::PurgeExpiredSessions;
 use zendiloos_identity::application::{IdentityConfig, IdentityPorts, IdentityUseCases};
@@ -25,7 +25,9 @@ use zendiloos_infra::agent::{
     AgentSsh, AgentStorage, AgentSystemAccounts, AgentTime, AgentUpdates, AgentWebTls, RandomPlanTokens,
     agent_version,
 };
-use zendiloos_infra::apps::{HttpsCatalogs, RandomSecrets, SharingForApps};
+use zendiloos_infra::apps::{
+    ContainersForApps, FilesForApps, HttpsCatalogs, RandomSecrets, SharingForApps, YamlFiller,
+};
 use zendiloos_infra::containers::{HttpsRegistries, SharesForProjects};
 use zendiloos_infra::host::{HostSystemInfo, IpNetworkReader, JournalctlReader, MetricsHub, ProcListening};
 use zendiloos_infra::identity::{
@@ -167,7 +169,6 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     let agent_storage = Arc::new(AgentStorage::new(agent.clone()));
     let agent_storage_for_sharing = agent_storage.clone();
     let docker = Docker::new(agent_storage.clone(), audit.clone(), Arc::new(SystemClock), jobs.clone());
-    let docker_host = agent_storage.clone();
     let storage = StorageUseCases::new(StoragePorts {
         devices: agent_storage.clone(),
         smart: agent_storage.clone(),
@@ -224,14 +225,12 @@ async fn serve(config: Config) -> anyhow::Result<()> {
             Err(error) => tracing::warn!(%error, "files: cannot remove what interrupted uploads left"),
         }
     });
+    let installed_apps = Arc::new(SqliteInstalledApps::new(database.clone()));
+    let agent_apps = Arc::new(AgentApps::new(patient_agent.clone()));
     let installs = Installs::new(InstallPorts {
-        catalogs: apps.clone(),
-        installed: Arc::new(SqliteInstalledApps::new(database.clone())),
-        host: Arc::new(AgentApps::new(patient_agent.clone(), files_agent.clone())),
-        docker: docker_host,
+        installed: installed_apps.clone(),
+        host: agent_apps.clone(),
         shares: Arc::new(SharingForApps::new(sharing.clone())),
-        listening: Arc::new(ProcListening::default()),
-        secrets: Arc::new(RandomSecrets),
         jobs: jobs.clone(),
         audit: audit.clone(),
         clock: Arc::new(SystemClock),
@@ -271,6 +270,16 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         audit: audit.clone(),
         clock: Arc::new(SystemClock),
     });
+    let templates = Templates::new(TemplatePorts {
+        catalogs: apps.clone(),
+        installed: installed_apps,
+        shares: Arc::new(FilesForApps::new(files.clone())),
+        listening: Arc::new(ProcListening::default()),
+        secrets: Arc::new(RandomSecrets),
+        host: agent_apps,
+        filler: Arc::new(YamlFiller),
+        projects: Arc::new(ContainersForApps::new(containers.clone())),
+    });
     let container_sampler = spawn_container_sampler(containers.clone());
     let image_updates = spawn_image_updates(containers.clone());
     let update_checks = spawn_update_checks(updates.clone());
@@ -290,6 +299,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         apps,
         docker,
         installs,
+        templates,
         containers,
         updates,
     };

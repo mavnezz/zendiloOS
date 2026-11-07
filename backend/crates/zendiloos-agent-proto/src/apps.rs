@@ -250,6 +250,59 @@ impl From<AppFolder> for String {
 /// Most lines of an app's log [`crate::Request::AppLogs`] returns.
 pub const MAX_LOG_LINES: u32 = 5000;
 
+/// A device of the machine an app may be given, such as `/dev/dri` or
+/// `/dev/serial/by-id/usb-…`: below `/dev`, names of letters, digits and
+/// `.`, `_`, `-`, `:`, `+`, `@`, none `.` or `..`; at most 255 bytes.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct DevicePath(String);
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("not a device path below /dev")]
+pub struct InvalidDevicePath;
+
+impl DevicePath {
+    pub const MAX_BYTES: usize = 255;
+    /// Most devices one request asks about.
+    pub const MAX_COUNT: usize = 64;
+
+    pub fn parse(value: &str) -> Result<Self, InvalidDevicePath> {
+        let valid = value.len() <= Self::MAX_BYTES
+            && value.strip_prefix("/dev/").is_some_and(|inside| {
+                inside.split('/').all(|name| {
+                    !name.is_empty()
+                        && name != "."
+                        && name != ".."
+                        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-:+@".contains(&b))
+                })
+            });
+        if valid { Ok(Self(value.to_owned())) } else { Err(InvalidDevicePath) }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// The path below `/dev`: `dri`, `serial/by-id/…`.
+    pub fn inside(&self) -> &str {
+        &self.0["/dev/".len()..]
+    }
+}
+
+impl TryFrom<String> for DevicePath {
+    type Error = InvalidDevicePath;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(&value)
+    }
+}
+
+impl From<DevicePath> for String {
+    fn from(path: DevicePath) -> Self {
+        path.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -287,5 +340,23 @@ mod tests {
         assert!(AppSettingValue::new("x".repeat(4097)).is_err());
         let manifest = AppManifest::new("{}".repeat(10)).unwrap();
         assert_eq!(format!("{manifest:?}"), "AppManifest(20 bytes)");
+    }
+
+    #[test]
+    fn devices_lie_below_dev() {
+        for good in
+            ["/dev/dri", "/dev/ttyUSB0", "/dev/net/tun", "/dev/serial/by-id/usb-ITead_Sonoff-if00:x+y@z"]
+        {
+            let device = DevicePath::parse(good).unwrap();
+            assert_eq!(String::from(device.clone()), good);
+            assert_eq!(device.inside(), &good[5..]);
+        }
+        for bad in
+            ["/dev/", "/dev", "/etc/passwd", "/dev/../etc", "/dev/a//b", "/dev/a b", "dev/dri", "/dev/./x"]
+        {
+            assert!(DevicePath::parse(bad).is_err(), "{bad}");
+        }
+        assert!(DevicePath::parse(&format!("/dev/{}", "a".repeat(251))).is_err());
+        assert!(serde_json::from_str::<DevicePath>("\"/dev/../x\"").is_err());
     }
 }

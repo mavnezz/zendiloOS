@@ -18,8 +18,8 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 use zendiloos_agent_proto::{
-    AppCompose, AppFolder, AppManifest, AppName, AppSettingValue, AppShareChoice, AppValues, Response,
-    ShareName, VolumeNumber,
+    AppCompose, AppFolder, AppManifest, AppName, AppSettingValue, AppShareChoice, AppValues, DevicePath,
+    Response, ShareName, UserName, VolumeNumber,
 };
 use zendiloos_exec::Program;
 
@@ -482,4 +482,31 @@ async fn ports_and_settings_the_manifest_rules_out_are_refused() {
     );
     assert!(refused.contains("Docker reads itself"), "{refused}");
     assert_eq!(f.calls(), "", "Compose never ran");
+}
+
+#[test]
+fn the_facts_a_template_needs_come_from_the_machine() {
+    let f = Fixture::new("facts");
+    let users = "zendiloos-users:x:1500:\napp-shm:x:2100:\n";
+    fs::write(f.path("group"), users).unwrap();
+    let alice = "alice:x:2001:1500:Alice:/nonexistent:/usr/sbin/nologin\n";
+    let owner = "owner:x:1000:1000::/home/owner:/bin/bash\n";
+    fs::write(f.path("passwd"), format!("{alice}{owner}")).unwrap();
+    fs::create_dir_all(f.path("dev/dri")).unwrap();
+    let device = |path: &str| DevicePath::parse(path).unwrap();
+    let asked = [device("/dev/dri"), device("/dev/ttyUSB0")];
+
+    let facts = f.apps.facts(&UserName::parse("alice").unwrap(), &asked).unwrap();
+
+    let expected = Response::HostFacts {
+        uid: 2001,
+        gid: 1500,
+        time_zone: "Europe/Berlin".into(),
+        devices: vec![device("/dev/dri")],
+    };
+    assert_eq!(facts, expected);
+    let unmanaged = f.apps.facts(&UserName::parse("owner").unwrap(), &asked);
+    assert!(unmanaged.is_err(), "the owner's own user is no account of zendiloOS");
+    let many = vec![device("/dev/dri"); DevicePath::MAX_COUNT + 1];
+    assert!(f.apps.facts(&UserName::parse("alice").unwrap(), &many).is_err());
 }

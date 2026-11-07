@@ -5,6 +5,8 @@
 //! the agent, when installing.
 
 mod installs;
+mod projects;
+mod templates;
 
 use std::sync::Arc;
 
@@ -17,7 +19,9 @@ use zendiloos_apps::domain::{
 };
 use zendiloos_catalog as catalog;
 
-pub use installs::{RandomSecrets, SharingForApps};
+pub use installs::{FilesForApps, RandomSecrets, SharingForApps};
+pub use projects::ContainersForApps;
+pub use templates::YamlFiller;
 
 /// The most an index may be; the community catalog's is a few dozen KiB.
 const MAX_INDEX_BYTES: usize = 8 * 1024 * 1024;

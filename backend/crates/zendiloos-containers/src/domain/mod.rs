@@ -11,7 +11,8 @@ pub use engine::{
 };
 pub use history::{Moment, UsageHistory, UsagePoint};
 pub use project::{
-    APP_FILES, COMPOSE_FILE, InvalidProjectName, Origin, OwnProject, Project, ProjectName, assemble,
+    APP_FILES, COMPOSE_FILE, InvalidProjectName, Origin, OwnProject, Project, ProjectName, ProjectTemplate,
+    assemble, bind_folders,
 };
 pub use updates::{
     ImageCheck, InvalidUpdateSettings, RegistryImage, UpdateReport, UpdateSchedule, UpdateSettings,

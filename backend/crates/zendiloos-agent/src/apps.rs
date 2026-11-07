@@ -30,16 +30,17 @@ use std::time::Duration;
 use rustix::fs::{Mode, OFlags, fstat, openat};
 use serde_json::Value;
 use zendiloos_agent_proto::{
-    AppCompose, AppFolder, AppManifest, AppName, AppShareChoice, AppValues, MAX_LOG_LINES, Response,
-    VolumeNumber,
+    AppCompose, AppFolder, AppManifest, AppName, AppShareChoice, AppValues, DevicePath, MAX_LOG_LINES,
+    Response, UserName, VolumeNumber,
 };
 use zendiloos_catalog::compose::{check_normalized, check_source, check_variables};
 use zendiloos_catalog::{Manifest, Placement, Problem, RESERVED_HOST_PORTS, SettingKind};
 use zendiloos_exec::{Limits, Output, Program, Surroundings};
 
-use crate::accounts::{AccountFiles, app_account};
+use crate::accounts::{AccountFiles, app_account, require_managed};
 use crate::app_shares::{self, Owner, Pin, open_mounted};
 use crate::operations::OperationError;
+use crate::passwd;
 use crate::pools::{APPS_DIRECTORY, HostPaths};
 
 /// What zendiloos keeps in an app's normalized compose file besides what
@@ -569,6 +570,22 @@ impl Apps {
         }
         self.remove_pin_unit(app).await?;
         fs::remove_file(&path).map_err(|e| OperationError::Write(path, e))
+    }
+
+    /// What filling in an app of a catalog for `user`'s project takes from
+    /// the machine: the account's UID and primary GID (one zendiloOS
+    /// manages), the time zone, and which of `devices` are there.
+    pub(crate) fn facts(&self, user: &UserName, devices: &[DevicePath]) -> Result<Response, OperationError> {
+        if devices.len() > DevicePath::MAX_COUNT {
+            return Err(refused("too many devices at once"));
+        }
+        let (passwd, group) = (read(&self.accounts.passwd)?, read(&self.accounts.group)?);
+        require_managed(&passwd, &group, user)?;
+        let (uid, gid) = passwd::lookup(&passwd, user.as_str())
+            .ok_or_else(|| OperationError::NotManaged(format!("user {}", user.as_str())))?;
+        let devices =
+            devices.iter().filter(|device| self.paths.dev.join(device.inside()).exists()).cloned().collect();
+        Ok(Response::HostFacts { uid, gid, time_zone: self.time_zone(), devices })
     }
 
     /// Every Compose project with its containers' states, as Compose

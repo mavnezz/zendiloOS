@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT name, share_id, folder, directory, file, compose, config, created_at, created_by\n             FROM docker_projects ORDER BY name",
+  "query": "SELECT name, share_id, folder, directory, file, compose, config, template_source,\n                    template_app, created_at, created_by\n             FROM docker_projects ORDER BY name",
   "describe": {
     "columns": [
       {
@@ -81,8 +81,30 @@
         }
       },
       {
-        "name": "created_at",
+        "name": "template_source",
         "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "docker_projects",
+            "name": "template_source"
+          }
+        }
+      },
+      {
+        "name": "template_app",
+        "ordinal": 8,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "docker_projects",
+            "name": "template_app"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 9,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -93,7 +115,7 @@
       },
       {
         "name": "created_by",
-        "ordinal": 8,
+        "ordinal": 10,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -114,9 +136,11 @@
       false,
       true,
       true,
+      true,
+      true,
       false,
       false
     ]
   },
-  "hash": "dd025aef2f0edb072964a578482d959ef3bc42a262616a15706413608ddb6fb3"
+  "hash": "2c6c2a24d93ce1f244e1438c2768cc0e2899a09afa70362bd93c80544ef499c4"
 }

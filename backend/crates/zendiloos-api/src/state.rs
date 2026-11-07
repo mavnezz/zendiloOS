@@ -1,4 +1,4 @@
-use zendiloos_apps::application::{Catalogs, Docker, Installs};
+use zendiloos_apps::application::{Catalogs, Docker, Installs, Templates};
 use zendiloos_containers::application::Containers;
 use zendiloos_identity::application::IdentityUseCases;
 use zendiloos_jobs::Jobs;
@@ -26,6 +26,7 @@ pub struct ApiState {
     pub(crate) apps: Catalogs,
     pub(crate) docker: Docker,
     pub(crate) installs: Installs,
+    pub(crate) templates: Templates,
     pub(crate) containers: Containers,
     pub(crate) updates: Updates,
     /// Session cookies get `Secure` and the `__Host-` prefix. Only turn
@@ -47,6 +48,7 @@ pub struct UseCases {
     pub apps: Catalogs,
     pub docker: Docker,
     pub installs: Installs,
+    pub templates: Templates,
     pub containers: Containers,
     pub updates: Updates,
 }
@@ -66,6 +68,7 @@ impl ApiState {
             apps,
             docker,
             installs,
+            templates,
             containers,
             updates,
         } = use_cases;
@@ -82,6 +85,7 @@ impl ApiState {
             apps,
             docker,
             installs,
+            templates,
             containers,
             updates,
             secure_cookies,

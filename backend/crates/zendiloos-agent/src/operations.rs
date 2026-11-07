@@ -197,6 +197,7 @@ impl Operations {
             Request::StartPackages { task, release } => self.packages.start(*task, release.as_ref()).await,
             Request::PackagesState {} => self.packages.state().await,
             Request::AppLogs { app, lines } => self.apps.logs(app, *lines).await,
+            Request::HostFacts { user, devices } => self.apps.facts(user, devices),
             Request::NetworkState {} => self.network.state().await,
             Request::ApplyNetwork { config, confirm_within } => {
                 self.network.apply(config, *confirm_within).await

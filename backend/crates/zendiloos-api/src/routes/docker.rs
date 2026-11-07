@@ -649,12 +649,29 @@ pub enum ProjectKind {
     Foreign,
 }
 
+/// The app of a catalog a project was made from in the App Center.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectTemplate {
+    /// The catalog; it may have been removed since.
+    pub source_id: i64,
+    pub app: String,
+}
+
+impl From<containers::ProjectTemplate> for ProjectTemplate {
+    fn from(template: containers::ProjectTemplate) -> Self {
+        Self { source_id: template.source, app: template.app }
+    }
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct DockerProject {
     pub name: String,
     pub kind: ProjectKind,
-    /// For an app: its id in the App Center.
+    /// For an app installed the earlier way: its id in the App Center.
     pub app: Option<String>,
+    /// For a project made here from an app of a catalog: which.
+    pub template: Option<ProjectTemplate>,
     /// Where its Compose file is: on the machine for every kind, and in the
     /// share for one made here (`docker/teslamate/compose.yaml`).
     pub files: Vec<String>,
@@ -676,16 +693,20 @@ fn project_dto(project: containers::Project, usage: &[ContainerView]) -> DockerP
             ContainerView { container, usage }.into()
         })
         .collect();
+    let mut template = None;
     let (kind, app, files, share_id, folder, created_at, created_by) = match project.origin {
-        Origin::Own(own) => (
-            ProjectKind::Own,
-            None,
-            vec![own.file],
-            Some(own.share_id),
-            Some(own.folder),
-            Some(own.created_at.unix_seconds()),
-            Some(own.created_by),
-        ),
+        Origin::Own(own) => {
+            template = own.template.map(Into::into);
+            (
+                ProjectKind::Own,
+                None,
+                vec![own.file],
+                Some(own.share_id),
+                Some(own.folder),
+                Some(own.created_at.unix_seconds()),
+                Some(own.created_by),
+            )
+        }
         Origin::App { app } => (ProjectKind::App, Some(app), vec![], None, None, None, None),
         Origin::Foreign { files } => (ProjectKind::Foreign, None, files, None, None, None, None),
     };
@@ -693,6 +714,7 @@ fn project_dto(project: containers::Project, usage: &[ContainerView]) -> DockerP
         name: project.name,
         kind,
         app,
+        template,
         files,
         share_id,
         folder,
@@ -747,6 +769,11 @@ pub struct NewDockerProject {
     /// accepted.
     #[serde(default)]
     pub accept_risks: bool,
+    /// The App Center filled the file in from this app of a catalog
+    /// (`/apps/catalog/{source}/{app}/compose`); it finds the project again
+    /// by it.
+    #[serde(default)]
+    pub template: Option<ProjectTemplate>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -775,6 +802,9 @@ async fn create_project(
         compose: request.compose,
         start: request.start,
         accept_risks: request.accept_risks,
+        template: request
+            .template
+            .map(|template| containers::ProjectTemplate { source: template.source_id, app: template.app }),
     };
     let job = state.containers.create_project(new, &auth.0.actor(), &client).await?;
     Ok((StatusCode::CREATED, Json(ProjectCreated { job: job.map(Into::into) })))

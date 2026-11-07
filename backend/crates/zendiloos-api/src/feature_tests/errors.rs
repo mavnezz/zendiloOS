@@ -114,21 +114,16 @@ async fn app_errors() {
     assert_maps(AppsError::NotACatalog("x".into()), StatusCode::UNPROCESSABLE_ENTITY, "not_a_catalog").await;
     assert_maps(AppsError::Unreachable("x".into()), StatusCode::BAD_GATEWAY, "catalog_unreachable").await;
     assert_maps(AppsError::Refused("x".into()), conflict, "refused").await;
-    assert_maps(AppsError::AlreadyInstalled, conflict, "app_installed").await;
-    assert_maps(AppsError::IdTooLong, StatusCode::UNPROCESSABLE_ENTITY, "app_id_too_long").await;
-    assert_maps(AppsError::DockerNotReady, conflict, "docker_not_ready").await;
     assert_maps(AppsError::DockerInstalled, conflict, "docker_installed").await;
-    let digest = assert_maps(
-        AppsError::PermissionsNotConfirmed { digest: "sha256:x".into() },
-        conflict,
-        "permissions_not_confirmed",
+    let why = assert_maps(
+        AppsError::Template("line 3: no".into()),
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "template_unfillable",
     );
-    assert_eq!(digest.await.as_deref(), Some("sha256:x"));
-    assert_maps(AppsError::Changed, conflict, "app_changed").await;
+    assert_eq!(why.await.as_deref(), Some("line 3: no"));
     assert_maps(AppsError::Busy, conflict, "app_busy").await;
     assert_maps(AppsError::ConfirmationMismatch, StatusCode::UNPROCESSABLE_ENTITY, "confirmation_mismatch")
         .await;
-    assert_maps(AppsError::UpToDate, conflict, "up_to_date").await;
     assert_maps(AppsError::HostFailed("x".into()), StatusCode::BAD_GATEWAY, "host_failed").await;
     assert_maps(AppsError::Port(port()), StatusCode::INTERNAL_SERVER_ERROR, "internal").await;
 }

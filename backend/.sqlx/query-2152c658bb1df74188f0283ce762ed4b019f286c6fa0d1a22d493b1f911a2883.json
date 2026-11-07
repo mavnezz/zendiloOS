@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO docker_projects\n                 (name, share_id, folder, directory, file, compose, config, template_source,\n                  template_app, created_at, created_by)\n             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (name) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 11
+    },
+    "nullable": []
+  },
+  "hash": "2152c658bb1df74188f0283ce762ed4b019f286c6fa0d1a22d493b1f911a2883"
+}

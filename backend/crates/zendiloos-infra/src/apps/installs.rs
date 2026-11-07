@@ -1,13 +1,45 @@
-//! What installing apps needs besides the agents: the shares (from the
+//! What the App Center needs besides the agents: the shares (from the
 //! Sharing context), the ports in use (from the kernel's socket tables)
 //! and new secrets.
 
 use async_trait::async_trait;
-use zendiloos_apps::application::ports::{AppHostError, AppShares, Secrets, ShareChoice};
+use zendiloos_apps::application::ports::{AppHostError, AppShares, Secrets, UsableShare, UsableShares};
 use zendiloos_apps::domain::SecretAlphabet;
-use zendiloos_kernel::{PortError, RequestContext};
-use zendiloos_sharing::application::{SharingError, SharingUseCases};
+use zendiloos_kernel::{Actor, PortError, RequestContext};
+use zendiloos_sharing::application::{FilesError, FilesUseCases, SharingError, SharingUseCases};
 use zendiloos_sharing::domain::{Access, ShareName};
+
+/// [`UsableShares`] through the file manager's use cases: the shares as
+/// the administrator may use them, which an app made from a template does
+/// as them.
+#[derive(Clone)]
+pub struct FilesForApps {
+    files: FilesUseCases,
+}
+
+impl FilesForApps {
+    pub fn new(files: FilesUseCases) -> Self {
+        Self { files }
+    }
+}
+
+#[async_trait]
+impl UsableShares for FilesForApps {
+    async fn usable(&self, actor: &Actor) -> Result<Vec<UsableShare>, PortError> {
+        let shares = self.files.shares(actor).await.map_err(|error| match error {
+            FilesError::Port(error) => error,
+            other => PortError::new("shares", other.to_string()),
+        })?;
+        Ok(shares
+            .into_iter()
+            .map(|usable| UsableShare {
+                name: usable.share.name.to_string(),
+                volume: usable.share.volume,
+                writable: usable.access == Access::ReadWrite,
+            })
+            .collect())
+    }
+}
 
 /// [`AppShares`] through the Sharing context's use cases: the apps'
 /// access is kept and written there, beside the people's.
@@ -32,17 +64,6 @@ fn sharing_error(error: SharingError) -> AppHostError {
 
 #[async_trait]
 impl AppShares for SharingForApps {
-    async fn shares(&self) -> Result<Vec<ShareChoice>, PortError> {
-        let shares = self.sharing.list().await.map_err(|error| match error {
-            SharingError::Port(error) => error,
-            other => PortError::new("shares", other.to_string()),
-        })?;
-        Ok(shares
-            .into_iter()
-            .map(|share| ShareChoice { name: share.name.to_string(), volume: share.volume })
-            .collect())
-    }
-
     async fn grant(
         &self,
         account: &str,

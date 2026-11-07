@@ -77,18 +77,9 @@ impl ProjectStorage for SharesForProjects {
         content: &str,
         context: &RequestContext,
     ) -> Result<(), StorageError> {
-        self.writable(actor, share_id).await?;
+        self.make_folder(actor, share_id, folder, context).await?;
         let id = ShareId::new(share_id);
         let folder = path(folder)?;
-        // Each folder on the way, as far as it is missing.
-        let mut made = FilePath::root();
-        for part in folder.as_str().split('/') {
-            made = made.join(part).map_err(|e| StorageError::Invalid(e.to_string()))?;
-            match self.files.make_directory(actor, id, made.clone(), context).await {
-                Ok(()) | Err(FilesError::Exists) => {}
-                Err(error) => return Err(storage_error(error)),
-            }
-        }
         let upload =
             self.files.begin_upload(actor, id, folder, name, true, context).await.map_err(storage_error)?;
         let mut file = upload.file;
@@ -127,6 +118,28 @@ impl ProjectStorage for SharesForProjects {
             .await
             .map_err(|e| StorageError::Port(PortError::new("project file", e)))?;
         Ok(text)
+    }
+
+    async fn make_folder(
+        &self,
+        actor: &Actor,
+        share_id: i64,
+        folder: &str,
+        context: &RequestContext,
+    ) -> Result<(), StorageError> {
+        self.writable(actor, share_id).await?;
+        let id = ShareId::new(share_id);
+        let folder = path(folder)?;
+        // Each folder on the way, as far as it is missing.
+        let mut made = FilePath::root();
+        for part in folder.as_str().split('/') {
+            made = made.join(part).map_err(|e| StorageError::Invalid(e.to_string()))?;
+            match self.files.make_directory(actor, id, made.clone(), context).await {
+                Ok(()) | Err(FilesError::Exists) => {}
+                Err(error) => return Err(storage_error(error)),
+            }
+        }
+        Ok(())
     }
 }
 

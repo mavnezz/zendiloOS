@@ -292,6 +292,13 @@ impl SimulatedAgent {
         self
     }
 
+    /// Has `app` installed the earlier way, stopped: apps are no longer
+    /// installed so, only run and removed.
+    pub fn with_app(self, app: &str) -> Self {
+        self.apps().insert(app.to_owned(), false);
+        self
+    }
+
     fn share_directory(&self, volume: u16, share: &str) -> Option<PathBuf> {
         Some(self.files.as_ref()?.join(format!("volume{volume}")).join(share))
     }
@@ -575,6 +582,14 @@ impl AgentTransport for SimulatedAgent {
                 self.apps().remove(app.as_str());
                 Response::Done
             }
+            // Every account is UID 2000 in zendiloOS's group; the machine has
+            // a graphics card and nothing else.
+            Request::HostFacts { devices, .. } => Response::HostFacts {
+                uid: 2000,
+                gid: 1500,
+                time_zone: "Europe/Berlin".into(),
+                devices: devices.iter().filter(|device| device.as_str() == "/dev/dri").cloned().collect(),
+            },
             // Answered by the simulated Docker engine above.
             Request::AppsStatus {}
             | Request::DockerContainers {}

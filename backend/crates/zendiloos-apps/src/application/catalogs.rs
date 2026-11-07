@@ -33,32 +33,21 @@ pub enum AppsError {
     Unreachable(String),
     #[error("there is no such pool")]
     PoolNotFound,
-    #[error("the app is installed already")]
-    AlreadyInstalled,
     #[error("the app is not installed")]
     NotInstalled,
-    /// Its account name, `app-<id>`, would be too long.
-    #[error("the app's id is too long to install it")]
-    IdTooLong,
-    #[error("Docker is not set up and running on a pool")]
-    DockerNotReady,
     #[error("Docker is installed already")]
     DockerInstalled,
-    /// `digest`: the version whose permissions are to be confirmed.
-    #[error("the app's permissions were not confirmed")]
-    PermissionsNotConfirmed { digest: String },
-    /// It changed in its catalog since its permissions were confirmed.
-    #[error("the app changed in its catalog since it was shown")]
-    Changed,
     #[error(transparent)]
     InvalidValue(#[from] crate::domain::InvalidValue),
+    /// The app's Compose file cannot be filled in, in the words of what
+    /// tried.
+    #[error("the app's template cannot be filled in: {0}")]
+    Template(String),
     /// A job is working on the app, or it is not in a state for this.
     #[error("the app is busy or not ready for this")]
     Busy,
     #[error("the confirmation does not match the app's id")]
     ConfirmationMismatch,
-    #[error("the app is up to date")]
-    UpToDate,
     /// Docker or another program on the host failed, in its words.
     #[error("{0}")]
     HostFailed(String),

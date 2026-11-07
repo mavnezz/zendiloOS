@@ -161,6 +161,9 @@ pub enum ValueProblem {
     Missing,
     #[error("there is no such share")]
     NoSuchShare,
+    /// The app writes to it, as whoever installs it, who may only read it.
+    #[error("the share can only be read")]
+    NotWritable,
     #[error("not a folder's path in the share")]
     NoFolder,
     #[error("port {0} is used by zendiloOS")]

@@ -100,6 +100,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/apps/catalog/{source}/{app}/compose": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Fills in an app's Compose file, its template, with the values given and
+         *     the caller as the account its containers run as; the devices the machine
+         *     lacks are left out. Nothing is made yet. Needs `containers.manage`.
+         */
+        post: operations["fill_template"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/apps/catalog/{source}/{app}/icon": {
         parameters: {
             query?: never;
@@ -173,18 +194,12 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * The installed apps, with what Docker makes of them. Needs
-         *     `containers.manage`.
+         * The apps installed the earlier way, with what Docker makes of them.
+         *     Needs `containers.manage`.
          */
         get: operations["installed"];
         put?: never;
-        /**
-         * Installs an app from a catalog: its data and Docker's on the same pool,
-         *     an account of its own, access to the shares picked; the agent checks it
-         *     against the catalog's policy before anything runs. Needs
-         *     `containers.manage`.
-         */
-        post: operations["install"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -229,26 +244,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/apps/installed/{id}/retry": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Installs a failed app again, with its values. Needs
-         *     `containers.manage`.
-         */
-        post: operations["retry_app"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/apps/installed/{id}/start": {
         parameters: {
             query?: never;
@@ -283,20 +278,20 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/apps/installed/{id}/update": {
+    "/api/v1/apps/projects": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get?: never;
-        put?: never;
         /**
-         * Brings an app to the version its catalog offers now, keeping its
-         *     values. Needs `containers.manage`.
+         * The Docker projects made from apps of a catalog, by name, with where
+         *     they answer. Needs `containers.manage`.
          */
-        post: operations["update_app"];
+        get: operations["app_projects"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2494,6 +2489,33 @@ export interface components {
             id: string;
             label: string;
         };
+        /** @description A Docker project made from an app of a catalog. */
+        AppProject: {
+            /** Format: int64 */
+            created_at: number;
+            /**
+             * @description The app's digest in its catalog now, for its icon; `None` once it
+             *     is gone from there.
+             */
+            digest?: string | null;
+            /** @description The app's id in its catalog. */
+            id: string;
+            /**
+             * @description The app's name as its catalog has it now; its id once it is gone
+             *     from there.
+             */
+            name: string;
+            /** @description The project, in the Docker app. */
+            project: string;
+            run_state: components["schemas"]["RunState"];
+            /** Format: int64 */
+            source_id: number;
+            tagline: string;
+            translations: {
+                [key: string]: components["schemas"]["AppTexts"];
+            };
+            web?: components["schemas"]["AppWebAddress"] | null;
+        };
         AppSetting: {
             default?: string | null;
             description?: string | null;
@@ -2548,11 +2570,6 @@ export interface components {
             name?: string | null;
             notes?: string | null;
             tagline?: string | null;
-        };
-        /** @description A newer state of an installed app. */
-        AppUpdate: {
-            /** @description The version its catalog names, if it names one. */
-            version?: string | null;
         };
         /** @description A pool apps can keep Docker's data on. */
         AppVolume: {
@@ -2685,7 +2702,7 @@ export interface components {
         /** @description Everything about an app before installing it. */
         CatalogAppDetail: components["schemas"]["CatalogApp"] & {
             architectures: string[];
-            /** @description The Compose file as written; zendiloOS fills in the variables. */
+            /** @description The Compose file as written: the template zendiloOS fills in. */
             compose: string;
             description: string;
             developer: string;
@@ -3022,7 +3039,7 @@ export interface components {
             projects_running: number;
         };
         DockerProject: {
-            /** @description For an app: its id in the App Center. */
+            /** @description For an app installed the earlier way: its id in the App Center. */
             app?: string | null;
             containers: components["schemas"]["DockerContainer"][];
             /** Format: int64 */
@@ -3039,6 +3056,7 @@ export interface components {
             running: number;
             /** Format: int64 */
             share_id?: number | null;
+            template?: components["schemas"]["ProjectTemplate"] | null;
         };
         /** @description Whether apps can run on this NAS. */
         DockerSetup: {
@@ -3172,6 +3190,36 @@ export interface components {
              */
             taken_at: number;
         };
+        FillTemplateRequest: {
+            /** @description Port id → host port; missing ones get their default. */
+            ports?: {
+                [key: string]: number;
+            };
+            /**
+             * @description Setting id → value; missing ones get their default. Generated
+             *     settings are made by zendiloOS.
+             */
+            settings?: {
+                [key: string]: string;
+            };
+            /**
+             * @description Share id → the share picked for it: its name, or a folder in it
+             *     (`media/Films`), which the app then mounts instead of the whole
+             *     share. One the caller may use as the app does (read or write).
+             */
+            shares?: {
+                [key: string]: string;
+            };
+        };
+        FilledTemplate: {
+            /**
+             * @description The app's Compose file with the values in: to be made into a project
+             *     with `POST /docker/projects`, naming the app as its `template`. Its
+             *     data goes in the project's folder (`./config`), its containers run
+             *     as the caller.
+             */
+            compose: string;
+        };
         /** @description A reason behind the health verdict. */
         Finding: {
             /**
@@ -3264,43 +3312,11 @@ export interface components {
             checked_at: number;
             images: components["schemas"]["ImageUpdate"][];
         };
-        InstallAppRequest: {
-            app: string;
-            /**
-             * @description The administrator confirmed the app's permissions, for the version
-             *     with `digest` as shown.
-             */
-            confirm_permissions?: boolean;
-            /** @description The app's `digest` as shown; with another one now, `app_changed`. */
-            digest?: string | null;
-            /**
-             * @description The pool the app's data goes on, one of `volumes` of `/apps/docker`;
-             *     the one Docker's data is on if absent.
-             */
-            pool?: string | null;
-            /** @description Port id → host port; missing ones get their default. */
-            ports?: {
-                [key: string]: number;
-            };
-            /**
-             * @description Setting id → value; missing ones get their default. Generated
-             *     settings are made by zendiloOS.
-             */
-            settings?: {
-                [key: string]: string;
-            };
-            /**
-             * @description Share id → the share picked for it: its name, or a folder in it
-             *     (`media/Films`), which the app then mounts instead of the whole
-             *     share.
-             */
-            shares?: {
-                [key: string]: string;
-            };
-            /** Format: int64 */
-            source: number;
-        };
-        /** @description An installed app. */
+        /**
+         * @description An app installed the earlier way, with a dataset and an account of its
+         *     own: it is started, stopped and removed, no longer installed or
+         *     updated so.
+         */
         InstalledApp: {
             /** @description Of the version installed; for its icon. */
             digest: string;
@@ -3334,15 +3350,10 @@ export interface components {
             translations: {
                 [key: string]: components["schemas"]["AppTexts"];
             };
-            update?: components["schemas"]["AppUpdate"] | null;
             /** Format: int64 */
             updated_at: number;
             version?: string | null;
             web?: components["schemas"]["AppWebAddress"] | null;
-        };
-        Installing: {
-            app: components["schemas"]["InstalledApp"];
-            job: components["schemas"]["Job"];
         };
         InterfaceAddress: {
             /** @description E.g. `192.168.1.20` or `2001:db8::20`. */
@@ -3607,6 +3618,7 @@ export interface components {
             share_id: number;
             /** @description Deploys it right away. */
             start?: boolean;
+            template?: components["schemas"]["ProjectTemplate"] | null;
         };
         NewNetwork: {
             /** @description Only with a subnet. */
@@ -3918,6 +3930,15 @@ export interface components {
             share: string;
             /** Format: int64 */
             share_id: number;
+        };
+        /** @description The app of a catalog a project was made from in the App Center. */
+        ProjectTemplate: {
+            app: string;
+            /**
+             * Format: int64
+             * @description The catalog; it may have been removed since.
+             */
+            source_id: number;
         };
         PublishedPort: {
             /** Format: int32 */
@@ -4544,15 +4565,6 @@ export interface components {
             password_locked?: boolean | null;
             role?: components["schemas"]["AccountRole"] | null;
         };
-        UpdateAppRequest: {
-            /**
-             * @description The administrator confirmed what the new version may do beyond the
-             *     old one, for the version with `digest`: the detail of the
-             *     `permissions_not_confirmed` that asked.
-             */
-            confirm_permissions?: boolean;
-            digest?: string | null;
-        };
         /**
          * @description Which releases of zendiloOS are offered: each channel takes those of
          *     the steadier ones too.
@@ -4971,6 +4983,50 @@ export interface operations {
             };
         };
     };
+    fill_template: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source: number;
+                app: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FillTemplateRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FilledTemplate"];
+                };
+            };
+            /** @description `not_found`: no such app */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_app_value`: the field and why; `template_unfillable` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     catalog_icon: {
         parameters: {
             query?: never;
@@ -5131,56 +5187,6 @@ export interface operations {
             };
         };
     };
-    install: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["InstallAppRequest"];
-            };
-        };
-        responses: {
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Installing"];
-                };
-            };
-            /** @description `not_found`: no such app */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Problem"];
-                };
-            };
-            /** @description `app_installed`, `docker_not_ready`, `permissions_not_confirmed` (the detail: the digest to confirm), `app_changed` */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Problem"];
-                };
-            };
-            /** @description `invalid_app_value`, `app_id_too_long` */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Problem"];
-                };
-            };
-        };
-    };
     installed_app: {
         parameters: {
             query?: never;
@@ -5305,45 +5311,6 @@ export interface operations {
             };
         };
     };
-    retry_app: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Job"];
-                };
-            };
-            /** @description `not_found` */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Problem"];
-                };
-            };
-            /** @description `app_busy`: not failed */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Problem"];
-                };
-            };
-        };
-    };
     start_app: {
         parameters: {
             query?: never;
@@ -5438,54 +5405,21 @@ export interface operations {
             };
         };
     };
-    update_app: {
+    app_projects: {
         parameters: {
             query?: never;
             header?: never;
-            path: {
-                id: string;
-            };
+            path?: never;
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["UpdateAppRequest"];
-            };
-        };
+        requestBody?: never;
         responses: {
-            202: {
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Job"];
-                };
-            };
-            /** @description `not_found`: the app or its catalog entry */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Problem"];
-                };
-            };
-            /** @description `up_to_date`, `app_busy`, `permissions_not_confirmed` (the detail: the digest to confirm), `app_changed` */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Problem"];
-                };
-            };
-            /** @description `invalid_app_value`: the new version needs a value */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Problem"];
+                    "application/json": components["schemas"]["AppProject"][];
                 };
             };
         };

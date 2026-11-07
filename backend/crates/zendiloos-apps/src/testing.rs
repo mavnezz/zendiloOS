@@ -294,55 +294,6 @@ impl FakeAppHost {
 
 #[async_trait]
 impl crate::application::ports::AppHost for FakeAppHost {
-    async fn prepare(
-        &self,
-        app: &str,
-        volume: &crate::domain::AppVolume,
-        _: &zendiloos_kernel::RequestContext,
-    ) -> Result<(), crate::application::ports::AppHostError> {
-        self.step("prepare", format!("{app} {}/{}", volume.pool, volume.number))
-    }
-
-    async fn configure(
-        &self,
-        app: &str,
-        volume: u16,
-        _manifest: &str,
-        _compose: &str,
-        values: &crate::application::ports::HostValues,
-        _: &zendiloos_kernel::RequestContext,
-    ) -> Result<Vec<String>, crate::application::ports::AppHostError> {
-        let shares: Vec<String> = values
-            .shares
-            .iter()
-            .map(|(id, s)| {
-                let folder = if s.folder.is_empty() { String::new() } else { format!(" in {}", s.folder) };
-                format!("{id}=/volume{}/{}{folder}", s.volume, s.name)
-            })
-            .collect();
-        let ports: Vec<String> = values.ports.iter().map(|(id, p)| format!("{id}={p}")).collect();
-        self.step("configure", format!("{app} {volume} [{}] [{}]", shares.join(","), ports.join(",")))?;
-        Ok(vec!["config".into()])
-    }
-
-    async fn make_folders(
-        &self,
-        app: &str,
-        _: u16,
-        folders: &[String],
-        _: &zendiloos_kernel::RequestContext,
-    ) -> Result<(), crate::application::ports::AppHostError> {
-        self.step("folders", format!("{app} {}", folders.join(",")))
-    }
-
-    async fn pull(
-        &self,
-        app: &str,
-        _: &zendiloos_kernel::RequestContext,
-    ) -> Result<(), crate::application::ports::AppHostError> {
-        self.step("pull", app.to_owned())
-    }
-
     async fn start(
         &self,
         app: &str,
@@ -412,7 +363,7 @@ impl crate::application::ports::AppHost for FakeAppHost {
     }
 }
 
-/// Shares `family` and `media` on volume 1; records what apps were given.
+/// Records what apps were given on shares.
 #[derive(Default)]
 pub struct FakeShares {
     grants: Mutex<BTreeMap<String, Vec<(String, bool)>>>,
@@ -427,12 +378,6 @@ impl FakeShares {
 
 #[async_trait]
 impl crate::application::ports::AppShares for FakeShares {
-    async fn shares(&self) -> Result<Vec<crate::application::ports::ShareChoice>, PortError> {
-        Ok(["family", "media"]
-            .map(|name| crate::application::ports::ShareChoice { name: name.into(), volume: 1 })
-            .to_vec())
-    }
-
     async fn grant(
         &self,
         account: &str,
@@ -466,5 +411,67 @@ pub struct CountingSecrets(AtomicUsize);
 impl crate::application::ports::Secrets for CountingSecrets {
     fn generate(&self, _: u8, _: crate::domain::SecretAlphabet) -> String {
         format!("secret-{}", self.0.fetch_add(1, Ordering::Relaxed) + 1)
+    }
+}
+
+/// `family` (written) and `media` (read) on volume 1, for everyone.
+#[derive(Default)]
+pub struct FakeUsableShares;
+
+#[async_trait]
+impl crate::application::ports::UsableShares for FakeUsableShares {
+    async fn usable(
+        &self,
+        _: &zendiloos_kernel::Actor,
+    ) -> Result<Vec<crate::application::ports::UsableShare>, PortError> {
+        Ok(vec![
+            crate::application::ports::UsableShare { name: "family".into(), volume: 1, writable: true },
+            crate::application::ports::UsableShare { name: "media".into(), volume: 1, writable: false },
+        ])
+    }
+}
+
+/// Everyone is 2000:1500 in Berlin; the machine has a graphics card only.
+#[derive(Default)]
+pub struct FakeTemplateHost;
+
+#[async_trait]
+impl crate::application::ports::TemplateHost for FakeTemplateHost {
+    async fn facts(
+        &self,
+        _: &str,
+        devices: &[String],
+        _: &zendiloos_kernel::RequestContext,
+    ) -> Result<crate::domain::HostFacts, crate::application::ports::AppHostError> {
+        Ok(crate::domain::HostFacts {
+            uid: 2000,
+            gid: 1500,
+            time_zone: "Europe/Berlin".into(),
+            devices: devices.iter().filter(|device| *device == "/dev/dri").cloned().collect(),
+        })
+    }
+}
+
+/// Fills in line by line, as text; the lines naming a device left out go.
+#[derive(Default)]
+pub struct LineFiller;
+
+impl crate::application::ports::ComposeFiller for LineFiller {
+    fn fill(
+        &self,
+        compose: &str,
+        variables: &BTreeMap<String, String>,
+        absent: &[String],
+    ) -> Result<String, String> {
+        let mut filled = String::new();
+        for line in compose.lines() {
+            if absent.iter().any(|device| line.contains(device.as_str())) {
+                continue;
+            }
+            let line = crate::domain::interpolate(line, variables).map_err(|error| error.to_string())?;
+            filled.push_str(&crate::domain::escape(&line));
+            filled.push('\n');
+        }
+        Ok(filled)
     }
 }

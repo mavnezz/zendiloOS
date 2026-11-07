@@ -4,6 +4,7 @@ mod app;
 mod docker;
 mod installed;
 mod source;
+mod template;
 
 pub use app::{
     Access, CatalogApp, Permissions, Port, SECRET_LENGTH, SecretAlphabet, Setting, SettingKind, Share,
@@ -16,3 +17,7 @@ pub use installed::{
     install_values, share_and_folder,
 };
 pub use source::{InvalidSource, OFFICIAL_INDEX, Refresh, Source, index_address};
+pub use template::{
+    HostFacts, PROJECT_FOLDER, PortTarget, TemplateError, escape, interpolate, port_target, port_variable,
+    share_variable, template_variables, web_address,
+};

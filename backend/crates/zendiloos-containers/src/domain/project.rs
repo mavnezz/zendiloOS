@@ -39,6 +39,16 @@ pub const COMPOSE_FILE: &str = "compose.yaml";
 /// Where the App Center keeps its apps' Compose files.
 pub const APP_FILES: &str = "/etc/zendiloos/apps/";
 
+/// The app of a catalog a project was made from in the App Center: its
+/// template, filled in once. The project is the administrator's like any
+/// other; this only lets the App Center find it again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectTemplate {
+    /// The catalog; it may have been removed since.
+    pub source: i64,
+    pub app: String,
+}
+
 /// A project an administrator made here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnProject {
@@ -58,8 +68,30 @@ pub struct OwnProject {
     /// What Compose made of it then (normalized, as JSON): this runs, never
     /// the file in the share, which others may write.
     pub config: Option<String>,
+    /// Made from an app of a catalog, in the App Center.
+    pub template: Option<ProjectTemplate>,
     pub created_at: Timestamp,
     pub created_by: String,
+}
+
+/// The folders inside the project's own folder its binds mount, relative to
+/// it (`config`, `data/db`), once each: zendiloOS makes the missing ones
+/// with the administrator's permissions before Docker would make them as
+/// root, so containers run as the administrator may write to them.
+pub fn bind_folders(directory: &str, binds: &[String]) -> Vec<String> {
+    let inside = format!("{}/", directory.trim_end_matches('/'));
+    let mut folders: Vec<String> = binds
+        .iter()
+        .filter_map(|bind| bind.strip_prefix(&inside))
+        .map(|folder| folder.trim_end_matches('/').to_owned())
+        .filter(|folder| {
+            !folder.is_empty()
+                && folder.split('/').all(|name| !name.is_empty() && name != "." && name != "..")
+        })
+        .collect();
+    folders.sort();
+    folders.dedup();
+    folders
 }
 
 /// Where a project comes from, and so what may be done with it here.
@@ -151,9 +183,26 @@ mod tests {
             file: format!("/volume1/docker/docker/{name}/compose.yaml"),
             compose: None,
             config: None,
+            template: None,
             created_at: Timestamp::from_unix_seconds(0),
             created_by: "alice".into(),
         }
+    }
+
+    #[test]
+    fn the_folders_to_make_are_those_inside_the_project() {
+        let binds = [
+            "/volume1/docker/docker/app/config".to_owned(),
+            "/volume1/docker/docker/app/data/db/".to_owned(),
+            "/volume1/docker/docker/app/config".to_owned(),
+            "/volume1/docker/docker/app".to_owned(),
+            "/volume1/docker/docker/apple/x".to_owned(),
+            "/volume1/media/Films".to_owned(),
+            "/volume1/docker/docker/app/../escape".to_owned(),
+            "/var/run/docker.sock".to_owned(),
+        ];
+        assert_eq!(bind_folders("/volume1/docker/docker/app", &binds), ["config", "data/db"]);
+        assert_eq!(bind_folders("/volume1/docker/docker/app/", &binds), ["config", "data/db"]);
     }
 
     #[test]

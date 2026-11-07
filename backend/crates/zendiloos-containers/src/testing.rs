@@ -243,12 +243,19 @@ impl DockerEngine for FakeEngine {
         }
         let privileged = compose.contains("privileged: true");
         let image = compose.lines().find_map(|l| l.trim().strip_prefix("image: ")).unwrap_or("nginx");
+        // Relative binds (`- ./config:/config`) start in the project's folder.
+        let binds = compose
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("- ./")?.split_once(':'))
+            .map(|(source, _)| format!("{directory}/{source}"))
+            .collect();
         Ok(CheckedCompose {
             model: ComposeModel {
                 services: vec![ComposeService {
                     name: "app".into(),
                     image: Some(image.into()),
                     privileged,
+                    binds,
                     ..ComposeService::default()
                 }],
             },
@@ -363,6 +370,8 @@ impl ProjectRepository for MemoryProjects {
 #[derive(Default)]
 pub struct MemoryStorage {
     pub files: Mutex<BTreeMap<(i64, String), String>>,
+    /// The folders made, by share and path, with who made them.
+    pub folders: Mutex<Vec<(i64, String, String)>>,
 }
 
 impl MemoryStorage {
@@ -409,6 +418,18 @@ impl ProjectStorage for MemoryStorage {
     ) -> Result<String, StorageError> {
         Self::allowed(actor, share_id)?;
         self.files.lock().unwrap().get(&(share_id, path.to_owned())).cloned().ok_or(StorageError::NotFound)
+    }
+
+    async fn make_folder(
+        &self,
+        actor: &Actor,
+        share_id: i64,
+        path: &str,
+        _: &RequestContext,
+    ) -> Result<(), StorageError> {
+        Self::allowed(actor, share_id)?;
+        self.folders.lock().unwrap().push((share_id, path.to_owned(), actor.name.clone()));
+        Ok(())
     }
 }
 
