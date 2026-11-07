@@ -555,6 +555,35 @@ async fn unknown_paths_and_methods_are_problems() {
 }
 
 #[tokio::test]
+async fn reads_the_page_made_on_its_own_keep_no_session_alive() {
+    let h = Harness::new();
+    let session = h.sign_in("alice", Role::Admin).await;
+    let background =
+        || empty(with_cookie(get("/api/v1/auth/session"), &session).header("x-zendiloos-background", "1"));
+
+    // Polled for longer than the idle timeout: the session ends.
+    for _ in 0..4 {
+        h.identity.clock.advance(std::time::Duration::from_secs(10 * 60));
+        let reply = h.send(background()).await;
+        if reply.status == StatusCode::UNAUTHORIZED {
+            return;
+        }
+    }
+    panic!("an open window alone kept the session alive");
+}
+
+#[tokio::test]
+async fn what_the_person_does_keeps_the_session_alive() {
+    let h = Harness::new();
+    let session = h.sign_in("alice", Role::Admin).await;
+    for _ in 0..4 {
+        h.identity.clock.advance(std::time::Duration::from_secs(10 * 60));
+        let reply = h.send(empty(with_cookie(get("/api/v1/auth/session"), &session))).await;
+        assert_eq!(reply.status, StatusCode::OK, "{:?}", reply.body);
+    }
+}
+
+#[tokio::test]
 async fn responses_carry_a_request_id() {
     let reply = Harness::new().send(empty(get("/api/v1/health"))).await;
     assert_eq!(reply.header("x-request-id").len(), 36, "a UUID");

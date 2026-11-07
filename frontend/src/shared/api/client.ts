@@ -1,5 +1,6 @@
 import createClient, { type Middleware } from 'openapi-fetch'
 
+import { unattended, watchActivity } from './activity'
 import type { paths } from './schema'
 
 /** An error answer of the API (RFC 9457), or `network` if there was none. */
@@ -46,6 +47,10 @@ const sessionMiddleware: Middleware = {
     if (token && !SAFE_METHODS.has(request.method)) {
       request.headers.set('X-CSRF-Token', token)
     }
+    // A read nobody asked for just now keeps no session alive.
+    if (SAFE_METHODS.has(request.method) && unattended()) {
+      request.headers.set('X-Zendiloos-Background', '1')
+    }
     return request
   },
   onResponse({ request, response }) {
@@ -58,6 +63,7 @@ const sessionMiddleware: Middleware = {
 }
 
 export function createApiClient(options: { baseUrl?: string; fetch?: typeof fetch } = {}) {
+  if (typeof window !== 'undefined') watchActivity()
   const client = createClient<paths>({
     baseUrl: options.baseUrl ?? window.location.origin,
     fetch: options.fetch,

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { ATTENDED_MS, noteInput } from './activity'
 import { ApiProblem, configureApi, createApiClient, unwrap } from './client'
 
 function problem(status: number, code: string, headers: Record<string, string> = {}): Response {
@@ -37,6 +38,22 @@ describe('the API client', () => {
 
     expect(requests[0]?.headers.get('X-CSRF-Token')).toBeNull()
     expect(requests[1]?.headers.get('X-CSRF-Token')).toBe('csrf-1')
+  })
+
+  it('marks reads nobody asked for just now, never what the person does', async () => {
+    configureApi({ csrfToken: () => 'csrf-1', onUnauthenticated: () => undefined })
+    const { client, requests } = clientAnswering(() => new Response(null, { status: 204 }))
+
+    noteInput()
+    await client.GET('/api/v1/auth/session')
+    noteInput(Date.now() - ATTENDED_MS - 1000)
+    await client.GET('/api/v1/auth/session')
+    await client.POST('/api/v1/auth/logout')
+    noteInput()
+
+    expect(requests[0]?.headers.get('X-Zendiloos-Background')).toBeNull()
+    expect(requests[1]?.headers.get('X-Zendiloos-Background')).toBe('1')
+    expect(requests[2]?.headers.get('X-Zendiloos-Background')).toBeNull()
   })
 
   it('turns problem details into an ApiProblem', async () => {

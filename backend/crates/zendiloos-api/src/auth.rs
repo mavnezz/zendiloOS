@@ -70,9 +70,19 @@ pub(crate) fn session_token(headers: &HeaderMap, secure: bool) -> Option<Secret>
     CookieJar::from_headers(headers).get(cookie_name(secure)).map(|cookie| Secret::new(cookie.value()))
 }
 
+/// Set by the web interface on reads nobody asked for just now.
+const BACKGROUND_HEADER: &str = "x-zendiloos-background";
+
 async fn authenticate(parts: &Parts, state: &ApiState, allow_pending: bool) -> Result<AuthContext, ApiError> {
     let token = session_token(&parts.headers, state.secure_cookies).ok_or(ApiError::Unauthenticated)?;
-    let auth = state.identity.authenticate.execute(&token).await?;
+    // A read the page made on its own (polling, nobody at it for a while)
+    // does not count as activity: an open window alone keeps no session.
+    let background = parts.method.is_safe() && parts.headers.contains_key(BACKGROUND_HEADER);
+    let auth = if background {
+        state.identity.authenticate.verify(&token).await?
+    } else {
+        state.identity.authenticate.execute(&token).await?
+    };
 
     if !parts.method.is_safe() {
         check_same_origin(&parts.headers)?;

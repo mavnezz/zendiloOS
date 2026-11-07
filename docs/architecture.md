@@ -627,7 +627,10 @@ rustls with ring and the system's certificate authorities
   cookie has no `Max-Age` and ends with the browser session. The database
   stores only the token's SHA-256 hash. Sessions end after 30 minutes idle
   (set from 5 to 1440 under Security) and 12 hours at most; a password
-  change ends all other sessions. Administrators see every account's
+  change ends all other sessions. Idle means nobody used the page: reads it
+  makes on its own after two minutes without input (polling, refreshing
+  windows) carry `X-Zendiloos-Background` and do not count, nor does the
+  live connection's check; a running upload counts, every five minutes. Administrators see every account's
   sessions with address and browser, and end any of them; the latest
   logins come from the audit log.
 - CSRF: per-session token in the `X-CSRF-Token` header on every

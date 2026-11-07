@@ -159,6 +159,9 @@ function problem(request: XMLHttpRequest): ApiProblem {
   }
 }
 
+/** How often a running upload tells the server the person is still there. */
+export const KEEP_ALIVE_MS = 5 * 60 * 1000
+
 /**
  * Sends `file` as is. Through XMLHttpRequest, because fetch cannot report
  * how much of a request body went out.
@@ -183,9 +186,18 @@ export function uploadFile(
     request.upload.onprogress = (event) => {
       if (event.lengthComputable && event.total > 0) options.onProgress(event.loaded / event.total)
     }
-    request.onload = () => (request.status < 300 ? resolve() : reject(problem(request)))
-    request.onerror = () => reject(new ApiProblem(0, 'network'))
-    request.onabort = () => reject(new ApiProblem(0, 'aborted'))
+    // A long upload is the person's doing: it keeps the session alive,
+    // which the upload's own request touches only when it starts.
+    const alive = setInterval(() => {
+      void fetch('/api/v1/auth/session', { credentials: 'same-origin' }).catch(() => undefined)
+    }, KEEP_ALIVE_MS)
+    const done = (settle: () => void) => () => {
+      clearInterval(alive)
+      settle()
+    }
+    request.onload = done(() => (request.status < 300 ? resolve() : reject(problem(request))))
+    request.onerror = done(() => reject(new ApiProblem(0, 'network')))
+    request.onabort = done(() => reject(new ApiProblem(0, 'aborted')))
     options.signal?.addEventListener('abort', () => request.abort())
     request.send(file)
   })
