@@ -15,7 +15,7 @@ import { Input } from '@/shared/ui/input'
 
 import { useProjectAction, useProjects, useRedeploy, useUpdatable } from '../api'
 import { projectStatus, statusVariant } from '../lib/status'
-import DeployLogDialog from './DeployLogDialog.vue'
+import { DeployLogDialog } from '@/shared/ui/deploy-log'
 import RedeployDialog from './RedeployDialog.vue'
 
 const emit = defineEmits<{ open: [name: string]; create: [] }>()

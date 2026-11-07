@@ -12,6 +12,7 @@ import { CodeEditor } from '@/shared/ui/code-editor'
 import { ModalDialog } from '@/shared/ui/dialog'
 import { Input } from '@/shared/ui/input'
 import { Label } from '@/shared/ui/label'
+import { DeployLogDialog } from '@/shared/ui/deploy-log'
 import { RisksDialog } from '@/shared/ui/risks-dialog'
 
 import {
@@ -189,6 +190,21 @@ async function deploy(): Promise<void> {
   }
 }
 
+/** The job deploying the new project, shown as it runs. */
+const deploying = ref<number | null>(null)
+const showingLog = ref(false)
+watch(showingLog, (showing) => {
+  if (!showing && deploying.value !== null) {
+    deploying.value = null
+    finish()
+  }
+})
+
+function finish(): void {
+  open.value = false
+  emit('installed', name.value)
+}
+
 async function make(accept: boolean): Promise<void> {
   busy.value = true
   failure.value = null
@@ -199,10 +215,15 @@ async function make(accept: boolean): Promise<void> {
       accept_risks: accept,
       template: { source_id: props.app.source_id, app: props.app.id },
     })
-    if (job) jobs.update(job)
     await actions.refresh()
-    open.value = false
-    emit('installed', name.value)
+    if (job) {
+      // What Compose does is shown as it runs; the dialog closes after.
+      jobs.update(job)
+      deploying.value = job.id
+      showingLog.value = true
+    } else {
+      finish()
+    }
   } catch (problem) {
     failure.value = problemMessage(problem)
   } finally {
@@ -433,6 +454,7 @@ const required = 'text-destructive'
     <Alert v-if="failure" variant="destructive" class="whitespace-pre-wrap">{{ failure }}</Alert>
 
     <FolderPicker v-model:open="browsing" :value="location" writable @pick="pickBase" />
+    <DeployLogDialog v-model:open="showingLog" :job-id="deploying" />
     <FolderPicker
       :open="picking !== null"
       :value="picking ? (shares[picking] ?? '') : ''"

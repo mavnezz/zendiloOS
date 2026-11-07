@@ -15,7 +15,7 @@ import { NativeSelect } from '@/shared/ui/native-select'
 import { RisksDialog } from '@/shared/ui/risks-dialog'
 
 import { checkCompose, useChangeCompose, useCreateProject, usePlaces } from '../api'
-import DeployLogDialog from './DeployLogDialog.vue'
+import { DeployLogDialog } from '@/shared/ui/deploy-log'
 
 /** Without `name`, a new project; with it, that project's file to change. */
 const props = defineProps<{ name?: string; compose?: string }>()

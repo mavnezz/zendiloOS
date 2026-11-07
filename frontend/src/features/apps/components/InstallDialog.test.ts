@@ -226,6 +226,21 @@ describe('the install dialog', () => {
     })
     expect(useJobsStore().running.map((job) => job.id)).toEqual([9])
     expect(refresh).toHaveBeenCalled()
+    // What Compose does shows as it runs; the dialog closes once it is read.
+    expect(document.body.textContent).toContain('Deployment')
+    expect(wrapper.emitted('installed')).toBeUndefined()
+    useJobsStore().update({
+      id: 9,
+      kind: 'containers.project_deploy',
+      target: 'photos',
+      state: 'succeeded',
+      created_at: 0,
+      updated_at: 1,
+      output: ['Container photos-immich-1 Started'],
+    })
+    await flushPromises()
+    expect(document.body.textContent).toContain('Container photos-immich-1 Started')
+    await press('OK')
     expect(wrapper.emitted('installed')).toEqual([['photos']])
   })
 
