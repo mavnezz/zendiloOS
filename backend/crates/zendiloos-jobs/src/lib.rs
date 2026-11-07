@@ -5,12 +5,13 @@
 //! After a restart, jobs that were running are marked as interrupted: the
 //! work does not survive the process, and nobody should wait for it.
 
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use async_trait::async_trait;
 use tokio::sync::broadcast;
-use zendiloos_kernel::{Actor, Clock, PortError, Timestamp};
+use zendiloos_kernel::{Actor, Clock, PortError, RunningWork, Timestamp};
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
@@ -127,6 +128,21 @@ struct Inner {
     repository: Arc<dyn JobRepository>,
     clock: Arc<dyn Clock>,
     events: broadcast::Sender<Job>,
+    /// The jobs this process runs now, as kind and target.
+    running: Mutex<BTreeMap<JobId, (String, Option<String>)>>,
+}
+
+/// Takes a job off [`Inner::running`] once its work ended, also when the
+/// work panicked.
+struct Ended {
+    jobs: Jobs,
+    id: JobId,
+}
+
+impl Drop for Ended {
+    fn drop(&mut self) {
+        self.jobs.inner.running.lock().unwrap_or_else(PoisonError::into_inner).remove(&self.id);
+    }
 }
 
 /// Lets running work report its step and progress.
@@ -158,7 +174,7 @@ impl Progress {
 impl Jobs {
     pub fn new(repository: Arc<dyn JobRepository>, clock: Arc<dyn Clock>) -> Self {
         let (events, _) = broadcast::channel(64);
-        Self { inner: Arc::new(Inner { repository, clock, events }) }
+        Self { inner: Arc::new(Inner { repository, clock, events, running: Mutex::new(BTreeMap::new()) }) }
     }
 
     /// Marks jobs of a previous run as interrupted. Call once at startup.
@@ -191,10 +207,17 @@ impl Jobs {
             })
             .await?;
         let _ = self.inner.events.send(job.clone());
+        self.inner
+            .running
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(job.id, (job.kind.clone(), job.target.clone()));
+        let ended = Ended { jobs: self.clone(), id: job.id };
         let progress = Progress { jobs: self.clone(), job: Arc::new(Mutex::new(job.clone())) };
         let jobs = self.clone();
         tokio::spawn(async move {
             let outcome = work(progress.clone()).await;
+            drop(ended);
             let finished = {
                 let mut job = progress.job.lock().unwrap_or_else(PoisonError::into_inner);
                 let now = jobs.inner.clock.now();
@@ -236,6 +259,24 @@ impl Jobs {
 
     pub async fn find(&self, id: JobId) -> Result<Option<Job>, PortError> {
         self.inner.repository.find(id).await
+    }
+
+    /// The jobs this process runs now, oldest first, as kind and target.
+    pub fn running(&self) -> Vec<(String, Option<String>)> {
+        self.inner.running.lock().unwrap_or_else(PoisonError::into_inner).values().cloned().collect()
+    }
+}
+
+impl RunningWork for Jobs {
+    /// Each as `kind target`, e.g. `sharing.apply_access photos`.
+    fn running(&self) -> Vec<String> {
+        Jobs::running(self)
+            .into_iter()
+            .map(|(kind, target)| match target {
+                Some(target) => format!("{kind} {target}"),
+                None => kind,
+            })
+            .collect()
     }
 }
 
@@ -292,6 +333,42 @@ mod tests {
         let failed = next(&mut events).await;
         assert_eq!(failed.state, JobState::Failed);
         assert_eq!(failed.error.unwrap().code, "agent_failed");
+    }
+
+    #[tokio::test]
+    async fn knows_what_runs_until_it_ended() {
+        let (jobs, _) = jobs();
+        let mut events = jobs.subscribe();
+        let (finish, finished) = tokio::sync::oneshot::channel::<()>();
+        jobs.start("sharing.apply_access", Some("photos".into()), None, |_| async move {
+            let _ = finished.await;
+            Ok(())
+        })
+        .await
+        .unwrap();
+        jobs.start("storage.scrub", None, None, |_| async { Ok(()) }).await.unwrap();
+        // Both starts, then the scrub's end.
+        for _ in 0..3 {
+            next(&mut events).await;
+        }
+        assert_eq!(RunningWork::running(&jobs), ["sharing.apply_access photos"]);
+
+        finish.send(()).unwrap();
+        assert_eq!(next(&mut events).await.state, JobState::Succeeded);
+        assert!(RunningWork::running(&jobs).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_job_whose_work_panicked_runs_no_more() {
+        let (jobs, _) = jobs();
+        jobs.start("storage.scrub", None, None, |_| async { panic!("broken") }).await.unwrap();
+        for _ in 0..100 {
+            if jobs.running().is_empty() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("still listed as running");
     }
 
     #[tokio::test]

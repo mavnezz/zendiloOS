@@ -7439,7 +7439,7 @@
         "tags": [
           "system"
         ],
-        "summary": "Reboots or powers off the system. Needs `system.manage`.",
+        "summary": "Reboots or powers off the system. Needs `system.manage`. Refused while\nbackground jobs run (`jobs_running`, the detail names them): they would\nstop halfway.",
         "operationId": "power",
         "requestBody": {
           "content": {
@@ -7457,6 +7457,16 @@
           },
           "403": {
             "description": "`forbidden`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`jobs_running`: the detail names the jobs",
             "content": {
               "application/json": {
                 "schema": {
@@ -7769,14 +7779,14 @@
         "tags": [
           "system"
         ],
-        "summary": "Installs what the last check found: Debian's packages, then zendiloOS,\nwhose interface restarts on the way. A restart of the NAS is asked for\nseparately. Needs `system.manage`.",
+        "summary": "Installs what the last check found: Debian's packages, then zendiloOS,\nwhose interface restarts on the way. A restart of the NAS is asked for\nseparately. Needs `system.manage`. Refused while background jobs run\n(`jobs_running`, the detail names them): the agents would see them\nthrough before taking the new release.",
         "operationId": "apply_system_updates",
         "responses": {
           "202": {
             "description": "The update begins."
           },
           "409": {
-            "description": "`update_busy`, `not_checked`, `nothing_to_update`",
+            "description": "`update_busy`, `jobs_running` (the detail names the jobs), `not_checked`, `nothing_to_update`",
             "content": {
               "application/json": {
                 "schema": {

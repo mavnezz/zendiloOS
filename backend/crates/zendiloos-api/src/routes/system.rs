@@ -8,7 +8,7 @@ use utoipa_axum::routes;
 
 use zendiloos_identity::domain::Permission;
 use zendiloos_kernel::Timestamp;
-use zendiloos_system::application::commands::{SetSshError, SetTimeError};
+use zendiloos_system::application::commands::{PowerError, SetSshError, SetTimeError};
 use zendiloos_system::domain::{
     PowerAction, RootLogin, SshSettings, SshStatus, TimeSettings, TimeStatus, TlsMinimum,
 };
@@ -126,7 +126,9 @@ pub struct PowerRequest {
     pub action: PowerActionKind,
 }
 
-/// Reboots or powers off the system. Needs `system.manage`.
+/// Reboots or powers off the system. Needs `system.manage`. Refused while
+/// background jobs run (`jobs_running`, the detail names them): they would
+/// stop halfway.
 #[utoipa::path(
     post,
     path = "/system/power",
@@ -136,6 +138,7 @@ pub struct PowerRequest {
     responses(
         (status = ACCEPTED, description = "The action is under way."),
         (status = FORBIDDEN, body = Problem, description = "`forbidden`, `csrf_rejected`"),
+        (status = CONFLICT, body = Problem, description = "`jobs_running`: the detail names the jobs"),
     )
 )]
 async fn power(
@@ -305,6 +308,17 @@ async fn set_time(
     };
     let status = state.system.set_time.execute(settings, &auth.0.actor(), &client).await?;
     Ok(Json(status.into()))
+}
+
+impl From<PowerError> for ApiError {
+    fn from(error: PowerError) -> Self {
+        match error {
+            PowerError::JobsRunning(named) => {
+                ApiError::Rejected { status: StatusCode::CONFLICT, code: "jobs_running", detail: Some(named) }
+            }
+            PowerError::Port(e) => e.into(),
+        }
+    }
 }
 
 impl From<SetSshError> for ApiError {

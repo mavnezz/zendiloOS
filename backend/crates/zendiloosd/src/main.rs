@@ -104,10 +104,16 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         Some(path) => tracing::info!(path = %path.display(), "reading the journal with journalctl"),
         None => tracing::warn!("journalctl not found: the log viewer will not work"),
     }
+    let jobs = Jobs::new(Arc::new(SqliteJobs::new(database.clone())), Arc::new(SystemClock));
+    let interrupted = jobs.recover().await.context("cannot read the jobs")?;
+    if interrupted > 0 {
+        tracing::warn!(interrupted, "jobs of the previous run were interrupted");
+    }
     let system = SystemUseCases::new(SystemPorts {
         info: Arc::new(HostSystemInfo),
         metrics: Arc::new(metrics),
         power: Arc::new(AgentPowerControl::new(agent.clone())),
+        work: Arc::new(jobs.clone()),
         time: Arc::new(AgentTime::new(agent.clone())),
         ssh: Arc::new(AgentSsh::new(agent.clone())),
         listening: Arc::new(ProcListening::default()),
@@ -117,11 +123,6 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         audit_reader: Arc::new(SqliteAuditLog::new(database.clone())),
         clock: Arc::new(SystemClock),
     });
-    let jobs = Jobs::new(Arc::new(SqliteJobs::new(database.clone())), Arc::new(SystemClock));
-    let interrupted = jobs.recover().await.context("cannot read the jobs")?;
-    if interrupted > 0 {
-        tracing::warn!(interrupted, "jobs of the previous run were interrupted");
-    }
     let notifier = Notifier::new(Arc::new(SqliteNotifications::new(database.clone())), Arc::new(SystemClock));
     // Notifications also go out by email and to webhooks, named after the host.
     let host_name = std::fs::read_to_string("/proc/sys/kernel/hostname")
@@ -253,6 +254,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
             host: Arc::new(AgentUpdates::new(agent.clone())),
             store: Arc::new(SqliteSystemUpdates::new(database.clone())),
             notifier: notifier.clone(),
+            work: Arc::new(jobs.clone()),
             audit: audit.clone(),
             clock: Arc::new(SystemClock),
         },

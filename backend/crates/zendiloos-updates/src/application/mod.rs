@@ -5,7 +5,7 @@ pub mod ports;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use zendiloos_kernel::{Actor, AuditEntry, AuditLog, Clock, Outcome, PortError, RequestContext};
+use zendiloos_kernel::{Actor, AuditEntry, AuditLog, Clock, Outcome, PortError, RequestContext, RunningWork};
 use zendiloos_notify::{Level, NewNotification, Notifier};
 
 use self::ports::{HostError, HostPackages, ReleaseSource, UpdateStore};
@@ -25,6 +25,10 @@ pub enum UpdatesError {
     /// A check or an update is going on.
     #[error("an update or a check is going on")]
     Busy,
+    /// Background work runs, which the agents would see through before
+    /// taking the new release; it names it.
+    #[error("background work runs: {0}")]
+    JobsRunning(String),
     #[error(transparent)]
     Host(#[from] HostError),
     #[error(transparent)]
@@ -61,6 +65,8 @@ pub struct UpdatesPorts {
     pub host: Arc<dyn HostPackages>,
     pub store: Arc<dyn UpdateStore>,
     pub notifier: Notifier,
+    /// What runs in the background, which an update waits for.
+    pub work: Arc<dyn RunningWork>,
     pub audit: Arc<dyn AuditLog>,
     pub clock: Arc<dyn Clock>,
 }
@@ -218,8 +224,16 @@ impl Updates {
     /// Installs what the last check found: the release is downloaded, then
     /// a run on the NAS installs Debian's packages and the release. Returns
     /// once the download began; the run is followed in the overview.
+    ///
+    /// Refused while background work runs: the package's upgrade restarts
+    /// the agents, which first see their running operations through (a
+    /// copy, a share's permissions, a pool's change), for hours maybe.
     pub async fn apply(&self, actor: &Actor, request: &RequestContext) -> Result<(), UpdatesError> {
         let busy = Arc::clone(&self.busy).try_lock_owned().map_err(|_| UpdatesError::Busy)?;
+        let running = self.ports.work.running();
+        if !running.is_empty() {
+            return Err(UpdatesError::JobsRunning(running.join(", ")));
+        }
         let latest = self.ports.host.latest(request).await?;
         if latest.as_ref().is_some_and(|run| run.state == RunState::Running) {
             return Err(UpdatesError::Busy);
@@ -391,12 +405,21 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct Work(std::sync::Mutex<Vec<String>>);
+    impl RunningWork for Work {
+        fn running(&self) -> Vec<String> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
     struct Setup {
         updates: Updates,
         releases: Arc<FakeReleases>,
         host: Arc<FakeHost>,
         store: Arc<MemoryStore>,
         said: Arc<MemoryNotifications>,
+        work: Arc<Work>,
     }
 
     fn setup() -> Setup {
@@ -410,15 +433,17 @@ mod tests {
         let host = Arc::new(FakeHost::default());
         let store = Arc::new(MemoryStore::default());
         let said = Arc::new(MemoryNotifications::default());
+        let work = Arc::new(Work::default());
         let ports = UpdatesPorts {
             releases: releases.clone(),
             host: host.clone(),
             store: store.clone(),
             notifier: Notifier::new(said.clone(), Arc::new(Fixed)),
+            work: work.clone(),
             audit: Arc::new(NoAudit),
             clock: Arc::new(Fixed),
         };
-        Setup { updates: Updates::new(ports, "0.1.0"), releases, host, store, said }
+        Setup { updates: Updates::new(ports, "0.1.0"), releases, host, store, said, work }
     }
 
     fn alice() -> Actor {
@@ -476,6 +501,26 @@ mod tests {
         let finished: Vec<_> = s.said.all().into_iter().filter(|n| n.code == "updates_installed").collect();
         assert_eq!(finished.len(), 1, "a finished update is said once");
         assert_eq!(finished[0].params["restart"], "true");
+    }
+
+    #[tokio::test]
+    async fn no_update_starts_while_background_work_runs() {
+        let s = setup();
+        let request = RequestContext::default();
+        s.updates.check(None, &request).await.unwrap();
+        *s.work.0.lock().unwrap() = vec!["files.copy photos".into(), "storage.scrub tank".into()];
+        match s.updates.apply(&alice(), &request).await {
+            Err(UpdatesError::JobsRunning(named)) => {
+                assert_eq!(named, "files.copy photos, storage.scrub tank")
+            }
+            other => panic!("not refused: {other:?}"),
+        }
+        assert!(s.releases.downloaded.lock().unwrap().is_empty());
+        assert!(s.host.started.lock().unwrap().is_empty());
+        assert_eq!(s.updates.overview(&request).await.unwrap().phase, Phase::Idle);
+
+        s.work.0.lock().unwrap().clear();
+        s.updates.apply(&alice(), &request).await.unwrap();
     }
 
     #[tokio::test]

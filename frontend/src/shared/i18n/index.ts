@@ -85,6 +85,7 @@ const KNOWN_PROBLEMS = [
   'project_unconfirmed',
   'app_changed',
   'pool_in_use',
+  'jobs_running',
   'compose_risks',
   'share_denied',
   'source_exists',
@@ -137,6 +138,7 @@ export function problemMessage(error: unknown): string {
     'host_failed',
     'share_used_by_apps',
     'pool_in_use',
+    'jobs_running',
   ]
   if (isKnown(error.code)) {
     const message = t(`errors.${error.code}`)

@@ -1959,6 +1959,8 @@ const de: Messages = {
     not_own_project: 'Die Compose-Datei dieses Projekts liegt nicht in zendiloOS.',
     app_changed:
       'Die App hat sich im Katalog geändert, seit Sie sie angesehen haben: Sehen Sie sie vor dem Bestätigen noch einmal an.',
+    jobs_running:
+      'Es laufen noch Aufgaben im Hintergrund, die sonst mittendrin abbrächen; warten Sie, bis sie beendet sind',
     pool_in_use:
       'Auf dem Pool liegen noch Daten, die sonst unbemerkt verloren gingen. Löschen oder verschieben Sie sie zuerst, jeweils an ihrer eigenen Stelle',
     project_unconfirmed:

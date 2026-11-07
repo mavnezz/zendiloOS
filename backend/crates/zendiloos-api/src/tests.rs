@@ -336,10 +336,12 @@ impl Harness {
         let identity = TestIdentity::new();
         let power = Arc::new(RecordingPower::default());
         let journal = Arc::new(FakeJournal::default());
+        let jobs = Jobs::new(Arc::new(MemoryJobs::default()), identity.clock.clone());
         let system = SystemUseCases::new(SystemPorts {
             info: Arc::new(provider),
             metrics: Arc::new(FakeLive),
             power: power.clone(),
+            work: Arc::new(jobs.clone()),
             time: Arc::new(FakeTime::default()),
             ssh: Arc::new(FakeSsh::default()),
             listening: Arc::new(FakeListening),
@@ -349,7 +351,6 @@ impl Harness {
             audit_reader: Arc::new(FakeAuditReader(identity.audit.clone())),
             clock: identity.clock.clone(),
         });
-        let jobs = Jobs::new(Arc::new(MemoryJobs::default()), identity.clock.clone());
         let (ports, storage_fake) =
             FakeStorage::ports(jobs.clone(), identity.audit.clone(), identity.clock.clone());
         let storage = StorageUseCases::new(ports);
@@ -442,6 +443,7 @@ impl Harness {
                     host: Arc::new(zendiloos_updates::testing::FakeHost::default()),
                     store: Arc::new(zendiloos_updates::testing::MemoryStore::default()),
                     notifier: notifier.clone(),
+                    work: Arc::new(jobs.clone()),
                     audit: identity.audit.clone(),
                     clock: identity.clock.clone(),
                 },
@@ -657,6 +659,47 @@ async fn power_actions_need_the_csrf_token() {
 
     assert_problem(&reply, StatusCode::FORBIDDEN, "csrf_rejected");
     assert!(h.power.0.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn no_reboot_nor_update_while_a_job_runs() {
+    let h = Harness::new();
+    let session = h.sign_in("alice", Role::Admin).await;
+    let check = h.send(empty(with_csrf(post("/api/v1/system/updates/check"), &session))).await;
+    assert_eq!(check.status, StatusCode::ACCEPTED);
+    for _ in 0..100 {
+        let found = h.send(empty(with_cookie(get("/api/v1/system/updates"), &session))).await;
+        if found.body["phase"] == "idle" && found.body["checked_at"] != Value::Null {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    let (finish, finished) = tokio::sync::oneshot::channel::<()>();
+    let job = h
+        .jobs
+        .start("sharing.apply_access", Some("photos".into()), None, |_| async move {
+            let _ = finished.await;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let reboot =
+        h.send(json(with_csrf(post("/api/v1/system/power"), &session), json!({ "action": "reboot" }))).await;
+    assert_problem(&reboot, StatusCode::CONFLICT, "jobs_running");
+    assert_eq!(reboot.body["detail"], "sharing.apply_access photos");
+    assert!(h.power.0.lock().unwrap().is_empty());
+    let entry = h.identity.audit.entries().last().cloned().unwrap();
+    assert_eq!((entry.action, entry.outcome), ("system.reboot", Outcome::Denied));
+    let update = h.send(empty(with_csrf(post("/api/v1/system/updates/apply"), &session))).await;
+    assert_problem(&update, StatusCode::CONFLICT, "jobs_running");
+    assert_eq!(update.body["detail"], "sharing.apply_access photos");
+
+    finish.send(()).unwrap();
+    job_done(&h, job.id.get()).await;
+    let reboot =
+        h.send(json(with_csrf(post("/api/v1/system/power"), &session), json!({ "action": "reboot" }))).await;
+    assert_eq!(reboot.status, StatusCode::ACCEPTED, "{:?}", reboot.body);
 }
 
 #[tokio::test]

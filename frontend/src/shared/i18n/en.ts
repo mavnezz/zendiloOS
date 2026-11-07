@@ -1922,6 +1922,8 @@ const en = {
     not_own_project: 'This project’s Compose file is not kept in zendiloOS.',
     app_changed:
       'The app changed in its catalog since you looked at it: look at it again before you confirm.',
+    jobs_running:
+      'Background tasks are still running and would stop halfway; wait until they have finished',
     pool_in_use:
       'The pool still holds data that would be lost without notice. Delete or move it first, each in its own place',
     project_unconfirmed:

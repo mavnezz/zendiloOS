@@ -6,7 +6,7 @@ pub mod queries;
 
 use std::sync::Arc;
 
-use zendiloos_kernel::{AuditLog, Clock};
+use zendiloos_kernel::{AuditLog, Clock, RunningWork};
 
 use ports::{
     AuditReader, JournalReader, ListeningPorts, LiveMetrics, PowerControl, SshControl, SystemInfoProvider,
@@ -20,6 +20,8 @@ pub struct SystemPorts {
     pub info: Arc<dyn SystemInfoProvider>,
     pub metrics: Arc<dyn LiveMetrics>,
     pub power: Arc<dyn PowerControl>,
+    /// What runs in the background, which a reboot waits for.
+    pub work: Arc<dyn RunningWork>,
     pub time: Arc<dyn TimeControl>,
     pub ssh: Arc<dyn SshControl>,
     pub listening: Arc<dyn ListeningPorts>,
@@ -53,6 +55,7 @@ impl SystemUseCases {
             watch_metrics: queries::WatchMetrics::new(ports.metrics),
             request_power_action: commands::RequestPowerAction::new(
                 ports.power,
+                ports.work,
                 ports.audit.clone(),
                 ports.clock.clone(),
             ),

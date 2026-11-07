@@ -2248,7 +2248,11 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Reboots or powers off the system. Needs `system.manage`. */
+        /**
+         * Reboots or powers off the system. Needs `system.manage`. Refused while
+         *     background jobs run (`jobs_running`, the detail names them): they would
+         *     stop halfway.
+         */
         post: operations["power"];
         delete?: never;
         options?: never;
@@ -2348,7 +2352,9 @@ export interface paths {
         /**
          * Installs what the last check found: Debian's packages, then zendiloOS,
          *     whose interface restarts on the way. A restart of the NAS is asked for
-         *     separately. Needs `system.manage`.
+         *     separately. Needs `system.manage`. Refused while background jobs run
+         *     (`jobs_running`, the detail names them): the agents would see them
+         *     through before taking the new release.
          */
         post: operations["apply_system_updates"];
         delete?: never;
@@ -10025,6 +10031,15 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
+            /** @description `jobs_running`: the detail names the jobs */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
         };
     };
     ssh: {
@@ -10271,7 +10286,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description `update_busy`, `not_checked`, `nothing_to_update` */
+            /** @description `update_busy`, `jobs_running` (the detail names the jobs), `not_checked`, `nothing_to_update` */
             409: {
                 headers: {
                     [name: string]: unknown;

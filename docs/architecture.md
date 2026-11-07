@@ -131,7 +131,7 @@ tests in `zendiloos-architecture` catch, as part of `cargo test`.
 
 | Crate | Role | May depend on (internal) |
 |---|---|---|
-| `zendiloos-kernel` | shared kernel: time, `Secret`, request context, the audit entry and its port, common port errors | – |
+| `zendiloos-kernel` | shared kernel: time, `Secret`, request context, the audit entry and its port, what runs in the background (`RunningWork`), common port errors | – |
 | `zendiloos-identity` | accounts and groups with their Linux users and groups, roles and permissions, sessions, passwords, throttling, audit | kernel |
 | `zendiloos-system` | system information, metrics, power, logs | kernel |
 | `zendiloos-storage` | disks, SMART, ZFS pools and volumes, plans for erasing disks, monitoring; mdadm arrays read-only | kernel, jobs, notify |
@@ -148,7 +148,7 @@ tests in `zendiloos-architecture` catch, as part of `cargo test`.
 | `zendiloos-agent` | privileged root service (binary): the system agent, and with `--role files` the files agent | agent-proto, exec, fileops, logging |
 | `zendiloos-fileops` | file operations beneath a share's root (`openat2`), with the credentials of the calling thread | agent-proto |
 | `zendiloos-sim` | simulated agent behind `AgentTransport`; a model of a small NAS (disks, ZFS pools, resilver and scrub over time); executes nothing, but keeps share contents as real files in a scratch directory | agent-proto, fileops |
-| `zendiloos-jobs` | long-running operations: recorded, published to subscribers, marked as interrupted after a restart | kernel |
+| `zendiloos-jobs` | long-running operations: recorded, published to subscribers, marked as interrupted after a restart; the running ones are the kernel's `RunningWork` | kernel |
 | `zendiloos-notify` | notifications for administrators: a code with parameters, stored (the 500 most recent) and published; how far each account has read and cleared them; channels that carry them by email and to webhooks | kernel |
 | `zendiloos-logging` | logging setup shared by `zendiloosd` and the agent | – |
 | `zendiloos-architecture` | tests only: checks this table and the rules below against the workspace (`cargo metadata`, and the sources parsed with `syn`) | – |
@@ -770,6 +770,9 @@ directory) and virtual disks in the Debian VM (`just vm-storage-test`).
   attempts. Every context writes it through the shared `AuditLog` port of
   the kernel. Actions that may end the process (reboot, power off) are
   recorded before they are carried out, and a failure is recorded after.
+  While background jobs run they are refused (`jobs_running`, recorded as
+  denied): a copy, a share's permissions or a pool's change would stop
+  halfway, and the agents would hold the shutdown until they saw it through.
   The request ID also appears in the agent's journal.
 - Structured logs through `tracing` (journald in production, readable during
   development). Passwords, tokens and cookies never appear in logs; the types
@@ -991,7 +994,10 @@ binary as `run-packages <id> <task>` outside the sandbox; the runner records
 each step in `/var/lib/zendiloos-packages/run.json`, which the agent reads
 back. A run outlives a restart of the agent and of zendiloosd, which matters
 when it installs zendiloOS: the package's maintainer scripts restart both,
-and the page follows the run from its record once zendiloosd is back. The
+and the page follows the run from its record once zendiloosd is back. An
+update does not start while background jobs run (`jobs_running`, the
+detail names them): a stopping agent first sees its running operations
+through, and the upgrade would wait for that, for hours maybe. The
 record is one file, which the next check replaces: so before a check or an
 update starts, zendiloosd says how the last update went (once) and keeps
 that run in its database, where the page still finds it. Tasks

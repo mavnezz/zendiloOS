@@ -33,6 +33,7 @@ impl From<UpdatesError> for ApiError {
             UpdatesError::NotChecked => rejected(StatusCode::CONFLICT, "not_checked", None),
             UpdatesError::NothingToDo => rejected(StatusCode::CONFLICT, "nothing_to_update", None),
             UpdatesError::Busy => rejected(StatusCode::CONFLICT, "update_busy", None),
+            UpdatesError::JobsRunning(named) => rejected(StatusCode::CONFLICT, "jobs_running", Some(named)),
             UpdatesError::Host(HostError::Refused(reason)) => {
                 rejected(StatusCode::CONFLICT, "refused", Some(reason))
             }
@@ -267,7 +268,9 @@ async fn check_system_updates(
 
 /// Installs what the last check found: Debian's packages, then zendiloOS,
 /// whose interface restarts on the way. A restart of the NAS is asked for
-/// separately. Needs `system.manage`.
+/// separately. Needs `system.manage`. Refused while background jobs run
+/// (`jobs_running`, the detail names them): the agents would see them
+/// through before taking the new release.
 #[utoipa::path(
     post,
     path = "/system/updates/apply",
@@ -275,7 +278,7 @@ async fn check_system_updates(
     security(("session" = [])),
     responses(
         (status = ACCEPTED, description = "The update begins."),
-        (status = CONFLICT, body = Problem, description = "`update_busy`, `not_checked`, `nothing_to_update`"),
+        (status = CONFLICT, body = Problem, description = "`update_busy`, `jobs_running` (the detail names the jobs), `not_checked`, `nothing_to_update`"),
     )
 )]
 async fn apply_system_updates(
