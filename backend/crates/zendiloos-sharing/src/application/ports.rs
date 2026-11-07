@@ -125,6 +125,22 @@ pub trait Volumes: Send + Sync {
     async fn volumes(&self, context: &RequestContext) -> Result<Vec<Volume>, PortError>;
 }
 
+/// A removable drive mounted at its place (the Storage context's).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemovableRoot {
+    pub id: String,
+    pub label: Option<String>,
+    /// Write-protected, or mounted read only.
+    pub read_only: bool,
+}
+
+/// The removable drives the file manager may work on: those mounted now.
+#[async_trait]
+pub trait RemovableRoots: Send + Sync {
+    /// The drive `id` if it is mounted now.
+    async fn mounted(&self, id: &str, context: &RequestContext) -> Result<Option<RemovableRoot>, PortError>;
+}
+
 /// Administrators' Compose projects (the Containers context's) that live in
 /// a share or mount something of it.
 #[async_trait]

@@ -960,6 +960,168 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/files/removable/{drive}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Downloads a folder of a removable drive as a tar archive. Needs
+         *     `files.read` and `storage.manage`.
+         */
+        get: operations["drive_archive"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/files/removable/{drive}/delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Deletes entries of a removable drive for good (a drive has no recycle
+         *     bin), as a job. Needs `files.write` and `storage.manage`.
+         */
+        post: operations["drive_delete"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/files/removable/{drive}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Downloads a file from a removable drive, as from a share. Needs
+         *     `files.read` and `storage.manage`.
+         */
+        get: operations["drive_download"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/files/removable/{drive}/folder": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A folder's contents on a removable drive. Needs `files.read` and
+         *     `storage.manage`.
+         */
+        get: operations["drive_folder"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/files/removable/{drive}/folders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Creates a folder on a removable drive. Needs `files.write` and
+         *     `storage.manage`.
+         */
+        post: operations["drive_create_folder"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/files/removable/{drive}/rename": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Renames a file or folder on a removable drive. Needs `files.write` and
+         *     `storage.manage`.
+         */
+        post: operations["drive_rename"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/files/removable/{drive}/transfer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Copies or moves entries of a removable drive into a folder of it, of
+         *     another drive or of a share, as a job. What lands in a share is the
+         *     administrator's and takes the folder's permissions, as an upload does.
+         *     Needs `files.write` and `storage.manage`.
+         */
+        post: operations["drive_transfer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/files/removable/{drive}/upload": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Uploads a file onto a removable drive. Needs `files.write` and
+         *     `storage.manage`.
+         */
+        post: operations["drive_upload"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/files/shares": {
         parameters: {
             query?: never;
@@ -4693,15 +4855,21 @@ export interface components {
         TransferMode: "copy" | "move";
         TransferRequest: {
             mode: components["schemas"]["TransferMode"];
-            /** @description Entries of this share, relative to its root. */
+            /** @description Entries of this share or drive, relative to its root. */
             paths: string[];
+            /**
+             * @description The removable drive to copy or move into (its ID, as listed); needs
+             *     `storage.manage`.
+             */
+            target_drive?: string | null;
             /** @description The folder there, relative to its root. */
             target_path?: string;
             /**
              * Format: int64
-             * @description The share to copy or move into; may be this one.
+             * @description The share to copy or move into; may be this one. Either this or
+             *     `target_drive`.
              */
-            target_share: number;
+            target_share?: number | null;
         };
         /** @enum {string} */
         Transport: "sata" | "sas" | "nvme" | "usb" | "virtio" | "other";
@@ -7231,6 +7399,433 @@ export interface operations {
             };
             /** @description `invalid_operation`: too many, or twice */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    drive_archive: {
+        parameters: {
+            query?: {
+                /** @description Relative to the share's root, e.g. `photos/2024`; empty for the root. */
+                path?: string;
+                /** @description In this snapshot of the share, read only (its label). */
+                snapshot?: string;
+            };
+            header?: never;
+            path: {
+                drive: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/x-tar": number[];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_operation`: not a folder, too many files */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    drive_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                drive: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeleteEntriesRequest"];
+            };
+        };
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description `forbidden`; `permission_denied` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input`, `invalid_operation` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    drive_download: {
+        parameters: {
+            query: {
+                /** @description Relative to the share's root, e.g. `photos/2024/beach.jpg`. */
+                path: string;
+                /**
+                 * @description Let the browser show the file, if it is a picture, sound, video or
+                 *     plain text; anything else is saved regardless.
+                 */
+                inline?: boolean;
+                /** @description From this snapshot of the share (its label). */
+                snapshot?: string;
+            };
+            header?: never;
+            path: {
+                drive: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": number[];
+                };
+            };
+            206: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": number[];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The range starts beyond the end. */
+            416: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    drive_folder: {
+        parameters: {
+            query?: {
+                /** @description Relative to the share's root, e.g. `photos/2024`; empty for the root. */
+                path?: string;
+                /** @description In this snapshot of the share, read only (its label). */
+                snapshot?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The drive's ID, as `/storage/removable` lists it */
+                drive: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Folder"];
+                };
+            };
+            /** @description `forbidden`: not someone who manages storage */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found`: no such drive mounted, or no such folder */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    drive_create_folder: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                drive: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateFolderRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `forbidden`; `permission_denied`: the drive is read only */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `name_taken` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    drive_rename: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                drive: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RenameRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UploadedFile"];
+                };
+            };
+            /** @description `forbidden`; `permission_denied` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `name_taken` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    drive_transfer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                drive: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TransferRequest"];
+            };
+        };
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description `forbidden`; `permission_denied` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input`, `invalid_operation` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    drive_upload: {
+        parameters: {
+            query: {
+                /** @description The folder, relative to the share's root; empty for the root. */
+                path?: string;
+                /** @description The new file's name. */
+                name: string;
+                /** @description Replace a file of that name. */
+                replace?: boolean;
+            };
+            header?: never;
+            path: {
+                drive: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/octet-stream": number[];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UploadedFile"];
+                };
+            };
+            /** @description `bad_request`: the upload did not complete */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `forbidden`; `permission_denied`: the drive is read only */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `name_taken` */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

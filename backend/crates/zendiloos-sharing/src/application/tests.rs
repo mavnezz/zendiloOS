@@ -73,6 +73,7 @@ struct Setup {
     host: Arc<Host>,
     file_host: Arc<Files>,
     projects: Arc<Projects>,
+    removable: Arc<crate::testing::Removable>,
     jobs: Jobs,
     clock: Arc<Moving>,
     notices: Arc<MemoryNotifications>,
@@ -85,6 +86,7 @@ fn setup() -> Setup {
     let clock = Arc::new(Moving::default());
     let notices = Arc::new(MemoryNotifications::default());
     let projects = Arc::new(Projects::default());
+    let removable = Arc::new(crate::testing::Removable::default());
     let ports = SharingPorts {
         shares: Arc::new(Shares::default()),
         directory: Arc::new(Static),
@@ -92,6 +94,7 @@ fn setup() -> Setup {
         projects: projects.clone(),
         host: host.clone(),
         files: file_host.clone(),
+        removable: removable.clone(),
         jobs: jobs.clone(),
         audit: Arc::new(NoAudit),
         clock: clock.clone(),
@@ -103,6 +106,7 @@ fn setup() -> Setup {
         host,
         file_host,
         projects,
+        removable,
         jobs,
         clock,
         notices,
@@ -632,6 +636,69 @@ async fn restoring_takes_entries_out_of_the_bin_one_by_one() {
             "restore alice photos:.recycle/alice/missing",
         ]
     );
+}
+
+#[tokio::test]
+async fn a_removable_drive_is_worked_on_while_mounted_and_has_no_bin() {
+    let s = setup();
+    let id = with_photos(&s).await;
+    let request = RequestContext::default();
+    let stick = || crate::domain::PlaceId::Removable("1A2B-3C4D".into());
+    let gone = s.files.list(&alice(), stick(), FilePath::root(), None, &request).await;
+    assert!(matches!(gone, Err(FilesError::ShareNotFound)), "not mounted: {gone:?}");
+    let (alice, bob) = (alice(), bob());
+    let odd = crate::domain::PlaceId::Removable("../x".into());
+    let odd = s.files.list(&alice, odd, FilePath::root(), None, &request).await;
+    assert!(matches!(odd, Err(FilesError::ShareNotFound)));
+    s.removable.plug("1A2B-3C4D", Some("STICK"), false);
+
+    s.files.list(&alice, stick(), file("Photos"), None, &request).await.unwrap();
+    let label = Some("zdl-2026-11-05_19.40.01");
+    let frozen = s.files.list(&alice, stick(), FilePath::root(), label, &request).await;
+    assert!(matches!(frozen, Err(FilesError::Invalid(why)) if why.contains("snapshots")));
+    s.files.make_directory(&alice, stick(), file("new"), &request).await.unwrap();
+    let (_, _, name) = s.files.archive(&alice, stick(), FilePath::root(), None, &request).await.unwrap();
+    assert_eq!(name, "STICK", "the top of a drive is named by its label");
+    let deleted = s.files.delete(&alice, stick(), vec![file("old.txt")], &request).await.unwrap();
+    assert_eq!(finished(&s.jobs, deleted).await.state, JobState::Succeeded);
+    // From the stick into a share, and back.
+    let copy = s
+        .files
+        .transfer(&alice, Transfer::Copy, stick(), vec![file("Photos/a.jpg")], id, file("2024"), &request)
+        .await
+        .unwrap();
+    assert_eq!(finished(&s.jobs, copy).await.state, JobState::Succeeded);
+    let back = s
+        .files
+        .transfer(&alice, Transfer::Move, id, vec![file("2024/a.jpg")], stick(), FilePath::root(), &request)
+        .await
+        .unwrap();
+    assert_eq!(finished(&s.jobs, back).await.state, JobState::Succeeded);
+    // A reader of the share cannot put anything there from a drive.
+    let into =
+        s.files.transfer(&bob, Transfer::Copy, stick(), vec![file("a")], id, FilePath::root(), &request);
+    assert!(matches!(into.await, Err(FilesError::Denied)), "bob only reads photos");
+
+    assert_eq!(
+        s.file_host.calls(),
+        [
+            "list alice removable:1A2B-3C4D:Photos",
+            "mkdir alice removable:1A2B-3C4D:new",
+            "archive alice removable:1A2B-3C4D:",
+            "remove alice removable:1A2B-3C4D:old.txt",
+            "copy alice removable:1A2B-3C4D:Photos/a.jpg -> photos:2024/a.jpg",
+            "move alice photos:2024/a.jpg -> removable:1A2B-3C4D:a.jpg",
+        ],
+        "deleted for good, no bin"
+    );
+
+    // Write-protected: read only.
+    s.removable.0.lock().unwrap().clear();
+    s.removable.plug("1A2B-3C4D", None, true);
+    let refused = s.files.make_directory(&alice, stick(), file("x"), &request).await;
+    assert!(matches!(refused, Err(FilesError::Denied)), "{refused:?}");
+    let (_, _, name) = s.files.archive(&alice, stick(), FilePath::root(), None, &request).await.unwrap();
+    assert_eq!(name, "1A2B-3C4D", "without a label, by its ID");
 }
 
 // Snapshots

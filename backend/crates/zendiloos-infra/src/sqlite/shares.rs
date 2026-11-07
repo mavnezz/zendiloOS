@@ -5,8 +5,9 @@ use zendiloos_kernel::{PortError, Timestamp};
 use zendiloos_sharing::application::ports::{Directory, Names, PendingUpload, ShareRepository};
 use zendiloos_sharing::domain::{
     Access, AccessRule, AppAccess, Compression, Favourite, FileLocation, FilePath, FileRoot, FileServices,
-    Frequency, Home, HomesLocation, NewShare, NfsClient, Permission, RecordSize, Share, ShareId, ShareName,
-    ShareSettings, SmbEncryption, SmbProtocol, SmbSigning, SnapshotSchedule, Subject, TimeMachine,
+    Frequency, Home, HomesLocation, NewShare, NfsClient, Permission, REMOVABLE_PREFIX, RecordSize, Share,
+    ShareId, ShareName, ShareSettings, SmbEncryption, SmbProtocol, SmbSigning, SnapshotSchedule, Subject,
+    TimeMachine, is_drive_id,
 };
 
 use super::Database;
@@ -211,9 +212,11 @@ impl ShareRepository for SqliteShares {
     }
 
     async fn add_upload(&self, user: &str, at: &FileLocation, started: Timestamp) -> Result<i64, PortError> {
+        // A removable drive as `removable:<id>`: a share's name has no `:`.
         let share = match &at.root {
-            FileRoot::Share(share) => share.as_str(),
-            FileRoot::Home => "",
+            FileRoot::Share(share) => share.as_str().to_owned(),
+            FileRoot::Home => String::new(),
+            FileRoot::Removable(_) => at.root.to_string(),
         };
         let result = sqlx::query(
             "INSERT INTO pending_uploads (user, volume, share, path, started_at) VALUES (?, ?, ?, ?, ?)",
@@ -250,6 +253,11 @@ impl ShareRepository for SqliteShares {
             .map(|(id, user, volume, share, path)| {
                 let root = if share.is_empty() {
                     FileRoot::Home
+                } else if let Some(drive) = share.strip_prefix(REMOVABLE_PREFIX) {
+                    if !is_drive_id(drive) {
+                        return Err(stored(format!("upload {id}: drive")));
+                    }
+                    FileRoot::Removable(drive.to_owned())
                 } else {
                     FileRoot::Share(
                         ShareName::parse(&share).map_err(|_| stored(format!("upload {id}: share")))?,
@@ -715,6 +723,12 @@ mod tests {
         assert_eq!((all[1].user.as_str(), &all[1].at), ("bob", &home), "a personal folder");
         shares.remove_upload(first).await.unwrap();
         assert_eq!(shares.uploads_before(Timestamp::from_unix_seconds(201)).await.unwrap().len(), 1);
+
+        let stick =
+            FileLocation { volume: 0, ..at(FileRoot::Removable("1A2B-3C4D".into()), ".zendiloos-upload-3") };
+        shares.add_upload("alice", &stick, Timestamp::from_unix_seconds(300)).await.unwrap();
+        let all = shares.uploads_before(Timestamp::from_unix_seconds(301)).await.unwrap();
+        assert_eq!(all.last().map(|upload| &upload.at), Some(&stick), "a removable drive");
     }
 
     #[tokio::test]

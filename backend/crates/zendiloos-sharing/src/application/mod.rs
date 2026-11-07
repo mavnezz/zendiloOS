@@ -20,7 +20,7 @@ pub use files::{
     FileVolume, FilesError, FilesUseCases, Transfer, Upload, UploadTicket, UsableShare, VolumeFolder,
 };
 pub use homes::HomesSettings;
-use ports::{Directory, FileHost, ShareHost, ShareProjects, ShareRepository, Volumes};
+use ports::{Directory, FileHost, RemovableRoots, ShareHost, ShareProjects, ShareRepository, Volumes};
 pub use shares::{NewShareInput, ShareChanges, SharingError, SharingUseCases};
 pub use subjects::SubjectAccess;
 
@@ -34,6 +34,8 @@ pub struct SharingPorts {
     pub projects: Arc<dyn ShareProjects>,
     pub host: Arc<dyn ShareHost>,
     pub files: Arc<dyn FileHost>,
+    /// Removable drives, which administrators work on in the file manager.
+    pub removable: Arc<dyn RemovableRoots>,
     pub jobs: Jobs,
     pub audit: Arc<dyn AuditLog>,
     pub clock: Arc<dyn Clock>,

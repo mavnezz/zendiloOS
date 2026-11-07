@@ -79,12 +79,14 @@ impl FilePath {
     }
 }
 
-/// Where a file location starts: a share's folder, or the personal folder
-/// of the user acting.
+/// Where a file location starts: a share's folder, the personal folder of
+/// the user acting, or a removable drive.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileRoot {
     Share(ShareName),
     Home,
+    /// By its ID: its file system's UUID ([`is_drive_id`]).
+    Removable(String),
 }
 
 impl std::fmt::Display for FileRoot {
@@ -92,12 +94,40 @@ impl std::fmt::Display for FileRoot {
         match self {
             FileRoot::Share(share) => f.write_str(share.as_str()),
             FileRoot::Home => f.write_str("home"),
+            FileRoot::Removable(id) => write!(f, "{REMOVABLE_PREFIX}{id}"),
         }
     }
 }
 
-/// A file or folder: `<root>/<path>` on volume `volume`, or the same in
-/// one of a share's snapshots (read only), by its label.
+/// How a removable drive is written where a share's name could stand
+/// (`removable:1A2B-3C4D`): a share's name has no `:`.
+pub const REMOVABLE_PREFIX: &str = "removable:";
+
+/// Whether `id` can name a removable drive: the UUID of its file system,
+/// letters, digits and `-`, not starting with `-`, at most 64.
+pub fn is_drive_id(id: &str) -> bool {
+    (1..=64).contains(&id.len())
+        && !id.starts_with('-')
+        && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+/// Where the file manager works: a share (or the personal folder, as
+/// [`super::HOME_SHARE`]), or a removable drive by its ID.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlaceId {
+    Share(super::ShareId),
+    Removable(String),
+}
+
+impl From<super::ShareId> for PlaceId {
+    fn from(id: super::ShareId) -> Self {
+        PlaceId::Share(id)
+    }
+}
+
+/// A file or folder: `<root>/<path>` on volume `volume` (for a removable
+/// drive, 0: it is on none), or the same in one of a share's snapshots
+/// (read only), by its label.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileLocation {
     pub volume: u16,
@@ -152,6 +182,21 @@ mod tests {
         }
         // What SMB or NFS wrote can still be opened.
         assert!(FilePath::parse("odd\tname/trail ").is_ok());
+    }
+
+    #[test]
+    fn a_drive_is_named_by_its_file_systems_id() {
+        for good in ["1A2B-3C4D", "0123456789ABCDEF", "2f6b0c4e-8d1a-4c1e-9f3e-0a1b2c3d4e5f"] {
+            assert!(is_drive_id(good), "{good:?}");
+        }
+        for bad in ["", "-1A2B", "../etc", "a b", "a/b", &"a".repeat(65)] {
+            assert!(!is_drive_id(bad), "{bad:?}");
+        }
+        assert_eq!(FileRoot::Removable("1A2B-3C4D".into()).to_string(), "removable:1A2B-3C4D");
+        assert_eq!(
+            PlaceId::from(super::super::ShareId::new(3)),
+            PlaceId::Share(super::super::ShareId::new(3))
+        );
     }
 
     #[test]

@@ -31,6 +31,7 @@ mod web;
 
 pub use accounts::AccountFiles;
 pub use app_shares::{pin_project, pin_shares, unpin_project, unpin_shares};
+pub use files::lower_file_overrides;
 pub use network::NetworkPaths;
 pub use operations::{Operations, Paths};
 pub use packages::run_packages;

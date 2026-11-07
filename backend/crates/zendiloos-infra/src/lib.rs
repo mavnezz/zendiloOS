@@ -16,6 +16,7 @@ pub mod host;
 mod https;
 pub mod identity;
 pub mod notify;
+pub mod sharing;
 pub mod sqlite;
 mod storage;
 #[cfg(test)]

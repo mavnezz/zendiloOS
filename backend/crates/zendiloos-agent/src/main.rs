@@ -8,8 +8,8 @@ use tokio::net::UnixListener;
 use tokio::signal::unix::{SignalKind, signal};
 use zendiloos_agent::config::Config;
 use zendiloos_agent::{
-    HostPaths, Operations, Server, passwd, pin_project, pin_shares, power_off_drive, run_packages, serve,
-    unpin_project, unpin_shares,
+    HostPaths, Operations, Server, lower_file_overrides, passwd, pin_project, pin_shares, power_off_drive,
+    run_packages, serve, unpin_project, unpin_shares,
 };
 use zendiloos_agent_proto::{AppName, DiskName, ProjectName, Role};
 
@@ -53,9 +53,25 @@ enum RoleArg {
     Files,
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    // The files agent overrides file permissions only on removable drives,
+    // on threads of their own: every other thread, this one and each the
+    // runtime starts, works without.
+    let files = matches!(cli.role, RoleArg::Files) && cli.command.is_none();
+    let lower = move || {
+        if files && let Err(error) = lower_file_overrides() {
+            // Before logging is set up; stderr reaches the journal.
+            eprintln!("cannot lower the file permission override: {error}");
+            std::process::exit(1);
+        }
+    };
+    lower();
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().on_thread_start(lower).build()?;
+    runtime.block_on(run(cli))
+}
+
+async fn run(cli: Cli) -> anyhow::Result<()> {
     if let Some(Command::RunPackages { id, task, release }) = &cli.command {
         return run_packages(&HostPaths::default(), id, task, release.as_deref())
             .map_err(|error| anyhow::anyhow!("{error}"));

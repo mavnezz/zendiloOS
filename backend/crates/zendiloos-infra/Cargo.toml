@@ -51,6 +51,7 @@ zendiloos-apps = { workspace = true, features = ["testing"] }
 zendiloos-containers = { workspace = true, features = ["testing"] }
 zendiloos-updates = { workspace = true, features = ["testing"] }
 zendiloos-sharing = { workspace = true, features = ["testing"] }
+zendiloos-storage = { workspace = true, features = ["testing"] }
 zendiloos-jobs = { workspace = true, features = ["testing"] }
 zendiloos-notify = { workspace = true, features = ["testing"] }
 tempfile.workspace = true

@@ -23,13 +23,15 @@ use rustix::fs::{
 use rustix::io::Errno;
 use rustix::rand::{GetRandomFlags, getrandom};
 use zendiloos_agent_proto::{
-    AppFolder, AppName, DirectoryEntry, EntryKind, HOMES_DIRECTORY, MAX_DIRECTORY_ENTRIES, ShareName,
-    SharePath, SnapshotLabel, UserName, VolumeNumber, is_file_name,
+    AppFolder, AppName, DirectoryEntry, EntryKind, HOMES_DIRECTORY, MAX_DIRECTORY_ENTRIES, RemovableId,
+    ShareName, SharePath, SnapshotLabel, UserName, VolumeNumber, is_file_name,
 };
 
 mod archive;
+mod stream;
 
 pub use archive::{ArchivePlan, MAX_ARCHIVE_ENTRIES, MAX_ARCHIVE_NAME_BYTES};
+pub use stream::{PIECES_IN_FLIGHT, Piece, Sent, Taken, copy_through, settle};
 
 pub use zendiloos_agent_proto::RECYCLE_DIRECTORY;
 /// Where apps keep their data on a volume: `/volume<N>/@apps/<app>`, each
@@ -418,6 +420,20 @@ impl ShareRoot {
         let stat = fstat(&directory)?;
         if device(&stat) != homes_device {
             return Err(FileError::Invalid("the personal folder is not a folder of the homes' dataset"));
+        }
+        Ok(Self { directory, file_system: device(&stat), inode: inode(&stat) })
+    }
+
+    /// A removable drive's root, `<places>/<id>`: with `require_mount`, only
+    /// with the drive's file system mounted there, never the empty folder
+    /// beneath it (on the tmpfs of `/run`).
+    pub fn open_removable(places: &Path, id: &RemovableId, require_mount: bool) -> Result<Self, FileError> {
+        let flags = OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        let base = open(places, flags, Mode::empty())?;
+        let directory = openat(&base, id.as_str(), flags, Mode::empty())?;
+        let stat = fstat(&directory)?;
+        if require_mount && device(&stat) == device(&fstat(&base)?) {
+            return Err(FileError::Invalid("the drive is not mounted"));
         }
         Ok(Self { directory, file_system: device(&stat), inode: inode(&stat) })
     }

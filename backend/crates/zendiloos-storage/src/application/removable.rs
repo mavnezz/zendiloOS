@@ -177,6 +177,20 @@ impl RemovableDrives {
         Ok(())
     }
 
+    /// The drive `id` if it is mounted at its place now, as the disks say:
+    /// what the file explorer may work on. Mounts nothing.
+    pub async fn mounted(
+        &self,
+        id: &str,
+        context: &RequestContext,
+    ) -> Result<Option<RemovableDrive>, StorageError> {
+        match self.find(id, context).await {
+            Ok(drive) => Ok(drive.is_mounted().then_some(drive)),
+            Err(StorageError::RemovableNotFound) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
     async fn find(&self, id: &str, context: &RequestContext) -> Result<RemovableDrive, StorageError> {
         let devices = self.devices.block_devices(context).await?;
         domain::removable_drives(&devices)
@@ -374,6 +388,20 @@ mod tests {
         assert_eq!(listed[0].hold, None);
         drives.watch().await;
         assert_eq!(fake.calls(), ["clean", "mount 1A2B-3C4D"], "cleaned once at the start, mounted once");
+    }
+
+    #[tokio::test]
+    async fn a_drive_is_worked_on_only_while_it_is_mounted() {
+        let fake = Arc::new(Fake::default());
+        let (drives, _) = drives(&fake);
+        assert_eq!(drives.mounted(ID, &context()).await.unwrap(), None, "not plugged in");
+        *fake.plugged.lock().unwrap() = true;
+        assert_eq!(drives.mounted(ID, &context()).await.unwrap(), None, "plugged in, not mounted yet");
+        assert!(fake.calls().is_empty(), "asking mounts nothing");
+        drives.list(&context()).await.unwrap();
+        let drive = drives.mounted(ID, &context()).await.unwrap().unwrap();
+        assert_eq!((drive.id.as_str(), drive.label.as_deref()), (ID, Some("STICK")));
+        assert_eq!(drives.mounted("other", &context()).await.unwrap(), None);
     }
 
     #[tokio::test]

@@ -314,6 +314,26 @@ impl zendiloos_apps::application::ports::AppProjects for TemplateProjects {
     }
 }
 
+/// Removable drives for the file manager from the Storage use cases, as
+/// zendiloosd's adapter has them.
+struct DrivesForFiles(Arc<zendiloos_storage::application::removable::RemovableDrives>);
+
+#[async_trait]
+impl zendiloos_sharing::application::ports::RemovableRoots for DrivesForFiles {
+    async fn mounted(
+        &self,
+        id: &str,
+        context: &RequestContext,
+    ) -> Result<Option<zendiloos_sharing::application::ports::RemovableRoot>, PortError> {
+        let drive = self.0.mounted(id, context).await.map_err(|e| PortError::new("storage", e))?;
+        Ok(drive.map(|drive| zendiloos_sharing::application::ports::RemovableRoot {
+            id: drive.id,
+            label: drive.label,
+            read_only: drive.read_only,
+        }))
+    }
+}
+
 /// Account and group names from the identity fakes.
 struct IdentityDirectory(
     Arc<zendiloos_identity::testing::InMemoryAccounts>,
@@ -407,6 +427,7 @@ impl Harness {
             projects: Arc::new(zendiloos_sharing::testing::Projects::default()),
             host: share_host.clone(),
             files: file_host.clone(),
+            removable: Arc::new(DrivesForFiles(Arc::clone(&storage.removable))),
             jobs: jobs.clone(),
             audit: identity.audit.clone(),
             clock: identity.clock.clone(),
@@ -1576,6 +1597,14 @@ fn openapi_documents_every_route() {
             "/api/v1/docker/usage",
             "/api/v1/file-services",
             "/api/v1/files/favourites",
+            "/api/v1/files/removable/{drive}/archive",
+            "/api/v1/files/removable/{drive}/delete",
+            "/api/v1/files/removable/{drive}/download",
+            "/api/v1/files/removable/{drive}/folder",
+            "/api/v1/files/removable/{drive}/folders",
+            "/api/v1/files/removable/{drive}/rename",
+            "/api/v1/files/removable/{drive}/transfer",
+            "/api/v1/files/removable/{drive}/upload",
             "/api/v1/files/shares",
             "/api/v1/files/shares/{id}/archive",
             "/api/v1/files/shares/{id}/delete",
@@ -2234,6 +2263,103 @@ async fn removable_drives_are_for_administrators_only() {
         assert_problem(&reply, StatusCode::FORBIDDEN, "forbidden");
     }
     assert_eq!(h.storage.calls(), Vec::<String>::new(), "nothing was mounted for a viewer");
+}
+
+#[tokio::test]
+async fn administrators_work_on_a_mounted_stick_and_copy_from_it_into_a_share() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let bob = h.sign_in("bob", Role::User).await;
+    let alice_id =
+        h.identity.accounts.all().into_iter().find(|a| a.name.as_str() == "alice").unwrap().id.get();
+    let created = h
+        .send(json(
+            with_csrf(post("/api/v1/shares"), &admin),
+            json!({ "name": "photos", "pool": "tank",
+                    "access": [{ "kind": "account", "id": alice_id, "access": "read_write" }] }),
+        ))
+        .await;
+    let share = created.body["id"].as_i64().unwrap();
+    let stick = "/api/v1/files/removable/1A2B-3C4D";
+    let folder = || h.send(empty(with_cookie(get(&format!("{stick}/folder?path=Photos")), &admin)));
+
+    assert_problem(&folder().await, StatusCode::NOT_FOUND, "not_found");
+    h.storage.plug_stick();
+    assert_problem(&folder().await, StatusCode::NOT_FOUND, "not_found");
+    h.send(empty(with_cookie(get("/api/v1/storage/removable"), &admin))).await;
+    let listed = folder().await;
+    assert_eq!(
+        (listed.status, listed.body["path"].clone()),
+        (StatusCode::OK, json!("Photos")),
+        "{:?}",
+        listed.body
+    );
+
+    let made =
+        h.send(json(with_csrf(post(&format!("{stick}/folders")), &admin), json!({ "path": "new" }))).await;
+    assert_eq!(made.status, StatusCode::CREATED);
+    let renamed = h
+        .send(json(
+            with_csrf(post(&format!("{stick}/rename")), &admin),
+            json!({ "path": "new", "name": "old" }),
+        ))
+        .await;
+    assert_eq!(renamed.body["path"], "old");
+    let download =
+        h.send(empty(with_cookie(get(&format!("{stick}/download?path=Photos/a.jpg")), &admin))).await;
+    assert_eq!((download.status, download.body.clone()), (StatusCode::OK, json!("abcdefghij")));
+    let archive = h.send(empty(with_cookie(get(&format!("{stick}/archive?path=")), &admin))).await;
+    assert_eq!(
+        archive.header(header::CONTENT_DISPOSITION),
+        "attachment; filename=\"STICK.tar\"; filename*=UTF-8''STICK.tar"
+    );
+    let request = with_csrf(post(&format!("{stick}/upload?path=&name=song.mp3")), &admin)
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .body(Body::from("tune"))
+        .unwrap();
+    assert_eq!(h.send(request).await.status, StatusCode::CREATED);
+    // From the stick into the share, and from the share onto the stick.
+    let into =
+        json!({ "mode": "copy", "paths": ["Photos/a.jpg"], "target_share": share, "target_path": "2024" });
+    let copied = h.send(json(with_csrf(post(&format!("{stick}/transfer")), &admin), into)).await;
+    assert_eq!(copied.status, StatusCode::ACCEPTED, "{:?}", copied.body);
+    job_done(&h, copied.body["id"].as_i64().unwrap()).await;
+    let onto =
+        json!({ "mode": "move", "paths": ["2024/a.jpg"], "target_drive": "1A2B-3C4D", "target_path": "" });
+    let shares_files = format!("/api/v1/files/shares/{share}");
+    let moved =
+        h.send(json(with_csrf(post(&format!("{shares_files}/transfer")), &admin), onto.clone())).await;
+    assert_eq!(moved.status, StatusCode::ACCEPTED, "{:?}", moved.body);
+    job_done(&h, moved.body["id"].as_i64().unwrap()).await;
+    let both = json!({ "mode": "copy", "paths": ["a"], "target_share": share, "target_drive": "1A2B-3C4D" });
+    let both = h.send(json(with_csrf(post(&format!("{stick}/transfer")), &admin), both)).await;
+    assert_problem(&both, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
+    let deleted =
+        h.send(json(with_csrf(post(&format!("{stick}/delete")), &admin), json!({ "paths": ["old"] }))).await;
+    job_done(&h, deleted.body["id"].as_i64().unwrap()).await;
+
+    // Everyone else: not even a look, nor onto a drive from a share.
+    let refused = h.send(empty(with_cookie(get(&format!("{stick}/folder")), &bob))).await;
+    assert_problem(&refused, StatusCode::FORBIDDEN, "forbidden");
+    let refused = h.send(json(with_csrf(post(&format!("{shares_files}/transfer")), &bob), onto)).await;
+    assert_problem(&refused, StatusCode::FORBIDDEN, "forbidden");
+
+    assert_eq!(
+        h.file_host.calls(),
+        [
+            "list alice removable:1A2B-3C4D:Photos",
+            "mkdir alice removable:1A2B-3C4D:new",
+            "move alice removable:1A2B-3C4D:new -> removable:1A2B-3C4D:old",
+            "open alice removable:1A2B-3C4D:Photos/a.jpg",
+            "archive alice removable:1A2B-3C4D:",
+            "create_upload alice removable:1A2B-3C4D:",
+            "move alice removable:1A2B-3C4D:.zendiloos-upload-1 -> removable:1A2B-3C4D:song.mp3",
+            "copy alice removable:1A2B-3C4D:Photos/a.jpg -> photos:2024/a.jpg",
+            "move alice photos:2024/a.jpg -> removable:1A2B-3C4D:a.jpg",
+            "remove alice removable:1A2B-3C4D:old",
+        ],
+        "for good: no bin on a drive"
+    );
 }
 
 #[tokio::test]

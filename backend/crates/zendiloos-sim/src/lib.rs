@@ -278,10 +278,15 @@ impl SimulatedAgent {
         }
     }
 
-    /// Keeps share contents in `root`, as `root/volume<N>/<share>`; Docker
-    /// counts as installed once it was installed there.
+    /// Keeps share contents in `root`, as `root/volume<N>/<share>`, and the
+    /// USB stick's as `root/removable/<id>`, with a file on it to copy;
+    /// Docker counts as installed once it was installed there.
     pub fn with_files(mut self, root: impl Into<PathBuf>) -> Self {
         let root = root.into();
+        let stick = root.join("removable").join(host::STICK_ID);
+        if !stick.exists() && std::fs::create_dir_all(stick.join("Photos")).is_ok() {
+            let _ = std::fs::write(stick.join("Photos/holiday.txt"), "A file on the simulated USB stick.\n");
+        }
         let marker = root.join(".docker-installed");
         {
             let mut packages = self.packages.lock().unwrap_or_else(PoisonError::into_inner);
@@ -331,6 +336,13 @@ impl SimulatedAgent {
                 FileRoot::Share(share) => share.clone(),
                 FileRoot::Home => ShareName::parse(&format!("home-{}", user.unwrap_or("nobody")))
                     .map_err(|_| FileError::NotFound)?,
+                // A removable drive as `removable/<id>`, whatever its state:
+                // zendiloosd asks only for one it lists as mounted.
+                FileRoot::Removable(id) => {
+                    let places = root.join("removable");
+                    std::fs::create_dir_all(places.join(id.as_str()))?;
+                    return ShareRoot::open_removable(&places, id, false);
+                }
             };
             // Shares from an earlier run have no directory yet.
             if let Some(directory) = self.share_directory(location.volume.get(), name.as_str()) {
@@ -390,6 +402,7 @@ impl SimulatedAgent {
                     let fallback = match &location.root {
                         FileRoot::Share(share) => share.as_str().to_owned(),
                         FileRoot::Home => "home".to_owned(),
+                        FileRoot::Removable(id) => id.as_str().to_owned(),
                     };
                     let name = path.file_name().unwrap_or(&fallback).to_owned();
                     let plan = share.plan_archive(&path, &name)?;

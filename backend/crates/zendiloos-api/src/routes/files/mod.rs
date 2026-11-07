@@ -3,6 +3,7 @@
 //! same permissions apply as over SMB and NFS.
 
 mod download;
+mod removable;
 
 use crate::extract::ApiPath as Path;
 use axum::Json;
@@ -17,8 +18,9 @@ use utoipa::{IntoParams, ToSchema};
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 use zendiloos_identity::domain::Permission;
+use zendiloos_kernel::RequestContext;
 use zendiloos_sharing::application::{FileVolume, FilesError, Transfer, Upload, UsableShare, VolumeFolder};
-use zendiloos_sharing::domain::{self as sharing, FilePath, ShareId};
+use zendiloos_sharing::domain::{self as sharing, FilePath, PlaceId, ShareId};
 
 use crate::auth::Auth;
 use crate::error::{ApiError, Problem};
@@ -43,6 +45,7 @@ pub(super) fn routes() -> OpenApiRouter<ApiState> {
         .routes(routes!(restore_entries))
         .routes(routes!(file_snapshots))
         .routes(routes!(restore_from_snapshot))
+        .merge(removable::routes())
 }
 
 impl From<FilesError> for ApiError {
@@ -266,10 +269,27 @@ async fn list_folder(
     ApiQuery(query): ApiQuery<FolderQuery>,
 ) -> Result<Json<Folder>, ApiError> {
     auth.require(Permission::FilesRead)?;
+    folder_in(&state, &auth, &client, ShareId::new(id).into(), query).await
+}
+
+/// A removable drive, for someone who manages storage and may use files
+/// that way (`files.read` or `files.write`).
+fn drive(auth: &Auth, id: String, files: Permission) -> Result<PlaceId, ApiError> {
+    auth.require(files)?;
+    auth.require(Permission::StorageManage)?;
+    Ok(PlaceId::Removable(id))
+}
+
+async fn folder_in(
+    state: &ApiState,
+    auth: &Auth,
+    client: &RequestContext,
+    place: PlaceId,
+    query: FolderQuery,
+) -> Result<Json<Folder>, ApiError> {
     let folder = path(&query.path)?;
     let snapshot = query.snapshot.as_deref();
-    let listing =
-        state.files.list(&auth.0.actor(), ShareId::new(id), folder.clone(), snapshot, &client).await?;
+    let listing = state.files.list(&auth.0.actor(), place, folder.clone(), snapshot, client).await?;
     Ok(Json(Folder {
         path: folder.as_str().to_owned(),
         entries: listing
@@ -355,11 +375,21 @@ async fn download(
     request_headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     auth.require(Permission::FilesRead)?;
+    download_from(&state, &auth, &client, ShareId::new(id).into(), query, &request_headers).await
+}
+
+async fn download_from(
+    state: &ApiState,
+    auth: &Auth,
+    client: &RequestContext,
+    place: PlaceId,
+    query: FileQuery,
+    request_headers: &HeaderMap,
+) -> Result<Response, ApiError> {
     let file_path = path(&query.path)?;
     let name = file_path.name().ok_or_else(|| ApiError::InvalidInput("not a file".into()))?.to_owned();
     let snapshot = query.snapshot.as_deref();
-    let (mut file, size) =
-        state.files.open(&auth.0.actor(), ShareId::new(id), file_path, snapshot, &client).await?;
+    let (mut file, size) = state.files.open(&auth.0.actor(), place, file_path, snapshot, client).await?;
 
     let modified = file.metadata().await.ok().and_then(|m| m.modified().ok()).map(httpdate::fmt_http_date);
     let preview = query.inline.then(|| download::preview_type(&name)).flatten();
@@ -426,11 +456,19 @@ async fn download_folder(
     ApiQuery(query): ApiQuery<FolderQuery>,
 ) -> Result<Response, ApiError> {
     auth.require(Permission::FilesRead)?;
+    archive_of(&state, &auth, &client, ShareId::new(id).into(), query).await
+}
+
+async fn archive_of(
+    state: &ApiState,
+    auth: &Auth,
+    client: &RequestContext,
+    place: PlaceId,
+    query: FolderQuery,
+) -> Result<Response, ApiError> {
     let folder = path(&query.path)?;
-    let (archive, size, name) = state
-        .files
-        .archive(&auth.0.actor(), ShareId::new(id), folder, query.snapshot.as_deref(), &client)
-        .await?;
+    let (archive, size, name) =
+        state.files.archive(&auth.0.actor(), place, folder, query.snapshot.as_deref(), client).await?;
     let mut headers = HeaderMap::new();
     headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/x-tar"));
     headers.insert(header::CONTENT_DISPOSITION, disposition(&format!("{name}.tar"), false));
@@ -497,12 +535,21 @@ async fn upload(
     body: Body,
 ) -> Result<(StatusCode, Json<UploadedFile>), ApiError> {
     auth.require(Permission::FilesWrite)?;
+    upload_into(state, &auth, client, ShareId::new(id).into(), query, body).await
+}
+
+async fn upload_into(
+    state: ApiState,
+    auth: &Auth,
+    client: RequestContext,
+    place: PlaceId,
+    query: UploadQuery,
+    body: Body,
+) -> Result<(StatusCode, Json<UploadedFile>), ApiError> {
     let actor = auth.0.actor();
     let folder = path(&query.path)?;
-    let Upload { mut file, ticket } = state
-        .files
-        .begin_upload(&actor, ShareId::new(id), folder, &query.name, query.replace, &client)
-        .await?;
+    let Upload { mut file, ticket } =
+        state.files.begin_upload(&actor, place, folder, &query.name, query.replace, &client).await?;
     // In a task of its own: if the client goes away, the handler is
     // dropped, but the half-written file must still be removed.
     let task = tokio::spawn(async move {
@@ -555,7 +602,17 @@ async fn create_folder(
     ApiJson(request): ApiJson<CreateFolderRequest>,
 ) -> Result<StatusCode, ApiError> {
     auth.require(Permission::FilesWrite)?;
-    state.files.make_directory(&auth.0.actor(), ShareId::new(id), path(&request.path)?, &client).await?;
+    folder_made(&state, &auth, &client, ShareId::new(id).into(), request).await
+}
+
+async fn folder_made(
+    state: &ApiState,
+    auth: &Auth,
+    client: &RequestContext,
+    place: PlaceId,
+    request: CreateFolderRequest,
+) -> Result<StatusCode, ApiError> {
+    state.files.make_directory(&auth.0.actor(), place, path(&request.path)?, client).await?;
     Ok(StatusCode::CREATED)
 }
 
@@ -590,10 +647,18 @@ async fn rename_entry(
     ApiJson(request): ApiJson<RenameRequest>,
 ) -> Result<Json<UploadedFile>, ApiError> {
     auth.require(Permission::FilesWrite)?;
-    let renamed = state
-        .files
-        .rename(&auth.0.actor(), ShareId::new(id), path(&request.path)?, &request.name, &client)
-        .await?;
+    renamed(&state, &auth, &client, ShareId::new(id).into(), request).await
+}
+
+async fn renamed(
+    state: &ApiState,
+    auth: &Auth,
+    client: &RequestContext,
+    place: PlaceId,
+    request: RenameRequest,
+) -> Result<Json<UploadedFile>, ApiError> {
+    let renamed =
+        state.files.rename(&auth.0.actor(), place, path(&request.path)?, &request.name, client).await?;
     Ok(Json(UploadedFile { path: renamed.as_str().to_owned() }))
 }
 
@@ -608,10 +673,16 @@ pub enum TransferMode {
 #[serde(deny_unknown_fields)]
 pub struct TransferRequest {
     pub mode: TransferMode,
-    /// Entries of this share, relative to its root.
+    /// Entries of this share or drive, relative to its root.
     pub paths: Vec<String>,
-    /// The share to copy or move into; may be this one.
-    pub target_share: i64,
+    /// The share to copy or move into; may be this one. Either this or
+    /// `target_drive`.
+    #[serde(default)]
+    pub target_share: Option<i64>,
+    /// The removable drive to copy or move into (its ID, as listed); needs
+    /// `storage.manage`.
+    #[serde(default)]
+    pub target_drive: Option<String>,
     /// The folder there, relative to its root.
     #[serde(default)]
     pub target_path: String,
@@ -642,22 +713,27 @@ async fn transfer_entries(
     ApiJson(request): ApiJson<TransferRequest>,
 ) -> Result<(StatusCode, Json<Job>), ApiError> {
     auth.require(Permission::FilesWrite)?;
+    transferred(&state, &auth, &client, ShareId::new(id).into(), request).await
+}
+
+async fn transferred(
+    state: &ApiState,
+    auth: &Auth,
+    client: &RequestContext,
+    place: PlaceId,
+    request: TransferRequest,
+) -> Result<(StatusCode, Json<Job>), ApiError> {
     let mode = match request.mode {
         TransferMode::Copy => Transfer::Copy,
         TransferMode::Move => Transfer::Move,
     };
-    let job = state
-        .files
-        .transfer(
-            &auth.0.actor(),
-            mode,
-            ShareId::new(id),
-            paths(&request.paths)?,
-            ShareId::new(request.target_share),
-            path(&request.target_path)?,
-            &client,
-        )
-        .await?;
+    let target = match (request.target_share, request.target_drive) {
+        (Some(share), None) => ShareId::new(share).into(),
+        (None, Some(id)) => drive(auth, id, Permission::FilesWrite)?,
+        _ => return Err(ApiError::InvalidInput("either target_share or target_drive".into())),
+    };
+    let (paths, directory) = (paths(&request.paths)?, path(&request.target_path)?);
+    let job = state.files.transfer(&auth.0.actor(), mode, place, paths, target, directory, client).await?;
     Ok((StatusCode::ACCEPTED, Json(job.into())))
 }
 
@@ -692,7 +768,17 @@ async fn delete_entries(
     ApiJson(request): ApiJson<DeleteEntriesRequest>,
 ) -> Result<(StatusCode, Json<Job>), ApiError> {
     auth.require(Permission::FilesWrite)?;
-    let job = state.files.delete(&auth.0.actor(), ShareId::new(id), paths(&request.paths)?, &client).await?;
+    deleted(&state, &auth, &client, ShareId::new(id).into(), request).await
+}
+
+async fn deleted(
+    state: &ApiState,
+    auth: &Auth,
+    client: &RequestContext,
+    place: PlaceId,
+    request: DeleteEntriesRequest,
+) -> Result<(StatusCode, Json<Job>), ApiError> {
+    let job = state.files.delete(&auth.0.actor(), place, paths(&request.paths)?, client).await?;
     Ok((StatusCode::ACCEPTED, Json(job.into())))
 }
 

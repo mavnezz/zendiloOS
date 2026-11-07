@@ -59,13 +59,18 @@ fn user(name: &str) -> Result<UserName, FileHostError> {
 }
 
 fn location(at: &FileLocation) -> Result<proto::FileLocation, FileHostError> {
+    // A removable drive is on no volume; the agent does not look.
+    let volume = if matches!(at.root, FileRoot::Removable(_)) { 1 } else { at.volume };
     Ok(proto::FileLocation {
-        volume: proto::VolumeNumber::new(at.volume).map_err(|_| invalid("volume number"))?,
+        volume: proto::VolumeNumber::new(volume).map_err(|_| invalid("volume number"))?,
         root: match &at.root {
             FileRoot::Share(share) => proto::FileRoot::Share(
                 proto::ShareName::parse(share.as_str()).map_err(|_| invalid("share name"))?,
             ),
             FileRoot::Home => proto::FileRoot::Home,
+            FileRoot::Removable(id) => {
+                proto::FileRoot::Removable(proto::RemovableId::parse(id).map_err(|_| invalid("drive"))?)
+            }
         },
         path: proto::SharePath::parse(at.path.as_str()).map_err(|_| invalid("path"))?,
         snapshot: match &at.snapshot {

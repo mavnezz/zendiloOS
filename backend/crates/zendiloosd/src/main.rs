@@ -34,6 +34,7 @@ use zendiloos_infra::identity::{
     Argon2PasswordHasher, FileSetupCodes, RandomSessionTokens, SharingFollowsGroups,
 };
 use zendiloos_infra::notify::NetworkChannels;
+use zendiloos_infra::sharing::DrivesForFiles;
 use zendiloos_infra::sqlite::{
     Database, Occupants, SqliteAccounts, SqliteAppSources, SqliteAuditLog, SqliteChannels, SqliteGroups,
     SqliteInstalledApps, SqliteJobs, SqliteNotifications, SqlitePreferences, SqliteProjects, SqliteSecurity,
@@ -194,6 +195,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         projects: Arc::new(SqliteShareProjects::new(database.clone())),
         host: Arc::new(AgentSharing::new(agent_for_sharing, files_agent.clone())),
         files: Arc::new(AgentFiles::new(files_agent.clone())),
+        removable: Arc::new(DrivesForFiles::new(Arc::clone(&storage.removable))),
         jobs: jobs.clone(),
         audit: audit.clone(),
         clock: Arc::new(SystemClock),

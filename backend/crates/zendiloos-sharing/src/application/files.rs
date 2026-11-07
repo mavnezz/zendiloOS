@@ -4,6 +4,12 @@
 //! what is allowed is decided where it is decided for SMB and NFS: by the
 //! file system's permissions. The checks here keep users out of shares that
 //! are not theirs and refuse early what the share's rules forbid anyway.
+//!
+//! Removable drives are places too ([`PlaceId::Removable`]), for
+//! administrators only: the caller lets only someone who manages storage
+//! name one. A drive is worked on only while it is mounted, with root's
+//! access to its files (a drive formatted elsewhere has owners nobody here
+//! has); it has no recycle bin and no snapshots, so deleting is for good.
 
 use std::sync::Arc;
 
@@ -14,7 +20,7 @@ use super::SharingPorts;
 use super::ports::FileHostError;
 use crate::domain::{
     self, Access, Favourite, FileLocation, FilePath, FileRoot, HOME_SHARE, InvalidFilePath, Listing,
-    MAX_FAVOURITES, Share, ShareId, ShareName, is_new_file_name,
+    MAX_FAVOURITES, PlaceId, Share, ShareId, ShareName, is_new_file_name,
 };
 
 /// Most entries one copy, move or delete takes.
@@ -96,27 +102,30 @@ fn access_of(share: &Share, account: i64, groups: &[i64]) -> Option<Access> {
     domain::effective(&share.access, account, groups)
 }
 
-/// Where file operations happen: a share, or the user's own personal
-/// folder on the volume where those are.
+/// Where file operations happen: a share, the user's own personal folder
+/// on the volume where those are, or a removable drive mounted now.
 #[derive(Debug, Clone)]
 enum Place {
     Share(Share),
     Home { volume: u16 },
+    Removable { id: String, name: String },
 }
 
 impl Place {
-    fn id(&self) -> ShareId {
+    fn id(&self) -> PlaceId {
         match self {
-            Place::Share(share) => share.id,
-            Place::Home { .. } => HOME_SHARE,
+            Place::Share(share) => PlaceId::Share(share.id),
+            Place::Home { .. } => PlaceId::Share(HOME_SHARE),
+            Place::Removable { id, .. } => PlaceId::Removable(id.clone()),
         }
     }
 
-    /// Its name for people: the share's, or `home`.
+    /// Its name for people: the share's, `home`, or the drive's label.
     fn name(&self) -> &str {
         match self {
             Place::Share(share) => share.name.as_str(),
             Place::Home { .. } => "home",
+            Place::Removable { name, .. } => name,
         }
     }
 }
@@ -138,6 +147,9 @@ fn at(place: &Place, path: FilePath) -> FileLocation {
         Place::Home { volume } => {
             FileLocation { volume: *volume, root: FileRoot::Home, path, snapshot: None }
         }
+        Place::Removable { id, .. } => {
+            FileLocation { volume: 0, root: FileRoot::Removable(id.clone()), path, snapshot: None }
+        }
     }
 }
 
@@ -147,6 +159,9 @@ fn at_snapshot(place: &Place, path: FilePath, label: Option<&str>) -> Result<Fil
         (None, _) => None,
         (Some(_), Place::Home { .. }) => {
             return Err(FilesError::Invalid("personal folders have no snapshots".into()));
+        }
+        (Some(_), Place::Removable { .. }) => {
+            return Err(FilesError::Invalid("removable drives have no snapshots".into()));
         }
         (Some(label), Place::Share(_)) if domain::is_label(label) => Some(label.to_owned()),
         (Some(_), Place::Share(_)) => return Err(FilesError::Invalid("not a snapshot of this share".into())),
@@ -251,7 +266,27 @@ impl FilesUseCases {
         Ok(homes.iter().any(|home| home.account == actor.account_id).then_some(location.volume))
     }
 
-    async fn share(&self, actor: &Actor, id: ShareId) -> Result<Usable, FilesError> {
+    /// The place `id` and what the user may do there. A removable drive
+    /// only while mounted; the caller names one only for an administrator.
+    async fn share(
+        &self,
+        actor: &Actor,
+        id: impl Into<PlaceId>,
+        context: &RequestContext,
+    ) -> Result<Usable, FilesError> {
+        let id = match id.into() {
+            PlaceId::Share(id) => id,
+            PlaceId::Removable(id) => {
+                if !domain::is_drive_id(&id) {
+                    return Err(FilesError::ShareNotFound);
+                }
+                let drive =
+                    self.ports.removable.mounted(&id, context).await?.ok_or(FilesError::ShareNotFound)?;
+                let access = if drive.read_only { Access::Read } else { Access::ReadWrite };
+                let name = drive.label.unwrap_or_else(|| drive.id.clone());
+                return Ok(Usable { place: Place::Removable { id: drive.id, name }, access });
+            }
+        };
         if id == HOME_SHARE {
             let volume = self.home(actor).await?.ok_or(FilesError::ShareNotFound)?;
             return Ok(Usable { place: Place::Home { volume }, access: Access::ReadWrite });
@@ -263,8 +298,13 @@ impl FilesUseCases {
     }
 
     /// The place, if the user may change things in it.
-    async fn writable_share(&self, actor: &Actor, id: ShareId) -> Result<Place, FilesError> {
-        let usable = self.share(actor, id).await?;
+    async fn writable_share(
+        &self,
+        actor: &Actor,
+        id: impl Into<PlaceId>,
+        context: &RequestContext,
+    ) -> Result<Place, FilesError> {
+        let usable = self.share(actor, id, context).await?;
         if usable.access != Access::ReadWrite {
             return Err(FilesError::Denied);
         }
@@ -275,12 +315,12 @@ impl FilesUseCases {
     pub async fn list(
         &self,
         actor: &Actor,
-        id: ShareId,
+        id: impl Into<PlaceId>,
         path: FilePath,
         snapshot: Option<&str>,
         context: &RequestContext,
     ) -> Result<Listing, FilesError> {
-        let share = self.share(actor, id).await?.place;
+        let share = self.share(actor, id, context).await?.place;
         Ok(self.ports.files.list(&actor.name, &at_snapshot(&share, path, snapshot)?, context).await?)
     }
 
@@ -288,12 +328,12 @@ impl FilesUseCases {
     pub async fn open(
         &self,
         actor: &Actor,
-        id: ShareId,
+        id: impl Into<PlaceId>,
         path: FilePath,
         snapshot: Option<&str>,
         context: &RequestContext,
     ) -> Result<(tokio::fs::File, u64), FilesError> {
-        let share = self.share(actor, id).await?.place;
+        let share = self.share(actor, id, context).await?.place;
         Ok(self.ports.files.open(&actor.name, &at_snapshot(&share, path, snapshot)?, context).await?)
     }
 
@@ -304,7 +344,7 @@ impl FilesUseCases {
         id: ShareId,
         context: &RequestContext,
     ) -> Result<Vec<domain::Snapshot>, FilesError> {
-        let Place::Share(share) = self.share(actor, id).await?.place else { return Ok(Vec::new()) };
+        let Place::Share(share) = self.share(actor, id, context).await?.place else { return Ok(Vec::new()) };
         let mut mine: Vec<domain::Snapshot> = self
             .ports
             .host
@@ -335,7 +375,7 @@ impl FilesUseCases {
         if paths.is_empty() || paths.len() > MAX_TRANSFER_ENTRIES || paths.iter().any(FilePath::is_root) {
             return Err(FilesError::Invalid(format!("between 1 and {MAX_TRANSFER_ENTRIES} entries")));
         }
-        let share = self.writable_share(actor, id).await?;
+        let share = self.writable_share(actor, id, context).await?;
         let copies = paths
             .into_iter()
             .map(|path| Ok((at_snapshot(&share, path.clone(), Some(label))?, at(&share, path))))
@@ -411,12 +451,12 @@ impl FilesUseCases {
     pub async fn archive(
         &self,
         actor: &Actor,
-        id: ShareId,
+        id: impl Into<PlaceId>,
         path: FilePath,
         snapshot: Option<&str>,
         context: &RequestContext,
     ) -> Result<(tokio::fs::File, u64, String), FilesError> {
-        let share = self.share(actor, id).await?.place;
+        let share = self.share(actor, id, context).await?.place;
         let name = path.name().unwrap_or(share.name()).to_owned();
         let location = at_snapshot(&share, path, snapshot)?;
         let (file, size) = self.ports.files.archive(&actor.name, &location, context).await?;
@@ -429,7 +469,7 @@ impl FilesUseCases {
     pub async fn begin_upload(
         &self,
         actor: &Actor,
-        id: ShareId,
+        id: impl Into<PlaceId>,
         directory: FilePath,
         name: &str,
         replace: bool,
@@ -438,7 +478,7 @@ impl FilesUseCases {
         if !is_new_file_name(name) || name.starts_with(UPLOAD_PREFIX) {
             return Err(FilesError::InvalidName);
         }
-        let share = self.writable_share(actor, id).await?;
+        let share = self.writable_share(actor, id, context).await?;
         let target = at(&share, directory.join(name)?);
         let folder = at(&share, directory.clone());
         let (file, temporary) = self.ports.files.create_upload(&actor.name, &folder, context).await?;
@@ -519,14 +559,14 @@ impl FilesUseCases {
     pub async fn make_directory(
         &self,
         actor: &Actor,
-        id: ShareId,
+        id: impl Into<PlaceId>,
         path: FilePath,
         context: &RequestContext,
     ) -> Result<(), FilesError> {
         if !path.name().is_some_and(is_new_file_name) {
             return Err(FilesError::InvalidName);
         }
-        let share = self.writable_share(actor, id).await?;
+        let share = self.writable_share(actor, id, context).await?;
         Ok(self.ports.files.make_directory(&actor.name, &at(&share, path), context).await?)
     }
 
@@ -534,7 +574,7 @@ impl FilesUseCases {
     pub async fn rename(
         &self,
         actor: &Actor,
-        id: ShareId,
+        id: impl Into<PlaceId>,
         path: FilePath,
         name: &str,
         context: &RequestContext,
@@ -544,22 +584,24 @@ impl FilesUseCases {
             return Err(FilesError::InvalidName);
         }
         let target = parent.join(name).map_err(|_| FilesError::InvalidName)?;
-        let share = self.writable_share(actor, id).await?;
+        let share = self.writable_share(actor, id, context).await?;
         let (from, to) = (at(&share, path), at(&share, target.clone()));
         self.ports.files.move_entry(&actor.name, &from, &to, false, context).await?;
         Ok(target)
     }
 
-    /// Copies or moves `paths` of share `id` into the folder `directory` of
-    /// share `target`, one after the other, as a job.
+    /// Copies or moves `paths` of place `id` into the folder `directory` of
+    /// place `target`, one after the other, as a job. Between a removable
+    /// drive and a share, the files agent reads one side and writes the
+    /// other each with its own rights: what lands in a share is the user's.
     #[allow(clippy::too_many_arguments)]
     pub async fn transfer(
         &self,
         actor: &Actor,
         mode: Transfer,
-        id: ShareId,
+        id: impl Into<PlaceId>,
         paths: Vec<FilePath>,
-        target: ShareId,
+        target: impl Into<PlaceId>,
         directory: FilePath,
         context: &RequestContext,
     ) -> Result<Job, FilesError> {
@@ -567,10 +609,10 @@ impl FilesUseCases {
             return Err(FilesError::Invalid(format!("between 1 and {MAX_TRANSFER_ENTRIES} entries")));
         }
         let source = match mode {
-            Transfer::Copy => self.share(actor, id).await?.place,
-            Transfer::Move => self.writable_share(actor, id).await?,
+            Transfer::Copy => self.share(actor, id, context).await?.place,
+            Transfer::Move => self.writable_share(actor, id, context).await?,
         };
-        let destination = self.writable_share(actor, target).await?;
+        let destination = self.writable_share(actor, target, context).await?;
         let mut moves = Vec::with_capacity(paths.len());
         for path in paths {
             if source.id() == destination.id() && directory.starts_with(&path) {
@@ -620,7 +662,8 @@ impl FilesUseCases {
         if paths.is_empty() || paths.len() > MAX_TRANSFER_ENTRIES {
             return Err(FilesError::Invalid(format!("between 1 and {MAX_TRANSFER_ENTRIES} entries")));
         }
-        let share = self.writable_share(actor, id).await?;
+        // A share's or the personal folder's bin: drives have none.
+        let share = self.writable_share(actor, id, context).await?;
         let mut restored = Vec::with_capacity(paths.len());
         for path in paths {
             restored.push(self.ports.files.restore(&actor.name, &at(&share, path), context).await?);
@@ -630,22 +673,24 @@ impl FilesUseCases {
     }
 
     /// Moves `paths` into the user's recycle bin if the share has one,
-    /// otherwise deletes them for good; as a job.
+    /// otherwise (and always on a removable drive) deletes them for good;
+    /// as a job.
     pub async fn delete(
         &self,
         actor: &Actor,
-        id: ShareId,
+        id: impl Into<PlaceId>,
         paths: Vec<FilePath>,
         context: &RequestContext,
     ) -> Result<Job, FilesError> {
         if paths.is_empty() || paths.len() > MAX_TRANSFER_ENTRIES || paths.iter().any(FilePath::is_root) {
             return Err(FilesError::Invalid(format!("between 1 and {MAX_TRANSFER_ENTRIES} entries")));
         }
-        let share = self.writable_share(actor, id).await?;
-        // Personal folders always have a bin, as over SMB.
+        let share = self.writable_share(actor, id, context).await?;
+        // Personal folders always have a bin, as over SMB; drives none.
         let recycle = match &share {
             Place::Share(share) => share.recycle_bin,
             Place::Home { .. } => true,
+            Place::Removable { .. } => false,
         };
         let locations: Vec<FileLocation> = paths.into_iter().map(|path| at(&share, path)).collect();
         let files = Arc::clone(&self.ports.files);

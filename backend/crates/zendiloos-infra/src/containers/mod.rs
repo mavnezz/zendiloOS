@@ -214,6 +214,7 @@ mod tests {
             projects: Arc::new(Projects::default()),
             host: Arc::new(Host::default()),
             files: files.clone(),
+            removable: Arc::new(zendiloos_sharing::testing::Removable::default()),
             jobs: Jobs::new(Arc::new(MemoryJobs::default()), Arc::new(FixedClock)),
             audit: Arc::new(NoAudit),
             clock: Arc::new(FixedClock),

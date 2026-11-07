@@ -23,14 +23,20 @@ ExecStart=/usr/libexec/zendiloos/zendiloos-agent --role files
 # - the file manager: opening files as the signed-in user (CAP_SETUID,
 #   CAP_SETGID);
 # - personal folders: making each user's folder in /volume<N>/@homes and
-#   giving it to the user (CAP_CHOWN).
+#   giving it to the user (CAP_CHOWN);
+# - removable drives, for administrators: their files with root's access,
+#   whoever owns them on a drive formatted elsewhere (CAP_DAC_OVERRIDE),
+#   only on threads working there; every other thread drops it at start.
 NoNewPrivileges=yes
-CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_DAC_READ_SEARCH CAP_SETUID CAP_SETGID
+CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_SETUID CAP_SETGID
 PrivateNetwork=yes
 # /usr, /boot and /etc read-only; volumes live directly below /.
 ProtectSystem=full
 ProtectHome=yes
-# /run too: its socket comes as a descriptor, and nothing there is its business.
+# /run too: its socket comes as a descriptor. Removable drives mounted at
+# /run/zendiloos-removable/<id> later reach it as mounts of their own, as
+# writable as the system agent mounted them; the folder beneath stays read
+# only, so nothing lands on the tmpfs when a drive is missing.
 ReadOnlyPaths=/var /run -/srv -/opt -/mnt -/media
 InaccessiblePaths=-/var/lib/zendiloos -/var/lib/samba -/etc/zendiloos -/etc/ssh -/etc/shadow -/etc/gshadow
 PrivateTmp=yes

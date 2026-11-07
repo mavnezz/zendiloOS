@@ -6,7 +6,8 @@ mod snapshot;
 
 pub use files::{
     Entry, EntryKind, Favourite, FileLocation, FilePath, FileRoot, InvalidFavourites, InvalidFilePath,
-    Listing, MAX_FAVOURITES, RECYCLE_DIRECTORY, favourites, is_file_name, is_new_file_name,
+    Listing, MAX_FAVOURITES, PlaceId, RECYCLE_DIRECTORY, REMOVABLE_PREFIX, favourites, is_drive_id,
+    is_file_name, is_new_file_name,
 };
 pub use homes::{HOME_SHARE, Home, HomesLocation, HomesSpec};
 pub use services::{

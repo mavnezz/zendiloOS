@@ -584,3 +584,126 @@ fn a_name_that_is_not_utf8_is_flagged_not_taken_for_another() {
     assert_eq!(fs::read_to_string(&raw).unwrap(), "bytes");
     assert!(!v.exists("photos", "file-\u{FFFD}.txt"));
 }
+
+#[test]
+fn a_removable_drive_is_a_root_only_while_mounted() {
+    let places = tempfile::tempdir().unwrap();
+    let id = RemovableId::parse("1A2B-3C4D").unwrap();
+    assert!(matches!(ShareRoot::open_removable(places.path(), &id, true), Err(FileError::NotFound)));
+    fs::create_dir(places.path().join("1A2B-3C4D")).unwrap();
+    // The empty folder of a drive that is not mounted: nothing goes in.
+    let unmounted = ShareRoot::open_removable(places.path(), &id, true);
+    assert!(
+        matches!(unmounted, Err(FileError::Invalid(why)) if why.contains("not mounted")),
+        "{unmounted:?}"
+    );
+    fs::write(places.path().join("1A2B-3C4D/song.mp3"), "tune").unwrap();
+    let drive = ShareRoot::open_removable(places.path(), &id, false).unwrap();
+    assert_eq!(names(&drive.list(&SharePath::root()).unwrap()), ["song.mp3"]);
+    // A link in its place leads nowhere.
+    fs::remove_dir_all(places.path().join("1A2B-3C4D")).unwrap();
+    symlink("/", places.path().join("1A2B-3C4D")).unwrap();
+    assert!(ShareRoot::open_removable(places.path(), &id, false).is_err(), "followed a link");
+}
+
+#[test]
+fn trees_go_across_piece_by_piece_and_keep_their_times() {
+    let v = Volumes::new();
+    v.write("photos", "album/a.jpg", "a");
+    v.write("photos", "album/deep/b.jpg", "b");
+    symlink("a.jpg", v.share_path("photos").join("album/link")).unwrap();
+    let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+    let a = v.share_path("photos").join("album/a.jpg");
+    File::options().write(true).open(a).unwrap().set_modified(old).unwrap();
+    v.write("music", "album/kept.txt", "kept");
+    let (photos, music) = (v.share("photos"), v.share("music"));
+
+    let (copied, _) = copy_through(&photos, &path("album"), &music, &path("album"), Taken::Beside).unwrap();
+    assert_eq!(copied, path("album (2)"), "beside the name that is taken");
+    assert_eq!(v.read("music", "album (2)/deep/b.jpg"), "b");
+    assert_eq!(v.read("music", "album/kept.txt"), "kept");
+    let link = fs::read_link(v.share_path("music").join("album (2)/link")).unwrap();
+    assert_eq!(link, Path::new("a.jpg"));
+    let modified = fs::metadata(v.share_path("music").join("album (2)/a.jpg")).unwrap().modified().unwrap();
+    assert_eq!(modified, old, "modification times are kept");
+    let (file, _) =
+        copy_through(&photos, &path("album/a.jpg"), &music, &path("a.jpg"), Taken::Beside).unwrap();
+    assert_eq!((file, v.read("music", "a.jpg")), (path("a.jpg"), "a".to_owned()));
+
+    // A move: refused where the name is taken, then the source goes.
+    let refused = copy_through(&photos, &path("album"), &music, &path("album"), Taken::Refuse);
+    assert!(matches!(refused, Err(FileError::Exists)), "{refused:?}");
+    let (moved, sent) = copy_through(&photos, &path("album"), &music, &path("moved"), Taken::Refuse).unwrap();
+    assert_eq!(moved, path("moved"));
+    photos.remove_sent(&path("album"), sent).unwrap();
+    assert!(!v.exists("photos", "album"));
+    assert_eq!(v.read("music", "moved/deep/b.jpg"), "b");
+}
+
+#[test]
+fn a_move_across_removes_only_what_was_sent() {
+    let v = Volumes::new();
+    v.write("photos", "album/a.jpg", "a");
+    let (photos, music) = (v.share("photos"), v.share("music"));
+    let (_, sent) = copy_through(&photos, &path("album"), &music, &path("album"), Taken::Refuse).unwrap();
+    // Swapped for another folder meanwhile: that one stays.
+    fs::rename(v.share_path("photos").join("album"), v.share_path("photos").join("old")).unwrap();
+    v.write("photos", "album/other.jpg", "other");
+    let removed = photos.remove_sent(&path("album"), sent);
+    assert!(matches!(removed, Err(FileError::Invalid(why)) if why.contains("replaced")), "{removed:?}");
+    assert_eq!(v.read("photos", "album/other.jpg"), "other");
+}
+
+#[test]
+fn a_copy_that_stops_halfway_leaves_nothing_behind() {
+    let v = Volumes::new();
+    v.write("photos", "album/a.jpg", "a");
+    let music = v.share("music");
+    // The source's side sends the folder and a file, then gives up.
+    let (out, pieces) = std::sync::mpsc::sync_channel(PIECES_IN_FLIGHT);
+    let a = v.share_path("photos").join("album/a.jpg");
+    let file = rustix::fs::open(a, OFlags::RDONLY, Mode::empty()).unwrap();
+    let times = timestamps(&rustix::fs::fstat(&file).unwrap());
+    out.send(Piece::Folder(c"album".to_owned())).unwrap();
+    out.send(Piece::File { name: c"a.jpg".to_owned(), file, times }).unwrap();
+    drop(out);
+    let written = music.receive_entry(&path("album"), &pieces, Taken::Beside);
+    assert!(matches!(written, Err(FileError::Invalid(why)) if why.contains("source stopped")), "{written:?}");
+    assert!(!v.exists("music", "album"), "the half copy stayed");
+
+    // Out of order: a folder's end before anything began.
+    let (out, pieces) = std::sync::mpsc::sync_channel(PIECES_IN_FLIGHT);
+    out.send(Piece::Leave).unwrap();
+    let written = music.receive_entry(&path("x"), &pieces, Taken::Beside);
+    assert!(matches!(written, Err(FileError::Invalid(why)) if why.contains("out of order")), "{written:?}");
+    // Nothing that is copied (a pipe, say): nothing is made.
+    let (out, pieces) = std::sync::mpsc::sync_channel(PIECES_IN_FLIGHT);
+    out.send(Piece::Done).unwrap();
+    assert_eq!(music.receive_entry(&path("y"), &pieces, Taken::Beside).unwrap(), path("y"));
+    assert!(!v.exists("music", "y"));
+}
+
+#[test]
+fn the_side_that_failed_first_says_why() {
+    let stopped = || FileError::Invalid("the copy's target stopped");
+    let sent = Sent(1, 2);
+    assert!(matches!(settle(Err(stopped()), Err(FileError::Denied)), Err(FileError::Denied)));
+    let both = settle(Err(FileError::NotFound), Err(FileError::Invalid("the copy's source stopped")));
+    assert!(matches!(both, Err(FileError::NotFound)));
+    assert!(matches!(settle(Ok(sent), Err(FileError::Exists)), Err(FileError::Exists)));
+    assert!(matches!(settle(Err(FileError::Denied), Ok(path("a"))), Err(FileError::Denied)));
+    assert_eq!(settle(Ok(sent), Ok(path("a"))).unwrap(), (path("a"), sent));
+}
+
+#[test]
+fn a_target_that_gives_up_stops_the_source() {
+    let v = Volumes::new();
+    for n in 0..(PIECES_IN_FLIGHT * 2) {
+        v.write("photos", &format!("many/{n}.txt"), "x");
+    }
+    let photos = v.share("photos");
+    let (out, pieces) = std::sync::mpsc::sync_channel(PIECES_IN_FLIGHT);
+    drop(pieces);
+    let read = photos.send_entry(&path("many"), &out);
+    assert!(matches!(read, Err(FileError::Invalid(why)) if why.contains("target stopped")), "{read:?}");
+}

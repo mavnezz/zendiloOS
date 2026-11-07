@@ -5,7 +5,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ShareName, VolumeNumber};
+use crate::{RemovableId, ShareName, VolumeNumber};
 
 /// Most entries [`crate::Response::Directory`] lists.
 pub const MAX_DIRECTORY_ENTRIES: usize = 20_000;
@@ -112,13 +112,21 @@ pub enum FileRoot {
     /// The personal folder of the user the request is for,
     /// `/volume<volume>/@homes/<user>`; never anybody else's.
     Home,
+    /// A removable drive mounted at its place,
+    /// `/run/zendiloos-removable/<id>` ([`RemovableId::place`]); the
+    /// location's volume means nothing for it. zendiloosd asks only for an
+    /// administrator's request, for a drive it lists as mounted; the files
+    /// agent works there with root's access to files.
+    Removable(RemovableId),
 }
 
 /// The directory below a volume where the personal folders are.
 pub const HOMES_DIRECTORY: &str = "@homes";
 
 /// A file or directory: `<root>/<path>`, or the same in one of the
-/// share's snapshots, read only.
+/// share's snapshots, read only. `volume` is the volume of a share or a
+/// personal folder; for a removable drive it is not used (zendiloosd sends
+/// 1).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FileLocation {
@@ -195,6 +203,24 @@ mod tests {
         assert!(path.starts_with(&SharePath::root()));
         assert!(!path.starts_with(&SharePath::parse("photo").unwrap()));
         assert_eq!(path.to_string(), "/photos/2024/beach.jpg");
+    }
+
+    #[test]
+    fn a_removable_drive_is_a_root_of_its_own() {
+        let location = FileLocation {
+            volume: VolumeNumber::new(1).unwrap(),
+            root: FileRoot::Removable(RemovableId::parse("1A2B-3C4D").unwrap()),
+            path: SharePath::parse("photos").unwrap(),
+            snapshot: None,
+        };
+        let text = serde_json::to_string(&location).unwrap();
+        assert!(text.contains(r#""root":{"removable":"1A2B-3C4D"}"#), "{text}");
+        assert_eq!(serde_json::from_str::<FileLocation>(&text).unwrap(), location);
+        let share =
+            FileLocation { root: FileRoot::Share(ShareName::parse("photos").unwrap()), ..location.clone() };
+        assert!(!location.same_share(&share));
+        let bad = text.replace("1A2B-3C4D", "../etc");
+        assert!(serde_json::from_str::<FileLocation>(&bad).is_err(), "the id is checked while reading");
     }
 
     #[test]

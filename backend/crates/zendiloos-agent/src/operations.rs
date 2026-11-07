@@ -87,7 +87,11 @@ impl Operations {
             smartctl: Program::new(&tools.smartctl)?,
             zpool: Program::new(&tools.zpool)?,
             zfs: Program::new(&tools.zfs)?,
-            files: Files::new(paths.accounts.clone(), paths.host.volumes.clone()),
+            files: Files::new(
+                paths.accounts.clone(),
+                paths.host.volumes.clone(),
+                paths.host.removable.clone(),
+            ),
             network: std::sync::Arc::new(Network::new(tools, paths.network)?),
             time: Time::new(tools, paths.time)?,
             ssh: Ssh::new(tools, paths.ssh)?,

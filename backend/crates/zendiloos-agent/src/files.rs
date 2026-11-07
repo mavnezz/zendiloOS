@@ -4,15 +4,28 @@
 //! and NFS access. On Linux, credentials belong to a thread when set with
 //! the raw system calls (as rustix does; glibc's wrappers would change the
 //! whole process), and they end with the thread.
+//!
+//! On a removable drive the thread keeps root's access to files instead
+//! (`CAP_DAC_OVERRIDE` and `CAP_DAC_READ_SEARCH`, nothing else): a drive
+//! formatted elsewhere has owners nobody here has, and only an
+//! administrator's request reaches one. That override is taken out of
+//! every other thread of the files agent ([`lower_file_overrides`]). A copy
+//! or move between a drive and a folder on a volume runs on two threads,
+//! one with each side's credentials (see `zendiloos_fileops::Piece`): what
+//! lands on a volume belongs to the person and takes the folder's ACL, as
+//! an upload does, and only what the person may read leaves one.
 
 use std::io;
 use std::os::fd::OwnedFd;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use rustix::process::{Gid, Uid, getegid, geteuid, getgid, getuid};
-use rustix::thread::{capabilities, set_thread_groups, set_thread_res_gid, set_thread_res_uid};
-use zendiloos_agent_proto::{AppFolder, FileLocation, FileRoot, Request, Response, UserName};
-use zendiloos_fileops::{FileError, ShareRoot};
+use rustix::thread::{
+    CapabilitySet, capabilities, set_capabilities, set_thread_groups, set_thread_res_gid, set_thread_res_uid,
+};
+use zendiloos_agent_proto::{AppFolder, FileLocation, FileRoot, Request, Response, SharePath, UserName};
+use zendiloos_fileops::{FileError, PIECES_IN_FLIGHT, Sent, ShareRoot, Taken, settle};
 
 use crate::accounts::{AccountFiles, ID_MAX, ID_MIN, USERS_GROUP};
 use crate::operations::OperationError;
@@ -22,6 +35,8 @@ use crate::passwd;
 pub(crate) struct Files {
     accounts: AccountFiles,
     volumes: PathBuf,
+    /// Where removable drives are mounted, a folder each.
+    removable: PathBuf,
     /// Folders being written as archives; each holds a thread.
     archives: std::sync::Arc<tokio::sync::Semaphore>,
     /// Users with an archive being written: one each, so that one user's
@@ -134,30 +149,114 @@ fn become_user(identity: &Identity) -> io::Result<()> {
     Ok(())
 }
 
+/// What a thread working on a removable drive may do beyond its UID's
+/// rights: read, search and write any file there, nothing else.
+const DRIVE_ACCESS: CapabilitySet = CapabilitySet::DAC_OVERRIDE.union(CapabilitySet::DAC_READ_SEARCH);
+
+/// Takes root's override of file permissions (`CAP_DAC_OVERRIDE`) out of
+/// the calling thread's effective set, keeping it permitted: in the files
+/// agent only a thread working on a removable drive takes it up again.
+/// Called on every thread of the files agent's runtime as it starts.
+pub fn lower_file_overrides() -> io::Result<()> {
+    let mut sets = capabilities(None)?;
+    sets.effective.remove(CapabilitySet::DAC_OVERRIDE);
+    Ok(set_capabilities(None, sets)?)
+}
+
+/// Keeps only [`DRIVE_ACCESS`], of what this thread is permitted, effective.
+fn take_drive_access() -> io::Result<()> {
+    let mut sets = capabilities(None)?;
+    sets.effective = sets.permitted & DRIVE_ACCESS;
+    Ok(set_capabilities(None, sets)?)
+}
+
+/// Whose rights work on a root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Acting {
+    /// A managed user's, by their credentials.
+    User(Identity),
+    /// Root's access to files, on a removable drive.
+    Drive,
+}
+
+impl Acting {
+    fn at(location: &FileLocation, identity: &Identity) -> Self {
+        match location.root {
+            FileRoot::Removable(_) => Acting::Drive,
+            FileRoot::Share(_) | FileRoot::Home => Acting::User(identity.clone()),
+        }
+    }
+}
+
+/// Runs `work` on a new thread acting as `acting`; fails only if the
+/// thread cannot take on those rights.
+async fn spawn_as<T: Send + 'static>(
+    acting: Acting,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, OperationError> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let name = match acting {
+        Acting::User(_) => "files-as-user",
+        Acting::Drive => "files-on-drive",
+    };
+    std::thread::Builder::new()
+        .name(name.to_owned())
+        .spawn(move || {
+            let ready = match &acting {
+                Acting::User(identity) => become_user(identity),
+                Acting::Drive => take_drive_access(),
+            };
+            // Without its rights, `work` is dropped unrun.
+            let _ = sender.send(ready.map(|()| work()));
+        })
+        .map_err(OperationError::Credentials)?;
+    receiver
+        .await
+        .map_err(|_| OperationError::Credentials(io::Error::other("the thread ended early")))?
+        .map_err(OperationError::Credentials)
+}
+
+/// Runs `work` on a new thread acting as `acting`.
+async fn run<T: Send + 'static>(
+    acting: Acting,
+    work: impl FnOnce() -> Result<T, FileError> + Send + 'static,
+) -> Result<T, OperationError> {
+    spawn_as(acting, work).await?.map_err(OperationError::File)
+}
+
 /// Runs `work` on a new thread with `identity`'s credentials.
 async fn as_user<T: Send + 'static>(
     identity: Identity,
     work: impl FnOnce() -> Result<T, FileError> + Send + 'static,
 ) -> Result<T, OperationError> {
-    let (sender, receiver) = tokio::sync::oneshot::channel();
-    std::thread::Builder::new()
-        .name("files-as-user".to_owned())
-        .spawn(move || {
-            let result = match become_user(&identity) {
-                Ok(()) => work().map_err(OperationError::File),
-                Err(error) => Err(OperationError::Credentials(error)),
-            };
-            let _ = sender.send(result);
-        })
-        .map_err(OperationError::Credentials)?;
-    receiver.await.map_err(|_| OperationError::Credentials(io::Error::other("the thread ended early")))?
+    run(Acting::User(identity), work).await
+}
+
+/// One side of a copy across rights: its root and path, and whose rights.
+struct Side {
+    acting: Acting,
+    root: Arc<ShareRoot>,
+    path: SharePath,
+}
+
+/// Copies `from` to `to`, each side on a thread of its own with its own
+/// rights; says where the copy went and what was copied.
+async fn across(from: Side, to: Side, taken: Taken) -> Result<(SharePath, Sent), OperationError> {
+    let (out, pieces) = std::sync::mpsc::sync_channel(PIECES_IN_FLIGHT);
+    let (source, from_path) = (from.root, from.path);
+    let (target, to_path) = (to.root, to.path);
+    let reading = spawn_as(from.acting, move || source.send_entry(&from_path, &out));
+    let writing = spawn_as(to.acting, move || target.receive_entry(&to_path, &pieces, taken));
+    let (read, written) = tokio::join!(reading, writing);
+    settle(read?, written?).map_err(OperationError::File)
 }
 
 impl Files {
-    pub(crate) fn new(accounts: AccountFiles, volumes: PathBuf) -> Self {
+    pub(crate) fn new(accounts: AccountFiles, volumes: PathBuf, removable: PathBuf) -> Self {
         Self {
             accounts,
             volumes,
+            removable,
             archives: std::sync::Arc::new(tokio::sync::Semaphore::new(CONCURRENT_ARCHIVES)),
             archiving: std::sync::Arc::default(),
         }
@@ -189,6 +288,11 @@ impl Files {
             }
             (FileRoot::Home, None) => ShareRoot::open_home(&self.volumes, location.volume, user),
             (FileRoot::Home, Some(_)) => Err(FileError::Invalid("personal folders have no snapshots")),
+            // Only the drive's own file system, never the tmpfs beneath.
+            (FileRoot::Removable(id), None) => ShareRoot::open_removable(&self.removable, id, true),
+            (FileRoot::Removable(_), Some(_)) => {
+                Err(FileError::Invalid("removable drives have no snapshots"))
+            }
         }
         .map_err(OperationError::File)
     }
@@ -205,11 +309,14 @@ impl Files {
         &self,
         request: &Request,
     ) -> Result<(Response, Option<OwnedFd>), OperationError> {
+        // Before anything else: only for a user zendiloOS manages, also on a
+        // removable drive.
+        let no_bin = || OperationError::File(FileError::Invalid("a removable drive has no recycle bin"));
         match request {
             Request::ListDirectory { user, location } => {
-                let (identity, share, path) =
-                    (self.identity(user)?, self.share(location, user)?, location.path.clone());
-                let listing = as_user(identity, move || share.list(&path)).await?;
+                let identity = self.identity(user)?;
+                let (share, path) = (self.share(location, user)?, location.path.clone());
+                let listing = run(Acting::at(location, &identity), move || share.list(&path)).await?;
                 let response = Response::Directory {
                     entries: listing.entries,
                     truncated: listing.truncated,
@@ -218,53 +325,85 @@ impl Files {
                 Ok((response, None))
             }
             Request::OpenFile { user, location } => {
-                let (identity, share, path) =
-                    (self.identity(user)?, self.share(location, user)?, location.path.clone());
-                let (file, size) = as_user(identity, move || share.open_file(&path)).await?;
+                let identity = self.identity(user)?;
+                let (share, path) = (self.share(location, user)?, location.path.clone());
+                let (file, size) =
+                    run(Acting::at(location, &identity), move || share.open_file(&path)).await?;
                 Ok((Response::File { size }, Some(file)))
             }
             Request::CreateUpload { user, location } => {
-                let (identity, share, path) =
-                    (self.identity(user)?, self.writable(location, user)?, location.path.clone());
-                let (file, name) = as_user(identity, move || share.create_upload(&path)).await?;
+                let identity = self.identity(user)?;
+                let (share, path) = (self.writable(location, user)?, location.path.clone());
+                let acting = Acting::at(location, &identity);
+                let (file, name) = run(acting, move || share.create_upload(&path)).await?;
                 Ok((Response::Upload { name }, Some(file)))
             }
             Request::MakeDirectory { user, location } => {
-                let (identity, share, path) =
-                    (self.identity(user)?, self.writable(location, user)?, location.path.clone());
-                as_user(identity, move || share.make_directory(&path)).await?;
+                let identity = self.identity(user)?;
+                let (share, path) = (self.writable(location, user)?, location.path.clone());
+                run(Acting::at(location, &identity), move || share.make_directory(&path)).await?;
                 Ok((Response::Done, None))
             }
             Request::MoveEntry { user, from, to, replace } => {
                 let identity = self.identity(user)?;
+                let (reader, writer) = (Acting::at(from, &identity), Acting::at(to, &identity));
                 let (source, target) = (self.writable(from, user)?, self.writable(to, user)?);
                 let (from, to, replace) = (from.path.clone(), to.path.clone(), *replace);
-                as_user(identity, move || source.move_entry(&from, &target, &to, replace)).await?;
+                if reader == writer {
+                    run(reader, move || source.move_entry(&from, &target, &to, replace)).await?;
+                    return Ok((Response::Done, None));
+                }
+                if replace {
+                    return Err(OperationError::File(FileError::Invalid(
+                        "nothing is replaced between a drive and a volume",
+                    )));
+                }
+                // A copy, then what was copied goes from where it was.
+                let source = Arc::new(source);
+                let from_side =
+                    Side { acting: reader.clone(), root: Arc::clone(&source), path: from.clone() };
+                let to_side = Side { acting: writer, root: Arc::new(target), path: to };
+                let (_, sent) = across(from_side, to_side, Taken::Refuse).await?;
+                run(reader, move || source.remove_sent(&from, sent)).await?;
                 Ok((Response::Done, None))
             }
             Request::CopyEntry { user, from, to } => {
                 let identity = self.identity(user)?;
+                let (reader, writer) = (Acting::at(from, &identity), Acting::at(to, &identity));
                 let (source, target) = (self.share(from, user)?, self.writable(to, user)?);
                 let (from, to) = (from.path.clone(), to.path.clone());
-                let path = as_user(identity, move || source.copy_entry(&from, &target, &to)).await?;
+                let path = if reader == writer {
+                    run(reader, move || source.copy_entry(&from, &target, &to)).await?
+                } else {
+                    let from = Side { acting: reader, root: Arc::new(source), path: from };
+                    let to = Side { acting: writer, root: Arc::new(target), path: to };
+                    across(from, to, Taken::Beside).await?.0
+                };
                 Ok((Response::Copied { path }, None))
             }
             Request::RemoveEntry { user, location, recycle } => {
-                let (identity, share, path) =
-                    (self.identity(user)?, self.writable(location, user)?, location.path.clone());
+                let identity = self.identity(user)?;
+                let acting = Acting::at(location, &identity);
+                if *recycle && acting == Acting::Drive {
+                    return Err(no_bin());
+                }
+                let (share, path) = (self.writable(location, user)?, location.path.clone());
                 let bin_owner = recycle.then(|| user.as_str().to_owned());
-                as_user(identity, move || share.remove(&path, bin_owner.as_deref())).await?;
+                run(acting, move || share.remove(&path, bin_owner.as_deref())).await?;
                 Ok((Response::Done, None))
             }
             Request::DiscardUpload { user, location } => {
-                let (identity, share, path) =
-                    (self.identity(user)?, self.writable(location, user)?, location.path.clone());
-                as_user(identity, move || share.discard_upload(&path)).await?;
+                let identity = self.identity(user)?;
+                let (share, path) = (self.writable(location, user)?, location.path.clone());
+                run(Acting::at(location, &identity), move || share.discard_upload(&path)).await?;
                 Ok((Response::Done, None))
             }
             Request::RestoreEntry { user, location } => {
-                let (identity, share, path) =
-                    (self.identity(user)?, self.writable(location, user)?, location.path.clone());
+                let identity = self.identity(user)?;
+                if matches!(location.root, FileRoot::Removable(_)) {
+                    return Err(no_bin());
+                }
+                let (share, path) = (self.writable(location, user)?, location.path.clone());
                 let owner = user.as_str().to_owned();
                 let path = as_user(identity, move || share.restore(&path, &owner)).await?;
                 Ok((Response::Restored { path }, None))
@@ -287,11 +426,12 @@ impl Files {
                     .unwrap_or(match &location.root {
                         FileRoot::Share(share) => share.as_str(),
                         FileRoot::Home => "home",
+                        FileRoot::Removable(id) => id.as_str(),
                     })
                     .to_owned();
+                let acting = Acting::at(location, &identity);
                 let (planner, planned_path) = (std::sync::Arc::clone(&share), path.clone());
-                let plan =
-                    as_user(identity.clone(), move || planner.plan_archive(&planned_path, &name)).await?;
+                let plan = run(acting.clone(), move || planner.plan_archive(&planned_path, &name)).await?;
                 let (reader, writer) = std::io::pipe().map_err(|error| OperationError::File(error.into()))?;
                 let writer = OwnedFd::from(writer);
                 rustix::io::ioctl_fionbio(&writer, true)
@@ -300,7 +440,7 @@ impl Files {
                 // Written while zendiloosd reads; it ends when done or when
                 // zendiloosd stops reading (the pipe breaks).
                 tokio::spawn(async move {
-                    let written = as_user(identity, move || {
+                    let written = run(acting, move || {
                         let mut out = std::io::BufWriter::with_capacity(
                             256 * 1024,
                             PatientPipe::new(writer, ARCHIVE_STALL, ARCHIVE_MIN_BYTES),
@@ -361,7 +501,160 @@ mod tests {
             group: directory.join("group"),
             high_water: directory.join("high-water"),
         };
-        Files::new(accounts, directory.to_owned())
+        Files::new(accounts, directory.to_owned(), directory.join("removable"))
+    }
+
+    fn drive(id: &str, path: &str) -> FileLocation {
+        FileLocation {
+            volume: VolumeNumber::new(1).unwrap(),
+            root: FileRoot::Removable(zendiloos_agent_proto::RemovableId::parse(id).unwrap()),
+            path: SharePath::parse(path).unwrap(),
+            snapshot: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_drive_is_worked_on_only_where_one_is_mounted() {
+        let directory = tempfile::tempdir().unwrap();
+        let files = files(directory.path());
+        std::fs::create_dir_all(directory.path().join("removable/1A2B-3C4D")).unwrap();
+        let anna = user("anna");
+        // The empty folder of a drive not mounted: nothing lands on the tmpfs.
+        for request in [
+            Request::ListDirectory { user: anna.clone(), location: drive("1A2B-3C4D", "") },
+            Request::MakeDirectory { user: anna.clone(), location: drive("1A2B-3C4D", "new") },
+            Request::CreateUpload { user: anna.clone(), location: drive("1A2B-3C4D", "") },
+        ] {
+            let refused = files.execute(&request).await;
+            assert!(
+                matches!(&refused, Err(OperationError::File(FileError::Invalid(why))) if why.contains("not mounted")),
+                "{}: {refused:?}",
+                request.name()
+            );
+        }
+        let unknown = Request::ListDirectory { user: anna.clone(), location: drive("FFFF", "") };
+        assert!(matches!(files.execute(&unknown).await, Err(OperationError::File(FileError::NotFound))));
+        let label = zendiloos_agent_proto::SnapshotLabel::parse("zdl-2026-11-05_19.40.01").unwrap();
+        let frozen = FileLocation { snapshot: Some(label), ..drive("1A2B-3C4D", "a") };
+        let refused = files.execute(&Request::OpenFile { user: anna.clone(), location: frozen }).await;
+        assert!(
+            matches!(refused, Err(OperationError::File(FileError::Invalid(why))) if why.contains("snapshots"))
+        );
+        for request in [
+            Request::RemoveEntry { user: anna.clone(), location: drive("1A2B-3C4D", "a"), recycle: true },
+            Request::RestoreEntry { user: anna.clone(), location: drive("1A2B-3C4D", ".recycle/anna/a") },
+        ] {
+            let refused = files.execute(&request).await;
+            assert!(
+                matches!(&refused, Err(OperationError::File(FileError::Invalid(why))) if why.contains("recycle bin")),
+                "{}: {refused:?}",
+                request.name()
+            );
+        }
+        // Only for users zendiloOS manages, on a drive too.
+        let root = Request::ListDirectory { user: user("root"), location: drive("1A2B-3C4D", "") };
+        assert!(matches!(files.execute(&root).await, Err(OperationError::NotManaged(_))));
+    }
+
+    #[tokio::test]
+    async fn on_a_drive_a_thread_keeps_root_access_to_files_and_nothing_else() {
+        let effective = spawn_as(Acting::Drive, || capabilities(None).map(|sets| sets.effective)).await;
+        let effective = effective.unwrap().unwrap();
+        assert!(DRIVE_ACCESS.contains(effective), "{effective:?}");
+        let lowered = std::thread::spawn(|| {
+            lower_file_overrides()?;
+            Ok::<_, io::Error>(capabilities(None)?.effective)
+        });
+        let lowered = lowered.join().unwrap().unwrap();
+        assert!(!lowered.contains(CapabilitySet::DAC_OVERRIDE), "{lowered:?}");
+    }
+
+    #[tokio::test]
+    async fn a_copy_across_runs_each_side_on_a_thread_of_its_own() {
+        let directory = tempfile::tempdir().unwrap();
+        for share in ["photos", "music"] {
+            std::fs::create_dir_all(directory.path().join("volume1").join(share)).unwrap();
+        }
+        std::fs::create_dir_all(directory.path().join("volume1/photos/album")).unwrap();
+        std::fs::write(directory.path().join("volume1/photos/album/a.jpg"), "a").unwrap();
+        let root = |name: &str| {
+            let share = ShareName::parse(name).unwrap();
+            Arc::new(ShareRoot::open(directory.path(), VolumeNumber::new(1).unwrap(), &share, false).unwrap())
+        };
+        let side = |name: &str, path: &str| Side {
+            acting: Acting::Drive,
+            root: root(name),
+            path: SharePath::parse(path).unwrap(),
+        };
+
+        let (copied, _) =
+            across(side("photos", "album"), side("music", "album"), Taken::Beside).await.unwrap();
+        assert_eq!(copied.as_str(), "album");
+        assert_eq!(std::fs::read_to_string(directory.path().join("volume1/music/album/a.jpg")).unwrap(), "a");
+        let (beside, _) =
+            across(side("photos", "album"), side("music", "album"), Taken::Beside).await.unwrap();
+        assert_eq!(beside.as_str(), "album (2)");
+        let refused = across(side("photos", "album"), side("music", "album"), Taken::Refuse).await;
+        assert!(matches!(refused, Err(OperationError::File(FileError::Exists))), "{refused:?}");
+        let missing = across(side("photos", "gone"), side("music", "gone"), Taken::Beside).await;
+        assert!(matches!(missing, Err(OperationError::File(FileError::NotFound))), "{missing:?}");
+    }
+
+    /// `/dev/shm` is a file system of its own below `/dev`, as a drive is
+    /// below its place: a drive called `shm` there, for what needs one
+    /// mounted. None where there is no such file system.
+    fn mounted_drive() -> Option<(Files, tempfile::TempDir, tempfile::TempDir)> {
+        let accounts = tempfile::tempdir().unwrap();
+        let shm = tempfile::tempdir_in("/dev/shm").ok()?;
+        let device = |path: &std::path::Path| rustix::fs::stat(path).ok().map(|stat| stat.st_dev);
+        if device(std::path::Path::new("/dev")) == device(std::path::Path::new("/dev/shm")) {
+            return None;
+        }
+        let mut files = files(accounts.path());
+        files.removable = PathBuf::from("/dev");
+        Some((files, accounts, shm))
+    }
+
+    #[tokio::test]
+    async fn files_on_a_mounted_drive_are_listed_made_copied_and_removed() {
+        let Some((files, _accounts, shm)) = mounted_drive() else { return };
+        let top = shm.path().file_name().unwrap().to_str().unwrap().to_owned();
+        std::fs::write(shm.path().join("song.mp3"), "tune").unwrap();
+        let at =
+            |path: &str| drive("shm", &if path.is_empty() { top.clone() } else { format!("{top}/{path}") });
+        let anna = user("anna");
+
+        let listed = files.execute(&Request::ListDirectory { user: anna.clone(), location: at("") }).await;
+        let Ok((Response::Directory { entries, .. }, _)) = listed else { panic!("{listed:?}") };
+        assert_eq!(entries.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["song.mp3"]);
+        files.execute(&Request::MakeDirectory { user: anna.clone(), location: at("new") }).await.unwrap();
+        let copied = files
+            .execute(&Request::CopyEntry { user: anna.clone(), from: at("song.mp3"), to: at("new/song.mp3") })
+            .await;
+        assert!(matches!(copied, Ok((Response::Copied { .. }, None))), "{copied:?}");
+        files
+            .execute(&Request::MoveEntry {
+                user: anna.clone(),
+                from: at("new/song.mp3"),
+                to: at("moved.mp3"),
+                replace: false,
+            })
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(shm.path().join("moved.mp3")).unwrap(), "tune");
+        let opened =
+            files.execute(&Request::OpenFile { user: anna.clone(), location: at("moved.mp3") }).await;
+        assert!(matches!(opened, Ok((Response::File { size: 4 }, Some(_)))), "{opened:?}");
+        let archive =
+            files.execute(&Request::ArchiveFolder { user: anna.clone(), location: at("new") }).await;
+        assert!(matches!(archive, Ok((Response::Archive { .. }, Some(_)))), "{archive:?}");
+        let removed = Request::RemoveEntry { user: anna.clone(), location: at("moved.mp3"), recycle: false };
+        files.execute(&removed).await.unwrap();
+        assert!(!shm.path().join("moved.mp3").exists(), "deleted for good, no bin on a drive");
+        let upload = files.execute(&Request::CreateUpload { user: anna.clone(), location: at("") }).await;
+        let Ok((Response::Upload { name }, Some(_))) = upload else { panic!("{upload:?}") };
+        files.execute(&Request::DiscardUpload { user: anna, location: at(&name) }).await.unwrap();
+        assert!(!shm.path().join(&name).exists());
     }
 
     fn user(name: &str) -> UserName {

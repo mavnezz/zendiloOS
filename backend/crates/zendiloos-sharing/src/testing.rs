@@ -28,6 +28,25 @@ impl ports::Volumes for Volumes {
     }
 }
 
+/// Removable drives mounted now: none until [`Removable::plug`].
+#[derive(Default)]
+pub struct Removable(pub Mutex<Vec<ports::RemovableRoot>>);
+
+impl Removable {
+    /// A drive mounted, writable unless `read_only`.
+    pub fn plug(&self, id: &str, label: Option<&str>, read_only: bool) {
+        let drive = ports::RemovableRoot { id: id.into(), label: label.map(Into::into), read_only };
+        self.0.lock().unwrap().push(drive);
+    }
+}
+
+#[async_trait]
+impl ports::RemovableRoots for Removable {
+    async fn mounted(&self, id: &str, _: &RequestContext) -> Result<Option<ports::RemovableRoot>, PortError> {
+        Ok(self.0.lock().unwrap().iter().find(|drive| drive.id == id).cloned())
+    }
+}
+
 /// Administrators' projects: those named here use every share.
 #[derive(Default)]
 pub struct Projects(pub Mutex<Vec<String>>);
