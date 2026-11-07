@@ -130,10 +130,23 @@ wait_for "the log" "call GET '/docker/projects/$project/logs' | jq -er .text | g
 changed='services:\n  app:\n    image: alpine:3.20\n    command: ["sh", "-c", "echo second; sleep 3600"]\n'
 [[ $(status PUT "/docker/projects/$project/compose" "$(jq -n --arg c "$(printf "$changed")" '{compose:$c}')") == 202 ]] \
     || fail "change: $(cat "$work/last")"
-job_succeeded "$(jq -r .id "$work/last")"
+change_job=$(jq -r .id "$work/last")
+job_succeeded "$change_job"
+# What Compose wrote while it deployed stays with the job, as text.
+call GET "/jobs/$change_job" | jq -e '.output | map(select(test("Container .*(Started|Recreated|Running)"))) | length > 0' \
+    >/dev/null || fail "the deploy kept no output: $(call GET "/jobs/$change_job" | jq -c .output)"
+call GET "/jobs/$change_job" | jq -e '.output | all(test("\u001b") | not)' >/dev/null || fail "escapes in the output"
 wait_for "the new log" "call GET '/docker/projects/$project/logs' | jq -er .text | grep -q second" 30
 call GET "/docker/projects/$project/compose" | jq -e '.editable and (.files[0].content | contains("second"))' >/dev/null \
     || fail "the file was not changed"
+call GET "/docker/projects/$project" | jq -e --arg f "$share/docker/ztest/compose.yaml" '.compose_file == $f' >/dev/null \
+    || fail "where the file is: $(call GET "/docker/projects/$project" | jq -r .compose_file)"
+# A redeploy pulls only when asked; pulling, Compose says so.
+[[ $(status POST "/docker/projects/$project/redeploy" '{"pull":true}') == 202 ]] || fail "redeploy: $(cat "$work/last")"
+pull_job=$(jq -r .id "$work/last")
+job_succeeded "$pull_job"
+call GET "/jobs/$pull_job" | jq -e '.output | map(select(test("[Pp]ull"))) | length > 0' >/dev/null \
+    || fail "no pull in the output: $(call GET "/jobs/$pull_job" | jq -c .output)"
 
 say "3. A network; newer images"
 [[ $(status POST /docker/networks '{"name":"ztest_net","subnet":"172.31.250.0/24","gateway":"172.31.250.1"}') == 201 ]] \

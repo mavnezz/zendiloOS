@@ -4,7 +4,7 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import type { DockerContainer } from '@/shared/api/types'
-import { formatBytes } from '@/shared/lib/format'
+import { formatBytes, formatRate } from '@/shared/lib/format'
 import { Badge } from '@/shared/ui/badge'
 
 import { isUp } from '../lib/status'
@@ -14,6 +14,8 @@ const props = defineProps<{
   container: DockerContainer
   showProject?: boolean
   updatable?: boolean
+  /** What its network sends and receives now, per second, instead of the totals. */
+  rates?: { sent: number; received: number }
 }>()
 const { t } = useI18n()
 
@@ -86,8 +88,14 @@ const state = computed(() => (isUp(props.container) ? 'running' : 'stopped'))
           <span class="block h-full bg-chart-5" :style="{ width: `${memoryShare * 100}%` }" />
         </span>
       </div>
-      <span class="text-muted-foreground">↑ {{ formatBytes(usage.sent_bytes) }}</span>
-      <span class="text-muted-foreground">↓ {{ formatBytes(usage.received_bytes) }}</span>
+      <template v-if="rates">
+        <span class="text-muted-foreground">↑ {{ formatRate(rates.sent) }}</span>
+        <span class="text-muted-foreground">↓ {{ formatRate(rates.received) }}</span>
+      </template>
+      <template v-else>
+        <span class="text-muted-foreground">↑ {{ formatBytes(usage.sent_bytes) }}</span>
+        <span class="text-muted-foreground">↓ {{ formatBytes(usage.received_bytes) }}</span>
+      </template>
     </div>
   </div>
 </template>

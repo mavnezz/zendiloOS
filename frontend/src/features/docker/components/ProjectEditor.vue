@@ -3,8 +3,9 @@ import { ArrowLeft, FileUp, Rocket, WandSparkles } from 'lucide-vue-next'
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import type { ComposeRisk } from '@/shared/api/types'
+import type { ComposeRisk, Job } from '@/shared/api/types'
 import { problemMessage } from '@/shared/i18n'
+import { useJobsStore } from '@/shared/jobs/store'
 import { Alert } from '@/shared/ui/alert'
 import { Button } from '@/shared/ui/button'
 import { CodeEditor } from '@/shared/ui/code-editor'
@@ -14,6 +15,7 @@ import { NativeSelect } from '@/shared/ui/native-select'
 import { RisksDialog } from '@/shared/ui/risks-dialog'
 
 import { checkCompose, useChangeCompose, useCreateProject, usePlaces } from '../api'
+import DeployLogDialog from './DeployLogDialog.vue'
 
 /** Without `name`, a new project; with it, that project's file to change. */
 const props = defineProps<{ name?: string; compose?: string }>()
@@ -99,13 +101,27 @@ async function deploy(): Promise<void> {
   }
 }
 
+/** The job deploying it, shown as it runs; the project's page once closed. */
+const jobs = useJobsStore()
+const deploying = ref<number | null>(null)
+const showing = ref(false)
+function deployed(job: Job | null | undefined): void {
+  if (!job) {
+    emit('done', name.value)
+    return
+  }
+  jobs.update(job)
+  deploying.value = job.id
+  showing.value = true
+}
+watch(showing, (open) => !open && deploying.value !== null && emit('done', name.value))
+
 function submit(accept: boolean): void {
-  const done = () => emit('done', name.value)
   const failed = (error: unknown) => (failure.value = error)
   if (editing.value) {
     change.mutate(
       { name: name.value, compose: compose.value, accept },
-      { onSuccess: done, onError: failed },
+      { onSuccess: deployed, onError: failed },
     )
   } else {
     create.mutate(
@@ -117,7 +133,7 @@ function submit(accept: boolean): void {
         start: start.value,
         accept_risks: accept,
       },
-      { onSuccess: done, onError: failed },
+      { onSuccess: (made) => deployed(made.job), onError: failed },
     )
   }
 }
@@ -216,5 +232,6 @@ function submit(accept: boolean): void {
       </Button>
     </div>
     <RisksDialog v-model:open="confirming" :risks="risks" @confirm="submit(true)" />
+    <DeployLogDialog v-model:open="showing" :job-id="deploying" />
   </div>
 </template>

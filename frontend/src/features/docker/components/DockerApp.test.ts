@@ -193,7 +193,13 @@ describe('the Docker app', () => {
     await settle()
     expect(called('POST', '/api/v1/docker/projects/tesla/stop')).toHaveLength(1)
     await choose(wrapper, 0, 'redeploy')
-    expect(called('POST', '/api/v1/docker/projects/tesla/redeploy')).toHaveLength(1)
+    expect(page()).toContain(t('docker.redeploy.title', { name: 'tesla' }))
+    await click(new RegExp(`^\\s*${t('docker.actions.redeploy')}\\s*$`))
+    expect(called('POST', '/api/v1/docker/projects/tesla/redeploy')[0]!.body).toEqual({
+      pull: false,
+    })
+    expect(page()).toContain(t('docker.deploy.title'))
+    await click(new RegExp(t('docker.deploy.hide')))
     await choose(wrapper, 0, 'delete')
     await confirm(wrapper)
     expect(called('DELETE', '/api/v1/docker/projects/tesla')).toHaveLength(1)
@@ -238,7 +244,7 @@ describe('the Docker app', () => {
 
     await click(new RegExp(t('docker.actions.start')))
     expect(called('POST', '/api/v1/docker/projects/tesla/start')).toHaveLength(1)
-    await choose(wrapper, 0, 'restart')
+    await click(new RegExp(t('docker.actions.restart')))
     expect(called('POST', '/api/v1/docker/projects/tesla/restart')).toHaveLength(1)
     await choose(wrapper, 0, 'delete')
     await confirm(wrapper)

@@ -526,6 +526,32 @@ const en = {
       deleteTitle: 'Delete project {name}?',
       deleteText:
         'The project’s containers and networks are removed. Images, data and the folder with the Compose file stay.',
+      composeFile: 'Compose file',
+      openContainer: 'Open container {name}',
+    },
+    redeploy: {
+      title: 'Redeploy {name}?',
+      text: 'The containers are brought up again as the Compose file says; those it no longer names are removed.',
+      pull: 'Pull the newest images first',
+      pullHint: 'Fetches the newest image under each tag before the containers are recreated.',
+    },
+    deploy: {
+      title: 'Deployment',
+      waiting: 'Waiting for Docker Compose …',
+      running: 'Deploying …',
+      succeeded: 'Deployed.',
+      failed: 'The deployment failed.',
+      hide: 'Close, keep running',
+      ok: 'OK',
+    },
+    projectLog: {
+      follow: 'Follow',
+      lines: 'Lines',
+      last: 'Last {n} lines',
+      search: 'Search the log',
+      download: 'Download the log',
+      noMatch: 'No line matches.',
+      matches: '{shown} of {all} lines',
     },
     editor: {
       createTitle: 'Create project',

@@ -151,11 +151,9 @@ export function useContainerAction() {
 export function useProjectAction() {
   const refresh = useRefresh()
   return useMutation({
-    mutationFn: ({ name, action }: { name: string; action: RunAction | 'redeploy' | 'delete' }) => {
+    mutationFn: ({ name, action }: { name: string; action: RunAction | 'delete' }) => {
       const path = { params: { path: { name } } }
       if (action === 'delete') return unwrap(api.DELETE('/api/v1/docker/projects/{name}', path))
-      if (action === 'redeploy')
-        return unwrap(api.POST('/api/v1/docker/projects/{name}/redeploy', path))
       return unwrap(
         api.POST('/api/v1/docker/projects/{name}/{action}', { params: { path: { name, action } } }),
       )
@@ -291,6 +289,42 @@ export function useMoveData() {
   const refresh = useRefresh()
   return useMutation({
     mutationFn: (pool: string) => unwrap(api.POST('/api/v1/docker/data/move', { body: { pool } })),
+    onSettled: refresh,
+  })
+}
+
+/** How often a project's log is read again while it is followed. */
+export const FOLLOW_MS = 3000
+
+/** The last `lines` lines of a project's containers; read again while `follow`. */
+export function useProjectLog(name: Ref<string>, lines: Ref<number>, follow: Ref<boolean>) {
+  return useQuery({
+    queryKey: ['docker', 'projects', name, 'log', lines],
+    queryFn: () =>
+      unwrap(
+        api.GET('/api/v1/docker/projects/{name}/logs', {
+          params: { path: { name: name.value }, query: { lines: lines.value } },
+        }),
+      ),
+    refetchInterval: () => (follow.value ? FOLLOW_MS : false),
+    refetchIntervalInBackground: false,
+  })
+}
+
+/**
+ * Brings a project up again, with its images fetched anew if `pull`: the
+ * job, whose output follows what Compose writes.
+ */
+export function useRedeploy() {
+  const refresh = useRefresh()
+  return useMutation({
+    mutationFn: ({ name, pull }: { name: string; pull: boolean }) =>
+      unwrap(
+        api.POST('/api/v1/docker/projects/{name}/redeploy', {
+          params: { path: { name } },
+          body: { pull },
+        }),
+      ),
     onSettled: refresh,
   })
 }

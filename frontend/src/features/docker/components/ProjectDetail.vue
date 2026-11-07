@@ -2,6 +2,7 @@
 import {
   ArrowLeft,
   Boxes,
+  FileCode2,
   Pencil,
   Play,
   RefreshCw,
@@ -9,11 +10,14 @@ import {
   Square,
   Trash2,
 } from 'lucide-vue-next'
-import { computed, ref, toRef } from 'vue'
+import { computed, inject, ref, toRef } from 'vue'
 import { useI18n } from 'vue-i18n'
 
+import type { Job } from '@/shared/api/types'
 import { problemMessage } from '@/shared/i18n'
+import { useJobsStore } from '@/shared/jobs/store'
 import { formatDateTime } from '@/shared/lib/format'
+import { WINDOW_SECTION } from '@/shared/lib/window-section'
 import { type Action, ActionMenu } from '@/shared/ui/action-menu'
 import { Alert } from '@/shared/ui/alert'
 import { Badge } from '@/shared/ui/badge'
@@ -22,14 +26,19 @@ import { CodeEditor } from '@/shared/ui/code-editor'
 import { ConfirmDialog } from '@/shared/ui/confirm-dialog'
 import { PageTabs } from '@/shared/ui/page'
 
-import { useLogs, useProject, useProjectAction, useProjectCompose } from '../api'
+import { useProject, useProjectAction, useProjectCompose, useRedeploy, useUsage } from '../api'
 import { projectStatus, statusVariant } from '../lib/status'
 import ContainerRow from './ContainerRow.vue'
-import LogView from './LogView.vue'
-import UsageChart from './UsageChart.vue'
+import DeployLogDialog from './DeployLogDialog.vue'
+import ProjectLog from './ProjectLog.vue'
+import ProjectUsage from './ProjectUsage.vue'
+import RedeployDialog from './RedeployDialog.vue'
 
 const props = defineProps<{ name: string }>()
-const emit = defineEmits<{ back: []; edit: [compose: string] }>()
+const emit = defineEmits<{ back: []; edit: [compose: string]; container: [name: string] }>()
+
+/** The page of one container in this window: `container:<name>`. */
+const CONTAINER = 'container:'
 
 const { t } = useI18n()
 const name = toRef(props, 'name')
@@ -40,11 +49,27 @@ const { data: compose, error: composeError } = useProjectCompose(
   name,
   () => tab.value === 'compose' && !app.value,
 )
-const { data: logs, isPending: logsPending } = useLogs('projects', name, () => tab.value === 'logs')
 const act = useProjectAction()
+const redeploy = useRedeploy()
+const jobs = useJobsStore()
 const deleting = ref(false)
+const asking = ref(false)
+const deploying = ref<number | null>(null)
+const showing = ref(false)
 
 const names = computed(() => project.value?.containers.map((c) => c.name) ?? [])
+// What the network does now: from the last of the 20-second samples.
+const { data: recent } = useUsage(ref(60), names)
+const rates = computed(() => {
+  const last = recent.value?.at(-1)
+  return new Map(
+    (last?.points ?? []).map((point) => [
+      point.container,
+      { sent: point.sent_per_second, received: point.received_per_second },
+    ]),
+  )
+})
+const where = computed(() => project.value?.compose_file ?? project.value?.files.join(', ') ?? '')
 const tabs = computed(() => [
   { id: 'containers', label: t('docker.sections.containers') },
   { id: 'usage', label: t('docker.projects.monitoring') },
@@ -52,12 +77,6 @@ const tabs = computed(() => [
   { id: 'compose', label: t('docker.projects.compose') },
 ])
 const actions = computed<Action[]>(() => [
-  {
-    id: 'restart',
-    label: t('docker.actions.restart'),
-    icon: RotateCw,
-    disabled: !names.value.length,
-  },
   { id: 'redeploy', label: t('docker.actions.redeploy'), icon: RefreshCw, disabled: app.value },
   {
     id: 'delete',
@@ -69,15 +88,35 @@ const actions = computed<Action[]>(() => [
 ])
 
 function run(action: string): void {
-  if (action === 'delete') {
-    deleting.value = true
-    return
-  }
-  act.mutate({ name: props.name, action: action as 'start' | 'stop' | 'restart' | 'redeploy' })
+  if (action === 'delete') deleting.value = true
+  else if (action === 'redeploy') asking.value = true
+  else act.mutate({ name: props.name, action: action as 'start' | 'stop' | 'restart' })
 }
 
 function remove(): void {
   act.mutate({ name: props.name, action: 'delete' }, { onSuccess: () => emit('back') })
+}
+
+/** Redeploys, then shows what Compose writes as it does. */
+function deploy(pull: boolean): void {
+  redeploy.mutate(
+    { name: props.name, pull },
+    {
+      onSuccess: (job: Job) => {
+        jobs.update(job)
+        deploying.value = job.id
+        asking.value = false
+        showing.value = true
+      },
+    },
+  )
+}
+
+const frame = inject(WINDOW_SECTION, null)
+/** Opens the container's own page. */
+function open(container: string): void {
+  emit('container', container)
+  frame?.navigate(`${CONTAINER}${container}`)
 }
 </script>
 
@@ -99,17 +138,18 @@ function remove(): void {
           }}</Badge>
           <Badge v-if="project" variant="outline">{{ t(`docker.kinds.${project.kind}`) }}</Badge>
         </span>
-        <span class="truncate text-xs text-muted-foreground">
-          <template v-if="project?.created_at">
-            {{
-              t('docker.projects.created', {
-                at: formatDateTime(project.created_at * 1000),
-                by: project.created_by,
-              })
-            }}
-            ·
-          </template>
-          <span class="font-mono">{{ project?.files.join(', ') }}</span>
+        <span class="flex flex-wrap gap-x-3 text-xs text-muted-foreground">
+          <span v-if="project?.created_at">{{
+            t('docker.projects.created', {
+              at: formatDateTime(project.created_at * 1000),
+              by: project.created_by,
+            })
+          }}</span>
+          <span v-if="where" class="flex min-w-0 items-center gap-1">
+            <FileCode2 class="size-3.5 shrink-0" />
+            <span class="sr-only">{{ t('docker.projects.composeFile') }}</span>
+            <span class="truncate font-mono" data-testid="compose-file">{{ where }}</span>
+          </span>
         </span>
       </div>
       <Button
@@ -130,21 +170,34 @@ function remove(): void {
         <Square />
         {{ t('docker.actions.stop') }}
       </Button>
+      <Button variant="ghost" size="sm" :disabled="!names.length" @click="run('restart')">
+        <RotateCw />
+        {{ t('docker.actions.restart') }}
+      </Button>
       <ActionMenu :actions="actions" :label="t('docker.actions.more')" @select="run" />
     </div>
-    <Alert v-if="error || act.error.value" variant="destructive" class="mb-3">{{
-      problemMessage(error ?? act.error.value)
-    }}</Alert>
+    <Alert
+      v-if="error || act.error.value || redeploy.error.value"
+      variant="destructive"
+      class="mb-3"
+      >{{ problemMessage(error ?? act.error.value ?? redeploy.error.value) }}</Alert
+    >
     <Alert v-if="app" class="mb-3">{{ t('docker.projects.appHint') }}</Alert>
     <PageTabs v-model="tab" :label="name" :tabs="tabs" />
 
     <ul v-if="tab === 'containers'" class="grid gap-3">
-      <li
-        v-for="container in project?.containers"
-        :key="container.id"
-        class="rounded-xl border bg-card p-4"
-      >
-        <ContainerRow :container="container" />
+      <li v-for="container in project?.containers" :key="container.id">
+        <div
+          role="button"
+          tabindex="0"
+          class="cursor-pointer rounded-xl border bg-card p-4 transition-colors outline-none hover:bg-accent/50 focus-visible:ring-2 focus-visible:ring-ring"
+          :aria-label="t('docker.projects.openContainer', { name: container.name })"
+          @click="open(container.name)"
+          @keydown.enter.prevent="open(container.name)"
+          @keydown.space.prevent="open(container.name)"
+        >
+          <ContainerRow :container="container" :rates="rates.get(container.name)" />
+        </div>
       </li>
       <li
         v-if="project && !project.containers.length"
@@ -153,8 +206,8 @@ function remove(): void {
         {{ t('docker.projects.noContainers') }}
       </li>
     </ul>
-    <UsageChart v-else-if="tab === 'usage'" :containers="names" :seconds="900" />
-    <LogView v-else-if="tab === 'logs'" :text="logs?.text" :loading="logsPending" />
+    <ProjectUsage v-else-if="tab === 'usage'" :containers="names" />
+    <ProjectLog v-else-if="tab === 'logs'" :name="name" :containers="names" />
     <div v-else-if="tab === 'compose'" class="grid gap-3">
       <Alert v-if="app">{{ t('docker.projects.appCompose') }}</Alert>
       <Alert v-else-if="composeError" variant="destructive">{{
@@ -184,5 +237,12 @@ function remove(): void {
       destructive
       @confirm="remove"
     />
+    <RedeployDialog
+      v-model:open="asking"
+      :name="name"
+      :busy="redeploy.isPending.value"
+      @confirm="deploy"
+    />
+    <DeployLogDialog v-model:open="showing" :job-id="deploying" />
   </div>
 </template>

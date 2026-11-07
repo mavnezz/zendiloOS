@@ -1042,7 +1042,32 @@ through the file manager with the administrator's permissions when the
 file is saved: Docker would make them as root, and a container run as
 the administrator could not write to them. Deploying (pull, then
 `up --detach --remove-orphans`) and removing (`down`; images, data and the
-folder stay) are jobs.
+folder stay) are jobs. A redeploy pulls only when asked ("pull the newest
+images"; containers no longer in the file are removed either way).
+
+**What Compose writes while it deploys** is shown as it comes: the agent
+runs it (`pull` and `up` without `--quiet`) reading both streams line by
+line (`zendiloos_exec::run_lines`: a `\n` or a progress bar's `\r` ends a
+line, a line longer than 4 KiB comes in pieces) and sends each line to
+zendiloosd as a `Response::Output` before its answer, as pool steps come
+as `Response::Progress`. The job keeps them as its `output`: the last 200
+lines, each at most 300 characters, terminal escapes and other control
+characters taken out (`zendiloos_jobs::clean_line`); it is stored with the
+job and published on the `jobs` topic at most every quarter of a second
+while lines come, saves of one job one after another so its end is always
+what was published last. The browser shows the lines as text in the
+deploy dialog (creating, changing and redeploying a project), never as
+markup; an image update's job keeps them too.
+
+**A project's page** has its state, when and by whom it was made, where
+its Compose file is in the shares (`docker/teslamate/compose.yaml`),
+start, stop and restart, and tabs: its containers (state, image and tag,
+CPU, memory and network now; each opens the container's page, the window
+section `container:<name>`), resource monitoring (CPU, memory, upload and
+download over time, one line per container, from the samples below), the
+log of all its containers together (`docker compose logs`, each line
+under its container's name in a colour of its own, followed while shown,
+searchable, downloadable as text) and its Compose file.
 
 **What runs is what was confirmed**, never the file in the share: whoever
 may write that share (other accounts, an NFS client, an app given it)

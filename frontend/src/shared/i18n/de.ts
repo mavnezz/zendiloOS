@@ -538,6 +538,32 @@ const de: Messages = {
       deleteTitle: 'Projekt {name} löschen?',
       deleteText:
         'Container und Netzwerke des Projekts werden entfernt. Images, Daten und der Ordner mit der Compose-Datei bleiben.',
+      composeFile: 'Compose-Datei',
+      openContainer: 'Container {name} öffnen',
+    },
+    redeploy: {
+      title: '{name} neu bereitstellen?',
+      text: 'Die Container werden so neu hochgefahren, wie es die Compose-Datei sagt; solche, die sie nicht mehr nennt, werden entfernt.',
+      pull: 'Vorher die neuesten Images laden',
+      pullHint: 'Lädt zu jedem Tag das neueste Image, bevor die Container neu erstellt werden.',
+    },
+    deploy: {
+      title: 'Bereitstellung',
+      waiting: 'Warten auf Docker Compose …',
+      running: 'Wird bereitgestellt …',
+      succeeded: 'Bereitgestellt.',
+      failed: 'Die Bereitstellung ist fehlgeschlagen.',
+      hide: 'Schließen, weiterlaufen lassen',
+      ok: 'OK',
+    },
+    projectLog: {
+      follow: 'Mitlaufen',
+      lines: 'Zeilen',
+      last: 'Letzte {n} Zeilen',
+      search: 'Protokoll durchsuchen',
+      download: 'Protokoll herunterladen',
+      noMatch: 'Keine Zeile passt.',
+      matches: '{shown} von {all} Zeilen',
     },
     editor: {
       createTitle: 'Projekt erstellen',

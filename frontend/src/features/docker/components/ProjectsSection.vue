@@ -3,8 +3,9 @@ import { Boxes, Play, Plus, RefreshCw, RotateCw, Search, Square, Trash2 } from '
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import type { DockerProject } from '@/shared/api/types'
+import type { DockerProject, Job } from '@/shared/api/types'
 import { problemMessage } from '@/shared/i18n'
+import { useJobsStore } from '@/shared/jobs/store'
 import { type Action, ActionMenu } from '@/shared/ui/action-menu'
 import { Alert } from '@/shared/ui/alert'
 import { Badge } from '@/shared/ui/badge'
@@ -12,8 +13,10 @@ import { Button } from '@/shared/ui/button'
 import { ConfirmDialog } from '@/shared/ui/confirm-dialog'
 import { Input } from '@/shared/ui/input'
 
-import { useProjectAction, useProjects, useUpdatable } from '../api'
+import { useProjectAction, useProjects, useRedeploy, useUpdatable } from '../api'
 import { projectStatus, statusVariant } from '../lib/status'
+import DeployLogDialog from './DeployLogDialog.vue'
+import RedeployDialog from './RedeployDialog.vue'
 
 const emit = defineEmits<{ open: [name: string]; create: [] }>()
 
@@ -54,7 +57,33 @@ function run(project: DockerProject, action: string): void {
     deleting.value = project
     return
   }
-  act.mutate({ name: project.name, action: action as 'start' | 'stop' | 'restart' | 'redeploy' })
+  if (action === 'redeploy') {
+    asking.value = project.name
+    return
+  }
+  act.mutate({ name: project.name, action: action as 'start' | 'stop' | 'restart' })
+}
+
+/** Redeploying asks first, then shows what Compose writes as it does. */
+const redeploy = useRedeploy()
+const jobs = useJobsStore()
+const asking = ref<string | null>(null)
+const deploying = ref<number | null>(null)
+const showing = ref(false)
+function deploy(pull: boolean): void {
+  const name = asking.value
+  if (!name) return
+  redeploy.mutate(
+    { name, pull },
+    {
+      onSuccess: (job: Job) => {
+        jobs.update(job)
+        deploying.value = job.id
+        asking.value = null
+        showing.value = true
+      },
+    },
+  )
 }
 function confirmDelete(): void {
   if (deleting.value) act.mutate({ name: deleting.value.name, action: 'delete' })
@@ -80,8 +109,8 @@ function confirmDelete(): void {
         />
       </div>
     </div>
-    <Alert v-if="act.error.value" variant="destructive">{{
-      problemMessage(act.error.value)
+    <Alert v-if="act.error.value || redeploy.error.value" variant="destructive">{{
+      problemMessage(act.error.value ?? redeploy.error.value)
     }}</Alert>
     <div v-if="isPending" class="h-40 animate-pulse rounded-xl bg-muted" />
     <p v-else-if="!shown.length" class="py-16 text-center text-sm text-muted-foreground">
@@ -161,5 +190,13 @@ function confirmDelete(): void {
       @update:open="(open: boolean) => !open && (deleting = null)"
       @confirm="confirmDelete"
     />
+    <RedeployDialog
+      :open="asking !== null"
+      :name="asking ?? ''"
+      :busy="redeploy.isPending.value"
+      @update:open="(open: boolean) => !open && (asking = null)"
+      @confirm="deploy"
+    />
+    <DeployLogDialog v-model:open="showing" :job-id="deploying" />
   </div>
 </template>

@@ -3,8 +3,10 @@ import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ref } from 'vue'
 
-import type { ComposeRisk, NewDockerProject } from '@/shared/api/types'
+import type { ComposeRisk, Job, NewDockerProject } from '@/shared/api/types'
 import { i18n } from '@/shared/i18n'
+import { useJobsStore } from '@/shared/jobs/store'
+import { job } from '@/shared/testing/fixtures'
 
 import ProjectEditor from './ProjectEditor.vue'
 
@@ -12,8 +14,11 @@ let risks: ComposeRisk[] = []
 const check = vi.fn<(body: unknown) => Promise<{ risks: ComposeRisk[] }>>(() =>
   Promise.resolve({ risks }),
 )
-const create = vi.fn((_body: NewDockerProject, options: { onSuccess: () => void }) =>
-  options.onSuccess(),
+/** What making the project answers: the deploying job, if it starts. */
+let created: { job: Job | null } = { job: null }
+const create = vi.fn(
+  (_body: NewDockerProject, options: { onSuccess: (made: { job: Job | null }) => void }) =>
+    options.onSuccess(created),
 )
 
 vi.mock('../api', () => ({
@@ -42,6 +47,7 @@ beforeEach(() => {
   document.body.innerHTML = ''
   i18n.global.locale.value = 'en'
   risks = []
+  created = { job: null }
   check.mockClear()
   create.mockClear()
 })
@@ -79,6 +85,34 @@ describe('the project editor', () => {
     confirm.click()
     await flushPromises()
     expect(create.mock.calls[0]?.[0]).toMatchObject({ accept_risks: true })
+    wrapper.unmount()
+  })
+
+  it('shows what Compose writes while it deploys, the project once closed', async () => {
+    created = {
+      job: job(9, 'containers.project_deploy', {
+        target: 'tesla',
+        output: [' Container tesla-app-1  Started'],
+      }),
+    }
+    const wrapper = editor()
+
+    await fill(wrapper)
+
+    expect(document.body.textContent).toContain('Container tesla-app-1  Started')
+    expect(document.body.textContent).toContain('Deploying')
+    expect(wrapper.emitted('done')).toBeUndefined()
+    useJobsStore().update(
+      job(9, 'containers.project_deploy', {
+        state: 'succeeded',
+        output: [' Container tesla-app-1  Started'],
+      }),
+    )
+    await flushPromises()
+    const ok = [...document.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'OK')!
+    ok.click()
+    await flushPromises()
+    expect(wrapper.emitted('done')).toEqual([['tesla']])
     wrapper.unmount()
   })
 
