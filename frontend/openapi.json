@@ -1448,6 +1448,59 @@
       }
     },
     "/api/v1/docker/containers/{id}": {
+      "get": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "One container as Docker inspects it now: its command, environment,\nnetworks, mounts, privileges, limits and health check. Needs\n`containers.manage`.",
+        "operationId": "container_details",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DockerContainerDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
       "delete": {
         "tags": [
           "docker"
@@ -1556,6 +1609,202 @@
           },
           "404": {
             "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/docker/containers/{id}/processes": {
+      "get": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "The processes of a running container, `docker top`. Needs\n`containers.manage`.",
+        "operationId": "container_processes",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ContainerProcess"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`refused`: it does not run",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/docker/containers/{id}/update": {
+      "get": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "How updating a container would go: by its project, or only its image\nfetched. Needs `containers.manage`.",
+        "operationId": "container_update_way",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContainerUpdateWay"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`app_project`: an app installed the earlier way",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "Takes the newest image under the tag a container runs, in a job: its\nproject is pulled and brought up again, as the scheduled update does;\noutside a project the image is only fetched. Needs `containers.manage`.",
+        "operationId": "update_container",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`app_project`: an app installed the earlier way",
             "content": {
               "application/json": {
                 "schema": {
@@ -9455,6 +9704,48 @@
           }
         }
       },
+      "AttachedNetwork": {
+        "type": "object",
+        "required": [
+          "name",
+          "aliases"
+        ],
+        "properties": {
+          "aliases": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "gateway": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ipv4": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ipv6": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mac": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
       "AuditPage": {
         "type": "object",
         "required": [
@@ -10053,6 +10344,82 @@
           }
         }
       },
+      "ContainerHealthcheck": {
+        "type": "object",
+        "required": [
+          "test"
+        ],
+        "properties": {
+          "interval_seconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "retries": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "test": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "As Docker keeps it: `CMD-SHELL pg_isready`."
+          },
+          "timeout_seconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "ContainerLimits": {
+        "type": "object",
+        "properties": {
+          "cpus": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Processors, `1.5` for one and a half; `null`: no limit."
+          },
+          "memory_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "memory_reservation_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "processes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "ContainerMount": {
         "type": "object",
         "required": [
@@ -10074,6 +10441,128 @@
           },
           "source": {
             "type": "string"
+          }
+        }
+      },
+      "ContainerPrivileges": {
+        "type": "object",
+        "required": [
+          "privileged",
+          "capabilities_added",
+          "capabilities_dropped",
+          "devices",
+          "security_options",
+          "read_only_root",
+          "pid_mode",
+          "ipc_mode"
+        ],
+        "properties": {
+          "capabilities_added": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "capabilities_dropped": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "devices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeviceMapping"
+            }
+          },
+          "ipc_mode": {
+            "type": "string"
+          },
+          "pid_mode": {
+            "type": "string",
+            "description": "`host` for the machine's processes; empty for its own."
+          },
+          "privileged": {
+            "type": "boolean",
+            "description": "Every device and capability: as good as root on the machine."
+          },
+          "read_only_root": {
+            "type": "boolean"
+          },
+          "security_options": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "ContainerProcess": {
+        "type": "object",
+        "required": [
+          "pid",
+          "parent",
+          "user",
+          "cpu_percent",
+          "memory_percent",
+          "resident_bytes",
+          "elapsed",
+          "command"
+        ],
+        "properties": {
+          "command": {
+            "type": "string"
+          },
+          "cpu_percent": {
+            "type": "number",
+            "format": "double"
+          },
+          "elapsed": {
+            "type": "string",
+            "description": "How long it runs, as `ps` writes it: `02:14:07`, `3-01:02:03`."
+          },
+          "memory_percent": {
+            "type": "number",
+            "format": "double"
+          },
+          "parent": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "pid": {
+            "type": "integer",
+            "format": "int32",
+            "description": "On the machine, not in the container.",
+            "minimum": 0
+          },
+          "resident_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "user": {
+            "type": "string"
+          }
+        }
+      },
+      "ContainerUpdateWay": {
+        "type": "object",
+        "description": "How a container is updated.",
+        "properties": {
+          "image": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The image fetched, for a container outside a project."
+          },
+          "project": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The project pulled and brought up again, which makes the container\nanew; `null` for a container outside a project, whose image is only\nfetched: whoever made it makes it anew."
           }
         }
       },
@@ -10386,6 +10875,56 @@
         },
         "additionalProperties": false
       },
+      "DetailedMount": {
+        "type": "object",
+        "required": [
+          "kind",
+          "source",
+          "host_path",
+          "destination",
+          "read_only"
+        ],
+        "properties": {
+          "destination": {
+            "type": "string"
+          },
+          "host_path": {
+            "type": "string",
+            "description": "Where its files are as the administrator named them: for a project\nmade here, the folder its confirmed file names rather than the pin\nDocker sees; `/volume1/media/Films` lies in the share `media`."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`bind` or `volume`."
+          },
+          "read_only": {
+            "type": "boolean"
+          },
+          "source": {
+            "type": "string",
+            "description": "What Docker mounts: a folder, a pin of one, or a volume's name."
+          }
+        }
+      },
+      "DeviceMapping": {
+        "type": "object",
+        "required": [
+          "host",
+          "container",
+          "permissions"
+        ],
+        "properties": {
+          "container": {
+            "type": "string"
+          },
+          "host": {
+            "type": "string"
+          },
+          "permissions": {
+            "type": "string",
+            "description": "`rwm`: read, write, make nodes."
+          }
+        }
+      },
       "Disk": {
         "type": "object",
         "required": [
@@ -10612,6 +11151,103 @@
               {
                 "type": "null"
               }
+            ]
+          }
+        }
+      },
+      "DockerContainerDetails": {
+        "type": "object",
+        "description": "One container as Docker inspects it.",
+        "required": [
+          "container",
+          "command",
+          "environment",
+          "network_mode",
+          "attached_networks",
+          "detailed_mounts",
+          "privileges",
+          "limits",
+          "restart_retries"
+        ],
+        "properties": {
+          "attached_networks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AttachedNetwork"
+            }
+          },
+          "command": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Its program and the arguments."
+          },
+          "container": {
+            "$ref": "#/components/schemas/DockerContainer"
+          },
+          "detailed_mounts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DetailedMount"
+            }
+          },
+          "environment": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EnvironmentVariable"
+            }
+          },
+          "health_output": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What the last health check printed."
+          },
+          "healthcheck": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ContainerHealthcheck"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hostname": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limits": {
+            "$ref": "#/components/schemas/ContainerLimits"
+          },
+          "network_mode": {
+            "type": "string",
+            "description": "`bridge`, `host`, `none`, a network's name or `container:…`."
+          },
+          "privileges": {
+            "$ref": "#/components/schemas/ContainerPrivileges"
+          },
+          "restart_retries": {
+            "type": "integer",
+            "format": "int64",
+            "description": "For the `on-failure` restart policy; 0 is without end.",
+            "minimum": 0
+          },
+          "user": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "As set in the image or the Compose file; `null` is root."
+          },
+          "working_dir": {
+            "type": [
+              "string",
+              "null"
             ]
           }
         }
@@ -10992,6 +11628,22 @@
           }
         },
         "additionalProperties": false
+      },
+      "EnvironmentVariable": {
+        "type": "object",
+        "required": [
+          "name",
+          "value"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string",
+            "description": "May be a password: shown on request only."
+          }
+        }
       },
       "FailureLimit": {
         "type": "object",
@@ -15330,6 +15982,88 @@
             "type": "string"
           }
         }
+      },
+      "TerminalEnd": {
+        "type": "string",
+        "description": "Why a terminal ended.",
+        "enum": [
+          "exited",
+          "idle",
+          "session"
+        ]
+      },
+      "TerminalMessage": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "reason",
+              "type"
+            ],
+            "properties": {
+              "reason": {
+                "$ref": "#/components/schemas/TerminalEnd"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "ended"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The terminal could not be opened, or a message was not understood.",
+            "required": [
+              "message",
+              "type"
+            ],
+            "properties": {
+              "message": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "error"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "What the server sends as text; what the program writes comes as binary\nframes."
+      },
+      "TerminalRequest": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "columns",
+              "rows",
+              "type"
+            ],
+            "properties": {
+              "columns": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              },
+              "rows": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "resize"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "What the browser sends as text; what is typed comes as binary frames."
       },
       "TimeMachineShare": {
         "type": "object",

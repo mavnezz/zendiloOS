@@ -10,7 +10,9 @@ use utoipa::{IntoParams, ToSchema};
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 use zendiloos_containers::application::ports::ProjectAction;
-use zendiloos_containers::application::{ContainerView, ContainersError, ImageView, NewProject, Overview};
+use zendiloos_containers::application::{
+    ContainerDetailsView, ContainerView, ContainersError, ImageView, NewProject, Overview, UpdateWay,
+};
 use zendiloos_containers::domain::{
     self as containers, ContainerAction, Origin, Risk, UpdateReport, UpdateSchedule, UpdateSettings,
     UpdateState,
@@ -29,7 +31,9 @@ pub(super) fn routes() -> OpenApiRouter<ApiState> {
         .routes(routes!(docker_usage))
         .routes(routes!(list_containers))
         .routes(routes!(control_container))
-        .routes(routes!(remove_container))
+        .routes(routes!(container_details, remove_container))
+        .routes(routes!(container_processes))
+        .routes(routes!(container_update_way, update_container))
         .routes(routes!(container_logs))
         .routes(routes!(list_images))
         .routes(routes!(pull_image))
@@ -352,6 +356,287 @@ async fn remove_container(
     manage(&auth)?;
     state.containers.control_container(&id, ContainerAction::Remove, &auth.0.actor(), &client).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct EnvironmentVariable {
+    pub name: String,
+    /// May be a password: shown on request only.
+    pub value: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AttachedNetwork {
+    pub name: String,
+    pub ipv4: Option<String>,
+    pub ipv6: Option<String>,
+    pub gateway: Option<String>,
+    pub mac: Option<String>,
+    pub aliases: Vec<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DetailedMount {
+    /// `bind` or `volume`.
+    pub kind: String,
+    /// What Docker mounts: a folder, a pin of one, or a volume's name.
+    pub source: String,
+    /// Where its files are as the administrator named them: for a project
+    /// made here, the folder its confirmed file names rather than the pin
+    /// Docker sees; `/volume1/media/Films` lies in the share `media`.
+    pub host_path: String,
+    pub destination: String,
+    pub read_only: bool,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DeviceMapping {
+    pub host: String,
+    pub container: String,
+    /// `rwm`: read, write, make nodes.
+    pub permissions: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ContainerPrivileges {
+    /// Every device and capability: as good as root on the machine.
+    pub privileged: bool,
+    pub capabilities_added: Vec<String>,
+    pub capabilities_dropped: Vec<String>,
+    pub devices: Vec<DeviceMapping>,
+    pub security_options: Vec<String>,
+    pub read_only_root: bool,
+    /// `host` for the machine's processes; empty for its own.
+    pub pid_mode: String,
+    pub ipc_mode: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ContainerLimits {
+    /// Processors, `1.5` for one and a half; `null`: no limit.
+    pub cpus: Option<f64>,
+    pub memory_bytes: Option<u64>,
+    pub memory_reservation_bytes: Option<u64>,
+    pub processes: Option<u64>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ContainerHealthcheck {
+    /// As Docker keeps it: `CMD-SHELL pg_isready`.
+    pub test: Vec<String>,
+    pub interval_seconds: Option<u64>,
+    pub timeout_seconds: Option<u64>,
+    pub retries: Option<u64>,
+}
+
+/// One container as Docker inspects it.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DockerContainerDetails {
+    pub container: DockerContainer,
+    /// Its program and the arguments.
+    pub command: Vec<String>,
+    pub working_dir: Option<String>,
+    /// As set in the image or the Compose file; `null` is root.
+    pub user: Option<String>,
+    pub hostname: Option<String>,
+    pub environment: Vec<EnvironmentVariable>,
+    /// `bridge`, `host`, `none`, a network's name or `container:…`.
+    pub network_mode: String,
+    pub attached_networks: Vec<AttachedNetwork>,
+    pub detailed_mounts: Vec<DetailedMount>,
+    pub privileges: ContainerPrivileges,
+    pub limits: ContainerLimits,
+    /// For the `on-failure` restart policy; 0 is without end.
+    pub restart_retries: u64,
+    pub healthcheck: Option<ContainerHealthcheck>,
+    /// What the last health check printed.
+    pub health_output: Option<String>,
+}
+
+impl From<ContainerDetailsView> for DockerContainerDetails {
+    fn from(view: ContainerDetailsView) -> Self {
+        let details = view.details;
+        let detailed_mounts = details
+            .container
+            .mounts
+            .iter()
+            .zip(view.host_paths)
+            .map(|(mount, host_path)| DetailedMount {
+                kind: mount.kind.clone(),
+                source: mount.source.clone(),
+                host_path,
+                destination: mount.destination.clone(),
+                read_only: mount.read_only,
+            })
+            .collect();
+        let privileges = details.privileges;
+        Self {
+            container: ContainerView { container: details.container, usage: view.usage }.into(),
+            command: details.command,
+            working_dir: details.working_dir,
+            user: details.user,
+            hostname: details.hostname,
+            environment: details
+                .environment
+                .into_iter()
+                .map(|(name, value)| EnvironmentVariable { name, value })
+                .collect(),
+            network_mode: details.network_mode,
+            attached_networks: details
+                .networks
+                .into_iter()
+                .map(|n| AttachedNetwork {
+                    name: n.name,
+                    ipv4: n.ipv4,
+                    ipv6: n.ipv6,
+                    gateway: n.gateway,
+                    mac: n.mac,
+                    aliases: n.aliases,
+                })
+                .collect(),
+            detailed_mounts,
+            privileges: ContainerPrivileges {
+                privileged: privileges.privileged,
+                capabilities_added: privileges.capabilities_added,
+                capabilities_dropped: privileges.capabilities_dropped,
+                devices: privileges
+                    .devices
+                    .into_iter()
+                    .map(|d| DeviceMapping {
+                        host: d.host,
+                        container: d.container,
+                        permissions: d.permissions,
+                    })
+                    .collect(),
+                security_options: privileges.security_options,
+                read_only_root: privileges.read_only_root,
+                pid_mode: privileges.pid_mode,
+                ipc_mode: privileges.ipc_mode,
+            },
+            limits: ContainerLimits {
+                cpus: details.limits.cpus,
+                memory_bytes: details.limits.memory_bytes,
+                memory_reservation_bytes: details.limits.memory_reservation_bytes,
+                processes: details.limits.processes,
+            },
+            restart_retries: details.restart_retries,
+            healthcheck: details.healthcheck.map(|h| ContainerHealthcheck {
+                test: h.test,
+                interval_seconds: h.interval_seconds,
+                timeout_seconds: h.timeout_seconds,
+                retries: h.retries,
+            }),
+            health_output: details.health_output,
+        }
+    }
+}
+
+/// One container as Docker inspects it now: its command, environment,
+/// networks, mounts, privileges, limits and health check. Needs
+/// `containers.manage`.
+#[utoipa::path(get, path = "/docker/containers/{id}", tag = "docker", security(("session" = [])), params(("id" = String, Path)),
+    responses((status = OK, body = DockerContainerDetails), (status = FORBIDDEN, body = Problem, description = "`forbidden`"),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`")))]
+async fn container_details(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(id): Path<String>,
+) -> Result<Json<DockerContainerDetails>, ApiError> {
+    manage(&auth)?;
+    Ok(Json(state.containers.container_details(&id, &client).await?.into()))
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ContainerProcess {
+    /// On the machine, not in the container.
+    pub pid: u32,
+    pub parent: u32,
+    pub user: String,
+    pub cpu_percent: f64,
+    pub memory_percent: f64,
+    pub resident_bytes: u64,
+    /// How long it runs, as `ps` writes it: `02:14:07`, `3-01:02:03`.
+    pub elapsed: String,
+    pub command: String,
+}
+
+/// The processes of a running container, `docker top`. Needs
+/// `containers.manage`.
+#[utoipa::path(get, path = "/docker/containers/{id}/processes", tag = "docker", security(("session" = [])), params(("id" = String, Path)),
+    responses((status = OK, body = [ContainerProcess]), (status = FORBIDDEN, body = Problem, description = "`forbidden`"),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`"), (status = CONFLICT, body = Problem, description = "`refused`: it does not run")))]
+async fn container_processes(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<ContainerProcess>>, ApiError> {
+    manage(&auth)?;
+    let processes = state.containers.container_processes(&id, &client).await?;
+    Ok(Json(
+        processes
+            .into_iter()
+            .map(|p| ContainerProcess {
+                pid: p.pid,
+                parent: p.parent,
+                user: p.user,
+                cpu_percent: p.cpu_percent,
+                memory_percent: p.memory_percent,
+                resident_bytes: p.resident_bytes,
+                elapsed: p.elapsed,
+                command: p.command,
+            })
+            .collect(),
+    ))
+}
+
+/// How a container is updated.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ContainerUpdateWay {
+    /// The project pulled and brought up again, which makes the container
+    /// anew; `null` for a container outside a project, whose image is only
+    /// fetched: whoever made it makes it anew.
+    pub project: Option<String>,
+    /// The image fetched, for a container outside a project.
+    pub image: Option<String>,
+}
+
+/// How updating a container would go: by its project, or only its image
+/// fetched. Needs `containers.manage`.
+#[utoipa::path(get, path = "/docker/containers/{id}/update", tag = "docker", security(("session" = [])), params(("id" = String, Path)),
+    responses((status = OK, body = ContainerUpdateWay), (status = FORBIDDEN, body = Problem, description = "`forbidden`"),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`"),
+        (status = CONFLICT, body = Problem, description = "`app_project`: an app installed the earlier way")))]
+async fn container_update_way(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(id): Path<String>,
+) -> Result<Json<ContainerUpdateWay>, ApiError> {
+    manage(&auth)?;
+    Ok(Json(match state.containers.update_way(&id, &client).await? {
+        UpdateWay::Project(project) => ContainerUpdateWay { project: Some(project), image: None },
+        UpdateWay::PullOnly(image) => ContainerUpdateWay { project: None, image: Some(image) },
+    }))
+}
+
+/// Takes the newest image under the tag a container runs, in a job: its
+/// project is pulled and brought up again, as the scheduled update does;
+/// outside a project the image is only fetched. Needs `containers.manage`.
+#[utoipa::path(post, path = "/docker/containers/{id}/update", tag = "docker", security(("session" = [])), params(("id" = String, Path)),
+    responses((status = ACCEPTED, body = Job), (status = FORBIDDEN, body = Problem, description = "`forbidden`, `csrf_rejected`"),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`"),
+        (status = CONFLICT, body = Problem, description = "`app_project`: an app installed the earlier way")))]
+async fn update_container(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(id): Path<String>,
+) -> Result<(StatusCode, Json<Job>), ApiError> {
+    manage(&auth)?;
+    let job = state.containers.update_container(&id, &auth.0.actor(), &client).await?;
+    Ok((StatusCode::ACCEPTED, Json(job.into())))
 }
 
 #[derive(Debug, Deserialize, IntoParams)]

@@ -47,7 +47,13 @@ pub const API_V1: &str = "/api/v1";
         (name = "shares", description = "Shares over SMB and NFS and their permissions"),
         (name = "files", description = "The file manager: share contents as the signed-in user"),
     ),
-    components(schemas(routes::live::LiveRequest, routes::live::LiveMessage, routes::logs::LogSource)),
+    components(schemas(
+        routes::live::LiveRequest,
+        routes::live::LiveMessage,
+        routes::logs::LogSource,
+        routes::terminal::TerminalRequest,
+        routes::terminal::TerminalMessage,
+    )),
     modifiers(&SessionSecurity)
 )]
 struct ApiDoc;
@@ -90,6 +96,7 @@ pub fn router(state: ApiState) -> Router {
             get(move || async move { ([(axum::http::header::CONTENT_TYPE, "application/json")], openapi_json) }),
         )
         .merge(routes::live::router())
+        .merge(routes::terminal::router())
         .fallback(|| async { ApiError::NotFound })
         .method_not_allowed_fallback(|| async { ApiError::MethodNotAllowed })
         .layer(from_fn(run_to_the_end))

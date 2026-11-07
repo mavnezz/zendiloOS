@@ -472,7 +472,12 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * One container as Docker inspects it now: its command, environment,
+         *     networks, mounts, privileges, limits and health check. Needs
+         *     `containers.manage`.
+         */
+        get: operations["container_details"];
         put?: never;
         post?: never;
         /** Removes a container that does not run. Needs `containers.manage`. */
@@ -493,6 +498,51 @@ export interface paths {
         get: operations["container_logs"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/docker/containers/{id}/processes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The processes of a running container, `docker top`. Needs
+         *     `containers.manage`.
+         */
+        get: operations["container_processes"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/docker/containers/{id}/update": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * How updating a container would go: by its project, or only its image
+         *     fetched. Needs `containers.manage`.
+         */
+        get: operations["container_update_way"];
+        put?: never;
+        /**
+         * Takes the newest image under the tag a container runs, in a job: its
+         *     project is pulled and brought up again, as the scheduled update does;
+         *     outside a project the image is only fetched. Needs `containers.manage`.
+         */
+        post: operations["update_container"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2890,6 +2940,14 @@ export interface components {
             index: number;
             state: components["schemas"]["MemberState"];
         };
+        AttachedNetwork: {
+            aliases: string[];
+            gateway?: string | null;
+            ipv4?: string | null;
+            ipv6?: string | null;
+            mac?: string | null;
+            name: string;
+        };
         AuditPage: {
             entries: components["schemas"]["AuditRecord"][];
             /**
@@ -3106,12 +3164,77 @@ export interface components {
             };
             severity: components["schemas"]["Severity"];
         };
+        ContainerHealthcheck: {
+            /** Format: int64 */
+            interval_seconds?: number | null;
+            /** Format: int64 */
+            retries?: number | null;
+            /** @description As Docker keeps it: `CMD-SHELL pg_isready`. */
+            test: string[];
+            /** Format: int64 */
+            timeout_seconds?: number | null;
+        };
+        ContainerLimits: {
+            /**
+             * Format: double
+             * @description Processors, `1.5` for one and a half; `null`: no limit.
+             */
+            cpus?: number | null;
+            /** Format: int64 */
+            memory_bytes?: number | null;
+            /** Format: int64 */
+            memory_reservation_bytes?: number | null;
+            /** Format: int64 */
+            processes?: number | null;
+        };
         ContainerMount: {
             destination: string;
             /** @description `bind` or `volume`. */
             kind: string;
             read_only: boolean;
             source: string;
+        };
+        ContainerPrivileges: {
+            capabilities_added: string[];
+            capabilities_dropped: string[];
+            devices: components["schemas"]["DeviceMapping"][];
+            ipc_mode: string;
+            /** @description `host` for the machine's processes; empty for its own. */
+            pid_mode: string;
+            /** @description Every device and capability: as good as root on the machine. */
+            privileged: boolean;
+            read_only_root: boolean;
+            security_options: string[];
+        };
+        ContainerProcess: {
+            command: string;
+            /** Format: double */
+            cpu_percent: number;
+            /** @description How long it runs, as `ps` writes it: `02:14:07`, `3-01:02:03`. */
+            elapsed: string;
+            /** Format: double */
+            memory_percent: number;
+            /** Format: int32 */
+            parent: number;
+            /**
+             * Format: int32
+             * @description On the machine, not in the container.
+             */
+            pid: number;
+            /** Format: int64 */
+            resident_bytes: number;
+            user: string;
+        };
+        /** @description How a container is updated. */
+        ContainerUpdateWay: {
+            /** @description The image fetched, for a container outside a project. */
+            image?: string | null;
+            /**
+             * @description The project pulled and brought up again, which makes the container
+             *     anew; `null` for a container outside a project, whose image is only
+             *     fetched: whoever made it makes it anew.
+             */
+            project?: string | null;
         };
         ContainerUsage: {
             /** Format: double */
@@ -3208,6 +3331,26 @@ export interface components {
             /** @description The pool's name, typed again. */
             confirm: string;
         };
+        DetailedMount: {
+            destination: string;
+            /**
+             * @description Where its files are as the administrator named them: for a project
+             *     made here, the folder its confirmed file names rather than the pin
+             *     Docker sees; `/volume1/media/Films` lies in the share `media`.
+             */
+            host_path: string;
+            /** @description `bind` or `volume`. */
+            kind: string;
+            read_only: boolean;
+            /** @description What Docker mounts: a folder, a pin of one, or a volume's name. */
+            source: string;
+        };
+        DeviceMapping: {
+            container: string;
+            host: string;
+            /** @description `rwm`: read, write, make nodes. */
+            permissions: string;
+        };
         Disk: {
             /** @description The array, if `usage` is `array_member`. */
             array?: string | null;
@@ -3270,6 +3413,31 @@ export interface components {
             /** @description `created`, `running`, `paused`, `restarting`, `removing`, `exited`, `dead`. */
             state: string;
             usage?: components["schemas"]["ContainerUsage"] | null;
+        };
+        /** @description One container as Docker inspects it. */
+        DockerContainerDetails: {
+            attached_networks: components["schemas"]["AttachedNetwork"][];
+            /** @description Its program and the arguments. */
+            command: string[];
+            container: components["schemas"]["DockerContainer"];
+            detailed_mounts: components["schemas"]["DetailedMount"][];
+            environment: components["schemas"]["EnvironmentVariable"][];
+            /** @description What the last health check printed. */
+            health_output?: string | null;
+            healthcheck?: components["schemas"]["ContainerHealthcheck"] | null;
+            hostname?: string | null;
+            limits: components["schemas"]["ContainerLimits"];
+            /** @description `bridge`, `host`, `none`, a network's name or `container:…`. */
+            network_mode: string;
+            privileges: components["schemas"]["ContainerPrivileges"];
+            /**
+             * Format: int64
+             * @description For the `on-failure` restart policy; 0 is without end.
+             */
+            restart_retries: number;
+            /** @description As set in the image or the Compose file; `null` is root. */
+            user?: string | null;
+            working_dir?: string | null;
         };
         DockerDataLocation: {
             current?: components["schemas"]["DockerDataPlace"] | null;
@@ -3379,6 +3547,11 @@ export interface components {
         EnableDockerRequest: {
             /** @description A pool zendiloOS created. */
             pool: string;
+        };
+        EnvironmentVariable: {
+            name: string;
+            /** @description May be a password: shown on request only. */
+            value: string;
         };
         /** @description So many failed logins within so many minutes. */
         FailureLimit: {
@@ -4879,6 +5052,33 @@ export interface components {
             celsius: number;
             label: string;
         };
+        /**
+         * @description Why a terminal ended.
+         * @enum {string}
+         */
+        TerminalEnd: "exited" | "idle" | "session";
+        /**
+         * @description What the server sends as text; what the program writes comes as binary
+         *     frames.
+         */
+        TerminalMessage: {
+            reason: components["schemas"]["TerminalEnd"];
+            /** @enum {string} */
+            type: "ended";
+        } | {
+            message: string;
+            /** @enum {string} */
+            type: "error";
+        };
+        /** @description What the browser sends as text; what is typed comes as binary frames. */
+        TerminalRequest: {
+            /** Format: int32 */
+            columns: number;
+            /** Format: int32 */
+            rows: number;
+            /** @enum {string} */
+            type: "resize";
+        };
         /** @description The share Macs back up to with Time Machine. */
         TimeMachineShare: {
             /**
@@ -6179,6 +6379,45 @@ export interface operations {
             };
         };
     };
+    container_details: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DockerContainerDetails"];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     remove_container: {
         parameters: {
             query?: never;
@@ -6259,6 +6498,150 @@ export interface operations {
             };
             /** @description `not_found` */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    container_processes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ContainerProcess"][];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `refused`: it does not run */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    container_update_way: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ContainerUpdateWay"];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `app_project`: an app installed the earlier way */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    update_container: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description `forbidden`, `csrf_rejected` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `app_project`: an app installed the earlier way */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

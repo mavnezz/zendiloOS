@@ -281,6 +281,7 @@ async fn everything_docker_is_refused_to_those_who_may_not_manage_containers() {
         (Method::POST, "/api/v1/docker/projects/stack/redeploy"),
         (Method::POST, "/api/v1/docker/updates/check"),
         (Method::POST, "/api/v1/docker/updates/apply"),
+        (Method::POST, "/api/v1/docker/containers/stack-web-id/update"),
     ] {
         let reply = h.send(empty(with_csrf(changing(method, path), &viewer))).await;
         assert_problem(&reply, StatusCode::FORBIDDEN, "forbidden");
@@ -301,4 +302,144 @@ async fn everything_docker_is_refused_to_those_who_may_not_manage_containers() {
         let reply = h.send(json(with_csrf(changing(method, path), &viewer), body)).await;
         assert_problem(&reply, StatusCode::FORBIDDEN, "forbidden");
     }
+}
+
+#[tokio::test]
+async fn a_container_is_shown_in_detail_with_its_processes() {
+    let h = Harness::new();
+    let admin = admin(&h).await;
+    h.containers.sample().await.unwrap();
+
+    let details = h.send(empty(with_cookie(get("/api/v1/docker/containers/stack-web-id"), &admin))).await;
+    assert_eq!(details.status, StatusCode::OK, "{:?}", details.body);
+    let body = &details.body;
+    assert_eq!(body["container"]["name"], "stack-web");
+    assert_eq!(body["container"]["usage"]["cpu_percent"], json!(10.0));
+    assert_eq!(body["command"], json!(["nginx", "-g", "daemon off;"]));
+    assert_eq!(body["environment"][1], json!({ "name": "DB_PASSWORD", "value": "secret" }));
+    assert_eq!(body["attached_networks"][0]["ipv4"], "172.17.0.2");
+    assert_eq!(body["privileges"]["capabilities_dropped"], json!(["ALL"]));
+    assert_eq!(body["limits"]["memory_bytes"], Value::Null);
+    assert_eq!(body["detailed_mounts"], json!([]));
+    let ghost = h.send(empty(with_cookie(get("/api/v1/docker/containers/ghost"), &admin))).await;
+    assert_problem(&ghost, StatusCode::NOT_FOUND, "not_found");
+
+    let processes =
+        h.send(empty(with_cookie(get("/api/v1/docker/containers/stack-web-id/processes"), &admin))).await;
+    assert_eq!(processes.status, StatusCode::OK, "{:?}", processes.body);
+    assert_eq!(processes.body[0]["command"], "nginx: master process");
+    assert_eq!(processes.body[0]["resident_bytes"], 51_200 * 1024);
+    let stopped =
+        h.send(empty(with_cookie(get("/api/v1/docker/containers/lonely-id/processes"), &admin))).await;
+    assert_problem(&stopped, StatusCode::CONFLICT, "refused");
+
+    let viewer = h.sign_in("bob", Role::User).await;
+    for path in ["/api/v1/docker/containers/stack-web-id", "/api/v1/docker/containers/stack-web-id/processes"]
+    {
+        assert_problem(
+            &h.send(empty(with_cookie(get(path), &viewer))).await,
+            StatusCode::FORBIDDEN,
+            "forbidden",
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_container_is_updated_by_its_project_or_by_its_image_alone() {
+    let h = Harness::new();
+    let admin = admin(&h).await;
+
+    let way = h.send(empty(with_cookie(get("/api/v1/docker/containers/stack-web-id/update"), &admin))).await;
+    assert_eq!(way.body, json!({ "project": "stack", "image": null }), "{:?}", way.body);
+    let way = h.send(empty(with_cookie(get("/api/v1/docker/containers/lonely-id/update"), &admin))).await;
+    assert_eq!(way.body, json!({ "project": null, "image": "alpine" }));
+    let app = h.send(empty(with_cookie(get("/api/v1/docker/containers/kuma-1-id/update"), &admin))).await;
+    assert_problem(&app, StatusCode::CONFLICT, "app_project");
+
+    let update =
+        h.send(empty(with_csrf(post("/api/v1/docker/containers/stack-web-id/update"), &admin))).await;
+    assert_eq!(update.status, StatusCode::ACCEPTED, "{:?}", update.body);
+    assert_eq!(
+        (update.body["kind"].as_str(), update.body["target"].as_str()),
+        (Some("containers.update"), Some("stack-web"))
+    );
+    let refused = h.send(empty(with_csrf(post("/api/v1/docker/containers/kuma-1-id/update"), &admin))).await;
+    assert_problem(&refused, StatusCode::CONFLICT, "app_project");
+}
+
+/// The next message other than a ping or pong, within five seconds.
+async fn next_message<S>(socket: &mut S) -> tokio_tungstenite::tungstenite::Message
+where
+    S: futures_util::Stream<
+            Item = Result<tokio_tungstenite::tungstenite::Message, tokio_tungstenite::tungstenite::Error>,
+        > + Unpin,
+{
+    use futures_util::StreamExt;
+    use tokio_tungstenite::tungstenite::Message;
+
+    loop {
+        let message = tokio::time::timeout(std::time::Duration::from_secs(5), socket.next()).await;
+        match message.unwrap().unwrap().unwrap() {
+            Message::Ping(_) | Message::Pong(_) => {}
+            other => return other,
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_terminal_in_a_container_runs_over_a_socket_for_administrators_only() {
+    use axum::http::header;
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest};
+
+    let h = Harness::new();
+    let admin = admin(&h).await;
+    let viewer = h.sign_in("bob", Role::User).await;
+    let terminal = "/api/v1/docker/containers/stack-web-id/terminal";
+    assert_problem(
+        &h.send(empty(with_cookie(get(terminal), &viewer))).await,
+        StatusCode::FORBIDDEN,
+        "forbidden",
+    );
+    let foreign = get(terminal).header(header::ORIGIN, "https://evil.example");
+    assert_problem(
+        &h.send(empty(with_cookie(foreign, &admin))).await,
+        StatusCode::FORBIDDEN,
+        "csrf_rejected",
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(axum::serve(listener, h.app.clone()).into_future());
+    let open = |path: &str| {
+        let mut request = format!("ws://{address}{path}").into_client_request().unwrap();
+        request.headers_mut().insert(header::COOKIE, admin.cookie.parse().unwrap());
+        request.headers_mut().insert(header::ORIGIN, format!("http://{address}").parse().unwrap());
+        request
+    };
+    let (mut socket, _) = tokio_tungstenite::connect_async(open(&format!(
+        "{terminal}?command=/bin/sh%20-l&columns=100&rows=30"
+    )))
+    .await
+    .unwrap();
+    assert_eq!(next_message(&mut socket).await, Message::Binary(b"$ ".to_vec().into()));
+    socket.send(Message::Binary(b"ls\r".to_vec().into())).await.unwrap();
+    assert_eq!(next_message(&mut socket).await, Message::Binary(b"ls\r".to_vec().into()));
+    socket.send(Message::Text(r#"{"type":"resize","columns":120,"rows":40}"#.into())).await.unwrap();
+    assert_eq!(next_message(&mut socket).await, Message::Binary(b"[120x40]".to_vec().into()));
+    socket.send(Message::Text(r#"{"type":"resize"}"#.into())).await.unwrap();
+    let complaint: Value = serde_json::from_str(next_message(&mut socket).await.to_text().unwrap()).unwrap();
+    assert_eq!(complaint["type"], "error");
+    socket.send(Message::Binary(b"exit\r".to_vec().into())).await.unwrap();
+    let ended: Value = serde_json::from_str(next_message(&mut socket).await.to_text().unwrap()).unwrap();
+    assert_eq!(ended, json!({ "type": "ended", "reason": "exited" }));
+    assert!(h.engine.calls().contains(&"terminal stack-web-id /bin/sh -l 100x30".to_owned()));
+
+    // A container that does not run has no terminal.
+    let (mut stopped, _) =
+        tokio_tungstenite::connect_async(open("/api/v1/docker/containers/lonely-id/terminal")).await.unwrap();
+    let message = tokio::time::timeout(std::time::Duration::from_secs(5), stopped.next()).await;
+    let refused: Value = serde_json::from_str(message.unwrap().unwrap().unwrap().to_text().unwrap()).unwrap();
+    assert_eq!(refused["type"], "error");
+    assert!(refused["message"].as_str().unwrap().contains("not running"), "{refused}");
 }

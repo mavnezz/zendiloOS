@@ -11,7 +11,8 @@ use super::ports::TerminalSession;
 use super::projects::Deployment;
 use super::{Containers, ContainersError, job_error};
 use crate::domain::{
-    Container, ContainerDetails, ContainerProcess, Origin, ProjectName, command_words, host_paths,
+    Container, ContainerDetails, ContainerProcess, ContainerUsage, Origin, ProjectName, command_words,
+    host_paths,
 };
 
 /// Terminals one account may have open at once.
@@ -24,6 +25,8 @@ pub struct ContainerDetailsView {
     pub details: ContainerDetails,
     /// One per mount of the container, in its order.
     pub host_paths: Vec<String>,
+    /// From the newest sample, while it runs.
+    pub usage: Option<ContainerUsage>,
 }
 
 /// The terminals each account has open.
@@ -81,7 +84,10 @@ impl Containers {
         let details = self.ports.engine.inspect_container(&container.id, context).await?;
         let service = self.confirmed_service(&details.container).await?;
         let host_paths = host_paths(&details.container.mounts, service.as_ref());
-        Ok(ContainerDetailsView { details, host_paths })
+        let usage = self.history().latest().filter(|_| details.container.state.is_up()).and_then(|sample| {
+            sample.containers.iter().find(|u| u.id == details.container.id).cloned()
+        });
+        Ok(ContainerDetailsView { details, host_paths, usage })
     }
 
     /// The service of `container` as its project was confirmed, for a

@@ -1577,6 +1577,8 @@ fn openapi_documents_every_route() {
             "/api/v1/docker/containers",
             "/api/v1/docker/containers/{id}",
             "/api/v1/docker/containers/{id}/logs",
+            "/api/v1/docker/containers/{id}/processes",
+            "/api/v1/docker/containers/{id}/update",
             "/api/v1/docker/containers/{id}/{action}",
             "/api/v1/docker/data",
             "/api/v1/docker/data/move",

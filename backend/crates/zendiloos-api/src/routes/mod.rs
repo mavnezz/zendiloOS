@@ -13,6 +13,7 @@ mod security;
 mod shares;
 mod storage;
 mod system;
+pub(crate) mod terminal;
 mod updates;
 
 use utoipa_axum::router::OpenApiRouter;
