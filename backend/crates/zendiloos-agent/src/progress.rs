@@ -21,6 +21,18 @@ pub(crate) enum Note {
     Line(String),
 }
 
+impl Note {
+    /// What the client is told before the answer.
+    pub(crate) fn into_response(self) -> zendiloos_agent_proto::Response {
+        match self {
+            Self::Step(step, percent) => {
+                zendiloos_agent_proto::Response::Progress { step: step.to_owned(), percent }
+            }
+            Self::Line(line) => zendiloos_agent_proto::Response::Output { line },
+        }
+    }
+}
+
 tokio::task_local! {
     static NOTES: UnboundedSender<Note>;
 }

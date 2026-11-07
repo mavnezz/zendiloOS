@@ -160,17 +160,18 @@ impl Server {
                 // hears none.
                 Some(note) = steps.recv() => {
                     if watching {
-                        let report = match note {
-                            crate::progress::Note::Step(step, percent) => {
-                                Response::Progress { step: step.to_owned(), percent }
-                            }
-                            crate::progress::Note::Line(line) => Response::Output { line },
-                        };
-                        let _ = write_message_with_file(writer, &report, None).await;
+                        let _ = write_message_with_file(writer, &note.into_response(), None).await;
                     }
                 }
             }
         };
+        // What came just before the end still goes out before the answer:
+        // the last lines are often what matters ("… Started").
+        while let Ok(note) = steps.try_recv() {
+            if watching {
+                let _ = write_message_with_file(writer, &note.into_response(), None).await;
+            }
+        }
         let (response, file) = match outcome {
             Ok(answer) => answer,
             Err(error) => {
