@@ -4,11 +4,11 @@ use std::time::Duration;
 
 use std::os::fd::OwnedFd;
 
-use tokio::io::BufReader;
+use tokio::io::{AsyncReadExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Semaphore;
 use zendiloos_agent_proto::{
-    Envelope, ErrorCode, FrameError, MAX_REQUEST_BYTES, PROTOCOL_VERSION, Request, Response, read_message,
+    Envelope, ErrorCode, FrameError, MAX_REQUEST_BYTES, PROTOCOL_VERSION, Response, read_message,
     write_message_with_file,
 };
 
@@ -22,34 +22,6 @@ const MAX_CONCURRENT: usize = 4;
 /// at once. They have places of their own, so one user's large copies never
 /// keep everyone else from listing, downloading or uploading.
 const MAX_CONCURRENT_LONG: usize = 2;
-
-/// Whether `request` may take long: copying, moving or deleting trees,
-/// permissions of a whole share, preparing or destroying pools, fetching
-/// and running apps.
-fn is_long(request: &Request) -> bool {
-    match request {
-        Request::CopyEntry { .. }
-        | Request::MoveEntry { .. }
-        | Request::RemoveEntry { .. }
-        // Planning walks the whole folder.
-        | Request::ArchiveFolder { .. }
-        // Restarts Docker.
-        | Request::EnableDocker { .. }
-        // Fetch images, start or stop containers.
-        | Request::PrepareApp { .. }
-        | Request::PullApp { .. }
-        | Request::StartApp { .. }
-        | Request::StopApp { .. }
-        | Request::RemoveApp { .. }
-        | Request::DeployProject { .. }
-        | Request::CreatePool { .. }
-        | Request::DestroyPool { .. }
-        | Request::ReplaceDisk { .. }
-        | Request::DestroyShare { .. } => true,
-        Request::SetShareAccess { recursive, .. } => *recursive,
-        _ => false,
-    }
-}
 
 /// Accepts connections from one account and answers one request each.
 #[derive(Debug, Clone)]
@@ -130,8 +102,20 @@ impl Server {
             return (error_response(ErrorCode::VersionMismatch, message), None);
         }
 
-        let permits = if is_long(&envelope.request) { &self.long_permits } else { &self.permits };
-        let _permit = permits.acquire().await;
+        let permits = if envelope.request.is_long() { &self.long_permits } else { &self.permits };
+        // While it waits for a place, the client may give up (zendiloosd's
+        // own timeout) and report a failure; what it asked for must not
+        // happen after that, behind its back. The request is read whole, so
+        // the connection says nothing more until it is closed.
+        let mut more = [0u8; 1];
+        let _permit = tokio::select! {
+            biased;
+            permit = permits.acquire() => permit,
+            _ = reader.read(&mut more) => {
+                tracing::warn!(request_id, op, uid, pid, "the client gave up waiting: not carried out");
+                return (error_response(ErrorCode::Failed, "the client gave up waiting"), None);
+            }
+        };
         let (response, file) = self.operations.execute_with_file(&envelope.request).await;
         match &response {
             Response::Error { code, message } => {
@@ -164,37 +148,5 @@ pub async fn serve(listener: UnixListener, server: Server, shutdown: impl Future
             },
             () = &mut shutdown => break,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use zendiloos_agent_proto::{FileLocation, PoolName, ShareName, SharePath, UserName, VolumeNumber};
-
-    use super::*;
-
-    #[test]
-    fn tree_walks_wait_in_a_queue_of_their_own() {
-        let user = || UserName::parse("anna").unwrap();
-        let volume = VolumeNumber::new(1).unwrap();
-        let share = ShareName::parse("photos").unwrap();
-        let location = FileLocation {
-            volume,
-            root: zendiloos_agent_proto::FileRoot::Share(share.clone()),
-            path: SharePath::parse("album").unwrap(),
-            snapshot: None,
-        };
-        assert!(!is_long(&Request::ListDirectory { user: user(), location: location.clone() }));
-        assert!(!is_long(&Request::ScrubPool { pool: PoolName::parse("tank").unwrap() }));
-        assert!(is_long(&Request::RemoveEntry { user: user(), location, recycle: true }));
-        let access = |recursive| Request::SetShareAccess {
-            volume,
-            name: share.clone(),
-            access: vec![],
-            removed: vec![],
-            recursive,
-        };
-        assert!(is_long(&access(true)));
-        assert!(!is_long(&access(false)));
     }
 }

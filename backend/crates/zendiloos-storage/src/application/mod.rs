@@ -11,7 +11,8 @@ use std::sync::Arc;
 
 pub use error::StorageError;
 use ports::{
-    ArraySource, BlockDeviceSource, PlanTokens, PoolAdmin, SelfTestPlanStore, SmartSource, ZfsSource,
+    ArraySource, BlockDeviceSource, PlanTokens, PoolAdmin, SelfTestPlanStore, SmartSource, VolumeOccupants,
+    ZfsSource,
 };
 use zendiloos_jobs::Jobs;
 use zendiloos_kernel::{AuditLog, Clock};
@@ -32,6 +33,7 @@ pub struct StoragePorts {
     pub tokens: Arc<dyn PlanTokens>,
     pub notifier: Notifier,
     pub self_test_plans: Arc<dyn SelfTestPlanStore>,
+    pub occupants: Arc<dyn VolumeOccupants>,
 }
 
 /// All use cases of this context.
@@ -86,6 +88,7 @@ impl StorageUseCases {
             ports.clock.clone(),
             ports.tokens,
             ports.smart.clone(),
+            ports.occupants,
         ));
         Self {
             plan_pool: commands::PlanPool::new(Arc::clone(&context)),

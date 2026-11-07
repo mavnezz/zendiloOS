@@ -1956,6 +1956,8 @@ const de: Messages = {
     project_exists: 'Ein Projekt dieses Namens gibt es schon.',
     app_project: 'Diese App verwaltet das App-Center.',
     not_own_project: 'Die Compose-Datei dieses Projekts liegt nicht in zendiloOS.',
+    pool_in_use:
+      'Auf dem Pool liegen noch Daten, die sonst unbemerkt verloren gingen. Löschen oder verschieben Sie sie zuerst, jeweils an ihrer eigenen Stelle',
     project_unconfirmed:
       'Dieses Projekt stammt aus der Zeit, bevor zendiloOS das Bestätigte aufbewahrt hat. Öffnen Sie seine Compose-Datei und speichern Sie sie einmal; danach läuft es so wie gespeichert, nicht aus der Datei in der Freigabe.',
     compose_risks: 'Die Compose-Datei braucht Ihre Bestätigung',

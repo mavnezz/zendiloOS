@@ -85,6 +85,18 @@ impl From<StorageError> for ApiError {
             }
             StorageError::SelfTestRunning => rejected(StatusCode::CONFLICT, "self_test_running", None),
             StorageError::NotTesting => rejected(StatusCode::CONFLICT, "not_testing", None),
+            StorageError::PoolInUse(occupants) => {
+                let named: Vec<String> = occupants
+                    .iter()
+                    .map(|occupant| match occupant {
+                        storage::Occupant::Share(name) => format!("share {name}"),
+                        storage::Occupant::App(name) => format!("app {name}"),
+                        storage::Occupant::Homes => "the personal folders".to_owned(),
+                        storage::Occupant::Docker => "Docker's data".to_owned(),
+                    })
+                    .collect();
+                rejected(StatusCode::CONFLICT, "pool_in_use", Some(named.join(", ")))
+            }
             StorageError::InvalidSelfTestPlan(e) => ApiError::InvalidInput(e.to_string()),
             StorageError::Port(e) => ApiError::internal(e),
         }
@@ -1143,7 +1155,9 @@ pub struct DestroyPoolRequest {
 }
 
 /// Destroys a pool zendiloOS created and erases its disks. All its data is
-/// lost. Answers with the job. Needs `storage.manage`.
+/// lost. Refused while shares, apps, the personal folders or Docker's data
+/// live on it (`pool_in_use`, the detail names them). Answers with the job.
+/// Needs `storage.manage`.
 #[utoipa::path(
     post,
     path = "/storage/pools/{name}/destroy",
@@ -1154,7 +1168,7 @@ pub struct DestroyPoolRequest {
     responses(
         (status = ACCEPTED, body = Job),
         (status = NOT_FOUND, body = Problem, description = "`not_found`"),
-        (status = CONFLICT, body = Problem, description = "`pool_not_managed`"),
+        (status = CONFLICT, body = Problem, description = "`pool_not_managed`; `pool_in_use`: the detail names what lives on it"),
         (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`confirmation_mismatch`"),
     )
 )]

@@ -953,6 +953,37 @@ pub enum Role {
 }
 
 impl Request {
+    /// Whether the request may take long: copying, moving or deleting
+    /// trees, permissions of a whole share, preparing or destroying pools,
+    /// fetching and running apps and projects, moving Docker's data. The
+    /// agent runs these in places of their own, so they never keep quick
+    /// ones waiting; clients wait for them longer.
+    pub fn is_long(&self) -> bool {
+        match self {
+            Request::CopyEntry { .. }
+            | Request::MoveEntry { .. }
+            | Request::RemoveEntry { .. }
+            // Planning walks the whole folder.
+            | Request::ArchiveFolder { .. }
+            // Restarts Docker.
+            | Request::EnableDocker { .. }
+            | Request::MoveDocker { .. }
+            // Fetch images, start or stop containers.
+            | Request::PrepareApp { .. }
+            | Request::PullApp { .. }
+            | Request::StartApp { .. }
+            | Request::StopApp { .. }
+            | Request::RemoveApp { .. }
+            | Request::DeployProject { .. }
+            | Request::CreatePool { .. }
+            | Request::DestroyPool { .. }
+            | Request::ReplaceDisk { .. }
+            | Request::DestroyShare { .. } => true,
+            Request::SetShareAccess { recursive, .. } => *recursive,
+            _ => false,
+        }
+    }
+
     pub fn role(&self) -> Role {
         match self {
             Request::SetShareAccess { .. }
@@ -1632,6 +1663,31 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn tree_walks_and_pools_take_long_lookups_do_not() {
+        let user = || UserName::parse("anna").unwrap();
+        let volume = VolumeNumber::new(1).unwrap();
+        let share = ShareName::parse("photos").unwrap();
+        let location = FileLocation {
+            volume,
+            root: FileRoot::Share(share.clone()),
+            path: SharePath::parse("album").unwrap(),
+            snapshot: None,
+        };
+        assert!(!Request::ListDirectory { user: user(), location: location.clone() }.is_long());
+        assert!(!Request::ScrubPool { pool: PoolName::parse("tank").unwrap() }.is_long());
+        assert!(Request::RemoveEntry { user: user(), location, recycle: true }.is_long());
+        assert!(Request::DestroyPool { name: PoolName::parse("tank").unwrap(), volume }.is_long());
+        let access = |recursive| Request::SetShareAccess {
+            volume,
+            name: share.clone(),
+            access: vec![],
+            removed: vec![],
+            recursive,
+        };
+        assert!(access(true).is_long());
+        assert!(!access(false).is_long());
+    }
     #[test]
     fn has_a_stable_wire_format() {
         let envelope = Envelope::new(Request::PowerOff {}, Some(RequestId::parse("4f0c-91").unwrap()));

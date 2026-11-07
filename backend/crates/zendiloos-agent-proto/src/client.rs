@@ -50,11 +50,21 @@ pub trait AgentTransport: Send + Sync {
 pub struct UnixTransport {
     socket: PathBuf,
     timeout: Duration,
+    /// For requests that may take long ([`Request::is_long`]).
+    long: Option<Duration>,
 }
 
 impl UnixTransport {
+    /// Waits `timeout` for an answer. A request still waiting for its turn
+    /// when that runs out is dropped by the agent, never carried out later;
+    /// one that started is finished.
     pub fn new(socket: impl Into<PathBuf>, timeout: Duration) -> Self {
-        Self { socket: socket.into(), timeout }
+        Self { socket: socket.into(), timeout, long: None }
+    }
+
+    /// Waits `long` for requests that may take long.
+    pub fn with_long(self, long: Duration) -> Self {
+        Self { long: Some(long), ..self }
     }
 
     async fn exchange(&self, envelope: &Envelope) -> Result<(Response, Option<OwnedFd>), TransportError> {
@@ -82,9 +92,10 @@ impl AgentTransport for UnixTransport {
         request: Request,
         request_id: Option<RequestId>,
     ) -> Result<(Response, Option<OwnedFd>), TransportError> {
+        let limit = if request.is_long() { self.long.unwrap_or(self.timeout) } else { self.timeout };
         let envelope = Envelope::new(request, request_id);
-        tokio::time::timeout(self.timeout, self.exchange(&envelope))
+        tokio::time::timeout(limit, self.exchange(&envelope))
             .await
-            .map_err(|_| TransportError::Timeout(self.timeout))?
+            .map_err(|_| TransportError::Timeout(limit))?
     }
 }

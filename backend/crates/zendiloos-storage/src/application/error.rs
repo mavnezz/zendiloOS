@@ -1,7 +1,7 @@
 use zendiloos_kernel::PortError;
 
 use crate::application::ports::AdminError;
-use crate::domain::{InvalidSelfTestPlan, PlanError};
+use crate::domain::{InvalidSelfTestPlan, Occupant, PlanError};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {
@@ -34,6 +34,9 @@ pub enum StorageError {
     NotTesting,
     #[error(transparent)]
     InvalidSelfTestPlan(#[from] InvalidSelfTestPlan),
+    /// Shares, apps, the personal folders or Docker's data live on the pool.
+    #[error("the pool holds data of shares, apps or Docker")]
+    PoolInUse(Vec<Occupant>),
     #[error(transparent)]
     Port(#[from] PortError),
 }

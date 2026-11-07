@@ -2073,7 +2073,9 @@ export interface paths {
         put?: never;
         /**
          * Destroys a pool zendiloOS created and erases its disks. All its data is
-         *     lost. Answers with the job. Needs `storage.manage`.
+         *     lost. Refused while shares, apps, the personal folders or Docker's data
+         *     live on it (`pool_in_use`, the detail names them). Answers with the job.
+         *     Needs `storage.manage`.
          */
         post: operations["destroy_pool"];
         delete?: never;
@@ -9680,7 +9682,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description `pool_not_managed` */
+            /** @description `pool_not_managed`; `pool_in_use`: the detail names what lives on it */
             409: {
                 headers: {
                     [name: string]: unknown;

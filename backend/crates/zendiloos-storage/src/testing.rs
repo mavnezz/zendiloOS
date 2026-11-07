@@ -12,12 +12,12 @@ use zendiloos_kernel::{AuditLog, Clock, PortError, RequestContext};
 use crate::application::StoragePorts;
 use crate::application::ports::{
     AdminError, ArraySource, BlockDeviceSource, NewPool, PlanTokens, PoolAdmin, SelfTestPlanStore,
-    SmartSource, ZfsSource,
+    SmartSource, VolumeOccupants, ZfsSource,
 };
 use crate::domain::{
-    Array, ArrayMember, BlockDevice, DeviceKind, Filesystem, MemberState, Pool, PoolDevice, PoolLayout,
-    PoolSpace, Scan, ScanKind, ScanState, SelfTestKind, Slots, SmartData, SmartProtocol, SmartReport,
-    SpaceUsage, VdevState, VolumeNumber,
+    Array, ArrayMember, BlockDevice, DeviceKind, Filesystem, MemberState, Occupant, Pool, PoolDevice,
+    PoolLayout, PoolSpace, Scan, ScanKind, ScanState, SelfTestKind, Slots, SmartData, SmartProtocol,
+    SmartReport, SpaceUsage, VdevState, VolumeNumber,
 };
 
 #[derive(Default)]
@@ -30,6 +30,8 @@ pub struct FakeStorage {
     pub scan: Mutex<Option<Scan>>,
     /// Disks testing themselves: from a start until stopped.
     pub testing: Mutex<Vec<String>>,
+    /// What other contexts keep on each volume.
+    pub occupants: Mutex<Vec<(u16, Occupant)>>,
     tokens: AtomicU64,
 }
 
@@ -57,6 +59,7 @@ impl FakeStorage {
             tokens: fake.clone(),
             notifier,
             self_test_plans: Arc::new(MemorySelfTestPlans::default()),
+            occupants: fake.clone(),
         };
         (ports, fake)
     }
@@ -135,6 +138,14 @@ impl PoolAdmin for FakeStorage {
             scan.state = ScanState::Canceled;
         }
         Ok(())
+    }
+}
+
+#[async_trait]
+impl VolumeOccupants for FakeStorage {
+    async fn on_volume(&self, volume: VolumeNumber, _: &RequestContext) -> Result<Vec<Occupant>, PortError> {
+        let occupants = self.occupants.lock().unwrap();
+        Ok(occupants.iter().filter(|(v, _)| *v == volume.get()).map(|(_, o)| o.clone()).collect())
     }
 }
 

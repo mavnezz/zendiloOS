@@ -53,7 +53,13 @@ impl Agent {
         };
         let tools = Tools {
             systemctl: script("systemctl", &format!("exit {exit_code}")),
-            lsblk: script("lsblk", "echo '{\"blockdevices\": []}'"),
+            lsblk: script(
+                "lsblk",
+                &format!(
+                    "[ -f {} ] && sleep 2\necho '{{\"blockdevices\": []}}'",
+                    dir.path().join("slow").display()
+                ),
+            ),
             smartctl: script("smartctl", "echo '{\"smart_status\": {\"passed\": true}}'; exit 4"),
             zpool: script("zpool", "echo '{\"pools\": {}}'"),
             zfs: script("zfs", "echo '{\"datasets\": {}}'"),
@@ -224,6 +230,29 @@ async fn serves_only_its_client_account() {
     let agent = Agent::start(Some(our_uid.wrapping_add(1)), 0).await;
     assert_error(agent.client().call(Request::Reboot {}, None).await.unwrap(), ErrorCode::Forbidden);
     assert_eq!(agent.calls(), "", "nothing ran");
+}
+
+#[tokio::test]
+async fn a_request_whose_client_gave_up_waiting_is_not_carried_out() {
+    let agent = Agent::start(None, 0).await;
+    fs::write(agent.dir.path().join("slow"), "").unwrap();
+    // Four slow requests take every place for quick ones.
+    let busy: Vec<_> = (0..4)
+        .map(|_| {
+            let client = agent.client();
+            tokio::spawn(async move { client.call(Request::ListBlockDevices {}, None).await })
+        })
+        .collect();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let impatient = UnixTransport::new(agent.socket(), Duration::from_millis(300));
+    assert!(impatient.call(Request::ListBlockDevices {}, None).await.is_err(), "it waited for a place");
+    for request in busy {
+        request.await.unwrap().unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    assert_eq!(agent.calls().matches("lsblk").count(), 4, "{}", agent.calls());
 }
 
 #[tokio::test]

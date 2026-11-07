@@ -262,6 +262,19 @@ fn disk_with_link(devices: &[BlockDevice], link: &str) -> Option<String> {
     disks.into_iter().find(|disk| disk.id_link.as_deref() == Some(disk_link)).map(|disk| disk.name.clone())
 }
 
+/// What other parts of the NAS keep on a pool's volume besides the pool's
+/// own data. A pool holding any of it is not deleted: it goes first, or is
+/// moved, through its own place in the interface.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Occupant {
+    Share(String),
+    App(String),
+    /// The personal folders.
+    Homes,
+    /// Docker's data.
+    Docker,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

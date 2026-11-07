@@ -141,7 +141,14 @@ fn host(erasable: Erasable) -> Host {
         sgdisk: script("sgdisk", ""),
         wipefs: script("wipefs", ""),
         udevadm: script("udevadm", ""),
-        systemctl: script("systemctl", ""),
+        // `busy` makes the volume's mount busy, as an open file would.
+        systemctl: script(
+            "systemctl",
+            &format!(
+                "[ -f {} ] && [ \"$1 $2\" = 'stop volume1.mount' ] && {{ echo 'target is busy' >&2; exit 1; }}\nexit 0",
+                root.join("busy").display()
+            ),
+        ),
         testparm: script("testparm", ""),
         exportfs: script("exportfs", ""),
         setfacl: script("setfacl", ""),
@@ -313,16 +320,21 @@ async fn destroys_only_its_own_pools_and_erases_their_disks() {
 
     assert_eq!(host.run(destroy("tank", 1)).await, Response::Done);
     let calls = host.calls();
-    let share = calls.iter().position(|c| c == "systemctl disable --now volume1-old\\x2dshare.mount");
-    let from = calls.iter().position(|c| c == "systemctl disable --now volume1.mount").expect("unmounted");
-    assert!(share.is_some_and(|share| share < from), "shares unmount first: {calls:#?}");
+    let from =
+        calls.iter().position(|c| c == "systemctl stop volume1-old\\x2dshare.mount").expect("unmounted");
     assert!(!host.path("units/volume1-old\\x2dshare.mount").exists());
     assert_eq!(
         &calls[from..],
         [
+            // Every mount stopped first, the shares' before the volume's.
+            "systemctl stop volume1-old\\x2dshare.mount",
+            "systemctl stop volume1.mount",
+            "zpool destroy tank",
+            // Only then their units go.
+            "systemctl disable --now volume1-old\\x2dshare.mount",
+            "systemctl daemon-reload",
             "systemctl disable --now volume1.mount",
             "systemctl daemon-reload",
-            "zpool destroy tank",
             "zpool labelclear -f /dev/disk/by-id/ata-MEMBER-part1",
             "wipefs --all --quiet /dev/disk/by-id/ata-MEMBER-part1",
             "wipefs --all --quiet /dev/sdf",
@@ -330,6 +342,49 @@ async fn destroys_only_its_own_pools_and_erases_their_disks() {
         ]
     );
     assert!(!host.path("units/volume1.mount").exists());
+}
+
+#[tokio::test]
+async fn a_busy_mount_leaves_the_pool_and_its_mounts_as_they_were() {
+    let host = host(Erasable::Policy(ErasePolicy::Unused));
+    fs::write(host.path("busy"), "").unwrap();
+    let destroy = Request::DestroyPool {
+        name: PoolName::parse("tank").unwrap(),
+        volume: VolumeNumber::new(1).unwrap(),
+    };
+
+    let Response::Error { message, .. } = host.run(destroy).await else { panic!("destroyed") };
+
+    assert!(message.contains("busy"), "{message}");
+    let calls = host.calls();
+    let from = calls.iter().position(|c| c == "systemctl stop volume1-old\\x2dshare.mount").expect("tried");
+    assert_eq!(
+        &calls[from..],
+        [
+            "systemctl stop volume1-old\\x2dshare.mount",
+            "systemctl stop volume1.mount",
+            "systemctl start volume1-old\\x2dshare.mount",
+        ]
+    );
+    assert!(
+        host.path("units/volume1.mount").exists() && host.path("units/volume1-old\\x2dshare.mount").exists()
+    );
+}
+
+#[tokio::test]
+async fn a_pool_with_dockers_data_is_not_destroyed() {
+    let host = host(Erasable::Policy(ErasePolicy::Unused));
+    fs::create_dir_all(host.path("etc-docker")).unwrap();
+    let data_root = host.path("volume1/@docker");
+    fs::write(host.path("etc-docker/daemon.json"), format!("{{\"data-root\": \"{}\"}}", data_root.display()))
+        .unwrap();
+    let destroy = Request::DestroyPool {
+        name: PoolName::parse("tank").unwrap(),
+        volume: VolumeNumber::new(1).unwrap(),
+    };
+
+    assert_refused(host.run(destroy).await, ErrorCode::Forbidden, "Docker's data");
+    assert!(!host.calls().iter().any(|c| c.starts_with("zpool destroy") || c.starts_with("systemctl stop")));
 }
 
 #[tokio::test]

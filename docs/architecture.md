@@ -649,9 +649,15 @@ rustls with ring and the system's certificate authorities
 - A closed set of operations; no "run this command", no paths from the API
   that the agent does not check again against fixed roots.
 - Operations that walk whole trees or disks (copying, moving and deleting
-  trees, permissions of a whole share, preparing and destroying pools) have
-  two places of their own; quick ones have four. One user's large copies
-  never keep others from listing, downloading or uploading.
+  trees, permissions of a whole share, preparing and destroying pools,
+  fetching and running apps and projects, moving Docker's data) have two
+  places of their own; quick ones have four. One user's large copies never
+  keep others from listing, downloading or uploading.
+- **Nothing happens behind a caller's back:** a request still waiting for
+  its place when its client gives up (zendiloosd's own timeout) is dropped,
+  never carried out later; zendiloosd waits two minutes for a quick request
+  and two hours for a long one, longer than the agent itself lets one run,
+  so once begun, a change is seen through and its outcome reported.
 - Every change to a pool, scrubs included, requires its `zendiloos:volume`
   property: pools the owner made stay untouched.
 - Known limits: with `erasable = "unused"`, a compromised `zendiloosd` could
@@ -722,6 +728,13 @@ replacing disks) go through:
    fails while ZFS, md or a filesystem uses them. Pools are destroyed or
    changed only if their `zendiloos:volume` property shows that zendiloos
    created them. Disks travel as by-id names, never as kernel names.
+   A pool is destroyed only when nothing else lives on it: shares, apps,
+   the personal folders and Docker's data go first, each through its own
+   place (`pool_in_use` names them; the agent refuses on its own while
+   Docker's `data-root` is there). Every mount of the pool is stopped
+   before anything is removed; if one is busy, the stopped ones are mounted
+   again and nothing changes, and their units are removed only once
+   `zpool destroy` succeeded.
 4. **Configuration:** `[storage] erasable` in the agent configuration is
    `"unused"` (every disk that passes the checks; the default), `"none"`,
    or a list of by-id names, which restricts a machine to the listed disks.

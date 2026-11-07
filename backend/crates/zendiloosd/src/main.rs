@@ -33,7 +33,7 @@ use zendiloos_infra::identity::{
 };
 use zendiloos_infra::notify::NetworkChannels;
 use zendiloos_infra::sqlite::{
-    Database, SqliteAccounts, SqliteAppSources, SqliteAuditLog, SqliteChannels, SqliteGroups,
+    Database, Occupants, SqliteAccounts, SqliteAppSources, SqliteAuditLog, SqliteChannels, SqliteGroups,
     SqliteInstalledApps, SqliteJobs, SqliteNotifications, SqlitePreferences, SqliteProjects, SqliteSecurity,
     SqliteSelfTestPlans, SqliteSessions, SqliteShares, SqliteSystemUpdates, SqliteUpdateSettings,
 };
@@ -154,6 +154,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         smart: agent_storage.clone(),
         arrays: agent_storage.clone(),
         zfs: agent_storage.clone(),
+        occupants: Arc::new(Occupants::new(database.clone(), agent_storage.clone())),
         admin: agent_storage,
         jobs: jobs.clone(),
         audit: audit.clone(),
@@ -318,7 +319,14 @@ async fn agent_transports(
     let (system, files, patient, moving): (Transport, Transport, Transport, Transport) =
         match config.agent.transport {
             AgentTransportKind::Unix => (
-                Arc::new(UnixTransport::new(&config.agent.socket, Duration::from_secs(30))),
+                // Long enough for whatever the agent runs once it started
+                // (each program it calls has a limit of two minutes at most,
+                // a pool's operations several); a request still waiting for
+                // its turn when the time is up is dropped by the agent.
+                Arc::new(
+                    UnixTransport::new(&config.agent.socket, Duration::from_secs(120))
+                        .with_long(Duration::from_secs(2 * 3600)),
+                ),
                 // Applying permissions to a large share takes a while.
                 Arc::new(UnixTransport::new(&config.agent.files_socket, Duration::from_secs(3600))),
                 // Fetching an app's images too; the agent gives up after 30 minutes.

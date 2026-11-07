@@ -12,7 +12,7 @@ use zendiloos_kernel::{Actor, AuditEntry, AuditLog, Clock, Outcome, RequestConte
 
 use crate::application::StorageError;
 use crate::application::ports::{
-    AdminError, BlockDeviceSource, NewPool, PlanTokens, PoolAdmin, SmartSource, ZfsSource,
+    AdminError, BlockDeviceSource, NewPool, PlanTokens, PoolAdmin, SmartSource, VolumeOccupants, ZfsSource,
 };
 use crate::application::queries::inventory;
 use crate::domain::{self, PoolLayout, PoolName, PoolPlan, ReplacePlan};
@@ -42,6 +42,7 @@ pub(crate) struct Context {
     pub(crate) clock: Arc<dyn Clock>,
     pub(crate) tokens: Arc<dyn PlanTokens>,
     pub(crate) smart: Arc<dyn SmartSource>,
+    pub(crate) occupants: Arc<dyn VolumeOccupants>,
     plans: Mutex<HashMap<String, Stored>>,
     /// Storage jobs run one at a time; later ones wait.
     changes: Arc<tokio::sync::Mutex<()>>,
@@ -58,6 +59,7 @@ impl Context {
         clock: Arc<dyn Clock>,
         tokens: Arc<dyn PlanTokens>,
         smart: Arc<dyn SmartSource>,
+        occupants: Arc<dyn VolumeOccupants>,
     ) -> Self {
         Self {
             devices,
@@ -68,6 +70,7 @@ impl Context {
             clock,
             tokens,
             smart,
+            occupants,
             plans: Mutex::new(HashMap::new()),
             changes: Arc::new(tokio::sync::Mutex::new(())),
         }
@@ -291,6 +294,13 @@ impl DestroyPool {
         let volume = found.volume.ok_or(StorageError::Plan(domain::PlanError::PoolNotManaged))?;
         let name =
             PoolName::parse(pool).map_err(|_| StorageError::Plan(domain::PlanError::PoolNotManaged))?;
+        // What lives there goes first, through its own place: a share's
+        // data would vanish behind its back, an app could never be removed,
+        // Docker would start without its data.
+        let occupants = c.occupants.on_volume(volume, request).await?;
+        if !occupants.is_empty() {
+            return Err(StorageError::PoolInUse(occupants));
+        }
         c.job("storage.destroy_pool", pool.to_owned(), actor, request, move |admin, request| async move {
             admin.destroy_pool(&name, volume, &request).await
         })
@@ -655,6 +665,26 @@ mod tests {
         assert!(matches!(resilver, Err(StorageError::NotScrubbing)), "a resilver must finish");
 
         assert_eq!(s.fake.calls(), ["scrub tank", "stop scrub tank"]);
+    }
+
+    #[tokio::test]
+    async fn a_pool_with_shares_apps_or_dockers_data_is_not_destroyed() {
+        let s = setup();
+        let request = RequestContext::default();
+        *s.fake.occupants.lock().unwrap() = vec![
+            (1, domain::Occupant::Share("photos".into())),
+            (1, domain::Occupant::Docker),
+            (2, domain::Occupant::Homes),
+        ];
+
+        let refused = s.storage.destroy_pool.execute("tank", "tank", &alice(), &request).await;
+
+        let Err(StorageError::PoolInUse(occupants)) = refused else { panic!("{refused:?}") };
+        assert_eq!(occupants, [domain::Occupant::Share("photos".into()), domain::Occupant::Docker]);
+        assert!(s.fake.calls().is_empty(), "nothing was destroyed");
+        s.fake.occupants.lock().unwrap().retain(|(volume, _)| *volume != 1);
+        let job = s.storage.destroy_pool.execute("tank", "tank", &alice(), &request).await.unwrap();
+        assert_eq!(finished(&s.jobs, job).await.state, JobState::Succeeded);
     }
 
     #[tokio::test]

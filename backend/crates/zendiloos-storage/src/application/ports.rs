@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use zendiloos_kernel::{PortError, RequestContext, Timestamp};
 
 use crate::domain::{
-    Array, BlockDevice, Pool, PoolLayout, PoolName, ScheduledSelfTest, SelfTestKind, SelfTestPlan,
+    Array, BlockDevice, Occupant, Pool, PoolLayout, PoolName, ScheduledSelfTest, SelfTestKind, SelfTestPlan,
     SmartReport, VolumeNumber,
 };
 
@@ -67,6 +67,17 @@ pub enum AdminError {
     Conflict,
     #[error(transparent)]
     Port(#[from] PortError),
+}
+
+/// What other contexts keep on a volume: shares, apps, the personal
+/// folders, Docker's data. Storage knows none of them itself.
+#[async_trait]
+pub trait VolumeOccupants: Send + Sync {
+    async fn on_volume(
+        &self,
+        volume: VolumeNumber,
+        context: &RequestContext,
+    ) -> Result<Vec<Occupant>, PortError>;
 }
 
 /// Changes to pools; needs the privileged agent, which checks every disk

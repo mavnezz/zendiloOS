@@ -19,8 +19,8 @@ pub use plan::{
     PoolPlan, ReplacePlan, Unusable, is_usable, plan_pool, plan_replace,
 };
 pub use pool::{
-    Pool, PoolDevice, PoolLayout, PoolSpace, Replacing, Scan, ScanEstimate, ScanKind, ScanPass, ScanState,
-    VdevState, VolumeNumber, resolve_pool_disks,
+    Occupant, Pool, PoolDevice, PoolLayout, PoolSpace, Replacing, Scan, ScanEstimate, ScanKind, ScanPass,
+    ScanState, VdevState, VolumeNumber, resolve_pool_disks,
 };
 pub use self_test::{
     InvalidSelfTestPlan, MAX_PLAN_DISKS, SELF_TEST_WINDOW_HOURS, ScheduledSelfTest, SelfTestFrequency,

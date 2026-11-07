@@ -275,19 +275,53 @@ impl Pools {
         let _serial = self.serial.lock().await;
         self.require_managed(name, Some(volume)).await?;
         let members = self.members(name).await?;
+        // Docker would start without its data, on the system disk.
+        let docker_root = docker_config(&self.paths.docker_config)?
+            .get("data-root")
+            .and_then(serde_json::Value::as_str)
+            .map(std::path::PathBuf::from);
+        let mount_point = self.paths.volumes.join(format!("volume{}", volume.get()));
+        if docker_root.is_some_and(|root| root.starts_with(&mount_point)) {
+            return Err(refused("Docker's data lies on this pool: move it to another pool first".to_owned()));
+        }
 
-        // The shares' mounts first, then the volume's.
-        let share_units: Vec<String> = fs::read_dir(&self.paths.units)
+        // The shares' mounts first, then the volume's: all are stopped
+        // before anything is removed, so one that is busy leaves everything
+        // as it was, mounted again.
+        let mut units: Vec<String> = fs::read_dir(&self.paths.units)
             .map_err(|e| OperationError::Read(self.paths.units.clone(), e))?
             .filter_map(Result::ok)
             .filter_map(|entry| entry.file_name().into_string().ok())
             .filter(|unit| unit.starts_with(&format!("volume{}-", volume.get())) && unit.ends_with(".mount"))
             .collect();
+        units.sort_unstable();
+        units.push(unit_name(volume));
+        units.retain(|unit| self.paths.units.join(unit).exists());
         self.release_nfs().await?;
-        for unit in share_units.iter().chain(std::iter::once(&unit_name(volume))) {
+        let mut stopped: Vec<&str> = Vec::new();
+        for unit in &units {
+            if let Err(error) = run(&self.systemctl, &["stop", unit]).await {
+                self.mount_again(&stopped).await;
+                let place = unit
+                    .trim_end_matches(".mount")
+                    .replace('-', "/")
+                    .replace("\\x2d", "-")
+                    .replace("\\x40", "@");
+                return Err(OperationError::Failed(format!(
+                    "/{place} is in use (a program or a client keeps something there open): \
+                     nothing was changed; close it and try again ({error})"
+                )));
+            }
+            stopped.push(unit);
+        }
+        if let Err(error) = run(&self.zpool, &["destroy", name.as_str()]).await {
+            self.mount_again(&stopped).await;
+            return Err(error);
+        }
+        // The pool is gone; so go the units for its mounts.
+        for unit in &units {
             self.remove_unit(unit).await?;
         }
-        run(&self.zpool, &["destroy", name.as_str()]).await?;
 
         for member in members {
             let _ = run(&self.zpool, &["labelclear", "-f", &member]).await;
@@ -518,6 +552,16 @@ impl Pools {
         fs::rename(&temporary, &path).map_err(|e| OperationError::Write(path.clone(), e))?;
         run(&self.systemctl, &["daemon-reload"]).await?;
         run(&self.systemctl, &["enable", "--now", unit]).await
+    }
+
+    /// Starts `units` again, the volume's before its shares', after a
+    /// delete that could not go through.
+    async fn mount_again(&self, units: &[&str]) {
+        for unit in units.iter().rev() {
+            if let Err(error) = run(&self.systemctl, &["start", unit]).await {
+                tracing::error!(unit, %error, "cannot mount again after a delete that failed");
+            }
+        }
     }
 
     async fn remove_unit(&self, unit: &str) -> Result<(), OperationError> {

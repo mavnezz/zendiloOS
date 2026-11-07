@@ -6971,7 +6971,7 @@
         "tags": [
           "storage"
         ],
-        "summary": "Destroys a pool zendiloOS created and erases its disks. All its data is\nlost. Answers with the job. Needs `storage.manage`.",
+        "summary": "Destroys a pool zendiloOS created and erases its disks. All its data is\nlost. Refused while shares, apps, the personal folders or Docker's data\nlive on it (`pool_in_use`, the detail names them). Answers with the job.\nNeeds `storage.manage`.",
         "operationId": "destroy_pool",
         "parameters": [
           {
@@ -7014,7 +7014,7 @@
             }
           },
           "409": {
-            "description": "`pool_not_managed`",
+            "description": "`pool_not_managed`; `pool_in_use`: the detail names what lives on it",
             "content": {
               "application/json": {
                 "schema": {

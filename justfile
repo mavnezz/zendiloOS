@@ -204,6 +204,10 @@ vm-app-folders-test:
 vm-project-pins-test:
     scripts/vm-project-pins-test.sh
 
+# Deleting pools in the VM: refused while something lives there, nothing changed while a mount is busy
+vm-pool-delete-test:
+    scripts/vm-pool-delete-test.sh
+
 # Notification channels (a webhook in the VM, an email channel without server)
 vm-notify-test:
     scripts/vm-notify-test.sh
