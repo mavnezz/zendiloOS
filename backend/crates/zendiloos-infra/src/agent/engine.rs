@@ -8,11 +8,13 @@ use async_trait::async_trait;
 use serde_json::Value;
 use zendiloos_agent_proto::{self as proto, AgentTransport, ErrorCode, Request, Response};
 use zendiloos_containers::application::ports::{
-    CheckedCompose, DockerEngine, EngineError, Lines, ProjectAction,
+    CheckedCompose, DockerEngine, EngineError, Lines, ProjectAction, TerminalInput, TerminalSession,
 };
 use zendiloos_containers::domain::{
-    ComposeListing, ComposeModel, ComposeService, Container, ContainerAction, ContainerState, ContainerUsage,
-    DiskUsage, Image, Mount, Network, ProjectName, PublishedPort, UsageSample,
+    AttachedNetwork, ComposeListing, ComposeModel, ComposeService, Container, ContainerAction,
+    ContainerDetails, ContainerProcess, ContainerState, ContainerUsage, DeviceMapping, DiskUsage,
+    Healthcheck, Image, Mount, Network, Privileges, ProjectName, PublishedPort, ResourceLimits, ServiceMount,
+    UsageSample,
 };
 use zendiloos_kernel::{PortError, RequestContext, Timestamp};
 
@@ -214,6 +216,191 @@ fn container(value: &Value) -> Container {
     }
 }
 
+/// Text that may be missing or empty: `None` for both.
+fn optional(value: &Value, key: &str) -> Option<String> {
+    value.get(key).and_then(Value::as_str).filter(|text| !text.is_empty()).map(str::to_owned)
+}
+
+/// Nanoseconds as Docker keeps durations, in whole seconds; 0 is unset.
+fn seconds(value: &Value) -> Option<u64> {
+    value.as_u64().filter(|n| *n > 0).map(|n| n / 1_000_000_000)
+}
+
+/// One container as `docker container inspect` writes it: tolerant of
+/// what is missing, as older engines leave fields out.
+fn container_details(value: &Value) -> ContainerDetails {
+    let config = &value["Config"];
+    let host = &value["HostConfig"];
+    let command = std::iter::once(string(value, "Path"))
+        .filter(|path| !path.is_empty())
+        .chain(texts(&value["Args"]))
+        .collect();
+    let environment = texts(&config["Env"])
+        .into_iter()
+        .map(|entry| match entry.split_once('=') {
+            Some((name, value)) => (name.to_owned(), value.to_owned()),
+            None => (entry, String::new()),
+        })
+        .collect();
+    let mut networks: Vec<AttachedNetwork> = value["NetworkSettings"]["Networks"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(name, network)| AttachedNetwork {
+            name: name.clone(),
+            ipv4: optional(network, "IPAddress"),
+            ipv6: optional(network, "GlobalIPv6Address"),
+            gateway: optional(network, "Gateway"),
+            mac: optional(network, "MacAddress"),
+            aliases: texts(&network["Aliases"]),
+        })
+        .collect();
+    networks.sort_by(|a, b| a.name.cmp(&b.name));
+    let devices = host["Devices"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|device| DeviceMapping {
+            host: string(device, "PathOnHost"),
+            container: string(device, "PathInContainer"),
+            permissions: string(device, "CgroupPermissions"),
+        })
+        .collect();
+    let positive = |key: &str| host[key].as_u64().filter(|n| *n > 0);
+    // Either a share of the processors (NanoCpus) or a quota per period.
+    let cpus = positive("NanoCpus").map(|nano| nano as f64 / 1e9).or_else(|| {
+        let (quota, period) = (host["CpuQuota"].as_i64()?, host["CpuPeriod"].as_i64()?);
+        (quota > 0 && period > 0).then(|| quota as f64 / period as f64)
+    });
+    let health = &config["Healthcheck"];
+    let healthcheck = health["Test"].as_array().filter(|test| !test.is_empty()).map(|_| Healthcheck {
+        test: texts(&health["Test"]),
+        interval_seconds: seconds(&health["Interval"]),
+        timeout_seconds: seconds(&health["Timeout"]),
+        retries: health["Retries"].as_u64().filter(|n| *n > 0),
+    });
+    let health_output = value["State"]["Health"]["Log"]
+        .as_array()
+        .and_then(|log| log.last())
+        .and_then(|last| optional(last, "Output"))
+        .map(|output| output.trim().to_owned());
+    ContainerDetails {
+        container: container(value),
+        command,
+        working_dir: optional(config, "WorkingDir"),
+        user: optional(config, "User"),
+        hostname: optional(config, "Hostname"),
+        environment,
+        network_mode: string(host, "NetworkMode"),
+        networks,
+        privileges: Privileges {
+            privileged: host["Privileged"].as_bool().unwrap_or(false),
+            capabilities_added: texts(&host["CapAdd"]),
+            capabilities_dropped: texts(&host["CapDrop"]),
+            devices,
+            security_options: texts(&host["SecurityOpt"]),
+            read_only_root: host["ReadonlyRootfs"].as_bool().unwrap_or(false),
+            pid_mode: string(host, "PidMode"),
+            ipc_mode: string(host, "IpcMode"),
+        },
+        limits: ResourceLimits {
+            cpus,
+            memory_bytes: positive("Memory"),
+            memory_reservation_bytes: positive("MemoryReservation"),
+            processes: positive("PidsLimit"),
+        },
+        restart_retries: host["RestartPolicy"]["MaximumRetryCount"].as_u64().unwrap_or(0),
+        healthcheck,
+        health_output,
+    }
+}
+
+/// `docker top` with the agent's columns (pid, ppid, user, pcpu, pmem,
+/// rss, etime, args): a header, then a process per line, its command last
+/// and with spaces.
+fn processes(text: &str) -> Vec<ContainerProcess> {
+    text.lines()
+        .skip(1)
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let pid = fields.next()?.parse().ok()?;
+            let parent = fields.next()?.parse().unwrap_or(0);
+            let user = fields.next()?.to_owned();
+            let cpu_percent = fields.next()?.parse().unwrap_or(0.0);
+            let memory_percent = fields.next()?.parse().unwrap_or(0.0);
+            // ps counts in KiB.
+            let resident_bytes = fields.next()?.parse::<u64>().unwrap_or(0).saturating_mul(1024);
+            let elapsed = fields.next()?.to_owned();
+            let command = fields.collect::<Vec<_>>().join(" ");
+            Some(ContainerProcess {
+                pid,
+                parent,
+                user,
+                cpu_percent,
+                memory_percent,
+                resident_bytes,
+                elapsed,
+                command,
+            })
+        })
+        .collect()
+}
+
+/// How much of a terminal's output is read at once.
+const TERMINAL_CHUNK: usize = 16 * 1024;
+
+/// Relays a terminal's master between the descriptor and the session's
+/// channels: what the program writes to `output`, what is typed from
+/// `input`, a new size set on the terminal. Dropping `input`'s sender
+/// closes the master, which hangs up the program.
+fn relay(master: std::os::fd::OwnedFd) -> std::io::Result<TerminalSession> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::unix::pipe;
+
+    let size = master.try_clone()?;
+    let mut reader = pipe::Receiver::from_owned_fd_unchecked(master.try_clone()?)?;
+    let mut writer = pipe::Sender::from_owned_fd_unchecked(master)?;
+    let (output, from_terminal) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
+    let (input, mut typed) = tokio::sync::mpsc::channel::<TerminalInput>(64);
+    tokio::spawn(async move {
+        let mut buffer = vec![0u8; TERMINAL_CHUNK];
+        loop {
+            tokio::select! {
+                // EIO once the program ended and the slave side is gone.
+                read = reader.read(&mut buffer) => match read {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if output.send(buffer[..n].to_vec()).await.is_err() {
+                            break;
+                        }
+                    }
+                },
+                input = typed.recv() => match input {
+                    Some(TerminalInput::Data(data)) => {
+                        if writer.write_all(&data).await.is_err() {
+                            break;
+                        }
+                    }
+                    Some(TerminalInput::Resize { columns, rows }) => {
+                        let wanted = proto::TerminalSize::clamped(columns, rows);
+                        let size_now = rustix::termios::Winsize {
+                            ws_row: wanted.rows,
+                            ws_col: wanted.columns,
+                            ws_xpixel: 0,
+                            ws_ypixel: 0,
+                        };
+                        // The program learns of it by SIGWINCH.
+                        let _ = rustix::termios::tcsetwinsize(&size, size_now);
+                    }
+                    // Hung up: the descriptors close as this ends.
+                    None => break,
+                },
+            }
+        }
+    });
+    Ok(TerminalSession { output: from_terminal, input })
+}
+
 fn containers(text: &str) -> Result<Vec<Container>, EngineError> {
     let values: Vec<Value> = serde_json::from_str(text).map_err(|e| unreadable("containers", e))?;
     Ok(values.iter().map(container).collect())
@@ -411,6 +598,18 @@ fn compose_model(text: &str) -> Result<ComposeModel, EngineError> {
                         .chain(used(&service["secrets"], &secrets))
                         .chain(used(&service["configs"], &configs))
                         .collect(),
+                    mounts: service["volumes"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter(|volume| volume.get("type").and_then(Value::as_str) == Some("bind"))
+                        .filter_map(|volume| {
+                            Some(ServiceMount {
+                                source: volume.get("source")?.as_str()?.to_owned(),
+                                target: volume.get("target")?.as_str()?.to_owned(),
+                            })
+                        })
+                        .collect(),
                     devices: service["devices"].as_array().into_iter().flatten().filter_map(source).collect(),
                     cap_add: texts(&service["cap_add"]),
                     security_opt: texts(&service["security_opt"]),
@@ -505,6 +704,57 @@ impl DockerEngine for AgentDockerEngine {
         let text =
             self.printed(Request::ContainerLogs { container: container_id(id)?, lines }, context).await?;
         Ok(plain(&text))
+    }
+
+    async fn inspect_container(
+        &self,
+        id: &str,
+        context: &RequestContext,
+    ) -> Result<ContainerDetails, EngineError> {
+        let text = self.printed(Request::InspectContainer { container: container_id(id)? }, context).await?;
+        let values: Vec<Value> = serde_json::from_str(&text).map_err(|e| unreadable("container", e))?;
+        values.first().map(container_details).ok_or_else(|| EngineError::Failed(format!("no container {id}")))
+    }
+
+    async fn container_processes(
+        &self,
+        id: &str,
+        context: &RequestContext,
+    ) -> Result<Vec<ContainerProcess>, EngineError> {
+        let text =
+            self.printed(Request::ContainerProcesses { container: container_id(id)? }, context).await?;
+        Ok(processes(&text))
+    }
+
+    async fn open_terminal(
+        &self,
+        id: &str,
+        command: &[String],
+        columns: u16,
+        rows: u16,
+        context: &RequestContext,
+    ) -> Result<TerminalSession, EngineError> {
+        let request = Request::OpenTerminal {
+            container: container_id(id)?,
+            command: proto::ExecCommand::parse(command.to_vec()).map_err(invalid)?,
+            size: proto::TerminalSize::clamped(columns, rows),
+        };
+        let request_id = context.request_id.as_deref().and_then(|id| proto::RequestId::parse(id).ok());
+        let answer =
+            self.transport.call_with_file(request, request_id).await.map_err(|e| PortError::new(WHAT, e))?;
+        match answer {
+            (Response::Terminal {}, Some(master)) => relay(master)
+                .map_err(|e| PortError::new(WHAT, format!("cannot relay the terminal: {e}")).into()),
+            (Response::Error { code: ErrorCode::Forbidden | ErrorCode::Conflict, message }, _) => {
+                Err(EngineError::Refused(message))
+            }
+            (Response::Error { message, .. }, _) => Err(EngineError::Failed(message)),
+            (other, _) => Err(unexpected(other).into()),
+        }
+    }
+
+    fn read_config(&self, config: &str) -> Result<ComposeModel, EngineError> {
+        compose_model(config)
     }
 
     async fn remove_image(&self, id: &str, context: &RequestContext) -> Result<(), EngineError> {
@@ -798,6 +1048,106 @@ mod tests {
         "Config": {"Image": "alpine", "Labels": null}, "HostConfig": {"RestartPolicy": {"Name": "no"}},
         "NetworkSettings": {"Ports": {}, "Networks": {"bridge": {}}}, "Mounts": []
     }]"#;
+
+    /// Reads a terminal's output until `wanted` came, or it closed.
+    async fn read_until(session: &mut TerminalSession, wanted: &str) -> String {
+        let mut seen = String::new();
+        while !seen.contains(wanted) {
+            match tokio::time::timeout(std::time::Duration::from_secs(10), session.output.recv()).await {
+                Ok(Some(chunk)) => seen.push_str(&String::from_utf8_lossy(&chunk)),
+                _ => break,
+            }
+        }
+        seen
+    }
+
+    #[tokio::test]
+    async fn one_container_reads_in_detail_and_a_terminal_relays_both_ways() {
+        let (engine, agent) = simulated();
+        let context = RequestContext::default();
+        let containers = engine.containers(&context).await.unwrap();
+        let id = |name: &str| containers.iter().find(|c| c.name == name).unwrap().id.clone();
+
+        let web = engine.inspect_container(&id("stack-web-1"), &context).await.unwrap();
+        assert_eq!(web.container.name, "stack-web-1");
+        assert_eq!(web.command, ["/docker-entrypoint.sh", "nginx", "-g", "daemon off;"]);
+        assert_eq!(web.privileges.capabilities_dropped, ["ALL"]);
+        assert_eq!(web.privileges.capabilities_added, ["NET_BIND_SERVICE"]);
+        assert_eq!(web.privileges.security_options, ["no-new-privileges:true"]);
+        assert!(web.environment.contains(&("TZ".to_owned(), "Europe/Berlin".to_owned())));
+        assert_eq!(
+            (web.networks[0].name.as_str(), web.network_mode.as_str()),
+            ("stack_default", "stack_default")
+        );
+        assert!(web.networks[0].ipv4.as_deref().is_some_and(|ip| ip.starts_with("172.19.")));
+        assert_eq!(web.container.mounts.len(), 2);
+        assert!(web.container.mounts[0].read_only);
+        assert_eq!(web.limits, ResourceLimits::default());
+        let db = engine.inspect_container(&id("stack-db-1"), &context).await.unwrap();
+        assert_eq!((db.limits.memory_bytes, db.limits.cpus), (Some(536_870_912), Some(1.5)));
+        assert_eq!(db.user.as_deref(), Some("999:999"));
+        let check = db.healthcheck.unwrap();
+        assert_eq!(
+            (check.interval_seconds, check.timeout_seconds, check.retries),
+            (Some(10), Some(5), Some(5))
+        );
+        assert!(
+            db.environment
+                .iter()
+                .any(|(name, value)| name == "POSTGRES_PASSWORD" && value == "simulated-secret")
+        );
+        assert!(matches!(engine.inspect_container("ghost", &context).await, Err(EngineError::Failed(_))));
+
+        let processes = engine.container_processes(&id("stack-web-1"), &context).await.unwrap();
+        assert_eq!(processes.len(), 2);
+        assert_eq!((processes[1].pid, processes[1].user.as_str()), (21040, "101"));
+        assert_eq!(processes[1].command, "nginx: worker process");
+        assert_eq!(processes[1].resident_bytes, 51_200 * 1024);
+
+        let mut terminal = engine
+            .open_terminal(&id("stack-web-1"), &["/bin/sh".to_owned()], 100, 30, &context)
+            .await
+            .unwrap();
+        assert!(read_until(&mut terminal, "$ ").await.contains("running /bin/sh"));
+        terminal.input.send(TerminalInput::Data(b"ls\n".to_vec())).await.unwrap();
+        assert!(read_until(&mut terminal, "simulated: ls").await.contains("simulated: ls"));
+        terminal.input.send(TerminalInput::Resize { columns: 120, rows: 40 }).await.unwrap();
+        terminal.input.send(TerminalInput::Data(b"exit\n".to_vec())).await.unwrap();
+        // The program ended: the output closes.
+        let ended = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while terminal.output.recv().await.is_some() {}
+        })
+        .await;
+        assert!(ended.is_ok(), "the output closes once the program ended");
+        assert!(agent.received().iter().any(|r| matches!(r, Request::OpenTerminal { size, .. }
+            if size.columns == 100 && size.rows == 30)));
+        let refused = engine.open_terminal(&id("stack-web-1"), &["-it".to_owned()], 80, 24, &context).await;
+        assert!(matches!(refused, Err(EngineError::Refused(_))));
+    }
+
+    #[test]
+    fn details_and_processes_read_whatever_docker_leaves_out() {
+        let bare = container_details(&serde_json::json!({"Id": "abc", "Name": "/x"}));
+        assert_eq!(bare.container.name, "x");
+        assert!(bare.command.is_empty() && bare.environment.is_empty() && bare.networks.is_empty());
+        assert_eq!(bare.healthcheck, None);
+        let quota = container_details(&serde_json::json!({
+            "HostConfig": {"CpuQuota": 50000, "CpuPeriod": 100000, "PidsLimit": 100,
+                           "Devices": [{"PathOnHost": "/dev/dri", "PathInContainer": "/dev/dri", "CgroupPermissions": "rwm"}]},
+            "Config": {"Env": ["FLAG"]},
+            "State": {"Health": {"Log": [{"Output": "old"}, {"Output": " ready\n"}]}}
+        }));
+        assert_eq!((quota.limits.cpus, quota.limits.processes), (Some(0.5), Some(100)));
+        assert_eq!(quota.privileges.devices[0].host, "/dev/dri");
+        assert_eq!(quota.environment, [("FLAG".to_owned(), String::new())]);
+        assert_eq!(quota.health_output.as_deref(), Some("ready"));
+        let listed = processes(
+            "PID PPID USER %CPU %MEM RSS ELAPSED COMMAND\n7 1 root x y z 1-00:00:01 sh -c a  b\nbroken\n",
+        );
+        assert_eq!(listed.len(), 1);
+        assert_eq!((listed[0].cpu_percent, listed[0].resident_bytes), (0.0, 0));
+        assert_eq!(listed[0].command, "sh -c a b");
+    }
 
     #[test]
     fn containers_read_as_docker_inspects_them() {

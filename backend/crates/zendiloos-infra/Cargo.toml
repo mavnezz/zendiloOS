@@ -44,6 +44,7 @@ sysinfo.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "time", "fs", "net"] }
+rustix = { workspace = true, features = ["termios"] }
 
 [dev-dependencies]
 zendiloos-sim.workspace = true

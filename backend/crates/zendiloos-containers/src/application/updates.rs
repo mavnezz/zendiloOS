@@ -129,7 +129,13 @@ impl Containers {
         Ok(Some(job))
     }
 
-    async fn record_update(&self, target: &str, done: bool, actor: Option<&Actor>, context: &RequestContext) {
+    pub(super) async fn record_update(
+        &self,
+        target: &str,
+        done: bool,
+        actor: Option<&Actor>,
+        context: &RequestContext,
+    ) {
         let outcome = if done { Outcome::Success } else { Outcome::Failure };
         let mut entry =
             AuditEntry::new(self.now(), "containers.update", outcome, context).target(target.to_owned());

@@ -15,12 +15,22 @@ pub struct ComposeService {
     pub userns_mode: Option<String>,
     /// The host's side of every bind mount.
     pub binds: Vec<String>,
+    /// Each bind mount with where it appears in the container.
+    pub mounts: Vec<ServiceMount>,
     /// The host's side of every device.
     pub devices: Vec<String>,
     pub cap_add: Vec<String>,
     pub security_opt: Vec<String>,
     /// Every key the service sets, to name those not known as harmless.
     pub keys: Vec<String>,
+}
+
+/// A bind mount of a service: the host's folder or file, and where the
+/// container sees it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ServiceMount {
+    pub source: String,
+    pub target: String,
 }
 
 /// A Compose file as Compose read it.

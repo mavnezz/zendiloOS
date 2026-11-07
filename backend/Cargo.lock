@@ -3150,6 +3150,7 @@ dependencies = [
  "hyper-util",
  "jiff",
  "lettre",
+ "rustix",
  "rustls",
  "rustls-native-certs",
  "serde",

@@ -1,10 +1,15 @@
 mod compose;
+mod details;
 mod engine;
 mod history;
 mod project;
 mod updates;
 
-pub use compose::{ComposeModel, ComposeService, Risk, file_reads, risks};
+pub use compose::{ComposeModel, ComposeService, Risk, ServiceMount, file_reads, risks};
+pub use details::{
+    AttachedNetwork, ContainerDetails, ContainerProcess, DeviceMapping, Healthcheck, PROJECT_PINS,
+    Privileges, ResourceLimits, command_words, host_paths,
+};
 pub use engine::{
     BUILT_IN_NETWORKS, ComposeListing, Container, ContainerAction, ContainerState, ContainerUsage, DiskUsage,
     Image, Mount, Network, PublishedPort, UsageSample, short_id,

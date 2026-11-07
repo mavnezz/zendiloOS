@@ -6,8 +6,8 @@ use async_trait::async_trait;
 use zendiloos_kernel::{Actor, PortError, RequestContext};
 
 use crate::domain::{
-    ComposeListing, ComposeModel, Container, ContainerAction, DiskUsage, Image, Network, OwnProject,
-    ProjectName, RegistryImage, UpdateSettings, UsageSample,
+    ComposeListing, ComposeModel, Container, ContainerAction, ContainerDetails, ContainerProcess, DiskUsage,
+    Image, Network, OwnProject, ProjectName, RegistryImage, UpdateSettings, UsageSample,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -62,6 +62,22 @@ impl ProjectAction {
     }
 }
 
+/// What is typed into a terminal, or its new size.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TerminalInput {
+    Data(Vec<u8>),
+    Resize { columns: u16, rows: u16 },
+}
+
+/// A terminal open in a container: what its program writes comes on
+/// `output`, which closes once the program ended; what goes to `input` is
+/// typed. Dropping `input` hangs up, which ends the program.
+#[derive(Debug)]
+pub struct TerminalSession {
+    pub output: tokio::sync::mpsc::Receiver<Vec<u8>>,
+    pub input: tokio::sync::mpsc::Sender<TerminalInput>,
+}
+
 /// The Docker engine, through the privileged agent.
 #[async_trait]
 pub trait DockerEngine: Send + Sync {
@@ -91,6 +107,35 @@ pub trait DockerEngine: Send + Sync {
         lines: u32,
         context: &RequestContext,
     ) -> Result<String, EngineError>;
+
+    /// One container as Docker inspects it.
+    async fn inspect_container(
+        &self,
+        id: &str,
+        context: &RequestContext,
+    ) -> Result<ContainerDetails, EngineError>;
+
+    /// The processes of a running container.
+    async fn container_processes(
+        &self,
+        id: &str,
+        context: &RequestContext,
+    ) -> Result<Vec<ContainerProcess>, EngineError>;
+
+    /// Starts `command` in a running container on a terminal of
+    /// `columns` × `rows`.
+    async fn open_terminal(
+        &self,
+        id: &str,
+        command: &[String],
+        columns: u16,
+        rows: u16,
+        context: &RequestContext,
+    ) -> Result<TerminalSession, EngineError>;
+
+    /// A project's configuration as Compose normalized it when it was
+    /// confirmed, read: its services and what they bind where.
+    fn read_config(&self, config: &str) -> Result<ComposeModel, EngineError>;
 
     async fn remove_image(&self, id: &str, context: &RequestContext) -> Result<(), EngineError>;
 

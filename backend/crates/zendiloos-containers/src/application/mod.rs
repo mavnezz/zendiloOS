@@ -1,6 +1,7 @@
 //! Use cases of the Containers context and the ports they need. Every one
 //! is for administrators (`containers.manage`); the caller checks that.
 
+mod container;
 mod data;
 mod engine;
 pub mod ports;
@@ -16,6 +17,7 @@ use std::time::Duration;
 use zendiloos_jobs::{JobError, Jobs};
 use zendiloos_kernel::{Actor, AuditEntry, AuditLog, Clock, Outcome, PortError, RequestContext, Timestamp};
 
+pub use container::{ContainerDetailsView, TERMINALS_PER_ACCOUNT, Terminal, UpdateWay};
 pub use data::DataLocation;
 pub use engine::{ContainerView, ImageView, Overview};
 use ports::{
@@ -117,6 +119,8 @@ pub struct Containers {
     history: Arc<Mutex<UsageHistory>>,
     /// The newest check for newer images.
     report: Arc<Mutex<Option<UpdateReport>>>,
+    /// The terminals each account has open.
+    terminals: Arc<container::OpenTerminals>,
 }
 
 impl Containers {
@@ -125,6 +129,7 @@ impl Containers {
             ports,
             history: Arc::new(Mutex::new(UsageHistory::new(HISTORY))),
             report: Arc::new(Mutex::new(None)),
+            terminals: Arc::default(),
         }
     }
 

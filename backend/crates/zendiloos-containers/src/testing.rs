@@ -11,13 +11,15 @@ use zendiloos_kernel::{Actor, AuditLog, Clock, PortError, RequestContext, Timest
 
 use crate::application::ports::{
     CheckedCompose, DataPlace, DockerData, DockerEngine, EngineError, Lines, ProjectAction, ProjectPlace,
-    ProjectRepository, ProjectStorage, Registries, StorageError, UpdateSettingsRepository,
+    ProjectRepository, ProjectStorage, Registries, StorageError, TerminalInput, TerminalSession,
+    UpdateSettingsRepository,
 };
 use crate::application::{Containers, ContainersPorts};
 use crate::domain::{
-    ComposeListing, ComposeModel, ComposeService, Container, ContainerAction, ContainerState, ContainerUsage,
-    DiskUsage, Image, Network, OwnProject, ProjectName, PublishedPort, RegistryImage, UpdateSettings,
-    UsageSample,
+    AttachedNetwork, ComposeListing, ComposeModel, ComposeService, Container, ContainerAction,
+    ContainerDetails, ContainerProcess, ContainerState, ContainerUsage, DiskUsage, Image, Network,
+    OwnProject, Privileges, ProjectName, PublishedPort, RegistryImage, ResourceLimits, ServiceMount,
+    UpdateSettings, UsageSample,
 };
 
 /// A container of `project` (if any) from `image`.
@@ -43,6 +45,33 @@ pub fn container(name: &str, project: Option<&str>, image: &str, running: bool) 
         networks: vec!["bridge".into()],
         mounts: vec![],
         restart_policy: "unless-stopped".into(),
+    }
+}
+
+/// What inspecting `container` tells: one network, a password in its
+/// environment, no limits.
+pub fn details(container: Container) -> ContainerDetails {
+    ContainerDetails {
+        command: vec!["nginx".into(), "-g".into(), "daemon off;".into()],
+        working_dir: None,
+        user: None,
+        hostname: Some(container.id.chars().take(12).collect()),
+        environment: vec![("TZ".into(), "Europe/Berlin".into()), ("DB_PASSWORD".into(), "secret".into())],
+        network_mode: "bridge".into(),
+        networks: vec![AttachedNetwork {
+            name: "bridge".into(),
+            ipv4: Some("172.17.0.2".into()),
+            ipv6: None,
+            gateway: Some("172.17.0.1".into()),
+            mac: None,
+            aliases: vec![],
+        }],
+        privileges: Privileges { capabilities_dropped: vec!["ALL".into()], ..Privileges::default() },
+        limits: ResourceLimits::default(),
+        restart_retries: 0,
+        healthcheck: None,
+        health_output: None,
+        container,
     }
 }
 
@@ -182,6 +211,77 @@ impl DockerEngine for FakeEngine {
 
     async fn container_logs(&self, id: &str, lines: u32, _: &RequestContext) -> Result<String, EngineError> {
         Ok(format!("2026-11-06T10:00:00Z {id} said {lines} lines\n"))
+    }
+
+    async fn inspect_container(&self, id: &str, _: &RequestContext) -> Result<ContainerDetails, EngineError> {
+        let container = self
+            .containers
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|c| c.id == id)
+            .cloned()
+            .ok_or_else(|| EngineError::Failed("Error: No such container".into()))?;
+        Ok(details(container))
+    }
+
+    async fn container_processes(
+        &self,
+        id: &str,
+        _: &RequestContext,
+    ) -> Result<Vec<ContainerProcess>, EngineError> {
+        self.call(format!("top {id}"));
+        Ok(vec![ContainerProcess {
+            pid: 4242,
+            parent: 4200,
+            user: "root".into(),
+            cpu_percent: 0.5,
+            memory_percent: 1.2,
+            resident_bytes: 51_200 * 1024,
+            elapsed: "01:02:03".into(),
+            command: "nginx: master process".into(),
+        }])
+    }
+
+    /// Answers each input with what was typed, after a greeting; a resize
+    /// with the new size.
+    async fn open_terminal(
+        &self,
+        id: &str,
+        command: &[String],
+        columns: u16,
+        rows: u16,
+        _: &RequestContext,
+    ) -> Result<TerminalSession, EngineError> {
+        self.call(format!("terminal {id} {} {columns}x{rows}", command.join(" ")));
+        let (output, from_engine) = tokio::sync::mpsc::channel(16);
+        let (input, mut typed) = tokio::sync::mpsc::channel(16);
+        tokio::spawn(async move {
+            let _ = output.send(b"$ ".to_vec()).await;
+            while let Some(input) = typed.recv().await {
+                let answer = match input {
+                    TerminalInput::Data(data) if data == b"exit\r" => break,
+                    TerminalInput::Data(data) => data,
+                    TerminalInput::Resize { columns, rows } => format!("[{columns}x{rows}]").into_bytes(),
+                };
+                if output.send(answer).await.is_err() {
+                    break;
+                }
+            }
+        });
+        Ok(TerminalSession { output: from_engine, input })
+    }
+
+    fn read_config(&self, config: &str) -> Result<ComposeModel, EngineError> {
+        // `bind <source> <target>` per line, under the service `app`.
+        let mounts = config
+            .lines()
+            .filter_map(|line| line.strip_prefix("bind ")?.split_once(' '))
+            .map(|(source, target)| ServiceMount { source: source.into(), target: target.into() })
+            .collect();
+        Ok(ComposeModel {
+            services: vec![ComposeService { name: "app".into(), mounts, ..ComposeService::default() }],
+        })
     }
 
     async fn remove_image(&self, id: &str, _: &RequestContext) -> Result<(), EngineError> {

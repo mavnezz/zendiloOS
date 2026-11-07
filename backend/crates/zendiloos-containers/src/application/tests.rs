@@ -435,3 +435,134 @@ async fn dockers_data_moves_to_a_pool_with_room() {
     assert!(matches!(same, Err(ContainersError::NotFound)), "{same:?}");
     let _ = audit;
 }
+
+#[tokio::test]
+async fn a_container_is_shown_with_the_folders_its_project_was_confirmed_with() {
+    use zendiloos_kernel::Timestamp;
+
+    use crate::domain::{Mount, OwnProject, ProjectName};
+
+    let (t, _) = setup();
+    {
+        let mut containers = t.engine.containers.lock().unwrap();
+        let mut db = crate::testing::container("app", Some("tesla"), "postgres", true);
+        db.mounts = vec![Mount {
+            kind: "bind".into(),
+            source: "/run/zendiloos-project-shares/tesla/3f9a".into(),
+            destination: "/var/lib/postgresql/data".into(),
+            read_only: false,
+        }];
+        containers.push(db);
+    }
+    t.projects.0.lock().unwrap().push(OwnProject {
+        name: ProjectName::parse("tesla").unwrap(),
+        share_id: 1,
+        folder: "docker/tesla".into(),
+        directory: "/volume1/docker/docker/tesla".into(),
+        file: "/volume1/docker/docker/tesla/compose.yaml".into(),
+        compose: Some("services: {}".into()),
+        config: Some("bind /volume1/docker/docker/tesla/data /var/lib/postgresql/data".into()),
+        template: None,
+        created_at: Timestamp::from_unix_seconds(0),
+        created_by: "alice".into(),
+    });
+
+    let view = t.containers.container_details("app-id", &context()).await.unwrap();
+    assert_eq!(view.details.container.name, "app");
+    assert_eq!(view.host_paths, ["/volume1/docker/docker/tesla/data"]);
+    let plain = t.containers.container_details("stack-web-id", &context()).await.unwrap();
+    assert!(plain.host_paths.is_empty());
+    assert!(matches!(
+        t.containers.container_details("ghost", &context()).await,
+        Err(ContainersError::NotFound)
+    ));
+}
+
+#[tokio::test]
+async fn processes_are_listed_only_of_a_running_container() {
+    let (t, _) = setup();
+    let processes = t.containers.container_processes("stack-web-id", &context()).await.unwrap();
+    assert_eq!(processes[0].command, "nginx: master process");
+    assert!(matches!(
+        t.containers.container_processes("lonely-id", &context()).await,
+        Err(ContainersError::Refused(_))
+    ));
+}
+
+#[tokio::test]
+async fn terminals_are_opened_in_running_containers_four_per_account_and_recorded() {
+    use super::TERMINALS_PER_ACCOUNT;
+    use super::ports::TerminalInput;
+
+    let (t, audit) = setup();
+    let open_one = |id: &'static str, command: &'static str, who: Actor| {
+        let containers = t.containers.clone();
+        async move { containers.open_terminal(id, command, 80, 24, &who, &context()).await }
+    };
+    let mut terminal = t
+        .containers
+        .open_terminal("stack-web-id", " /bin/sh  -l", 100, 30, &alice(), &context())
+        .await
+        .unwrap();
+    assert_eq!((terminal.container.as_str(), terminal.command.as_str()), ("stack-web", "/bin/sh -l"));
+    assert!(t.engine.calls().contains(&"terminal stack-web-id /bin/sh -l 100x30".to_owned()));
+    assert_eq!(terminal.session.output.recv().await.unwrap(), b"$ ");
+    terminal.session.input.send(TerminalInput::Data(b"ls\r".to_vec())).await.unwrap();
+    assert_eq!(terminal.session.output.recv().await.unwrap(), b"ls\r");
+    terminal.session.input.send(TerminalInput::Resize { columns: 120, rows: 40 }).await.unwrap();
+    assert_eq!(terminal.session.output.recv().await.unwrap(), b"[120x40]");
+    assert!(audit.actions().contains(&(
+        "containers.container_terminal",
+        Some("stack-web: /bin/sh -l".into()),
+        None
+    )));
+
+    let mut open = vec![terminal];
+    for _ in 1..TERMINALS_PER_ACCOUNT {
+        open.push(open_one("stack-web-id", "sh", alice()).await.unwrap());
+    }
+    let refused = open_one("stack-web-id", "sh", alice()).await;
+    assert!(matches!(refused, Err(ContainersError::Refused(reason)) if reason.contains("4 terminals")));
+    let bob = Actor { account_id: 2, name: "bob".into() };
+    assert!(open_one("stack-web-id", "sh", bob).await.is_ok());
+    drop(open.pop());
+    assert!(open_one("stack-web-id", "sh", alice()).await.is_ok());
+
+    for (id, command) in [("lonely-id", "sh"), ("stack-web-id", "-it sh"), ("stack-web-id", "")] {
+        assert!(open_one(id, command, alice()).await.is_err(), "{id} {command:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_container_is_updated_by_its_project_or_by_its_image_alone() {
+    use super::UpdateWay;
+
+    let (t, audit) = setup();
+    assert_eq!(
+        t.containers.update_way("stack-web-id", &context()).await.unwrap(),
+        UpdateWay::Project("stack".into())
+    );
+    let job = t.containers.update_container("stack-web-id", &alice(), &context()).await.unwrap();
+    assert_eq!((job.kind.as_str(), job.target.as_deref()), ("containers.update", Some("stack-web")));
+    asked(&t, "project up stack").await;
+    assert!(t.engine.calls().contains(&"project pull stack".to_owned()));
+
+    assert_eq!(
+        t.containers.update_way("lonely-id", &context()).await.unwrap(),
+        UpdateWay::PullOnly("alpine".into())
+    );
+    t.containers.update_container("lonely-id", &alice(), &context()).await.unwrap();
+    asked(&t, "pull alpine").await;
+
+    assert!(matches!(
+        t.containers.update_container("kuma-1-id", &alice(), &context()).await,
+        Err(ContainersError::AppProject)
+    ));
+    for _ in 0..200 {
+        if audit.actions().iter().filter(|a| a.0 == "containers.update").count() == 2 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    panic!("not audited: {:?}", audit.actions());
+}
