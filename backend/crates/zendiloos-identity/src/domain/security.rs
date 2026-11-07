@@ -44,6 +44,15 @@ impl AddressRange {
         Self { network: ip, prefix: bits(ip) }
     }
 
+    /// What one client counts as: an IPv4 address, or the /64 network of
+    /// an IPv6 one, which a single host is commonly given whole and could
+    /// otherwise step through, one address per attempt.
+    pub fn client(ip: IpAddr) -> Self {
+        let ip = ip.to_canonical();
+        let prefix = if ip.is_ipv4() { 32 } else { 64 };
+        Self { network: masked(ip, prefix), prefix }
+    }
+
     pub fn parse(text: &str) -> Result<Self, InvalidAddressRange> {
         let invalid = || InvalidAddressRange(text.to_owned());
         let text = text.trim();
@@ -237,6 +246,17 @@ mod tests {
         text.parse().unwrap()
     }
 
+    #[test]
+    fn a_client_is_an_ipv4_address_or_an_ipv6_network() {
+        let v4: IpAddr = "192.0.2.7".parse().unwrap();
+        assert_eq!(AddressRange::client(v4), AddressRange::single(v4));
+        let v6: IpAddr = "2001:db8:0:1:aaaa:bbbb:cccc:dddd".parse().unwrap();
+        assert_eq!(AddressRange::client(v6).to_string(), "2001:db8:0:1::/64");
+        assert!(AddressRange::client(v6).contains("2001:db8:0:1::99".parse().unwrap()));
+        assert!(!AddressRange::client(v6).contains("2001:db8:0:2::1".parse().unwrap()));
+        let mapped: IpAddr = "::ffff:192.0.2.7".parse().unwrap();
+        assert_eq!(AddressRange::client(mapped), AddressRange::single(v4), "a v4 address seen over v6");
+    }
     #[test]
     fn ranges_are_addresses_or_networks() {
         assert_eq!(range(" 192.168.1.20 ").to_string(), "192.168.1.20");

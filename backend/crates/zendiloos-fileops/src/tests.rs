@@ -407,3 +407,31 @@ fn app_data_needs_its_own_dataset() {
     let refused = ShareRoot::open_app_data(v.directory.path(), VolumeNumber::new(1).unwrap(), &app);
     assert!(matches!(refused, Err(FileError::Invalid(_))), "{refused:?}");
 }
+
+#[test]
+fn a_failed_copy_into_another_file_system_leaves_nothing_behind() {
+    // As a copy into another share: the target on another file system.
+    let Ok(target) = tempfile::tempdir_in("/dev/shm") else { return };
+    let source = tempfile::tempdir().unwrap();
+    if rustix::process::geteuid().is_root() {
+        return; // root reads the unreadable file
+    }
+    let album = source.path().join("album");
+    fs::create_dir_all(&album).unwrap();
+    fs::write(album.join("a.jpg"), "a").unwrap();
+    fs::write(album.join("b.jpg"), "b").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(album.join("b.jpg"), fs::Permissions::from_mode(0o000)).unwrap();
+    let directory =
+        |path: &Path| rustix::fs::open(path, OFlags::RDONLY | OFlags::DIRECTORY, Mode::empty()).unwrap();
+    let (from, to) = (directory(source.path()), directory(target.path()));
+    let source_fs = device(&rustix::fs::fstat(&from).unwrap());
+    if source_fs == device(&rustix::fs::fstat(&to).unwrap()) {
+        return; // one file system here: nothing to show
+    }
+
+    let copied = copy_new(from.as_fd(), c"album", to.as_fd(), c"album", source_fs, 0);
+
+    assert!(copied.is_err(), "an unreadable file was copied");
+    assert!(!target.path().join("album").exists(), "the half copy stayed");
+}

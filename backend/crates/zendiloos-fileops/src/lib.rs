@@ -194,6 +194,9 @@ fn copy_new(
             }
             let from = open_beneath_flags(source, name, OFlags::RDONLY | OFlags::DIRECTORY)?;
             mkdirat(target, target_name, Mode::from_raw_mode(0o777))?;
+            // Where the copy is, for cleaning up after a failure: a copy into
+            // another share lies on another file system than its source.
+            let copy_on = device(&statat(target, target_name, AtFlags::SYMLINK_NOFOLLOW)?);
             let filled = (|| {
                 let to = open_beneath_flags(target, target_name, OFlags::PATH | OFlags::DIRECTORY)?;
                 for child in names(&from)? {
@@ -203,7 +206,7 @@ fn copy_new(
                 Ok(())
             })();
             if let Err(error) = filled {
-                let _ = remove_tree(target, target_name, file_system, 0);
+                let _ = remove_tree(target, target_name, copy_on, 0);
                 return Err(nested(error));
             }
         }

@@ -1,7 +1,9 @@
 [Unit]
 Description=zendiloOS self-signed TLS certificate
 Documentation=https://github.com/mavnezz/zendiloOS
-ConditionPathExists=!/etc/zendiloos/tls/zendiloos.key
+# Unless both are there: a run interrupted halfway is made good.
+ConditionFileNotEmpty=|!/etc/zendiloos/tls/zendiloos.key
+ConditionFileNotEmpty=|!/etc/zendiloos/tls/zendiloos.crt
 Before=nginx.service
 
 [Service]

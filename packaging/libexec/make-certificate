@@ -2,17 +2,23 @@
 # Creates the self-signed certificate nginx serves until an administrator
 # installs another one. Runs at installation and, for images built
 # elsewhere, on the first boot (zendiloos-certificate.service), so the
-# certificate names this machine.
+# certificate names this machine. Both files are written beside their place
+# and renamed into it, the key last: a run interrupted halfway leaves no
+# key, and the next one makes both again.
 set -e
 
 dir=/etc/zendiloos/tls
-[ -e "$dir/zendiloos.key" ] && exit 0
+[ -s "$dir/zendiloos.key" ] && [ -s "$dir/zendiloos.crt" ] && exit 0
 
 host=$(hostname)
 install -d -m 0755 "$dir"
 umask 077
+rm -f "$dir/zendiloos.key.new" "$dir/zendiloos.crt.new"
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 3650 \
     -subj "/CN=$host" \
     -addext "subjectAltName=DNS:$host,DNS:$host.local,DNS:localhost,IP:127.0.0.1" \
-    -keyout "$dir/zendiloos.key" -out "$dir/zendiloos.crt" 2>/dev/null
-chmod 0644 "$dir/zendiloos.crt"
+    -keyout "$dir/zendiloos.key.new" -out "$dir/zendiloos.crt.new" 2>/dev/null
+chmod 0644 "$dir/zendiloos.crt.new"
+sync "$dir/zendiloos.key.new" "$dir/zendiloos.crt.new"
+mv -f "$dir/zendiloos.crt.new" "$dir/zendiloos.crt"
+mv -f "$dir/zendiloos.key.new" "$dir/zendiloos.key"

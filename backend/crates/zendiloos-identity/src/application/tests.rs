@@ -717,6 +717,32 @@ async fn each_account_keeps_its_own_preferences() {
 // Security: idle time, account lock, blocked addresses, sessions
 
 #[tokio::test]
+async fn ipv6_addresses_of_one_network_count_as_one_client() {
+    let t = TestIdentity::new();
+    t.add_account("alice", PASSWORD, Role::User);
+    let at = |host: u16| RequestContext {
+        client_ip: Some(IpAddr::from([0x2001, 0xdb8, 0, 1, 0, 0, 0, host])),
+        ..from(1)
+    };
+    // Each attempt from another address of the same /64.
+    for host in 0..10 {
+        let _ = t.use_cases.login.execute(login_input("nobody", PASSWORD), &at(host)).await;
+    }
+
+    let blocked = t.use_cases.login.execute(login_input("alice", PASSWORD), &at(77)).await;
+
+    assert!(matches!(blocked, Err(IdentityError::AddressBlocked)), "{blocked:?}");
+    let entry = t.audit.entries().into_iter().find(|e| e.action == "identity.address_block").unwrap();
+    assert_eq!(entry.target.as_deref(), Some("2001:db8:0:1::/64"));
+    let neighbour =
+        RequestContext { client_ip: Some(IpAddr::from([0x2001, 0xdb8, 0, 2, 0, 0, 0, 1])), ..from(1) };
+    assert!(
+        t.use_cases.login.execute(login_input("alice", PASSWORD), &neighbour).await.is_ok(),
+        "the next /64 is another"
+    );
+}
+
+#[tokio::test]
 async fn an_address_that_fails_too_often_is_blocked_for_a_day() {
     let t = TestIdentity::new();
     t.add_account("alice", PASSWORD, Role::User);

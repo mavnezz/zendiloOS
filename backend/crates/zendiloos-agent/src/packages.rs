@@ -196,6 +196,9 @@ fn steps(
     mut step: impl FnMut(&str) -> Result<(), String>,
 ) -> Result<(), String> {
     step("lists")?;
+    if task != PackageTask::Check {
+        finish_interrupted()?;
+    }
     apt(&["update"])?;
     match task {
         PackageTask::InstallDocker => {
@@ -322,9 +325,11 @@ fn release_key(paths: &HostPaths) -> Result<minisign_verify::PublicKey, String> 
 /// Copies a regular file, never through a link, of at most `max` bytes;
 /// returns the content of small ones.
 fn copy_plain(from: &Path, to: &Path, max: u64) -> Result<Vec<u8>, String> {
+    // Not through a link, and a FIFO put in the download folder opens at
+    // once (and is refused below) rather than waiting for a writer.
     let mut source = fs::OpenOptions::new()
         .read(true)
-        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+        .custom_flags((rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK).bits() as i32)
         .open(from)
         .map_err(|e| format!("{}: {e}", from.display()))?;
     let metadata = source.metadata().map_err(|e| format!("{}: {e}", from.display()))?;
@@ -454,10 +459,27 @@ fn run_text(program: &str, args: &[&str]) -> Result<String, String> {
 /// restart this very unit once an update replaces this binary, and Docker
 /// with every app after a library's update. Services restart as their own
 /// packages say, as on a Debian without needrestart.
+/// Finishes what an interrupted apt or dpkg left half done (a restart in
+/// the middle of an update): until then every run of apt fails with "dpkg
+/// was interrupted". Nothing to do is quick.
+fn finish_interrupted() -> Result<(), String> {
+    debian("/usr/bin/dpkg", &["--force-confdef", "--force-confold", "--configure", "-a"])
+}
+
 fn apt(args: &[&str]) -> Result<(), String> {
-    let output = Command::new("/usr/bin/apt-get")
-        .args(["--quiet", "-o", "DPkg::Lock::Timeout=600"])
-        .args(["-o", "Dpkg::Options::=--force-confdef", "-o", "Dpkg::Options::=--force-confold"])
+    let mut all = vec!["--quiet", "-o", "DPkg::Lock::Timeout=600"];
+    all.extend(["-o", "Dpkg::Options::=--force-confdef", "-o", "Dpkg::Options::=--force-confold"]);
+    all.extend_from_slice(args);
+    debian("/usr/bin/apt-get", &all)
+}
+
+/// Runs apt-get or dpkg without asking anything; prints what it said.
+fn debian(program: &str, args: &[&str]) -> Result<(), String> {
+    let name = Path::new(program).file_name().and_then(|name| name.to_str()).unwrap_or(program);
+    // `apt-get upgrade`: the first word that is no option nor its value.
+    let action =
+        args.iter().find(|arg| !arg.starts_with('-') && !arg.contains('=')).map(|arg| format!(" {arg}"));
+    let output = Command::new(program)
         .args(args)
         .env_clear()
         .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
@@ -467,7 +489,7 @@ fn apt(args: &[&str]) -> Result<(), String> {
         .env("NEEDRESTART_SUSPEND", "1")
         .stdin(Stdio::null())
         .output()
-        .map_err(|e| format!("apt-get cannot be started: {e}"))?;
+        .map_err(|e| format!("{name} cannot be started: {e}"))?;
     let text =
         format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
     print!("{text}");
@@ -476,7 +498,7 @@ fn apt(args: &[&str]) -> Result<(), String> {
     }
     let lines: Vec<&str> = text.lines().filter(|line| !line.trim().is_empty()).collect();
     let tail = lines[lines.len().saturating_sub(TAIL)..].join("\n");
-    Err(format!("apt-get {} failed ({}):\n{tail}", args[0], output.status))
+    Err(format!("{name}{} failed ({}):\n{tail}", action.unwrap_or_default(), output.status))
 }
 
 /// Writes the run's state, readable by everyone, replacing the last.
@@ -521,6 +543,26 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_fifo_in_the_download_folder_is_refused_at_once() {
+        let folder = tempfile::tempdir().unwrap();
+        let fifo = folder.path().join("zendiloos_9.9.9_amd64.deb");
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            &fifo,
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::from_raw_mode(0o600),
+            0,
+        )
+        .unwrap();
+        let target = folder.path().join("copy");
+        let (done, waited) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done.send(copy_plain(&fifo, &target, 1024));
+        });
+        let copied = waited.recv_timeout(std::time::Duration::from_secs(5)).expect("it waited for a writer");
+        assert!(copied.unwrap_err().contains("no file of the release"));
+    }
     #[test]
     fn a_run_is_recorded_for_the_agent_to_read() {
         let folder = tempfile::tempdir().unwrap();

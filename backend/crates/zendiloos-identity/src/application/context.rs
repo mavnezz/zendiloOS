@@ -162,7 +162,7 @@ impl Context {
 
     /// The keys an attempt from `request` for `account` counts against.
     pub(crate) fn throttle_keys(request: &RequestContext, account: Option<&AccountName>) -> Vec<ThrottleKey> {
-        let address = request.client_ip.map(ThrottleKey::Address);
+        let address = request.client_ip.map(|ip| ThrottleKey::Address(AddressRange::client(ip).network()));
         let account = account.cloned().map(ThrottleKey::Account);
         address.into_iter().chain(account).collect()
     }
@@ -220,14 +220,14 @@ impl Context {
                 }
             }
         }
-        let Some(ip) = reached else { return Ok(()) };
+        let (Some(_), Some(ip)) = (reached, request.client_ip) else { return Ok(()) };
         let Some(auto) = defences.settings.auto_block else { return Ok(()) };
         if defences.settings.is_allowed(ip) || defences.blocks(Some(ip), now) {
             return Ok(());
         }
         let release = |days: u16| now.saturating_add(Duration::from_secs(u64::from(days) * 86_400));
         let block = BlockedAddress {
-            range: AddressRange::single(ip),
+            range: AddressRange::client(ip),
             blocked_at: now,
             until: auto.release_after_days.map(release),
             automatic: true,
