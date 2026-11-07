@@ -204,6 +204,10 @@ vm-docker-test:
 vm-app-center-test:
     scripts/vm-app-center-test.sh
 
+# Removable drives in the second VM: mounted when seen, ejected, pulled, guarded
+vm-removable-test:
+    scripts/vm-removable-test.sh
+
 # Administrators' projects in the VM: what runs is what was confirmed, binds pinned
 vm-project-pins-test:
     scripts/vm-project-pins-test.sh

@@ -5,6 +5,8 @@
 #   scripts/vm.sh start     boot in the background (console in dev/vm/console.log)
 #   scripts/vm.sh install [deb]  install a package; the newest dist/zendiloos_*.deb by default
 #   scripts/vm.sh ssh [cmd] log in as the image's user `debian`
+#   scripts/vm.sh removable-attach <image> <id> [ro]  plug a raw disk image in as a removable drive
+#   scripts/vm.sh removable-detach <id>          pull it out again, unannounced
 #   scripts/vm.sh stop      power off
 #   scripts/vm.sh destroy   delete the VM's disks (keeps the downloaded image)
 #
@@ -118,6 +120,8 @@ start() {
         -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:$ssh_port-:22,hostfwd=tcp:$https_listen:$https_port-:443" \
         -device virtio-net-pci,netdev=net0 \
         "${lan[@]}" \
+        -device virtio-scsi-pci,id=scsi \
+        -monitor "unix:$dir/monitor.sock,server,nowait" \
         -display none -serial "file:$dir/console.log" \
         -daemonize -pidfile "$dir/qemu.pid"
     wait_for_ssh
@@ -167,6 +171,33 @@ install_package() {
     say "Installed: https://127.0.0.1:$https_port/"
 }
 
+# A command to QEMU's monitor; what it answers, without its prompts.
+monitor() {
+    [[ -S $dir/monitor.sock ]] || { echo "no monitor; restart the VM (stop, start)" >&2; exit 1; }
+    printf '%s\n' "$1" | nc -U -q 1 "$dir/monitor.sock" | tr -d '\r' | grep -v '^(qemu)\|^QEMU ' || true
+}
+
+# A raw image as a removable disk, as if plugged in. The cloud image's
+# kernel has no USB at all, so it comes over SCSI with the removable bit,
+# which is what the kernel tells USB sticks by.
+removable_attach() {
+    local image=$1 id=$2 readonly=${3:-}
+    [[ -f $image && $id =~ ^[a-z0-9]+$ && ( -z $readonly || $readonly == ro ) ]] \
+        || { echo "usage: removable-attach <image> <id> [ro]" >&2; exit 1; }
+    local out
+    out=$(monitor "drive_add 0 if=none,id=$id,file=$(realpath "$image"),format=raw${readonly:+,readonly=on}")
+    [[ $out == *OK* ]] || { echo "drive_add: $out" >&2; exit 1; }
+    out=$(monitor "device_add scsi-hd,bus=scsi.0,drive=$id,id=$id-stick,removable=on,serial=ZDL-RM-$id")
+    [[ -z $out ]] || { echo "device_add: $out" >&2; exit 1; }
+}
+
+# Pulled out without warning; the drive goes with the device.
+removable_detach() {
+    local out
+    out=$(monitor "device_del $1-stick")
+    [[ -z $out ]] || { echo "device_del: $out" >&2; exit 1; }
+}
+
 stop() {
     running || { echo "not running"; return; }
     ssh "${ssh_opts[@]}" debian@127.0.0.1 'sudo systemctl poweroff' 2>/dev/null || true
@@ -177,7 +208,7 @@ stop() {
 destroy() {
     running && stop
     rm -f "${dir:?}"/system.qcow2 "${dir:?}"/sata-*.qcow2 "${dir:?}"/nvme-*.qcow2 \
-          "${dir:?}"/seed.iso "${dir:?}"/console.log "${dir:?}"/qemu.pid
+          "${dir:?}"/seed.iso "${dir:?}"/console.log "${dir:?}"/qemu.pid "${dir:?}"/monitor.sock
     say "Destroyed (the downloaded image is kept)"
 }
 
@@ -186,6 +217,8 @@ case ${1:-} in
     start) start ;;
     install) install_package "${2:-}" ;;
     ssh) shift; exec ssh "${ssh_opts[@]}" debian@127.0.0.1 "$@" ;;
+    removable-attach) removable_attach "${2:-}" "${3:-}" "${4:-}" ;;
+    removable-detach) removable_detach "${2:?usage: removable-detach <id>}" ;;
     stop) stop ;;
     destroy) destroy ;;
     *) sed -n '2,/^set /{/^set /d;p}' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;

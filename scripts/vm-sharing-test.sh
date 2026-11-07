@@ -163,6 +163,21 @@ grep -q hello.txt <<<"$nfs" || fail "NFS shows no files"
 ! grep -q WRITABLE <<<"$nfs" || fail "the read-only export is writable"
 ! grep -q ROOT-READS <<<"$nfs" || fail "root is not squashed"
 
+say "3b. On the NAS only: off the network, files and rules kept"
+call PATCH "/shares/$share_id" '{"shared":false}' | jq -e '.share.shared == false' >/dev/null || fail "cannot stop sharing"
+vm "! testparm -s 2>/dev/null | grep -qx '\[photos\]'" || fail "Samba still offers the folder"
+vm "! sudo exportfs -v | grep -qF '$path'" || fail "NFS still exports the folder"
+smb_refused anna 'first secret phrase' 'ls'
+vm "sudo test -f $path/hello.txt" || fail "the files went with the sharing"
+[[ $(call GET /files/volumes | jq -r --argjson id "$share_id" '[.[].folders[]? | select(.id == $id)][0].shared') == false ]] \
+    || fail "the explorer does not see it unshared: $(call GET /files/volumes)"
+call PATCH "/shares/$share_id" '{"shared":true}' | jq -e '.share.shared == true' >/dev/null || fail "cannot share again"
+vm "testparm -s 2>/dev/null | grep -qx '\[photos\]'" || fail "Samba does not offer it again"
+vm "sudo exportfs -v | grep -qF '$path'" || fail "NFS does not export it again"
+acl=$(vm "sudo getfacl -p $path")
+grep -q '^user:ben:r-x' <<<"$acl" || fail "the rules went with the sharing: $acl"
+smb_ok anna 'first secret phrase' 'ls'
+
 say "4. The file manager sees what SMB sees"
 # New accounts choose their own password first; it is their SMB password too.
 anna_pw='fresh secret phrase one' ben_pw='fresh secret phrase two'
