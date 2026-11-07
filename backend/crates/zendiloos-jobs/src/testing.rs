@@ -35,6 +35,7 @@ impl JobRepository for MemoryJobs {
             created_at: new.created_at,
             updated_at: new.created_at,
             finished_at: None,
+            output: Vec::new(),
         };
         jobs.push(job.clone());
         Ok(job)

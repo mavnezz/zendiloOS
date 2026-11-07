@@ -19,7 +19,9 @@ mod web;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use zendiloos_agent_proto::{AgentTransport, ErrorCode, PROTOCOL_VERSION, Request, RequestId, Response};
+use zendiloos_agent_proto::{
+    AgentTransport, ErrorCode, PROTOCOL_VERSION, Report, Request, RequestId, Response,
+};
 use zendiloos_kernel::{PortError, RequestContext};
 use zendiloos_system::application::ports::PowerControl;
 use zendiloos_system::domain::PowerAction;
@@ -48,6 +50,17 @@ async fn call_raw(
     // Request IDs come from zendiloosd itself (UUIDs); anything else is dropped.
     let request_id = context.request_id.as_deref().and_then(|id| RequestId::parse(id).ok());
     transport.call(request, request_id).await.map_err(|error| PortError::new(WHAT, error))
+}
+
+/// As [`call_raw`], telling `report` what the agent reports on the way.
+async fn call_raw_reporting(
+    transport: &dyn AgentTransport,
+    request: Request,
+    report: &dyn Report,
+    context: &RequestContext,
+) -> Result<Response, PortError> {
+    let request_id = context.request_id.as_deref().and_then(|id| RequestId::parse(id).ok());
+    transport.call_reporting(request, request_id, report).await.map_err(|error| PortError::new(WHAT, error))
 }
 
 /// The agent's answer; its errors become port errors.

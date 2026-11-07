@@ -79,10 +79,12 @@ impl Projects {
         if !pins.is_empty() {
             app_shares::repin(&self.systemctl, owner).await?;
         }
+        // Not quiet: what Compose writes goes to whoever deploys, line by
+        // line, as it pulls and makes containers.
         if pull {
-            self.compose(project, &["pull", "--quiet"]).await?;
+            self.compose(project, &["pull"]).await?;
         }
-        self.compose(project, &["up", "--detach", "--remove-orphans", "--quiet-pull"]).await
+        self.compose(project, &["up", "--detach", "--remove-orphans"]).await
     }
 
     /// Takes the project's containers and networks down and removes what
@@ -100,7 +102,8 @@ impl Projects {
         }
     }
 
-    /// `docker compose` on the kept file, nothing else read.
+    /// `docker compose` on the kept file, nothing else read; what it writes
+    /// is reported line by line ([`crate::progress::line`]).
     async fn compose(&self, project: &ProjectName, args: &[&str]) -> Result<Response, OperationError> {
         let path = Owner::Project(project).kept(&self.paths).to_string_lossy().into_owned();
         let mut all =
@@ -110,7 +113,9 @@ impl Projects {
             variables: DOCKER_ENVIRONMENT.iter().map(|(n, v)| ((*n).to_owned(), (*v).to_owned())).collect(),
             directory: None,
         };
-        let output = zendiloos_exec::run_with(&self.docker, &all, None, &surroundings, LONG).await?;
+        let output =
+            zendiloos_exec::run_lines(&self.docker, &all, &surroundings, LONG, &mut crate::progress::line)
+                .await?;
         if output.status.success() {
             return Ok(Response::Done);
         }

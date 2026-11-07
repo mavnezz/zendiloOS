@@ -672,9 +672,11 @@ pub struct DockerProject {
     pub app: Option<String>,
     /// For a project made here from an app of a catalog: which.
     pub template: Option<ProjectTemplate>,
-    /// Where its Compose file is: on the machine for every kind, and in the
-    /// share for one made here (`docker/teslamate/compose.yaml`).
+    /// Where its Compose files are on the machine.
     pub files: Vec<String>,
+    /// For a project made here: where its Compose file is in the shares,
+    /// share, folder and file (`docker/teslamate/compose.yaml`).
+    pub compose_file: Option<String>,
     pub share_id: Option<i64>,
     pub folder: Option<String>,
     pub created_at: Option<i64>,
@@ -694,9 +696,11 @@ fn project_dto(project: containers::Project, usage: &[ContainerView]) -> DockerP
         })
         .collect();
     let mut template = None;
+    let mut compose_file = None;
     let (kind, app, files, share_id, folder, created_at, created_by) = match project.origin {
         Origin::Own(own) => {
-            template = own.template.map(Into::into);
+            template = own.template.clone().map(Into::into);
+            compose_file = Some(own.compose_place());
             (
                 ProjectKind::Own,
                 None,
@@ -716,6 +720,7 @@ fn project_dto(project: containers::Project, usage: &[ContainerView]) -> DockerP
         app,
         template,
         files,
+        compose_file,
         share_id,
         folder,
         created_at,
@@ -848,9 +853,21 @@ async fn control_project(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Fetches the images anew and recreates what changed, in a job. Not for
-/// an app of a catalog. Needs `containers.manage`.
+#[derive(Debug, Default, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Redeploy {
+    /// Fetches the newest images under the project's tags first.
+    #[serde(default)]
+    pub pull: bool,
+}
+
+/// Brings the project up again in a job, recreating what changed and
+/// removing containers no longer in its file; with `pull` (no body: no
+/// pull), its images are fetched anew first. The job's `output` follows
+/// what Docker Compose writes. Not for an app of a catalog. Needs
+/// `containers.manage`.
 #[utoipa::path(post, path = "/docker/projects/{name}/redeploy", tag = "docker", security(("session" = [])), params(("name" = String, Path)),
+    request_body(content = Option<Redeploy>),
     responses((status = ACCEPTED, body = Job), (status = FORBIDDEN, body = Problem, description = "`forbidden`, `csrf_rejected`"),
         (status = NOT_FOUND, body = Problem, description = "`not_found`"),
         (status = CONFLICT, body = Problem, description = "`app_project`; `project_unconfirmed`: made before what was confirmed was kept, save its file once")))]
@@ -859,9 +876,11 @@ async fn redeploy_project(
     State(state): State<ApiState>,
     Client(client): Client,
     Path(name): Path<String>,
+    request: Option<ApiJson<Redeploy>>,
 ) -> Result<(StatusCode, Json<Job>), ApiError> {
     manage(&auth)?;
-    let job = state.containers.redeploy(&name, &auth.0.actor(), &client).await?;
+    let pull = request.is_some_and(|ApiJson(request)| request.pull);
+    let job = state.containers.redeploy(&name, pull, &auth.0.actor(), &client).await?;
     Ok((StatusCode::ACCEPTED, Json(job.into())))
 }
 

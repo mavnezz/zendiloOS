@@ -272,6 +272,8 @@ pub(crate) struct Harness {
     pub(crate) installed: Arc<zendiloos_apps::testing::MemoryInstalled>,
     pub(crate) engine: Arc<zendiloos_containers::testing::FakeEngine>,
     pub(crate) containers: zendiloos_containers::application::Containers,
+    /// The jobs of the Docker app, kept apart from the others here.
+    pub(crate) docker_jobs: Arc<zendiloos_jobs::testing::MemoryJobs>,
 }
 
 /// The App Center's projects, from the Docker fakes, as zendiloosd's
@@ -477,6 +479,7 @@ impl Harness {
                 projects: Arc::new(TemplateProjects(docker_test.containers.clone())),
             });
         let engine = docker_test.engine.clone();
+        let docker_jobs = docker_test.jobs.clone();
         let update_releases = Arc::new(zendiloos_updates::testing::FakeReleases::default());
         *update_releases.releases.lock().unwrap() =
             vec![zendiloos_updates::testing::release("v0.2.0", "0.2.0", false)];
@@ -541,6 +544,7 @@ impl Harness {
             app_host,
             installed,
             containers,
+            docker_jobs,
         }
     }
 

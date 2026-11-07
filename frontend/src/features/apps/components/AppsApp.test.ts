@@ -360,6 +360,7 @@ describe('the App Center', () => {
       step: 'account',
       created_at: 0,
       updated_at: 0,
+      output: [],
     })
     await settle()
     expect(page()).toContain(t('appStore.installed.steps.account'))

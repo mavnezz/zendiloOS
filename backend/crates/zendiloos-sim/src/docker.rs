@@ -39,6 +39,38 @@ fn refused(message: &str) -> Response {
     Response::Error { code: ErrorCode::Forbidden, message: format!("refused: {message}") }
 }
 
+/// What Docker Compose writes while `request` pulls or brings a project
+/// up, as it would on a NAS; nothing for other requests.
+pub(crate) fn compose_lines(request: &Request) -> Vec<String> {
+    let (name, pull, up) = match request {
+        Request::DeployProject { project, pull, .. } => (project.as_str(), *pull, true),
+        Request::ControlProject { project, action: ProjectAction::Pull } => (project.as_str(), true, false),
+        Request::ControlProject { project, action: ProjectAction::Up } => (project.as_str(), false, true),
+        _ => return Vec::new(),
+    };
+    let mut lines = Vec::new();
+    if pull {
+        lines.extend([
+            " app Pulling".to_owned(),
+            " 2d429b9e73a6 Pulling fs layer".to_owned(),
+            " 2d429b9e73a6 Downloading [=====>     ]  14.2MB/28.2MB".to_owned(),
+            " 2d429b9e73a6 Pull complete".to_owned(),
+            " app Pulled".to_owned(),
+        ]);
+    }
+    if up {
+        lines.extend([
+            format!(" Network {name}_default  Creating"),
+            format!(" Network {name}_default  Created"),
+            format!(" Container {name}-app-1  Recreate"),
+            format!(" Container {name}-app-1  Recreated"),
+            format!(" Container {name}-app-1  Starting"),
+            format!(" Container {name}-app-1  Started"),
+        ]);
+    }
+    lines
+}
+
 fn failed(message: &str) -> Response {
     Response::Error { code: ErrorCode::Failed, message: message.to_owned() }
 }

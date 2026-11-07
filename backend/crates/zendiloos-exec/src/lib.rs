@@ -217,6 +217,107 @@ where
     }
 }
 
+/// Longest line [`run_lines`] passes on at once; a longer one comes in
+/// pieces of this size.
+pub const MAX_LINE: usize = 4096;
+
+/// Like [`run_combined`], but passes each line the program writes, to
+/// either stream, to `line` as it comes: without its line break (`\n`, or
+/// `\r` as progress bars use), lossily decoded, empty ones left out. Lines
+/// are passed on, not kept, so `limits.max_stdout` does not apply; the
+/// last 16 KiB written are kept for an error message, as `stderr` of the
+/// result, and `stdout` is empty.
+pub async fn run_lines<I, A>(
+    program: &Program,
+    args: I,
+    surroundings: &Surroundings<'_>,
+    limits: Limits,
+    line: &mut (dyn FnMut(&str) + Send),
+) -> Result<Output, ExecError>
+where
+    I: IntoIterator<Item = A>,
+    A: AsRef<OsStr>,
+{
+    let name = program.name();
+    let io_error = |source| ExecError::Io { program: name.clone(), source };
+    let (reader, writer) = io::pipe().map_err(io_error)?;
+    let mut command = Command::new(program.path());
+    command
+        .args(args)
+        .env_clear()
+        .envs(surroundings.variables.iter().map(|(name, value)| (name, value)))
+        .current_dir(surroundings.directory.unwrap_or(Path::new("/")))
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(writer.try_clone().map_err(io_error)?))
+        .stderr(Stdio::from(writer))
+        .process_group(0)
+        .kill_on_drop(true);
+    let mut child =
+        spawn(&mut command).await.map_err(|source| ExecError::Spawn { program: name.clone(), source })?;
+    let mut group = Group::of(&child);
+    // Only the child may hold the writing end, or reading never ends.
+    drop(command);
+    let mut reader = tokio::net::unix::pipe::Receiver::from_owned_fd(std::os::fd::OwnedFd::from(reader))
+        .map_err(io_error)?;
+
+    let finished = async {
+        let mut lines = Lines::default();
+        let mut chunk = [0u8; 8192];
+        loop {
+            let read = reader.read(&mut chunk).await.map_err(io_error)?;
+            if read == 0 {
+                break;
+            }
+            lines.take(&chunk[..read], line);
+        }
+        lines.flush(line);
+        let status = child.wait().await.map_err(io_error)?;
+        group.ended();
+        Ok(Output { status, stdout: Vec::new(), stderr: lines.tail() })
+    };
+    match tokio::time::timeout(limits.timeout, finished).await {
+        Ok(result) => result,
+        Err(_) => Err(ExecError::Timeout { program: name.clone(), after: limits.timeout }),
+    }
+}
+
+/// Splits what a program writes into lines, keeping the last bytes.
+#[derive(Default)]
+struct Lines {
+    pending: Vec<u8>,
+    tail: std::collections::VecDeque<u8>,
+}
+
+impl Lines {
+    fn take(&mut self, bytes: &[u8], line: &mut (dyn FnMut(&str) + Send)) {
+        self.tail.extend(bytes);
+        let excess = self.tail.len().saturating_sub(MAX_STDERR);
+        self.tail.drain(..excess);
+        for &byte in bytes {
+            if byte == b'\n' || byte == b'\r' {
+                self.flush(line);
+            } else {
+                self.pending.push(byte);
+                if self.pending.len() >= MAX_LINE {
+                    self.flush(line);
+                }
+            }
+        }
+    }
+
+    fn flush(&mut self, line: &mut (dyn FnMut(&str) + Send)) {
+        if !self.pending.is_empty() {
+            line(&String::from_utf8_lossy(&self.pending));
+            self.pending.clear();
+        }
+    }
+
+    fn tail(&self) -> String {
+        let bytes: Vec<u8> = self.tail.iter().copied().collect();
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+}
+
 enum Stdin<'a> {
     Null,
     Bytes(&'a [u8]),
@@ -502,6 +603,47 @@ mod tests {
         assert_eq!(run(&sh(), ["-c", "printf 0123456789"], limits).await.unwrap().stdout.len(), 10);
         let error = run(&sh(), ["-c", "printf 0123456789x"], limits).await.unwrap_err();
         assert!(matches!(error, ExecError::OutputTooLarge { limit: 10, .. }), "{error:?}");
+    }
+
+    #[tokio::test]
+    async fn lines_are_passed_on_as_they_come_from_either_stream() {
+        let script = r#"echo pulling; echo "50%" >&2; printf 'one\rtwo\n\n'; printf tail; exit 3"#;
+        let mut seen = Vec::new();
+        let output =
+            run_lines(&sh(), ["-c", script], &Surroundings::default(), Limits::default(), &mut |line| {
+                seen.push(line.to_owned());
+            })
+            .await
+            .unwrap();
+        assert_eq!(seen, ["pulling", "50%", "one", "two", "tail"]);
+        assert_eq!(output.status.code(), Some(3));
+        assert!(output.stdout.is_empty());
+        assert!(output.stderr.ends_with("two\n\ntail"), "{:?}", output.stderr);
+
+        let long = format!("head -c {} /dev/zero | tr '\\0' x", MAX_LINE + 10);
+        let mut pieces = Vec::new();
+        run_lines(&sh(), ["-c", long.as_str()], &Surroundings::default(), Limits::default(), &mut |line| {
+            pieces.push(line.len());
+        })
+        .await
+        .unwrap();
+        assert_eq!(pieces, [MAX_LINE, 10]);
+        let many = format!("head -c {} /dev/zero", MAX_STDERR * 2);
+        let output =
+            run_lines(&sh(), ["-c", many.as_str()], &Surroundings::default(), Limits::default(), &mut |_| {})
+                .await
+                .unwrap();
+        assert_eq!(output.stderr.len(), MAX_STDERR, "only the last bytes are kept");
+    }
+
+    #[tokio::test]
+    async fn a_streaming_program_that_takes_too_long_is_killed() {
+        let limits = Limits { timeout: Duration::from_millis(200), ..Limits::default() };
+        let error =
+            run_lines(&sh(), ["-c", "echo a; sleep 5"], &Surroundings::default(), limits, &mut |_| {})
+                .await
+                .unwrap_err();
+        assert!(matches!(error, ExecError::Timeout { .. }), "{error:?}");
     }
 
     #[test]

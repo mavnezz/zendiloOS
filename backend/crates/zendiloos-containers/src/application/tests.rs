@@ -251,7 +251,7 @@ async fn a_file_changed_in_the_share_does_not_run() {
     let changed = "services:\n  app:\n    image: nginx\n    privileged: true\n";
     t.storage.files.lock().unwrap().insert((1, "docker/tesla/compose.yaml".to_owned()), changed.to_owned());
 
-    t.containers.redeploy("tesla", &alice(), &context()).await.unwrap();
+    t.containers.redeploy("tesla", true, &alice(), &context()).await.unwrap();
 
     let deployed = asked(&t, "deploy tesla pull=true").await;
     assert!(deployed.contains(r#""privileged":false"#), "what was confirmed runs: {deployed}");
@@ -271,15 +271,48 @@ async fn a_project_made_before_runs_once_its_file_is_saved() {
     }
     t.storage.files.lock().unwrap().insert((1, "docker/tesla/compose.yaml".to_owned()), plain.to_owned());
 
-    let refused = t.containers.redeploy("tesla", &alice(), &context()).await;
+    let refused = t.containers.redeploy("tesla", true, &alice(), &context()).await;
     assert!(matches!(refused, Err(ContainersError::Unconfirmed)), "{refused:?}");
     let source = t.containers.project_compose("tesla", &alice(), &context()).await.unwrap();
     assert_eq!(source.files[0].1, plain, "read from the share to be saved");
 
     t.containers.change_compose("tesla", plain, false, &alice(), &context()).await.unwrap();
     asked(&t, "deploy tesla pull=false").await;
-    t.containers.redeploy("tesla", &alice(), &context()).await.unwrap();
+    t.containers.redeploy("tesla", true, &alice(), &context()).await.unwrap();
     asked(&t, "deploy tesla pull=true").await;
+}
+
+#[tokio::test]
+async fn a_redeploy_pulls_only_when_asked_and_its_job_tells_what_compose_wrote() {
+    let (t, _) = setup();
+    let plain = "services:\n  app:\n    image: nginx\n";
+    let resting = NewProject { start: false, ..new_project("tesla", plain, false) };
+    t.containers.create_project(resting, &alice(), &context()).await.unwrap();
+
+    let job = t.containers.redeploy("tesla", false, &alice(), &context()).await.unwrap();
+    asked(&t, "deploy tesla pull=false").await;
+    let ended = finished(&t, job.id).await;
+    assert_eq!(ended.output, [" Container tesla-app  Started"]);
+
+    let job = t.containers.redeploy("tesla", true, &alice(), &context()).await.unwrap();
+    assert_eq!(finished(&t, job.id).await.output, [" app Pulled", " Container tesla-app  Started"]);
+
+    // Made elsewhere: what Docker writes as it pulls and brings it up.
+    let job = t.containers.redeploy("stack", false, &alice(), &context()).await.unwrap();
+    assert_eq!(finished(&t, job.id).await.output, ["up stack"]);
+}
+
+/// The job `id` once it ended, as stored.
+async fn finished(t: &TestContainers, id: zendiloos_jobs::JobId) -> zendiloos_jobs::Job {
+    for _ in 0..200 {
+        if let Some(job) = t.jobs.all().into_iter().find(|job| job.id == id && job.finished_at.is_some()) {
+            // Output published after the end would come within a quarter second.
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            return t.jobs.all().into_iter().find(|j| j.id == id).unwrap_or(job);
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    panic!("job {id:?} did not end");
 }
 
 #[tokio::test]
@@ -287,7 +320,7 @@ async fn apps_of_catalogs_are_left_to_the_app_center() {
     let (t, _) = setup();
 
     for refused in [
-        t.containers.redeploy("kuma", &alice(), &context()).await.map(|_| ()),
+        t.containers.redeploy("kuma", false, &alice(), &context()).await.map(|_| ()),
         t.containers.delete_project("kuma", &alice(), &context()).await.map(|_| ()),
         t.containers.project_compose("kuma", &alice(), &context()).await.map(|_| ()),
         t.containers.change_compose("kuma", "x", true, &alice(), &context()).await.map(|_| ()),
@@ -306,7 +339,7 @@ async fn projects_made_elsewhere_are_shown_updated_and_removed() {
     assert!(!source.editable);
     assert_eq!(source.files[0].0, "/opt/stack/compose.yml");
 
-    t.containers.redeploy("stack", &alice(), &context()).await.unwrap();
+    t.containers.redeploy("stack", true, &alice(), &context()).await.unwrap();
     asked(&t, "project up stack").await;
     assert!(t.engine.calls().contains(&"project pull stack".to_owned()), "images fetched first");
 

@@ -90,6 +90,23 @@ impl Docker {
         Ok(Response::Done)
     }
 
+    /// Like [`Docker::done`], reporting what `docker` writes line by line
+    /// ([`crate::progress::line`]) as it comes.
+    async fn reported(&self, args: &[&str], limits: Limits) -> Result<Response, OperationError> {
+        let output = zendiloos_exec::run_lines(
+            &self.docker,
+            args,
+            &surroundings(),
+            limits,
+            &mut crate::progress::line,
+        )
+        .await?;
+        if !output.status.success() {
+            return Err(OperationError::Failed(format!("Docker: {}", complaint(&output))));
+        }
+        Ok(Response::Done)
+    }
+
     fn output(text: String) -> Response {
         Response::DockerOutput { text }
     }
@@ -306,11 +323,11 @@ impl Docker {
                 }
                 args.extend(["--project-name", name]);
                 if action == ProjectAction::Up {
-                    args.extend(["up", "--detach", "--remove-orphans", "--quiet-pull"]);
+                    args.extend(["up", "--detach", "--remove-orphans"]);
                 } else {
-                    args.extend(["pull", "--quiet"]);
+                    args.extend(["pull"]);
                 }
-                self.done(&args, LONG).await
+                self.reported(&args, LONG).await
             }
         }
     }

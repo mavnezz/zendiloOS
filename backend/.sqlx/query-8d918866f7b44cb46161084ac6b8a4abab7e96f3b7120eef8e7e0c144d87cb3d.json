@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id AS \"id!\", kind, target, state, step, progress, error_code, error_detail,\n                      account_id, actor, created_at, updated_at, finished_at\n               FROM jobs WHERE account_id = ? ORDER BY id DESC LIMIT ?",
+  "query": "SELECT id AS \"id!\", kind, target, state, step, progress, error_code, error_detail,\n                      account_id, actor, created_at, updated_at, finished_at, output\n               FROM jobs ORDER BY id DESC LIMIT ?",
   "describe": {
     "columns": [
       {
@@ -145,10 +145,21 @@
             "name": "finished_at"
           }
         }
+      },
+      {
+        "name": "output",
+        "ordinal": 13,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "jobs",
+            "name": "output"
+          }
+        }
       }
     ],
     "parameters": {
-      "Right": 2
+      "Right": 1
     },
     "nullable": [
       false,
@@ -163,8 +174,9 @@
       true,
       false,
       false,
-      true
+      true,
+      false
     ]
   },
-  "hash": "6d6b1e70e379d2d641c32dc4d9e5429da5254d5884ed78fc00a4bcec2d2f60f9"
+  "hash": "8d918866f7b44cb46161084ac6b8a4abab7e96f3b7120eef8e7e0c144d87cb3d"
 }

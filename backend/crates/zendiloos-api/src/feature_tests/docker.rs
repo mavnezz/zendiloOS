@@ -149,6 +149,44 @@ async fn projects_are_shown_controlled_redeployed_and_deleted() {
 }
 
 #[tokio::test]
+async fn a_redeploy_pulls_when_asked_and_its_job_follows_what_compose_writes() {
+    let h = Harness::new();
+    let admin = admin(&h).await;
+    let redeploy = |body: Option<Value>| {
+        let request = with_csrf(post("/api/v1/docker/projects/stack/redeploy"), &admin);
+        match body {
+            Some(body) => h.send(json(request, body)),
+            None => h.send(empty(request)),
+        }
+    };
+
+    let pulled = redeploy(Some(json!({ "pull": true }))).await;
+    assert_eq!(pulled.status, StatusCode::ACCEPTED, "{:?}", pulled.body);
+    assert_eq!(pulled.body["output"], json!([]), "nothing written yet");
+    assert_eq!(output(&h, pulled.body["id"].as_i64().unwrap()).await, ["pull stack", "up stack"]);
+
+    let plain = redeploy(None).await;
+    assert_eq!(output(&h, plain.body["id"].as_i64().unwrap()).await, ["up stack"], "no body: no pull");
+
+    let wrong = redeploy(Some(json!({ "pull": "yes" }))).await;
+    assert!(wrong.status.is_client_error(), "{:?}", wrong.status);
+}
+
+/// The output of the Docker app's job `id`, once it ended and what came
+/// last was published, as the API shows it.
+async fn output(h: &Harness, id: i64) -> Vec<String> {
+    let find = || h.docker_jobs.all().into_iter().find(|job| job.id.get() == id).unwrap();
+    for _ in 0..200 {
+        if find().finished_at.is_some() {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            return crate::routes::jobs::Job::from(find()).output;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    panic!("job {id} did not end");
+}
+
+#[tokio::test]
 async fn an_own_projects_file_is_changed_with_consent_and_a_foreign_one_not() {
     let h = Harness::new();
     let admin = admin(&h).await;
@@ -174,6 +212,9 @@ async fn an_own_projects_file_is_changed_with_consent_and_a_foreign_one_not() {
     assert_problem(&broken, StatusCode::CONFLICT, "refused");
     let changed = h.send(change("services:\n  app:\n    image: nginx:1.27\n", false)).await;
     assert_eq!(changed.status, StatusCode::ACCEPTED, "{:?}", changed.body);
+    let tesla = h.send(empty(with_cookie(get("/api/v1/docker/projects/tesla"), &admin))).await;
+    let file = tesla.body["compose_file"].as_str().unwrap();
+    assert!(file.ends_with("docker/tesla/compose.yaml"), "where it is in the shares: {file}");
     let foreign = h
         .send(json(
             with_csrf(changing(Method::PUT, "/api/v1/docker/projects/stack/compose"), &admin),

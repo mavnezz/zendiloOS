@@ -58,6 +58,11 @@ pub struct Job {
     pub created_at: i64,
     pub updated_at: i64,
     pub finished_at: Option<i64>,
+    /// What a program the job runs wrote, for a person to follow (Docker
+    /// Compose deploying a project), oldest first: the last 200 lines, at
+    /// most 300 characters each, cleaned of terminal escapes and control
+    /// characters. Text, never markup. Empty for most jobs.
+    pub output: Vec<String>,
 }
 
 impl From<jobs::Job> for Job {
@@ -84,6 +89,7 @@ impl From<jobs::Job> for Job {
             created_at: job.created_at.unix_seconds(),
             updated_at: job.updated_at.unix_seconds(),
             finished_at: job.finished_at.map(|t| t.unix_seconds()),
+            output: job.output,
         }
     }
 }

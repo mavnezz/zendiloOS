@@ -156,11 +156,17 @@ impl Server {
                     watching = false;
                     let _ = gone_tx.send(true);
                 }
-                // Steps go out as they come; a client that hung up hears none.
-                Some((step, percent)) = steps.recv() => {
+                // Steps and lines go out as they come; a client that hung up
+                // hears none.
+                Some(note) = steps.recv() => {
                     if watching {
-                        let progress = Response::Progress { step: step.to_owned(), percent };
-                        let _ = write_message_with_file(writer, &progress, None).await;
+                        let report = match note {
+                            crate::progress::Note::Step(step, percent) => {
+                                Response::Progress { step: step.to_owned(), percent }
+                            }
+                            crate::progress::Note::Line(line) => Response::Output { line },
+                        };
+                        let _ = write_message_with_file(writer, &report, None).await;
                     }
                 }
             }

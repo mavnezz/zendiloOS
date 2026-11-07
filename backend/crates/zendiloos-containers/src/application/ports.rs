@@ -23,6 +23,19 @@ pub enum EngineError {
     Port(#[from] PortError),
 }
 
+/// Where the lines Docker writes while it deploys go, for a person to
+/// follow: the job's output.
+pub trait Lines: Send + Sync {
+    fn line(&self, line: &str);
+}
+
+/// Lines nobody follows.
+pub struct NoLines;
+
+impl Lines for NoLines {
+    fn line(&self, _: &str) {}
+}
+
 /// What a project's Compose action does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProjectAction {
@@ -116,14 +129,28 @@ pub trait DockerEngine: Send + Sync {
         context: &RequestContext,
     ) -> Result<(), EngineError>;
 
+    /// As [`DockerEngine::control_project`], telling `lines` what Docker
+    /// writes as it comes (pulling, bringing up).
+    async fn control_project_reporting(
+        &self,
+        project: &str,
+        action: ProjectAction,
+        lines: &dyn Lines,
+        context: &RequestContext,
+    ) -> Result<(), EngineError> {
+        let _ = lines;
+        self.control_project(project, action, context).await
+    }
+
     /// Deploys an administrator's project from `config`, what Compose made
     /// of the file they confirmed; with `pull`, its images are fetched
-    /// first.
+    /// first. What Compose writes goes to `lines` as it comes.
     async fn deploy_project(
         &self,
         project: &str,
         config: &str,
         pull: bool,
+        lines: &dyn Lines,
         context: &RequestContext,
     ) -> Result<(), EngineError>;
 

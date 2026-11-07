@@ -94,6 +94,19 @@ pub fn bind_folders(directory: &str, binds: &[String]) -> Vec<String> {
     folders
 }
 
+impl OwnProject {
+    /// Where its Compose file is, as people find it in the shares: share,
+    /// folder and file (`docker/teslamate/compose.yaml`).
+    pub fn compose_place(&self) -> String {
+        let share = self
+            .directory
+            .strip_suffix(self.folder.as_str())
+            .and_then(|parent| parent.trim_end_matches('/').rsplit('/').next())
+            .unwrap_or_default();
+        format!("{share}/{}/{COMPOSE_FILE}", self.folder)
+    }
+}
+
 /// Where a project comes from, and so what may be done with it here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Origin {
@@ -187,6 +200,17 @@ mod tests {
             created_at: Timestamp::from_unix_seconds(0),
             created_by: "alice".into(),
         }
+    }
+
+    #[test]
+    fn a_projects_file_is_named_by_its_share_and_folder() {
+        assert_eq!(own("tesla").compose_place(), "docker/docker/tesla/compose.yaml");
+        let teslamate = OwnProject {
+            folder: "teslamate".into(),
+            directory: "/volume2/apps/teslamate".into(),
+            ..own("teslamate")
+        };
+        assert_eq!(teslamate.compose_place(), "apps/teslamate/compose.yaml");
     }
 
     #[test]

@@ -792,8 +792,11 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Fetches the images anew and recreates what changed, in a job. Not for
-         *     an app of a catalog. Needs `containers.manage`.
+         * Brings the project up again in a job, recreating what changed and
+         *     removing containers no longer in its file; with `pull` (no body: no
+         *     pull), its images are fetched anew first. The job's `output` follows
+         *     what Docker Compose writes. Not for an app of a catalog. Needs
+         *     `containers.manage`.
          */
         post: operations["redeploy_project"];
         delete?: never;
@@ -3335,14 +3338,16 @@ export interface components {
         DockerProject: {
             /** @description For an app installed the earlier way: its id in the App Center. */
             app?: string | null;
+            /**
+             * @description For a project made here: where its Compose file is in the shares,
+             *     share, folder and file (`docker/teslamate/compose.yaml`).
+             */
+            compose_file?: string | null;
             containers: components["schemas"]["DockerContainer"][];
             /** Format: int64 */
             created_at?: number | null;
             created_by?: string | null;
-            /**
-             * @description Where its Compose file is: on the machine for every kind, and in the
-             *     share for one made here (`docker/teslamate/compose.yaml`).
-             */
+            /** @description Where its Compose files are on the machine. */
             files: string[];
             folder?: string | null;
             kind: components["schemas"]["ProjectKind"];
@@ -3758,6 +3763,13 @@ export interface components {
             id: number;
             /** @description Dotted name, e.g. `storage.create_pool`. */
             kind: string;
+            /**
+             * @description What a program the job runs wrote, for a person to follow (Docker
+             *     Compose deploying a project), oldest first: the last 200 lines, at
+             *     most 300 characters each, cleaned of terminal escapes and control
+             *     characters. Text, never markup. Empty for most jobs.
+             */
+            output: string[];
             /**
              * Format: float
              * @description 0 to 1, if known.
@@ -4290,6 +4302,10 @@ export interface components {
             /** Format: int64 */
             size_bytes?: number | null;
             sync?: components["schemas"]["SyncProgress"] | null;
+        };
+        Redeploy: {
+            /** @description Fetches the newest images under the project's tags first. */
+            pull?: boolean;
         };
         /** @description A removable drive: a file system on a USB stick or disk, a memory card. */
         RemovableDrive: {
@@ -7046,7 +7062,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["Redeploy"] | null;
+            };
+        };
         responses: {
             202: {
                 headers: {

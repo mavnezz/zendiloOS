@@ -7,14 +7,16 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::Value;
 use zendiloos_agent_proto::{self as proto, AgentTransport, ErrorCode, Request, Response};
-use zendiloos_containers::application::ports::{CheckedCompose, DockerEngine, EngineError, ProjectAction};
+use zendiloos_containers::application::ports::{
+    CheckedCompose, DockerEngine, EngineError, Lines, ProjectAction,
+};
 use zendiloos_containers::domain::{
     ComposeListing, ComposeModel, ComposeService, Container, ContainerAction, ContainerState, ContainerUsage,
     DiskUsage, Image, Mount, Network, ProjectName, PublishedPort, UsageSample,
 };
 use zendiloos_kernel::{PortError, RequestContext, Timestamp};
 
-use super::{WHAT, call_raw, unexpected};
+use super::{WHAT, call_raw, call_raw_reporting, unexpected};
 
 pub struct AgentDockerEngine {
     transport: Arc<dyn AgentTransport>,
@@ -48,6 +50,34 @@ impl AgentDockerEngine {
             other => Err(unexpected(other).into()),
         }
     }
+
+    /// As [`Self::done`], passing the lines Docker writes on to `lines`.
+    async fn done_reporting(
+        &self,
+        request: Request,
+        lines: &dyn Lines,
+        context: &RequestContext,
+    ) -> Result<(), EngineError> {
+        match call_raw_reporting(self.transport.as_ref(), request, &ToLines(lines), context).await? {
+            Response::Done => Ok(()),
+            Response::Error { code: ErrorCode::Forbidden | ErrorCode::Conflict, message } => {
+                Err(EngineError::Refused(message))
+            }
+            Response::Error { message, .. } => Err(EngineError::Failed(message)),
+            other => Err(unexpected(other).into()),
+        }
+    }
+}
+
+/// The agent's lines of output to [`Lines`]; its steps are not used here.
+struct ToLines<'a>(&'a dyn Lines);
+
+impl proto::Report for ToLines<'_> {
+    fn step(&self, _: &str, _: Option<u8>) {}
+
+    fn line(&self, line: &str) {
+        self.0.line(line);
+    }
 }
 
 fn unreadable(what: &str, error: impl std::fmt::Display) -> EngineError {
@@ -56,6 +86,19 @@ fn unreadable(what: &str, error: impl std::fmt::Display) -> EngineError {
 
 fn invalid(error: proto::InvalidDockerName) -> EngineError {
     EngineError::Refused(error.to_string())
+}
+
+/// The request for `action` on `project`.
+fn control(project: &str, action: ProjectAction) -> Result<Request, EngineError> {
+    let action = match action {
+        ProjectAction::Start => proto::ProjectAction::Start,
+        ProjectAction::Stop => proto::ProjectAction::Stop,
+        ProjectAction::Restart => proto::ProjectAction::Restart,
+        ProjectAction::Up => proto::ProjectAction::Up,
+        ProjectAction::Pull => proto::ProjectAction::Pull,
+        ProjectAction::Down => proto::ProjectAction::Down,
+    };
+    Ok(Request::ControlProject { project: proto::ProjectName::parse(project).map_err(invalid)?, action })
 }
 
 fn string(value: &Value, key: &str) -> String {
@@ -519,6 +562,7 @@ impl DockerEngine for AgentDockerEngine {
         project: &str,
         config: &str,
         pull: bool,
+        lines: &dyn Lines,
         context: &RequestContext,
     ) -> Result<(), EngineError> {
         let request = Request::DeployProject {
@@ -526,7 +570,7 @@ impl DockerEngine for AgentDockerEngine {
             config: proto::ProjectConfig::parse(config).map_err(invalid)?,
             pull,
         };
-        self.done(request, context).await
+        self.done_reporting(request, lines, context).await
     }
 
     async fn control_project(
@@ -535,17 +579,17 @@ impl DockerEngine for AgentDockerEngine {
         action: ProjectAction,
         context: &RequestContext,
     ) -> Result<(), EngineError> {
-        let action = match action {
-            ProjectAction::Start => proto::ProjectAction::Start,
-            ProjectAction::Stop => proto::ProjectAction::Stop,
-            ProjectAction::Restart => proto::ProjectAction::Restart,
-            ProjectAction::Up => proto::ProjectAction::Up,
-            ProjectAction::Pull => proto::ProjectAction::Pull,
-            ProjectAction::Down => proto::ProjectAction::Down,
-        };
-        let request =
-            Request::ControlProject { project: proto::ProjectName::parse(project).map_err(invalid)?, action };
-        self.done(request, context).await
+        self.done(control(project, action)?, context).await
+    }
+
+    async fn control_project_reporting(
+        &self,
+        project: &str,
+        action: ProjectAction,
+        lines: &dyn Lines,
+        context: &RequestContext,
+    ) -> Result<(), EngineError> {
+        self.done_reporting(control(project, action)?, lines, context).await
     }
 
     async fn project_logs(
@@ -575,8 +619,20 @@ impl DockerEngine for AgentDockerEngine {
 mod tests {
     use zendiloos_sim::SimulatedAgent;
 
+    use zendiloos_containers::application::ports::NoLines;
+
     use super::*;
     use crate::agent::scripted::Scripted;
+
+    /// The lines Docker wrote, as told.
+    #[derive(Default)]
+    struct Heard(std::sync::Mutex<Vec<String>>);
+
+    impl Lines for Heard {
+        fn line(&self, line: &str) {
+            self.0.lock().unwrap().push(line.to_owned());
+        }
+    }
 
     fn simulated() -> (AgentDockerEngine, Arc<SimulatedAgent>) {
         let agent = Arc::new(SimulatedAgent::new());
@@ -640,7 +696,14 @@ mod tests {
         assert!(checked.model.services[0].privileged);
         let broken = engine.check_compose(&name, "/volume1/docker/tesla", "broken: [", &context).await;
         assert!(matches!(broken, Err(EngineError::Refused(_))), "{broken:?}");
-        engine.deploy_project("tesla", &checked.config, true, &context).await.unwrap();
+        let heard = Heard::default();
+        engine.deploy_project("tesla", &checked.config, true, &heard, &context).await.unwrap();
+        let lines = heard.0.lock().unwrap().clone();
+        assert_eq!(lines.first().map(String::as_str), Some(" app Pulling"), "{lines:?}");
+        assert_eq!(lines.last().map(String::as_str), Some(" Container tesla-app-1  Started"));
+        let heard = Heard::default();
+        engine.control_project_reporting("tesla", ProjectAction::Pull, &heard, &context).await.unwrap();
+        assert!(heard.0.lock().unwrap().iter().any(|line| line == " app Pulled"));
         for action in [
             ProjectAction::Stop,
             ProjectAction::Start,
@@ -674,7 +737,7 @@ mod tests {
         refused(engine.create_network("proxy", Some("no subnet"), None, &context).await);
         refused(engine.create_network("proxy", None, Some("no address"), &context).await);
         refused(engine.remove_network("bad name", &context).await);
-        refused(engine.deploy_project("Bad", "{}", false, &context).await);
+        refused(engine.deploy_project("Bad", "{}", false, &NoLines, &context).await);
         refused(engine.control_project("Bad", ProjectAction::Up, &context).await);
         assert!(engine.project_logs("Bad", 1, &context).await.is_err());
         assert!(engine.project_files("Bad", &context).await.is_err());

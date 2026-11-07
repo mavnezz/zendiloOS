@@ -75,6 +75,7 @@ export function job(id: number, kind: string, extra: Partial<Job> = {}): Job {
     created_at: 1_700_000_000,
     updated_at: 1_700_000_000,
     finished_at: null,
+    output: [],
     ...extra,
   }
 }

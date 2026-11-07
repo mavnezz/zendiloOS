@@ -1,10 +1,10 @@
 //! Compose projects: listed whoever made them; made, changed and deployed
 //! here by administrators, with their Compose file in a share.
 
-use zendiloos_jobs::Job;
+use zendiloos_jobs::{Job, Progress};
 use zendiloos_kernel::{Actor, AuditEntry, Outcome, RequestContext};
 
-use super::ports::{CheckedCompose, EngineError, ProjectAction, ProjectPlace};
+use super::ports::{CheckedCompose, EngineError, Lines, ProjectAction, ProjectPlace};
 use super::{Containers, ContainersError, job_error};
 use crate::domain::{
     COMPOSE_FILE, Origin, OwnProject, Project, ProjectName, ProjectTemplate, Risk, assemble, bind_folders,
@@ -72,25 +72,36 @@ impl Deployment {
         project.config.clone().map_or(Self::Unconfirmed, Self::Own)
     }
 
-    /// Pulls (if `pull`) and brings the project up.
+    /// Pulls (if `pull`) and brings the project up; what Docker writes on
+    /// the way goes to `lines`.
     pub(super) async fn run(
         &self,
         containers: &Containers,
         name: &str,
         pull: bool,
+        lines: &dyn Lines,
         context: &RequestContext,
     ) -> Result<(), EngineError> {
         let engine = &containers.ports.engine;
         match self {
-            Self::Own(config) => engine.deploy_project(name, config, pull, context).await,
+            Self::Own(config) => engine.deploy_project(name, config, pull, lines, context).await,
             Self::Unconfirmed => Err(EngineError::Refused(ContainersError::Unconfirmed.to_string())),
             Self::Foreign => {
                 if pull {
-                    engine.control_project(name, ProjectAction::Pull, context).await?;
+                    engine.control_project_reporting(name, ProjectAction::Pull, lines, context).await?;
                 }
-                engine.control_project(name, ProjectAction::Up, context).await
+                engine.control_project_reporting(name, ProjectAction::Up, lines, context).await
             }
         }
+    }
+}
+
+/// A job's output, as [`Lines`].
+pub(super) struct JobLines(pub(super) Progress);
+
+impl Lines for JobLines {
+    fn line(&self, line: &str) {
+        self.0.line(line);
     }
 }
 
@@ -252,7 +263,7 @@ impl Containers {
             .jobs
             .start("containers.project_deploy", Some(name.clone()), Some(actor), move |progress| async move {
                 progress.step(if pull { "pulling" } else { "starting" }, Some(0.1)).await;
-                let done = how.run(&this, &name, pull, &context).await;
+                let done = how.run(&this, &name, pull, &JobLines(progress.clone()), &context).await;
                 let done = this
                     .audited("containers.project_deploy", &name, &who, &context, done.map_err(Into::into))
                     .await;
@@ -344,10 +355,12 @@ impl Containers {
         self.audited(audited, name, actor, context, done).await
     }
 
-    /// Fetches the images anew and recreates what changed, in a job.
+    /// Brings the project up again in a job, recreating what changed;
+    /// with `pull`, its images are fetched anew first.
     pub async fn redeploy(
         &self,
         name: &str,
+        pull: bool,
         actor: &Actor,
         context: &RequestContext,
     ) -> Result<Job, ContainersError> {
@@ -359,7 +372,7 @@ impl Containers {
         if matches!(how, Deployment::Unconfirmed) {
             return Err(ContainersError::Unconfirmed);
         }
-        self.deploy(name.to_owned(), how, true, actor, context).await
+        self.deploy(name.to_owned(), how, pull, actor, context).await
     }
 
     /// Removes a project's containers and networks, in a job; images, data

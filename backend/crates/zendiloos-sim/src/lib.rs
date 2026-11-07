@@ -28,8 +28,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use zendiloos_agent_proto::{
     AgentTransport, DiskName, ErrorCode, FileLocation, FileRoot, Layout, PROTOCOL_VERSION, PackageReport,
-    PackageRun, PackageRunState, PackageTask, Request, RequestId, Response, ShareName, TransportError,
-    UpgradablePackage,
+    PackageRun, PackageRunState, PackageTask, Report, Request, RequestId, Response, ShareName,
+    TransportError, UpgradablePackage,
 };
 use zendiloos_fileops::{FileError, ShareRoot};
 
@@ -849,6 +849,20 @@ impl AgentTransport for SimulatedAgent {
             }
             other => Ok((self.call(other, request_id).await?, None)),
         }
+    }
+
+    /// As the real agent: what Docker Compose writes while it deploys
+    /// comes, line by line, before the answer.
+    async fn call_reporting(
+        &self,
+        request: Request,
+        request_id: Option<RequestId>,
+        report: &dyn Report,
+    ) -> Result<Response, TransportError> {
+        for line in docker::compose_lines(&request) {
+            report.line(&line);
+        }
+        self.call(request, request_id).await
     }
 }
 

@@ -91,6 +91,67 @@ pub struct Job {
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
     pub finished_at: Option<Timestamp>,
+    /// What a program the work runs wrote, for a person to follow (Docker
+    /// Compose deploying a project): the last [`OUTPUT_LINES`] lines, each
+    /// cleaned by [`clean_line`]. Empty for most jobs.
+    pub output: Vec<String>,
+}
+
+/// Lines of output a job keeps; older ones go.
+pub const OUTPUT_LINES: usize = 200;
+
+/// Characters of one line of output a job keeps; the rest of it goes.
+pub const OUTPUT_LINE_CHARS: usize = 300;
+
+/// How often a job's output is saved and published at most while lines
+/// come; a line waits that long at most.
+const OUTPUT_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// A line of output as a job keeps it: terminal escape sequences (colours,
+/// cursor moves) and other control characters out, tabs as spaces, at most
+/// [`OUTPUT_LINE_CHARS`] characters; `None` if nothing is left.
+pub fn clean_line(line: &str) -> Option<String> {
+    let mut clean = String::with_capacity(line.len().min(OUTPUT_LINE_CHARS));
+    let mut chars = line.chars().peekable();
+    let mut kept = 0;
+    while let Some(c) = chars.next() {
+        match c {
+            '\u{1b}' => match chars.next() {
+                // CSI: parameters, then one final byte.
+                Some('[') => {
+                    while let Some(&next) = chars.peek() {
+                        chars.next();
+                        if ('\u{40}'..='\u{7e}').contains(&next) {
+                            break;
+                        }
+                    }
+                }
+                // OSC: up to BEL or ESC \.
+                Some(']') => {
+                    while let Some(next) = chars.next() {
+                        if next == '\u{7}' || (next == '\u{1b}' && chars.next_if_eq(&'\\').is_some()) {
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            },
+            '\t' => {
+                clean.push(' ');
+                kept += 1;
+            }
+            c if c.is_control() => {}
+            c => {
+                clean.push(c);
+                kept += 1;
+            }
+        }
+        if kept >= OUTPUT_LINE_CHARS {
+            break;
+        }
+    }
+    let clean = clean.trim_end();
+    (!clean.trim().is_empty()).then(|| clean.to_owned())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -153,20 +214,71 @@ impl Drop for Ended {
 pub struct Progress {
     jobs: Jobs,
     job: Arc<Mutex<Job>>,
+    /// Saves go one at a time, each of the job as it is then: a slow save
+    /// of an older state never lands after a newer one (the end).
+    order: Arc<tokio::sync::Mutex<()>>,
+    /// Whether a save of new output waits, and when output was saved last.
+    output: Arc<Mutex<(bool, Option<std::time::Instant>)>>,
 }
 
 impl Progress {
+    fn new(jobs: Jobs, job: Job) -> Self {
+        Self {
+            jobs,
+            job: Arc::new(Mutex::new(job)),
+            order: Arc::default(),
+            output: Arc::new(Mutex::new((false, None))),
+        }
+    }
+
+    fn change(&self, change: impl FnOnce(&mut Job)) {
+        let mut job = self.job.lock().unwrap_or_else(PoisonError::into_inner);
+        change(&mut job);
+        job.updated_at = self.jobs.inner.clock.now();
+    }
+
+    /// Stores and publishes the job as it is now.
+    async fn publish(&self) {
+        let _turn = self.order.lock().await;
+        let job = self.job.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        self.jobs.save(&job).await;
+    }
+
     /// Records the step and publishes the change; a failure to store it is
     /// logged, not fatal to the work.
     pub async fn step(&self, step: &str, progress: Option<f32>) {
-        let job = {
-            let mut job = self.job.lock().unwrap_or_else(PoisonError::into_inner);
+        self.change(|job| {
             job.step = Some(step.to_owned());
             job.progress = progress.map(|p| p.clamp(0.0, 1.0));
-            job.updated_at = self.jobs.inner.clock.now();
-            job.clone()
+        });
+        self.publish().await;
+    }
+
+    /// Adds a line a program wrote to the job's output ([`clean_line`],
+    /// the last [`OUTPUT_LINES`] kept). Lines come fast: they are published
+    /// together, at most every quarter of a second, in the background.
+    pub fn line(&self, line: &str) {
+        let Some(line) = clean_line(line) else { return };
+        self.change(|job| {
+            job.output.push(line);
+            let excess = job.output.len().saturating_sub(OUTPUT_LINES);
+            job.output.drain(..excess);
+        });
+        let wait = {
+            let mut output = self.output.lock().unwrap_or_else(PoisonError::into_inner);
+            if output.0 {
+                return;
+            }
+            output.0 = true;
+            output.1.map_or(std::time::Duration::ZERO, |last| OUTPUT_EVERY.saturating_sub(last.elapsed()))
         };
-        self.jobs.save(&job).await;
+        let this = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(wait).await;
+            *this.output.lock().unwrap_or_else(PoisonError::into_inner) =
+                (false, Some(std::time::Instant::now()));
+            this.publish().await;
+        });
     }
 
     pub fn id(&self) -> JobId {
@@ -216,14 +328,12 @@ impl Jobs {
             .unwrap_or_else(PoisonError::into_inner)
             .insert(job.id, (job.kind.clone(), job.target.clone()));
         let ended = Ended { jobs: self.clone(), id: job.id };
-        let progress = Progress { jobs: self.clone(), job: Arc::new(Mutex::new(job.clone())) };
+        let progress = Progress::new(self.clone(), job.clone());
         let jobs = self.clone();
         tokio::spawn(async move {
             let outcome = work(progress.clone()).await;
             drop(ended);
-            let finished = {
-                let mut job = progress.job.lock().unwrap_or_else(PoisonError::into_inner);
-                let now = jobs.inner.clock.now();
+            progress.change(|job| {
                 match outcome {
                     Ok(()) => {
                         job.state = JobState::Succeeded;
@@ -235,11 +345,9 @@ impl Jobs {
                         job.error = Some(error);
                     }
                 }
-                job.updated_at = now;
-                job.finished_at = Some(now);
-                job.clone()
-            };
-            jobs.save(&finished).await;
+                job.finished_at = Some(jobs.inner.clock.now());
+            });
+            progress.publish().await;
         });
         Ok(job)
     }
@@ -328,6 +436,65 @@ mod tests {
         assert_eq!((done.state, done.progress), (JobState::Succeeded, Some(1.0)));
         assert!(done.finished_at.is_some());
         assert_eq!(repository.all()[0], done, "stored as published");
+    }
+
+    #[test]
+    fn output_lines_are_cleaned_of_what_a_terminal_would_act_on_and_cut() {
+        assert_eq!(
+            clean_line("\u{1b}[32m✔\u{1b}[0m Container web\tStarted  ").as_deref(),
+            Some("✔ Container web Started")
+        );
+        assert_eq!(clean_line("\u{1b}]0;title\u{7}pulled").as_deref(), Some("pulled"));
+        assert_eq!(clean_line("\u{1b}]8;;https://x\u{1b}\\link").as_deref(), Some("link"));
+        assert_eq!(clean_line("a\u{0}b\u{8}c<b>").as_deref(), Some("abc<b>"), "markup is text, kept as such");
+        assert_eq!(clean_line(" \u{1b}[2K "), None);
+        assert_eq!(clean_line(&"é".repeat(1000)).unwrap().chars().count(), OUTPUT_LINE_CHARS);
+    }
+
+    #[tokio::test]
+    async fn output_is_kept_bounded_and_published_while_the_work_runs() {
+        let (jobs, repository) = jobs();
+        let mut events = jobs.subscribe();
+        jobs.start("containers.project_deploy", Some("tesla".into()), None, |progress| async move {
+            for n in 0..OUTPUT_LINES + 5 {
+                progress.line(&format!("line {n}"));
+            }
+            progress.line("\u{1b}[2K");
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(next(&mut events).await.state, JobState::Running, "started");
+        let during = next(&mut events).await;
+        assert_eq!(during.state, JobState::Running);
+        assert_eq!(during.output.len(), OUTPUT_LINES);
+        assert_eq!(during.output[0], "line 5", "the oldest went");
+        let done = next(&mut events).await;
+        assert_eq!(done.state, JobState::Succeeded);
+        assert_eq!(done.output.last().map(String::as_str), Some("line 204"));
+        assert_eq!(repository.all()[0], done);
+    }
+
+    #[tokio::test]
+    async fn the_end_is_published_last_whatever_lines_came_just_before() {
+        let (jobs, repository) = jobs();
+        let mut events = jobs.subscribe();
+        jobs.start("containers.project_deploy", None, None, |progress| async move {
+            progress.line("last words");
+            Ok(())
+        })
+        .await
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        let mut last = None;
+        while let Ok(job) = events.try_recv() {
+            last = Some(job);
+        }
+        let last = last.unwrap();
+        assert_eq!((last.state, last.output.clone()), (JobState::Succeeded, vec!["last words".to_owned()]));
+        assert_eq!(repository.all()[0], last, "stored as published last");
     }
 
     #[tokio::test]

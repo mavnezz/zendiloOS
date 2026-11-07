@@ -34,6 +34,8 @@ struct JobRow {
     created_at: i64,
     updated_at: i64,
     finished_at: Option<i64>,
+    /// Lines, one per line.
+    output: String,
 }
 
 impl TryFrom<JobRow> for Job {
@@ -55,6 +57,7 @@ impl TryFrom<JobRow> for Job {
             created_at: Timestamp::from_unix_seconds(row.created_at),
             updated_at: Timestamp::from_unix_seconds(row.updated_at),
             finished_at: row.finished_at.map(Timestamp::from_unix_seconds),
+            output: row.output.lines().map(str::to_owned).collect(),
         })
     }
 }
@@ -89,6 +92,7 @@ impl JobRepository for SqliteJobs {
             created_at: new.created_at,
             updated_at: new.created_at,
             finished_at: None,
+            output: Vec::new(),
         })
     }
 
@@ -100,9 +104,10 @@ impl JobRepository for SqliteJobs {
             None => (None, None),
         };
         let (updated, finished) = (job.updated_at.unix_seconds(), job.finished_at.map(|t| t.unix_seconds()));
+        let output = job.output.join("\n");
         sqlx::query!(
             "UPDATE jobs SET state = ?, step = ?, progress = ?, error_code = ?, error_detail = ?,
-                             updated_at = ?, finished_at = ?
+                             updated_at = ?, finished_at = ?, output = ?
              WHERE id = ?",
             state,
             job.step,
@@ -111,6 +116,7 @@ impl JobRepository for SqliteJobs {
             detail,
             updated,
             finished,
+            output,
             id
         )
         .execute(self.db.pool())
@@ -124,7 +130,7 @@ impl JobRepository for SqliteJobs {
         sqlx::query_as!(
             JobRow,
             r#"SELECT id AS "id!", kind, target, state, step, progress, error_code, error_detail,
-                      account_id, actor, created_at, updated_at, finished_at
+                      account_id, actor, created_at, updated_at, finished_at, output
                FROM jobs WHERE id = ?"#,
             id
         )
@@ -140,7 +146,7 @@ impl JobRepository for SqliteJobs {
         sqlx::query_as!(
             JobRow,
             r#"SELECT id AS "id!", kind, target, state, step, progress, error_code, error_detail,
-                      account_id, actor, created_at, updated_at, finished_at
+                      account_id, actor, created_at, updated_at, finished_at, output
                FROM jobs ORDER BY id DESC LIMIT ?"#,
             limit
         )
@@ -157,7 +163,7 @@ impl JobRepository for SqliteJobs {
         sqlx::query_as!(
             JobRow,
             r#"SELECT id AS "id!", kind, target, state, step, progress, error_code, error_detail,
-                      account_id, actor, created_at, updated_at, finished_at
+                      account_id, actor, created_at, updated_at, finished_at, output
                FROM jobs WHERE account_id = ? ORDER BY id DESC LIMIT ?"#,
             account,
             limit
@@ -210,6 +216,7 @@ mod tests {
         done.progress = Some(0.25);
         done.error = Some(JobError::new("agent_failed", Some("sgdisk failed".to_owned())));
         done.finished_at = Some(Timestamp::from_unix_seconds(160));
+        done.output = vec![" web Pulled".to_owned(), "Container tesla-web-1  Started".to_owned()];
         jobs.update(&done).await.unwrap();
 
         assert_eq!(jobs.find(done.id).await.unwrap(), Some(done.clone()));

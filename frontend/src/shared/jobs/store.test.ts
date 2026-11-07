@@ -44,6 +44,7 @@ function job(id: number, state: Job['state']): Job {
     created_at: id,
     updated_at: id,
     finished_at: state === 'running' ? null : id,
+    output: [],
   }
 }
 

@@ -31,6 +31,12 @@ pub enum TransportError {
 /// Where the steps the agent reports on the way go.
 pub trait Report: Send + Sync {
     fn step(&self, step: &str, percent: Option<u8>);
+
+    /// A line a program the agent runs wrote ([`Response::Output`]);
+    /// dropped unless asked for.
+    fn line(&self, line: &str) {
+        let _ = line;
+    }
 }
 
 impl<F: Fn(&str, Option<u8>) + Send + Sync> Report for F {
@@ -115,6 +121,7 @@ impl UnixTransport {
             file = file.or(received);
             match response {
                 Response::Progress { step, percent } => report.step(&step, percent),
+                Response::Output { line } => report.line(&line),
                 answer => return Ok((answer, file)),
             }
         }

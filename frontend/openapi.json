@@ -2612,7 +2612,7 @@
         "tags": [
           "docker"
         ],
-        "summary": "Fetches the images anew and recreates what changed, in a job. Not for\nan app of a catalog. Needs `containers.manage`.",
+        "summary": "Brings the project up again in a job, recreating what changed and\nremoving containers no longer in its file; with `pull` (no body: no\npull), its images are fetched anew first. The job's `output` follows\nwhat Docker Compose writes. Not for an app of a catalog. Needs\n`containers.manage`.",
         "operationId": "redeploy_project",
         "parameters": [
           {
@@ -2624,6 +2624,22 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/Redeploy"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
         "responses": {
           "202": {
             "content": {
@@ -10842,6 +10858,13 @@
             ],
             "description": "For an app installed the earlier way: its id in the App Center."
           },
+          "compose_file": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For a project made here: where its Compose file is in the shares,\nshare, folder and file (`docker/teslamate/compose.yaml`)."
+          },
           "containers": {
             "type": "array",
             "items": {
@@ -10866,7 +10889,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Where its Compose file is: on the machine for every kind, and in the\nshare for one made here (`docker/teslamate/compose.yaml`)."
+            "description": "Where its Compose files are on the machine."
           },
           "folder": {
             "type": [
@@ -11968,7 +11991,8 @@
           "kind",
           "state",
           "created_at",
-          "updated_at"
+          "updated_at",
+          "output"
         ],
         "properties": {
           "actor": {
@@ -12010,6 +12034,13 @@
           "kind": {
             "type": "string",
             "description": "Dotted name, e.g. `storage.create_pool`."
+          },
+          "output": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What a program the job runs wrote, for a person to follow (Docker\nCompose deploying a project), oldest first: the last 200 lines, at\nmost 300 characters each, cleaned of terminal escapes and control\ncharacters. Text, never markup. Empty for most jobs."
           },
           "progress": {
             "type": [
@@ -13633,6 +13664,16 @@
             ]
           }
         }
+      },
+      "Redeploy": {
+        "type": "object",
+        "properties": {
+          "pull": {
+            "type": "boolean",
+            "description": "Fetches the newest images under the project's tags first."
+          }
+        },
+        "additionalProperties": false
       },
       "RemovableDrive": {
         "type": "object",

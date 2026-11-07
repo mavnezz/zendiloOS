@@ -9,7 +9,7 @@ use std::sync::PoisonError;
 use zendiloos_jobs::Job;
 use zendiloos_kernel::{Actor, AuditEntry, Outcome, RequestContext};
 
-use super::projects::Deployment;
+use super::projects::{Deployment, JobLines};
 use super::{Containers, ContainersError, job_error};
 use crate::domain::{ImageCheck, Origin, RegistryImage, UpdateReport, UpdateSettings, UpdateState, is_newer};
 
@@ -107,7 +107,7 @@ impl Containers {
                 let mut failed: Option<ContainersError> = None;
                 for (done, (name, how)) in projects.iter().enumerate() {
                     progress.step(name, Some(done as f32 / steps)).await;
-                    let outcome = how.run(&this, name, true, &context).await;
+                    let outcome = how.run(&this, name, true, &JobLines(progress.clone()), &context).await;
                     this.record_update(name, outcome.is_ok(), who.as_ref(), &context).await;
                     if let Err(error) = outcome {
                         failed.get_or_insert(error.into());

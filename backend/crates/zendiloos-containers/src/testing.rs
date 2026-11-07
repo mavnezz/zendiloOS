@@ -10,7 +10,7 @@ use zendiloos_jobs::testing::MemoryJobs;
 use zendiloos_kernel::{Actor, AuditLog, Clock, PortError, RequestContext, Timestamp};
 
 use crate::application::ports::{
-    CheckedCompose, DataPlace, DockerData, DockerEngine, EngineError, ProjectAction, ProjectPlace,
+    CheckedCompose, DataPlace, DockerData, DockerEngine, EngineError, Lines, ProjectAction, ProjectPlace,
     ProjectRepository, ProjectStorage, Registries, StorageError, UpdateSettingsRepository,
 };
 use crate::application::{Containers, ContainersPorts};
@@ -270,10 +270,26 @@ impl DockerEngine for FakeEngine {
         project: &str,
         config: &str,
         pull: bool,
+        lines: &dyn Lines,
         context: &RequestContext,
     ) -> Result<(), EngineError> {
         self.call(format!("deploy {project} pull={pull} {config}"));
+        if pull {
+            lines.line(" app Pulled");
+        }
+        lines.line(&format!(" Container {project}-app  Started"));
         self.control_project(project, ProjectAction::Up, context).await
+    }
+
+    async fn control_project_reporting(
+        &self,
+        project: &str,
+        action: ProjectAction,
+        lines: &dyn Lines,
+        context: &RequestContext,
+    ) -> Result<(), EngineError> {
+        lines.line(&format!("{} {project}", action.as_str()));
+        self.control_project(project, action, context).await
     }
 
     async fn control_project(

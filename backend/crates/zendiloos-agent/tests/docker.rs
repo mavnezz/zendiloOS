@@ -47,6 +47,8 @@ case "$*" in
   "logs "*) echo out; echo err >&2; echo again ;;
   "compose --project-name broken logs"*) echo 'no such project'; exit 1 ;;
   "network rm "*) ;;
+  *" pull") echo ' web Pulling'; echo ' web Pulled' >&2 ;;
+  *" up --detach --remove-orphans") printf ' Container tesla-web-1  Recreated\r Container tesla-web-1  Started\n' ;;
 esac
 "#,
             log = log.display(),
@@ -161,7 +163,7 @@ async fn foreign_projects_come_up_from_the_file_compose_reports() {
         host.calls().last().unwrap(),
         &format!(
             "docker compose --file {foreign} --project-directory {directory} --project-name stack \
-             up --detach --remove-orphans --quiet-pull"
+             up --detach --remove-orphans"
         )
     );
 }
@@ -178,11 +180,7 @@ async fn foreign_projects_start_stop_pull_and_go_down_as_compose_knows_them() {
     let calls = host.calls();
     assert!(calls.contains(&format!("docker start {FIRST}")), "{calls:?}");
     assert!(calls.contains(&format!("docker stop {FIRST}")));
-    assert!(
-        calls
-            .iter()
-            .any(|call| call.contains(&format!("--file {foreign}")) && call.ends_with("pull --quiet"))
-    );
+    assert!(calls.iter().any(|call| call.contains(&format!("--file {foreign}")) && call.ends_with(" pull")));
     assert_eq!(calls.last().unwrap(), "docker compose --project-name stack down --remove-orphans");
     // Compose knows no file of it.
     let unknown = Request::ControlProject { project: project("ghost"), action: ProjectAction::Up };
@@ -233,6 +231,48 @@ fn config(text: &str) -> ProjectConfig {
 }
 
 #[tokio::test]
+async fn what_compose_writes_while_deploying_reaches_the_client_line_by_line() {
+    use std::os::unix::fs::MetadataExt;
+    use std::sync::Mutex;
+    use zendiloos_agent::{Server, serve};
+    use zendiloos_agent_proto::{AgentTransport, Report, UnixTransport};
+
+    struct Heard(Mutex<Vec<String>>);
+    impl Report for Heard {
+        fn step(&self, _: &str, _: Option<u8>) {}
+        fn line(&self, line: &str) {
+            self.0.lock().unwrap().push(line.to_owned());
+        }
+    }
+
+    let Host { _dir, root, agent } = Host::new();
+    let socket = root.join("agent.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let our_uid = fs::metadata(&root).unwrap().uid();
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    tokio::spawn(serve(listener, Server::new(agent, our_uid), async {
+        let _ = stopped.await;
+    }));
+    let heard = Heard(Mutex::new(Vec::new()));
+    let client = UnixTransport::new(&socket, std::time::Duration::from_secs(30));
+    let confirmed = r#"{"name":"tesla","services":{"web":{"image":"nginx"}}}"#;
+    let deploy = Request::DeployProject { project: project("tesla"), config: config(confirmed), pull: true };
+
+    assert_eq!(client.call_reporting(deploy, None, &heard).await.unwrap(), Response::Done);
+    assert_eq!(
+        heard.0.into_inner().unwrap(),
+        [
+            " web Pulling",
+            " web Pulled",
+            " Container tesla-web-1  Recreated",
+            " Container tesla-web-1  Started"
+        ],
+        "both streams, in order, before the answer"
+    );
+    let _ = stop.send(());
+}
+
+#[tokio::test]
 async fn administrators_projects_run_from_what_was_confirmed_and_kept() {
     let host = Host::new();
     let kept = host.root.join("etc-projects/tesla.json");
@@ -244,10 +284,7 @@ async fn administrators_projects_run_from_what_was_confirmed_and_kept() {
 
     let compose =
         format!("docker compose --file {} --env-file /dev/null --project-name tesla", kept.display());
-    assert_eq!(
-        host.calls(),
-        [format!("{compose} pull --quiet"), format!("{compose} up --detach --remove-orphans --quiet-pull")]
-    );
+    assert_eq!(host.calls(), [format!("{compose} pull"), format!("{compose} up --detach --remove-orphans")]);
     let file: serde_json::Value = serde_json::from_str(&fs::read_to_string(&kept).unwrap()).unwrap();
     assert_eq!(file["services"]["web"]["volumes"][0]["source"], "/etc/localtime");
     assert_eq!(file["x-zendiloos"]["pins"], serde_json::json!([]));

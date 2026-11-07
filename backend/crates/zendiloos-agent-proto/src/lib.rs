@@ -724,6 +724,12 @@ pub enum Response {
         step: String,
         percent: Option<u8>,
     },
+    /// Before the answer of a long operation: a line a program it runs
+    /// wrote, such as Docker Compose's "Container x Recreated", for a
+    /// person to follow. Any number may come; the answer follows them.
+    Output {
+        line: String,
+    },
     BlockDevices {
         lsblk_json: String,
     },

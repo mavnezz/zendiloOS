@@ -71,8 +71,8 @@ async fn creates_a_private_database_and_applies_all_migrations() {
         OpenReport {
             created: true,
             schema_before: None,
-            schema_after: 29,
-            applied: (1..=29).collect(),
+            schema_after: 30,
+            applied: (1..=30).collect(),
             backup: None
         }
     );
@@ -140,8 +140,8 @@ async fn reopening_an_up_to_date_database_changes_nothing() {
         report,
         OpenReport {
             created: false,
-            schema_before: Some(29),
-            schema_after: 29,
+            schema_before: Some(30),
+            schema_after: 30,
             applied: vec![],
             backup: None
         }

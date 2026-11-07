@@ -2,8 +2,8 @@
 
 use std::net::{IpAddr, SocketAddr};
 
-use axum::extract::{ConnectInfo, FromRequest, FromRequestParts, Request};
-use axum::http::header::USER_AGENT;
+use axum::extract::{ConnectInfo, FromRequest, FromRequestParts, OptionalFromRequest, Request};
+use axum::http::header::{CONTENT_TYPE, USER_AGENT};
 use axum::http::request::Parts;
 use serde::de::DeserializeOwned;
 use zendiloos_kernel::RequestContext;
@@ -17,12 +17,25 @@ impl<T: DeserializeOwned, S: Send + Sync> FromRequest<S> for ApiJson<T> {
     type Rejection = ApiError;
 
     async fn from_request(request: Request, state: &S) -> Result<Self, Self::Rejection> {
-        match axum::Json::<T>::from_request(request, state).await {
+        match <axum::Json<T> as FromRequest<S>>::from_request(request, state).await {
             Ok(axum::Json(value)) => Ok(Self(value)),
             Err(rejection) => {
                 Err(ApiError::InvalidBody { status: rejection.status(), detail: rejection.body_text() })
             }
         }
+    }
+}
+
+/// `Option<ApiJson<T>>`: no body at all (no `Content-Type`) is `None`; a
+/// body is read as [`ApiJson`] reads it.
+impl<T: DeserializeOwned, S: Send + Sync> OptionalFromRequest<S> for ApiJson<T> {
+    type Rejection = ApiError;
+
+    async fn from_request(request: Request, state: &S) -> Result<Option<Self>, Self::Rejection> {
+        if !request.headers().contains_key(CONTENT_TYPE) {
+            return Ok(None);
+        }
+        <Self as FromRequest<S>>::from_request(request, state).await.map(Some)
     }
 }
 
