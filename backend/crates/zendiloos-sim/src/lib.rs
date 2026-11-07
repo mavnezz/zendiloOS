@@ -972,6 +972,265 @@ mod tests {
         assert_eq!(done["pools"]["backup"]["scan_stats"]["state"], "FINISHED");
     }
 
+    fn done(response: Response) {
+        assert_eq!(response, Response::Done);
+    }
+
+    fn refused(response: &Response, code: ErrorCode) {
+        assert!(matches!(response, Response::Error { code: c, .. } if *c == code), "{response:?}");
+    }
+
+    #[tokio::test]
+    async fn shares_and_their_snapshots_come_and_go_like_datasets() {
+        use zendiloos_agent_proto::{PoolName, ShareName, SnapshotLabel, SnapshotNote, VolumeNumber};
+        let agent = at(1_793_907_601);
+        let (tank, one, photos) = (
+            || PoolName::parse("tank").unwrap(),
+            || VolumeNumber::new(1).unwrap(),
+            || ShareName::parse("photos").unwrap(),
+        );
+        let label = |text: &str| SnapshotLabel::parse(text).unwrap();
+        done(
+            agent
+                .call(Request::CreateShare { pool: tank(), volume: one(), name: photos() }, None)
+                .await
+                .unwrap(),
+        );
+        let again =
+            agent.call(Request::CreateShare { pool: tank(), volume: one(), name: photos() }, None).await;
+        refused(&again.unwrap(), ErrorCode::Conflict);
+        let unmanaged = agent
+            .call(
+                Request::CreateShare { pool: tank(), volume: VolumeNumber::new(7).unwrap(), name: photos() },
+                None,
+            )
+            .await;
+        refused(&unmanaged.unwrap(), ErrorCode::Forbidden);
+        let Response::ShareUsage { zfs_list } = agent.call(Request::ShareUsage {}, None).await.unwrap()
+        else {
+            panic!()
+        };
+        assert!(zfs_list.contains("tank/photos\t"), "{zfs_list}");
+
+        let snapshot = |text: &str| Request::CreateSnapshot {
+            pool: tank(),
+            volume: one(),
+            share: photos(),
+            label: label(text),
+            schedules: vec![zendiloos_agent_proto::SnapshotFrequency::Daily],
+            note: Some(SnapshotNote::parse("before").unwrap()),
+        };
+        done(agent.call(snapshot("zdl-2026-11-05_19.40.01"), None).await.unwrap());
+        done(agent.call(snapshot("zdl-2026-11-05_20.40.01"), None).await.unwrap());
+        refused(&agent.call(snapshot("zdl-2026-11-05_20.40.01"), None).await.unwrap(), ErrorCode::Conflict);
+        let Response::Snapshots { zfs_list } = agent.call(Request::ListSnapshots {}, None).await.unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(zfs_list.lines().count(), 2);
+        assert!(zfs_list.contains("daily\tbefore"), "{zfs_list}");
+
+        let rollback = |text: &str| Request::RollbackSnapshot {
+            pool: tank(),
+            volume: one(),
+            share: photos(),
+            label: label(text),
+        };
+        done(agent.call(rollback("zdl-2026-11-05_19.40.01"), None).await.unwrap());
+        let Response::Snapshots { zfs_list } = agent.call(Request::ListSnapshots {}, None).await.unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(zfs_list.lines().count(), 1, "the later one went");
+        refused(&agent.call(rollback("zdl-2026-11-05_21.00.00"), None).await.unwrap(), ErrorCode::Forbidden);
+        let destroy = |text: &str| Request::DestroySnapshot {
+            pool: tank(),
+            volume: one(),
+            share: photos(),
+            label: label(text),
+        };
+        done(agent.call(destroy("zdl-2026-11-05_19.40.01"), None).await.unwrap());
+        refused(&agent.call(destroy("zdl-2026-11-05_19.40.01"), None).await.unwrap(), ErrorCode::Forbidden);
+        let of_nothing = Request::CreateSnapshot {
+            pool: tank(),
+            volume: one(),
+            share: ShareName::parse("nothing").unwrap(),
+            label: label("zdl-2026-11-05_19.40.01"),
+            schedules: vec![],
+            note: None,
+        };
+        refused(&agent.call(of_nothing, None).await.unwrap(), ErrorCode::Forbidden);
+
+        let access = |name: ShareName| Request::SetShareAccess {
+            volume: one(),
+            name,
+            access: vec![],
+            removed: vec![],
+            recursive: true,
+        };
+        done(agent.call(access(photos()), None).await.unwrap());
+        refused(
+            &agent.call(access(ShareName::parse("nothing").unwrap()), None).await.unwrap(),
+            ErrorCode::Forbidden,
+        );
+        done(
+            agent
+                .call(Request::DestroyShare { pool: tank(), volume: one(), name: photos() }, None)
+                .await
+                .unwrap(),
+        );
+        refused(&agent.call(access(photos()), None).await.unwrap(), ErrorCode::Forbidden);
+    }
+
+    #[tokio::test]
+    async fn files_are_copied_deleted_restored_and_packed_in_a_directory() {
+        use std::io::Read;
+
+        use zendiloos_agent_proto::{
+            AppFolder, AppName, PoolName, ShareName, SharePath, UserName, VolumeNumber,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let agent = SimulatedAgent::new().with_files(root.path());
+        let (volume, docs) = (VolumeNumber::new(1).unwrap(), ShareName::parse("docs").unwrap());
+        let pool = PoolName::parse("tank").unwrap();
+        done(agent.call(Request::CreateShare { pool, volume, name: docs.clone() }, None).await.unwrap());
+        let at = |path: &str| FileLocation {
+            volume,
+            root: FileRoot::Share(docs.clone()),
+            path: SharePath::parse(path).unwrap(),
+            snapshot: None,
+        };
+        let anna = || UserName::parse("anna").unwrap();
+        done(agent.call(Request::MakeDirectory { user: anna(), location: at("album") }, None).await.unwrap());
+        std::fs::write(root.path().join("volume1/docs/album/a.txt"), "hello").unwrap();
+        let copied =
+            agent.call(Request::CopyEntry { user: anna(), from: at("album"), to: at("copy") }, None).await;
+        assert!(matches!(copied.unwrap(), Response::Copied { .. }));
+        done(
+            agent
+                .call(Request::RemoveEntry { user: anna(), location: at("copy"), recycle: true }, None)
+                .await
+                .unwrap(),
+        );
+        let restored = agent
+            .call(Request::RestoreEntry { user: anna(), location: at(".recycle/anna/copy") }, None)
+            .await;
+        assert!(matches!(restored.unwrap(), Response::Restored { .. }));
+        done(
+            agent
+                .call(Request::RemoveEntry { user: anna(), location: at("copy"), recycle: false }, None)
+                .await
+                .unwrap(),
+        );
+
+        let (answer, file) = agent
+            .call_with_file(Request::ArchiveFolder { user: anna(), location: at("album") }, None)
+            .await
+            .unwrap();
+        let Response::Archive { size } = answer else { panic!("{answer:?}") };
+        let mut archive = Vec::new();
+        std::fs::File::from(file.unwrap()).read_to_end(&mut archive).unwrap();
+        assert_eq!(archive.len() as u64, size);
+
+        let (answer, _) = agent
+            .call_with_file(Request::CreateUpload { user: anna(), location: at("") }, None)
+            .await
+            .unwrap();
+        let Response::Upload { name } = answer else { panic!("{answer:?}") };
+        done(agent.call(Request::DiscardUpload { user: anna(), location: at(&name) }, None).await.unwrap());
+
+        let home = FileLocation {
+            volume,
+            root: FileRoot::Home,
+            path: SharePath::parse("").unwrap(),
+            snapshot: None,
+        };
+        let listed = agent.call(Request::ListDirectory { user: anna(), location: home }, None).await.unwrap();
+        assert!(matches!(listed, Response::Directory { .. }), "{listed:?}");
+        let in_a_snapshot = FileLocation {
+            snapshot: Some(zendiloos_agent_proto::SnapshotLabel::parse("zdl-2026-11-05_19.40.01").unwrap()),
+            ..at("")
+        };
+        let none =
+            agent.call(Request::ListDirectory { user: anna(), location: in_a_snapshot }, None).await.unwrap();
+        refused(&none, ErrorCode::NotFound);
+        let taken =
+            agent.call(Request::MakeDirectory { user: anna(), location: at("album") }, None).await.unwrap();
+        refused(&taken, ErrorCode::Conflict);
+
+        let folders = Request::MakeAppFolders {
+            app: AppName::parse("immich").unwrap(),
+            volume,
+            folders: vec![AppFolder::parse("library").unwrap()],
+        };
+        done(agent.call(folders.clone(), None).await.unwrap());
+        assert!(root.path().join("volume1/@apps/immich/library").is_dir());
+
+        // Without a directory for files, nothing is kept.
+        let bare = SimulatedAgent::new();
+        done(bare.call(folders, None).await.unwrap());
+        let nothing =
+            bare.call(Request::ListDirectory { user: anna(), location: at("") }, None).await.unwrap();
+        refused(&nothing, ErrorCode::Failed);
+    }
+
+    #[tokio::test]
+    async fn accounts_are_made_changed_and_refused_like_the_agent() {
+        use zendiloos_agent_proto::{GroupName, Password, UserName};
+        let agent = SimulatedAgent::new();
+        let (anna, family) = (|| UserName::parse("anna").unwrap(), || GroupName::parse("family").unwrap());
+        done(agent.call(Request::CreateUser { name: anna() }, None).await.unwrap());
+        refused(&agent.call(Request::CreateUser { name: anna() }, None).await.unwrap(), ErrorCode::Conflict);
+        let password = Password::new("correct horse battery").unwrap();
+        done(agent.call(Request::SetSmbPassword { name: anna(), password }, None).await.unwrap());
+        done(agent.call(Request::SetUserEnabled { name: anna(), enabled: false }, None).await.unwrap());
+        done(agent.call(Request::CreateGroup { name: family() }, None).await.unwrap());
+        done(
+            agent
+                .call(Request::SetGroupMembers { group: family(), members: vec![anna()] }, None)
+                .await
+                .unwrap(),
+        );
+        let root =
+            Request::SetGroupMembers { group: family(), members: vec![UserName::parse("root").unwrap()] };
+        refused(&agent.call(root, None).await.unwrap(), ErrorCode::Forbidden);
+        done(agent.call(Request::DeleteGroup { name: family() }, None).await.unwrap());
+        done(agent.call(Request::DeleteUser { name: anna() }, None).await.unwrap());
+        let system = agent.call(Request::DeleteUser { name: UserName::parse("root").unwrap() }, None).await;
+        refused(&system.unwrap(), ErrorCode::Forbidden);
+    }
+
+    #[tokio::test]
+    async fn an_update_runs_its_steps_and_a_second_waits() {
+        use zendiloos_agent_proto::PackageTask;
+        let agent = SimulatedAgent::new();
+        let started =
+            agent.call(Request::StartPackages { task: PackageTask::Check, release: None }, None).await;
+        assert!(matches!(started.unwrap(), Response::PackagesStarted { .. }));
+        let busy =
+            agent.call(Request::StartPackages { task: PackageTask::Update, release: None }, None).await;
+        refused(&busy.unwrap(), ErrorCode::Forbidden);
+        let Response::Packages { run: Some(run) } =
+            agent.call(Request::PackagesState {}, None).await.unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!((run.state, run.step.as_str()), (PackageRunState::Running, "lists"));
+        let refused_docker = agent
+            .call(
+                Request::MoveDocker {
+                    from_pool: zendiloos_agent_proto::PoolName::parse("tank").unwrap(),
+                    from_volume: zendiloos_agent_proto::VolumeNumber::new(9).unwrap(),
+                    to_pool: zendiloos_agent_proto::PoolName::parse("backup").unwrap(),
+                    to_volume: zendiloos_agent_proto::VolumeNumber::new(2).unwrap(),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        refused(&refused_docker, ErrorCode::Forbidden);
+    }
+
     #[tokio::test]
     async fn a_scrub_can_be_stopped_while_it_runs() {
         use zendiloos_agent_proto::PoolName;

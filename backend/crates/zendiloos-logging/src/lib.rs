@@ -23,12 +23,7 @@ pub enum Format {
 
 /// Installs the global subscriber. `RUST_LOG`, if set, overrides `filter`.
 pub fn init(filter: &str, format: Format) -> anyhow::Result<()> {
-    let filter = match std::env::var("RUST_LOG") {
-        Ok(directive) if !directive.is_empty() => {
-            EnvFilter::try_new(&directive).context("invalid RUST_LOG")?
-        }
-        _ => EnvFilter::try_new(filter).context("invalid log filter")?,
-    };
+    let filter = filter_from(std::env::var("RUST_LOG").ok(), filter)?;
     let builder = tracing_subscriber::fmt().with_env_filter(filter).with_writer(std::io::stderr);
     match format {
         Format::Text if logging_to_journal() => builder
@@ -39,6 +34,17 @@ pub fn init(filter: &str, format: Format) -> anyhow::Result<()> {
         Format::Json => builder.json().try_init(),
     }
     .map_err(|error| anyhow::anyhow!(error))
+}
+
+/// `RUST_LOG`'s directives (`environment`), if set and not empty, else
+/// `default`.
+fn filter_from(environment: Option<String>, default: &str) -> anyhow::Result<EnvFilter> {
+    match environment {
+        Some(directive) if !directive.is_empty() => {
+            EnvFilter::try_new(&directive).context("invalid RUST_LOG")
+        }
+        _ => EnvFilter::try_new(default).context("invalid log filter"),
+    }
 }
 
 /// Whether stderr is connected to the journal. systemd sets
@@ -119,6 +125,46 @@ mod tests {
         fn make_writer(&'a self) -> Self::Writer {
             self.clone()
         }
+    }
+
+    #[test]
+    fn levels_have_the_journals_priorities() {
+        let priorities: Vec<u8> = [Level::ERROR, Level::WARN, Level::INFO, Level::DEBUG, Level::TRACE]
+            .into_iter()
+            .map(priority)
+            .collect();
+        assert_eq!(priorities, [3, 4, 6, 7, 7]);
+    }
+
+    #[test]
+    fn rust_log_wins_over_the_configured_filter() {
+        assert_eq!(filter_from(Some("debug".into()), "info").unwrap().to_string(), "debug");
+        assert_eq!(filter_from(Some(String::new()), "info").unwrap().to_string(), "info", "empty is not set");
+        assert_eq!(filter_from(None, "warn").unwrap().to_string(), "warn");
+        let bad = filter_from(Some("x=notalevel".into()), "info").unwrap_err();
+        assert!(bad.to_string().contains("RUST_LOG"), "{bad}");
+        let bad = filter_from(None, "x=notalevel").unwrap_err();
+        assert!(bad.to_string().contains("log filter"), "{bad}");
+    }
+
+    #[test]
+    fn installs_one_subscriber_and_refuses_a_broken_filter() {
+        assert!(init("info,zendiloos=notalevel", Format::Text).is_err(), "not a level");
+        // Once per process: the first takes, a second is refused.
+        let first = init("info", Format::Json);
+        let second = init("info", Format::Text);
+        assert!(first.is_ok() || std::env::var("RUST_LOG").is_ok_and(|v| !v.is_empty()), "{first:?}");
+        assert!(second.is_err(), "a subscriber is set already");
+    }
+
+    #[test]
+    fn tells_whether_stderr_is_the_journal() {
+        use std::os::unix::fs::MetadataExt;
+        let expected = std::env::var("JOURNAL_STREAM").ok().is_some_and(|stream| {
+            std::fs::metadata("/proc/self/fd/2")
+                .is_ok_and(|stderr| is_stream(&stream, stderr.dev(), stderr.ino()))
+        });
+        assert_eq!(logging_to_journal(), expected);
     }
 
     #[test]

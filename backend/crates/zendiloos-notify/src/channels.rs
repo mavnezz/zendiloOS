@@ -526,6 +526,90 @@ mod tests {
     }
 
     #[test]
+    fn securities_and_formats_are_named_and_read_back() {
+        for security in [Security::Tls, Security::StartTls, Security::None] {
+            assert_eq!(Security::parse(security.as_str()), Some(security));
+        }
+        for format in [WebhookFormat::Json, WebhookFormat::Text] {
+            assert_eq!(WebhookFormat::parse(format.as_str()), Some(format));
+        }
+        assert_eq!((Security::parse("ssl"), WebhookFormat::parse("xml")), (None, None));
+        for level in [Level::Info, Level::Success, Level::Warning, Level::Error] {
+            assert_eq!(Level::parse(level.as_str()), Some(level));
+        }
+        assert_eq!(Level::parse("fatal"), None);
+        let mut odd = webhook("https://x.example");
+        odd.name = "  ".into();
+        assert_eq!(odd.checked(), Err(InvalidChannel::Name));
+        let mut good_news = webhook("https://x.example");
+        good_news.min_level = Level::Success;
+        assert_eq!(good_news.checked(), Err(InvalidChannel::Level), "success is no level to start from");
+    }
+
+    #[tokio::test]
+    async fn notifications_published_go_out_by_themselves() {
+        let sender = Arc::new(RecordingSender::default());
+        let channels = Channels::new(
+            Arc::new(MemoryChannels::default()),
+            sender.clone(),
+            Arc::new(Audit::default()),
+            Arc::new(Fixed),
+            "nas".into(),
+        );
+        channels.create(email("me@example.org"), &alice(), &RequestContext::default()).await.unwrap();
+        let notifier =
+            crate::Notifier::new(Arc::new(crate::testing::MemoryNotifications::default()), Arc::new(Fixed));
+        let delivering = channels.clone().spawn(&notifier);
+        notifier
+            .notify(crate::NewNotification::new(Level::Error, "snapshot_failed").with("share", "photos"))
+            .await;
+        for _ in 0..100 {
+            if !sender.sent.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(sender.sent.lock().unwrap()[0].1.title, "[nas] Kein Snapshot von photos");
+        delivering.abort();
+        let missing = channels.test(99, &alice(), &RequestContext::default()).await;
+        assert!(matches!(missing, Err(ChannelError::NotFound)), "{missing:?}");
+    }
+
+    #[tokio::test]
+    async fn there_is_a_limit_of_channels() {
+        let channels = Channels::new(
+            Arc::new(MemoryChannels::default()),
+            Arc::new(RecordingSender::default()),
+            Arc::new(Audit::default()),
+            Arc::new(Fixed),
+            "nas".into(),
+        );
+        let request = RequestContext::default();
+        for n in 0..MAX_CHANNELS {
+            channels
+                .create(
+                    webhook(&format!("https://x.example/{n}")).named(&format!("Chat {n}")),
+                    &alice(),
+                    &request,
+                )
+                .await
+                .unwrap();
+        }
+        let one_more = channels.create(webhook("https://x.example").named("More"), &alice(), &request).await;
+        assert!(matches!(one_more, Err(ChannelError::TooMany)), "{one_more:?}");
+        let missing =
+            channels.update(99, webhook("https://x.example"), PasswordChange::Keep, &alice(), &request).await;
+        assert!(matches!(missing, Err(ChannelError::NotFound)), "{missing:?}");
+    }
+
+    impl ChannelSettings {
+        fn named(mut self, name: &str) -> Self {
+            self.name = name.to_owned();
+            self
+        }
+    }
+
+    #[test]
     fn a_channel_carries_its_level_and_more_serious_ones() {
         let warnings = email("me@example.org");
         assert!(!warnings.carries(Level::Info));

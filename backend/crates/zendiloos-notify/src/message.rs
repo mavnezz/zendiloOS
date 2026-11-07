@@ -202,6 +202,102 @@ mod tests {
     }
 
     #[test]
+    fn every_known_code_is_worded_in_both_languages() {
+        let cases = [
+            (
+                "pool_recovered",
+                vec![("pool", "tank")],
+                "Pool tank is healthy again",
+                "Pool tank ist wieder intakt",
+            ),
+            (
+                "resilver_finished",
+                vec![("pool", "tank")],
+                "Pool tank is rebuilt",
+                "Pool tank ist wiederhergestellt",
+            ),
+            (
+                "scrub_finished",
+                vec![("pool", "tank")],
+                "Data check of tank finished",
+                "Datenprüfung von tank abgeschlossen",
+            ),
+            (
+                "volume_filling",
+                vec![("pool", "tank"), ("percent", "91")],
+                "Pool tank is 91 % full",
+                "Pool tank ist zu 91 % voll",
+            ),
+            (
+                "disk_health",
+                vec![("disk", "sda"), ("health", "warning")],
+                "Disk sda reports problems",
+                "Platte sda meldet Probleme",
+            ),
+            (
+                "snapshot_failed",
+                vec![("share", "photos")],
+                "No snapshot of photos",
+                "Kein Snapshot von photos",
+            ),
+            ("channel_test", vec![], "Test message", "Testnachricht"),
+        ];
+        for (code, params, english, german) in cases {
+            let notification = notification(code, &params);
+            let (en, de) = (
+                message(&notification, "nas", Language::English),
+                message(&notification, "nas", Language::German),
+            );
+            assert_eq!(en.title, format!("[nas] {english}"));
+            assert_eq!(de.title, format!("[nas] {german}"));
+        }
+        let worrying = notification("disk_health", &[("disk", "sda"), ("health", "warning")]);
+        assert_eq!(
+            message(&worrying, "nas", Language::English).body,
+            "sda: SMART health is worrying. Plan to replace it."
+        );
+        assert!(message(&worrying, "nas", Language::German).body.contains("auffällig"));
+    }
+
+    #[test]
+    fn errors_are_counted_in_words() {
+        for (errors, english, german) in [
+            ("0", "No errors.", "Keine Fehler."),
+            ("1", "One error was found.", "Ein Fehler wurde gefunden."),
+            ("4", "4 errors were found.", "4 Fehler wurden gefunden."),
+        ] {
+            let rebuilt = notification("resilver_finished", &[("pool", "tank"), ("errors", errors)]);
+            assert_eq!(message(&rebuilt, "nas", Language::English).body, english);
+            assert_eq!(message(&rebuilt, "nas", Language::German).body, german);
+        }
+        let scrubbed = notification("scrub_finished", &[("pool", "tank"), ("errors", "1")]);
+        assert_eq!(
+            message(&scrubbed, "nas", Language::German).body,
+            "Ein Fehler wurde gefunden und behoben."
+        );
+    }
+
+    #[test]
+    fn a_pools_state_is_worded_and_the_language_named() {
+        for (state, english, german) in [
+            ("degraded", "degraded", "beeinträchtigt"),
+            ("faulted", "failed", "ausgefallen"),
+            ("unavailable", "unavailable", "nicht verfügbar"),
+            ("suspended", "suspended", "angehalten"),
+            ("offline", "offline", "offline"),
+            ("removed", "removed", "entfernt"),
+            ("weird", "in an unknown state", "in einem unbekannten Zustand"),
+        ] {
+            assert_eq!((pool_state(state, false), pool_state(state, true)), (english, german));
+        }
+        for language in [Language::English, Language::German] {
+            assert_eq!(Language::parse(language.as_str()), Some(language));
+        }
+        assert_eq!(Language::parse("fr"), None);
+        assert_eq!(Language::default(), Language::English);
+    }
+
+    #[test]
     fn unknown_codes_still_say_what_happened() {
         let odd = notification("pool_on_fire", &[("pool", "tank")]);
         assert_eq!(
