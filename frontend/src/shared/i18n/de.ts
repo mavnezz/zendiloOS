@@ -1819,6 +1819,7 @@ const de: Messages = {
       other: 'Spezialdatei',
       file: '{ext}-Datei',
       plainFile: 'Datei',
+      drive: 'Wechseldatenträger',
     },
     actions: {
       open: 'Öffnen',
@@ -1838,6 +1839,8 @@ const de: Messages = {
       share: 'Im Netzwerk freigeben',
       shareUndo: 'Freigabe aufheben',
       previousVersions: 'Vorgängerversionen',
+      eject: 'Auswerfen',
+      mount: 'Einhängen',
       properties: 'Eigenschaften',
     },
     properties: {
@@ -1868,6 +1871,16 @@ const de: Messages = {
         'Snapshots halten den Ordner fest, wie er war. Schauen Sie hinein und kopieren Sie zurück, was Sie brauchen.',
       browse: 'Öffnen',
       manage: 'Snapshots verwalten',
+    },
+    drive: {
+      heading: 'Wechseldatenträger',
+      mounted: 'Eingehängt',
+      ejected: 'Ausgeworfen',
+      failed: 'Nicht einhängbar',
+      unmounted: 'Nicht eingehängt',
+      free: '{free} von {size} frei',
+      ejectedNow: '{name} kann jetzt abgezogen werden',
+      mountedNow: '{name} ist eingehängt',
     },
   },
   files: {
@@ -2098,6 +2111,8 @@ const de: Messages = {
       'Es laufen noch Aufgaben im Hintergrund, die sonst mittendrin abbrächen; warten Sie, bis sie beendet sind',
     pool_in_use:
       'Auf dem Pool liegen noch Daten, die sonst unbemerkt verloren gingen. Löschen oder verschieben Sie sie zuerst, jeweils an ihrer eigenen Stelle',
+    drive_in_use:
+      'Auf dem Datenträger sind noch Dateien geöffnet, im Dateimanager oder in einer App. Schließen Sie sie und werfen Sie ihn dann erneut aus.',
     project_unconfirmed:
       'Dieses Projekt stammt aus der Zeit, bevor zendiloOS das Bestätigte aufbewahrt hat. Öffnen Sie seine Compose-Datei und speichern Sie sie einmal; danach läuft es so wie gespeichert, nicht aus der Datei in der Freigabe.',
     compose_risks: 'Die Compose-Datei braucht Ihre Bestätigung',

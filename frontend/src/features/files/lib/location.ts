@@ -6,19 +6,27 @@ export const HOME = 0
 export const RECYCLE_BIN = '.recycle'
 
 /**
- * Where the explorer is. Removable drives will be a kind of their own
- * beside these (`{ kind: 'removable', drive, path }`), addressed by their
- * own routes.
+ * Where files are: a folder on a volume by its share ID (the personal
+ * folder as {@link HOME}), or a removable drive by its ID, which the file
+ * routes of `/files/removable/{drive}` take.
  */
+export type Place = number | string
+
+/** Whether `place` is a removable drive. */
+export function isDrive(place: Place): place is string {
+  return typeof place === 'string'
+}
+
+/** Where the explorer is. */
 export type Location =
   /** The folders directly on a volume. */
   | { kind: 'volume'; volume: number }
-  /** A folder in a folder on a volume (`share`), or in the personal one. */
-  | { kind: 'folder'; share: number; path: string; snapshot: string | null }
+  /** A folder in a folder on a volume or on a drive (`share`), or in the personal one. */
+  | { kind: 'folder'; share: Place; path: string; snapshot: string | null }
   /** The signed-in person's recycle bins, of every folder, together. */
   | { kind: 'bin' }
 
-export function folderAt(share: number, path = '', snapshot: string | null = null): Location {
+export function folderAt(share: Place, path = '', snapshot: string | null = null): Location {
   return { kind: 'folder', share, path, snapshot }
 }
 

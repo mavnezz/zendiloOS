@@ -10,5 +10,6 @@ const session = useSessionStore()
     :user-name="session.info?.account.name"
     :account-id="session.info?.account.id"
     :can-manage="session.can('shares.manage')"
+    :can-manage-storage="session.can('storage.manage')"
   />
 </template>

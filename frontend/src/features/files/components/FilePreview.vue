@@ -9,9 +9,10 @@ import { Button } from '@/shared/ui/button'
 import { ModalDialog } from '@/shared/ui/dialog'
 
 import { downloadUrl, previewKind, previewUrl, textPreview } from '../api'
+import type { Place } from '../lib/location'
 
-/** The file to show: its share and path, in a snapshot if given; null shows nothing. */
-const props = defineProps<{ share: number; path: string | null; snapshot?: string | null }>()
+/** The file to show: its place and path, in a snapshot if given; null shows nothing. */
+const props = defineProps<{ share: Place; path: string | null; snapshot?: string | null }>()
 const open = defineModel<boolean>('open', { default: false })
 
 const { t } = useI18n()

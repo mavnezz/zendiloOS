@@ -31,6 +31,7 @@ function situation(extra: Partial<Situation> = {}): Situation {
     favouriteTarget: true,
     hasSnapshots: true,
     shareTarget: null,
+    drive: null,
     items: [],
     ...extra,
   }
@@ -87,6 +88,37 @@ describe('the actions', () => {
     expect(enabled({ ...volume, canManage: true })).not.toContain('copy')
     const shared = actionsFor({ ...volume, canManage: true, shareTarget: { shared: true } })
     expect(shared.find((a) => a.id === 'share')!.undo).toBe(true)
+  })
+
+  it('treat a removable drive as such', () => {
+    // Inside a mounted drive: eject, no favourites, no snapshots.
+    const inside = situation({ drive: 'mounted', items: [item('a.txt', { share: 'STICK' })] })
+    expect(enabled(inside)).toEqual(expect.arrayContaining(['eject', 'copy', 'delete', 'rename']))
+    expect(ids(inside)).not.toEqual(expect.arrayContaining(['favourite']))
+    expect(ids(inside)).not.toContain('previousVersions')
+    expect(ids(inside)).not.toContain('mount')
+    // The drive itself, in the tree: opened, ejected; never copied or deleted.
+    const node = item('STICK', {
+      kind: 'directory',
+      share: 'STICK',
+      path: '',
+      drive: { state: 'mounted', problem: null },
+    })
+    const mounted = situation({ drive: 'mounted', items: [node] })
+    expect(enabled(mounted)).toEqual(expect.arrayContaining(['open', 'eject', 'properties']))
+    for (const id of ['copy', 'cut', 'rename', 'delete', 'download'] as const) {
+      expect(enabled(mounted)).not.toContain(id)
+    }
+    // Ejected: mounted again, nothing else.
+    const ejected = situation({
+      drive: 'ejected',
+      writable: false,
+      items: [{ ...node, drive: { state: 'ejected', problem: null } }],
+    })
+    expect(enabled(ejected)).toContain('mount')
+    expect(enabled(ejected)).not.toContain('open')
+    expect(enabled(ejected)).not.toContain('eject')
+    expect(enabled(ejected)).not.toContain('properties')
   })
 
   it('know their keys', () => {

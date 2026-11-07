@@ -85,6 +85,7 @@ const KNOWN_PROBLEMS = [
   'project_unconfirmed',
   'app_changed',
   'pool_in_use',
+  'drive_in_use',
   'jobs_running',
   'disk_not_found',
   'duplicate_disk',

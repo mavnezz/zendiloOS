@@ -16,11 +16,13 @@ import {
   Network,
   PanelLeft,
   Pencil,
+  Plug,
   RotateCcw,
   Scissors,
   Search,
   Star,
   Trash2,
+  Unplug,
   Upload,
   X,
 } from 'lucide-vue-next'
@@ -43,14 +45,18 @@ import { Meter } from '@/shared/ui/meter'
 import {
   archiveUrl,
   downloadUrl,
+  listFolder,
   previewKind,
   restoreFromSnapshot,
+  targetOf,
   uploadFile,
+  useDriveActions,
   useFavourites,
   useFileActions,
   useFileVolumes,
   useFolder,
   useMyShares,
+  useRemovableDrives,
   useSetFavourites,
   useShareSnapshots,
 } from '../api'
@@ -69,10 +75,12 @@ import {
   folderAt,
   HOME,
   inBin,
+  isDrive,
   joinPath,
   type Location,
   ownBin,
   parentPath,
+  type Place,
   RECYCLE_BIN,
   useHistory,
 } from '../lib/location'
@@ -92,9 +100,16 @@ import SnapshotsDialog from './sharing/SnapshotsDialog.vue'
 /**
  * The files of the NAS as the signed-in person may see them, with their own
  * permissions. `canManage`: they manage shares (`shares.manage`), so make,
- * share and delete folders directly on the volumes.
+ * share and delete folders directly on the volumes. `canManageStorage`:
+ * they manage storage (`storage.manage`), so see, use and eject the
+ * removable drives plugged in.
  */
-const props = defineProps<{ userName?: string; accountId?: number; canManage?: boolean }>()
+const props = defineProps<{
+  userName?: string
+  accountId?: number
+  canManage?: boolean
+  canManageStorage?: boolean
+}>()
 
 const { t } = useI18n()
 const notifications = useNotifications()
@@ -107,6 +122,8 @@ const { data: volumes, error: volumesError, isPending: volumesPending } = useFil
 const { data: favourites } = useFavourites()
 const setFavourites = useSetFavourites()
 const managed = useShares({ enabled: computed(() => props.canManage === true) })
+const { data: drives } = useRemovableDrives(computed(() => props.canManageStorage === true))
+const driveActions = useDriveActions()
 
 const history = useHistory({ kind: 'bin' })
 const location = history.current
@@ -114,31 +131,54 @@ const started = ref(false)
 const bin = computed(() => ownBin(props.userName))
 const hasHome = computed(() => (places.value ?? []).some((place) => place.home))
 
-// Where the explorer opens: the personal folder, else the first folder or volume.
+/** Where the explorer opens: the personal folder, else the first folder or volume. */
+function startLocation(): Location {
+  const first = (volumes.value ?? []).flatMap((v) => v.folders).find((f) => f.access)
+  if (hasHome.value) return folderAt(HOME)
+  if (first) return folderAt(first.id)
+  const volume = volumes.value?.[0]
+  return volume ? { kind: 'volume', volume: volume.volume } : { kind: 'bin' }
+}
 watch(
   [places, volumes],
   ([placeList, volumeList]) => {
     if (started.value || !placeList || !volumeList) return
     started.value = true
-    const first = volumeList.flatMap((v) => v.folders).find((f) => f.access)
-    if (placeList.some((place) => place.home)) history.replace(folderAt(HOME))
-    else if (first) history.replace(folderAt(first.id))
-    else if (volumeList[0]) history.replace({ kind: 'volume', volume: volumeList[0].volume })
+    if (placeList.length || volumeList.length) history.replace(startLocation())
   },
   { immediate: true },
 )
 
-/** The folder on a volume (or personal folder) `id`, as the person may use it. */
-function place(id: number) {
-  return places.value?.find((p) => p.id === id)
+/** The folder on a volume (or personal folder) `id`, as the person may use it; never a drive. */
+function place(id: Place) {
+  return isDrive(id) ? undefined : places.value?.find((p) => p.id === id)
 }
-function volumeOf(id: number) {
-  return volumes.value?.find((v) => v.folders.some((f) => f.id === id))
+function volumeOf(id: Place) {
+  return isDrive(id) ? undefined : volumes.value?.find((v) => v.folders.some((f) => f.id === id))
 }
-function folderName(id: number): string {
+/** The removable drive `id`, as last listed. */
+function driveOf(id: Place) {
+  return isDrive(id) ? drives.value?.find((d) => d.id === id) : undefined
+}
+function folderName(id: Place): string {
+  if (isDrive(id)) return driveOf(id)?.label || id
   if (id === HOME) return t('files.home')
   return place(id)?.name ?? volumeOf(id)?.folders.find((f) => f.id === id)?.name ?? `#${id}`
 }
+/** What the person may do in a place: a drive is the administrator's while mounted. */
+function accessOf(id: Place): 'read' | 'read_write' | undefined {
+  if (!isDrive(id)) return place(id)?.access
+  const drive = driveOf(id)
+  if (drive?.state !== 'mounted') return undefined
+  return drive.read_only ? 'read' : 'read_write'
+}
+
+// A drive ejected or pulled out while looked into: back to where the explorer starts.
+watch(drives, (list) => {
+  const at = location.value
+  if (at.kind !== 'folder' || !isDrive(at.share) || !list) return
+  if (list.find((d) => d.id === at.share)?.state !== 'mounted') history.replace(startLocation())
+})
 
 // What is shown.
 const shareRef = computed(() => (location.value.kind === 'folder' ? location.value.share : null))
@@ -148,14 +188,17 @@ const snapshotRef = computed(() =>
 )
 const { data: folder, error: folderError, isFetching } = useFolder(shareRef, pathRef, snapshotRef)
 const { data: snapshots } = useShareSnapshots(
-  computed(() => (shareRef.value !== null && shareRef.value !== HOME ? shareRef.value : null)),
+  computed(() => {
+    const share = shareRef.value
+    return share !== null && !isDrive(share) && share !== HOME ? share : null
+  }),
 )
 
 const showHidden = ref(false)
 const search = ref('')
 const sort = ref<{ key: SortKey; descending: boolean }>({ key: 'name', descending: false })
 
-function entryItem(share: number, parent: string, entry: FileEntry, origin?: string): Item {
+function entryItem(share: Place, parent: string, entry: FileEntry, origin?: string): Item {
   const path = joinPath(parent, entry.name)
   return {
     key: `${share}:${path}`,
@@ -265,7 +308,7 @@ function toggleAll(): void {
 // What the actions are about: the selection where the explorer is, or a
 // node of the tree that was right-clicked.
 const aimed = ref<Item | null>(null)
-const clipboard = ref<{ mode: 'copy' | 'move'; share: number; paths: string[] } | null>(null)
+const clipboard = ref<{ mode: 'copy' | 'move'; share: Place; paths: string[] } | null>(null)
 
 interface Target {
   location: Location
@@ -282,12 +325,16 @@ function isFavourite(share: number, path: string): boolean {
   return (favourites.value ?? []).some((f) => f.share_id === share && f.path === path)
 }
 
-/** The folder the favourite action is about: one chosen, or the one shown. */
+/** The folder the favourite action is about: one chosen, or the one shown; never on a drive. */
 function favouriteFolder(target: Target): { share: number; path: string } | null {
   const one = target.items.length === 1 ? target.items[0] : undefined
-  if (one) return one.kind === 'directory' && one.volumeFolder?.access !== null ? one : null
+  if (one) {
+    return one.kind === 'directory' && one.volumeFolder?.access !== null && !isDrive(one.share)
+      ? { share: one.share, path: one.path }
+      : null
+  }
   const at = target.location
-  return at.kind === 'folder' && !at.snapshot && !inBin(at.path)
+  return at.kind === 'folder' && !isDrive(at.share) && !at.snapshot && !inBin(at.path)
     ? { share: at.share, path: at.path }
     : null
 }
@@ -295,15 +342,27 @@ function favouriteFolder(target: Target): { share: number; path: string } | null
 /** The folder on a volume the share, versions and properties actions are about. */
 function volumeFolderOf(target: Target): number | null {
   const one = target.items.length === 1 ? target.items[0] : undefined
-  if (one) return one.volumeFolder ? one.share : null
+  if (one) return one.volumeFolder && !isDrive(one.share) ? one.share : null
   const at = target.location
-  return at.kind === 'folder' && at.path === '' && at.share !== HOME ? at.share : null
+  return at.kind === 'folder' && at.path === '' && !isDrive(at.share) && at.share !== HOME
+    ? at.share
+    : null
+}
+
+/** The drive the eject and mount actions are about: one in the tree, or the one shown. */
+function driveIdOf(target: Target): string | null {
+  const one = target.items.length === 1 ? target.items[0] : undefined
+  if (one?.drive && isDrive(one.share)) return one.share
+  const at = target.location
+  return at.kind === 'folder' && isDrive(at.share) ? at.share : null
 }
 
 function situation(target: Target): Situation {
   const at = target.location
   const inFolder = at.kind === 'folder'
-  const access = inFolder ? place(at.share)?.access : undefined
+  const access = inFolder ? accessOf(at.share) : undefined
+  const driveId = driveIdOf(target)
+  const aimedDrive = target.items.length === 1 ? target.items[0]?.drive : undefined
   const isHere = target === here.value
   const writable =
     inFolder &&
@@ -318,7 +377,8 @@ function situation(target: Target): Situation {
     shareFolder !== null
       ? volumes.value?.flatMap((v) => v.folders).find((f) => f.id === shareFolder)
       : undefined
-  const versionsOf = shareFolder ?? (inFolder && at.share !== HOME ? at.share : null)
+  const versionsOf =
+    shareFolder ?? (inFolder && !isDrive(at.share) && at.share !== HOME ? at.share : null)
   return {
     kind: at.kind,
     writable,
@@ -334,6 +394,7 @@ function situation(target: Target): Situation {
     favouriteTarget: favourite !== null,
     hasSnapshots: versionsOf !== null && place(versionsOf) !== undefined,
     shareTarget: shareTarget ? { shared: shareTarget.shared } : null,
+    drive: driveId === null ? null : (driveOf(driveId)?.state ?? aimedDrive?.state ?? 'unmounted'),
     items: target.items.filter((i) => !i.unreadable),
   }
 }
@@ -354,6 +415,8 @@ const ICONS: Record<ActionId, MenuAction['icon']> = {
   favourite: Star,
   share: Network,
   previousVersions: History,
+  eject: Unplug,
+  mount: Plug,
   properties: Info,
 }
 const KEYS: Partial<Record<ActionId, string>> = {
@@ -364,7 +427,14 @@ const KEYS: Partial<Record<ActionId, string>> = {
   rename: 'F2',
   delete: 'Del',
 }
-const GROUPS = new Set<ActionId>(['newFolder', 'cut', 'restore', 'favourite', 'properties'])
+const GROUPS = new Set<ActionId>([
+  'newFolder',
+  'cut',
+  'restore',
+  'favourite',
+  'eject',
+  'properties',
+])
 
 function menu(target: Target): MenuAction[] {
   return actionsFor(situation(target)).map((state) => ({
@@ -398,7 +468,7 @@ function save(href: string): void {
 }
 
 // Dialogs.
-const previewing = ref<{ share: number; path: string; snapshot: string | null } | null>(null)
+const previewing = ref<{ share: Place; path: string; snapshot: string | null } | null>(null)
 const previewOpen = computed({
   get: () => previewing.value !== null,
   set: (open) => {
@@ -417,6 +487,7 @@ const managing = ref<number | null>(null)
 const managedShare = (id: number | null) => managed.data.value?.find((s) => s.id === id) ?? null
 
 function typeOf(item: Item): string {
+  if (item.drive || (isDrive(item.share) && item.path === '')) return t('explorer.types.drive')
   if (item.volumeFolder) {
     return item.volumeFolder.shared
       ? t('explorer.types.sharedFolder')
@@ -431,6 +502,7 @@ function typeOf(item: Item): string {
 
 function open(item: Item): void {
   if (item.volumeFolder?.access === null) return
+  if (item.drive && item.drive.state !== 'mounted') return
   const at = location.value
   const snapshot = at.kind === 'folder' ? at.snapshot : null
   if (item.kind === 'directory') go(folderAt(item.share, item.path, snapshot))
@@ -441,25 +513,30 @@ function open(item: Item): void {
 
 async function transfer(
   mode: 'copy' | 'move',
-  share: number,
+  share: Place,
   paths: string[],
-  into: { share: number; path: string },
+  into: { share: Place; path: string },
 ) {
   const inside = paths.some(
     (p) => share === into.share && (into.path === p || into.path.startsWith(`${p}/`)),
   )
   if (inside || paths.every((p) => share === into.share && parentPath(p) === into.path)) return
   try {
-    await actions.transfer(share, { mode, paths, target_share: into.share, target_path: into.path })
+    await actions.transfer(share, {
+      mode,
+      paths,
+      ...targetOf(into.share),
+      target_path: into.path,
+    })
     notifications.notify('info', t(`files.started.${mode}`, { count: paths.length }, paths.length))
   } catch (failure) {
     fail(failure)
   }
 }
 
-/** Entries by the folder on a volume they are in. */
-function byShare(list: Item[]): Map<number, string[]> {
-  const grouped = new Map<number, string[]>()
+/** Entries by the folder on a volume, or the drive, they are in. */
+function byShare(list: Item[]): Map<Place, string[]> {
+  const grouped = new Map<Place, string[]>()
   for (const item of list) grouped.set(item.share, [...(grouped.get(item.share) ?? []), item.path])
   return grouped
 }
@@ -481,8 +558,9 @@ async function removeAll(list: Item[]): Promise<void> {
 async function restoreAll(list: Item[]): Promise<void> {
   try {
     let count = 0
+    // Only the bins of folders on volumes: drives have none.
     for (const [share, paths] of byShare(list))
-      count += (await actions.restore(share, paths)).length
+      if (!isDrive(share)) count += (await actions.restore(share, paths)).length
     notifications.notify('info', t('files.restored', { count }, count))
     selected.value = new Set()
   } catch (failure) {
@@ -499,6 +577,26 @@ async function toggleFavourite(target: Target): Promise<void> {
     : [...list, { share_id: folderOf.share, path: folderOf.path }]
   try {
     await setFavourites(next)
+  } catch (failure) {
+    fail(failure)
+  }
+}
+
+async function eject(id: string): Promise<void> {
+  const name = folderName(id)
+  try {
+    await driveActions.eject(id)
+    notifications.notify('success', t('explorer.drive.ejectedNow', { name }))
+    if (clipboard.value?.share === id) clipboard.value = null
+  } catch (failure) {
+    fail(failure)
+  }
+}
+
+async function mount(id: string): Promise<void> {
+  try {
+    await driveActions.mount(id)
+    notifications.notify('success', t('explorer.drive.mountedNow', { name: folderName(id) }))
   } catch (failure) {
     fail(failure)
   }
@@ -527,29 +625,25 @@ interface Sending {
 const uploads = ref<Sending[]>([])
 let nextUpload = 0
 const picker = ref<HTMLInputElement | null>(null)
-const uploadInto = ref<{ share: number; path: string } | null>(null)
+const uploadInto = ref<{ share: Place; path: string } | null>(null)
 const conflicts = ref<{
   files: File[]
   taken: Set<string>
-  into: { share: number; path: string }
+  into: { share: Place; path: string }
 } | null>(null)
 const asking = ref(false)
 watch(asking, (isOpen) => {
   if (!isOpen) resolveConflicts(false)
 })
 
-async function upload(files: File[], into: { share: number; path: string }): Promise<void> {
+async function upload(files: File[], into: { share: Place; path: string }): Promise<void> {
   if (!files.length) return
   let existing: Set<string>
   try {
     const listed =
       shareRef.value === into.share && pathRef.value === into.path && folder.value
         ? folder.value
-        : await unwrap(
-            api.GET('/api/v1/files/shares/{id}/folder', {
-              params: { path: { id: into.share }, query: { path: into.path } },
-            }),
-          )
+        : await listFolder(into.share, into.path)
     existing = new Set(listed.entries.map((e) => e.name))
   } catch (failure) {
     fail(failure)
@@ -575,7 +669,7 @@ function resolveConflicts(replace: boolean): void {
 async function send(
   file: File,
   replace: boolean,
-  into: { share: number; path: string },
+  into: { share: Place; path: string },
 ): Promise<void> {
   const id = nextUpload++
   const controller = new AbortController()
@@ -612,7 +706,7 @@ function picked(event: Event): void {
 }
 
 /** The folder new entries of `target` go into: the node aimed at, or the one shown. */
-function container(target: Target): { share: number; path: string } | null {
+function container(target: Target): { share: Place; path: string } | null {
   const at = target.location
   return at.kind === 'folder' && !at.snapshot ? { share: at.share, path: at.path } : null
 }
@@ -662,7 +756,7 @@ function run(id: ActionId, target: Target): void {
       if (one) naming.value = { mode: 'rename', target }
       return
     case 'delete':
-      if (one?.volumeFolder) {
+      if (one?.volumeFolder && !isDrive(one.share)) {
         deletingFolder.value = {
           id: one.share,
           name: one.name,
@@ -677,7 +771,7 @@ function run(id: ActionId, target: Target): void {
       emptying.value = target
       return
     case 'copyBack':
-      if (at.kind === 'folder' && at.snapshot) {
+      if (at.kind === 'folder' && at.snapshot && !isDrive(at.share)) {
         const paths = list.map((i) => i.path)
         restoreFromSnapshot(at.share, at.snapshot, paths)
           .then(() => {
@@ -700,9 +794,16 @@ function run(id: ActionId, target: Target): void {
       return
     }
     case 'previousVersions': {
-      const share = volumeFolderOf(target) ?? (at.kind === 'folder' ? at.share : null)
+      const share =
+        volumeFolderOf(target) ?? (at.kind === 'folder' && !isDrive(at.share) ? at.share : null)
       if (share !== null)
         versions.value = { share, path: at.kind === 'folder' && !one ? at.path : '' }
+      return
+    }
+    case 'eject':
+    case 'mount': {
+      const drive = driveIdOf(target)
+      if (drive !== null) void (id === 'eject' ? eject(drive) : mount(drive))
       return
     }
     case 'properties': {
@@ -811,7 +912,7 @@ function dragStart(item: Item, event: DragEvent): void {
   if (event.dataTransfer) event.dataTransfer.effectAllowed = 'copyMove'
 }
 
-function dropOn(event: DragEvent, share: number, path: string): void {
+function dropOn(event: DragEvent, share: Place, path: string): void {
   dragging.value = false
   const files = [...(event.dataTransfer?.files ?? [])]
   if (files.length) {
@@ -820,7 +921,7 @@ function dropOn(event: DragEvent, share: number, path: string): void {
   }
   const raw = event.dataTransfer?.getData(ENTRIES)
   if (!raw) return
-  const dragged = JSON.parse(raw) as { share: number; paths: string[] }
+  const dragged = JSON.parse(raw) as { share: Place; paths: string[] }
   void transfer(event.ctrlKey || event.altKey ? 'copy' : 'move', dragged.share, dragged.paths, {
     share,
     path,
@@ -946,7 +1047,7 @@ provide(EXPLORER, {
   current: location,
   go,
   aim: (item: Item) => (aimed.value = item),
-  drop: (event: DragEvent, share: number, path: string) => dropOn(event, share, path),
+  drop: (event: DragEvent, share: Place, path: string) => dropOn(event, share, path),
 })
 </script>
 
@@ -965,7 +1066,12 @@ provide(EXPLORER, {
         "
         @contextmenu.capture="aimed = null"
       >
-        <NavigationTree :home="hasHome" :favourites="favourites ?? []" :volumes="volumes ?? []" />
+        <NavigationTree
+          :home="hasHome"
+          :favourites="favourites ?? []"
+          :volumes="volumes ?? []"
+          :drives="canManageStorage ? (drives ?? []) : []"
+        />
       </aside>
     </ContextMenu>
     <div

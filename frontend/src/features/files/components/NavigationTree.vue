@@ -3,7 +3,8 @@ import { HardDrive, Star, Trash2 } from 'lucide-vue-next'
 import { computed, inject } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import type { Favourite, FileVolumeDto } from '@/shared/api/types'
+import type { Favourite, FileVolumeDto, RemovableDrive } from '@/shared/api/types'
+import { formatBytes } from '@/shared/lib/format'
 import { cn } from '@/shared/lib/utils'
 
 import { folderAt, HOME } from '../lib/location'
@@ -12,13 +13,14 @@ import TreeBranch from './TreeBranch.vue'
 
 /**
  * Where the explorer can go: the personal folder, the favourites, the
- * volumes with their folders, and the recycle bins. Removable drives get a
- * section of their own here once the NAS offers them.
+ * volumes with their folders, the removable drives plugged in (for those
+ * who manage storage), and the recycle bins.
  */
 const props = defineProps<{
   home: boolean
   favourites: Favourite[]
   volumes: FileVolumeDto[]
+  drives: RemovableDrive[]
 }>()
 
 const { t } = useI18n()
@@ -36,6 +38,20 @@ const row = (active: boolean) =>
     active ? 'bg-primary/10 font-medium text-primary' : 'hover:bg-foreground/5',
   )
 const favourites = computed(() => props.favourites)
+
+/** A drive by its label, or its ID without one. */
+function driveName(drive: RemovableDrive): string {
+  return drive.label || drive.id
+}
+
+/** How full a mounted drive is, as a tooltip. */
+function driveTitle(drive: RemovableDrive): string | undefined {
+  if (drive.available_bytes === null || drive.available_bytes === undefined) return undefined
+  return t('explorer.drive.free', {
+    free: formatBytes(drive.available_bytes),
+    size: formatBytes(drive.size_bytes),
+  })
+}
 </script>
 
 <template>
@@ -81,6 +97,22 @@ const favourites = computed(() => props.favourites)
           :name="folder.name"
           :depth="1"
           :volume-folder="{ shared: folder.shared, access: folder.access ?? null }"
+        />
+      </ul>
+    </template>
+
+    <template v-if="drives.length">
+      <p :class="heading">{{ t('explorer.drive.heading') }}</p>
+      <ul role="tree" :aria-label="t('explorer.drive.heading')">
+        <TreeBranch
+          v-for="drive in drives"
+          :key="drive.id"
+          :share="drive.id"
+          path=""
+          :name="driveName(drive)"
+          :depth="0"
+          :title="driveTitle(drive)"
+          :drive="{ state: drive.state, problem: drive.problem ?? null }"
         />
       </ul>
     </template>

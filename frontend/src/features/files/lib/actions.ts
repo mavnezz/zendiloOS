@@ -1,4 +1,6 @@
-import type { FileKind } from '@/shared/api/types'
+import type { FileKind, RemovableState } from '@/shared/api/types'
+
+import type { Place } from './location'
 
 /** Everything the toolbar and the context menu offer, in their order. */
 export const ACTIONS = [
@@ -17,6 +19,8 @@ export const ACTIONS = [
   'favourite',
   'share',
   'previousVersions',
+  'eject',
+  'mount',
   'properties',
 ] as const
 
@@ -34,8 +38,8 @@ export interface Item {
   modified: number | null
   /** The name is not UTF-8: shown, never acted on. */
   unreadable: boolean
-  /** The folder on a volume (share ID, `0` personal) it lives in. */
-  share: number
+  /** The folder on a volume (share ID, `0` personal) or the drive it lives in. */
+  share: Place
   /** In that folder; empty for the folder on the volume itself. */
   path: string
   /** For a folder directly on a volume. */
@@ -43,6 +47,12 @@ export interface Item {
     shared: boolean
     /** `null`: listed for someone who manages shares, but not to open. */
     access: 'read' | 'read_write' | null
+  }
+  /** For a removable drive itself, in the tree. */
+  drive?: {
+    state: RemovableState
+    /** Why it is not mounted, if it could not be. */
+    problem: string | null
   }
   /** In the recycle bin view: the folder it was deleted from. */
   origin?: string
@@ -86,6 +96,8 @@ export interface Situation {
   hasSnapshots: boolean
   /** The folder on a volume the share action is about, if any. */
   shareTarget: { shared: boolean } | null
+  /** On a removable drive, or about one in the tree: its state. */
+  drive: RemovableState | null
   /** The chosen entries; never unreadable ones. */
   items: Item[]
 }
@@ -116,9 +128,14 @@ function relevant(id: ActionId, s: Situation): boolean {
     case 'copy':
       return s.kind !== 'bin' && !s.snapshot
     case 'favourite':
-      return s.kind !== 'bin' && !s.snapshot
+      // Drives come and go: no favourites on them, no snapshots either.
+      return s.kind !== 'bin' && !s.snapshot && s.drive === null
     case 'previousVersions':
-      return s.kind !== 'bin'
+      return s.kind !== 'bin' && s.drive === null
+    case 'eject':
+      return s.drive !== null
+    case 'mount':
+      return s.drive !== null && s.drive !== 'mounted'
     default:
       return true
   }
@@ -128,14 +145,21 @@ function enabled(id: ActionId, s: Situation): boolean {
   const one = s.items.length === 1 ? s.items[0] : undefined
   const some = s.items.length > 0
   const volumeFolders = s.items.some((item) => item.volumeFolder !== undefined)
+  // A drive itself, in the tree: opened while mounted, otherwise only ejected or mounted.
+  const drives = s.items.some((item) => item.drive !== undefined)
   switch (id) {
     case 'open':
-      return one !== undefined && one.volumeFolder?.access !== null
+      return (
+        one !== undefined &&
+        one.volumeFolder?.access !== null &&
+        (one.drive?.state ?? 'mounted') === 'mounted'
+      )
     case 'download':
       return (
         one !== undefined &&
         (one.kind === 'file' || one.kind === 'directory') &&
-        one.volumeFolder?.access !== null
+        one.volumeFolder?.access !== null &&
+        !drives
       )
     case 'newFolder':
       return s.kind === 'volume' ? s.canManage : s.writable
@@ -144,10 +168,11 @@ function enabled(id: ActionId, s: Situation): boolean {
       return s.writable && (id === 'upload' || s.clipboard)
     case 'cut':
     case 'rename':
-      return s.writable && some && !volumeFolders && (id === 'cut' || one !== undefined)
+      return s.writable && some && !volumeFolders && !drives && (id === 'cut' || one !== undefined)
     case 'copy':
-      return some && !volumeFolders
+      return some && !volumeFolders && !drives
     case 'delete':
+      if (drives) return false
       // A folder on a volume goes with its dataset: one at a time.
       if (s.kind === 'volume' || volumeFolders) return s.canManage && one !== undefined
       return some && (s.writable || s.kind === 'bin')
@@ -163,8 +188,12 @@ function enabled(id: ActionId, s: Situation): boolean {
       return s.shareTarget !== null
     case 'previousVersions':
       return s.hasSnapshots
+    case 'eject':
+      return s.drive === 'mounted'
+    case 'mount':
+      return true
     case 'properties':
-      return one !== undefined || s.kind === 'folder'
+      return (one !== undefined || s.kind === 'folder') && (s.drive ?? 'mounted') === 'mounted'
   }
 }
 

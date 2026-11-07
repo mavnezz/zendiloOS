@@ -614,7 +614,20 @@ rustls with ring and the system's certificate authorities
   Linux change only the calling thread; the thread then has no
   capabilities left, which the agent checks) and ends with the operation.
   Only managed users qualify (UID 2000 to 59999, primary group
-  `zendiloos-users`), never root or system accounts. Paths are resolved
+  `zendiloos-users`), never root or system accounts. On a removable drive
+  the thread instead keeps root's access to files and nothing else
+  (`CAP_DAC_OVERRIDE` and `CAP_DAC_READ_SEARCH` effective, every other
+  capability dropped): a drive formatted elsewhere has owners nobody here
+  has, and only an administrator's request names one; its root is opened
+  only while a file system of its own is mounted there, never the tmpfs
+  beneath. A copy or move between a drive and a folder on a volume runs on
+  two threads, each with its side's rights: one walks the source as a copy
+  does and sends what it finds in order, files already opened (at most 32
+  pieces on their way), the other makes the copy from them, so what lands
+  in a folder on a volume belongs to the person and takes the folder's
+  inherited ACL exactly as an upload does, and only what the person may
+  read there reaches a drive; a move removes the source once the copy is
+  complete, and only what was copied (by device and inode). Paths are resolved
   relative to the share's root with
   `openat2(RESOLVE_BENEATH | RESOLVE_NO_XDEV | RESOLVE_NO_MAGICLINKS)`, so
   neither `..` nor a symbolic link leads out of the share; copying and
@@ -664,9 +677,8 @@ rustls with ring and the system's certificate authorities
 - **The explorer** is one app for files and for the folders on the
   volumes (the Shares app of before is part of it): on the left a tree of
   places (the personal folder, the favourites, each volume with its folders
-  down to any depth, and one recycle bin view that gathers the person's
-  bins of every folder; removable drives get a section and a location kind
-  of their own there when the NAS offers them), on the right the details
+  down to any depth, the removable drives plugged in, and one recycle bin
+  view that gathers the person's bins of every folder), on the right the details
   view (name, modified, type, size; sorted; chosen with clicks, Ctrl,
   Shift and Ctrl+A). The toolbar and the context menu (a right click, or a
   long press on a touch screen, on an entry, on empty space or on a node of
@@ -683,7 +695,26 @@ rustls with ring and the system's certificate authorities
   manages shares sees every folder on them, those they may not open
   marked, and makes new ones ("new folder" on a volume: off the network,
   for its maker only); everyone else sees only the folders open to them.
-  On a phone the tree is a drawer.
+  On a phone the tree is a drawer; a node lights up while something is
+  dragged over it.
+- **Removable drives in the explorer**, for those who manage storage
+  (`storage.manage`), from `GET /storage/removable`, asked every four
+  seconds while the explorer is shown, so a drive plugged in appears and is
+  mounted by itself. A mounted drive is a place like a folder on a volume,
+  under `/files/removable/{drive}/…` (folder, download, archive, upload,
+  folders, rename, transfer, delete): listed, previewed, downloaded,
+  uploaded to, copied and moved within and to and from folders on volumes
+  (`transfer` takes `target_share` or `target_drive`), deleted for good
+  (a drive has no recycle bin, no snapshots and no favourites, and is never
+  shared). `zendiloosd` lets only someone who manages storage name a drive,
+  and only one the disks show mounted at its place now (the Storage
+  context's `RemovableDrives::mounted`, through a port of the Sharing
+  context); write-protected, it is read only. "Eject" (toolbar, and the
+  drive's context menu in the tree) unmounts and powers it off, saying so
+  when files on it are still open (`drive_in_use`); an ejected drive, or
+  one that could not be mounted (its reason shown), offers "Mount". A
+  drive ejected or pulled out while looked into sends the explorer back
+  to where it starts.
 - **Favourites** are folders an account keeps at hand, in its order (at
   most 50, in the database with the account and the share). Only those in
   shares the account may use are shown; the others are kept, should
@@ -822,9 +853,12 @@ rustls with ring and the system's certificate authorities
   `--role files`) serves only requests about share contents. It may write
   below the volumes and act as a user, but touches no disk, no system
   configuration and no network: capabilities `CAP_CHOWN`, `CAP_FOWNER` and
-  `CAP_DAC_READ_SEARCH` (share permissions on files owned by users) and
-  `CAP_SETUID`, `CAP_SETGID` (the file manager); `/etc`, `/usr` and `/var`
-  read-only; the database, Samba's state, `/etc/zendiloos`, SSH keys and
+  `CAP_DAC_READ_SEARCH` (share permissions on files owned by users),
+  `CAP_SETUID`, `CAP_SETGID` (the file manager) and `CAP_DAC_OVERRIDE`
+  (removable drives), which every thread of its runtime drops from its
+  effective set as it starts and only a thread working on a drive takes up
+  again; `/etc`, `/usr` and `/var` read-only, `/run` too (a drive mounted
+  below it later is a mount of its own, writable as mounted); the database, Samba's state, `/etc/zendiloos`, SSH keys and
   the shadow files inaccessible. It does without `RestrictSUIDSGID`: to
   enforce it, systemd blocks `openat2()`, whose arguments seccomp cannot
   inspect, and `openat2()` is what keeps paths inside a share. Volumes and
@@ -1209,7 +1243,7 @@ the interface and the agent deal with a single tool chain (`zpool`, `zfs`).
 | Snapshots | per share (child dataset), by hand or on schedules (hourly, daily, weekly, monthly, each keeping 1 to 100). Named after their UTC time, `zdl-YYYY-MM-DD_HH.MM.SS`, the form Samba's `vfs_shadow_copy2` reads, so Windows offers every snapshot as "Previous Versions" (`shadow:snapdir = .zfs/snapshot`); the schedules a snapshot was taken for and a note are ZFS user properties (`zendiloos:schedule`, `zendiloos:note`), the schedules themselves live in the database. `zendiloosd` looks every five minutes: a schedule that never took one, or missed its time while the machine was off, takes one at once; when several are due, one snapshot counts for all of them. Each schedule keeps its newest; a snapshot goes only when every schedule it was taken for lets it go, never one taken by hand or of a removed schedule. A failing schedule becomes one notification until it works again. The agent takes and destroys snapshots only of a share dataset on a pool zendiloos created, and the label's shape rules out ZFS's ranges and lists. The file manager looks into a snapshot as it was: the files agent opens `.zfs/snapshot/<label>` of the mounted share as a root of its own (the label's shape checked; opening it for reading makes ZFS mount it, which `RESOLVE_NO_XDEV` from the share would refuse), read only, and refuses every change in it; folders list, files download and preview, folders download as archives from it, and entries are copied back into the share, into the folder they were in and beside a name that is taken, so nothing is replaced (a job). A share can be rolled back to one of its snapshots (`zfs rollback -r`, the agent only on its own share datasets): what changed since is lost and so are the later snapshots, which the interface lists, so the share's name must be typed to confirm |
 | Monitoring | `zpool status` (health, resilver and scrub progress, errors per device) every minute, SMART of disks holding data every six hours; changes become notifications (degraded or recovered pool, finished resilver or scrub, volume 80 or 90 % full, a disk's SMART getting worse); scrub monthly (second Sunday) by the cron job of `zfsutils-linux`, and on demand; a running scrub can be stopped (`zpool scrub -s`), a resilver cannot; while a scan runs, its speed and the time left are estimated as `zpool status` does (bytes issued in the current pass over its time minus pauses); the package depends on a cron daemon, which Debian's cloud image lacks. The storage overview answers "is my storage all right?" in one place: every concern (pool unavailable or degraded, unrepairable files, device errors, volume 80 or 90 % full, a disk's SMART verdict, no redundancy, no check for 40 days), the worst first; SMART verdicts are the monitor's last, so asking reads no disk; a disk can test itself (short or long SMART self-test, `smartctl --test`), its report shows the progress and the drive's own estimate of how long each test takes, and a running test can be stopped; a disk that sleeps, reports no SMART or cannot test itself is refused rather than woken. Self-tests also run on a schedule: one plan per kind (the long test weekly or monthly), the disks by serial number or all that can, starting from a local hour (the host's time zone, read with `jiff`) within four hours, so a NAS switched on late still tests the same night; the long test goes first, a disk already testing is left alone, a sleeping one is woken because the plan asked for it, and a failed test reaches the owner through the monitor's SMART notifications |
 | Existing storage | mdadm arrays and Btrfs, ext4 or XFS filesystems found on the system are shown read-only (M2); zendiloos does not create or change them |
-| Removable drives | USB sticks and disks, memory cards, for administrators only (`storage.manage`), never shared: a file system that passes the checks of 4.7 is named by its UUID and mounted at **`/run/zendiloos-removable/<id>`**, root's, outside the volumes (so no share, Samba or NFS export reaches it) and on a tmpfs (so nothing of it outlives a restart). `nosuid,nodev,noexec,noatime`; FAT (`utf8,shortname=mixed,flush`), exFAT and NTFS (the kernel's `ntfs3`, `windows_names`) have no owners of their own, so everything on them belongs to root and the group `zendiloos-users` (`uid=0,gid=…,fmask=0117,dmask=0007`): readable and writable by the accounts the files agent acts as, by nobody else, executable by nobody; ext4 keeps its owners and permissions, which the files agent, acting as the administrator, meets like any other user (a drive formatted elsewhere may hold files only its owner there may change). A drive that cannot be written (write-protected, NTFS that Windows left hibernated) is mounted read-only. Mounting happens in the host's namespace: the agent asks systemd for a transient mount unit (`systemd-mount --collect --fsck=no`), gone at the next boot and bound to its device, so systemd unmounts it when the drive is pulled out; `umount`, removing the place (`rmdir`) and powering off run in transient services (`systemd-run`), outside the agent's sandbox, which keeps `/run` read-only and only sees the mounts. `zendiloosd` mounts a drive when it sees it, as Windows does: whenever the drives are listed (the file explorer asks while it is open) and once a minute besides; the agent and `zendiloosd` speak `AF_UNIX` only, so no udev or netlink hook is needed. Ejecting unmounts (refused while files on it are open, `drive_in_use`), removes the place and, by default, takes the disk off the bus (this binary as `power-off-drive <disk>`: the SCSI device is deleted, which writes its cache out and stops it, then its USB device is removed, which powers the port off where the hub can), so it can be pulled out; without powering off, the drive stays plugged in and unmounted until it is pulled out or mounted by hand, e.g. to make a pool of it. A drive pulled out while mounted becomes a notification (`removable_pulled`), and what is left of it is let go of lazily (`umount --lazy` once its device is gone) and its place removed; so are empty places from before a restart. The API: `GET /storage/removable` (id, label, file system, device and disk, model, size, state `mounted`, `ejected`, `failed` with the agent's reason, or `unmounted`, `read_only`, `path`, space while mounted), `POST /storage/removable/{id}/mount` and `…/eject` (`power_off`, true by default). The simulation offers a USB stick (`1A2B-3C4D`, FAT) |
+| Removable drives | USB sticks and disks, memory cards, for administrators only (`storage.manage`), never shared: a file system that passes the checks of 4.7 is named by its UUID and mounted at **`/run/zendiloos-removable/<id>`**, root's, outside the volumes (so no share, Samba or NFS export reaches it) and on a tmpfs (so nothing of it outlives a restart). `nosuid,nodev,noexec,noatime`; FAT (`utf8,shortname=mixed,flush`), exFAT and NTFS (the kernel's `ntfs3`, `windows_names`) have no owners of their own, so everything on them belongs to root and the group `zendiloos-users` (`uid=0,gid=…,fmask=0117,dmask=0007`): readable and writable by the accounts the files agent acts as, by nobody else, executable by nobody; ext4 keeps its owners and permissions, which the files agent overrides there with root's access to files, on threads of their own (4.4), so a drive formatted elsewhere is fully usable; what it writes there belongs to root. A drive that cannot be written (write-protected, NTFS that Windows left hibernated) is mounted read-only. Mounting happens in the host's namespace: the agent asks systemd for a transient mount unit (`systemd-mount --collect --fsck=no`), gone at the next boot and bound to its device, so systemd unmounts it when the drive is pulled out; `umount`, removing the place (`rmdir`) and powering off run in transient services (`systemd-run`), outside the agent's sandbox, which keeps `/run` read-only and only sees the mounts. `zendiloosd` mounts a drive when it sees it, as Windows does: whenever the drives are listed (the file explorer asks while it is open) and once a minute besides; the agent and `zendiloosd` speak `AF_UNIX` only, so no udev or netlink hook is needed. Ejecting unmounts (refused while files on it are open, `drive_in_use`), removes the place and, by default, takes the disk off the bus (this binary as `power-off-drive <disk>`: the SCSI device is deleted, which writes its cache out and stops it, then its USB device is removed, which powers the port off where the hub can), so it can be pulled out; without powering off, the drive stays plugged in and unmounted until it is pulled out or mounted by hand, e.g. to make a pool of it. A drive pulled out while mounted becomes a notification (`removable_pulled`), and what is left of it is let go of lazily (`umount --lazy` once its device is gone) and its place removed; so are empty places from before a restart. The API: `GET /storage/removable` (id, label, file system, device and disk, model, size, state `mounted`, `ejected`, `failed` with the agent's reason, or `unmounted`, `read_only`, `path`, space while mounted), `POST /storage/removable/{id}/mount` and `…/eject` (`power_off`, true by default). The simulation offers a USB stick (`1A2B-3C4D`, FAT) |
 | Kernel module | `zfs-dkms` and `zfsutils-linux` from Debian contrib, built for the installed kernel with its headers |
 
 | Option | Pros | Cons |

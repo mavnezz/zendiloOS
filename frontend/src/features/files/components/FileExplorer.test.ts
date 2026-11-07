@@ -662,3 +662,151 @@ describe('folders on a volume', () => {
     expect(page()).toContain('Snapshots of photos')
   })
 })
+
+describe('removable drives', () => {
+  const STICK = '/api/v1/files/removable/1A2B-3C4D'
+
+  function stick(state: 'mounted' | 'ejected' | 'failed' = 'mounted') {
+    return {
+      id: '1A2B-3C4D',
+      label: 'STICK',
+      filesystem: 'fat',
+      device: 'sdf1',
+      disk: 'sdf',
+      model: 'TEST Stick',
+      size_bytes: 32_000_000_000,
+      state,
+      read_only: false,
+      path: state === 'mounted' ? '/run/zendiloos-removable/1A2B-3C4D' : null,
+      used_bytes: state === 'mounted' ? 1_000_000 : null,
+      available_bytes: state === 'mounted' ? 31_000_000_000 : null,
+      problem: state === 'failed' ? 'the file system is damaged' : null,
+    }
+  }
+
+  function serveDrives(state: 'mounted' | 'ejected' | 'failed' = 'mounted'): void {
+    serve(true)
+    answer('GET', '/api/v1/storage/removable', [stick(state)])
+    on('GET', `${STICK}/folder`, ({ query }) =>
+      (query.get('path') ?? '') === ''
+        ? folder('', [entry('song.mp3', 'file', { size: 4 }), entry('Photos', 'directory')])
+        : folder(query.get('path') ?? '', []),
+    )
+    on('POST', `${STICK}/transfer`, () => job(11, 'files.copy'))
+    on('POST', `${STICK}/delete`, () => job(12, 'files.delete'))
+    on('POST', '/api/v1/storage/removable/1A2B-3C4D/eject', () => null)
+    on('POST', '/api/v1/storage/removable/1A2B-3C4D/mount', () => stick())
+  }
+
+  async function showWithDrives() {
+    const wrapper = mountApp(FileExplorer, {
+      props: { userName: 'anna', accountId: 7, canManage: true, canManageStorage: true },
+    })
+    await settle()
+    return wrapper
+  }
+
+  function node(name: string): HTMLElement {
+    const found = [...document.body.querySelectorAll<HTMLButtonElement>('aside button')].find((b) =>
+      b.textContent?.trim().startsWith(name),
+    )
+    if (!found) throw new Error(`no ${name} in the tree`)
+    return found.parentElement!
+  }
+
+  it('are shown only to those who manage storage', async () => {
+    serve(true)
+    await show(true)
+    expect(page()).not.toContain('Removable drives')
+    expect(callsTo('GET', '/api/v1/storage/removable')).toHaveLength(0)
+  })
+
+  it('are opened, and their files copied into a folder on a volume and back', async () => {
+    serveDrives()
+    await showWithDrives()
+    expect(page()).toContain('Removable drives')
+    await goTo('STICK')
+    expect(names()).toEqual(['Photos', 'song.mp3'])
+    expect(page()).not.toContain('Add to favourites')
+
+    await fire(row('song.mp3'), 'click')
+    await key('c', { ctrlKey: true })
+    await goTo('photos')
+    await key('v', { ctrlKey: true })
+    expect(callsTo('POST', `${STICK}/transfer`)[0]!.body).toEqual({
+      mode: 'copy',
+      paths: ['song.mp3'],
+      target_share: 1,
+      target_path: '',
+    })
+
+    // Dragged onto the drive in the tree: it lights up, then gets it.
+    const target = node('STICK')
+    await fire(target, 'dragover')
+    expect(target.dataset.over).toBe('true')
+    target.dispatchEvent(dropEvent({ entries: { share: 1, paths: ['b.txt'] } }))
+    await settle()
+    expect(target.dataset.over).toBeUndefined()
+    expect(callsTo('POST', '/api/v1/files/shares/1/transfer')[0]!.body).toEqual({
+      mode: 'move',
+      paths: ['b.txt'],
+      target_drive: '1A2B-3C4D',
+      target_path: '',
+    })
+  })
+
+  it('delete for good and upload onto the drive', async () => {
+    serveDrives()
+    await showWithDrives()
+    await goTo('STICK')
+    await fire(row('song.mp3'), 'click')
+    await use('Delete')
+    expect(page()).toContain('for good')
+    await confirm('Delete')
+    expect(callsTo('POST', `${STICK}/delete`)[0]!.body).toEqual({ paths: ['song.mp3'] })
+
+    const entries = document.body.querySelector('[aria-label="Entries"]')!
+    entries.dispatchEvent(dropEvent({ files: [new File(['x'], 'new.txt')] }))
+    await settle()
+    expect(FakeUpload.sent[0]!.url).toContain(`${STICK}/upload?path=&name=new.txt`)
+  })
+
+  it('are ejected from the tree, saying when files are still open', async () => {
+    serveDrives()
+    await showWithDrives()
+    on('POST', '/api/v1/storage/removable/1A2B-3C4D/eject', () => problem(409, 'drive_in_use'))
+    await menu(node('STICK'), 'Eject')
+    expect(notified('still open')).toBe(true)
+    on('POST', '/api/v1/storage/removable/1A2B-3C4D/eject', () => null)
+    await goTo('STICK')
+    expect(names()).toContain('song.mp3')
+    // Powered off, it is gone from the list once asked again.
+    answer('GET', '/api/v1/storage/removable', [])
+    await use('Eject')
+    expect(callsTo('POST', '/api/v1/storage/removable/1A2B-3C4D/eject').at(-1)!.body).toEqual({
+      power_off: true,
+    })
+    expect(notified('can be pulled out now')).toBe(true)
+    // The explorer leaves it, for the personal folder.
+    expect(names()).not.toContain('song.mp3')
+    expect(names()).toContain('notes.txt')
+  })
+
+  it('are mounted again once ejected, and say why one cannot be', async () => {
+    serveDrives('ejected')
+    await showWithDrives()
+    expect(node('STICK').textContent).toContain('Ejected')
+    await menu(node('STICK'), 'Mount')
+    expect(callsTo('POST', '/api/v1/storage/removable/1A2B-3C4D/mount')).toHaveLength(1)
+    expect(notified('is mounted')).toBe(true)
+  })
+
+  it('show why one could not be mounted', async () => {
+    serveDrives('failed')
+    await showWithDrives()
+    expect(node('STICK').textContent).toContain('Cannot be mounted')
+    expect(node('STICK').querySelector('[title]')!.getAttribute('title')).toBe(
+      'the file system is damaged',
+    )
+  })
+})

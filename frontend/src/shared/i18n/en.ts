@@ -1787,6 +1787,7 @@ const en = {
       other: 'Special file',
       file: '{ext} file',
       plainFile: 'File',
+      drive: 'Removable drive',
     },
     actions: {
       open: 'Open',
@@ -1806,6 +1807,8 @@ const en = {
       share: 'Share on the network',
       shareUndo: 'Stop sharing',
       previousVersions: 'Previous versions',
+      eject: 'Eject',
+      mount: 'Mount',
       properties: 'Properties',
     },
     properties: {
@@ -1836,6 +1839,16 @@ const en = {
         'Snapshots keep the folder as it was. Look into one, then copy back what you need.',
       browse: 'Open',
       manage: 'Manage snapshots',
+    },
+    drive: {
+      heading: 'Removable drives',
+      mounted: 'Mounted',
+      ejected: 'Ejected',
+      failed: 'Cannot be mounted',
+      unmounted: 'Not mounted',
+      free: '{free} free of {size}',
+      ejectedNow: '{name} can be pulled out now',
+      mountedNow: '{name} is mounted',
     },
   },
   files: {
@@ -2056,6 +2069,8 @@ const en = {
       'Background tasks are still running and would stop halfway; wait until they have finished',
     pool_in_use:
       'The pool still holds data that would be lost without notice. Delete or move it first, each in its own place',
+    drive_in_use:
+      'Files on the drive are still open, in the file manager or an app. Close them, then eject it again.',
     project_unconfirmed:
       'This project was made before zendiloOS kept what you confirmed. Open its Compose file and save it once; from then on it runs as saved, not from the file in the share.',
     compose_risks: 'The Compose file needs your confirmation',
