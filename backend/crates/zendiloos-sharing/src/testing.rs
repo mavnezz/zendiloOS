@@ -39,16 +39,34 @@ pub struct Shares(
     Mutex<Vec<crate::domain::AppAccess>>,
     Mutex<Option<crate::domain::FileServices>>,
     Mutex<(Option<crate::domain::HomesLocation>, Vec<crate::domain::Home>)>,
+    /// Shares hidden while their data goes.
+    Mutex<std::collections::HashSet<ShareId>>,
 );
 
 #[async_trait]
 impl ShareRepository for Shares {
     async fn list(&self) -> Result<Vec<Share>, PortError> {
-        Ok(self.0.lock().unwrap().clone())
+        let hidden = self.6.lock().unwrap();
+        Ok(self.0.lock().unwrap().iter().filter(|s| !hidden.contains(&s.id)).cloned().collect())
     }
 
     async fn find(&self, id: ShareId) -> Result<Option<Share>, PortError> {
-        Ok(self.0.lock().unwrap().iter().find(|s| s.id == id).cloned())
+        Ok(self.list().await?.into_iter().find(|s| s.id == id))
+    }
+
+    async fn set_deleting(&self, id: ShareId, deleting: bool) -> Result<(), PortError> {
+        let mut hidden = self.6.lock().unwrap();
+        if deleting {
+            hidden.insert(id);
+        } else {
+            hidden.remove(&id);
+        }
+        Ok(())
+    }
+
+    async fn deleting(&self) -> Result<Vec<Share>, PortError> {
+        let hidden = self.6.lock().unwrap();
+        Ok(self.0.lock().unwrap().iter().filter(|s| hidden.contains(&s.id)).cloned().collect())
     }
 
     async fn create(&self, new: NewShare) -> Result<Option<Share>, PortError> {
@@ -80,6 +98,7 @@ impl ShareRepository for Shares {
     async fn delete(&self, id: ShareId) -> Result<(), PortError> {
         self.0.lock().unwrap().retain(|s| s.id != id);
         self.1.lock().unwrap().remove(&id);
+        self.6.lock().unwrap().remove(&id);
         Ok(())
     }
 
@@ -176,6 +195,10 @@ pub struct Host {
     /// The servers refuse a configuration where SMB and NFS are both off,
     /// standing for any configuration `testparm` rejects.
     pub refuse_all_off: std::sync::atomic::AtomicBool,
+    /// Every apply is refused, as when smbd does not restart.
+    pub refuse_apply: std::sync::atomic::AtomicBool,
+    /// Destroying a dataset fails, as when it is busy.
+    pub refuse_destroy: std::sync::atomic::AtomicBool,
 }
 
 impl Host {
@@ -212,10 +235,16 @@ impl ShareHost for Host {
         _: &RequestContext,
     ) -> Result<(), HostError> {
         self.calls.lock().unwrap().push(format!("destroy {pool} {volume} {name}"));
+        if self.refuse_destroy.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(HostError::Refused("dataset is busy".into()));
+        }
         Ok(())
     }
 
     async fn apply(&self, config: &SharingConfig, _: &RequestContext) -> Result<(), HostError> {
+        if self.refuse_apply.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(HostError::Refused("smbd did not restart".into()));
+        }
         if self.refuse_all_off.load(std::sync::atomic::Ordering::Relaxed)
             && !config.services.smb
             && !config.services.nfs

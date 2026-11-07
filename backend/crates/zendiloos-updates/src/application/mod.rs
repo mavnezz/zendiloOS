@@ -95,13 +95,37 @@ impl Updates {
 
     pub async fn overview(&self, request: &RequestContext) -> Result<UpdateOverview, UpdatesError> {
         let settings = self.ports.store.settings().await?;
-        let run = self.ports.host.latest(request).await?;
+        let latest = self.ports.host.latest(request).await?;
+        let run = self.last_update(latest).await?;
         let mut check = self.ports.store.last_check().await?;
         if let Some(check) = &mut check {
             self.forget_installed(check, run.as_ref());
         }
-        let run = run.filter(|run| run.installs || run.state == RunState::Running);
         Ok(UpdateOverview { current: self.current.clone(), settings, check, run, phase: self.phase() })
+    }
+
+    /// The last update that installed: the NAS's record while it is one,
+    /// otherwise as it was kept before a check replaced that record.
+    async fn last_update(&self, latest: Option<UpdateRun>) -> Result<Option<UpdateRun>, UpdatesError> {
+        match latest {
+            Some(run) if run.installs || run.state == RunState::Running => Ok(Some(run)),
+            _ => Ok(self.ports.store.last_run().await?),
+        }
+    }
+
+    /// Says how a finished update went, once, and keeps it: before a check
+    /// or another update replaces the NAS's record of it, and on each tick.
+    async fn remember(&self, run: Option<&UpdateRun>) -> Result<(), UpdatesError> {
+        if let Some(run) = run
+            && run.installs
+            && run.state != RunState::Running
+            && self.ports.store.said("run").await?.as_deref() != Some(run.id.as_str())
+        {
+            self.ports.store.save_last_run(run).await?;
+            self.ports.store.save_said("run", &run.id).await?;
+            self.say_finished(run).await;
+        }
+        Ok(())
     }
 
     /// A release no newer than what runs is no update any more; after a
@@ -159,9 +183,12 @@ impl Updates {
         actor: Option<&Actor>,
         request: &RequestContext,
     ) -> Result<CheckResult, UpdatesError> {
-        if self.ports.host.latest(request).await?.is_some_and(|run| run.state == RunState::Running) {
+        let latest = self.ports.host.latest(request).await?;
+        if latest.as_ref().is_some_and(|run| run.state == RunState::Running) {
             return Err(UpdatesError::Busy);
         }
+        // The check replaces the NAS's record of the last run.
+        self.remember(latest.as_ref()).await?;
         self.set_phase(Phase::Checking);
         let result = self.look(request).await;
         self.set_phase(Phase::Idle);
@@ -193,11 +220,14 @@ impl Updates {
     /// once the download began; the run is followed in the overview.
     pub async fn apply(&self, actor: &Actor, request: &RequestContext) -> Result<(), UpdatesError> {
         let busy = Arc::clone(&self.busy).try_lock_owned().map_err(|_| UpdatesError::Busy)?;
-        if self.ports.host.latest(request).await?.is_some_and(|run| run.state == RunState::Running) {
+        let latest = self.ports.host.latest(request).await?;
+        if latest.as_ref().is_some_and(|run| run.state == RunState::Running) {
             return Err(UpdatesError::Busy);
         }
+        // This run replaces the NAS's record of the last one.
+        self.remember(latest.as_ref()).await?;
         let mut check = self.ports.store.last_check().await?.ok_or(UpdatesError::NotChecked)?;
-        let run = self.ports.host.latest(request).await?;
+        let run = self.last_update(latest).await?;
         self.forget_installed(&mut check, run.as_ref());
         if !check.has_updates() {
             return Err(UpdatesError::NothingToDo);
@@ -259,14 +289,8 @@ impl Updates {
     /// looks for updates when a day passed without.
     pub async fn tick(&self) -> Result<(), UpdatesError> {
         let request = RequestContext::default();
-        if let Some(run) = self.ports.host.latest(&request).await?
-            && run.installs
-            && run.state != RunState::Running
-            && self.ports.store.said("run").await?.as_deref() != Some(run.id.as_str())
-        {
-            self.ports.store.save_said("run", &run.id).await?;
-            self.say_finished(&run).await;
-        }
+        let latest = self.ports.host.latest(&request).await?;
+        self.remember(latest.as_ref()).await?;
         let settings = self.ports.store.settings().await?;
         let last = self.ports.store.last_check().await?.map(|check| check.checked_at);
         let due =
@@ -452,6 +476,34 @@ mod tests {
         let finished: Vec<_> = s.said.all().into_iter().filter(|n| n.code == "updates_installed").collect();
         assert_eq!(finished.len(), 1, "a finished update is said once");
         assert_eq!(finished[0].params["restart"], "true");
+    }
+
+    #[tokio::test]
+    async fn a_check_right_after_an_update_does_not_swallow_how_it_went() {
+        let s = setup();
+        let request = RequestContext::default();
+        *s.host.run.lock().unwrap() = Some(UpdateRun {
+            id: "run9".into(),
+            installs: true,
+            state: RunState::Failed,
+            step: "debian".into(),
+            started_at: Timestamp::from_unix_seconds(100),
+            finished_at: Some(Timestamp::from_unix_seconds(150)),
+            error: Some("dpkg was interrupted".into()),
+            zendiloos: None,
+            report: None,
+        });
+
+        // Before the next tick: the check replaces the NAS's record.
+        s.updates.check(None, &request).await.unwrap();
+
+        let failed: Vec<_> = s.said.all().into_iter().filter(|n| n.code == "updates_failed").collect();
+        assert_eq!(failed.len(), 1, "how it went is said");
+        assert_eq!(failed[0].params["error"], "dpkg was interrupted");
+        let run = s.updates.overview(&request).await.unwrap().run.expect("the update is still shown");
+        assert_eq!((run.id.as_str(), run.state), ("run9", RunState::Failed));
+        s.updates.tick().await.unwrap();
+        assert_eq!(s.said.all().iter().filter(|n| n.code == "updates_failed").count(), 1, "and said once");
     }
 
     #[tokio::test]

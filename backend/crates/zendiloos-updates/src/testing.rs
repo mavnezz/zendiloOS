@@ -80,8 +80,21 @@ impl FakeHost {
 
 #[async_trait]
 impl HostPackages for FakeHost {
+    /// As on the NAS, a check is a run too: its record replaces the last.
     async fn check(&self, _: &RequestContext) -> Result<HostReport, HostError> {
-        Ok(self.report())
+        let report = self.report();
+        *self.run.lock().unwrap() = Some(UpdateRun {
+            id: format!("check{}", self.started.lock().unwrap().len()),
+            installs: false,
+            state: RunState::Succeeded,
+            step: "lists".into(),
+            started_at: Timestamp::from_unix_seconds(300),
+            finished_at: Some(Timestamp::from_unix_seconds(310)),
+            error: None,
+            zendiloos: None,
+            report: Some(report.clone()),
+        });
+        Ok(report)
     }
 
     async fn start(&self, release: Option<&Release>, _: &RequestContext) -> Result<String, HostError> {
@@ -112,6 +125,7 @@ pub struct MemoryStore {
     pub settings: Mutex<UpdateSettings>,
     pub check: Mutex<Option<CheckResult>>,
     pub said: Mutex<std::collections::BTreeMap<String, String>>,
+    pub last_run: Mutex<Option<UpdateRun>>,
 }
 
 #[async_trait]
@@ -140,6 +154,15 @@ impl UpdateStore for MemoryStore {
 
     async fn save_said(&self, topic: &str, key: &str) -> Result<(), PortError> {
         self.said.lock().unwrap().insert(topic.into(), key.into());
+        Ok(())
+    }
+
+    async fn last_run(&self) -> Result<Option<UpdateRun>, PortError> {
+        Ok(self.last_run.lock().unwrap().clone())
+    }
+
+    async fn save_last_run(&self, run: &UpdateRun) -> Result<(), PortError> {
+        *self.last_run.lock().unwrap() = Some(run.clone());
         Ok(())
     }
 }

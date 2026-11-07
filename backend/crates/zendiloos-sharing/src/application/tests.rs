@@ -211,6 +211,21 @@ async fn a_failed_creation_removes_the_dataset() {
 }
 
 #[tokio::test]
+async fn a_share_whose_services_cannot_apply_leaves_neither_record_nor_dataset() {
+    let s = setup();
+    s.host.refuse_apply.store(true, std::sync::atomic::Ordering::Relaxed);
+
+    let result = s.sharing.create(input("photos", "tank"), &alice(), &RequestContext::default()).await;
+
+    assert!(result.is_err(), "{result:?}");
+    assert!(s.sharing.list().await.unwrap().is_empty(), "the record went");
+    assert_eq!(s.host.calls().last().unwrap(), "destroy tank 1 photos");
+    s.host.refuse_apply.store(false, std::sync::atomic::Ordering::Relaxed);
+    let again = s.sharing.create(input("photos", "tank"), &alice(), &RequestContext::default()).await;
+    assert!(again.is_ok(), "the name is free again: {again:?}");
+}
+
+#[tokio::test]
 async fn changed_access_applies_now_and_to_existing_files_in_a_job() {
     let s = setup();
     let request = RequestContext::default();
@@ -259,6 +274,40 @@ async fn deleting_needs_the_name_and_stops_offering_first() {
     let job = s.sharing.delete(share.id, "photos", &alice(), &request).await.unwrap();
     assert_eq!(finished(&s.jobs, job).await.state, JobState::Succeeded);
     assert_eq!(&s.host.calls()[4..], ["apply 0", "destroy tank 1 photos"]);
+    assert!(s.sharing.list().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_deletion_that_cannot_apply_leaves_the_share_as_it_was() {
+    let s = setup();
+    let request = RequestContext::default();
+    let share = s.sharing.create(input("photos", "tank"), &alice(), &request).await.unwrap();
+    s.host.refuse_apply.store(true, std::sync::atomic::Ordering::Relaxed);
+
+    let refused = s.sharing.delete(share.id, "photos", &alice(), &request).await;
+
+    assert!(refused.is_err(), "{refused:?}");
+    assert_eq!(s.sharing.list().await.unwrap().len(), 1, "still there, to be deleted again");
+    assert!(!s.host.calls().iter().any(|c| c.starts_with("destroy")));
+}
+
+#[tokio::test]
+async fn data_that_cannot_go_now_goes_when_zendiloos_starts_again() {
+    let s = setup();
+    let request = RequestContext::default();
+    let share = s.sharing.create(input("photos", "tank"), &alice(), &request).await.unwrap();
+    s.host.refuse_destroy.store(true, std::sync::atomic::Ordering::Relaxed);
+
+    let job = s.sharing.delete(share.id, "photos", &alice(), &request).await.unwrap();
+    assert_eq!(finished(&s.jobs, job).await.state, JobState::Failed);
+
+    assert!(s.sharing.list().await.unwrap().is_empty(), "offered no more");
+    let taken = s.sharing.create(input("photos", "tank"), &alice(), &request).await;
+    assert!(matches!(taken, Err(SharingError::NameTaken)), "the name waits for the data: {taken:?}");
+    assert_eq!(s.sharing.finish_deletions(&request).await.unwrap(), 1, "still busy");
+    s.host.refuse_destroy.store(false, std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(s.sharing.finish_deletions(&request).await.unwrap(), 0);
+    assert!(s.sharing.create(input("photos", "tank"), &alice(), &request).await.is_ok(), "free again");
 }
 
 #[tokio::test]

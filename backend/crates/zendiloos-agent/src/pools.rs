@@ -176,6 +176,8 @@ pub(crate) struct Pools {
     exportfs: Program,
     /// One change to disks and pools at a time.
     serial: tokio::sync::Mutex<()>,
+    /// One move of Docker's data at a time; the copy runs without `serial`.
+    docker_move: tokio::sync::Mutex<()>,
 }
 
 /// A disk that passed the checks.
@@ -216,6 +218,7 @@ impl Pools {
             dockerd: tools.dockerd.clone(),
             exportfs: Program::new(&tools.exportfs)?,
             serial: tokio::sync::Mutex::new(()),
+            docker_move: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -689,7 +692,12 @@ impl Pools {
         to: &PoolName,
         to_volume: VolumeNumber,
     ) -> Result<Response, OperationError> {
-        let _serial = self.serial.lock().await;
+        // The pools' own lock only while something is checked or changed,
+        // never through the hours a copy may take: every other change to a
+        // pool would wait. Meanwhile the source cannot be destroyed (the
+        // data root is still on it) and a second move waits here.
+        let _moving = self.docker_move.lock().await;
+        let serial = self.serial.lock().await;
         if !self.docker.path().exists() || !self.dockerd.exists() {
             return Err(refused("Docker is not installed".into()));
         }
@@ -712,6 +720,8 @@ impl Pools {
         // Stopped, so nothing changes while it is copied.
         let _ = run(&self.systemctl, &["stop", "docker.socket"]).await;
         run(&self.systemctl, &["stop", "docker.service"]).await?;
+        drop(serial);
+
         let snapshot = format!("{source}@zendiloos-move");
         let _ = run(&self.zfs, &["destroy", &snapshot]).await;
         let copied = async {
@@ -719,16 +729,32 @@ impl Pools {
             self.send_receive(&snapshot, &target).await
         }
         .await;
+        let _serial = self.serial.lock().await;
         if let Err(error) = copied {
             let _ = run(&self.zfs, &["destroy", "-r", &target]).await;
             let _ = run(&self.zfs, &["destroy", &snapshot]).await;
             let _ = run(&self.systemctl, &["start", "docker.service"]).await;
             return Err(error);
         }
-        // From here on, Docker's data is the copy.
-        self.point_docker(to, to_volume, config).await?;
-        self.remove_unit(&docker_unit_name(from_volume)).await?;
-        run(&self.systemctl, &["start", "docker.service"]).await?;
+        // From here on, Docker's data is the copy. Should switching to it
+        // fail, Docker goes back to its data as it was, which is untouched,
+        // and starts again: never left stopped.
+        let switched = async {
+            self.point_docker(to, to_volume, config.clone()).await?;
+            self.remove_unit(&docker_unit_name(from_volume)).await?;
+            run(&self.systemctl, &["start", "docker.service"]).await
+        }
+        .await;
+        if let Err(error) = switched {
+            let _ = self.remove_unit(&docker_unit_name(to_volume)).await;
+            if let Err(again) = self.point_docker(from, from_volume, config).await {
+                tracing::error!(%again, "cannot point Docker back at its data");
+            }
+            let _ = run(&self.systemctl, &["start", "docker.service"]).await;
+            let _ = run(&self.zfs, &["destroy", "-r", &target]).await;
+            let _ = run(&self.zfs, &["destroy", &snapshot]).await;
+            return Err(error);
+        }
         let _ = run(&self.zfs, &["destroy", &format!("{target}@zendiloos-move")]).await;
         run(&self.zfs, &["destroy", "-r", &source]).await?;
         Ok(Response::Done)

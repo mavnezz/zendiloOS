@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id AS \"id!\", name, description, pool, volume, recycle_bin AS \"recycle_bin: bool\",\n                      quota_bytes, compression, record_size, created_at, updated_at\n               FROM shares ORDER BY name",
+  "query": "SELECT id AS \"id!\", name, description, pool, volume, recycle_bin AS \"recycle_bin: bool\",\n                      quota_bytes, compression, record_size, created_at, updated_at\n               FROM shares WHERE deleting = 1 ORDER BY name",
   "describe": {
     "columns": [
       {
@@ -142,5 +142,5 @@
       false
     ]
   },
-  "hash": "768465ed08d7d109df074c0239466943be6fb198a3ee7dca9c255bf9e2359c17"
+  "hash": "8060f29f4b5ec496963b3ba515b1118e2aee6d1e39cb16b260bc336486befa43"
 }

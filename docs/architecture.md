@@ -594,6 +594,12 @@ rustls with ring and the system's certificate authorities
 - NFS (v4 with `sec=sys`, `root_squash`) trusts the client's UID. Exports
   are therefore restricted to addresses or networks, and the interface
   states the risk. **[Later]** Kerberos.
+- **Creating and deleting a share keep its record and its dataset in
+  step.** A share that cannot be applied after it was stored goes again,
+  record and dataset. Deleting hides the share first (it is offered no
+  more and its name stays taken) and forgets it only once its dataset is
+  gone; if applying fails, it is back as it was, and data that cannot go
+  yet (busy, or zendiloosd stopped) goes when zendiloosd starts again.
 
 ### 4.5 Login, Sessions, CSRF
 
@@ -862,9 +868,12 @@ Center, images pinned by digest never looked at.
 dataset is copied with `zfs send -R | zfs receive -u` (up to six hours,
 over a transport that waits as long), the mount unit, the drop-in and
 `data-root` follow, Docker starts from the copy, and only then is the old
-dataset destroyed; if the copy fails, Docker starts as it was. Containers
-that restart by themselves start again. The apps' datasets stay where they
-are.
+dataset destroyed; if the copy fails, or switching to the copy fails,
+Docker goes back to its data as it was and starts again, never left
+stopped. While it copies, other changes to pools go on (the pools' lock is
+held only to check and to switch; one move at a time); the old pool cannot
+be deleted meanwhile, Docker's data root still being there. Containers that
+restart by themselves start again. The apps' datasets stay where they are.
 
 **Docker's own data** (images, layers, containers) lives on a pool, not on
 the system disk: turning apps on creates the dataset
@@ -970,7 +979,10 @@ binary as `run-packages <id> <task>` outside the sandbox; the runner records
 each step in `/var/lib/zendiloos-packages/run.json`, which the agent reads
 back. A run outlives a restart of the agent and of zendiloosd, which matters
 when it installs zendiloOS: the package's maintainer scripts restart both,
-and the page follows the run from its record once zendiloosd is back. Tasks
+and the page follows the run from its record once zendiloosd is back. The
+record is one file, which the next check replaces: so before a check or an
+update starts, zendiloosd says how the last update went (once) and keeps
+that run in its database, where the page still finds it. Tasks
 are fixed: install Docker (`docker.io`, `docker-compose`, for the App
 Store's own item), check (lists fetched, then `apt-get --simulate upgrade`
 parsed into packages, security updates marked by Debian's security archive)

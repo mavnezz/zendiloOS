@@ -172,7 +172,29 @@ impl ShareRepository for SqliteShares {
             ShareRow,
             r#"SELECT id AS "id!", name, description, pool, volume, recycle_bin AS "recycle_bin: bool",
                       quota_bytes, compression, record_size, created_at, updated_at
-               FROM shares ORDER BY name"#
+               FROM shares WHERE deleting = 0 ORDER BY name"#
+        )
+        .fetch_all(self.db.pool())
+        .await
+        .map_err(db_error)?;
+        self.load(rows).await
+    }
+
+    async fn set_deleting(&self, id: ShareId, deleting: bool) -> Result<(), PortError> {
+        let id = id.get();
+        sqlx::query!("UPDATE shares SET deleting = ? WHERE id = ?", deleting, id)
+            .execute(self.db.pool())
+            .await
+            .map_err(db_error)?;
+        Ok(())
+    }
+
+    async fn deleting(&self) -> Result<Vec<Share>, PortError> {
+        let rows = sqlx::query_as!(
+            ShareRow,
+            r#"SELECT id AS "id!", name, description, pool, volume, recycle_bin AS "recycle_bin: bool",
+                      quota_bytes, compression, record_size, created_at, updated_at
+               FROM shares WHERE deleting = 1 ORDER BY name"#
         )
         .fetch_all(self.db.pool())
         .await

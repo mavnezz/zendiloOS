@@ -385,7 +385,9 @@ impl SharingUseCases {
         let _changes = self.changes.lock().await;
         let names = self.ports.directory.names().await?;
         check_rules(&input.access, &names)?;
-        if self.ports.shares.list().await?.iter().any(|share| share.name == name) {
+        // A share still being deleted keeps its name until its data is gone.
+        let deleting = self.ports.shares.deleting().await?;
+        if self.ports.shares.list().await?.iter().chain(&deleting).any(|share| share.name == name) {
             return Err(SharingError::NameTaken);
         }
         let volumes = self.ports.volumes.volumes(request).await?;
@@ -396,6 +398,7 @@ impl SharingUseCases {
             .number;
 
         self.ports.host.create_dataset(&input.pool, volume, &name, request).await?;
+        let mut recorded = None;
         let stored = async {
             self.ports.host.set_properties(&input.pool, volume, &name, &input.settings, request).await?;
             let access = principals(&input.access, &names);
@@ -412,6 +415,7 @@ impl SharingUseCases {
                 created_at: self.ports.clock.now(),
             };
             let share = self.ports.shares.create(new).await?.ok_or(SharingError::NameTaken)?;
+            recorded = Some(share.id);
             self.apply_locked(request).await?;
             Ok::<_, SharingError>(share)
         }
@@ -422,6 +426,16 @@ impl SharingUseCases {
                 Ok(share)
             }
             Err(error) => {
+                // Neither the share nor its dataset stays: offered with no
+                // dataset behind it, Samba would serve the volume's own folder.
+                if let Some(id) = recorded {
+                    if let Err(cleanup) = self.ports.shares.delete(id).await {
+                        tracing::error!(share = name.as_str(), error = %cleanup, "cannot forget a failed share");
+                    }
+                    if let Err(cleanup) = self.apply_locked(request).await {
+                        tracing::warn!(share = name.as_str(), error = %cleanup, "file services not applied after a failed share");
+                    }
+                }
                 if let Err(cleanup) =
                     self.ports.host.destroy_dataset(&input.pool, volume, &name, request).await
                 {
@@ -600,9 +614,14 @@ impl SharingUseCases {
         if !users.is_empty() {
             return Err(SharingError::UsedByApps(users.join(", ")));
         }
-        // Not offered any more before its data goes.
-        self.ports.shares.delete(id).await?;
-        self.apply_locked(request).await?;
+        // Offered no more before its data goes, but recorded until it has
+        // gone: if applying fails, the share is back as it was; if its data
+        // cannot go, that is tried again (finish_deletions).
+        self.ports.shares.set_deleting(id, true).await?;
+        if let Err(error) = self.apply_locked(request).await {
+            self.ports.shares.set_deleting(id, false).await?;
+            return Err(error);
+        }
 
         let this = self.clone();
         let (actor_owned, request_owned) = (actor.clone(), request.clone());
@@ -615,11 +634,15 @@ impl SharingUseCases {
                 Some(actor),
                 move |progress| async move {
                     progress.step("destroying", None).await;
-                    let outcome = this
+                    let mut outcome = this
                         .ports
                         .host
                         .destroy_dataset(&share.pool, share.volume, &share.name, &request_owned)
-                        .await;
+                        .await
+                        .map_err(SharingError::from);
+                    if outcome.is_ok() {
+                        outcome = this.ports.shares.delete(share.id).await.map_err(SharingError::from);
+                    }
                     let audit = if outcome.is_ok() { Outcome::Success } else { Outcome::Failure };
                     this.audit(
                         "sharing.share_delete",
@@ -634,5 +657,23 @@ impl SharingUseCases {
             )
             .await?;
         Ok(job)
+    }
+
+    /// Destroys the data of shares whose deletion did not finish (their
+    /// dataset was busy, or zendiloOS stopped in between) and forgets them;
+    /// zendiloosd calls it when it starts. Says how many are still left.
+    pub async fn finish_deletions(&self, request: &RequestContext) -> Result<usize, SharingError> {
+        let _changes = self.changes.lock().await;
+        let mut left = 0;
+        for share in self.ports.shares.deleting().await? {
+            match self.ports.host.destroy_dataset(&share.pool, share.volume, &share.name, request).await {
+                Ok(()) => self.ports.shares.delete(share.id).await?,
+                Err(error) => {
+                    left += 1;
+                    tracing::warn!(share = share.name.as_str(), %error, "the data of a deleted share is still there");
+                }
+            }
+        }
+        Ok(left)
     }
 }

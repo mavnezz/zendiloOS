@@ -53,4 +53,8 @@ pub trait UpdateStore: Send + Sync {
     /// The key of what was last said about `topic`.
     async fn said(&self, topic: &str) -> Result<Option<String>, PortError>;
     async fn save_said(&self, topic: &str, key: &str) -> Result<(), PortError>;
+    /// The last update run that installed, kept once it finished: the NAS
+    /// keeps one record, which the next check replaces.
+    async fn last_run(&self) -> Result<Option<UpdateRun>, PortError>;
+    async fn save_last_run(&self, run: &UpdateRun) -> Result<(), PortError>;
 }

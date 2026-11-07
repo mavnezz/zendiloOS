@@ -177,6 +177,18 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         notifier: notifier.clone(),
     };
     let sharing = SharingUseCases::new(sharing_ports.clone());
+    // Shares whose data could not go before (busy, or zendiloosd stopped).
+    let unfinished = sharing.clone();
+    tokio::spawn(async move {
+        match unfinished.finish_deletions(&RequestContext::default()).await {
+            Ok(0) => {}
+            Ok(left) => tracing::warn!(
+                left,
+                "the data of deleted shares is still there; tried again at the next start"
+            ),
+            Err(error) => tracing::error!(%error, "cannot finish deleting shares"),
+        }
+    });
     // After sharing: shares follow the members of groups they deny.
     let identity = identity(&config, &database, audit.clone(), agent.clone(), sharing.clone())?;
     let setup_code = announce_setup(&config, &identity).await?;

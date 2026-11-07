@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE shares SET deleting = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "3d1ebb8d70592d92b5ff38ccc520fa22148a99d65bbe38017c8e146e41d59d0d"
+}

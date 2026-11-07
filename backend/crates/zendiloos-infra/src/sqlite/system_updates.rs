@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use zendiloos_kernel::{PortError, Timestamp};
 use zendiloos_updates::application::ports::UpdateStore;
 use zendiloos_updates::domain::{
-    Asset, Channel, CheckResult, HostReport, PackageUpdate, Release, UpdateSettings,
+    Asset, Channel, CheckResult, HostReport, PackageUpdate, Release, RunState, UpdateRun, UpdateSettings,
 };
 
 use super::Database;
@@ -102,6 +102,98 @@ impl From<StoredAsset> for Asset {
     }
 }
 
+impl From<&HostReport> for StoredReport {
+    fn from(host: &HostReport) -> Self {
+        Self {
+            packages: host
+                .packages
+                .iter()
+                .map(|p| StoredPackage {
+                    name: p.name.clone(),
+                    from: p.from.clone(),
+                    to: p.to.clone(),
+                    security: p.security,
+                })
+                .collect(),
+            running_kernel: host.running_kernel.clone(),
+            newest_kernel: host.newest_kernel.clone(),
+            zfs_ready: host.zfs_ready,
+        }
+    }
+}
+
+impl From<StoredReport> for HostReport {
+    fn from(host: StoredReport) -> Self {
+        Self {
+            packages: host
+                .packages
+                .into_iter()
+                .map(|p| PackageUpdate { name: p.name, from: p.from, to: p.to, security: p.security })
+                .collect(),
+            running_kernel: host.running_kernel,
+            newest_kernel: host.newest_kernel,
+            zfs_ready: host.zfs_ready,
+        }
+    }
+}
+
+/// The last update run that installed, as `run` (once it finished).
+#[derive(Serialize, Deserialize)]
+struct StoredRun {
+    id: String,
+    state: String,
+    step: String,
+    started_at: i64,
+    finished_at: Option<i64>,
+    error: Option<String>,
+    zendiloos: Option<String>,
+    report: Option<StoredReport>,
+}
+
+impl From<&UpdateRun> for StoredRun {
+    fn from(run: &UpdateRun) -> Self {
+        let state = match run.state {
+            RunState::Running => "running",
+            RunState::Succeeded => "succeeded",
+            RunState::Failed => "failed",
+        };
+        Self {
+            id: run.id.clone(),
+            state: state.to_owned(),
+            step: run.step.clone(),
+            started_at: run.started_at.unix_seconds(),
+            finished_at: run.finished_at.map(Timestamp::unix_seconds),
+            error: run.error.clone(),
+            zendiloos: run.zendiloos.clone(),
+            report: run.report.as_ref().map(StoredReport::from),
+        }
+    }
+}
+
+impl TryFrom<StoredRun> for UpdateRun {
+    type Error = PortError;
+
+    fn try_from(stored: StoredRun) -> Result<Self, PortError> {
+        let state = match stored.state.as_str() {
+            "running" => RunState::Running,
+            "succeeded" => RunState::Succeeded,
+            "failed" => RunState::Failed,
+            other => return Err(PortError::new("stored update run", format!("state {other:?}"))),
+        };
+        Ok(Self {
+            id: stored.id,
+            installs: true,
+            state,
+            step: stored.step,
+            started_at: Timestamp::from_unix_seconds(stored.started_at),
+            finished_at: stored.finished_at.map(Timestamp::from_unix_seconds),
+            error: stored.error,
+            zendiloos: stored.zendiloos,
+            report: stored.report.map(HostReport::from),
+        })
+    }
+}
+
 impl From<&CheckResult> for StoredCheck {
     fn from(check: &CheckResult) -> Self {
         Self {
@@ -117,21 +209,7 @@ impl From<&CheckResult> for StoredCheck {
                 signature: (&release.signature).into(),
             }),
             release_error: check.release_error.clone(),
-            host: check.host.as_ref().map(|host| StoredReport {
-                packages: host
-                    .packages
-                    .iter()
-                    .map(|p| StoredPackage {
-                        name: p.name.clone(),
-                        from: p.from.clone(),
-                        to: p.to.clone(),
-                        security: p.security,
-                    })
-                    .collect(),
-                running_kernel: host.running_kernel.clone(),
-                newest_kernel: host.newest_kernel.clone(),
-                zfs_ready: host.zfs_ready,
-            }),
+            host: check.host.as_ref().map(StoredReport::from),
             host_error: check.host_error.clone(),
         }
     }
@@ -159,16 +237,7 @@ impl TryFrom<StoredCheck> for CheckResult {
             checked_at: Timestamp::from_unix_seconds(stored.checked_at),
             release,
             release_error: stored.release_error,
-            host: stored.host.map(|host| HostReport {
-                packages: host
-                    .packages
-                    .into_iter()
-                    .map(|p| PackageUpdate { name: p.name, from: p.from, to: p.to, security: p.security })
-                    .collect(),
-                running_kernel: host.running_kernel,
-                newest_kernel: host.newest_kernel,
-                zfs_ready: host.zfs_ready,
-            }),
+            host: stored.host.map(HostReport::from),
             host_error: stored.host_error,
         })
     }
@@ -220,6 +289,23 @@ impl UpdateStore for SqliteSystemUpdates {
         self.value(&format!("said:{topic}")).await
     }
 
+    async fn last_run(&self) -> Result<Option<UpdateRun>, PortError> {
+        match self.value("run").await? {
+            Some(text) => {
+                let stored: StoredRun =
+                    serde_json::from_str(&text).map_err(|e| PortError::new("stored update run", e))?;
+                Ok(Some(stored.try_into()?))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn save_last_run(&self, run: &UpdateRun) -> Result<(), PortError> {
+        let text =
+            serde_json::to_string(&StoredRun::from(run)).map_err(|e| PortError::new("update run", e))?;
+        self.set_value("run", &text).await
+    }
+
     async fn save_said(&self, topic: &str, key: &str) -> Result<(), PortError> {
         self.set_value(&format!("said:{topic}"), key).await
     }
@@ -260,7 +346,22 @@ mod tests {
             host_error: Some("nothing".into()),
         };
         store.save_check(&check).await.unwrap();
-        assert_eq!(store.last_check().await.unwrap(), Some(check));
+        assert_eq!(store.last_check().await.unwrap(), Some(check.clone()));
+
+        assert_eq!(store.last_run().await.unwrap(), None);
+        let run = UpdateRun {
+            id: "ab12".into(),
+            installs: true,
+            state: RunState::Failed,
+            step: "debian".into(),
+            started_at: Timestamp::from_unix_seconds(100),
+            finished_at: Some(Timestamp::from_unix_seconds(150)),
+            error: Some("dpkg was interrupted".into()),
+            zendiloos: Some("0.2.0".into()),
+            report: check.host.clone(),
+        };
+        store.save_last_run(&run).await.unwrap();
+        assert_eq!(store.last_run().await.unwrap(), Some(run));
 
         assert_eq!(store.said("run").await.unwrap(), None);
         store.save_said("run", "ab12").await.unwrap();

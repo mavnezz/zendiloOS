@@ -27,6 +27,13 @@ pub trait ShareRepository: Send + Sync {
 
     async fn delete(&self, id: ShareId) -> Result<(), PortError>;
 
+    /// Hides a share while its data goes (`true`), or shows it again. A
+    /// hidden share is left out of `list` and `find`; its name stays taken.
+    async fn set_deleting(&self, id: ShareId, deleting: bool) -> Result<(), PortError>;
+
+    /// Shares hidden for deletion whose data has not gone yet.
+    async fn deleting(&self) -> Result<Vec<Share>, PortError>;
+
     /// The share's snapshot schedules, ordered by frequency.
     async fn snapshot_schedules(&self, id: ShareId) -> Result<Vec<SnapshotSchedule>, PortError>;
 
