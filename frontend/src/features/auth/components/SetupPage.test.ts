@@ -16,6 +16,7 @@ import type { SessionInfo } from '@/shared/api/types'
 
 import { useSessionStore } from '../store'
 import ChangePasswordForm from './ChangePasswordForm.vue'
+import PasswordChangePage from './PasswordChangePage.vue'
 import SetupPage from './SetupPage.vue'
 
 const session: SessionInfo = {
@@ -132,5 +133,34 @@ describe('the password form', () => {
     await type('#password-repeat', 'a new long password')
     await submit('#password-new')
     expect(page()).toContain('The current password is wrong.')
+  })
+})
+
+describe('choosing a password before going on', () => {
+  async function choose(answerSession: () => unknown) {
+    on('POST', '/api/v1/auth/password', () => undefined)
+    on('GET', '/api/v1/auth/session', answerSession)
+    const router = memoryRouter()
+    router.addRoute({ path: '/password', name: 'password', component: PasswordChangePage })
+    await router.push('/password')
+    mountApp(PasswordChangePage, { global: { plugins: [router] } })
+    await settle()
+    await type('#password-current', 'set by an admin')
+    await type('#password-new', 'my very own password')
+    await type('#password-repeat', 'my very own password')
+    await submit('#password-new')
+    return router
+  }
+
+  it('goes to the desktop with the session as it is now', async () => {
+    const router = await choose(() => session)
+    expect(useSessionStore().info?.account.name).toBe('admin')
+    expect(router.currentRoute.value.name).toBe('desktop')
+  })
+
+  it('forgets the session when the server has none any more', async () => {
+    const router = await choose(() => problem(401, 'unauthenticated'))
+    expect(useSessionStore().signedIn).toBe(false)
+    expect(router.currentRoute.value.name).toBe('desktop')
   })
 })
