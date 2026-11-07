@@ -648,7 +648,12 @@ impl AgentTransport for SimulatedAgent {
                         if passwords { "yes" } else { "no" }
                     ));
                 }
-                let state = if config.enabled { ("enabled", "active") } else { ("disabled", "inactive") };
+                // Turned on for a while, it is enabled until the next boot only.
+                let state = match (config.enabled, off_at) {
+                    (true, Some(_)) => ("enabled-runtime", "active"),
+                    (true, None) => ("enabled", "active"),
+                    (false, _) => ("disabled", "inactive"),
+                };
                 Response::SshState {
                     installed: true,
                     enabled: state.0.to_owned(),

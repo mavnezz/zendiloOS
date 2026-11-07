@@ -101,6 +101,7 @@ mod tests {
             (2222, Some(RootLogin::KeyOnly), None)
         );
         assert_eq!(found.off_at, Some(Timestamp::from_unix_seconds(5)));
+        assert!(status(true, "enabled-runtime", "active", "", Some(5)).enabled, "on for a while");
         let plain = status(false, "disabled", "inactive", "", None);
         assert!(!plain.installed && !plain.enabled && !plain.running);
         assert_eq!(plain.port, 22, "sshd's default");
@@ -122,6 +123,7 @@ mod tests {
 
         let found = ssh.status(&context).await.unwrap();
         assert!(found.running && found.off_at.is_some());
+        assert!(found.enabled, "enabled until the next boot counts as on");
         assert_eq!(
             (found.port, found.root_login, found.password_login),
             (2222, Some(RootLogin::No), Some(false))

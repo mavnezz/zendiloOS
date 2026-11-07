@@ -10,7 +10,10 @@
 //! in a transient unit that brings the directory along. Turning SSH
 //! off stops the listener; open sessions are processes of their own
 //! (`KillMode=process`) and stay. A timer to turn it off again is a
-//! transient unit of systemd, so it fires whatever happens to the agent.
+//! transient unit of systemd, so it fires whatever happens to the agent;
+//! it lives in `/run`, so it is gone after a restart, and SSH turned on
+//! for a while is therefore enabled only in `/run` as well
+//! (`enable --runtime`): it never starts with the machine again.
 
 use std::fs;
 use std::io;
@@ -137,9 +140,18 @@ impl Ssh {
         let _ = self.run(&self.systemctl, &["reset-failed", &service]).await;
         if !config.enabled {
             self.run(&self.systemctl, &["disable", "--now", UNIT]).await?;
+            // What a time-limited start enabled until the next boot.
+            self.run(&self.systemctl, &["disable", "--runtime", UNIT]).await?;
             return Ok(Response::Done);
         }
-        self.run(&self.systemctl, &["enable", "--now", UNIT]).await?;
+        if config.off_after.is_some() {
+            // Enabled for good, it would outlive its timer across a restart.
+            self.run(&self.systemctl, &["disable", UNIT]).await?;
+            self.run(&self.systemctl, &["enable", "--runtime", "--now", UNIT]).await?;
+        } else {
+            self.run(&self.systemctl, &["disable", "--runtime", UNIT]).await?;
+            self.run(&self.systemctl, &["enable", "--now", UNIT]).await?;
+        }
         // A new port needs the listener anew; sshd re-executes on reload.
         self.run(&self.systemctl, &["reload-or-restart", UNIT]).await?;
         if let Some(off) = config.off_after {
@@ -158,6 +170,7 @@ impl Ssh {
                     "--collect",
                     &systemctl,
                     "disable",
+                    "--runtime",
                     "--now",
                     UNIT,
                 ],
