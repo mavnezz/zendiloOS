@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ChevronLeft, CircleHelp, Copy, Minus, Square, X } from 'lucide-vue-next'
+import { ChevronLeft, Copy, Minus, Square, X } from 'lucide-vue-next'
 import { computed, provide } from 'vue'
 import { useI18n } from 'vue-i18n'
 
@@ -135,15 +135,6 @@ const control =
       </h2>
       <div class="relative z-10 ml-auto flex items-center gap-0.5" @pointerdown.stop>
         <template v-if="!compact">
-          <button
-            type="button"
-            :class="control"
-            :aria-label="t('desktop.help')"
-            :title="t('desktop.help')"
-          >
-            <CircleHelp />
-          </button>
-          <span aria-hidden="true" class="mx-1 h-4 w-px bg-foreground/15" />
           <button
             type="button"
             :class="control"

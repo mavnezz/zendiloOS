@@ -827,7 +827,6 @@ const de: Messages = {
     widgets: 'Widgets',
     search: 'Suchen',
     searchPlaceholder: 'Apps und Einstellungen suchen',
-    help: 'Hilfe',
     editWidgets: 'Widgets bearbeiten',
     done: 'Fertig',
     noWidgets: 'Keine Widgets gewählt.',
@@ -1284,8 +1283,8 @@ const de: Messages = {
       pool_member: 'In Pool {pool}',
       array_member: 'In {array}',
       volume: 'Volume',
-      removable: 'Wechseldatenträger, eingehängt',
       foreign: 'Belegt (nicht verwaltet)',
+      removable: 'Wechseldatenträger, eingehängt',
       unused: 'Unbenutzt',
     },
     transport: {

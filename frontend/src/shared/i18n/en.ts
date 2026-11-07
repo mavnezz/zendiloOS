@@ -807,7 +807,6 @@ const en = {
     widgets: 'Widgets',
     search: 'Search',
     searchPlaceholder: 'Search apps and settings',
-    help: 'Help',
     editWidgets: 'Edit widgets',
     done: 'Done',
     noWidgets: 'No widgets chosen.',
@@ -1258,8 +1257,8 @@ const en = {
       pool_member: 'In pool {pool}',
       array_member: 'In {array}',
       volume: 'Volume',
-      removable: 'Removable drive, mounted',
       foreign: 'In use (not managed)',
+      removable: 'Removable drive, mounted',
       unused: 'Unused',
     },
     transport: {
