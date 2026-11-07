@@ -227,7 +227,9 @@ impl Containers {
                 let done = match (&way, &deployment) {
                     (UpdateWay::Project(project), Some(how)) => {
                         progress.step("redeploying", None).await;
-                        how.run(&this, project, true, &context).await.map_err(ContainersError::from)
+                        how.run(&this, project, true, &super::projects::JobLines(progress.clone()), &context)
+                            .await
+                            .map_err(ContainersError::from)
                     }
                     (UpdateWay::PullOnly(image), _) | (UpdateWay::Project(image), None) => {
                         progress.step("pulling", None).await;

@@ -12,6 +12,7 @@ import { ConfirmDialog } from '@/shared/ui/confirm-dialog'
 import { ModalDialog } from '@/shared/ui/dialog'
 import { Input } from '@/shared/ui/input'
 import { Switch } from '@/shared/ui/switch'
+import { DeployLogDialog } from '@/shared/ui/deploy-log'
 
 import { useContainerAction, useContainers, useLogs, useUpdatable } from '../api'
 import { isUp } from '../lib/status'
@@ -159,6 +160,7 @@ function confirmRemove(): void {
       @update:open="(open: boolean) => !open && (removing = null)"
       @confirm="confirmRemove"
     />
+    <DeployLogDialog v-model:open="updates.showing.value" :job-id="updates.shown.value" />
     <UpdateDialog
       :open="updates.asking.value !== null"
       :container="updates.asking.value"

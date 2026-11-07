@@ -479,6 +479,8 @@ describe('updating containers', () => {
     expect(called('POST', '/api/v1/docker/containers/id-web/update')).toHaveLength(1)
     expect(window.localStorage.getItem(UPDATE_WITHOUT_ASKING)).toBe('true')
     expect(page()).toContain(t('docker.update.running'))
+    // What Compose does shows as it runs.
+    expect(page()).toContain(t('docker.deploy.title'))
   })
 
   it('updates all at once, straight away once told not to ask', async () => {

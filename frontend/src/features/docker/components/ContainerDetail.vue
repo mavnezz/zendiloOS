@@ -17,6 +17,7 @@ import { Alert } from '@/shared/ui/alert'
 import { Badge } from '@/shared/ui/badge'
 import { Button } from '@/shared/ui/button'
 import { PageTabs } from '@/shared/ui/page'
+import { DeployLogDialog } from '@/shared/ui/deploy-log'
 
 import { useContainerAction, useContainerDetails, useUpdatable } from '../api'
 import { isUp } from '../lib/status'
@@ -145,6 +146,7 @@ function run(action: 'start' | 'stop' | 'restart'): void {
     </template>
     <div v-else-if="!error" class="h-40 animate-pulse rounded-xl bg-muted" />
 
+    <DeployLogDialog v-model:open="updates.showing.value" :job-id="updates.shown.value" />
     <UpdateDialog
       :open="updates.asking.value !== null"
       :container="updates.asking.value"

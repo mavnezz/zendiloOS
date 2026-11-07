@@ -19,6 +19,13 @@ export function useContainerUpdates() {
   const asking = ref<DockerContainer | null>(null)
   const askingAll = ref(false)
   const failure = ref<unknown>(null)
+  /** The update job whose output is shown as it runs. */
+  const shown = ref<number | null>(null)
+  const showing = ref(false)
+  function show(id: number): void {
+    shown.value = id
+    showing.value = true
+  }
 
   /** Names of the containers being updated now. */
   const updating = computed(
@@ -33,7 +40,9 @@ export function useContainerUpdates() {
   async function start(container: DockerContainer): Promise<void> {
     failure.value = null
     try {
-      jobs.update(await update.mutateAsync(container.id))
+      const job = await update.mutateAsync(container.id)
+      jobs.update(job)
+      show(job.id)
     } catch (problem) {
       failure.value = problem
     }
@@ -43,7 +52,10 @@ export function useContainerUpdates() {
     failure.value = null
     try {
       const started = await applyAll.mutateAsync()
-      if (started.job) jobs.update(started.job)
+      if (started.job) {
+        jobs.update(started.job)
+        show(started.job.id)
+      }
     } catch (problem) {
       failure.value = problem
     }
@@ -59,5 +71,5 @@ export function useContainerUpdates() {
     else askingAll.value = true
   }
 
-  return { asking, askingAll, ask, askAll, start, startAll, updating, failure }
+  return { asking, askingAll, ask, askAll, start, startAll, updating, failure, shown, showing }
 }

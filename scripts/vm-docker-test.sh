@@ -5,7 +5,9 @@
 #   1. a project's Compose file is checked: what reaches beyond the
 #      containers needs consent; a plain one is written into a share and
 #      deployed, as the administrator who made it
-#   2. the project stops, starts, writes logs, changes and is deployed again
+#   2. the project stops, starts, writes logs, changes and is deployed again;
+#      one container shows its details and processes, and a terminal in it
+#      answers, follows a new size and ends with the socket
 #   3. a network comes and goes; registries are asked for newer images
 #   4. the project is removed; its folder stays
 #   5. Docker's data moves to another pool and back, and the app on it runs
@@ -147,6 +149,21 @@ pull_job=$(jq -r .id "$work/last")
 job_succeeded "$pull_job"
 call GET "/jobs/$pull_job" | jq -e '.output | map(select(test("[Pp]ull"))) | length > 0' >/dev/null \
     || fail "no pull in the output: $(call GET "/jobs/$pull_job" | jq -c .output)"
+
+say "2b. One container: its details, processes and a terminal"
+box=$(call GET "/docker/projects/$project" | jq -er '.containers[0].name') || fail "no container"
+call GET "/docker/containers/$box" | jq -e '.mounts | map(select(.destination == "/data")) | length == 1' >/dev/null \
+    || fail "the container's details: $(call GET "/docker/containers/$box" | jq -c .)"
+call GET "/docker/containers/$box/processes" | jq -e '[.. | strings | select(test("sleep 3600"))] | length > 0' >/dev/null \
+    || fail "its processes: $(call GET "/docker/containers/$box/processes" | jq -c .)"
+session=$(awk '$6 ~ /zendiloos_session$/ { print $6 "=" $7 }' "$work/admin.jar")
+wss="wss://${base#https://}/api/v1/docker/containers/$box/terminal?command=/bin/sh&columns=80&rows=24"
+NODE_TLS_REJECT_UNAUTHORIZED=0 node "$root/scripts/vm-terminal-probe.mjs" "$wss" "$session" "$base" >"$work/terminal" 2>&1 \
+    || fail "the terminal: $(cat "$work/terminal")"
+# Closing it hangs up the terminal, which ends what ran in it.
+wait_for "the terminal's program to end" "! vm 'pgrep -f \"docker exec .*$box\"'" 30
+call GET '/logs/audit' | jq -e '[.. | strings | select(test("container_terminal"))] | length > 0' >/dev/null \
+    || fail "no audit entry for the terminal"
 
 say "3. A network; newer images"
 [[ $(status POST /docker/networks '{"name":"ztest_net","subnet":"172.31.250.0/24","gateway":"172.31.250.1"}') == 201 ]] \
