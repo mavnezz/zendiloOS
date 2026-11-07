@@ -83,7 +83,8 @@ pub enum SecretAlphabet {
 /// The length of a generated value the catalog does not set.
 pub const SECRET_LENGTH: u8 = 32;
 
-/// Exceptions from the policy, confirmed when installing.
+/// Exceptions from the policy the app declares: shown before it is filled
+/// in, and confirmed as the project's risks.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Permissions {
     pub devices: Vec<String>,
@@ -92,20 +93,6 @@ pub struct Permissions {
     /// The Docker socket: control over every container, and so over the
     /// whole NAS.
     pub docker_socket: bool,
-}
-
-impl Permissions {
-    pub fn is_empty(&self) -> bool {
-        self.devices.is_empty() && self.capabilities.is_empty() && !self.host_network && !self.docker_socket
-    }
-
-    /// Whether `self` asks for something `before` did not.
-    pub fn asks_more_than(&self, before: &Self) -> bool {
-        self.devices.iter().any(|d| !before.devices.contains(d))
-            || self.capabilities.iter().any(|c| !before.capabilities.contains(c))
-            || (self.host_network && !before.host_network)
-            || (self.docker_socket && !before.docker_socket)
-    }
 }
 
 /// The texts of one language; each falls back to English.

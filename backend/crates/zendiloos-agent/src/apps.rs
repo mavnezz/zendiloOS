@@ -1,47 +1,35 @@
-//! Apps from a catalog, run by Docker Compose (docs/architecture.md, 4.9).
+//! Apps installed from a catalog the earlier way, run by Docker Compose
+//! (docs/architecture.md, 4.9). The App Center now fills an app in as an
+//! administrator's own project; what was installed before keeps running
+//! from the normalized compose file the agent checked and kept then
+//! (`/etc/zendiloos/apps/<app>.json`, root's alone):
 //!
-//! zendiloosd sends an app's manifest, its compose file as written and the
-//! values for it; the agent trusts none of it. It reads both files itself
-//! and checks them with the catalog's own code (`zendiloos-catalog`), as
-//! the catalog's format asks of zendiloOS (format.md, section 8):
-//!
-//! - `check_source` before Compose sees the file, which would otherwise
-//!   read what `env_file`, `extends` or `include` name;
-//! - the file normalized twice by `docker compose config`, with stand-in
-//!   values for `check_variables` and with the real ones for
-//!   `check_normalized`, each time with nothing but those values in the
-//!   environment, `--env-file /dev/null` and an empty project folder;
-//! - only that normalized form is kept and ever started;
 //! - before every start, each folder a container mounts is opened name by
 //!   name without following a link;
 //! - a folder in a share (rather than the whole share) is mounted pinned
-//!   (`app_shares`), never by its path.
+//!   (`app_shares`), never by its path, and checked to be the folder the
+//!   walk reaches now;
+//! - removing takes the containers, images, the pins' unit and the file.
 //!
-//! The account (`app-<id>`), the time zone and the data folder
-//! (`/volume<N>/@apps/<id>`) the agent fills in itself.
+//! What filling in an app for a project takes from the machine (an
+//! account's IDs, the time zone, the devices there) comes from here too.
 
-use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::os::fd::OwnedFd;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use rustix::fs::{Mode, OFlags, fstat, openat};
 use serde_json::Value;
-use zendiloos_agent_proto::{
-    AppCompose, AppFolder, AppManifest, AppName, AppShareChoice, AppValues, DevicePath, MAX_LOG_LINES,
-    Response, UserName, VolumeNumber,
-};
-use zendiloos_catalog::compose::{check_normalized, check_source, check_variables};
-use zendiloos_catalog::{Manifest, Placement, Problem, RESERVED_HOST_PORTS, SettingKind};
+use zendiloos_agent_proto::{AppFolder, AppName, DevicePath, MAX_LOG_LINES, Response, UserName};
 use zendiloos_exec::{Limits, Output, Program, Surroundings};
 
-use crate::accounts::{AccountFiles, app_account, require_managed};
-use crate::app_shares::{self, Owner, Pin, open_mounted};
+use crate::accounts::{AccountFiles, require_managed};
+use crate::app_shares::{self, Owner, open_mounted};
 use crate::operations::OperationError;
 use crate::passwd;
-use crate::pools::{APPS_DIRECTORY, HostPaths};
+use crate::pools::HostPaths;
 
 /// What zendiloos keeps in an app's normalized compose file besides what
 /// Compose reads: where the app's data is and which shares it mounts.
@@ -52,84 +40,14 @@ pub(crate) const EXTENSION: &str = "x-zendiloos";
 pub(crate) const DOCKER_ENVIRONMENT: [(&str, &str); 2] =
     [("PATH", "/usr/sbin:/usr/bin:/sbin:/bin"), ("DOCKER_CONFIG", "/nonexistent")];
 
-/// Names a setting must not have: Docker, Compose, the Go runtime or the C
-/// library would read them from the environment `docker compose` runs in,
-/// as root.
-const RESERVED_VARIABLES: [&str; 33] = [
-    "PATH",
-    "HOME",
-    "TMPDIR",
-    "TMP",
-    "TEMP",
-    "SHELL",
-    "USER",
-    "LOGNAME",
-    "LANG",
-    "LANGUAGE",
-    "TERM",
-    "TZDIR",
-    "HOSTALIASES",
-    "LOCALDOMAIN",
-    "GCONV_PATH",
-    "GETCONF_DIR",
-    "LOCPATH",
-    "NLSPATH",
-    "NIS_PATH",
-    "GODEBUG",
-    "GOGC",
-    "GOMAXPROCS",
-    "GOMEMLIMIT",
-    "GOTRACEBACK",
-    "GOCOVERDIR",
-    "NO_COLOR",
-    "FORCE_COLOR",
-    "HTTP_PROXY",
-    "HTTPS_PROXY",
-    "NO_PROXY",
-    "ALL_PROXY",
-    "FTP_PROXY",
-    "SSL_CERT_FILE",
-];
-const RESERVED_PREFIXES: [&str; 15] = [
-    "DOCKER_",
-    "COMPOSE_",
-    "BUILDKIT_",
-    "BUILDX_",
-    "LD_",
-    "LC_",
-    "XDG_",
-    "OTEL_",
-    "SSH_",
-    "GIT_",
-    "NOTARY_",
-    "MALLOC_",
-    "GLIBC_",
-    "RES_",
-    "SSL_",
-];
-
-/// Reading and checking: quick.
+/// Listing the projects: quick.
 const LIMITS: Limits = Limits { timeout: Duration::from_secs(120), max_stdout: 4 * 1024 * 1024 };
-/// Fetching images and starting or removing containers.
+/// Starting, stopping or removing containers.
 const LONG: Limits = Limits { timeout: Duration::from_secs(30 * 60), max_stdout: 1024 * 1024 };
 const LOGS: Limits = Limits { timeout: Duration::from_secs(60), max_stdout: 8 * 1024 * 1024 };
 
 fn refused(reason: impl Into<String>) -> OperationError {
     OperationError::Refused(reason.into())
-}
-
-/// Refuses with the problems, if there are any.
-fn require_none(problems: Vec<Problem>) -> Result<(), OperationError> {
-    if problems.is_empty() {
-        return Ok(());
-    }
-    let lines: Vec<String> = problems.iter().map(ToString::to_string).collect();
-    Err(refused(format!("the app does not pass the checks:\n{}", lines.join("\n"))))
-}
-
-/// Whether Docker, Compose, Go or the C library read a variable of this name.
-fn is_reserved_variable(name: &str) -> bool {
-    RESERVED_VARIABLES.contains(&name) || RESERVED_PREFIXES.iter().any(|prefix| name.starts_with(prefix))
 }
 
 /// The end of what a program wrote to stderr, for a message.
@@ -139,39 +57,13 @@ fn complaint(output: &Output) -> String {
     if tail.is_empty() { format!("it ended with {}", output.status) } else { tail }
 }
 
-/// A folder of its own in the agent's private `/tmp`, removed when dropped.
-struct EmptyFolder(PathBuf);
-
-impl EmptyFolder {
-    fn new() -> Result<Self, OperationError> {
-        let mut bytes = [0u8; 8];
-        rustix::rand::getrandom(&mut bytes, rustix::rand::GetRandomFlags::empty())
-            .map_err(|e| OperationError::Write(std::env::temp_dir(), e.into()))?;
-        let name: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-        let path = std::env::temp_dir().join(format!("zendiloos-compose-{name}"));
-        fs::DirBuilder::new()
-            .mode(0o700)
-            .create(&path)
-            .map_err(|e| OperationError::Write(path.clone(), e))?;
-        Ok(Self(path))
-    }
-}
-
-impl Drop for EmptyFolder {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir(&self.0);
-    }
-}
-
-use std::os::unix::fs::DirBuilderExt;
-
 #[derive(Debug)]
 pub(crate) struct Apps {
     docker: Program,
     systemctl: Program,
     paths: HostPaths,
     accounts: AccountFiles,
-    /// One change to the kept compose files at a time.
+    /// One removal of a kept compose file at a time.
     serial: tokio::sync::Mutex<()>,
 }
 
@@ -182,62 +74,6 @@ impl Apps {
 
     fn config_path(&self, app: &AppName) -> PathBuf {
         self.paths.apps.join(format!("{}.json", app.as_str()))
-    }
-
-    /// `/volume<N>/@apps/<app>`, with the app's own dataset mounted there.
-    fn app_data(&self, volume: VolumeNumber, app: &AppName) -> Result<PathBuf, OperationError> {
-        let apps = self.paths.volumes.join(format!("volume{}", volume.get())).join(APPS_DIRECTORY);
-        let path = apps.join(app.as_str());
-        let mounted = match (fs::symlink_metadata(&path), fs::metadata(&apps)) {
-            (Ok(own), Ok(above)) => own.is_dir() && own.dev() != above.dev(),
-            _ => false,
-        };
-        if mounted { Ok(path) } else { Err(refused(format!("the data of {} is not mounted", app.as_str()))) }
-    }
-
-    /// `/volume<N>/<share>`, with the share's dataset mounted there.
-    fn share_root(&self, choice: &AppShareChoice) -> Result<PathBuf, OperationError> {
-        let volume = self.paths.volumes.join(format!("volume{}", choice.volume.get()));
-        let path = volume.join(choice.name.as_str());
-        let mounted = match (fs::symlink_metadata(&path), fs::metadata(&volume)) {
-            (Ok(own), Ok(above)) => own.is_dir() && own.dev() != above.dev(),
-            _ => false,
-        };
-        if mounted {
-            Ok(path)
-        } else {
-            Err(refused(format!("the share {} is not mounted", choice.name.as_str())))
-        }
-    }
-
-    /// What the app mounts for the share `id`: the share's root, or the pin
-    /// of the folder picked in it, which must be reachable now.
-    fn share_mount(
-        &self,
-        app: &AppName,
-        id: &str,
-        choice: &AppShareChoice,
-    ) -> Result<(String, Option<Pin>), OperationError> {
-        let root = self.share_root(choice)?;
-        if choice.folder.is_whole() {
-            return Ok((root.to_string_lossy().into_owned(), None));
-        }
-        app_shares::walk(&root, &choice.folder)?;
-        let at = app_shares::pin_path(&self.paths, Owner::App(app), id)?.to_string_lossy().into_owned();
-        let pin = Pin {
-            share: root.to_string_lossy().into_owned(),
-            folder: choice.folder.clone(),
-            at: at.clone(),
-            file: false,
-            create: false,
-        };
-        Ok((at, Some(pin)))
-    }
-
-    /// The unit pinning the app's folders: written and enabled when there
-    /// are any, stopped and removed when there are none.
-    async fn place_pin_unit(&self, app: &AppName, pins: &[Pin]) -> Result<(), OperationError> {
-        app_shares::place_unit(&self.systemctl, &self.paths, Owner::App(app), pins).await
     }
 
     async fn remove_pin_unit(&self, app: &AppName) -> Result<(), OperationError> {
@@ -256,227 +92,6 @@ impl Apps {
             valid.then(|| zone.to_owned())
         });
         zone.unwrap_or_else(|| "UTC".to_owned())
-    }
-
-    /// The values for `manifest`: exactly the shares, ports and settings it
-    /// declares, each checked; and the folders of shares to pin.
-    fn placement(
-        &self,
-        app: &AppName,
-        manifest: &Manifest,
-        app_data: &Path,
-        account: (u32, u32),
-        values: &AppValues,
-    ) -> Result<(Placement, Vec<Pin>), OperationError> {
-        let same_ids = |declared: BTreeSet<&str>, given: BTreeSet<&str>, what: &str| {
-            if declared == given {
-                Ok(())
-            } else {
-                Err(refused(format!("give a value for each of the app's {what}, and for no other")))
-            }
-        };
-        same_ids(
-            manifest.shares.iter().map(|s| s.id.as_str()).collect(),
-            values.shares.keys().map(String::as_str).collect(),
-            "shares",
-        )?;
-        same_ids(
-            manifest.ports.iter().map(|p| p.id.as_str()).collect(),
-            values.ports.keys().map(String::as_str).collect(),
-            "ports",
-        )?;
-        same_ids(
-            manifest.settings.iter().map(|s| s.id.as_str()).collect(),
-            values.settings.keys().map(String::as_str).collect(),
-            "settings",
-        )?;
-
-        let mut shares = BTreeMap::new();
-        let mut pins = Vec::new();
-        for (id, choice) in &values.shares {
-            let (mounted, pin) = self.share_mount(app, id, choice)?;
-            shares.insert(id.clone(), mounted);
-            pins.extend(pin);
-        }
-
-        let mut taken = BTreeSet::new();
-        for port in &manifest.ports {
-            let chosen = values.ports[&port.id];
-            if port.fixed && chosen != port.default {
-                return Err(refused(format!("the port {} is fixed at {}", port.id, port.default)));
-            }
-            if chosen == 0 || RESERVED_HOST_PORTS.contains(&chosen) {
-                return Err(refused(format!("port {chosen} is not available to apps")));
-            }
-            if !taken.insert(chosen) {
-                return Err(refused(format!("port {chosen} is given twice")));
-            }
-        }
-
-        for setting in &manifest.settings {
-            let value = values.settings[&setting.id].expose();
-            if is_reserved_variable(&setting.id) {
-                return Err(refused(format!(
-                    "the setting {} has a name Docker reads itself; the app cannot be installed",
-                    setting.id
-                )));
-            }
-            if setting.required && value.is_empty() {
-                return Err(refused(format!("the setting {} needs a value", setting.id)));
-            }
-            let valid = value.is_empty()
-                || match setting.kind {
-                    SettingKind::Number => value.parse::<f64>().is_ok_and(f64::is_finite),
-                    SettingKind::Boolean => matches!(value, "true" | "false"),
-                    SettingKind::Text | SettingKind::Password => true,
-                };
-            if !valid {
-                return Err(refused(format!("the setting {} has a value of the wrong kind", setting.id)));
-            }
-        }
-
-        let placement = Placement {
-            project: manifest.id.clone(),
-            app_data: app_data.to_string_lossy().into_owned(),
-            puid: account.0.to_string(),
-            pgid: account.1.to_string(),
-            tz: self.time_zone(),
-            shares,
-            ports: values.ports.clone(),
-            settings: values
-                .settings
-                .iter()
-                .map(|(id, value)| (id.clone(), value.expose().to_owned()))
-                .collect(),
-        };
-        Ok((placement, pins))
-    }
-
-    /// `docker compose config --format json` of `compose` with `variables`
-    /// and nothing else: no environment of the agent's, no `.env`, no
-    /// files beside it.
-    async fn normalize(
-        &self,
-        app: &AppName,
-        compose: &str,
-        variables: BTreeMap<String, String>,
-    ) -> Result<Value, OperationError> {
-        let folder = EmptyFolder::new()?;
-        let folder_text = folder.0.to_string_lossy().into_owned();
-        let mut environment: Vec<(String, String)> = DOCKER_ENVIRONMENT
-            .iter()
-            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
-            .collect();
-        environment.extend(variables);
-        let surroundings = Surroundings { variables: environment, directory: Some(&folder.0) };
-        let args = [
-            "compose",
-            "--file",
-            "-",
-            "--project-directory",
-            &folder_text,
-            "--env-file",
-            "/dev/null",
-            "--project-name",
-            app.as_str(),
-            "config",
-            "--format",
-            "json",
-        ];
-        let output =
-            zendiloos_exec::run_with(&self.docker, args, Some(compose.as_bytes()), &surroundings, LIMITS)
-                .await?;
-        if !output.status.success() {
-            return Err(refused(format!(
-                "Docker Compose cannot read the compose file: {}",
-                complaint(&output)
-            )));
-        }
-        serde_json::from_slice(&output.stdout)
-            .map_err(|e| refused(format!("Docker Compose wrote something unexpected: {e}")))
-    }
-
-    /// Checks the app with `values` and keeps its normalized compose file.
-    pub(crate) async fn configure(
-        &self,
-        app: &AppName,
-        volume: VolumeNumber,
-        manifest: &AppManifest,
-        compose: &AppCompose,
-        values: &AppValues,
-    ) -> Result<Response, OperationError> {
-        let _serial = crate::waiting::lock(&self.serial).await?;
-        let manifest: Manifest = serde_json::from_str(manifest.as_str())
-            .map_err(|e| refused(format!("the manifest cannot be read: {e}")))?;
-        if manifest.id != app.as_str() {
-            return Err(refused("the manifest is another app's"));
-        }
-        require_none(manifest.check(&manifest.id))?;
-        require_none(check_source(compose.as_str(), Some(&manifest)))?;
-
-        let (passwd, group) = (read(&self.accounts.passwd)?, read(&self.accounts.group)?);
-        let account = app_account(&passwd, &group, app)
-            .ok_or_else(|| refused(format!("the account {} is missing", app.account())))?;
-        let app_data = self.app_data(volume, app)?;
-        let (placement, pins) = self.placement(app, &manifest, &app_data, account, values)?;
-
-        let stand_in = Placement::stand_in(&manifest);
-        let checked = self.normalize(app, compose.as_str(), stand_in.variables()).await?;
-        let mut problems = check_normalized(&checked, &manifest, &stand_in);
-        problems.extend(check_variables(&checked, &manifest));
-        require_none(problems)?;
-
-        let mut normalized = self.normalize(app, compose.as_str(), placement.variables()).await?;
-        require_none(check_normalized(&normalized, &manifest, &placement))?;
-        leave_out_missing_devices(&mut normalized, &self.paths.dev);
-        let folders = folders(&normalized, &placement.app_data)?;
-        let pinned: Vec<&str> = pins.iter().map(|pin| pin.at.as_str()).collect();
-        // The app's own folders are made beforehand (MakeAppFolders).
-        refuse_to_create(&mut normalized, |source| {
-            pinned.contains(&source) || app_shares::on_a_volume(source)
-        });
-        if let Some(root) = normalized.as_object_mut() {
-            let shares: Vec<&String> = placement.shares.values().collect();
-            root.insert(
-                EXTENSION.to_owned(),
-                serde_json::json!({
-                    "app_data": placement.app_data,
-                    "shares": shares,
-                    "pins": pins,
-                    // Checked against the manifest by check_normalized.
-                    "docker_socket": manifest.permissions.docker_socket,
-                }),
-            );
-        }
-        self.keep(app, &normalized)?;
-        self.place_pin_unit(app, &pins).await?;
-        Ok(Response::AppFolders { folders })
-    }
-
-    /// Writes the normalized compose file, readable by root only: settings
-    /// may be passwords.
-    fn keep(&self, app: &AppName, normalized: &Value) -> Result<(), OperationError> {
-        fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&self.paths.apps)
-            .map_err(|e| OperationError::Write(self.paths.apps.clone(), e))?;
-        let path = self.config_path(app);
-        let temporary = path.with_extension("json.new");
-        let text = serde_json::to_string_pretty(normalized).unwrap_or_default();
-        let written = (|| {
-            use std::io::Write;
-            let mut file = fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(&temporary)?;
-            file.write_all(text.as_bytes())?;
-            file.sync_all()
-        })();
-        written.map_err(|e| OperationError::Write(temporary.clone(), e))?;
-        fs::rename(&temporary, &path).map_err(|e| OperationError::Write(path, e))
     }
 
     fn kept(&self, app: &AppName) -> Result<(PathBuf, Value), OperationError> {
@@ -529,10 +144,6 @@ impl Apps {
         } else {
             Err(OperationError::Failed(format!("Docker Compose: {}", complaint(&output))))
         }
-    }
-
-    pub(crate) async fn pull(&self, app: &AppName) -> Result<Response, OperationError> {
-        self.compose_done(app, &["pull", "--quiet"], LONG).await
     }
 
     pub(crate) async fn start(&self, app: &AppName) -> Result<Response, OperationError> {
@@ -692,60 +303,6 @@ fn bind_sources(normalized: &Value) -> Vec<String> {
         .collect()
 }
 
-/// Binds of the sources `refused` names fail when the source is missing,
-/// rather than Docker making an empty folder there: a pin that could not be
-/// made, or a volume not mounted yet.
-fn refuse_to_create(normalized: &mut Value, refused: impl Fn(&str) -> bool) {
-    let Some(services) = normalized.get_mut("services").and_then(Value::as_object_mut) else {
-        return;
-    };
-    for service in services.values_mut() {
-        let Some(mounts) = service.get_mut("volumes").and_then(Value::as_array_mut) else { continue };
-        for mount in mounts {
-            let pinned = mount.get("type").and_then(Value::as_str) == Some("bind")
-                && mount.get("source").and_then(Value::as_str).is_some_and(&refused);
-            if let (true, Some(mount)) = (pinned, mount.as_object_mut()) {
-                mount.insert("bind".to_owned(), serde_json::json!({ "create_host_path": false }));
-            }
-        }
-    }
-}
-
-/// The folders below `app_data` the containers mount, for the files agent
-/// to make.
-fn folders(normalized: &Value, app_data: &str) -> Result<Vec<AppFolder>, OperationError> {
-    let mut folders = BTreeSet::new();
-    for source in bind_sources(normalized) {
-        if let Some(folder) = below(&source, app_data) {
-            folders
-                .insert(AppFolder::parse(folder).map_err(|_| refused(format!("{source} is no plain path")))?);
-        }
-    }
-    if folders.len() > AppFolder::MAX_COUNT {
-        return Err(refused("the app mounts too many folders"));
-    }
-    Ok(folders.into_iter().collect())
-}
-
-/// Devices the machine lacks, such as `/dev/dri` without a graphics
-/// card, are left out: Docker would refuse to start the container.
-fn leave_out_missing_devices(normalized: &mut Value, dev: &Path) {
-    let Some(services) = normalized.get_mut("services").and_then(Value::as_object_mut) else {
-        return;
-    };
-    for service in services.values_mut() {
-        let Some(service) = service.as_object_mut() else { continue };
-        let Some(devices) = service.get_mut("devices").and_then(Value::as_array_mut) else { continue };
-        devices.retain(|device| {
-            let source = device.get("source").and_then(Value::as_str).unwrap_or_default();
-            source.strip_prefix("/dev/").is_some_and(|inside| dev.join(inside).exists())
-        });
-        if devices.is_empty() {
-            service.remove("devices");
-        }
-    }
-}
-
 /// Walks `folder` from `root` name by name: each must be a folder on the
 /// same file system, never a link.
 fn reach(root: &OwnedFd, folder: &AppFolder) -> Result<(), &'static str> {
@@ -770,17 +327,6 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-
-    #[test]
-    fn variables_docker_reads_itself_are_no_settings() {
-        for reserved in ["PATH", "LD_PRELOAD", "DOCKER_HOST", "COMPOSE_PROFILES", "GODEBUG", "GLIBC_TUNABLES"]
-        {
-            assert!(is_reserved_variable(reserved), "{reserved}");
-        }
-        for fine in ["DB_PASSWORD", "ADMIN_TOKEN", "PATHFINDER", "GOOGLE_KEY"] {
-            assert!(!is_reserved_variable(fine), "{fine}");
-        }
-    }
 
     fn normalized() -> Value {
         json!({
@@ -808,46 +354,16 @@ mod tests {
     }
 
     #[test]
-    fn pinned_folders_are_never_made_by_docker() {
-        let mut normalized = normalized();
-        refuse_to_create(&mut normalized, |source| source == "/volume1/media");
-        let volumes = &normalized["services"]["app"]["volumes"];
-        assert_eq!(volumes[2]["bind"], json!({ "create_host_path": false }));
-        assert!(volumes[0].get("bind").is_none());
-
-        let mut normalized = self::normalized();
-        refuse_to_create(&mut normalized, app_shares::on_a_volume);
-        for (service, index) in [("app", 0), ("app", 1), ("app", 2), ("db", 0)] {
-            let bind = &normalized["services"][service]["volumes"][index]["bind"];
-            assert_eq!(bind["create_host_path"], false, "{service} {index}: nothing made on a volume");
-        }
-        assert!(normalized["services"]["app"]["volumes"][3].get("bind").is_none(), "not a bind");
-    }
-
-    #[test]
-    fn folders_are_the_mounts_below_the_data_folder() {
-        let made = folders(&normalized(), "/volume1/@apps/demo").unwrap();
-        let names: Vec<&str> = made.iter().map(AppFolder::as_str).collect();
-        assert_eq!(names, ["", "config", "db"]);
-        let mut odd = normalized();
-        odd["services"]["db"]["volumes"][0]["source"] = json!("/volume1/@apps/demo/a/../../etc");
-        assert!(folders(&odd, "/volume1/@apps/demo").is_err());
+    fn the_binds_are_what_is_checked_before_a_start() {
+        let sources = bind_sources(&normalized());
+        assert_eq!(
+            sources,
+            ["/volume1/@apps/demo/config", "/volume1/@apps/demo", "/volume1/media", "/volume1/@apps/demo/db"]
+        );
+        assert_eq!(below("/volume1/@apps/demo/config", "/volume1/@apps/demo"), Some("config"));
+        assert_eq!(below("/volume1/@apps/demo", "/volume1/@apps/demo"), Some(""));
         assert_eq!(below("/volume1/@apps/demo2", "/volume1/@apps/demo"), None);
-    }
-
-    #[test]
-    fn devices_the_machine_lacks_are_left_out() {
-        let dev = tempfile::tempdir().unwrap();
-        fs::create_dir_all(dev.path().join("net")).unwrap();
-        fs::write(dev.path().join("net/tun"), "").unwrap();
-        let mut normalized = normalized();
-        leave_out_missing_devices(&mut normalized, dev.path());
-        assert_eq!(normalized["services"]["app"]["devices"].as_array().unwrap().len(), 1);
-        assert_eq!(normalized["services"]["app"]["devices"][0]["source"], "/dev/net/tun");
-
-        fs::remove_file(dev.path().join("net/tun")).unwrap();
-        leave_out_missing_devices(&mut normalized, dev.path());
-        assert!(normalized["services"]["app"].get("devices").is_none());
+        assert!(bind_sources(&json!({ "services": "none" })).is_empty());
     }
 
     #[test]
@@ -872,24 +388,5 @@ mod tests {
             reach(&root, &AppFolder::parse("shm").unwrap()),
             Err("another file system is mounted on the way")
         );
-    }
-
-    #[test]
-    fn an_app_with_too_many_folders_or_without_services_is_left_alone() {
-        let volumes: Vec<Value> = (0..=AppFolder::MAX_COUNT)
-            .map(|n| json!({ "type": "bind", "source": format!("/volume1/@apps/demo/f{n}"), "target": format!("/f{n}") }))
-            .collect();
-        let many = json!({ "services": { "app": { "image": "x", "volumes": volumes } } });
-        assert!(folders(&many, "/volume1/@apps/demo").is_err());
-
-        let mut odd = json!({ "services": "none", "name": "demo" });
-        let before = odd.clone();
-        refuse_to_create(&mut odd, |_| true);
-        leave_out_missing_devices(&mut odd, Path::new("/dev"));
-        assert_eq!(odd, before);
-        let mut not_objects = json!({ "services": { "app": "x" } });
-        leave_out_missing_devices(&mut not_objects, Path::new("/dev"));
-        refuse_to_create(&mut not_objects, |_| true);
-        assert_eq!(not_objects, json!({ "services": { "app": "x" } }));
     }
 }

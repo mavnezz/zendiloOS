@@ -1,13 +1,11 @@
-//! Apps from a catalog, run by Docker Compose: what travels to the agents to
-//! install, run and remove one. The agent checks the app itself against the
-//! catalog's format and policy (`zendiloos-catalog`); these types only keep
-//! what reaches it within bounds.
-
-use std::collections::BTreeMap;
+//! Apps installed from a catalog the earlier way, run by Docker Compose from
+//! the file the agent kept: what travels to the agents to run and remove
+//! one, and the folders and devices of projects and the App Center's
+//! templates. These types only keep what reaches the agents within bounds.
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ShareName, VolumeNumber, is_file_name};
+use crate::is_file_name;
 
 /// The id of an installed app: its catalog id, its Compose project, and
 /// with `app-` in front its Linux account. Two to 28 characters (the
@@ -56,141 +54,6 @@ impl From<AppName> for String {
     fn from(name: AppName) -> Self {
         name.0
     }
-}
-
-macro_rules! bounded_text {
-    ($(#[$doc:meta])* $name:ident, $error:ident, $max:expr, $message:literal) => {
-        $(#[$doc])*
-        #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-        #[serde(try_from = "String", into = "String")]
-        pub struct $name(String);
-
-        #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-        #[error($message)]
-        pub struct $error;
-
-        impl $name {
-            pub const MAX_BYTES: usize = $max;
-
-            pub fn new(text: impl Into<String>) -> Result<Self, $error> {
-                let text = text.into();
-                if !text.is_empty() && text.len() <= Self::MAX_BYTES && !text.contains('\0') {
-                    Ok(Self(text))
-                } else {
-                    Err($error)
-                }
-            }
-
-            pub fn as_str(&self) -> &str {
-                &self.0
-            }
-        }
-
-        impl TryFrom<String> for $name {
-            type Error = $error;
-
-            fn try_from(value: String) -> Result<Self, Self::Error> {
-                Self::new(value)
-            }
-        }
-
-        impl From<$name> for String {
-            fn from(text: $name) -> Self {
-                text.0
-            }
-        }
-
-        impl std::fmt::Debug for $name {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(f, "{}({} bytes)", stringify!($name), self.0.len())
-            }
-        }
-    };
-}
-
-bounded_text!(
-    /// An app's manifest as the catalog's index has it, as JSON.
-    AppManifest,
-    InvalidAppManifest,
-    64 * 1024,
-    "not a manifest that can be passed on"
-);
-bounded_text!(
-    /// An app's `compose.yaml` as written in the catalog.
-    AppCompose,
-    InvalidAppCompose,
-    64 * 1024,
-    "not a compose file that can be passed on"
-);
-
-/// The value of one of an app's settings. Never printed: some are
-/// passwords. At most 4096 bytes, without control characters.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct AppSettingValue(String);
-
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("not a setting value that can be passed on")]
-pub struct InvalidAppSettingValue;
-
-impl AppSettingValue {
-    pub const MAX_BYTES: usize = 4096;
-
-    pub fn new(value: impl Into<String>) -> Result<Self, InvalidAppSettingValue> {
-        let value = value.into();
-        if value.len() <= Self::MAX_BYTES && !value.chars().any(char::is_control) {
-            Ok(Self(value))
-        } else {
-            Err(InvalidAppSettingValue)
-        }
-    }
-
-    pub fn expose(&self) -> &str {
-        &self.0
-    }
-}
-
-impl TryFrom<String> for AppSettingValue {
-    type Error = InvalidAppSettingValue;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        Self::new(value)
-    }
-}
-
-impl From<AppSettingValue> for String {
-    fn from(value: AppSettingValue) -> Self {
-        value.0
-    }
-}
-
-impl std::fmt::Debug for AppSettingValue {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("AppSettingValue(..)")
-    }
-}
-
-/// A share the administrator picked for one of the app's shares, or a
-/// folder in it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AppShareChoice {
-    pub volume: VolumeNumber,
-    pub name: ShareName,
-    /// Below the share's root; empty for the whole share.
-    #[serde(default = "AppFolder::whole")]
-    pub folder: AppFolder,
-}
-
-/// What zendiloos fills in for an app, by the ids its manifest declares.
-/// The account, the time zone and where the app's data lives the agent
-/// knows itself.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AppValues {
-    pub shares: BTreeMap<String, AppShareChoice>,
-    pub ports: BTreeMap<String, u16>,
-    pub settings: BTreeMap<String, AppSettingValue>,
 }
 
 /// A folder below an app's data folder or a share, relative to it: names
@@ -329,17 +192,6 @@ mod tests {
         for bad in ["/config", "config/", "../x", "a/./b", "a//b", "a\0b"] {
             assert!(AppFolder::parse(bad).is_err(), "{bad:?}");
         }
-    }
-
-    #[test]
-    fn setting_values_are_never_printed() {
-        let value = AppSettingValue::new("hunter2 with spaces & $igns").unwrap();
-        assert_eq!(format!("{value:?}"), "AppSettingValue(..)");
-        assert!(AppSettingValue::new("").is_ok(), "an optional setting may be empty");
-        assert!(AppSettingValue::new("a\nb").is_err());
-        assert!(AppSettingValue::new("x".repeat(4097)).is_err());
-        let manifest = AppManifest::new("{}".repeat(10)).unwrap();
-        assert_eq!(format!("{manifest:?}"), "AppManifest(20 bytes)");
     }
 
     #[test]

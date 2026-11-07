@@ -28,9 +28,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 pub use apps::{
-    AppCompose, AppFolder, AppManifest, AppName, AppSettingValue, AppShareChoice, AppValues, DevicePath,
-    InvalidAppCompose, InvalidAppFolder, InvalidAppManifest, InvalidAppName, InvalidAppSettingValue,
-    InvalidDevicePath, MAX_LOG_LINES,
+    AppFolder, AppName, DevicePath, InvalidAppFolder, InvalidAppName, InvalidDevicePath, MAX_LOG_LINES,
 };
 pub use client::{AgentTransport, Report, TransportError, UnixTransport};
 pub use descriptor::{MessageReader, read_message_with_file, write_message_with_file};
@@ -243,32 +241,9 @@ pub enum Request {
         to_pool: PoolName,
         to_volume: VolumeNumber,
     },
-    /// Makes what an app needs before its compose file is read: its data
-    /// folder, the dataset `<pool>/zendiloos.apps/<app>` mounted at
-    /// `/volume<N>/@apps/<app>`, and its Linux user and group `app-<app>`.
-    /// What exists already stays.
-    PrepareApp {
-        app: AppName,
-        pool: PoolName,
-        volume: VolumeNumber,
-    },
-    /// Checks the app against the catalog's format and policy with the
-    /// values given, and keeps the normalized compose file the agent runs
-    /// from then on. Answers [`Response::AppFolders`]: the folders below
-    /// the data folder its containers mount, to be made by the files agent.
-    ConfigureApp {
-        app: AppName,
-        volume: VolumeNumber,
-        manifest: AppManifest,
-        compose: AppCompose,
-        values: AppValues,
-    },
-    /// Fetches the app's images.
-    PullApp {
-        app: AppName,
-    },
-    /// Starts (or updates) the app's containers, after checking that no
-    /// folder it mounts has become a link.
+    /// Starts an app installed the earlier way (its kept compose file in
+    /// `/etc/zendiloos/apps`), after checking that no folder it mounts has
+    /// become a link.
     StartApp {
         app: AppName,
     },
@@ -609,13 +584,6 @@ pub enum Request {
         user: UserName,
         location: FileLocation,
     },
-    /// Makes `folders` below the app's data folder, without following a
-    /// link, owned by the app's account.
-    MakeAppFolders {
-        app: AppName,
-        volume: VolumeNumber,
-        folders: Vec<AppFolder>,
-    },
     /// Plans a tar archive of the folder `location` as the user, then
     /// writes it, as the user, into a pipe whose reading end comes along
     /// with [`Response::Archive`]. Refused if anything inside cannot be
@@ -658,9 +626,6 @@ impl Request {
             Request::DockerState {} => "docker_state",
             Request::EnableDocker { .. } => "enable_docker",
             Request::MoveDocker { .. } => "move_docker",
-            Request::PrepareApp { .. } => "prepare_app",
-            Request::ConfigureApp { .. } => "configure_app",
-            Request::PullApp { .. } => "pull_app",
             Request::StartApp { .. } => "start_app",
             Request::StopApp { .. } => "stop_app",
             Request::RemoveApp { .. } => "remove_app",
@@ -668,7 +633,6 @@ impl Request {
             Request::AppsStatus {} => "apps_status",
             Request::AppLogs { .. } => "app_logs",
             Request::HostFacts { .. } => "host_facts",
-            Request::MakeAppFolders { .. } => "make_app_folders",
             Request::DockerContainers {} => "docker_containers",
             Request::DockerStats {} => "docker_stats",
             Request::DockerImages {} => "docker_images",
@@ -795,10 +759,6 @@ pub enum Response {
     },
     Packages {
         run: Option<PackageRun>,
-    },
-    /// Folders below an app's data folder its containers mount.
-    AppFolders {
-        folders: Vec<AppFolder>,
     },
     Apps {
         /// `docker compose ls --all --format json`: every Compose project,
@@ -1057,8 +1017,6 @@ impl Request {
             | Request::EnableDocker { .. }
             | Request::MoveDocker { .. }
             // Fetch images, start or stop containers.
-            | Request::PrepareApp { .. }
-            | Request::PullApp { .. }
             | Request::StartApp { .. }
             | Request::StopApp { .. }
             | Request::RemoveApp { .. }
@@ -1116,8 +1074,7 @@ impl Request {
             | Request::RemoveEntry { .. }
             | Request::DiscardUpload { .. }
             | Request::RestoreEntry { .. }
-            | Request::ArchiveFolder { .. }
-            | Request::MakeAppFolders { .. } => Role::Files,
+            | Request::ArchiveFolder { .. } => Role::Files,
             // The handshake works with both.
             _ => Role::System,
         }

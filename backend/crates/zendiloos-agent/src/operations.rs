@@ -186,16 +186,6 @@ impl Operations {
             Request::MoveDocker { from_pool, from_volume, to_pool, to_volume } => {
                 self.pools.move_docker(from_pool, *from_volume, to_pool, *to_volume).await
             }
-            Request::PrepareApp { app, pool, volume } => {
-                match self.pools.prepare_app_dataset(pool, *volume, app).await {
-                    Ok(()) => self.accounts.create_app_account(app).await.map(|()| Response::Done),
-                    Err(error) => Err(error),
-                }
-            }
-            Request::ConfigureApp { app, volume, manifest, compose, values } => {
-                self.apps.configure(app, *volume, manifest, compose, values).await
-            }
-            Request::PullApp { app } => self.apps.pull(app).await,
             Request::StartApp { app } => self.apps.start(app).await,
             Request::StopApp { app } => self.apps.stop(app).await,
             Request::RemoveApp { app, pool, volume } => match self.apps.remove(app).await {
@@ -302,8 +292,7 @@ impl Operations {
             | Request::RemoveEntry { .. }
             | Request::DiscardUpload { .. }
             | Request::RestoreEntry { .. }
-            | Request::ArchiveFolder { .. }
-            | Request::MakeAppFolders { .. } => {
+            | Request::ArchiveFolder { .. } => {
                 return self.files.execute(request).await.unwrap_or_else(|error| (failure(&error), None));
             }
         };

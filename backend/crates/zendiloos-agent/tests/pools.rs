@@ -742,82 +742,6 @@ async fn dockers_data_moves_only_between_pools_zendiloos_made() {
     assert!(!host.calls().iter().any(|call| call.contains("stop docker")), "Docker kept running");
 }
 
-#[tokio::test]
-async fn a_group_left_by_an_interrupted_making_is_taken_over() {
-    let host = host(Erasable::Policy(ErasePolicy::Unused));
-    let prepare = |app: &str| Request::PrepareApp {
-        app: AppName::parse(app).unwrap(),
-        pool: PoolName::parse("tank").unwrap(),
-        volume: VolumeNumber::new(1).unwrap(),
-    };
-    // groupadd ran, useradd did not: a restart in between.
-    fs::write(
-        host.path("group"),
-        "root:x:0:\nzendiloos-users:x:990:\napp-kuma:x:2000:\napp-taken:x:2001:anna\napp-foreign:x:1500:\n",
-    )
-    .unwrap();
-
-    assert_eq!(host.run(prepare("kuma")).await, Response::Done);
-
-    let calls = host.calls();
-    assert!(!calls.iter().any(|call| call.starts_with("groupadd")), "the group is kept: {calls:?}");
-    let useradd = calls.iter().find(|call| call.starts_with("useradd")).expect("the user is made");
-    assert!(useradd.contains("--gid app-kuma"), "{useradd}");
-    // Not a group someone is in, nor one zendiloOS did not number.
-    for taken in ["taken", "foreign"] {
-        let Response::Error { code, .. } = host.run(prepare(taken)).await else { panic!("{taken} made") };
-        assert_eq!(code, ErrorCode::Conflict, "{taken}");
-    }
-}
-
-#[tokio::test]
-async fn an_app_gets_a_dataset_and_an_account_of_its_own() {
-    let host = host(Erasable::Policy(ErasePolicy::Unused));
-    let prepare = |app: &str| Request::PrepareApp {
-        app: AppName::parse(app).unwrap(),
-        pool: PoolName::parse("tank").unwrap(),
-        volume: VolumeNumber::new(1).unwrap(),
-    };
-
-    assert_eq!(host.run(prepare("uptime-kuma")).await, Response::Done);
-
-    let calls = host.calls();
-    assert!(
-        calls.contains(&"zfs create -o mountpoint=legacy -o canmount=off tank/zendiloos.apps".to_owned()),
-        "{calls:?}"
-    );
-    assert!(
-        calls.contains(
-            &"zfs create -o mountpoint=legacy -o setuid=off -o devices=off tank/zendiloos.apps/uptime-kuma"
-                .to_owned()
-        ),
-        "{calls:?}"
-    );
-    let unit_name = "volume1-\\x40apps-uptime\\x2dkuma.mount";
-    assert!(calls.contains(&format!("systemctl enable --now {unit_name}")), "{calls:?}");
-    let unit = fs::read_to_string(host.path("units").join(unit_name)).unwrap();
-    assert!(unit.contains("Before=docker.service\n"), "{unit}");
-    assert!(
-        unit.contains("What=tank/zendiloos.apps/uptime-kuma\nWhere=/volume1/@apps/uptime-kuma\n"),
-        "{unit}"
-    );
-    // IDs above everything handed out, a group of its own first.
-    assert!(calls.contains(&"groupadd --gid 2000 -- app-uptime-kuma".to_owned()), "{calls:?}");
-    let useradd = calls.iter().find(|call| call.starts_with("useradd")).unwrap();
-    assert!(
-        useradd.contains("--comment zendiloOS app --gid app-uptime-kuma --uid 2001 -- app-uptime-kuma"),
-        "{useradd}"
-    );
-
-    // The name of a person's account is not taken over.
-    fs::write(
-        host.path("passwd"),
-        "root:x:0:0::/root:/bin/bash\napp-paperless:x:2003:990::/nonexistent:/usr/sbin/nologin\n",
-    )
-    .unwrap();
-    assert_refused(host.run(prepare("paperless")).await, ErrorCode::Conflict, "taken");
-}
-
 /// SMB on, NFS off, everything else as a fresh install has it.
 fn base_services() -> FileServices {
     FileServices {
@@ -897,49 +821,14 @@ async fn an_apps_account_goes_with_its_group_and_nobody_elses_does() {
 }
 
 #[tokio::test]
-async fn accounts_need_the_users_group_and_an_apps_is_made_once() {
+async fn accounts_need_the_users_group() {
     let host = host(Erasable::Policy(ErasePolicy::Unused));
-    fs::write(
-        host.path("passwd"),
-        "root:x:0:0::/root:/bin/bash\napp-kuma:x:2001:2001:zendiloOS app:/nonexistent:/usr/sbin/nologin\n",
-    )
-    .unwrap();
-    fs::write(host.path("group"), "root:x:0:\napp-kuma:x:2001:\n").unwrap();
+    fs::write(host.path("passwd"), "root:x:0:0::/root:/bin/bash\n").unwrap();
+    fs::write(host.path("group"), "root:x:0:\n").unwrap();
 
     let user = Request::CreateUser { name: zendiloos_agent_proto::UserName::parse("anna").unwrap() };
     assert_refused(host.run(user).await, ErrorCode::Failed, "zendiloos-users is missing");
-    let prepare = Request::PrepareApp {
-        app: AppName::parse("kuma").unwrap(),
-        pool: PoolName::parse("tank").unwrap(),
-        volume: VolumeNumber::new(1).unwrap(),
-    };
-    assert_eq!(host.run(prepare).await, Response::Done);
-    assert!(
-        !host.calls().iter().any(|call| call.starts_with("useradd") || call.starts_with("groupadd")),
-        "kept"
-    );
-}
-
-#[tokio::test]
-async fn an_apps_group_goes_again_when_its_account_cannot_be_made() {
-    let host = host(Erasable::Policy(ErasePolicy::Unused));
-    let useradd = host.path("useradd");
-    fs::write(
-        &useradd,
-        format!("#!/bin/sh\necho useradd \"$@\" >> {}\nexit 9\n", host.path("calls.log").display()),
-    )
-    .unwrap();
-    let prepare = Request::PrepareApp {
-        app: AppName::parse("kuma").unwrap(),
-        pool: PoolName::parse("tank").unwrap(),
-        volume: VolumeNumber::new(1).unwrap(),
-    };
-
-    assert!(matches!(host.run(prepare).await, Response::Error { .. }));
-    let calls = host.calls();
-    let made = calls.iter().position(|call| call.starts_with("groupadd")).expect("the group is made first");
-    let removed = calls.iter().position(|call| call == "groupdel -- app-kuma").expect("and removed again");
-    assert!(made < removed, "{calls:?}");
+    assert!(!host.calls().iter().any(|call| call.starts_with("useradd")), "nobody made");
 }
 
 /// zfs and systemctl for two pools zendiloOS made, `tank` (volume 1, with

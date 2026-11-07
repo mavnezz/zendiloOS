@@ -24,7 +24,7 @@ use rustix::process::{Gid, Uid, getegid, geteuid, getgid, getuid};
 use rustix::thread::{
     CapabilitySet, capabilities, set_capabilities, set_thread_groups, set_thread_res_gid, set_thread_res_uid,
 };
-use zendiloos_agent_proto::{AppFolder, FileLocation, FileRoot, Request, Response, SharePath, UserName};
+use zendiloos_agent_proto::{FileLocation, FileRoot, Request, Response, SharePath, UserName};
 use zendiloos_fileops::{FileError, PIECES_IN_FLIGHT, Sent, ShareRoot, Taken, settle};
 
 use crate::accounts::{AccountFiles, ID_MAX, ID_MIN, USERS_GROUP};
@@ -455,24 +455,6 @@ impl Files {
                 });
                 Ok((Response::Archive { size }, Some(OwnedFd::from(reader))))
             }
-            Request::MakeAppFolders { app, volume, folders } => {
-                if folders.len() > AppFolder::MAX_COUNT {
-                    return Err(OperationError::Refused("too many folders".to_owned()));
-                }
-                let (passwd, group) = (read(&self.accounts.passwd)?, read(&self.accounts.group)?);
-                let (uid, gid) = crate::accounts::app_account(&passwd, &group, app)
-                    .ok_or_else(|| OperationError::NotManaged(app.account()))?;
-                let root =
-                    ShareRoot::open_app_data(&self.volumes, *volume, app).map_err(OperationError::File)?;
-                root.set_root_owner(uid, gid, 0o750).map_err(OperationError::File)?;
-                // As the app's account, so what is made is the app's.
-                let folders = folders.clone();
-                as_user(Identity { uid, gid, groups: vec![gid] }, move || {
-                    folders.iter().try_for_each(|folder| root.make_folders(folder))
-                })
-                .await?;
-                Ok((Response::Done, None))
-            }
             other => Err(OperationError::Refused(format!("{} is not a file operation", other.name()))),
         }
     }
@@ -792,37 +774,5 @@ mod tests {
         assert!(matches!(again, Err(OperationError::File(_))), "{again:?}");
         let other = files.execute(&Request::Reboot {}).await;
         assert!(matches!(other, Err(OperationError::Refused(why)) if why.contains("not a file operation")));
-    }
-
-    #[tokio::test]
-    async fn an_apps_folders_are_made_only_for_its_own_account_and_data() {
-        let directory = tempfile::tempdir().unwrap();
-        let files = files(directory.path());
-        let app = zendiloos_agent_proto::AppName::parse("kuma").unwrap();
-        let folders = |count: usize| {
-            (0..count).map(|n| AppFolder::parse(&format!("f{n}")).unwrap()).collect::<Vec<_>>()
-        };
-        let make = |folders| Request::MakeAppFolders {
-            app: app.clone(),
-            volume: VolumeNumber::new(1).unwrap(),
-            folders,
-        };
-
-        let many = files.execute(&make(folders(AppFolder::MAX_COUNT + 1))).await;
-        assert!(matches!(many, Err(OperationError::Refused(_))), "{many:?}");
-        let no_account = files.execute(&make(folders(1))).await;
-        assert!(matches!(no_account, Err(OperationError::NotManaged(who)) if who == "app-kuma"));
-        let mut passwd = std::fs::read_to_string(directory.path().join("passwd")).unwrap();
-        passwd.push_str(&format!(
-            "app-kuma:x:2100:2100:{}:/nonexistent:/usr/sbin/nologin\n",
-            crate::accounts::APP_COMMENT
-        ));
-        std::fs::write(directory.path().join("passwd"), passwd).unwrap();
-        let mut group = std::fs::read_to_string(directory.path().join("group")).unwrap();
-        group.push_str("app-kuma:x:2100:\n");
-        std::fs::write(directory.path().join("group"), group).unwrap();
-        // Its account is there, its data is not.
-        let no_data = files.execute(&make(folders(1))).await;
-        assert!(matches!(no_data, Err(OperationError::File(_))), "{no_data:?}");
     }
 }

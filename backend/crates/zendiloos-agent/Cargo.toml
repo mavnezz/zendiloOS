@@ -11,7 +11,6 @@ publish.workspace = true
 # depend on the bounded contexts, the database or HTTP crates.
 [dependencies]
 zendiloos-agent-proto.workspace = true
-zendiloos-catalog.workspace = true
 zendiloos-exec.workspace = true
 zendiloos-fileops.workspace = true
 zendiloos-logging.workspace = true

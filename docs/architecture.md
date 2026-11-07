@@ -966,9 +966,9 @@ entry that fails is left out, not repaired. Icons are cached, checked to be
 PNG and served as `image/png`.
 
 **One policy, in one crate.** The format and the policy live in the
-catalog's crate `zendiloos-catalog` (pure: text in, problems out). The
-agent and `zendiloos-infra` use it as a git dependency pinned to one
-commit, so a change to the catalog's checks reaches zendiloOS only when
+catalog's crate `zendiloos-catalog` (pure: text in, problems out).
+`zendiloos-infra` uses it, to check the indexes, as a git dependency
+pinned to one commit, so a change to the catalog's checks reaches zendiloOS only when
 the pin is moved deliberately: Renovate opens a pull request for each new
 commit of the catalog (`renovate.json`), CI checks it, a maintainer merges
 it, the next release ships it. The apps themselves are read live from the
@@ -1128,9 +1128,11 @@ updates, the file by the administrator.
 (`share_app_access`), and a Compose file the agent checked against the
 policy and keeps, normalized, readable by root only
 (`/etc/zendiloos/apps/<id>.json`). They keep running: they are started
-(the agent walks each folder they mount again first), stopped and
-removed, no longer installed, tried again or updated so. One whose
-installation did not finish is *failed*, to be removed. Removing takes
+from that file (the agent walks each folder they mount again first),
+stopped, their logs read, and removed; nothing installs, tries again or
+updates an app so any more, and the agent has no steps left for it (no
+preparing, checking, pulling or making folders). One whose installation
+did not finish is *failed*, to be removed. Removing takes
 the containers, images and kept file, destroys the dataset with the data,
 then takes the account's share access and finally the account.
 
@@ -1146,7 +1148,7 @@ path: it walks to it from the share's root with `O_PATH | O_NOFOLLOW`,
 staying on the share's file system, and mounts the very directory it
 opened (`open_tree` and `move_mount` on the file descriptor) at
 `/run/zendiloos-app-shares/<app>/<share id>`, a folder only root may
-change; `SHARE_<ID>` points there, and the bind refuses to start rather
+change; the kept file binds that place, and the bind refuses to start rather
 than let Docker make an empty folder when the pin is missing. The mounts
 belong in the host's mount namespace, outside the agent's sandbox: a unit
 per app, `zendiloos-app-<app>-shares.service` (`RequiresMountsFor=` the

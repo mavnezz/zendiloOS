@@ -262,64 +262,6 @@ impl Accounts {
         Ok(Response::Done)
     }
 
-    /// Makes `app`'s account, `app-<id>`, unless it is there: a group of its
-    /// own, then the user in it, both with IDs never handed out before.
-    /// `conflict` if the name belongs to somebody else.
-    pub(crate) async fn create_app_account(&self, app: &AppName) -> Result<(), OperationError> {
-        let _serial = crate::waiting::lock(&self.serial).await?;
-        let (passwd, group) = self.read_files().await?;
-        if app_account(&passwd, &group, app).is_some() {
-            return Ok(());
-        }
-        let name = app.account();
-        if passwd::lookup(&passwd, &name).is_some() {
-            return Err(OperationError::Conflict);
-        }
-        // A group of this name with no user is what a making stopped
-        // between groupadd and useradd leaves (a restart): taken over if
-        // zendiloOS gave it its ID and nobody is in it.
-        let left = passwd::group_id(&group, &name);
-        if left.is_some_and(|gid| !MANAGED_IDS.contains(&gid) || !passwd::members(&group, &name).is_empty()) {
-            return Err(OperationError::Conflict);
-        }
-        let marks = self.read_high_water()?;
-        let (gid, marks) = match left {
-            Some(gid) => (gid, marks),
-            None => {
-                let gid = next_id(&group, &marks, IdKind::Group)
-                    .ok_or_else(|| OperationError::Setup("no group IDs left".to_owned()))?;
-                (gid, set_high_water(&marks, IdKind::Group, gid))
-            }
-        };
-        let uid = next_id(&passwd, &marks, IdKind::User)
-            .ok_or_else(|| OperationError::Setup("no user IDs left".to_owned()))?;
-        self.write_high_water(&set_high_water(&marks, IdKind::User, uid))?;
-        if left.is_none() {
-            run(&self.groupadd, &["--gid", &gid.to_string(), "--", &name]).await?;
-        }
-        let args = [
-            "--no-log-init",
-            "--no-create-home",
-            "--home-dir",
-            "/nonexistent",
-            "--shell",
-            NOLOGIN,
-            "--comment",
-            APP_COMMENT,
-            "--gid",
-            &name,
-            "--uid",
-            &uid.to_string(),
-            "--",
-            &name,
-        ];
-        if let Err(error) = run(&self.useradd, &args).await {
-            let _ = run(&self.groupdel, &["--", &name]).await;
-            return Err(error);
-        }
-        Ok(())
-    }
-
     /// Deletes `app`'s account and its group; nothing if it is gone.
     pub(crate) async fn delete_app_account(&self, app: &AppName) -> Result<Response, OperationError> {
         let _serial = crate::waiting::lock(&self.serial).await?;

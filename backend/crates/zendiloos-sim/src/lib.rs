@@ -390,13 +390,6 @@ impl SimulatedAgent {
                     let path = share(location)?.restore(&location.path, user.as_str())?;
                     (Response::Restored { path }, None)
                 }
-                Request::MakeAppFolders { app, volume, folders } => {
-                    let data = root.join(format!("volume{}", volume.get())).join("@apps").join(app.as_str());
-                    for folder in folders {
-                        std::fs::create_dir_all(data.join(folder.as_str())).map_err(FileError::Io)?;
-                    }
-                    (Response::Done, None)
-                }
                 Request::ArchiveFolder { location, .. } => {
                     let (share, path) = (share(location)?, location.path.clone());
                     let fallback = match &location.root {
@@ -564,26 +557,13 @@ impl AgentTransport for SimulatedAgent {
             }
             // The simulated host is managed by systemd-networkd; a change
             // waits for confirmation and lapses at its time.
-            // Apps are checked by nothing but their id; they run nowhere.
-            Request::PrepareApp { .. } | Request::DeleteAppAccount { .. } => Response::Done,
-            Request::ConfigureApp { app, manifest, .. } => {
-                let id = serde_json::from_str::<serde_json::Value>(manifest.as_str())
-                    .ok()
-                    .and_then(|m| m.get("id").and_then(serde_json::Value::as_str).map(str::to_owned));
-                if id.as_deref() == Some(app.as_str()) {
-                    self.apps().entry(app.as_str().to_owned()).or_insert(false);
-                    Response::AppFolders { folders: Vec::new() }
-                } else {
-                    error(ErrorCode::Forbidden, "refused: the manifest is another app's")
-                }
-            }
-            Request::PullApp { app } | Request::StartApp { app } | Request::StopApp { app } => {
+            // Apps installed the earlier way (`with_app`) run nowhere.
+            Request::DeleteAppAccount { .. } => Response::Done,
+            Request::StartApp { app } | Request::StopApp { app } => {
                 let mut apps = self.apps();
                 match apps.get_mut(app.as_str()) {
                     Some(running) => {
-                        if !matches!(request, Request::PullApp { .. }) {
-                            *running = matches!(request, Request::StartApp { .. });
-                        }
+                        *running = matches!(request, Request::StartApp { .. });
                         Response::Done
                     }
                     None => {
@@ -842,9 +822,6 @@ impl AgentTransport for SimulatedAgent {
             | Request::DiscardUpload { .. }
             | Request::RestoreEntry { .. }
             | Request::ArchiveFolder { .. } => self.file_operation(&request).0,
-            // Without files kept, an app's folders are nowhere to be made.
-            Request::MakeAppFolders { .. } if self.files.is_none() => Response::Done,
-            Request::MakeAppFolders { .. } => self.file_operation(&request).0,
         };
         self.received.lock().unwrap_or_else(PoisonError::into_inner).push(request);
         Ok(response)
@@ -1128,9 +1105,7 @@ mod tests {
     async fn files_are_copied_deleted_restored_and_packed_in_a_directory() {
         use std::io::Read;
 
-        use zendiloos_agent_proto::{
-            AppFolder, AppName, PoolName, ShareName, SharePath, UserName, VolumeNumber,
-        };
+        use zendiloos_agent_proto::{PoolName, ShareName, SharePath, UserName, VolumeNumber};
         let root = tempfile::tempdir().unwrap();
         let agent = SimulatedAgent::new().with_files(root.path());
         let (volume, docs) = (VolumeNumber::new(1).unwrap(), ShareName::parse("docs").unwrap());
@@ -1200,17 +1175,8 @@ mod tests {
             agent.call(Request::MakeDirectory { user: anna(), location: at("album") }, None).await.unwrap();
         refused(&taken, ErrorCode::Conflict);
 
-        let folders = Request::MakeAppFolders {
-            app: AppName::parse("immich").unwrap(),
-            volume,
-            folders: vec![AppFolder::parse("library").unwrap()],
-        };
-        done(agent.call(folders.clone(), None).await.unwrap());
-        assert!(root.path().join("volume1/@apps/immich/library").is_dir());
-
         // Without a directory for files, nothing is kept.
         let bare = SimulatedAgent::new();
-        done(bare.call(folders, None).await.unwrap());
         let nothing =
             bare.call(Request::ListDirectory { user: anna(), location: at("") }, None).await.unwrap();
         refused(&nothing, ErrorCode::Failed);

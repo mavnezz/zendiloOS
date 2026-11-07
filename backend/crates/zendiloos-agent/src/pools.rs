@@ -820,9 +820,6 @@ impl Pools {
         Ok(())
     }
 
-    /// The dataset of an app's data, `<pool>/zendiloos.apps/<app>`, mounted
-    /// by its own unit at `/volume<N>/@apps/<app>` before Docker starts.
-    /// What exists already stays.
     /// The personal folders' dataset, mounted at `/volume<N>/@homes`.
     /// What exists stays.
     pub(crate) async fn prepare_homes(
@@ -875,46 +872,6 @@ impl Pools {
         let quota = quota_bytes.map_or_else(|| "none".to_owned(), |bytes| bytes.to_string());
         run(&self.zfs, &["set", &format!("userquota@{}={quota}", user.as_str()), &dataset]).await?;
         Ok(Response::Done)
-    }
-
-    pub(crate) async fn prepare_app_dataset(
-        &self,
-        pool: &PoolName,
-        volume: VolumeNumber,
-        app: &AppName,
-    ) -> Result<(), OperationError> {
-        let _serial = crate::waiting::lock(&self.serial).await?;
-        self.require_managed(pool, Some(volume)).await?;
-        let parent = format!("{}/{APPS_DATASET}", pool.as_str());
-        let dataset = format!("{parent}/{}", app.as_str());
-        let existing = output(&self.zfs, &["list", "-H", "-o", "name", "-d", "2", pool.as_str()]).await?;
-        if !existing.lines().any(|line| line == parent) {
-            // Never mounted itself; it only holds the apps' datasets.
-            run(&self.zfs, &["create", "-o", "mountpoint=legacy", "-o", "canmount=off", &parent]).await?;
-        }
-        if !existing.lines().any(|line| line == dataset) {
-            let options = ["create", "-o", "mountpoint=legacy", "-o", "setuid=off", "-o", "devices=off"];
-            run(&self.zfs, &[&options[..], &[dataset.as_str()]].concat()).await?;
-        }
-        let content = format!(
-            "# Created by zendiloOS for the app {app}; removed with the app.\n\
-             [Unit]\n\
-             Description=zendiloOS app {app}: its data (ZFS dataset {dataset})\n\
-             Requires=zfs-import.target\n\
-             After=zfs-import.target\n\
-             Before=docker.service\n\
-             \n\
-             [Mount]\n\
-             What={dataset}\n\
-             Where=/volume{number}/{APPS_DIRECTORY}/{app}\n\
-             Type=zfs\n\
-             \n\
-             [Install]\n\
-             WantedBy=multi-user.target\n",
-            app = app.as_str(),
-            number = volume.get(),
-        );
-        self.install_unit(&app_unit_name(volume, app), &content).await
     }
 
     /// Unmounts an app's dataset and destroys it with all its data.
@@ -1153,7 +1110,6 @@ pub(crate) const DOCKER_DIRECTORY: &str = "@docker";
 
 /// The apps' datasets below a pool: `<pool>/zendiloos.apps/<app>`.
 pub(crate) const APPS_DATASET: &str = "zendiloos.apps";
-pub(crate) use zendiloos_fileops::APPS_DIRECTORY;
 
 /// `volume<N>-\x40apps-<app>.mount`; systemd escapes `-` in paths.
 pub(crate) fn app_unit_name(volume: VolumeNumber, app: &AppName) -> String {
