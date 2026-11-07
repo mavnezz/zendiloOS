@@ -55,12 +55,77 @@ impl Attempts {
                 max_tracked_addresses: base.max_tracked_addresses,
             })
         };
+        // The attempts under way in a throttle replaced are forgotten; they
+        // are only recorded in the new one if they fail.
         if self.accounts.as_ref().map(|(limit, _)| *limit) != settings.account_lock {
             self.accounts = settings.account_lock.map(|limit| (limit, per(limit, true)));
         }
         let blocking = settings.auto_block.map(|block| block.limit);
         if self.blocking.as_ref().map(|(limit, _)| *limit) != blocking {
             self.blocking = blocking.map(|limit| (limit, per(limit, false)));
+        }
+    }
+
+    /// The throttles an attempt for `key` counts against.
+    fn throttles(&self, key: &ThrottleKey) -> [Option<&LoginThrottle>; 2] {
+        match key {
+            ThrottleKey::Address(_) => [Some(&self.addresses), self.blocking.as_ref().map(|(_, t)| t)],
+            ThrottleKey::Account(_) => [self.accounts.as_ref().map(|(_, t)| t), None],
+        }
+    }
+
+    fn throttles_mut(&mut self, key: &ThrottleKey) -> [Option<&mut LoginThrottle>; 2] {
+        match key {
+            ThrottleKey::Address(_) => [Some(&mut self.addresses), self.blocking.as_mut().map(|(_, t)| t)],
+            ThrottleKey::Account(_) => [self.accounts.as_mut().map(|(_, t)| t), None],
+        }
+    }
+
+    /// Ends an attempt for `keys`; whether, failed, it reached the limit for
+    /// blocking an address.
+    fn end(&mut self, keys: &[ThrottleKey], failed: bool, now: Timestamp) -> bool {
+        let mut reached = false;
+        for key in keys {
+            for throttle in self.throttles_mut(key).into_iter().flatten() {
+                throttle.end(key, failed, now);
+            }
+            if let (true, ThrottleKey::Address(_), Some((_, blocking))) =
+                (failed, key, self.blocking.as_mut())
+                && blocking.reached(key, now)
+            {
+                blocking.clear(key);
+                reached = true;
+            }
+        }
+        reached
+    }
+}
+
+/// An attempt [`Context::begin_attempt`] let through. Dropped without
+/// [`failed`](Self::failed) it did not fail: the secret was right, or
+/// something else stopped it, or the caller went away before learning
+/// whether it was right.
+pub(crate) struct Attempt<'a> {
+    context: &'a Context,
+    keys: Vec<ThrottleKey>,
+    now: Timestamp,
+    ended: bool,
+}
+
+impl Attempt<'_> {
+    /// The secret was wrong: counted against every key, and an address that
+    /// failed too often is blocked.
+    pub(crate) async fn failed(mut self, request: &RequestContext) -> Result<(), PortError> {
+        self.ended = true;
+        let reached = self.context.attempts().end(&self.keys, true, self.now);
+        self.context.block_if_reached(reached, request, self.now).await
+    }
+}
+
+impl Drop for Attempt<'_> {
+    fn drop(&mut self) {
+        if !self.ended {
+            self.context.attempts().end(&self.keys, false, self.now);
         }
     }
 }
@@ -167,60 +232,45 @@ impl Context {
         address.into_iter().chain(account).collect()
     }
 
-    /// Refuses an attempt from a blocked address, or for one of `keys` with
-    /// no attempts left.
-    pub(crate) async fn check_throttle(
-        &self,
-        keys: &[ThrottleKey],
-        request: &RequestContext,
-        now: Timestamp,
-    ) -> Result<(), IdentityError> {
-        if self.defences().await?.blocks(request.client_ip, now) {
-            return Err(IdentityError::AddressBlocked);
-        }
-        let attempts = self.attempts();
-        let check = |key: &ThrottleKey| match key {
-            ThrottleKey::Address(_) => attempts.addresses.check(key, now),
-            ThrottleKey::Account(_) => {
-                attempts.accounts.as_ref().map_or(Ok(()), |(_, throttle)| throttle.check(key, now))
-            }
-        };
-        keys.iter().try_for_each(check).map_err(|retry_after| IdentityError::TooManyAttempts { retry_after })
-    }
-
-    /// Counts a failed attempt; an address that failed too often is blocked.
-    pub(crate) async fn record_failure(
+    /// Starts an attempt to give a secret for `keys` (a password, the setup
+    /// code); refused from a blocked address, or for a key with no attempts
+    /// left. Until it ends, it counts as failed: attempts made at once
+    /// cannot all get past the limits while none of them has failed yet.
+    pub(crate) async fn begin_attempt(
         &self,
         keys: Vec<ThrottleKey>,
         request: &RequestContext,
         now: Timestamp,
-    ) -> Result<(), PortError> {
-        let defences = self.defences().await?;
-        let mut reached = None;
-        {
-            let mut attempts = self.attempts();
-            for key in keys {
-                match key {
-                    ThrottleKey::Address(ip) => {
-                        attempts.addresses.record_failure(ThrottleKey::Address(ip), now);
-                        if let Some((_, blocking)) = attempts.blocking.as_mut() {
-                            let key = ThrottleKey::Address(ip);
-                            blocking.record_failure(key.clone(), now);
-                            if blocking.check(&key, now).is_err() {
-                                blocking.clear(&key);
-                                reached = Some(ip);
-                            }
-                        }
-                    }
-                    ThrottleKey::Account(_) => {
-                        if let Some((_, throttle)) = attempts.accounts.as_mut() {
-                            throttle.record_failure(key, now);
-                        }
-                    }
-                }
+    ) -> Result<Attempt<'_>, IdentityError> {
+        if self.defences().await?.blocks(request.client_ip, now) {
+            return Err(IdentityError::AddressBlocked);
+        }
+        let mut attempts = self.attempts();
+        for key in &keys {
+            for throttle in attempts.throttles(key).into_iter().flatten() {
+                throttle
+                    .check(key, now)
+                    .map_err(|retry_after| IdentityError::TooManyAttempts { retry_after })?;
             }
         }
-        let (Some(_), Some(ip)) = (reached, request.client_ip) else { return Ok(()) };
+        for key in &keys {
+            for throttle in attempts.throttles_mut(key).into_iter().flatten() {
+                throttle.start(key);
+            }
+        }
+        Ok(Attempt { context: self, keys, now, ended: false })
+    }
+
+    /// Blocks the address `request` came from once its failures `reached`
+    /// the limit for that.
+    async fn block_if_reached(
+        &self,
+        reached: bool,
+        request: &RequestContext,
+        now: Timestamp,
+    ) -> Result<(), PortError> {
+        let defences = self.defences().await?;
+        let (true, Some(ip)) = (reached, request.client_ip) else { return Ok(()) };
         let Some(auto) = defences.settings.auto_block else { return Ok(()) };
         if defences.settings.is_allowed(ip) || defences.blocks(Some(ip), now) {
             return Ok(());

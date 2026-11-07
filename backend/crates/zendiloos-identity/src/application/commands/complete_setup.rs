@@ -34,17 +34,18 @@ impl CompleteSetup {
         let audit = |outcome| AuditEntry::new(now, AuditAction::Setup.as_str(), outcome, request);
 
         let keys = Context::throttle_keys(request, None);
-        c.check_throttle(&keys, request, now).await?;
+        let attempt = c.begin_attempt(keys, request, now).await?;
         if c.ports.accounts.any_admin().await? {
             return Err(IdentityError::SetupCompleted);
         }
 
         let code = c.ports.setup_codes.current().await?;
         if !code.is_some_and(|code| code.matches(input.setup_code.expose())) {
-            c.record_failure(keys, request, now).await?;
+            attempt.failed(request).await?;
             c.audit(audit(Outcome::Failure).reason("wrong_setup_code")).await?;
             return Err(IdentityError::InvalidSetupCode);
         }
+        drop(attempt);
 
         let name = AccountName::parse(input.name.trim())?;
         let policy = c.ports.accounts.password_policy().await?;

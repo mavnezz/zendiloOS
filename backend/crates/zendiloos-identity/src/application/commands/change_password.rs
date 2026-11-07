@@ -33,7 +33,7 @@ impl ChangePassword {
         let c = &self.context;
         let now = c.now();
         let keys = Context::throttle_keys(request, Some(&auth.account.name));
-        c.check_throttle(&keys, request, now).await?;
+        let attempt = c.begin_attempt(keys, request, now).await?;
 
         let account =
             c.ports.accounts.find_by_id(auth.account.id).await?.ok_or(IdentityError::Unauthenticated)?;
@@ -49,10 +49,11 @@ impl ChangePassword {
         let policy = c.ports.accounts.password_policy().await?;
         let password = NewPassword::parse(input.new_password, &account.name, &policy)?;
         if !c.ports.hasher.verify(&input.current_password, Some(&account.password_hash)).await? {
-            c.record_failure(keys, request, now).await?;
+            attempt.failed(request).await?;
             c.audit(audit(Outcome::Failure).reason("wrong_password")).await?;
             return Err(IdentityError::WrongPassword);
         }
+        drop(attempt);
 
         // From here one with administrators' changes: a reset or a lock in
         // between would leave Samba with one password and the web with

@@ -642,7 +642,10 @@ rustls with ring and the system's certificate authorities
   cookie has no `Max-Age` and ends with the browser session. The database
   stores only the token's SHA-256 hash. Sessions end after 30 minutes idle
   (set from 5 to 1440 under Security) and 12 hours at most; a password
-  change ends all other sessions. Idle means nobody used the page: reads it
+  change ends all other sessions. A login whose password check overlapped
+  a change or reset of the password, or the account being disabled or
+  deleted, starts no session: it reads the account again under the lock
+  those changes hold and needs the hash it checked. Idle means nobody used the page: reads it
   makes on its own after two minutes without input (polling, refreshing
   windows) carry `X-Zendiloos-Background` and do not count, nor does the
   live connection's check; a running upload counts, every five minutes. Administrators see every account's
@@ -656,8 +659,10 @@ rustls with ring and the system's certificate authorities
   will get the same checks.
 - Throttling in the backend, in memory: 20 failures per address within 15
   minutes, and the account lock as set under Security (5 failures within 15
-  minutes by default, or off), for passwords and setup codes alike. Plus
-  `limit_req` in nginx for login, setup and password changes.
+  minutes by default, or off), for passwords and setup codes alike. An
+  attempt counts as failed from its start until it ends otherwise, so
+  attempts sent at once get no more checks than attempts one after
+  another. Plus `limit_req` in nginx for login, setup and password changes.
 - **Blocked addresses:** an address with too many failed logins (10 within
   5 minutes by default) is blocked from the whole API for a day, or until
   lifted; administrators block addresses and networks by hand too. Every

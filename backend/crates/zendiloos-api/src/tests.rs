@@ -1288,6 +1288,32 @@ async fn login_failures_are_throttled() {
 }
 
 #[tokio::test]
+async fn logins_sent_at_once_are_throttled_as_if_one_after_another() {
+    let h = Harness::new();
+    h.identity.add_account("alice", PASSWORD, Role::User);
+    let hasher = &h.identity.hasher;
+    hasher.hold(12);
+    let attempts = (0..12).map(|_| {
+        h.send(json(post("/api/v1/auth/login"), json!({ "name": "alice", "password": "wrong password" })))
+    });
+
+    let (replies, held) = tokio::join!(futures_util::future::join_all(attempts), async {
+        // Every attempt has reached its check of the password, or was
+        // refused before it.
+        for _ in 0..1_000 {
+            tokio::task::yield_now().await;
+        }
+        let held = hasher.waiting();
+        hasher.release();
+        held
+    });
+
+    assert_eq!(held, 5);
+    let statuses = |status| replies.iter().filter(|r| r.status == status).count();
+    assert_eq!((statuses(StatusCode::UNAUTHORIZED), statuses(StatusCode::TOO_MANY_REQUESTS)), (5, 7));
+}
+
+#[tokio::test]
 async fn logins_from_foreign_sites_are_rejected() {
     let h = Harness::new();
     h.identity.add_account("alice", PASSWORD, Role::User);

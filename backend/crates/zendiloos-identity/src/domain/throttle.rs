@@ -47,11 +47,14 @@ pub struct LoginThrottle {
     policy: ThrottlePolicy,
     /// Times of recent failures per key, oldest first.
     failures: HashMap<ThrottleKey, VecDeque<Timestamp>>,
+    /// Attempts under way per key: each counts as a failure until it ends,
+    /// so attempts made at once cannot all pass while none has failed yet.
+    under_way: HashMap<ThrottleKey, usize>,
 }
 
 impl LoginThrottle {
     pub fn new(policy: ThrottlePolicy) -> Self {
-        Self { policy, failures: HashMap::new() }
+        Self { policy, failures: HashMap::new(), under_way: HashMap::new() }
     }
 
     fn limit(&self, key: &ThrottleKey) -> usize {
@@ -65,17 +68,50 @@ impl LoginThrottle {
         now.saturating_sub(self.policy.window)
     }
 
-    /// `Err(retry_after)` if `key` has no attempts left right now.
-    pub fn check(&self, key: &ThrottleKey, now: Timestamp) -> Result<(), Duration> {
-        let Some(times) = self.failures.get(key) else { return Ok(()) };
+    /// The failures of `key` within the window.
+    fn recent(&self, key: &ThrottleKey, now: Timestamp) -> impl Iterator<Item = Timestamp> + Clone + '_ {
         let start = self.window_start(now);
-        let recent = times.iter().filter(|t| **t > start);
-        if recent.clone().count() < self.limit(key) {
+        self.failures.get(key).into_iter().flatten().copied().filter(move |t| *t > start)
+    }
+
+    /// `Err(retry_after)` if `key` has no attempts left right now, counting
+    /// those under way as failed.
+    pub fn check(&self, key: &ThrottleKey, now: Timestamp) -> Result<(), Duration> {
+        let recent = self.recent(key, now);
+        let under_way = self.under_way.get(key).copied().unwrap_or(0);
+        if recent.clone().count() + under_way < self.limit(key) {
             return Ok(());
         }
-        // Blocked until the oldest recent failure leaves the window.
-        let oldest = recent.min().copied().unwrap_or(now);
+        // Blocked until the oldest recent failure leaves the window; one
+        // still under way would fail now.
+        let oldest = recent.min().unwrap_or(now);
         Err(oldest.saturating_add(self.policy.window).duration_since(now).max(Duration::from_secs(1)))
+    }
+
+    /// Whether the failures of `key` alone reached the limit, not counting
+    /// attempts still under way, which may yet succeed.
+    pub fn reached(&self, key: &ThrottleKey, now: Timestamp) -> bool {
+        self.recent(key, now).count() >= self.limit(key)
+    }
+
+    /// Counts an attempt for `key` as under way, once [`check`](Self::check)
+    /// let it through.
+    pub fn start(&mut self, key: &ThrottleKey) {
+        *self.under_way.entry(key.clone()).or_default() += 1;
+    }
+
+    /// Ends an attempt [`start`](Self::start) counted; a failed one is
+    /// recorded.
+    pub fn end(&mut self, key: &ThrottleKey, failed: bool, now: Timestamp) {
+        if let Some(count) = self.under_way.get_mut(key) {
+            *count -= 1;
+            if *count == 0 {
+                self.under_way.remove(key);
+            }
+        }
+        if failed {
+            self.record_failure(key.clone(), now);
+        }
     }
 
     pub fn record_failure(&mut self, key: ThrottleKey, now: Timestamp) {
@@ -91,7 +127,8 @@ impl LoginThrottle {
         self.bound_memory(now);
     }
 
-    /// Forgets the failures of `key`, e.g. after a successful login.
+    /// Forgets the failures of `key`, e.g. after a successful login; not
+    /// the attempts still under way.
     pub fn clear(&mut self, key: &ThrottleKey) {
         self.failures.remove(key);
     }
@@ -170,6 +207,51 @@ mod tests {
         }
         throttle.clear(&account("alice"));
         assert_eq!(throttle.check(&account("alice"), at(6)), Ok(()));
+    }
+
+    #[test]
+    fn attempts_under_way_count_as_failures_until_they_end() {
+        let mut throttle = LoginThrottle::new(ThrottlePolicy::default());
+        throttle.record_failure(account("alice"), at(0));
+        for _ in 0..4 {
+            assert_eq!(throttle.check(&account("alice"), at(10)), Ok(()));
+            throttle.start(&account("alice"));
+        }
+
+        assert_eq!(throttle.check(&account("alice"), at(10)), Err(Duration::from_secs(890)), "five at once");
+        assert!(!throttle.reached(&account("alice"), at(10)), "those under way may yet succeed");
+        throttle.end(&account("alice"), false, at(11));
+        assert_eq!(throttle.check(&account("alice"), at(11)), Ok(()), "one succeeded");
+        throttle.clear(&account("alice"));
+        for _ in 0..3 {
+            throttle.end(&account("alice"), true, at(12));
+        }
+        assert!(throttle.check(&account("alice"), at(12)).is_ok(), "three failures");
+        throttle.start(&account("alice"));
+        throttle.start(&account("alice"));
+        assert!(throttle.check(&account("alice"), at(12)).is_err(), "clearing kept those under way");
+        throttle.end(&account("alice"), true, at(13));
+        throttle.end(&account("alice"), true, at(13));
+        assert!(throttle.reached(&account("alice"), at(13)));
+        assert!(throttle.under_way.is_empty());
+    }
+
+    #[test]
+    fn under_way_alone_blocks_for_a_whole_window() {
+        let mut throttle = LoginThrottle::new(ThrottlePolicy::default());
+        for _ in 0..5 {
+            throttle.start(&account("alice"));
+        }
+        assert_eq!(throttle.check(&account("alice"), at(0)), Err(Duration::from_secs(900)));
+    }
+
+    #[test]
+    fn ending_an_attempt_never_counted_records_only_a_failure() {
+        let mut throttle = LoginThrottle::new(ThrottlePolicy::default());
+        throttle.end(&account("alice"), false, at(0));
+        assert!(throttle.failures.is_empty() && throttle.under_way.is_empty());
+        throttle.end(&account("alice"), true, at(0));
+        assert_eq!(throttle.recent(&account("alice"), at(0)).count(), 1);
     }
 
     #[test]

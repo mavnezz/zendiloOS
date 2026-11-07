@@ -209,6 +209,177 @@ async fn disabled_accounts_cannot_log_in() {
     assert!(t.sessions.all().is_empty());
 }
 
+// Logins at the same time
+
+type Running = Vec<tokio::task::JoinHandle<Result<super::SignedIn, IdentityError>>>;
+
+/// Starts `logins` at once, one from each of `addresses`, with their checks
+/// of the password held; returns once each is held or finished.
+async fn logins_at_once(t: &TestIdentity, logins: &[(&str, &str, u8)]) -> Running {
+    t.hasher.hold(logins.len());
+    let running: Running = logins
+        .iter()
+        .map(|&(name, password, address)| {
+            let login = t.use_cases.login.clone();
+            let input = login_input(name, password);
+            tokio::spawn(async move { login.execute(input, &from(address)).await })
+        })
+        .collect();
+    settle(t, &running).await;
+    running
+}
+
+/// Yields until every login is held at its check or finished.
+async fn settle(t: &TestIdentity, running: &Running) {
+    for _ in 0..10_000 {
+        if running.iter().filter(|r| r.is_finished()).count() + t.hasher.waiting() == running.len() {
+            return;
+        }
+        tokio::task::yield_now().await;
+    }
+    panic!("the logins did not settle");
+}
+
+async fn outcomes(running: Running) -> Vec<Result<super::SignedIn, IdentityError>> {
+    let mut outcomes = Vec::new();
+    for login in running {
+        outcomes.push(login.await.unwrap());
+    }
+    outcomes
+}
+
+#[tokio::test]
+async fn logins_at_once_get_no_more_attempts_than_the_account_lock_allows() {
+    let t = TestIdentity::new();
+    t.add_account("alice", PASSWORD, Role::User);
+    let guesses: Vec<_> = (1..=30).map(|address| ("alice", "wrong password", address)).collect();
+
+    let running = logins_at_once(&t, &guesses).await;
+
+    assert_eq!(t.hasher.waiting(), 5, "five are checked, the others refused straight away");
+    t.hasher.release();
+    let outcomes = outcomes(running).await;
+    let refused = outcomes.iter().filter(|o| matches!(o, Err(IdentityError::TooManyAttempts { .. }))).count();
+    let wrong = outcomes.iter().filter(|o| matches!(o, Err(IdentityError::InvalidCredentials))).count();
+    assert_eq!((t.hasher.checks(), wrong, refused), (5, 5, 25));
+    let locked = t.use_cases.login.execute(login_input("alice", PASSWORD), &from(31)).await;
+    assert!(matches!(locked, Err(IdentityError::TooManyAttempts { .. })), "{locked:?}");
+}
+
+#[tokio::test]
+async fn logins_at_once_from_one_address_get_no_more_attempts_than_blocking_allows() {
+    let t = TestIdentity::new();
+    let guesses: Vec<_> = (0..30).map(|_| ("nobody", PASSWORD, 1)).collect();
+
+    let running = logins_at_once(&t, &guesses).await;
+
+    assert_eq!(t.hasher.waiting(), 10, "as many as fail before the address is blocked");
+    t.hasher.release();
+    outcomes(running).await;
+    assert_eq!(t.hasher.checks(), 10);
+    assert!(t.use_cases.check_address.is_blocked(from(1).client_ip).await.unwrap());
+}
+
+#[tokio::test]
+async fn a_login_that_succeeds_frees_its_attempt_for_others() {
+    let t = TestIdentity::new();
+    t.add_account("alice", PASSWORD, Role::User);
+    let mut logins = vec![("alice", PASSWORD, 5)];
+    logins.extend((1..=4).map(|address| ("alice", "wrong password", address)));
+
+    let running = logins_at_once(&t, &logins).await;
+    t.hasher.release();
+    let outcomes = outcomes(running).await;
+
+    assert!(outcomes[0].is_ok(), "{:?}", outcomes[0]);
+    // Four failed after it (or were cleared by it): one attempt is left.
+    assert!(t.use_cases.login.execute(login_input("alice", PASSWORD), &from(6)).await.is_ok());
+}
+
+/// Alice's login with [`PASSWORD`], its check held while `change` runs.
+async fn login_while<F: Future>(t: &TestIdentity, change: F) -> Result<super::SignedIn, IdentityError> {
+    let running = logins_at_once(t, &[("alice", PASSWORD, 1)]).await;
+    change.await;
+    t.hasher.release();
+    outcomes(running).await.remove(0)
+}
+
+#[tokio::test]
+async fn a_login_checking_a_password_changed_meanwhile_starts_no_session() {
+    let t = TestIdentity::new();
+    t.add_account("alice", PASSWORD, Role::User);
+    let here = t.use_cases.login.execute(login_input("alice", PASSWORD), &from(2)).await.unwrap();
+    let input = ChangePasswordInput {
+        current_password: Secret::new(PASSWORD),
+        new_password: Secret::new("a much better passphrase"),
+    };
+
+    let login = login_while(&t, async {
+        t.use_cases.change_password.execute(&here.session, input, &from(2)).await.unwrap();
+    })
+    .await;
+
+    assert!(matches!(login, Err(IdentityError::InvalidCredentials)), "{login:?}");
+    let sessions = t.sessions.all();
+    assert_eq!(sessions.len(), 1, "only the one that changed it");
+    assert_eq!(sessions[0].id, here.session.session_id);
+    let entry = t.audit.entries().pop().unwrap();
+    assert_eq!((entry.outcome, entry.reason), (Outcome::Failure, Some("wrong_password")));
+}
+
+#[tokio::test]
+async fn a_login_checking_a_password_reset_meanwhile_starts_no_session() {
+    let t = TestIdentity::new();
+    let admin = signed_in(&t, "admin", Role::Admin).await;
+    let alice = t.add_account("alice", PASSWORD, Role::User);
+
+    let login = login_while(&t, async {
+        let password = Secret::new("a much better passphrase");
+        t.use_cases.reset_password.execute(&admin, alice.id, password, &from(9)).await.unwrap();
+    })
+    .await;
+
+    assert!(matches!(login, Err(IdentityError::InvalidCredentials)), "{login:?}");
+    assert!(t.sessions.all().iter().all(|s| s.account_id != alice.id));
+}
+
+#[tokio::test]
+async fn a_login_for_an_account_disabled_or_deleted_meanwhile_starts_no_session() {
+    let t = TestIdentity::new();
+    let admin = signed_in(&t, "admin", Role::Admin).await;
+    let alice = t.add_account("alice", PASSWORD, Role::User);
+
+    let login = login_while(&t, async {
+        let changes = AccountChanges { disabled: Some(true), ..Default::default() };
+        t.use_cases.update_account.execute(&admin, alice.id, changes, &from(9)).await.unwrap();
+    })
+    .await;
+    assert!(matches!(login, Err(IdentityError::AccountDisabled)), "{login:?}");
+
+    let changes = AccountChanges { disabled: Some(false), ..Default::default() };
+    t.use_cases.update_account.execute(&admin, alice.id, changes, &from(9)).await.unwrap();
+    let login = login_while(&t, async {
+        t.use_cases.delete_account.execute(&admin, alice.id, &from(9)).await.unwrap();
+    })
+    .await;
+    assert!(matches!(login, Err(IdentityError::InvalidCredentials)), "{login:?}");
+    assert!(t.sessions.all().iter().all(|s| s.account_id != alice.id));
+}
+
+#[tokio::test]
+async fn an_attempt_stopped_otherwise_does_not_count_as_failed() {
+    let t = TestIdentity::new();
+    let alice = t.add_account("alice", PASSWORD, Role::User);
+    t.accounts.update(alice.id, |a| a.disabled = true);
+    for address in 1..=6 {
+        let disabled = t.use_cases.login.execute(login_input("alice", PASSWORD), &from(address)).await;
+        assert!(matches!(disabled, Err(IdentityError::AccountDisabled)), "{disabled:?}");
+    }
+
+    t.accounts.update(alice.id, |a| a.disabled = false);
+    assert!(t.use_cases.login.execute(login_input("alice", PASSWORD), &from(7)).await.is_ok());
+}
+
 // Sessions
 
 #[tokio::test]

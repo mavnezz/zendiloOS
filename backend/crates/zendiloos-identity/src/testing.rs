@@ -1,7 +1,7 @@
 //! In-memory implementations of every port of this context, for tests here
 //! and in the API crate (feature `testing`).
 
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -449,12 +449,42 @@ impl SecurityRepository for InMemorySecurity {
     }
 }
 
-/// "Hashes" by prefixing, so tests stay fast and readable.
-pub struct FakeHasher;
+/// "Hashes" by prefixing, so tests stay fast and readable. Checks can be
+/// held, as a slow Argon2 run, to race them against other changes.
+#[derive(Default)]
+pub struct FakeHasher {
+    /// How many of the next checks wait, and what they wait for.
+    holding: Mutex<(usize, Option<Arc<tokio::sync::Semaphore>>)>,
+    waiting: AtomicUsize,
+    checks: AtomicUsize,
+}
 
 impl FakeHasher {
     pub fn hash_of(password: &str) -> PasswordHash {
         PasswordHash::new(format!("fake${password}"))
+    }
+
+    /// The next `checks` checks wait until [`release`](Self::release).
+    pub fn hold(&self, checks: usize) {
+        *self.holding.lock().unwrap() = (checks, Some(Arc::new(tokio::sync::Semaphore::new(0))));
+    }
+
+    /// Lets the held checks finish, and the next ones run through.
+    pub fn release(&self) {
+        let (_, gate) = std::mem::take(&mut *self.holding.lock().unwrap());
+        if let Some(gate) = gate {
+            gate.close();
+        }
+    }
+
+    /// Checks being held now.
+    pub fn waiting(&self) -> usize {
+        self.waiting.load(Ordering::SeqCst)
+    }
+
+    /// Checks made so far.
+    pub fn checks(&self) -> usize {
+        self.checks.load(Ordering::SeqCst)
     }
 }
 
@@ -465,6 +495,22 @@ impl PasswordHasher for FakeHasher {
     }
 
     async fn verify(&self, password: &Secret, hash: Option<&PasswordHash>) -> Result<bool, PortError> {
+        self.checks.fetch_add(1, Ordering::SeqCst);
+        let gate = {
+            let mut holding = self.holding.lock().unwrap();
+            if holding.0 > 0 {
+                holding.0 -= 1;
+                holding.1.clone()
+            } else {
+                None
+            }
+        };
+        if let Some(gate) = gate {
+            self.waiting.fetch_add(1, Ordering::SeqCst);
+            // Closed when released.
+            let _ = gate.acquire().await;
+            self.waiting.fetch_sub(1, Ordering::SeqCst);
+        }
         Ok(hash.is_some_and(|hash| *hash == Self::hash_of(password.expose())))
     }
 }
@@ -627,6 +673,7 @@ pub struct TestIdentity {
     pub sessions: Arc<InMemorySessions>,
     pub security: Arc<InMemorySecurity>,
     pub system: Arc<FakeSystemAccounts>,
+    pub hasher: Arc<FakeHasher>,
     pub setup_codes: Arc<MemorySetupCodes>,
     pub audit: Arc<MemoryAudit>,
     pub clock: Arc<ManualClock>,
@@ -648,6 +695,7 @@ impl TestIdentity {
         let audit = Arc::new(MemoryAudit::default());
         let clock = Arc::new(ManualClock::default());
         let group_observer = Arc::new(RecordingGroupObserver::default());
+        let hasher = Arc::new(FakeHasher::default());
         let ports = IdentityPorts {
             accounts: accounts.clone(),
             groups: groups.clone(),
@@ -656,7 +704,7 @@ impl TestIdentity {
             security: security.clone(),
             preferences: Arc::new(InMemoryPreferences::default()),
             system: system.clone(),
-            hasher: Arc::new(FakeHasher),
+            hasher: hasher.clone(),
             tokens: Arc::new(FakeTokens::default()),
             setup_codes: setup_codes.clone(),
             audit: audit.clone(),
@@ -670,6 +718,7 @@ impl TestIdentity {
             sessions,
             security,
             system,
+            hasher,
             setup_codes,
             audit,
             clock,
