@@ -125,6 +125,8 @@ async function install(): Promise<void> {
         asked.value.map((setting) => [setting.id, settings[setting.id] ?? '']),
       ),
       confirm_permissions: asksMore.value && understood.value,
+      // The permissions shown were this version's.
+      digest: props.app.digest,
       pool: pool.value || null,
     })
     open.value = false

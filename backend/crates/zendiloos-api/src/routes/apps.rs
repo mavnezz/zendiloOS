@@ -60,9 +60,10 @@ impl From<AppsError> for ApiError {
             AppsError::IdTooLong => rejected(StatusCode::UNPROCESSABLE_ENTITY, "app_id_too_long", None),
             AppsError::DockerNotReady => rejected(StatusCode::CONFLICT, "docker_not_ready", None),
             AppsError::DockerInstalled => rejected(StatusCode::CONFLICT, "docker_installed", None),
-            AppsError::PermissionsNotConfirmed => {
-                rejected(StatusCode::CONFLICT, "permissions_not_confirmed", None)
+            AppsError::PermissionsNotConfirmed { digest } => {
+                rejected(StatusCode::CONFLICT, "permissions_not_confirmed", Some(digest))
             }
+            AppsError::Changed => rejected(StatusCode::CONFLICT, "app_changed", None),
             AppsError::InvalidValue(e) => {
                 rejected(StatusCode::UNPROCESSABLE_ENTITY, "invalid_app_value", Some(e.to_string()))
             }
@@ -662,9 +663,13 @@ pub struct InstallAppRequest {
     /// settings are made by zendiloOS.
     #[serde(default)]
     pub settings: BTreeMap<String, String>,
-    /// The administrator confirmed the app's permissions.
+    /// The administrator confirmed the app's permissions, for the version
+    /// with `digest` as shown.
     #[serde(default)]
     pub confirm_permissions: bool,
+    /// The app's `digest` as shown; with another one now, `app_changed`.
+    #[serde(default)]
+    pub digest: Option<String>,
     /// The pool the app's data goes on, one of `volumes` of `/apps/docker`;
     /// the one Docker's data is on if absent.
     #[serde(default)]
@@ -690,7 +695,7 @@ pub struct Installing {
     responses(
         (status = ACCEPTED, body = Installing),
         (status = NOT_FOUND, body = Problem, description = "`not_found`: no such app"),
-        (status = CONFLICT, body = Problem, description = "`app_installed`, `docker_not_ready`, `permissions_not_confirmed`"),
+        (status = CONFLICT, body = Problem, description = "`app_installed`, `docker_not_ready`, `permissions_not_confirmed` (the detail: the digest to confirm), `app_changed`"),
         (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_app_value`, `app_id_too_long`"),
     )
 )]
@@ -707,7 +712,7 @@ async fn install(
         shares: request.shares,
         ports: request.ports,
         settings: request.settings,
-        permissions_confirmed: request.confirm_permissions,
+        permissions_confirmed: confirmed(request.confirm_permissions, request.digest),
         pool: request.pool,
     };
     let (app, job) = state.installs.install(request, &auth.0.actor(), &client).await?;
@@ -798,9 +803,17 @@ async fn retry_app(
 #[serde(deny_unknown_fields)]
 pub struct UpdateAppRequest {
     /// The administrator confirmed what the new version may do beyond the
-    /// old one.
+    /// old one, for the version with `digest`: the detail of the
+    /// `permissions_not_confirmed` that asked.
     #[serde(default)]
     pub confirm_permissions: bool,
+    #[serde(default)]
+    pub digest: Option<String>,
+}
+
+/// The digest whose permissions were confirmed, if they were.
+fn confirmed(confirm: bool, digest: Option<String>) -> Option<String> {
+    confirm.then(|| digest.unwrap_or_default())
 }
 
 /// Brings an app to the version its catalog offers now, keeping its
@@ -815,7 +828,7 @@ pub struct UpdateAppRequest {
     responses(
         (status = ACCEPTED, body = Job),
         (status = NOT_FOUND, body = Problem, description = "`not_found`: the app or its catalog entry"),
-        (status = CONFLICT, body = Problem, description = "`up_to_date`, `app_busy`, `permissions_not_confirmed`"),
+        (status = CONFLICT, body = Problem, description = "`up_to_date`, `app_busy`, `permissions_not_confirmed` (the detail: the digest to confirm), `app_changed`"),
         (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_app_value`: the new version needs a value"),
     )
 )]
@@ -827,7 +840,8 @@ async fn update_app(
     ApiJson(request): ApiJson<UpdateAppRequest>,
 ) -> Result<(StatusCode, Json<Job>), ApiError> {
     auth.require(Permission::ContainersManage)?;
-    let job = state.installs.update(&id, request.confirm_permissions, &auth.0.actor(), &client).await?;
+    let confirmed = confirmed(request.confirm_permissions, request.digest);
+    let job = state.installs.update(&id, confirmed, &auth.0.actor(), &client).await?;
     Ok((StatusCode::ACCEPTED, Json(job.into())))
 }
 

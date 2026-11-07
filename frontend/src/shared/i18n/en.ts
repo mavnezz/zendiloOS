@@ -563,7 +563,8 @@ const en = {
         host_namespace: 'shares processes, memory or users with the NAS',
         devices: 'uses devices',
         capabilities: 'gets extra capabilities',
-        unconfined: 'without the kernel’s protection (seccomp/AppArmor)',
+        unconfined: 'without the kernel’s usual protection (seccomp/AppArmor)',
+        unusual: 'uses a setting zendiloOS does not know as harmless',
       },
     },
     containers: {
@@ -1919,6 +1920,8 @@ const en = {
     project_exists: 'A project of that name exists.',
     app_project: 'The App Center manages this app.',
     not_own_project: 'This project’s Compose file is not kept in zendiloOS.',
+    app_changed:
+      'The app changed in its catalog since you looked at it: look at it again before you confirm.',
     pool_in_use:
       'The pool still holds data that would be lost without notice. Delete or move it first, each in its own place',
     project_unconfirmed:

@@ -573,7 +573,8 @@ const de: Messages = {
         host_namespace: 'teilt Prozesse, Speicher oder Benutzer mit dem NAS',
         devices: 'greift auf Geräte zu',
         capabilities: 'erhält zusätzliche Rechte',
-        unconfined: 'ohne Schutz durch den Kernel (seccomp/AppArmor)',
+        unconfined: 'ohne den üblichen Schutz durch den Kernel (seccomp/AppArmor)',
+        unusual: 'nutzt eine Einstellung, die zendiloOS nicht als harmlos kennt',
       },
     },
     containers: {
@@ -1956,6 +1957,8 @@ const de: Messages = {
     project_exists: 'Ein Projekt dieses Namens gibt es schon.',
     app_project: 'Diese App verwaltet das App-Center.',
     not_own_project: 'Die Compose-Datei dieses Projekts liegt nicht in zendiloOS.',
+    app_changed:
+      'Die App hat sich im Katalog geändert, seit Sie sie angesehen haben: Sehen Sie sie vor dem Bestätigen noch einmal an.',
     pool_in_use:
       'Auf dem Pool liegen noch Daten, die sonst unbemerkt verloren gingen. Löschen oder verschieben Sie sie zuerst, jeweils an ihrer eigenen Stelle',
     project_unconfirmed:

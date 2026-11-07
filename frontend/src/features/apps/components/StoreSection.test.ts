@@ -113,7 +113,7 @@ describe('the app store', () => {
       .findAll('button')
       .find((b) => b.text() === 'Update')!
       .trigger('click')
-    expect(update).toHaveBeenCalledWith('immich', false)
+    expect(update).toHaveBeenCalledWith('immich', null)
   })
 
   it('shows one category, or what the search finds', () => {

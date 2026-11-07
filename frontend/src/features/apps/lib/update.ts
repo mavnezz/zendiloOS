@@ -19,17 +19,21 @@ export function useAppUpdates() {
   const notifications = useNotifications()
   const busy = ref<string | null>(null)
   const asking = ref<InstalledApp | null>(null)
+  // The version whose permissions the confirmation is for: what the server
+  // named when it asked.
+  let askedFor: string | null = null
 
   /** Starts the update; `false` if it waits for confirmation or failed. */
   async function update(app: InstalledApp, confirm = false): Promise<boolean> {
     const name = appText(app, 'name', locale.value)
     busy.value = app.id
     try {
-      await actions.update(app.id, confirm)
+      await actions.update(app.id, confirm ? askedFor : null)
       notifications.notify('info', t('appStore.installed.updating', { name }))
       return true
     } catch (problem) {
       if (problem instanceof ApiProblem && problem.code === 'permissions_not_confirmed') {
+        askedFor = problem.detail ?? null
         asking.value = app
       } else {
         notifications.notify('error', name, problemMessage(problem))

@@ -2762,11 +2762,11 @@ export interface components {
         };
         /** @description Something a service may do beyond its container. */
         ComposeRisk: {
-            /** @description The path, namespace, devices or capabilities. */
+            /** @description The path, namespace, devices, capabilities or setting. */
             detail?: string | null;
             /**
              * @description `privileged`, `docker_socket`, `system_path`, `host_network`,
-             *     `host_namespace`, `devices`, `capabilities`, `unconfined`.
+             *     `host_namespace`, `devices`, `capabilities`, `unconfined`, `unusual`.
              */
             kind: string;
             service: string;
@@ -3252,8 +3252,13 @@ export interface components {
         };
         InstallAppRequest: {
             app: string;
-            /** @description The administrator confirmed the app's permissions. */
+            /**
+             * @description The administrator confirmed the app's permissions, for the version
+             *     with `digest` as shown.
+             */
             confirm_permissions?: boolean;
+            /** @description The app's `digest` as shown; with another one now, `app_changed`. */
+            digest?: string | null;
             /**
              * @description The pool the app's data goes on, one of `volumes` of `/apps/docker`;
              *     the one Docker's data is on if absent.
@@ -4528,9 +4533,11 @@ export interface components {
         UpdateAppRequest: {
             /**
              * @description The administrator confirmed what the new version may do beyond the
-             *     old one.
+             *     old one, for the version with `digest`: the detail of the
+             *     `permissions_not_confirmed` that asked.
              */
             confirm_permissions?: boolean;
+            digest?: string | null;
         };
         /**
          * @description Which releases of zendiloOS are offered: each channel takes those of
@@ -5140,7 +5147,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description `app_installed`, `docker_not_ready`, `permissions_not_confirmed` */
+            /** @description `app_installed`, `docker_not_ready`, `permissions_not_confirmed` (the detail: the digest to confirm), `app_changed` */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -5449,7 +5456,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description `up_to_date`, `app_busy`, `permissions_not_confirmed` */
+            /** @description `up_to_date`, `app_busy`, `permissions_not_confirmed` (the detail: the digest to confirm), `app_changed` */
             409: {
                 headers: {
                     [name: string]: unknown;

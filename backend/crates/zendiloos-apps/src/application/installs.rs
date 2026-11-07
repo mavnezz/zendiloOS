@@ -34,9 +34,10 @@ pub struct InstallRequest {
     pub ports: BTreeMap<String, u16>,
     /// Setting id → value; missing ones get their default.
     pub settings: BTreeMap<String, String>,
-    /// The administrator confirmed what the app may do beyond the policy:
-    /// devices, capabilities, the host network.
-    pub permissions_confirmed: bool,
+    /// The administrator confirmed what the app may do beyond the policy
+    /// (devices, capabilities, the host network) for the version with this
+    /// digest, as it was shown; for that version only.
+    pub permissions_confirmed: Option<String>,
     /// The pool its data goes on; Docker's if none.
     pub pool: Option<String>,
 }
@@ -103,6 +104,16 @@ fn job_error(error: &AppHostError) -> JobError {
 }
 
 /// Whether `new` asks for something `old` did not.
+/// Consent to an app's permissions holds for the version it was given for:
+/// the catalog may change between showing them and the click.
+fn confirmed_for(app: &CatalogApp, digest: Option<&str>) -> Result<(), AppsError> {
+    match digest {
+        None => Err(AppsError::PermissionsNotConfirmed { digest: app.digest.clone() }),
+        Some(seen) if seen != app.digest => Err(AppsError::Changed),
+        Some(_) => Ok(()),
+    }
+}
+
 fn asks_more(new: &CatalogApp, old: &CatalogApp) -> bool {
     new.permissions.asks_more_than(&old.permissions)
 }
@@ -261,8 +272,8 @@ impl Installs {
         if app.id.len() > MAX_APP_ID {
             return Err(AppsError::IdTooLong);
         }
-        if !app.permissions.is_empty() && !request.permissions_confirmed {
-            return Err(AppsError::PermissionsNotConfirmed);
+        if !app.permissions.is_empty() {
+            confirmed_for(&app, request.permissions_confirmed.as_deref())?;
         }
         if self.ports.installed.find(&app.id).await?.is_some() {
             return Err(AppsError::AlreadyInstalled);
@@ -312,7 +323,7 @@ impl Installs {
     pub async fn update(
         &self,
         id: &str,
-        permissions_confirmed: bool,
+        permissions_confirmed: Option<String>,
         actor: &Actor,
         context: &RequestContext,
     ) -> Result<Job, AppsError> {
@@ -325,8 +336,8 @@ impl Installs {
         if new.digest == installed.app.digest {
             return Err(AppsError::UpToDate);
         }
-        if asks_more(&new, &installed.app) && !permissions_confirmed {
-            return Err(AppsError::PermissionsNotConfirmed);
+        if asks_more(&new, &installed.app) {
+            confirmed_for(&new, permissions_confirmed.as_deref())?;
         }
         let request = InstallRequest {
             shares: installed
@@ -777,7 +788,7 @@ mod tests {
         given.ports.insert("web".into(), 8097);
         let (_, job) = s.installs.install(given, &alice(), &context).await.unwrap();
         finished(&s.jobs, job).await;
-        let up_to_date = s.installs.update("jellyfin", false, &alice(), &context).await;
+        let up_to_date = s.installs.update("jellyfin", None, &alice(), &context).await;
         assert!(matches!(up_to_date, Err(AppsError::UpToDate)));
 
         jellyfin.version = Some("2.0".into());
@@ -790,9 +801,15 @@ mod tests {
             Some("2.0")
         );
 
-        let unconfirmed = s.installs.update("jellyfin", false, &alice(), &context).await;
-        assert!(matches!(unconfirmed, Err(AppsError::PermissionsNotConfirmed)));
-        let job = s.installs.update("jellyfin", true, &alice(), &context).await.unwrap();
+        let unconfirmed = s.installs.update("jellyfin", None, &alice(), &context).await;
+        let Err(AppsError::PermissionsNotConfirmed { digest }) = unconfirmed else {
+            panic!("{unconfirmed:?}")
+        };
+        assert_eq!(digest, "sha256:jellyfin-2", "the version to confirm");
+        // Consent for what was shown, not for what the catalog offers later.
+        let older = s.installs.update("jellyfin", Some("sha256:jellyfin-1".into()), &alice(), &context).await;
+        assert!(matches!(older, Err(AppsError::Changed)), "{older:?}");
+        let job = s.installs.update("jellyfin", Some(digest), &alice(), &context).await.unwrap();
         assert_eq!(finished(&s.jobs, job).await.state, JobState::Succeeded);
         let view = s.installs.get("jellyfin", &context).await.unwrap();
         assert_eq!(view.app.app.version.as_deref(), Some("2.0"));
@@ -813,7 +830,10 @@ mod tests {
         let no_docker = s.installs.install(request("jellyfin"), &alice(), &context).await;
         assert!(matches!(no_docker, Err(AppsError::DockerNotReady)), "{no_docker:?}");
         let unconfirmed = s.installs.install(request("vpn"), &alice(), &context).await;
-        assert!(matches!(unconfirmed, Err(AppsError::PermissionsNotConfirmed)), "{unconfirmed:?}");
+        assert!(matches!(unconfirmed, Err(AppsError::PermissionsNotConfirmed { .. })), "{unconfirmed:?}");
+        let changed = InstallRequest { permissions_confirmed: Some("sha256:old".into()), ..request("vpn") };
+        let changed = s.installs.install(changed, &alice(), &context).await;
+        assert!(matches!(changed, Err(AppsError::Changed)), "{changed:?}");
         assert!(s.host.calls().is_empty());
     }
 }

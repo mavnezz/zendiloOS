@@ -117,12 +117,13 @@ export function useInstallActions() {
       refreshing(unwrap(api.POST('/api/v1/apps/installed', { body: request }))),
     retry: (id: string) =>
       refreshing(unwrap(api.POST('/api/v1/apps/installed/{id}/retry', path(id)))),
-    update: (id: string, confirmPermissions: boolean) =>
+    /** `confirmed`: the digest whose permissions were confirmed, if any. */
+    update: (id: string, confirmed: string | null) =>
       refreshing(
         unwrap(
           api.POST('/api/v1/apps/installed/{id}/update', {
             ...path(id),
-            body: { confirm_permissions: confirmPermissions },
+            body: { confirm_permissions: confirmed !== null, digest: confirmed },
           }),
         ),
       ),

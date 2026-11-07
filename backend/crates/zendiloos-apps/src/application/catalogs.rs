@@ -44,8 +44,12 @@ pub enum AppsError {
     DockerNotReady,
     #[error("Docker is installed already")]
     DockerInstalled,
+    /// `digest`: the version whose permissions are to be confirmed.
     #[error("the app's permissions were not confirmed")]
-    PermissionsNotConfirmed,
+    PermissionsNotConfirmed { digest: String },
+    /// It changed in its catalog since its permissions were confirmed.
+    #[error("the app changed in its catalog since it was shown")]
+    Changed,
     #[error(transparent)]
     InvalidValue(#[from] crate::domain::InvalidValue),
     /// A job is working on the app, or it is not in a state for this.

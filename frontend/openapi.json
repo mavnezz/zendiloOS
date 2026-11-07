@@ -653,7 +653,7 @@
             }
           },
           "409": {
-            "description": "`app_installed`, `docker_not_ready`, `permissions_not_confirmed`",
+            "description": "`app_installed`, `docker_not_ready`, `permissions_not_confirmed` (the detail: the digest to confirm), `app_changed`",
             "content": {
               "application/json": {
                 "schema": {
@@ -1085,7 +1085,7 @@
             }
           },
           "409": {
-            "description": "`up_to_date`, `app_busy`, `permissions_not_confirmed`",
+            "description": "`up_to_date`, `app_busy`, `permissions_not_confirmed` (the detail: the digest to confirm), `app_changed`",
             "content": {
               "application/json": {
                 "schema": {
@@ -8925,11 +8925,11 @@
               "string",
               "null"
             ],
-            "description": "The path, namespace, devices or capabilities."
+            "description": "The path, namespace, devices, capabilities or setting."
           },
           "kind": {
             "type": "string",
-            "description": "`privileged`, `docker_socket`, `system_path`, `host_network`,\n`host_namespace`, `devices`, `capabilities`, `unconfined`."
+            "description": "`privileged`, `docker_socket`, `system_path`, `host_network`,\n`host_namespace`, `devices`, `capabilities`, `unconfined`, `unusual`."
           },
           "service": {
             "type": "string"
@@ -10440,7 +10440,14 @@
           },
           "confirm_permissions": {
             "type": "boolean",
-            "description": "The administrator confirmed the app's permissions."
+            "description": "The administrator confirmed the app's permissions, for the version\nwith `digest` as shown."
+          },
+          "digest": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The app's `digest` as shown; with another one now, `app_changed`."
           },
           "pool": {
             "type": [
@@ -14226,7 +14233,13 @@
         "properties": {
           "confirm_permissions": {
             "type": "boolean",
-            "description": "The administrator confirmed what the new version may do beyond the\nold one."
+            "description": "The administrator confirmed what the new version may do beyond the\nold one, for the version with `digest`: the detail of the\n`permissions_not_confirmed` that asked."
+          },
+          "digest": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "additionalProperties": false

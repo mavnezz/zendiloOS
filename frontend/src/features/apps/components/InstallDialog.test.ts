@@ -184,6 +184,7 @@ describe('the install dialog', () => {
       shares: { photos: 'family/2024' },
       settings: { ADMIN_EMAIL: 'me@example.org' },
       confirm_permissions: true,
+      digest: 'sha256:immich',
       pool: 'backup',
     })
     expect(wrapper.emitted('installed')).toEqual([['immich']])

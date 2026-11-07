@@ -300,6 +300,17 @@ fn source(entry: &Value) -> Option<String> {
     }
 }
 
+/// The files of the secrets or configs a service uses, by their names.
+fn used(entries: &Value, files: &BTreeMap<String, String>) -> Vec<String> {
+    entries
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.get("source").and_then(Value::as_str).or_else(|| entry.as_str()))
+        .filter_map(|name| files.get(name).cloned())
+        .collect()
+}
+
 fn texts(value: &Value) -> Vec<String> {
     value.as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect()
 }
@@ -307,6 +318,27 @@ fn texts(value: &Value) -> Vec<String> {
 fn compose_model(text: &str) -> Result<ComposeModel, EngineError> {
     let value: Value = serde_json::from_str(text).map_err(|e| unreadable("Compose file", e))?;
     let services = value["services"].as_object().cloned().unwrap_or_default();
+    // Binds in disguise, by name: a named volume of the local driver with
+    // `o: bind` mounts its `device`; a secret or config from a file is bound.
+    let named_binds: BTreeMap<String, String> = value["volumes"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(name, volume)| {
+            let options = volume.get("driver_opts")?;
+            let binds = options.get("o")?.as_str()?.split(',').any(|o| o.trim() == "bind");
+            binds.then(|| Some((name.clone(), options.get("device")?.as_str()?.to_owned())))?
+        })
+        .collect();
+    let files = |kind: &str| -> BTreeMap<String, String> {
+        value[kind]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter_map(|(name, entry)| Some((name.clone(), entry.get("file")?.as_str()?.to_owned())))
+            .collect()
+    };
+    let (secrets, configs) = (files("secrets"), files("configs"));
     Ok(ComposeModel {
         services: services
             .iter()
@@ -324,12 +356,22 @@ fn compose_model(text: &str) -> Result<ComposeModel, EngineError> {
                         .as_array()
                         .into_iter()
                         .flatten()
-                        .filter(|volume| volume.get("type").and_then(Value::as_str) == Some("bind"))
-                        .filter_map(source)
+                        .filter_map(|volume| match volume.get("type").and_then(Value::as_str) {
+                            Some("bind") => source(volume),
+                            Some("volume") => volume
+                                .get("source")
+                                .and_then(Value::as_str)
+                                .and_then(|n| named_binds.get(n))
+                                .cloned(),
+                            _ => None,
+                        })
+                        .chain(used(&service["secrets"], &secrets))
+                        .chain(used(&service["configs"], &configs))
                         .collect(),
                     devices: service["devices"].as_array().into_iter().flatten().filter_map(source).collect(),
                     cap_add: texts(&service["cap_add"]),
                     security_opt: texts(&service["security_opt"]),
+                    keys: service.as_object().map(|s| s.keys().cloned().collect()).unwrap_or_default(),
                 }
             })
             .collect(),
@@ -644,6 +686,17 @@ mod tests {
     }
 
     #[test]
+    fn binds_in_disguise_count_as_binds() {
+        let config = r#"{"services":{"web":{"image":"nginx",
+            "volumes":[{"type":"volume","source":"root","target":"/host"},{"type":"volume","source":"plain","target":"/d"}],
+            "secrets":[{"source":"shadow","target":"/run/secrets/x"}],"configs":[{"source":"site"}]}},
+            "volumes":{"root":{"driver":"local","driver_opts":{"type":"none","o":"bind","device":"/"}},"plain":{}},
+            "secrets":{"shadow":{"file":"/etc/shadow"}},"configs":{"site":{"file":"/volume1/docker/web/site.conf"}}}"#;
+        let model = compose_model(config).unwrap();
+        assert_eq!(model.services[0].binds, ["/", "/etc/shadow", "/volume1/docker/web/site.conf"]);
+    }
+
+    #[test]
     fn compose_files_read_as_compose_normalizes_them() {
         let config = r#"{"name":"ha","services":{"homeassistant":{
             "image":"ghcr.io/home-assistant/home-assistant:stable","privileged":true,"network_mode":"host",
@@ -666,6 +719,8 @@ mod tests {
             (service.cap_add.clone(), service.security_opt.clone()),
             (vec!["NET_ADMIN".into()], vec!["apparmor:unconfined".into()])
         );
+
+        assert!(service.keys.contains(&"devices".to_owned()) && service.keys.contains(&"image".to_owned()));
 
         let listed = r#"[{"Name":"stack","Status":"running(2)","ConfigFiles":"/opt/a.yml,/opt/b.yml"}]"#;
         assert_eq!(compose_listings(listed).unwrap()[0].files, ["/opt/a.yml", "/opt/b.yml"]);

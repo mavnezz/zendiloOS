@@ -216,7 +216,7 @@ async fn send(socket: &mut WebSocket, message: &LiveMessage) -> bool {
     socket.send(Message::Text(text.into())).await.is_ok()
 }
 
-async fn serve(mut socket: WebSocket, state: ApiState, token: Secret, viewer: AuthContext) {
+async fn serve(mut socket: WebSocket, state: ApiState, token: Secret, mut viewer: AuthContext) {
     let mut metrics: Option<Box<dyn MetricsSubscription>> = None;
     let mut jobs: Option<broadcast::Receiver<zendiloos_jobs::Job>> = None;
     let mut notifications: Option<broadcast::Receiver<zendiloos_notify::Notification>> = None;
@@ -299,14 +299,22 @@ async fn serve(mut socket: WebSocket, state: ApiState, token: Secret, viewer: Au
                 notifications = None;
                 true
             }
-            Event::CheckSession => {
-                if state.identity.authenticate.verify(&token).await.is_err() {
+            Event::CheckSession => match state.identity.authenticate.verify(&token).await {
+                // What the account may see now: a role taken away also ends
+                // what it was subscribed to.
+                Ok(fresh) => {
+                    viewer = fresh;
+                    if !sees_notifications(&viewer) {
+                        notifications = None;
+                    }
+                    true
+                }
+                Err(_) => {
                     let frame = CloseFrame { code: CLOSE_SESSION_ENDED, reason: "session ended".into() };
                     let _ = socket.send(Message::Close(Some(frame))).await;
                     break;
                 }
-                true
-            }
+            },
         };
         if !delivered {
             break;

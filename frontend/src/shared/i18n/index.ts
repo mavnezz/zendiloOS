@@ -83,6 +83,7 @@ const KNOWN_PROBLEMS = [
   'app_project',
   'not_own_project',
   'project_unconfirmed',
+  'app_changed',
   'pool_in_use',
   'compose_risks',
   'share_denied',

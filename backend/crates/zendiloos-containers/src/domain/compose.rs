@@ -19,6 +19,8 @@ pub struct ComposeService {
     pub devices: Vec<String>,
     pub cap_add: Vec<String>,
     pub security_opt: Vec<String>,
+    /// Every key the service sets, to name those not known as harmless.
+    pub keys: Vec<String>,
 }
 
 /// A Compose file as Compose read it.
@@ -61,9 +63,17 @@ pub enum Risk {
         service: String,
         capabilities: Vec<String>,
     },
-    /// Without the kernel's confinement (seccomp, AppArmor).
+    /// Without the kernel's confinement (seccomp, AppArmor), or confined
+    /// otherwise than Docker's default.
     Unconfined {
         service: String,
+    },
+    /// A setting not known as harmless (`cgroup_parent`, `volumes_from`,
+    /// `runtime`, another container's namespace, …): Compose has many, and
+    /// new ones come; what is not known is named rather than let through.
+    Unusual {
+        service: String,
+        setting: String,
     },
 }
 
@@ -79,6 +89,7 @@ impl Risk {
             Risk::Devices { .. } => "devices",
             Risk::Capabilities { .. } => "capabilities",
             Risk::Unconfined { .. } => "unconfined",
+            Risk::Unusual { .. } => "unusual",
         }
     }
 
@@ -91,7 +102,8 @@ impl Risk {
             | Risk::HostNamespace { service, .. }
             | Risk::Devices { service, .. }
             | Risk::Capabilities { service, .. }
-            | Risk::Unconfined { service } => service,
+            | Risk::Unconfined { service }
+            | Risk::Unusual { service, .. } => service,
         }
     }
 
@@ -102,6 +114,7 @@ impl Risk {
             Risk::HostNamespace { namespace, .. } => Some((*namespace).to_owned()),
             Risk::Devices { devices, .. } => Some(devices.join(", ")),
             Risk::Capabilities { capabilities, .. } => Some(capabilities.join(", ")),
+            Risk::Unusual { setting, .. } => Some(setting.clone()),
             Risk::Privileged { .. } | Risk::HostNetwork { .. } | Risk::Unconfined { .. } => None,
         }
     }
@@ -113,6 +126,82 @@ fn on_a_volume(path: &str) -> bool {
         !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()) && !rest.is_empty()
     })
 }
+
+/// Settings of a service that cannot reach beyond its container, as
+/// Compose writes them normalized; those that can are looked at one by one
+/// (`privileged`, binds, `devices`, `cap_add`, namespaces, `security_opt`).
+const HARMLESS: &[&str] = &[
+    "annotations",
+    "attach",
+    "blkio_config",
+    "build",
+    "cap_drop",
+    "command",
+    "configs",
+    "container_name",
+    "cpu_count",
+    "cpu_percent",
+    "cpu_period",
+    "cpu_quota",
+    "cpu_rt_period",
+    "cpu_rt_runtime",
+    "cpu_shares",
+    "cpus",
+    "cpuset",
+    "depends_on",
+    "deploy",
+    "develop",
+    "dns",
+    "dns_opt",
+    "dns_search",
+    "domainname",
+    "entrypoint",
+    "env_file",
+    "environment",
+    "expose",
+    "external_links",
+    "extra_hosts",
+    "group_add",
+    "healthcheck",
+    "hostname",
+    "image",
+    "init",
+    "labels",
+    "links",
+    "logging",
+    "mac_address",
+    "mem_limit",
+    "mem_reservation",
+    "mem_swappiness",
+    "memswap_limit",
+    "networks",
+    "oom_kill_disable",
+    "oom_score_adj",
+    "pids_limit",
+    "platform",
+    "ports",
+    "profiles",
+    "pull_policy",
+    "read_only",
+    "restart",
+    "scale",
+    "secrets",
+    "shm_size",
+    "stdin_open",
+    "stop_grace_period",
+    "stop_signal",
+    "storage_opt",
+    "tmpfs",
+    "tty",
+    "ulimits",
+    "user",
+    "volumes",
+    "working_dir",
+];
+
+/// Looked at by `risks` one by one.
+const LOOKED_AT: &[&str] =
+    &["privileged", "devices", "cap_add", "network_mode", "pid", "ipc", "userns_mode", "security_opt"];
 
 /// Everything in `model` that reaches beyond its containers, service by
 /// service in the file's order.
@@ -140,14 +229,35 @@ pub fn risks(model: &ComposeModel) -> Vec<Risk> {
                 found.push(Risk::HostNamespace { service: name(), namespace });
             }
         }
+        // Another container's namespace: what that container may, this one
+        // may too; one of the same project is looked at itself.
+        for (key, mode) in
+            [("network_mode", &service.network_mode), ("pid", &service.pid), ("ipc", &service.ipc)]
+        {
+            if let Some(mode) = mode.as_deref().filter(|mode| mode.starts_with("container:")) {
+                found.push(Risk::Unusual { service: name(), setting: format!("{key}: {mode}") });
+            }
+        }
         if !service.devices.is_empty() {
             found.push(Risk::Devices { service: name(), devices: service.devices.clone() });
         }
         if !service.cap_add.is_empty() {
             found.push(Risk::Capabilities { service: name(), capabilities: service.cap_add.clone() });
         }
-        if service.security_opt.iter().any(|option| option.ends_with("unconfined")) {
+        // Only `no-new-privileges` adds confinement; anything else (a profile
+        // of its own, a label turned off) may take it away.
+        let confining =
+            |option: &String| matches!(option.as_str(), "no-new-privileges" | "no-new-privileges:true");
+        if service.security_opt.iter().any(|option| !confining(option)) {
             found.push(Risk::Unconfined { service: name() });
+        }
+        for key in &service.keys {
+            let known = HARMLESS.contains(&key.as_str())
+                || LOOKED_AT.contains(&key.as_str())
+                || key.starts_with("x-");
+            if !known {
+                found.push(Risk::Unusual { service: name(), setting: key.clone() });
+            }
         }
     }
     found
@@ -168,6 +278,57 @@ mod tests {
             }],
         };
         assert!(risks(&model).is_empty());
+    }
+
+    #[test]
+    fn settings_not_known_as_harmless_are_named() {
+        let keys = |keys: &[&str]| keys.iter().map(|k| (*k).to_owned()).collect::<Vec<_>>();
+        let model = ComposeModel {
+            services: vec![
+                ComposeService {
+                    name: "web".into(),
+                    keys: keys(&[
+                        "image",
+                        "ports",
+                        "volumes",
+                        "networks",
+                        "restart",
+                        "x-note",
+                        "security_opt",
+                    ]),
+                    security_opt: vec!["no-new-privileges:true".into()],
+                    ..ComposeService::default()
+                },
+                ComposeService {
+                    name: "odd".into(),
+                    keys: keys(&[
+                        "image",
+                        "cgroup_parent",
+                        "device_cgroup_rules",
+                        "volumes_from",
+                        "network_mode",
+                    ]),
+                    network_mode: Some("container:portainer".into()),
+                    security_opt: vec!["seccomp=/volume1/docker/odd/profile.json".into()],
+                    ..ComposeService::default()
+                },
+            ],
+        };
+
+        let named: Vec<_> =
+            risks(&model).iter().map(|r| (r.service().to_owned(), r.kind(), r.detail())).collect();
+
+        assert_eq!(
+            named,
+            [
+                ("odd".to_owned(), "unusual", Some("network_mode: container:portainer".to_owned())),
+                ("odd".to_owned(), "unconfined", None),
+                ("odd".to_owned(), "unusual", Some("cgroup_parent".to_owned())),
+                ("odd".to_owned(), "unusual", Some("device_cgroup_rules".to_owned())),
+                ("odd".to_owned(), "unusual", Some("volumes_from".to_owned())),
+            ],
+            "the plain service asks nothing"
+        );
     }
 
     #[test]

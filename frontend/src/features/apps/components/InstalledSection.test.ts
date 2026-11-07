@@ -84,7 +84,7 @@ describe('the installed apps', () => {
       .trigger('click')
     await flushPromises()
     expect(retry).toHaveBeenCalledWith('immich')
-    expect(update).toHaveBeenCalledWith('jellyfin', false)
+    expect(update).toHaveBeenCalledWith('jellyfin', null)
   })
 
   it('open the web interface on the address the NAS was reached at', () => {
