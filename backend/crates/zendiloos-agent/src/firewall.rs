@@ -250,9 +250,11 @@ impl Firewall {
         Err(OperationError::Failed(line.unwrap_or("nft -c failed").trim().to_owned()))
     }
 
-    /// The unit loads the file.
+    /// The unit loads the file (reloads it when it ran already).
     async fn load(&self) -> Result<(), OperationError> {
-        zendiloos_exec::run(&self.systemctl, &["restart", UNIT], LIMITS).await?.success(&self.systemctl)?;
+        zendiloos_exec::run(&self.systemctl, &["reload-or-restart", UNIT], LIMITS)
+            .await?
+            .success(&self.systemctl)?;
         Ok(())
     }
 

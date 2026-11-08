@@ -2,10 +2,16 @@
 set -e
 
 case "$1" in
+    remove)
+        # The firewall's rules go with the package; nothing would keep them.
+        if command -v nft >/dev/null 2>&1; then
+            nft delete table inet zendiloos_firewall 2>/dev/null || true
+        fi
+        ;;
     purge)
         # Generated at installation; the database in /var/lib/zendiloos is
         # kept, since it holds the administrators' work.
-        rm -rf /etc/zendiloos/tls /etc/zendiloos/nginx
+        rm -rf /etc/zendiloos/tls /etc/zendiloos/nginx /etc/zendiloos/firewall
         ;;
 esac
 

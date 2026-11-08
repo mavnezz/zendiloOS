@@ -179,7 +179,7 @@ async fn rules_stay_once_confirmed() {
     assert!(firewall.confirm().await.is_err(), "nothing waits");
     assert_eq!(
         calls(dir.path()),
-        ["restart zendiloos-firewall.service", "restart zendiloos-firewall.service"]
+        ["reload-or-restart zendiloos-firewall.service", "reload-or-restart zendiloos-firewall.service"]
     );
     // Off again: the table goes.
     firewall.apply(None, None).await.unwrap();

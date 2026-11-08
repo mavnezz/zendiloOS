@@ -61,6 +61,10 @@ ExecStart=/usr/libexec/zendiloos/zendiloos-agent
 #   (systemd-run: umount, rmdir, this binary as `power-off-drive`, which
 #   writes to sysfs), all outside this sandbox, which only sees them;
 #   /run stays read-only here, so no mount of its own hides theirs.
+# - the firewall: its rules go to /etc/zendiloos/firewall, are checked
+#   with `nft -c` in a transient unit and loaded by
+#   zendiloos-firewall.service, both in the host's network namespace,
+#   outside this sandbox (which has a network of its own);
 # The contents of volumes are the files agent's (zendiloos-files.service).
 NoNewPrivileges=yes
 CapabilityBoundingSet=CAP_SYS_RAWIO CAP_SYS_ADMIN CAP_CHOWN CAP_DAC_READ_SEARCH
