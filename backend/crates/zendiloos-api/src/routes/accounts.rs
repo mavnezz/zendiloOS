@@ -56,12 +56,15 @@ pub struct Account {
     pub password_locked: bool,
     /// When its password was last set, in Unix seconds.
     pub password_changed_at: i64,
+    /// Its sign-ins to the web interface ask for a code from an
+    /// authenticator app.
+    pub two_factor: bool,
     pub created_at: i64,
     pub updated_at: i64,
 }
 
-impl From<identity::Account> for Account {
-    fn from(account: identity::Account) -> Self {
+impl Account {
+    fn new(account: identity::Account, two_factor: bool) -> Self {
         Self {
             id: account.id.get(),
             name: account.name.to_string(),
@@ -73,6 +76,7 @@ impl From<identity::Account> for Account {
             password_change_required: account.password_change_required,
             password_locked: account.password_locked,
             password_changed_at: account.password_changed_at.unix_seconds(),
+            two_factor,
             created_at: account.created_at.unix_seconds(),
             updated_at: account.updated_at.unix_seconds(),
         }
@@ -92,7 +96,16 @@ impl From<identity::Account> for Account {
 )]
 async fn list_accounts(auth: Auth, State(state): State<ApiState>) -> Result<Json<Vec<Account>>, ApiError> {
     let accounts = state.identity.list_accounts.execute(&auth.0).await?;
-    Ok(Json(accounts.into_iter().map(Account::from).collect()))
+    let two_factor = state.identity.two_factor_accounts.execute(&auth.0).await?;
+    Ok(Json(
+        accounts
+            .into_iter()
+            .map(|a| {
+                let on = two_factor.contains(&a.id);
+                Account::new(a, on)
+            })
+            .collect(),
+    ))
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -144,7 +157,7 @@ async fn create_account(
         password_locked: request.password_locked,
     };
     let account = state.identity.create_account.execute(&auth.0, input, &client).await?;
-    Ok((StatusCode::CREATED, Json(account.into())))
+    Ok((StatusCode::CREATED, Json(Account::new(account, false))))
 }
 
 /// Absent fields stay as they are.
@@ -195,7 +208,8 @@ async fn update_account(
     };
     let account =
         state.identity.update_account.execute(&auth.0, AccountId::new(id), changes, &client).await?;
-    Ok(Json(account.into()))
+    let two_factor = state.identity.two_factor_accounts.execute(&auth.0).await?.contains(&account.id);
+    Ok(Json(Account::new(account, two_factor)))
 }
 
 /// Deletes another account with its Linux user. Its files stay.

@@ -4,13 +4,14 @@
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use axum_extra::extract::CookieJar;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 use zendiloos_identity::application::commands::{ChangePasswordInput, LoginInput, SetupInput};
-use zendiloos_identity::application::{AuthContext, SignedIn};
+use zendiloos_identity::application::{AuthContext, LoginOutcome, SignedIn};
 use zendiloos_identity::domain::{Language, Layout, Preferences, Role, Theme, Wallpaper};
 use zendiloos_kernel::Secret;
 
@@ -101,7 +102,11 @@ impl From<&AuthContext> for SessionInfo {
     }
 }
 
-fn signed_in(jar: CookieJar, signed_in: &SignedIn, state: &ApiState) -> (CookieJar, axum::Json<SessionInfo>) {
+pub(super) fn signed_in(
+    jar: CookieJar,
+    signed_in: &SignedIn,
+    state: &ApiState,
+) -> (CookieJar, axum::Json<SessionInfo>) {
     (
         jar.add(session_cookie(signed_in, state.secure_cookies)),
         axum::Json(SessionInfo::from(&signed_in.session)),
@@ -167,7 +172,17 @@ pub struct LoginRequest {
     pub password: String,
 }
 
-/// Signs in with name and password.
+/// The password checked out; the account's second factor comes next.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SecondFactorChallenge {
+    /// Send it with the code to `/auth/login/second-factor`.
+    pub token: String,
+    /// Until when the code is waited for, as Unix time in seconds.
+    pub expires_at: i64,
+}
+
+/// Signs in with name and password. An account with a second factor gets
+/// no session yet: the code follows at `/auth/login/second-factor`.
 #[utoipa::path(
     post,
     path = "/auth/login",
@@ -175,6 +190,7 @@ pub struct LoginRequest {
     request_body = LoginRequest,
     responses(
         (status = OK, body = SessionInfo, description = "Signed in; the session cookie is set."),
+        (status = ACCEPTED, body = SecondFactorChallenge, description = "The password checked out; a code from the authenticator app is asked for."),
         (status = UNAUTHORIZED, body = Problem, description = "`invalid_credentials`"),
         (status = FORBIDDEN, body = Problem, description = "`account_disabled`, `csrf_rejected`"),
         (status = TOO_MANY_REQUESTS, body = Problem, description = "`too_many_attempts`"),
@@ -186,10 +202,18 @@ async fn login(
     Client(client): Client,
     jar: CookieJar,
     ApiJson(request): ApiJson<LoginRequest>,
-) -> Result<(CookieJar, axum::Json<SessionInfo>), ApiError> {
+) -> Result<Response, ApiError> {
     let input = LoginInput { name: request.name, password: Secret::new(request.password) };
-    let session = state.identity.login.execute(input, &client).await?;
-    Ok(signed_in(jar, &session, &state))
+    Ok(match state.identity.login.execute(input, &client).await? {
+        LoginOutcome::SignedIn(session) => signed_in(jar, &session, &state).into_response(),
+        LoginOutcome::SecondFactor(challenge) => {
+            let challenge = SecondFactorChallenge {
+                token: challenge.token.expose().to_owned(),
+                expires_at: challenge.expires_at.unix_seconds(),
+            };
+            (StatusCode::ACCEPTED, axum::Json(challenge)).into_response()
+        }
+    })
 }
 
 /// Ends the current session.

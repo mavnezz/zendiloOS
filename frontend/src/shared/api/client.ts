@@ -39,7 +39,11 @@ export function csrfToken(): string | undefined {
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
 
 /** 401 is the normal answer here and says nothing about an existing session. */
-const UNAUTHENTICATED_IS_EXPECTED = ['/api/v1/auth/login', '/api/v1/auth/session']
+const UNAUTHENTICATED_IS_EXPECTED = [
+  '/api/v1/auth/login',
+  '/api/v1/auth/login/second-factor',
+  '/api/v1/auth/session',
+]
 
 const sessionMiddleware: Middleware = {
   onRequest({ request }) {

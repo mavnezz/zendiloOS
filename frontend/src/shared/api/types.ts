@@ -4,6 +4,9 @@ import type { components } from './schema'
 type Schemas = components['schemas']
 
 export type SessionInfo = Schemas['SessionInfo']
+export type SecondFactorChallenge = Schemas['SecondFactorChallenge']
+export type TwoFactorStatus = Schemas['TwoFactorStatus']
+export type TwoFactorSetup = Schemas['TwoFactorSetup']
 export type SetupRequest = Schemas['SetupRequest']
 export type SetupStatus = Schemas['SetupStatus']
 export type SystemInfo = Schemas['SystemInfo']

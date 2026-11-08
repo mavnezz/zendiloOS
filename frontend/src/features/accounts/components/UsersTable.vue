@@ -1,5 +1,14 @@
 <script setup lang="ts">
-import { KeyRound, ListFilter, Pencil, Power, Trash2, UserPlus } from 'lucide-vue-next'
+import {
+  KeyRound,
+  ListFilter,
+  Pencil,
+  Power,
+  ShieldCheck,
+  ShieldOff,
+  Trash2,
+  UserPlus,
+} from 'lucide-vue-next'
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
@@ -31,6 +40,7 @@ const creating = ref(false)
 const editing = ref<Account | null>(null)
 const resetting = ref<Account | null>(null)
 const deleting = ref<Account | null>(null)
+const resettingTwoFactor = ref<Account | null>(null)
 
 const isOwn = (account: Account) => account.id === props.ownAccountId
 const shown = computed(() => {
@@ -61,6 +71,12 @@ function actionsFor(account: Account): Action[] {
     { id: 'edit', label: t('users.edit'), icon: Pencil },
     { id: 'password', label: t('users.resetPassword'), icon: KeyRound, disabled: own },
     {
+      id: 'two-factor',
+      label: t('users.resetTwoFactor'),
+      icon: ShieldOff,
+      disabled: own || !account.two_factor,
+    },
+    {
       id: 'toggle',
       label: account.disabled ? t('people.enable') : t('people.disable'),
       icon: Power,
@@ -73,6 +89,7 @@ function actionsFor(account: Account): Action[] {
 async function run(account: Account, action: string): Promise<void> {
   if (action === 'edit') editing.value = account
   else if (action === 'password') resetting.value = account
+  else if (action === 'two-factor') resettingTwoFactor.value = account
   else if (action === 'delete') deleting.value = account
   else if (action === 'toggle') {
     try {
@@ -80,6 +97,17 @@ async function run(account: Account, action: string): Promise<void> {
     } catch (failure) {
       notifications.notify('error', t('people.toggleFailed'), problemMessage(failure))
     }
+  }
+}
+
+async function resetTwoFactor(): Promise<void> {
+  const account = resettingTwoFactor.value
+  if (!account) return
+  try {
+    await accountActions.resetTwoFactor(account.id)
+    notifications.notify('success', t('users.twoFactorReset', { name: account.name }))
+  } catch (failure) {
+    notifications.notify('error', t('users.resetTwoFactorFailed'), problemMessage(failure))
   }
 }
 
@@ -138,6 +166,15 @@ async function remove(): Promise<void> {
                   <span class="flex items-center gap-1.5">
                     <span class="truncate font-medium">{{ account.name }}</span>
                     <Badge v-if="isOwn(account)">{{ t('people.me') }}</Badge>
+                    <Badge
+                      v-if="account.two_factor"
+                      variant="success"
+                      :title="t('users.twoFactorHint')"
+                      data-testid="two-factor"
+                    >
+                      <ShieldCheck />
+                      {{ t('users.twoFactor') }}
+                    </Badge>
                   </span>
                   <span
                     v-if="account.full_name"
@@ -184,6 +221,16 @@ async function remove(): Promise<void> {
       :open="true"
       :account="resetting"
       @update:open="(open) => !open && (resetting = null)"
+    />
+    <ConfirmDialog
+      :open="resettingTwoFactor !== null"
+      :title="t('users.resetTwoFactorTitle', { name: resettingTwoFactor?.name })"
+      :description="t('users.resetTwoFactorDescription', { name: resettingTwoFactor?.name })"
+      :confirm-label="t('users.resetTwoFactor')"
+      :cancel-label="t('desktop.cancel')"
+      destructive
+      @update:open="(open) => !open && (resettingTwoFactor = null)"
+      @confirm="resetTwoFactor"
     />
     <ConfirmDialog
       :open="deleting !== null"

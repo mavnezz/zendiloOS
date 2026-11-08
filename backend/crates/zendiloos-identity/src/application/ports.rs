@@ -7,8 +7,8 @@ use zendiloos_kernel::{Actor, PortError, RequestContext, Secret, Timestamp};
 
 use crate::domain::{
     Account, AccountId, AccountName, AddressRange, BlockedAddress, Group, GroupId, GroupName, NewAccount,
-    NewGroup, NewSession, PasswordHash, PasswordPolicy, Preferences, SecuritySettings, Session,
-    SessionDetails, SessionId, SetupCode, TokenHash,
+    NewGroup, NewSession, PasswordHash, PasswordPolicy, Preferences, RecoveryHash, SecuritySettings, Session,
+    SessionDetails, SessionId, SetupCode, TokenHash, TotpSecret, TwoFactor,
 };
 
 #[async_trait]
@@ -211,6 +211,41 @@ pub trait SetupCodes: Send + Sync {
 
     /// Ends an open setup; a no-op if it is not open.
     async fn close(&self) -> Result<(), PortError>;
+}
+
+/// Each account's second factor: the secret of its authenticator app and
+/// what is left of its recovery codes.
+#[async_trait]
+pub trait TwoFactorRepository: Send + Sync {
+    /// `None` for an account that never set one up.
+    async fn find(&self, account: AccountId) -> Result<Option<TwoFactor>, PortError>;
+
+    /// Stores `two_factor`, replacing what the account had.
+    async fn save(&self, two_factor: &TwoFactor) -> Result<(), PortError>;
+
+    /// Forgets the account's second factor; a no-op if it has none.
+    async fn delete(&self, account: AccountId) -> Result<(), PortError>;
+
+    /// The accounts whose sign-ins ask for a second factor.
+    async fn enabled(&self) -> Result<Vec<AccountId>, PortError>;
+}
+
+/// The arithmetic and randomness of second factors. Implementations must
+/// use a cryptographically secure random source.
+pub trait OneTimeCodes: Send + Sync {
+    /// A new secret for an authenticator app.
+    fn new_secret(&self) -> TotpSecret;
+
+    /// The code an app shows for `secret` in time step `step` (RFC 6238:
+    /// HMAC-SHA-1, six digits).
+    fn code(&self, secret: &TotpSecret, step: u64) -> String;
+
+    /// New recovery codes, normalized (no dash), as many as
+    /// [`RECOVERY_CODES`](crate::domain::RECOVERY_CODES).
+    fn recovery_codes(&self) -> Vec<Secret>;
+
+    /// What is kept of a normalized recovery code.
+    fn digest(&self, code: &str) -> RecoveryHash;
 }
 
 /// Each account's [`Preferences`].

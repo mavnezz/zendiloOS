@@ -10,6 +10,7 @@ mod session;
 mod setup_code;
 pub mod text;
 mod throttle;
+mod two_factor;
 
 pub use account::{Account, AccountId, AccountName, InvalidAccountName, NewAccount};
 pub use audit::AuditAction;
@@ -28,3 +29,8 @@ pub use security::{
 pub use session::{NewSession, Session, SessionDetails, SessionId, SessionPolicy, TokenHash};
 pub use setup_code::SetupCode;
 pub use throttle::{LoginThrottle, ThrottleKey, ThrottlePolicy};
+pub use two_factor::{
+    DIGITS, DRIFT_STEPS, PERIOD_SECONDS, RECOVERY_ALPHABET, RECOVERY_CODE_LEN, RECOVERY_CODES, RecoveryHash,
+    SECRET_BYTES, TotpSecret, TwoFactor, TypedCode, matching_step, otpauth_uri, show_recovery_code,
+    time_step,
+};

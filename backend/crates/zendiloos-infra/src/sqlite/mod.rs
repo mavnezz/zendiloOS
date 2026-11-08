@@ -24,6 +24,7 @@ mod sessions;
 mod share_projects;
 mod shares;
 mod system_updates;
+mod two_factor;
 mod update_settings;
 
 #[cfg(test)]
@@ -58,6 +59,7 @@ pub use sessions::SqliteSessions;
 pub use share_projects::SqliteShareProjects;
 pub use shares::SqliteShares;
 pub use system_updates::SqliteSystemUpdates;
+pub use two_factor::SqliteTwoFactor;
 pub use update_settings::SqliteUpdateSettings;
 
 static MIGRATOR: Migrator = sqlx::migrate!();

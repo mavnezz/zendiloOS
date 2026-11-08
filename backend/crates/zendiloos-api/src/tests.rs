@@ -1581,11 +1581,12 @@ async fn a_wrong_current_password_is_not_mistaken_for_a_lost_session() {
 
 /// Routes anyone may call. Everything else must require a session; this
 /// guards against a handler that forgets its `Auth` argument.
-const PUBLIC: [(&str, &str); 4] = [
+const PUBLIC: [(&str, &str); 5] = [
     ("GET", "/api/v1/health"),
     ("GET", "/api/v1/setup"),
     ("POST", "/api/v1/setup"),
     ("POST", "/api/v1/auth/login"),
+    ("POST", "/api/v1/auth/login/second-factor"),
 ];
 
 #[tokio::test]
@@ -1625,6 +1626,7 @@ fn openapi_documents_every_route() {
             "/api/v1/accounts",
             "/api/v1/accounts/{id}",
             "/api/v1/accounts/{id}/password",
+            "/api/v1/accounts/{id}/two-factor",
             "/api/v1/apps/catalog",
             "/api/v1/apps/catalog/{source}/{app}",
             "/api/v1/apps/catalog/{source}/{app}/compose",
@@ -1641,9 +1643,15 @@ fn openapi_documents_every_route() {
             "/api/v1/apps/sources/refresh",
             "/api/v1/apps/sources/{id}",
             "/api/v1/auth/login",
+            "/api/v1/auth/login/second-factor",
             "/api/v1/auth/logout",
             "/api/v1/auth/password",
             "/api/v1/auth/session",
+            "/api/v1/auth/two-factor",
+            "/api/v1/auth/two-factor/confirm",
+            "/api/v1/auth/two-factor/disable",
+            "/api/v1/auth/two-factor/recovery-codes",
+            "/api/v1/auth/two-factor/setup",
             "/api/v1/certificates",
             "/api/v1/certificates/accounts",
             "/api/v1/certificates/accounts/{id}",

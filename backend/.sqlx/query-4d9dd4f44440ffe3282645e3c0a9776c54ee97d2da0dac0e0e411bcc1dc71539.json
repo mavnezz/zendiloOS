@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO account_two_factor (account_id, secret, pending_secret, last_step, recovery_codes, enabled_at)\n             VALUES (?, ?, ?, ?, ?, ?)\n             ON CONFLICT (account_id) DO UPDATE SET secret = excluded.secret,\n                pending_secret = excluded.pending_secret, last_step = excluded.last_step,\n                recovery_codes = excluded.recovery_codes, enabled_at = excluded.enabled_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "4d9dd4f44440ffe3282645e3c0a9776c54ee97d2da0dac0e0e411bcc1dc71539"
+}

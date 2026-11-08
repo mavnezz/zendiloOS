@@ -67,6 +67,20 @@ pub enum IdentityError {
     BlockNotFound,
     #[error("there is no such session")]
     SessionNotFound,
+    /// The one-time or recovery code given is wrong, or taken already.
+    #[error("the code is wrong")]
+    InvalidCode,
+    /// The sign-in waiting for its second factor is unknown or over: sign in
+    /// again from the start.
+    #[error("the sign-in has expired; sign in again")]
+    SignInExpired,
+    #[error("two-factor sign-in is on already")]
+    TwoFactorOn,
+    #[error("two-factor sign-in is not on")]
+    TwoFactorOff,
+    /// A code to confirm is given before a setup was begun.
+    #[error("set up two-factor sign-in first")]
+    NoTwoFactorSetup,
     #[error(transparent)]
     Port(#[from] PortError),
 }

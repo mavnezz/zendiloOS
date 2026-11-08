@@ -20,6 +20,11 @@ const CODES = [
   'acme_installed',
   'acme_not_installed',
   'web_server_failed',
+  'invalid_code',
+  'sign_in_expired',
+  'two_factor_on',
+  'two_factor_off',
+  'no_two_factor_setup',
 ]
 
 describe('problem messages', () => {

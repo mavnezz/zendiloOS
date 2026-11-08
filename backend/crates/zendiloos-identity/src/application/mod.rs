@@ -17,8 +17,8 @@ use crate::domain::{AccountId, AccountName, Permission, Role, SessionId, Session
 use context::Context;
 pub use error::IdentityError;
 use ports::{
-    AccountRepository, GroupObserver, GroupRepository, PasswordHasher, PreferenceRepository,
-    SecurityRepository, SessionRepository, SessionTokens, SetupCodes, SystemAccounts,
+    AccountRepository, GroupObserver, GroupRepository, OneTimeCodes, PasswordHasher, PreferenceRepository,
+    SecurityRepository, SessionRepository, SessionTokens, SetupCodes, SystemAccounts, TwoFactorRepository,
 };
 
 /// Adapters for every port of this context, plugged in by the composition
@@ -32,6 +32,8 @@ pub struct IdentityPorts {
     pub sessions: Arc<dyn SessionRepository>,
     pub security: Arc<dyn SecurityRepository>,
     pub preferences: Arc<dyn PreferenceRepository>,
+    pub two_factor: Arc<dyn TwoFactorRepository>,
+    pub codes: Arc<dyn OneTimeCodes>,
     pub system: Arc<dyn SystemAccounts>,
     pub hasher: Arc<dyn PasswordHasher>,
     pub tokens: Arc<dyn SessionTokens>,
@@ -55,6 +57,7 @@ pub struct IdentityUseCases {
     pub prepare_setup: commands::PrepareSetup,
     pub complete_setup: commands::CompleteSetup,
     pub login: commands::Login,
+    pub complete_sign_in: commands::CompleteSignIn,
     pub logout: commands::Logout,
     pub change_password: commands::ChangePassword,
     pub purge_expired_sessions: commands::PurgeExpiredSessions,
@@ -81,6 +84,13 @@ pub struct IdentityUseCases {
     pub check_address: queries::CheckAddress,
     pub sessions: queries::ListSessions,
     pub end_session: commands::EndSession,
+    pub two_factor: queries::GetTwoFactor,
+    pub two_factor_accounts: queries::ListTwoFactorAccounts,
+    pub begin_two_factor: commands::BeginTwoFactor,
+    pub confirm_two_factor: commands::ConfirmTwoFactor,
+    pub disable_two_factor: commands::DisableTwoFactor,
+    pub renew_recovery_codes: commands::RenewRecoveryCodes,
+    pub reset_two_factor: commands::ResetTwoFactor,
 }
 
 impl IdentityUseCases {
@@ -90,6 +100,7 @@ impl IdentityUseCases {
             prepare_setup: commands::PrepareSetup::new(Arc::clone(&context)),
             complete_setup: commands::CompleteSetup::new(Arc::clone(&context)),
             login: commands::Login::new(Arc::clone(&context)),
+            complete_sign_in: commands::CompleteSignIn::new(Arc::clone(&context)),
             logout: commands::Logout::new(Arc::clone(&context)),
             change_password: commands::ChangePassword::new(Arc::clone(&context)),
             purge_expired_sessions: commands::PurgeExpiredSessions::new(Arc::clone(&context)),
@@ -115,6 +126,13 @@ impl IdentityUseCases {
             check_address: queries::CheckAddress::new(Arc::clone(&context)),
             sessions: queries::ListSessions::new(Arc::clone(&context)),
             end_session: commands::EndSession::new(Arc::clone(&context)),
+            two_factor: queries::GetTwoFactor::new(Arc::clone(&context)),
+            two_factor_accounts: queries::ListTwoFactorAccounts::new(Arc::clone(&context)),
+            begin_two_factor: commands::BeginTwoFactor::new(Arc::clone(&context)),
+            confirm_two_factor: commands::ConfirmTwoFactor::new(Arc::clone(&context)),
+            disable_two_factor: commands::DisableTwoFactor::new(Arc::clone(&context)),
+            renew_recovery_codes: commands::RenewRecoveryCodes::new(Arc::clone(&context)),
+            reset_two_factor: commands::ResetTwoFactor::new(Arc::clone(&context)),
             authenticate: queries::Authenticate::new(context),
         }
     }
@@ -129,6 +147,23 @@ pub struct AccountSummary {
     pub role: Role,
     pub password_change_required: bool,
     pub password_locked: bool,
+}
+
+/// What a password that checked out leads to.
+#[derive(Debug)]
+pub enum LoginOutcome {
+    SignedIn(SignedIn),
+    /// The account signs in with a second factor: the code goes with this
+    /// token to [`commands::CompleteSignIn`].
+    SecondFactor(SecondFactorChallenge),
+}
+
+/// A sign-in waiting for its second factor.
+#[derive(Debug)]
+pub struct SecondFactorChallenge {
+    /// Given back with the code; known to this client only.
+    pub token: Secret,
+    pub expires_at: Timestamp,
 }
 
 /// A session that was just started. The token goes into the cookie and is

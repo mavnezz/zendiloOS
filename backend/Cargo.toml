@@ -49,6 +49,9 @@ getrandom = "0.4"
 # template's values and leaves the rest of the file as written. The same
 # parser the catalog's YAML reader (serde-saphyr) is built on.
 granit-parser = "2.1"
+# Two-factor sign-in: TOTP (RFC 6238) is HMAC-SHA-1, as authenticator apps compute it.
+hmac = "0.13"
+sha1 = "0.11"
 http-body-util = "0.1"
 # Notification channels: webhooks over hyper's own client, mail with
 # lettre; TLS by rustls with ring and the system's certificates.

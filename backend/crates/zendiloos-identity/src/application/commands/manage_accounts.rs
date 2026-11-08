@@ -247,7 +247,9 @@ impl DeleteAccount {
             return Err(IdentityError::LastAdmin);
         }
         c.ports.system.delete_user(&account.name, request).await?;
+        c.ports.two_factor.delete(id).await?;
         c.ports.accounts.delete(id).await?;
+        c.end_sign_ins_of(id);
 
         let entry = AuditEntry::new(now, AuditAction::AccountDelete.as_str(), Outcome::Success, request);
         c.audit(entry.by(&auth.actor()).target(account.name.as_str())).await?;

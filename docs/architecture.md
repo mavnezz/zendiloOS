@@ -415,6 +415,7 @@ Loopback, `veth`, `tun`/`tap` and Docker's bridges are left out.
 | Attacker | Goal | Main countermeasures |
 |---|---|---|
 | Device on the LAN without an account | log in, take over during initial setup | throttling, setup code (none on a machine installed from the ISO, whose setup is open to the own network only: **accepted**, as on other NAS systems, between installing and setting it up), no default password, TLS |
+| Someone who has an account's password (phished, reused elsewhere, seen) | sign in to the web interface as that account | two-factor sign-in per account (4.5): a code from an authenticator app, or a recovery code, after the password; codes throttled like passwords. **Accepted:** SMB and NFS keep the password alone, as they have no second factor; the codes guard the web interface, where accounts and the system are changed |
 | Signed-in user without admin rights | other users' files, privilege escalation | server-side permission checks, file access with the user's own kernel permissions |
 | Web page in the same browser | CSRF, WebSocket hijacking | `SameSite=Strict`, CSRF header, origin check including the WebSocket upgrade, strict CSP |
 | Compromised `zendiloosd` | root | the agent offers only validated domain operations, no generic execution; system disk protected. **Accepted limit:** an administrator may run any Compose project and give an app the Docker socket (4.9), and the agent carries that out as asked, so whoever controls `zendiloosd` controls Docker and with it the machine; an administrator's account is as good as root, as on other NAS systems |
@@ -427,7 +428,7 @@ SMB, the file manager, and later NFS and apps. "Admin" is a role, not a
 separate account.
 
 - The database is authoritative (role, groups, Argon2id hash for the web
-  login, preferences).
+  login, the second factor of the web login, preferences).
 - For every account the agent creates a Linux account: UID from 2000, group
   `zendiloos-users`, shell `nologin`, no home directory, locked Linux
   password. Files on shares therefore belong to the right user.
@@ -865,7 +866,8 @@ TLS is rustls with ring and the system's certificate authorities
   minutes by default, or off), for passwords and setup codes alike. An
   attempt counts as failed from its start until it ends otherwise, so
   attempts sent at once get no more checks than attempts one after
-  another. Plus `limit_req` in nginx for login, setup and password changes.
+  another. Plus `limit_req` in nginx for login, the second sign-in step, setup,
+  password changes and the two-factor changes that check the password.
 - **Blocked addresses:** an address with too many failed logins (10 within
   5 minutes by default) is blocked from the whole API for a day, or until
   lifted; administrators block addresses and networks by hand too. Every
@@ -904,7 +906,49 @@ TLS is rustls with ring and the system's certificate authorities
   refusal. The setup, or an admin found at startup, removes the marker. A
   NAS installed with apt on an existing Debian (possibly reachable from the
   internet) never gets the marker and keeps the code.
-- **[Later]** TOTP second factor, passkeys.
+- **Two-factor sign-in (TOTP):** each account can turn it on from its
+  account menu; it applies to the web interface only, not to SMB or NFS.
+  RFC 6238 as authenticator apps compute it: HMAC-SHA-1, six digits,
+  30-second steps, one step of drift either way, a 160-bit secret from the
+  operating system's random source, shown as an `otpauth://totp/zendiloOS:
+  <name>?secret=…&issuer=zendiloOS` QR code and as base32 for typing in.
+  Setting it up takes the account's password, so a session alone (left
+  open, taken over) cannot turn it on with someone else's phone and lock
+  the owner out; a wrong password counts against the account lock and the
+  address block like a failed login (`wrong_password`). A secret being set
+  up waits for its first code, which turns it on; until then the password
+  alone signs in. The time step of the last code taken is
+  stored, and a code of that step or an earlier one is refused, so no code
+  signs in twice, not even two sign-ins at once (the check and the update
+  run under the lock of account changes). Ten recovery codes (ten
+  characters from 31 that cannot be mistaken for one another, about 49
+  bits each) come with it, are shown once and kept as SHA-256 digests; each
+  signs in once, and new ones (for the password and a code from the app)
+  replace the old.
+  The secret is stored as it is in `zendiloosd`'s private database
+  (`account_two_factor`, 0600), as the server must compute codes from it;
+  whoever reads that database has the secrets as well as the digests, which
+  is why the digests need no salt.
+- **Sign-in with a second factor:** the right password starts no session.
+  `POST /auth/login` answers 202 with a random token (256 bits, as for
+  sessions; only its hash is kept), and the sign-in waits in memory for at
+  most five minutes, bound to the account and to the address the password
+  came from (1000 at most; the oldest go first). The code goes to
+  `POST /auth/login/second-factor` with the token. A wrong code counts
+  against the account lock and the address block like a wrong password,
+  and the password step does not clear the account's failures, so knowing
+  the password gives no more guesses; three wrong codes end the sign-in.
+  Under the lock of account changes the second step reads the account and
+  its second factor again: a password changed or reset, a second factor
+  reset or set up anew, or the account deleted meanwhile end the sign-in
+  (`sign_in_expired`), a disabled account is refused. Turning it off takes
+  the password and a code (or a recovery code); administrators reset it for
+  someone who lost their phone and their recovery codes (audited,
+  `identity.two_factor_reset`), and the users page shows who has it on.
+  Turning it on or off, a reset and new recovery codes are audited; every
+  one ends the account's other sessions (a reset all of them) and its
+  waiting sign-ins. A restart of `zendiloosd` ends waiting sign-ins too.
+- **[Later]** passkeys.
 
 ### 4.6 Agent Hardening
 

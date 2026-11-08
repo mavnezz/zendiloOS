@@ -11,14 +11,16 @@ use zendiloos_kernel::{AuditEntry, AuditLog, Clock, PortError, Secret, Timestamp
 use zendiloos_kernel::RequestContext;
 
 use crate::application::ports::{
-    AccountRepository, Creation, GroupObserver, GroupRepository, IssuedToken, PasswordHasher,
+    AccountRepository, Creation, GroupObserver, GroupRepository, IssuedToken, OneTimeCodes, PasswordHasher,
     PreferenceRepository, SecurityRepository, SessionRepository, SessionTokens, SetupCodes, SystemAccounts,
+    TwoFactorRepository,
 };
 use crate::application::{IdentityConfig, IdentityPorts, IdentityUseCases};
 use crate::domain::{
     Account, AccountId, AccountName, AddressRange, BlockedAddress, Group, GroupId, GroupName, NewAccount,
-    NewGroup, NewSession, PasswordHash, Preferences, Role, SecuritySettings, Session, SessionDetails,
-    SessionId, SetupCode, TokenHash,
+    NewGroup, NewSession, PasswordHash, Preferences, RECOVERY_ALPHABET, RECOVERY_CODE_LEN, RECOVERY_CODES,
+    RecoveryHash, Role, SECRET_BYTES, SecuritySettings, Session, SessionDetails, SessionId, SetupCode,
+    TokenHash, TotpSecret, TwoFactor, time_step,
 };
 
 /// The code [`MemorySetupCodes`] issues.
@@ -591,6 +593,88 @@ impl SetupCodes for MemorySetupCodes {
 }
 
 #[derive(Default)]
+pub struct InMemoryTwoFactor(Mutex<std::collections::HashMap<AccountId, TwoFactor>>);
+
+impl InMemoryTwoFactor {
+    pub fn get(&self, account: AccountId) -> Option<TwoFactor> {
+        self.0.lock().unwrap().get(&account).cloned()
+    }
+}
+
+#[async_trait]
+impl TwoFactorRepository for InMemoryTwoFactor {
+    async fn find(&self, account: AccountId) -> Result<Option<TwoFactor>, PortError> {
+        Ok(self.get(account))
+    }
+
+    async fn save(&self, two_factor: &TwoFactor) -> Result<(), PortError> {
+        self.0.lock().unwrap().insert(two_factor.account_id, two_factor.clone());
+        Ok(())
+    }
+
+    async fn delete(&self, account: AccountId) -> Result<(), PortError> {
+        self.0.lock().unwrap().remove(&account);
+        Ok(())
+    }
+
+    async fn enabled(&self) -> Result<Vec<AccountId>, PortError> {
+        let mut ids: Vec<AccountId> =
+            self.0.lock().unwrap().values().filter(|t| t.is_on()).map(|t| t.account_id).collect();
+        ids.sort_by_key(|id| id.get());
+        Ok(ids)
+    }
+}
+
+/// Codes anyone can work out, instead of HMAC: secrets filled with 1, 2, …,
+/// [`FakeCodes::code_for`] for a step's code, recovery codes counting up
+/// and their digests as `h:<code>`.
+#[derive(Default)]
+pub struct FakeCodes {
+    secrets: AtomicU64,
+    recovery: AtomicU64,
+}
+
+impl FakeCodes {
+    /// The one-time code of `secret` for `step`.
+    pub fn code_for(secret: &TotpSecret, step: u64) -> String {
+        let seed = u64::from(secret.bytes()[0]);
+        format!("{:06}", (seed * 100_003 + step * 7_919) % 1_000_000)
+    }
+}
+
+impl OneTimeCodes for FakeCodes {
+    fn new_secret(&self) -> TotpSecret {
+        let n = self.secrets.fetch_add(1, Ordering::Relaxed) + 1;
+        TotpSecret::from_bytes([u8::try_from(n % 256).unwrap(); SECRET_BYTES])
+    }
+
+    fn code(&self, secret: &TotpSecret, step: u64) -> String {
+        Self::code_for(secret, step)
+    }
+
+    fn recovery_codes(&self) -> Vec<Secret> {
+        (0..RECOVERY_CODES)
+            .map(|_| {
+                let mut n = self.recovery.fetch_add(1, Ordering::Relaxed);
+                let code: String = (0..RECOVERY_CODE_LEN)
+                    .map(|_| {
+                        let len = RECOVERY_ALPHABET.len() as u64;
+                        let c = RECOVERY_ALPHABET[usize::try_from(n % len).unwrap()];
+                        n /= len;
+                        char::from(c)
+                    })
+                    .collect();
+                Secret::new(code)
+            })
+            .collect()
+    }
+
+    fn digest(&self, code: &str) -> RecoveryHash {
+        RecoveryHash::new(format!("h:{code}"))
+    }
+}
+
+#[derive(Default)]
 pub struct MemoryAudit {
     entries: Mutex<Vec<AuditEntry>>,
 }
@@ -694,6 +778,7 @@ pub struct TestIdentity {
     pub system: Arc<FakeSystemAccounts>,
     pub hasher: Arc<FakeHasher>,
     pub setup_codes: Arc<MemorySetupCodes>,
+    pub two_factor: Arc<InMemoryTwoFactor>,
     pub audit: Arc<MemoryAudit>,
     pub clock: Arc<ManualClock>,
 }
@@ -715,6 +800,7 @@ impl TestIdentity {
         let clock = Arc::new(ManualClock::default());
         let group_observer = Arc::new(RecordingGroupObserver::default());
         let hasher = Arc::new(FakeHasher::default());
+        let two_factor = Arc::new(InMemoryTwoFactor::default());
         let ports = IdentityPorts {
             accounts: accounts.clone(),
             groups: groups.clone(),
@@ -726,6 +812,8 @@ impl TestIdentity {
             hasher: hasher.clone(),
             tokens: Arc::new(FakeTokens::default()),
             setup_codes: setup_codes.clone(),
+            two_factor: two_factor.clone(),
+            codes: Arc::new(FakeCodes::default()),
             audit: audit.clone(),
             clock: clock.clone(),
         };
@@ -739,9 +827,19 @@ impl TestIdentity {
             system,
             hasher,
             setup_codes,
+            two_factor,
             audit,
             clock,
         }
+    }
+
+    /// The code the account's authenticator app shows now (`steps` time
+    /// steps on, or back), once its second factor is on or being set up.
+    pub fn code_now(&self, account: AccountId, steps: i64) -> String {
+        let stored = self.two_factor.get(account).expect("a second factor");
+        let secret = stored.secret.or(stored.pending).expect("a secret");
+        let step = time_step(self.clock.now()).checked_add_signed(steps).unwrap();
+        FakeCodes::code_for(&secret, step)
     }
 
     /// Stores an account directly, bypassing the use cases.

@@ -13,6 +13,7 @@ export function account(id: number, name: string, extra: Partial<Account> = {}):
     password_locked: false,
     password_change_required: false,
     password_changed_at: 1_700_000_000,
+    two_factor: false,
     created_at: 1_700_000_000,
     updated_at: 1_700_000_000,
     ...extra,

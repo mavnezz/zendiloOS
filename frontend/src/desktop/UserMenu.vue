@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { KeyRound, LogOut, Power, RotateCcw, Settings } from 'lucide-vue-next'
+import { KeyRound, LogOut, Power, RotateCcw, Settings, ShieldCheck } from 'lucide-vue-next'
 import {
   DropdownMenuContent,
   DropdownMenuItem,
@@ -13,6 +13,7 @@ import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import ChangePasswordForm from '@/features/auth/components/ChangePasswordForm.vue'
+import TwoFactorDialog from '@/features/auth/components/TwoFactorDialog.vue'
 import { useSessionStore } from '@/features/auth/store'
 import type { PowerAction } from '@/shared/api/types'
 import { problemMessage } from '@/shared/i18n'
@@ -32,6 +33,8 @@ const notifications = useNotifications()
 const account = computed(() => session.info?.account)
 /** The own password is being changed, in a dialog of its own. */
 const changingPassword = ref(false)
+/** The own two-factor sign-in, in a dialog of its own. */
+const twoFactor = ref(false)
 const confirming = ref<PowerAction | null>(null)
 const dialogOpen = computed({
   get: () => confirming.value !== null,
@@ -85,6 +88,10 @@ async function confirmed(): Promise<void> {
           <KeyRound class="size-4" />
           {{ t('settings.changePassword') }}
         </DropdownMenuItem>
+        <DropdownMenuItem :class="item" @select="twoFactor = true">
+          <ShieldCheck class="size-4" />
+          {{ t('twoFactor.title') }}
+        </DropdownMenuItem>
         <DropdownMenuItem :class="item" @select="emit('openSettings')">
           <Settings class="size-4" />
           {{ t('apps.settings') }}
@@ -119,6 +126,8 @@ async function confirmed(): Promise<void> {
     </p>
     <ChangePasswordForm v-else @changed="changingPassword = false" />
   </ModalDialog>
+
+  <TwoFactorDialog v-model:open="twoFactor" />
 
   <ConfirmDialog
     v-model:open="dialogOpen"

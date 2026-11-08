@@ -196,6 +196,10 @@ vm-ssh-test:
 vm-security-test:
     scripts/vm-security-test.sh
 
+# Two-factor sign-in in the second VM: setup, codes, recovery codes, other address, reset
+vm-two-factor-test:
+    scripts/vm-two-factor-test.sh
+
 # The Docker app in the second VM: projects with consent, networks, updates, moving Docker's data
 vm-docker-test:
     scripts/vm-docker-test.sh

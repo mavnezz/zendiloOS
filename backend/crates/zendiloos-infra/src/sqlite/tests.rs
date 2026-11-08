@@ -71,8 +71,8 @@ async fn creates_a_private_database_and_applies_all_migrations() {
         OpenReport {
             created: true,
             schema_before: None,
-            schema_after: 33,
-            applied: (1..=33).collect(),
+            schema_after: 34,
+            applied: (1..=34).collect(),
             backup: None
         }
     );
@@ -92,6 +92,7 @@ async fn creates_a_private_database_and_applies_all_migrations() {
         tables,
         [
             "account_preferences",
+            "account_two_factor",
             "accounts",
             "acme_accounts",
             "acme_challenges",
@@ -146,8 +147,8 @@ async fn reopening_an_up_to_date_database_changes_nothing() {
         report,
         OpenReport {
             created: false,
-            schema_before: Some(33),
-            schema_after: 33,
+            schema_before: Some(34),
+            schema_after: 34,
             applied: vec![],
             backup: None
         }

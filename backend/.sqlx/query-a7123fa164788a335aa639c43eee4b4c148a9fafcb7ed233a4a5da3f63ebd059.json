@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT secret, pending_secret, last_step, recovery_codes, enabled_at\n             FROM account_two_factor WHERE account_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "secret",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "account_two_factor",
+            "name": "secret"
+          }
+        }
+      },
+      {
+        "name": "pending_secret",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "account_two_factor",
+            "name": "pending_secret"
+          }
+        }
+      },
+      {
+        "name": "last_step",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "account_two_factor",
+            "name": "last_step"
+          }
+        }
+      },
+      {
+        "name": "recovery_codes",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "account_two_factor",
+            "name": "recovery_codes"
+          }
+        }
+      },
+      {
+        "name": "enabled_at",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "account_two_factor",
+            "name": "enabled_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      true,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "a7123fa164788a335aa639c43eee4b4c148a9fafcb7ed233a4a5da3f63ebd059"
+}
