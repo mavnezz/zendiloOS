@@ -88,9 +88,26 @@ start over.
 
 ## Development
 
-Tooling (Rust as pinned in `rust-toolchain.toml`, Node, just, …) comes from
-the Nix devShell; direnv loads it when entering the directory, otherwise use
-`nix develop`. The product itself contains no Nix.
+The tools:
+
+- **rustup.** It fetches the Rust that `rust-toolchain.toml` pins by itself.
+- **Node** as `.nvmrc` pins it.
+- **just, sqlx-cli for SQLite, cargo-deny and cargo-llvm-cov.**
+- **Docker** for the package.
+- **QEMU, xorriso, curl and jq** for the test VM and the ISO.
+- **minisign** to sign releases.
+
+On Debian 13 or a recent Ubuntu:
+
+```sh
+sudo apt install build-essential pkg-config rustup docker.io \
+    qemu-system-x86 qemu-utils xorriso curl jq minisign
+nvm install                # Node from .nvmrc, with nvm (https://github.com/nvm-sh/nvm)
+scripts/install-tools.sh   # just, cargo-deny, cargo-llvm-cov, sqlx-cli into ~/.local/bin
+```
+
+`scripts/install-tools.sh` installs the versions CI uses, prebuilt and
+checked against their checksums, except sqlx-cli, which cargo builds.
 
 ```sh
 just               # list all recipes

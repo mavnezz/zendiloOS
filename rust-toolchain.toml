@@ -1,5 +1,5 @@
-# Read by rustup (Debian build container) and by rust-overlay (Nix devShell),
-# so both build with the same compiler.
+# Read by rustup on the development machine, in CI and in the Debian build
+# container, so all of them build with the same compiler.
 [toolchain]
 channel = "1.99.1"
 profile = "minimal"

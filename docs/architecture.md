@@ -1617,7 +1617,7 @@ the interface and the agent deal with a single tool chain (`zpool`, `zfs`).
 |---|---|---|
 | Base | Debian 13 "trixie" (kernel 6.12 LTS), amd64; arm64 from phase 5 | current stable; backports kernel for new hardware if needed |
 | Target hardware | x86-64 NAS appliances with Intel CPUs and generic x86-64 systems with UEFI (self-built, mini PCs) | phase 5: boot medium, LEDs and fans (often via I²C), Intel GPU drivers |
-| Development environment | Nix devShell (`flake.nix`, `.envrc`) for tooling on the development machine only; toolchain version from `rust-toolchain.toml` | the product contains no Nix; packages and images are built in a `debian:trixie` container |
+| Development environment | tools installed on the development machine (README, "Development"): Rust from `rust-toolchain.toml` through rustup, Node from `.nvmrc`; CI installs the same versions | packages and images are built in a `debian:trixie` container |
 | Database | SQLite (WAL) with sqlx; compile-time checked queries (`query!`), offline data in `backend/.sqlx` | after changing SQL or migrations run `just sqlx-prepare`; `just check` fails if the data is stale |
 | Migrations | forward only, embedded, transactional; before each migration a copy of the database in `/var/lib/zendiloos/backup/` | safe migrations without down scripts |
 | Configuration | static: `/etc/zendiloos/*.toml` (listen address, paths, log level, development flags); everything the admin manages lives in the database | |
@@ -1641,13 +1641,14 @@ the interface and the agent deal with a single tool chain (`zpool`, `zfs`).
 
 ## 7. Open Questions
 
-Decided on 2026-11-05: name `zendiloos`, unified accounts, Nix devShell for
-tooling only, target hardware x86-64 NAS appliances and generic x86-64.
+Decided on 2026-11-05: name `zendiloos`, unified accounts, target hardware
+x86-64 NAS appliances and generic x86-64.
 HTTPS by default: plain HTTP only redirects, the session cookie is
 HTTPS-only, a self-signed certificate is created on the device; installing
 an own certificate and ACME follow later. CI: GitHub Actions
-(`.github/workflows/ci.yml`) runs `just check` and `just deb` in the same Nix
-shell as development, with actions pinned to commit SHAs.
+(`.github/workflows/ci.yml`) runs `just check` and `just deb` with the same
+toolchain and tool versions as development, with actions pinned to commit
+SHAs.
 
 Decided on 2026-11-05 for storage (section 5): ZFS as the default, one
 pool is one volume, mounted at `/volume<N>`, disks prepared with GPT and one
