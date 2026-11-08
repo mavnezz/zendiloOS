@@ -70,6 +70,9 @@ export interface EntryInfo {
   access?: 'read' | 'read_write' | null
   /** For a folder on a volume: whether it is on the network. */
   shared?: boolean
+  /** Where to ask the NAS for its times, owner and (for a folder) what it holds. */
+  at?: { place: Place; path: string; snapshot: string | null }
+  folder?: boolean
 }
 
 /** What the explorer is looking at, and what is chosen there. */

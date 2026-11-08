@@ -575,7 +575,10 @@ const namingBusy = ref(false)
 const deleting = ref<Target | null>(null)
 const emptying = ref<Target | null>(null)
 const deletingFolder = ref<{ id: number; name: string; path: string } | null>(null)
-const properties = ref<{ id: number; tab?: 'general' | 'permissions' | 'sharing' } | null>(null)
+const properties = ref<{
+  id: number
+  tab?: 'general' | 'permissions' | 'sharing' | 'nfs'
+} | null>(null)
 const info = ref<EntryInfo | null>(null)
 const versions = ref<{ share: number; path: string } | null>(null)
 const managing = ref<number | null>(null)
@@ -938,6 +941,17 @@ function run(id: ActionId, target: Target): void {
         size: subject.size,
         modified: subject.modified,
         ...(onVolume ? onVolume : {}),
+        // Nothing to ask about a name that is not text.
+        ...(subject.unreadable
+          ? {}
+          : {
+              at: {
+                place: subject.share,
+                path: subject.path,
+                snapshot: at.kind === 'folder' ? at.snapshot : null,
+              },
+              folder: subject.kind === 'directory',
+            }),
       }
     }
   }

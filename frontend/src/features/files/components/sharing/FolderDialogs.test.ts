@@ -1,5 +1,6 @@
 import {
   answer,
+  buttons,
   callsTo,
   choose,
   cleanup,
@@ -66,11 +67,24 @@ beforeEach(() => {
     account(5, 'anna', { full_name: 'Anna A' }),
     account(6, 'ben'),
   ])
-  answer('GET', '/api/v1/groups', [group(1, 'family')])
+  answer('GET', '/api/v1/groups', [group(1, 'family', [6])])
   answer('GET', '/api/v1/shares/10/snapshots', snapshots)
 })
 
-async function properties(of = photos, tab?: 'general' | 'permissions' | 'sharing') {
+const counted = {
+  path: '',
+  folder: true,
+  bytes: 2048,
+  files: 1234,
+  folders: 3,
+  hidden: 1,
+  stopped: null,
+  created: 1_690_000_000,
+  modified: 1_700_000_100,
+  owner: 'anna',
+}
+
+async function properties(of = photos, tab?: 'general' | 'permissions' | 'sharing' | 'nfs') {
   await mountApp(FolderPropertiesDialog, { props: { share: of, tab, open: false } }).setProps({
     open: true,
   })
@@ -82,25 +96,81 @@ async function snapshotsOf(of = photos) {
   await settle()
 }
 
+function box(label: string): HTMLInputElement {
+  const found = document.body.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)
+  if (!found) throw new Error(`no checkbox ${label}`)
+  return found
+}
+async function toggle(label: string): Promise<void> {
+  box(label).click()
+  await settle()
+}
+/** The row of the permissions table naming `name`. */
+function rowOf(name: string): string {
+  const row = [...document.body.querySelectorAll('tbody tr')].find((r) =>
+    r.querySelector('td')?.textContent?.trim().startsWith(name),
+  )
+  return row?.textContent ?? ''
+}
+
 describe('the properties of a folder on a volume', () => {
-  it('change storage, permissions and sharing, and say when files follow', async () => {
+  it('tell where it is, how to reach it and what it holds, counted on the NAS', async () => {
+    answer('GET', '/api/v1/files/shares/10/facts', counted)
+    await properties({ ...photos, shared: true })
+    expect(page()).toContain('/volume1/photos')
+    expect(page()).toContain(`\\${window.location.hostname}\\photos`)
+    expect(page()).toContain(`${window.location.hostname}:/volume1/photos`)
+    expect(page()).toContain('1,234 files and 3 folders holding 2 KiB; 1 hidden')
+    expect(page()).toContain('anna')
+    expect(callsTo('GET', '/api/v1/files/shares/10/facts')[0]!.query.get('path')).toBe('')
+  })
+
+  it('say a count is short, and count nothing when the NAS cannot', async () => {
+    let release: (value: unknown) => void = () => {}
+    on('GET', '/api/v1/files/shares/10/facts', () => new Promise((done) => (release = done)))
+    await properties()
+    expect(page()).toContain('Counting…')
+    release({ ...counted, stopped: 'time' })
+    await settle()
+    expect(page()).toContain('Counted so far: counting took longer than half a minute.')
+    cleanup()
+    answer('GET', '/api/v1/accounts', [])
+    answer('GET', '/api/v1/groups', [])
+    await properties()
+    expect(page()).toContain('Could not be counted.')
+  })
+
+  it('change storage, permissions, sharing and NFS, and say when files follow', async () => {
     on('PATCH', '/api/v1/shares/10', () => ({ share: photos, job: job(4, 'sharing.apply_access') }))
+    answer('GET', '/api/v1/files/shares/10/facts', counted)
     await properties()
     expect(page()).toContain('Properties of photos')
     expect(document.body.querySelector<HTMLInputElement>('#share-quota')!.value).toBe('10')
     await type('#share-quota', '')
     await click('Permissions')
-    expect(document.body.querySelector<HTMLSelectElement>('select[aria-label="anna"]')!.value).toBe(
-      'read_write',
-    )
-    await choose('select[aria-label="family"]', '')
-    await choose('select[aria-label="ben"]', 'deny')
+    expect(box('anna: Read and write').checked).toBe(true)
+    // ben reads through family.
+    expect(rowOf('ben')).toContain('Read')
+    await press('Members of family')
+    expect(page()).toContain('One member')
+    await toggle('family: Read')
+    expect(rowOf('ben')).toContain('No access')
+    await toggle('ben: Read')
+    await toggle('ben: Deny access')
+    expect(box('ben: Read').checked).toBe(false)
+    expect(rowOf('ben')).toContain('Deny access')
     await click('Sharing')
-    await press('Remove')
-    await click('Add computer or network')
-    await type('input[aria-label="IP address or network, e.g. 192.168.1.0/24"]', '10.0.0.0/8')
-    await tick('Write')
     await tick('Share on the network', false)
+    await click('NFS')
+    expect(page()).toContain('NFS offers it only once it is shared again')
+    await press('Remove the rule for 192.168.1.0/24')
+    expect(page()).toContain('No computer may mount this folder over NFS.')
+    await click('Add a rule')
+    await type('#nfs-client', ' 10.0.0.0/8 ')
+    await choose('#nfs-permission', 'true')
+    await choose('#nfs-squash', 'all')
+    await tick('Allow connections from ports above 1024')
+    await click('OK')
     await click('Save')
 
     expect(callsTo('PATCH', '/api/v1/shares/10')[0]!.body).toEqual({
@@ -111,12 +181,41 @@ describe('the properties of a folder on a volume', () => {
         { kind: 'account', id: 5, access: 'read_write' },
         { kind: 'account', id: 6, access: 'deny' },
       ],
-      nfs: [{ network: '10.0.0.0/8', write: true }],
+      nfs: [{ network: '10.0.0.0/8', write: true, squash: 'all', async: false, insecure: true }],
       settings: { quota_bytes: null, compression: 'zstd', record_size_bytes: 1048576 },
     })
     expect(useNotifications().items.find((n) => n.title === 'Changes to photos saved')?.body).toBe(
       'Existing files get the new permissions in the background.',
     )
+  })
+
+  it('check NFS rules in their dialog, and change one', async () => {
+    on('PATCH', '/api/v1/shares/10', () => ({ share: photos, job: null }))
+    await properties(photos, 'nfs')
+    await click('Add a rule')
+    await type('#nfs-client', 'nas lan')
+    expect(page()).toContain('Not an address, network, host name or pattern.')
+    expect(buttons('OK')[0]!.disabled).toBe(true)
+    await type('#nfs-client', '192.168.1.0/24')
+    expect(page()).toContain('There is a rule for it already.')
+    buttons('Cancel').at(-1)!.click()
+    await settle()
+    await press('Change the rule for 192.168.1.0/24')
+    expect(document.body.querySelector<HTMLInputElement>('#nfs-client')!.value).toBe(
+      '192.168.1.0/24',
+    )
+    await choose('#nfs-squash', 'none')
+    expect(page()).toContain('their root is root in this folder')
+    await tick('Answer writes before they are on disk')
+    await type('#nfs-client', '*.Example.com')
+    await click('OK')
+    expect(page()).toContain('*.example.com')
+    await click('Save')
+    expect(callsTo('PATCH', '/api/v1/shares/10')[0]!.body).toMatchObject({
+      nfs: [
+        { network: '*.example.com', write: false, squash: 'none', async: true, insecure: false },
+      ],
+    })
   })
 
   it('open on the tab asked for, and show a refusal', async () => {
