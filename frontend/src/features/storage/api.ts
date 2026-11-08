@@ -3,13 +3,18 @@ import { type MaybeRefOrGetter, toValue } from 'vue'
 
 import { api, unwrap } from '@/shared/api/client'
 import type {
+  Enclosure,
+  InventoryDisk,
+  InventoryUpdate,
   Job,
+  Locating,
   NewPoolLayout,
   PoolPlan,
   ReplacePlan,
   SelfTestKind,
   SelfTestPlan,
   SelfTestPlans,
+  SetEnclosure,
 } from '@/shared/api/types'
 
 /** Arrays change while they rebuild, so they are polled more often. */
@@ -18,6 +23,79 @@ const DEVICE_REFRESH_MS = 30_000
 /** SMART is read from the disks themselves; once in a while is enough. */
 const SMART_STALE_MS = 5 * 60_000
 const SELF_TEST_REFRESH_MS = 30_000
+/** While a disk blinks, its end follows the server. */
+const LOCATE_REFRESH_MS = 5_000
+
+/** The enclosure, which disk is in which slot, and the model the NAS was recognised as. */
+export function useEnclosure() {
+  return useQuery({
+    queryKey: ['storage', 'enclosure'],
+    queryFn: () => unwrap(api.GET('/api/v1/storage/enclosure')),
+    refetchInterval: DEVICE_REFRESH_MS,
+  })
+}
+
+/** The NAS models zendiloOS knows; built in, so asked once. */
+export function useEnclosureModels() {
+  return useQuery({
+    queryKey: ['storage', 'enclosure-models'],
+    queryFn: () => unwrap(api.GET('/api/v1/storage/enclosure/models')),
+    staleTime: Number.POSITIVE_INFINITY,
+  })
+}
+
+export function saveEnclosure(body: SetEnclosure): Promise<Enclosure> {
+  return unwrap(api.PUT('/api/v1/storage/enclosure', { body }))
+}
+
+/** No enclosure: the disks are listed without slots. */
+export function resetEnclosure(): Promise<Enclosure> {
+  return unwrap(api.DELETE('/api/v1/storage/enclosure'))
+}
+
+/** The disks blinking now. */
+export function useLocating() {
+  return useQuery({
+    queryKey: ['storage', 'locate'],
+    queryFn: () => unwrap(api.GET('/api/v1/storage/locate')),
+    refetchInterval: (query) => (query.state.data?.length ? LOCATE_REFRESH_MS : false),
+  })
+}
+
+/** Has the disk blink for `seconds` (60 if not given). */
+export function startLocate(disk: string, seconds?: number): Promise<Locating> {
+  return unwrap(
+    api.POST('/api/v1/storage/disks/{name}/locate', {
+      params: { path: { name: disk } },
+      body: seconds == null ? {} : { seconds },
+    }),
+  )
+}
+
+export async function stopLocate(disk: string): Promise<void> {
+  await unwrap(
+    api.DELETE('/api/v1/storage/disks/{name}/locate', { params: { path: { name: disk } } }),
+  )
+}
+
+/** Every disk seen, those present first. */
+export function useInventory() {
+  return useQuery({
+    queryKey: ['storage', 'inventory'],
+    queryFn: () => unwrap(api.GET('/api/v1/storage/inventory')),
+  })
+}
+
+export function saveInventory(serial: string, body: InventoryUpdate): Promise<InventoryDisk> {
+  return unwrap(
+    api.PUT('/api/v1/storage/inventory/{serial}', { params: { path: { serial } }, body }),
+  )
+}
+
+/** Forgets a disk that is no longer present. */
+export async function forgetDisk(serial: string): Promise<void> {
+  await unwrap(api.DELETE('/api/v1/storage/inventory/{serial}', { params: { path: { serial } } }))
+}
 
 export function useStorageOverview() {
   return useQuery({
@@ -35,9 +113,14 @@ export function useDisks() {
   })
 }
 
-export function useSmartReport(disk: MaybeRefOrGetter<string>) {
+/** SMART of `disk`; asked only while `enabled`. */
+export function useSmartReport(
+  disk: MaybeRefOrGetter<string>,
+  enabled: MaybeRefOrGetter<boolean> = true,
+) {
   return useQuery({
     queryKey: ['storage', 'smart', disk],
+    enabled: () => toValue(enabled),
     queryFn: () =>
       unwrap(
         api.GET('/api/v1/storage/disks/{name}/smart', {

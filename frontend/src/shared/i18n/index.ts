@@ -78,6 +78,8 @@ const KNOWN_PROBLEMS = [
   'self_test_unsupported',
   'self_test_running',
   'not_testing',
+  'not_locating',
+  'disk_present',
   'delivery_failed',
   'change_pending',
   'not_installed',

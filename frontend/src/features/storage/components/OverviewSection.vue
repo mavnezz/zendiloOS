@@ -13,13 +13,17 @@ import { Meter } from '@/shared/ui/meter'
 import { PanelSection } from '@/shared/ui/section'
 import { StatTile } from '@/shared/ui/stat'
 
-import { usePools, useStorageOverview } from '../api'
+import { useEnclosure, usePools, useStorageOverview } from '../api'
 import { formatPoolLayout } from '../format'
+import EnclosureSchematic from './EnclosureSchematic.vue'
+
+defineEmits<{ select: [name: string] }>()
 
 const i18n = useI18n()
 const { t } = i18n
 const { data: overview, error } = useStorageOverview()
 const { data: pools } = usePools()
+const { data: enclosure } = useEnclosure()
 
 const icons: Record<StorageSeverity, unknown> = {
   notice: Info,
@@ -110,6 +114,15 @@ function wording(concern: StorageConcern): string {
           tone="chart-2"
         />
       </div>
+
+      <PanelSection v-if="enclosure?.source" :title="t('storage.enclosure.title')">
+        <EnclosureSchematic
+          :enclosure="enclosure"
+          compact
+          class="justify-self-start"
+          @select="$emit('select', $event)"
+        />
+      </PanelSection>
 
       <PanelSection v-if="overview.concerns.length" :title="t('storage.concernsTitle')">
         <ul class="divide-y rounded-lg border">

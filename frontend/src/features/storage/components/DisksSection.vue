@@ -10,19 +10,25 @@ import { Alert } from '@/shared/ui/alert'
 import { Button } from '@/shared/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/shared/ui/table'
 
-import { useDisks, useSelfTestPlans } from '../api'
+import { useDisks, useEnclosure, useSelfTestPlans } from '../api'
 import { formatHour, usageLabel } from '../format'
+import { slotOf } from '../lib/enclosure'
 import DiskSmartCells from './DiskSmartCells.vue'
+import EnclosureDialog from './EnclosureDialog.vue'
+import EnclosureSection from './EnclosureSection.vue'
 import SelfTestPlansDialog from './SelfTestPlansDialog.vue'
+import StoredDisks from './StoredDisks.vue'
 
-/** Whether the signed-in account may plan self-tests (`storage.manage`). */
+/** Whether the signed-in account may plan self-tests and set up the enclosure (`storage.manage`). */
 defineProps<{ canManage: boolean }>()
 defineEmits<{ select: [name: string] }>()
 
 const { t } = useI18n()
 const { data: disks, error, isPending } = useDisks()
 const { data: plans } = useSelfTestPlans()
+const { data: enclosure } = useEnclosure()
 const planning = ref(false)
+const editing = ref(false)
 
 const schedule = computed(() =>
   (plans.value?.plans ?? []).map((plan) =>
@@ -37,16 +43,34 @@ const schedule = computed(() =>
 function usage(disk: Disk): string {
   return usageLabel(disk)
 }
+
+function slot(disk: Disk): string {
+  return slotOf(enclosure.value, disk.name)?.label ?? '–'
+}
 </script>
 
 <template>
   <div class="grid gap-4">
-    <div class="flex items-center gap-2 rounded-lg bg-muted/50 px-3 py-2 text-xs">
+    <EnclosureSection
+      :can-manage="canManage"
+      @select="$emit('select', $event)"
+      @edit="editing = true"
+    />
+    <div class="flex flex-wrap items-center gap-2 rounded-lg bg-muted/50 px-3 py-2 text-xs">
       <CalendarClock class="size-4 shrink-0 text-muted-foreground" />
       <p class="min-w-0 flex-1 truncate">
         <span class="font-medium">{{ t('storage.selfTestPlans.title') }}:</span>
         {{ schedule.length ? schedule.join(' · ') : t('storage.selfTestPlans.none') }}
       </p>
+      <Button
+        v-if="canManage && enclosure?.source"
+        variant="soft"
+        size="sm"
+        shape="pill"
+        @click="editing = true"
+      >
+        {{ t('storage.enclosure.edit') }}
+      </Button>
       <Button v-if="canManage" variant="soft" size="sm" shape="pill" @click="planning = true">
         {{ t('storage.selfTestPlans.button') }}
       </Button>
@@ -59,6 +83,9 @@ function usage(disk: Disk): string {
       <TableHeader>
         <TableRow>
           <TableHead>{{ t('storage.columns.device') }}</TableHead>
+          <TableHead v-if="enclosure?.source" class="hidden @3xl:table-cell">
+            {{ t('storage.columns.slot') }}
+          </TableHead>
           <TableHead>{{ t('storage.columns.model') }}</TableHead>
           <TableHead class="hidden @4xl:table-cell">{{ t('storage.columns.serial') }}</TableHead>
           <TableHead class="text-right">{{ t('storage.columns.size') }}</TableHead>
@@ -88,6 +115,12 @@ function usage(disk: Disk): string {
               <span class="font-mono text-xs font-medium">{{ disk.name }}</span>
             </span>
           </TableCell>
+          <TableCell
+            v-if="enclosure?.source"
+            class="hidden whitespace-nowrap text-muted-foreground @3xl:table-cell"
+          >
+            {{ slot(disk) }}
+          </TableCell>
           <TableCell class="max-w-56 truncate">{{
             disk.model ?? t('storage.unknownModel')
           }}</TableCell>
@@ -106,6 +139,8 @@ function usage(disk: Disk): string {
         </TableRow>
       </TableBody>
     </Table>
+    <StoredDisks :can-manage="canManage" />
     <SelfTestPlansDialog v-if="canManage" v-model:open="planning" />
+    <EnclosureDialog v-if="canManage" v-model:open="editing" />
   </div>
 </template>

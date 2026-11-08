@@ -10,7 +10,8 @@ import { Button } from '@/shared/ui/button'
 import { ModalDialog } from '@/shared/ui/dialog'
 import { useJobsStore } from '@/shared/jobs/store'
 
-import { planReplace, replaceDisk, useDisks } from '../api'
+import { planReplace, replaceDisk, useDisks, useEnclosure } from '../api'
+import { slotOf } from '../lib/enclosure'
 import PlanReview from './PlanReview.vue'
 
 const props = defineProps<{ pool: string; device: PoolDevice }>()
@@ -20,6 +21,9 @@ const emit = defineEmits<{ started: [] }>()
 const { t } = useI18n()
 const jobs = useJobsStore()
 const { data: disks } = useDisks()
+const { data: enclosure } = useEnclosure()
+/** Where the disk being replaced sits, to find it. */
+const slot = computed(() => (props.device.disk ? slotOf(enclosure.value, props.device.disk) : null))
 
 const disk = ref('')
 const plan = ref<ReplacePlan | null>(null)
@@ -80,6 +84,9 @@ async function replace(): Promise<void> {
     :close-label="t('desktop.close')"
   >
     <Alert v-if="error" variant="destructive">{{ error }}</Alert>
+    <p v-if="slot" class="text-sm font-medium" data-testid="replace-slot">
+      {{ t('storage.enclosure.inSlot', { slot: slot.label }) }}
+    </p>
     <form v-if="!plan" class="grid gap-4" @submit.prevent="review">
       <p v-if="!candidates.length" class="text-sm text-muted-foreground">
         {{ t('storage.create.noDisks') }}

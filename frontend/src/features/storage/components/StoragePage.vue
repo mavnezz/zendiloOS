@@ -21,7 +21,7 @@ const props = defineProps<{
 const { t } = useI18n()
 const refresh = useRefreshStorage()
 
-/** The disk opened from the list; another page closes it. */
+/** The disk opened from the list or the enclosure; another page closes it. */
 const selectedDisk = ref<string | null>(null)
 watch(
   () => props.page,
@@ -41,16 +41,14 @@ watch(
         {{ t('storage.refresh') }}
       </Button>
     </PageHeader>
-    <OverviewSection v-if="page === 'overview'" />
-    <PoolsSection v-else-if="page === 'pools'" :can-manage="canManage" />
-    <template v-else>
-      <DiskDetail
-        v-if="selectedDisk"
-        :name="selectedDisk"
-        :can-manage="canManage"
-        @back="selectedDisk = null"
-      />
-      <DisksSection v-else :can-manage="canManage" @select="selectedDisk = $event" />
-    </template>
+    <PoolsSection v-if="page === 'pools'" :can-manage="canManage" />
+    <DiskDetail
+      v-else-if="selectedDisk"
+      :name="selectedDisk"
+      :can-manage="canManage"
+      @back="selectedDisk = null"
+    />
+    <OverviewSection v-else-if="page === 'overview'" @select="selectedDisk = $event" />
+    <DisksSection v-else :can-manage="canManage" @select="selectedDisk = $event" />
   </div>
 </template>
