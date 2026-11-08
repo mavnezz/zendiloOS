@@ -122,7 +122,7 @@ tests in `zendiloos-architecture` catch, as part of `cargo test`.
 
 | Concept | In Zendiloos |
 |---|---|
-| Bounded context | one core crate each: `identity`, `system`, `storage`, `sharing`, `apps`, `containers`, `updates`, `network` |
+| Bounded context | one core crate each: `identity`, `system`, `storage`, `sharing`, `apps`, `containers`, `updates`, `network`, `certificates` |
 | Domain layer | entities, value objects, aggregates, domain rules and errors; pure Rust, no I/O |
 | Application layer | use cases (commands and queries) and the **ports** they need, as traits |
 | Primary (driving) adapter | `zendiloos-api`: HTTP and WebSocket |
@@ -141,6 +141,7 @@ tests in `zendiloos-architecture` catch, as part of `cargo test`.
 | `zendiloos-containers` | the Docker engine as administrators see it: containers, images, networks, Compose projects (administrators' own with their file in a share), use over time, newer images on a schedule, moving Docker's data (4.9) | kernel, jobs |
 | `zendiloos-updates` | updates of the NAS: Debian's packages and zendiloOS's releases from GitHub by channel, checked daily, installed on request (4.10) | kernel, notify |
 | `zendiloos-network` | interfaces, addresses, default routes, name servers (read-only until M6); later IP configuration, DNS, hostname | kernel |
+| `zendiloos-certificates` | the ACME client plugin (acme.sh): accounts, challenges and certificates from Let's Encrypt, renewed daily; the web interface's ports and certificate, changed with confirmation (4.11) | kernel, jobs, notify |
 | `zendiloos-infra` | all secondary adapters, SQLite migrations | kernel, jobs, notify, contexts, agent-proto, exec; in tests also sim |
 | `zendiloos-api` | primary adapter: axum routes, DTOs, OpenAPI, auth middleware, WebSocket | kernel, jobs, notify, contexts |
 | `zendiloosd` | composition root (binary) | everything except agent |
@@ -1408,6 +1409,74 @@ test VM (`scripts/vm-update-test.sh`): a check, zendiloOS updating itself to
 a release signed with a test key and coming back with the new version, a
 changed package and an older release refused; Docker installed from the
 store (`scripts/vm-docker-install-test.sh`).
+
+### 4.11 Certificates and the web interface
+
+**The ACME client is a plugin** of the App Center, beside Docker: acme.sh
+from Debian, installed by the package runner (task `install-acme`, as
+Docker's) when an administrator asks. Its context, `zendiloos-certificates`,
+keeps three things in the database (migration 0032): **accounts** at an ACME
+server (Let's Encrypt, or its staging server for trying out) with a contact
+address; **challenges**, how the server is shown a name is ours: DNS-01
+through a DNS provider's API (a curated list of acme.sh's `dnsapi` scripts
+with their variables: IONOS, Cloudflare, Hetzner, deSEC, INWX, netcup, OVH,
+Gandi, Porkbun, Route 53, Hurricane Electric, Duck DNS, dynv6), or HTTP-01
+through a file nginx serves on port 80; and **certificates**: names (a
+wildcard only with DNS), key (ECDSA P-256 by default, RSA 2048 or 4096),
+account, challenge, whether it renews itself, and what came of the last try
+with acme.sh's lines. A provider's secret values are stored like a
+notification channel's passwords and never sent back: the interface shows
+that one is set, and an empty field keeps it.
+
+**acme.sh never runs as root, and never in the agent's sandbox.** It needs
+the network, which the agent has none of, and it is a shell script. For
+`IssueCertificate` the agent starts a transient unit (`systemd-run --wait
+--pipe`) as the system account `zendiloos-acme`, with a sandbox of its own
+(`ProtectSystem=strict`, writable only `/var/lib/zendiloos-acme`, no
+capabilities, `NoNewPrivileges`, only IP and Unix sockets) and fixed
+arguments made of checked protocol values: `--issue --force --server …
+--accountemail … --config-home accounts/<n> --cert-home certificates/<n>
+--keylength … --domain … (--dns <script> | --webroot webroot)`, each
+account with acme.sh settings and key of its own. The DNS API's variables
+reach it only in an environment file in `/run/zendiloos-acme` that only
+root reads (systemd's `EnvironmentFile=`), so they appear on no command
+line and in no unit property; the file is removed when acme.sh ends. Names
+of variables that steer programs (`PATH`, `LD_*`) or acme.sh itself (`LE_*`,
+`ACME_*`) are refused while the request is read, and the script must be one
+acme.sh brings. acme.sh's lines reach the job as they come; acme.sh's own
+renewal (a cron job) is never set up. Once issued, the agent copies the
+chain and key, opened without following links and size-limited, to
+`/etc/zendiloos/web/certificates/<n>` (root's; the key 0600) and reads the
+end date with `openssl x509 -enddate`. acme.sh's folder of a removed
+certificate is removed by its account, in a unit of its own: the agent may
+read anything but write only what is root's.
+
+**Renewal.** zendiloosd looks once a day (the first time five minutes after
+its start) and renews, each in a job, every certificate set to renew itself
+that ends within 30 days, unless a try failed in the last 20 hours. A
+renewal tells: `certificate_renewed` (success) or `certificate_renewal_failed`
+(error, with acme.sh's last complaint); issuing by hand does not. A renewed
+certificate the web interface shows is taken by nginx at once (`nginx -t`,
+reload).
+
+**The web interface's settings** (Control panel → Web interface): the HTTP
+port, whether plain HTTP redirects to HTTPS or is not served, the HTTPS port,
+and the certificate: the machine's own, self-signed one, or an issued one
+that holds. Plain HTTP never serves the interface itself (the session cookie
+is HTTPS-only): it points to HTTPS and answers HTTP challenges from acme.sh's
+`webroot`, which needs it on port 80. Ports are 1 to 65535, not those of the
+file services or SSH (22, 111, 137–139, 445, 2049, 3702, 5353), not the same
+twice, and a new one must be free (`/proc/net/tcp*`). nginx's site includes
+two files the agent writes, `/etc/zendiloos/web/http.conf` (the HTTP server,
+or nothing) and `https.conf` (the HTTPS server's `listen` lines and
+certificate); postinst writes the defaults (80 to HTTPS on 443, the own
+certificate). A change works as a network change does: the files it replaces
+are kept beside them, `nginx -t` checks the new ones (in a transient unit: it
+opens nginx's log and temporary folders) and nginx reloads; unless the
+browser confirms within 90 seconds, from the new address if it moved, the
+old files return, by a timer and after a restart of the agent. zendiloosd
+saves the settings once confirmed, so the database never holds settings
+that went back.
 
 ---
 
