@@ -86,6 +86,9 @@ async function replace(): Promise<void> {
     <Alert v-if="error" variant="destructive">{{ error }}</Alert>
     <p v-if="slot" class="text-sm font-medium" data-testid="replace-slot">
       {{ t('storage.enclosure.inSlot', { slot: slot.label }) }}
+      <span v-if="slot.unconfirmed" class="font-normal text-amber-700 dark:text-amber-400">
+        {{ t('storage.enclosure.unconfirmed') }}
+      </span>
     </p>
     <form v-if="!plan" class="grid gap-4" @submit.prevent="review">
       <p v-if="!candidates.length" class="text-sm text-muted-foreground">

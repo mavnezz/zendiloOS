@@ -208,7 +208,9 @@ describe('the desktop', () => {
     await settle()
     icons[0]!.dispatchEvent(new Event('dragend', { bubbles: true }))
     expect(
-      called('PATCH', '/api/v1/preferences').some((call) => 'desktop_icons' in (call.body as object)),
+      called('PATCH', '/api/v1/preferences').some(
+        (call) => 'desktop_icons' in (call.body as object),
+      ),
     ).toBe(true)
 
     await click(t('desktop.editWidgets'))

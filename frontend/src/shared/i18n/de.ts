@@ -1953,6 +1953,7 @@ const de: Messages = {
       blinking: 'Blinkt',
       inSlot: 'In {slot}',
       slot: '{slot}, {group}',
+      unconfirmed: '(Reihenfolge der Einschübe noch nicht bestätigt)',
       tile: '{slot}: {disk}, {state}',
       tones: {
         good: 'gesund',

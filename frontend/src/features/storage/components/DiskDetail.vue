@@ -95,7 +95,12 @@ function finding(item: SmartFinding): string {
     <dl v-if="disk" class="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1.5 text-sm">
       <template v-if="slot">
         <dt class="text-muted-foreground">{{ t('storage.columns.slot') }}</dt>
-        <dd>{{ t('storage.enclosure.slot', { slot: slot.label, group: slot.group }) }}</dd>
+        <dd data-testid="disk-slot">
+          {{ t('storage.enclosure.slot', { slot: slot.label, group: slot.group }) }}
+          <span v-if="slot.unconfirmed" class="text-amber-700 dark:text-amber-400">
+            {{ t('storage.enclosure.unconfirmed') }}
+          </span>
+        </dd>
       </template>
       <dt class="text-muted-foreground">{{ t('storage.serial') }}</dt>
       <dd class="font-mono text-xs leading-5">{{ disk.serial ?? '–' }}</dd>

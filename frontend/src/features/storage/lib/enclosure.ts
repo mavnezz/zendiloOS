@@ -33,14 +33,21 @@ export function slotTone(
   return health ?? 'unknown'
 }
 
-/** The slot a disk sits in, with its group's name. */
+/**
+ * The slot a disk sits in, with its group's name; `unconfirmed` while the
+ * slot is bound as a model nobody checked on a real machine binds it, so its
+ * place may be another.
+ */
 export function slotOf(
   enclosure: Enclosure | undefined,
   disk: string,
-): { label: string; group: string } | null {
+): { label: string; group: string; unconfirmed: boolean } | null {
+  const unchecked = enclosure?.source === 'model' && enclosure.model?.verified === false
   for (const group of enclosure?.groups ?? []) {
     const slot = group.slots.find((candidate) => candidate.disk === disk)
-    if (slot) return { label: slot.label, group: group.name }
+    if (slot) {
+      return { label: slot.label, group: group.name, unconfirmed: unchecked && !slot.overridden }
+    }
   }
   return null
 }

@@ -1915,6 +1915,7 @@ const en = {
       blinking: 'Blinking',
       inSlot: 'In {slot}',
       slot: '{slot}, {group}',
+      unconfirmed: '(bay order not confirmed yet)',
       tile: '{slot}: {disk}, {state}',
       tones: {
         good: 'healthy',

@@ -112,9 +112,28 @@ describe('a slot’s tile', () => {
     const groups = [
       { ...model.groups[0]!, slots: [placed('bay1', { label: 'Bay 1', disk: 'sdc' })] },
     ]
-    expect(slotOf(enclosure({ groups }), 'sdc')).toEqual({ label: 'Bay 1', group: 'Bays' })
+    expect(slotOf(enclosure({ groups }), 'sdc')).toEqual({
+      label: 'Bay 1',
+      group: 'Bays',
+      unconfirmed: false,
+    })
     expect(slotOf(enclosure({ groups }), 'sdz')).toBeNull()
     expect(slotOf(undefined, 'sdc')).toBeNull()
+  })
+
+  it('is not confirmed while a model nobody checked binds it', () => {
+    const unchecked = { ...model, verified: false }
+    const slots = [
+      placed('bay1', { label: 'Bay 1', disk: 'sdc' }),
+      placed('bay2', { label: 'Bay 2', disk: 'sdd', overridden: true }),
+    ]
+    const groups = [{ ...model.groups[0]!, slots }]
+    const chosen = enclosure({ source: 'model', model: unchecked, groups })
+    expect(slotOf(chosen, 'sdc')?.unconfirmed).toBe(true)
+    expect(slotOf(chosen, 'sdd')?.unconfirmed, 'bound by hand').toBe(false)
+    const checked = enclosure({ source: 'model', model: { ...model, verified: true }, groups })
+    expect(slotOf(checked, 'sdc')?.unconfirmed).toBe(false)
+    expect(slotOf(enclosure({ source: 'custom', groups }), 'sdc')?.unconfirmed).toBe(false)
   })
 })
 

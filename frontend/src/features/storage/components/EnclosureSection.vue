@@ -53,11 +53,24 @@ async function chooseDetected(): Promise<void> {
       <p>{{ t('storage.enclosure.callToAction') }}</p>
       <p v-if="detected" class="text-xs text-muted-foreground">
         {{ t('storage.enclosure.detected', { model: `${detected.vendor} ${detected.name}` }) }}
+        <span
+          v-if="!detected.verified"
+          id="enclosure-unconfirmed"
+          class="text-amber-700 dark:text-amber-400"
+        >
+          {{ t('storage.enclosure.unconfirmed') }}
+        </span>
       </p>
       <p v-if="failure" class="text-xs text-destructive">{{ failure }}</p>
     </div>
     <div v-if="canManage" class="flex flex-wrap gap-2">
-      <Button v-if="detected" size="sm" :disabled="saving" @click="chooseDetected">
+      <Button
+        v-if="detected"
+        size="sm"
+        :disabled="saving"
+        :aria-describedby="detected.verified ? undefined : 'enclosure-unconfirmed'"
+        @click="chooseDetected"
+      >
         {{ t('storage.enclosure.useModel', { model: `${detected.vendor} ${detected.name}` }) }}
       </Button>
       <Button variant="outline" size="sm" @click="$emit('edit')">
@@ -72,6 +85,13 @@ async function chooseDetected(): Promise<void> {
       :blinking="blinking"
       @select="$emit('select', $event)"
     />
+    <p
+      v-if="enclosure.source === 'model' && enclosure.model?.verified === false"
+      class="text-xs text-amber-700 dark:text-amber-400"
+      data-testid="enclosure-unverified"
+    >
+      {{ t('storage.enclosure.dialog.unverified') }}
+    </p>
     <p v-if="enclosure.unplaced.length" class="flex flex-wrap items-center gap-1.5 text-xs">
       <span class="text-muted-foreground">{{ t('storage.enclosure.notPlacedHint') }}</span>
       <button
