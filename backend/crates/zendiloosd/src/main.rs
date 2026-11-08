@@ -38,10 +38,9 @@ use zendiloos_infra::notify::NetworkChannels;
 use zendiloos_infra::sharing::DrivesForFiles;
 use zendiloos_infra::sqlite::{
     Database, Occupants, SqliteAccountAddresses, SqliteAccounts, SqliteAppSources, SqliteAuditLog,
-    SqliteCertificates,
-    SqliteChannels, SqliteGroups, SqliteInstalledApps, SqliteJobs, SqliteNotifications, SqlitePreferences,
-    SqliteProjects, SqliteSecurity, SqliteSelfTestPlans, SqliteSessions, SqliteShareProjects, SqliteShares,
-    SqliteSystemUpdates, SqliteUpdateSettings,
+    SqliteCertificates, SqliteChannels, SqliteGroups, SqliteInstalledApps, SqliteJobs, SqliteNotifications,
+    SqlitePreferences, SqliteProjects, SqliteSecurity, SqliteSelfTestPlans, SqliteSessions,
+    SqliteShareProjects, SqliteShares, SqliteSystemUpdates, SqliteUpdateSettings,
 };
 use zendiloos_infra::updates::GitHubReleases;
 use zendiloos_jobs::Jobs;

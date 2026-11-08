@@ -1229,7 +1229,12 @@ const de: Messages = {
       kind: 'Benachrichtigung',
       inApp: 'In zendiloOS',
       cell: '{kind}: {to}',
-      groups: { storage: 'Speicher', folders: 'Ordner', system: 'System' },
+      groups: {
+        storage: 'Speicher',
+        folders: 'Ordner',
+        system: 'System',
+        certificates: 'Zertifikate',
+      },
       kinds: {
         pool_trouble: 'Pool beeinträchtigt oder ausgefallen',
         pool_recovered: 'Pool wieder intakt',
@@ -1243,6 +1248,8 @@ const de: Messages = {
         updates_available: 'Updates verfügbar',
         updates_installed: 'Updates installiert',
         updates_failed: 'Update fehlgeschlagen',
+        certificate_renewed: 'Zertifikat erneuert',
+        certificate_renewal_failed: 'Zertifikat nicht erneuert',
       },
     },
   },

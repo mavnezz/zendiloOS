@@ -14321,7 +14321,8 @@
         "enum": [
           "storage",
           "folders",
-          "system"
+          "system",
+          "certificates"
         ]
       },
       "KindLevel": {

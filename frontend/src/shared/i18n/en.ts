@@ -1205,7 +1205,12 @@ const en = {
       kind: 'Notification',
       inApp: 'In zendiloOS',
       cell: '{kind}: {to}',
-      groups: { storage: 'Storage', folders: 'Folders', system: 'System' },
+      groups: {
+        storage: 'Storage',
+        folders: 'Folders',
+        system: 'System',
+        certificates: 'Certificates',
+      },
       kinds: {
         pool_trouble: 'Pool degraded or failing',
         pool_recovered: 'Pool healthy again',
@@ -1219,6 +1224,8 @@ const en = {
         updates_available: 'Updates available',
         updates_installed: 'Updates installed',
         updates_failed: 'Update failed',
+        certificate_renewed: 'Certificate renewed',
+        certificate_renewal_failed: 'Certificate not renewed',
       },
     },
   },

@@ -515,7 +515,8 @@ set up, so that a failing disk is noticed without the interface open.
 - **Routes.** Notifications come in kinds (`zendiloos_notify::routes::KINDS`),
   each a code, except a data check that found errors (`scrub_finished`
   as a warning or error), which is `scrub_errors`; grouped as storage,
-  folders and system, each with the most serious level it is raised at
+  folders, system and certificates (the ACME client's automatic renewals,
+  4.11), each with the most serious level it is raised at
   (a degraded pool is a warning, a faulted one an error: `pool_trouble`
   is an error kind). Per kind, administrators
   tick whether it is kept in zendiloOS and on which channels it goes out

@@ -515,7 +515,14 @@ mod tests {
             .collect();
         assert_eq!(
             errors,
-            ["pool_trouble", "disk_health", "volume_filling", "updates_installed", "updates_failed"]
+            [
+                "pool_trouble",
+                "disk_health",
+                "volume_filling",
+                "updates_installed",
+                "updates_failed",
+                "certificate_renewal_failed"
+            ]
         );
         db.close().await;
     }

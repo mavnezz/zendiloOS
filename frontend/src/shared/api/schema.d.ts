@@ -4466,7 +4466,7 @@ export interface components {
             older?: string | null;
         };
         /** @enum {string} */
-        KindGroup: "storage" | "folders" | "system";
+        KindGroup: "storage" | "folders" | "system" | "certificates";
         /** @enum {string} */
         KindLevel: "info" | "success" | "warning" | "error";
         /** @description What the server sends. */
