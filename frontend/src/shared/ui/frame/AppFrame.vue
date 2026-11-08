@@ -13,6 +13,16 @@ const props = defineProps<{
   panelClass?: HTMLAttributes['class']
 }>()
 const section = defineModel<string>('section', { default: '' })
+/**
+ * An item was clicked, also the one shown as current: an app that shows a
+ * page under an item (a plugin under Plugins) leads back by it.
+ */
+const emit = defineEmits<{ select: [id: string] }>()
+
+function choose(id: string): void {
+  section.value = id
+  emit('select', id)
+}
 
 const items = computed(() => (props.groups ?? []).flatMap((group) => group.items))
 </script>
@@ -52,7 +62,7 @@ const items = computed(() => (props.groups ?? []).flatMap((group) => group.items
                 section === item.id && 'bg-primary/10 font-medium text-primary hover:bg-primary/15',
               )
             "
-            @click="section = item.id"
+            @click="choose(item.id)"
           >
             <component :is="item.icon" v-if="item.icon" class="mt-0.5 size-4 shrink-0" />
             <span class="min-w-0 flex-1">{{ item.label }}</span>

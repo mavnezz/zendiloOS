@@ -276,6 +276,35 @@ describe('the App Center', () => {
     expect(page()).toContain(t('errors.refused'))
   })
 
+  it('lists Docker among the plugins, opens it and leads back', async () => {
+    await open('plugins')
+    expect(page()).toContain(t('appStore.plugins.title'))
+    expect(page()).toContain('Docker')
+    expect(page()).toContain(t('appStore.docker.running'))
+    const card = [...document.querySelectorAll('button')].find((b) =>
+      b.textContent?.includes(t('appStore.docker.subtitle')),
+    )!
+    card.click()
+    await settle()
+    expect(section.value).toBe('docker')
+    expect(page()).toContain(t('appStore.docker.toStore'))
+    // Back by the button above the page, and by the navigation.
+    const titled = (inNav: boolean) =>
+      [...document.querySelectorAll('button')].find(
+        (b) =>
+          Boolean(b.closest('nav')) === inNav &&
+          b.textContent?.trim() === t('appStore.plugins.title'),
+      )!
+    titled(false).click()
+    await settle()
+    expect(section.value).toBe('plugins')
+    section.value = 'docker'
+    await settle()
+    titled(true).click()
+    await settle()
+    expect(section.value).toBe('plugins')
+  })
+
   it('sends a ready engine to the store', async () => {
     await open('docker')
     expect(page()).toContain(t('appStore.docker.running'))

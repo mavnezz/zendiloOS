@@ -1,16 +1,18 @@
 <script setup lang="ts">
-import { Container, Download, LayoutGrid, LibraryBig, Search } from 'lucide-vue-next'
+import { ArrowLeft, Download, LayoutGrid, LibraryBig, Puzzle, Search } from 'lucide-vue-next'
 import { computed, defineComponent, h, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import { useWindowSection } from '@/shared/lib/window-section'
 import { AppFrame, type NavGroup } from '@/shared/ui/frame'
+import { Button } from '@/shared/ui/button'
 import { Input } from '@/shared/ui/input'
 
 import { useAppProjects, useCatalog, useDocker, useInstalled } from '../api'
 import AppDetail from './AppDetail.vue'
 import DockerSection from './DockerSection.vue'
 import InstalledSection from './InstalledSection.vue'
+import PluginsSection from './PluginsSection.vue'
 import SourcesSection from './SourcesSection.vue'
 import StoreSection from './StoreSection.vue'
 
@@ -31,12 +33,12 @@ const categories = computed(() =>
 )
 const groups = computed<NavGroup[]>(() => [
   {
-    id: 'runtime',
+    id: 'plugins',
     items: [
       {
-        id: 'docker',
-        label: 'Docker',
-        icon: Container,
+        id: 'plugins',
+        label: t('appStore.plugins.title'),
+        icon: Puzzle,
         alert: docker.value ? !dockerReady.value : false,
       },
     ],
@@ -70,8 +72,11 @@ const section = useWindowSection(() => [
   ...categories.value.map((category) => `category:${category}`),
   'installed',
   'sources',
+  'plugins',
   'docker',
 ])
+/** A plugin's own page belongs under Plugins in the navigation. */
+const shownSection = computed(() => (section.value === 'docker' ? 'plugins' : section.value))
 const category = computed(() =>
   section.value.startsWith('category:') ? section.value.slice('category:'.length) : null,
 )
@@ -94,7 +99,12 @@ function open(app: { source_id: number; id: string }, install = false): void {
 
 <!-- Apps for the NAS, from the community catalog and others. -->
 <template>
-  <AppFrame v-model:section="section" :groups="groups">
+  <AppFrame
+    :section="shownSection"
+    :groups="groups"
+    @update:section="(next: string) => (section = next)"
+    @select="(next: string) => (section = next)"
+  >
     <template #sidebar-top>
       <div class="relative mb-2 hidden @2xl/app:block">
         <Search class="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -127,7 +137,14 @@ function open(app: { source_id: number; id: string }, install = false): void {
       @back="opened = null"
       @installed="section = 'installed'"
     />
-    <DockerSection v-else-if="section === 'docker'" @store="section = 'all'" />
+    <template v-else-if="section === 'docker'">
+      <Button variant="ghost" size="sm" class="mb-3 w-fit" @click="section = 'plugins'">
+        <ArrowLeft />
+        {{ t('appStore.plugins.title') }}
+      </Button>
+      <DockerSection @store="section = 'all'" />
+    </template>
+    <PluginsSection v-else-if="section === 'plugins'" @open="section = 'docker'" />
     <InstalledSection v-else-if="section === 'installed'" @open="open" @store="section = 'all'" />
     <SourcesSection v-else-if="section === 'sources'" />
     <StoreSection
