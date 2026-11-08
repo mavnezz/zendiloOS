@@ -137,7 +137,7 @@ export function groupsOf(model: EnclosureModel): DraftGroup[] {
 }
 
 /** What is chosen now, to edit; a model of the catalog when none is, the detected one first. */
-export function draftOf(enclosure: Enclosure, models: EnclosureModel[]): Draft {
+export function draftOf(enclosure: Enclosure, models: EnclosureModel[], name = 'Bays'): Draft {
   if (enclosure.source === 'custom') {
     return {
       source: 'custom',
@@ -167,7 +167,7 @@ export function draftOf(enclosure: Enclosure, models: EnclosureModel[]): Draft {
   const model = enclosure.detected ?? models[0]
   return model
     ? { source: 'model', model: model.id, overrides: {} }
-    : { source: 'custom', groups: [newGroup([])] }
+    : { source: 'custom', groups: [newGroup([], name)] }
 }
 
 /** Every id the groups and their slots use. */

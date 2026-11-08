@@ -62,6 +62,7 @@ const description = computed(() =>
   <component
     :is="place.disk ? 'button' : 'div'"
     :type="place.disk ? 'button' : undefined"
+    :role="compact && !place.disk ? 'img' : undefined"
     :aria-label="compact || place.disk ? description : undefined"
     :title="compact ? description : undefined"
     :data-tone="tone"

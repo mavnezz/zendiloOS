@@ -150,18 +150,23 @@ bad=$(jq -c '.groups[0].slots[0].binding.value += "-part1"' <<<"$layout")
 [[ $(status PUT /storage/enclosure "$bad") == 422 ]] || fail "a partition's path was taken"
 
 say "4. A disk blinks: read from, never written, until stopped"
-disk=${disks[2]}
+# One no pool uses, so nothing else reads or writes it meanwhile.
+disk=$(jq -r '[.[] | select((.serial // "" | startswith("ZDL-SATA")) and .usage == "unused") | .name][0] // empty' \
+    "$work/disks")
+disk=${disk:-${disks[2]}}
 before_reads=$(reads "$disk")
 before_writes=$(writes "$disk")
 [[ $(status POST "/storage/disks/$disk/locate" '{"seconds": 30}') == 200 ]] || fail "locate: $(cat "$work/last")"
 now=$(date +%s)
+# The VM's clock against the host's, a few seconds either way.
 call GET /storage/locate | jq -e --arg d "$disk" --argjson now "$now" \
-    '.[] | select(.disk == $d and .until > $now and .until <= $now + 31)' >/dev/null || fail "not blinking"
+    '.[] | select(.disk == $d and .until > $now + 20 and .until < $now + 40)' >/dev/null || fail "not blinking"
 sleep 4
 during=$(reads "$disk")
 (( during > before_reads + 3 )) || fail "$disk was hardly read: $before_reads, then $during"
 [[ $(writes "$disk") == "$before_writes" ]] || fail "$disk was written to"
-vm "journalctl -u zendiloos-agent --since -1min --no-pager" | grep -q read_burst || fail "no burst in the agent's log"
+vm "sudo journalctl -u zendiloos-agent --since -1min --no-pager" | grep -q read_burst \
+    || fail "no burst in the agent's log"
 [[ $(status DELETE "/storage/disks/$disk/locate") == 204 ]] || fail "stop: $(cat "$work/last")"
 call GET /storage/locate | jq -e --arg d "$disk" 'map(select(.disk == $d)) | length == 0' >/dev/null \
     || fail "still blinking"

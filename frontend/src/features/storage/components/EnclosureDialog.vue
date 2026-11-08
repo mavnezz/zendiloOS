@@ -64,6 +64,11 @@ const NUMBERINGS: EnclosureNumbering[] = [
 ]
 const CUSTOM = 'custom'
 
+/** The name a new layout's first group gets, in the interface's language. */
+function firstGroup(): string {
+  return t('storage.enclosure.dialog.group', { n: 1 })
+}
+
 const draft = ref<Draft | null>(null)
 const failure = ref<string | null>(null)
 const saving = ref(false)
@@ -81,7 +86,7 @@ watch(
     }
     if (filled || !current || !models) return
     filled = true
-    draft.value = draftOf(current, models)
+    draft.value = draftOf(current, models, firstGroup())
     failure.value = null
   },
   { immediate: true },
@@ -113,7 +118,7 @@ const source = computed({
   set: (value: string) => {
     if (value === CUSTOM) {
       if (draft.value?.source !== 'custom') {
-        draft.value = { source: 'custom', groups: [newGroup([])] }
+        draft.value = { source: 'custom', groups: [newGroup([], firstGroup())] }
       }
     } else {
       draft.value = { source: 'model', model: value, overrides: {} }

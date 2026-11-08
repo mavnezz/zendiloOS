@@ -164,12 +164,27 @@ describe('the enclosure on the disks page', () => {
     on('PUT', '/api/v1/storage/enclosure', chosen())
     await open('disks')
     expect(page()).toContain(t('storage.enclosure.callToAction'))
-    expect(page()).not.toContain(t('storage.enclosure.edit'))
+    expect(page()).toContain(t('storage.enclosure.setUp'))
     await click(t('storage.enclosure.useModel', { model: 'UGREEN DXP4800 Plus' }))
     expect(called('PUT', '/api/v1/storage/enclosure')[0]?.body).toEqual({
       source: 'model',
       model: 'ugreen-dxp4800-plus',
     })
+  })
+
+  it('starts a layout of one’s own where no model is known', async () => {
+    on('GET', '/api/v1/storage/enclosure', { ...notSetUp, detected: null })
+    on('GET', '/api/v1/storage/enclosure/models', [])
+    on('PUT', '/api/v1/storage/enclosure', chosen({ source: 'custom', model: null }))
+    await open('disks')
+    await click(t('storage.enclosure.setUp'))
+    expect(select('#enclosure-source').value).toBe('custom')
+    await submit('#enclosure-form')
+    const body = called('PUT', '/api/v1/storage/enclosure')[0]?.body as {
+      groups: { name: string; slots: unknown[] }[]
+    }
+    expect(body.groups[0]).toMatchObject({ name: 'Group 1' })
+    expect(body.groups[0]!.slots).toHaveLength(4)
   })
 
   it('says why the model could not be chosen', async () => {

@@ -62,13 +62,7 @@ function slot(disk: Disk): string {
         <span class="font-medium">{{ t('storage.selfTestPlans.title') }}:</span>
         {{ schedule.length ? schedule.join(' · ') : t('storage.selfTestPlans.none') }}
       </p>
-      <Button
-        v-if="canManage && enclosure?.source"
-        variant="soft"
-        size="sm"
-        shape="pill"
-        @click="editing = true"
-      >
+      <Button v-if="canManage" variant="soft" size="sm" shape="pill" @click="editing = true">
         {{ t('storage.enclosure.edit') }}
       </Button>
       <Button v-if="canManage" variant="soft" size="sm" shape="pill" @click="planning = true">
