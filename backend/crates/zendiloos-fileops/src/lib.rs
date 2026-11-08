@@ -380,7 +380,7 @@ fn copy_new(
         FileType::Symlink => {
             let Some((opened, link)) = open_link(source, name)? else { return Ok(()) };
             symlinkat(link.as_c_str(), target, target_name)?;
-            copied.link(name, &opened);
+            copied.link(name, &opened, &link);
         }
         // Devices, pipes and sockets are not copied.
         _ => {}

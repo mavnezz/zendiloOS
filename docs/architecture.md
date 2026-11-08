@@ -825,9 +825,13 @@ TLS is rustls with ring and the system's certificate authorities
 - **Moves into another place** (another share, the personal folder, a
   drive: another file system) copy, then remove what was copied, and
   nothing else. The copy records each entry it copied as it goes, a
-  compact tree in memory: name, device and inode and kind, for a file its
-  change and modification times and size, all by `fstat` of the
-  descriptor it copied from, taken before it read. Before anything is
+  compact tree in memory: name, device and inode, kind and change time,
+  for a file also its modification time and size, for a link its target,
+  all from the descriptor it copied through, taken before it read. Device
+  and inode alone do not tell an entry: ext4 gives a new entry the number
+  of one just removed, and ZFS reuses object numbers too; what is put in a
+  copied entry's place has a change time of its own, and a link its own
+  target. Before anything is
   removed, the target's file system is written out (`syncfs` on the
   target's root, on the target's side); if that fails, the source stays
   and the move says so: a drive pulled out after "done" would otherwise
@@ -838,7 +842,11 @@ TLS is rustls with ring and the system's certificate authorities
   files and links that are still what was copied go; a folder goes once
   that left it empty, otherwise it stays and is counted (something new
   came into it, an upload under way, a pipe, a file system mounted inside,
-  none of which are copied). A move that left anything is never a plain
+  none of which are copied). A folder's change time is compared before
+  what is in it goes, which changes it too: one that changed since it was
+  copied (something came, went or was renamed in it, or another, empty
+  folder took its place and number) stays once what in it is still as
+  copied went. A move that left anything is never a plain
   success: the job ends as `partly_moved`, with the number of entries that
   stayed and one of them, which the explorer shows. The record has a
   budget like an archive's plan (half a million entries, 16 MiB of names,

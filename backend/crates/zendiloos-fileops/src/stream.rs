@@ -129,7 +129,7 @@ fn send(
         }
         FileType::Symlink => {
             let Some((opened, target)) = open_link(source, name)? else { return Ok(()) };
-            copied.link(name, &opened);
+            copied.link(name, &opened, &target);
             put(out, Piece::Link { name: name.to_owned(), target })?;
         }
         // Devices, pipes and sockets are not copied.

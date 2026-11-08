@@ -2,13 +2,24 @@
 //! from the source once the copy is complete and written out.
 //!
 //! The copy records each entry it copied as it goes: its name, device and
-//! inode and kind, and for a file its change and modification times and
-//! size, all from `fstat` of the descriptor it copied from, taken before it
-//! read. Removing walks that record, never the folders themselves: what is
-//! missing by then is passed by, what changed since (another entry under the
-//! name, a file written to, a new entry in a folder) stays and is counted,
-//! and only what still is what was copied goes. FAT keeps times in steps of
-//! two seconds, which is why the size is compared too.
+//! inode, kind and change time, for a file also its modification time and
+//! size, for a link its target, all from the descriptor it copied through,
+//! taken before it read. Removing walks that record, never the folders
+//! themselves: what is missing by then is passed by, what changed since
+//! (another entry under the name, a file written to, a new entry in a
+//! folder) stays and is counted, and only what still is what was copied
+//! goes. FAT keeps times in steps of two seconds, which is why the size is
+//! compared too.
+//!
+//! Device and inode alone do not tell an entry: ext4 gives a new entry the
+//! number of one just removed, and ZFS reuses object numbers too. A file or
+//! link put in a copied one's place gets a change time of its own (and a
+//! link its own target), so it is told apart by those. A folder's change
+//! time moves whenever something in it comes, goes or is renamed, also when
+//! the move removes what it copied; so it is compared before that: a folder
+//! that changed since it was copied, another empty one in its place and
+//! number among them, keeps its place once what in it is still as copied
+//! went.
 //!
 //! The record has a budget, like an archive's plan: a move of more entries
 //! than that keeps its copy and its source whole and says so.
@@ -21,39 +32,46 @@ use rustix::fs::{AtFlags, FileType, OFlags, Stat, fstat, statat, unlinkat};
 use rustix::io::Errno;
 use zendiloos_agent_proto::SharePath;
 
-use super::{FileError, ShareRoot, c_name, identity, kind, open_beneath_flags};
+use super::{FileError, ShareRoot, c_name, identity, kind, open_beneath_flags, open_link};
 
 /// The most entries one move records; a move of more keeps its source. With
 /// its names some 50 MB at most: two moves at once and the archives being
 /// written stay well within the files agent's memory (`MemoryHigh=384M`).
 pub const MAX_MOVED_ENTRIES: usize = 500_000;
-/// The most bytes of names one move records: whoever may write the folder
-/// could fill it with long names, and the record must not take the files
-/// agent's memory.
+/// The most bytes of names and link targets one move records: whoever may
+/// write the folder could fill it with long names or links to long targets,
+/// and the record must not take the files agent's memory.
 pub const MAX_MOVED_NAME_BYTES: usize = 16 * 1024 * 1024;
 
 /// A time as `fstat` tells it, to the nanosecond.
 type Time = (i64, u32);
+
+/// Where bytes begin in the record's names, and how many.
+type Span = (u32, u16);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum What {
     /// A folder; what was copied of it follows it, up to entry `end`.
     Folder {
         end: u32,
+        changed: Time,
     },
     File {
         size: u64,
         changed: Time,
         modified: Time,
     },
-    Link,
+    /// A link, and where its target is in the record's names.
+    Link {
+        changed: Time,
+        target: Span,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
 struct Entry {
-    /// Where its name begins in the record's names, and its length with
-    /// the NUL that ends it.
-    name: (u32, u16),
+    /// Its name in the record's names, with the NUL that ends it.
+    name: Span,
     device: u64,
     inode: u64,
     what: What,
@@ -74,6 +92,7 @@ enum State {
 #[derive(Debug)]
 pub struct Copied {
     entries: Vec<Entry>,
+    /// Names, and the targets of links.
     names: Vec<u8>,
     /// Entries copied, recorded or not.
     count: u64,
@@ -110,14 +129,19 @@ impl std::fmt::Display for Kept {
     }
 }
 
+/// When the entry last changed: its contents, its name, its owner or mode.
+#[allow(clippy::useless_conversion)]
+fn changed(stat: &Stat) -> Time {
+    (i64::from(stat.st_ctime), u32::try_from(stat.st_ctime_nsec).unwrap_or(0))
+}
+
 /// Size, change and modification time of a file.
 #[allow(clippy::useless_conversion)]
 fn file_facts(stat: &Stat) -> (u64, Time, Time) {
-    let nanoseconds = |n| u32::try_from(n).unwrap_or(0);
     (
         u64::try_from(stat.st_size).unwrap_or(0),
-        (i64::from(stat.st_ctime), nanoseconds(stat.st_ctime_nsec)),
-        (i64::from(stat.st_mtime), nanoseconds(stat.st_mtime_nsec)),
+        changed(stat),
+        (i64::from(stat.st_mtime), u32::try_from(stat.st_mtime_nsec).unwrap_or(0)),
     )
 }
 
@@ -148,15 +172,21 @@ impl Copied {
         self.count
     }
 
-    fn add(&mut self, name: &CStr, stat: &Stat, what: What) -> Option<usize> {
+    /// Records an entry, its name, and for a link its `target`, which
+    /// `what` then says where to find.
+    fn add(&mut self, name: &CStr, stat: &Stat, what: What, target: &[u8]) -> Option<usize> {
         self.count += 1;
         if self.state != State::On {
             return None;
         }
         let bytes = name.to_bytes_with_nul();
-        let within = self.entries.len() < self.budget.0 && self.names.len() + bytes.len() <= self.budget.1;
-        let (Ok(start), Ok(length), true) =
-            (u32::try_from(self.names.len()), u16::try_from(bytes.len()), within)
+        let within = self.entries.len() < self.budget.0
+            && self.names.len() + bytes.len() + target.len() <= self.budget.1;
+        let start = u32::try_from(self.names.len()).ok();
+        let length = u16::try_from(bytes.len()).ok();
+        let target_at = start.zip(length).and_then(|(start, length)| start.checked_add(u32::from(length)));
+        let (Some(start), Some(length), Some(target_at), Ok(target_length), true) =
+            (start, length, target_at, u16::try_from(target.len()), within)
         else {
             self.state = State::Full;
             self.entries = Vec::new();
@@ -164,22 +194,28 @@ impl Copied {
             return None;
         };
         self.names.extend_from_slice(bytes);
+        self.names.extend_from_slice(target);
+        let what = match what {
+            What::Link { changed, .. } => What::Link { changed, target: (target_at, target_length) },
+            other => other,
+        };
         let (device, inode) = identity(stat);
         self.entries.push(Entry { name: (start, length), device, inode, what });
         Some(self.entries.len() - 1)
     }
 
-    /// A folder copied, `stat` from the descriptor it was read through;
-    /// what is copied next is in it, up to [`Copied::leave`].
+    /// A folder copied, `stat` from the descriptor it was read through,
+    /// taken before it was read; what is copied next is in it, up to
+    /// [`Copied::leave`].
     pub(crate) fn folder(&mut self, name: &CStr, stat: &Stat) -> Option<usize> {
-        self.add(name, stat, What::Folder { end: 0 })
+        self.add(name, stat, What::Folder { end: 0, changed: changed(stat) }, &[])
     }
 
     /// The folder `index` names (from [`Copied::folder`]) ends.
     pub(crate) fn leave(&mut self, index: Option<usize>) {
         let end = u32::try_from(self.entries.len());
         if let (Some(index), Ok(end)) = (index, end)
-            && let Some(Entry { what: What::Folder { end: at }, .. }) = self.entries.get_mut(index)
+            && let Some(Entry { what: What::Folder { end: at, .. }, .. }) = self.entries.get_mut(index)
         {
             *at = end;
         }
@@ -189,25 +225,41 @@ impl Copied {
     /// taken before it was read.
     pub(crate) fn file(&mut self, name: &CStr, stat: &Stat) {
         let (size, changed, modified) = file_facts(stat);
-        self.add(name, stat, What::File { size, changed, modified });
+        self.add(name, stat, What::File { size, changed, modified }, &[]);
     }
 
-    /// A symbolic link copied, `stat` from a descriptor of the link itself.
-    pub(crate) fn link(&mut self, name: &CStr, stat: &Stat) {
-        self.add(name, stat, What::Link);
+    /// A symbolic link copied, `stat` from a descriptor of the link itself
+    /// and `target` read through it.
+    pub(crate) fn link(&mut self, name: &CStr, stat: &Stat, target: &CStr) {
+        self.add(name, stat, What::Link { changed: changed(stat), target: (0, 0) }, target.to_bytes());
+    }
+
+    fn bytes(&self, (start, length): Span) -> &[u8] {
+        let start = start as usize;
+        &self.names[start..start + usize::from(length)]
     }
 
     fn name(&self, index: usize) -> &CStr {
-        let (start, length) = self.entries[index].name;
-        let (start, length) = (start as usize, usize::from(length));
-        CStr::from_bytes_with_nul(&self.names[start..start + length]).unwrap_or(c"")
+        CStr::from_bytes_with_nul(self.bytes(self.entries[index].name)).unwrap_or(c"")
     }
 
     /// The entry after `index` and everything in it.
     fn after(&self, index: usize) -> usize {
         match self.entries[index].what {
-            What::Folder { end } => (end as usize).max(index + 1),
+            What::Folder { end, .. } => (end as usize).max(index + 1),
             _ => index + 1,
+        }
+    }
+
+    /// As if the file system had given the entries named `name` the device
+    /// and inode of `stat`, as ext4 and ZFS give the number of an entry
+    /// removed to a new one.
+    #[cfg(test)]
+    pub(crate) fn renumber(&mut self, name: &CStr, stat: &Stat) {
+        for index in 0..self.entries.len() {
+            if self.name(index) == name {
+                (self.entries[index].device, self.entries[index].inode) = identity(stat);
+            }
         }
     }
 }
@@ -253,15 +305,16 @@ impl Removal<'_> {
 
     fn remove_one(&mut self, directory: BorrowedFd<'_>, index: usize) {
         let entry = self.copied.entries[index];
+        let recorded = (entry.device, entry.inode);
         let name = self.copied.name(index);
         let stat = match statat(directory, name, AtFlags::SYMLINK_NOFOLLOW) {
             Err(Errno::NOENT) => return, // gone meanwhile
             Err(_) => return self.keep(),
             Ok(stat) => stat,
         };
-        let same = identity(&stat) == (entry.device, entry.inode);
+        let same = identity(&stat) == recorded;
         let removed = match entry.what {
-            What::Folder { .. } => {
+            What::Folder { changed: then, .. } => {
                 if !same || kind(&stat) != FileType::Directory {
                     return self.keep();
                 }
@@ -272,20 +325,26 @@ impl Removal<'_> {
                     Err(_) => return self.keep(),
                     Ok(inner) => inner,
                 };
-                if fstat(&inner).map(|opened| identity(&opened)).ok() != Some((entry.device, entry.inode)) {
+                let Ok(opened) = fstat(&inner) else { return self.keep() };
+                if identity(&opened) != recorded {
                     return self.keep();
                 }
+                // Before what is in it goes, which changes it too.
+                let unchanged = changed(&opened) == then;
                 let mut child = index + 1;
                 while child < self.copied.after(index) {
                     self.remove(inner.as_fd(), child);
                     child = self.copied.after(child);
+                }
+                if !unchanged {
+                    return self.keep();
                 }
                 unlinkat(directory, name, AtFlags::REMOVEDIR)
             }
             What::File { size, changed, modified } => {
                 let (now_size, now_changed, now_modified) = file_facts(&stat);
                 // Another name of it went: that alone changed it.
-                let by_us = self.unlinked.contains(&(entry.device, entry.inode));
+                let by_us = self.unlinked.contains(&recorded);
                 let unchanged = same
                     && kind(&stat) == FileType::RegularFile
                     && now_size == size
@@ -295,12 +354,22 @@ impl Removal<'_> {
                     return self.keep();
                 }
                 if stat.st_nlink > 1 {
-                    self.unlinked.insert((entry.device, entry.inode));
+                    self.unlinked.insert(recorded);
                 }
                 unlinkat(directory, name, AtFlags::empty())
             }
-            What::Link => {
-                if !same || kind(&stat) != FileType::Symlink {
+            What::Link { changed: then, target } => {
+                // The link itself and what it points to, of the one link
+                // that has the name now.
+                let (opened, now_target) = match open_link(directory, name) {
+                    Err(FileError::NotFound) => return,
+                    Ok(Some(link)) => link,
+                    Ok(None) | Err(_) => return self.keep(),
+                };
+                let unchanged = identity(&opened) == recorded
+                    && changed(&opened) == then
+                    && now_target.as_bytes() == self.copied.bytes(target);
+                if !unchanged {
                     return self.keep();
                 }
                 unlinkat(directory, name, AtFlags::empty())

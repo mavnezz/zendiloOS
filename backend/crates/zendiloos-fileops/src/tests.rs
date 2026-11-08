@@ -1022,6 +1022,55 @@ fn a_file_saved_during_a_move_between_shares_stays() {
     assert!(matches!(&moved, Err(FileError::PartlyMoved(Kept { count: 2, .. }))), "{moved:?}");
 }
 
+/// Ext4 and ZFS give a new entry the number of one just removed. What took
+/// a copied entry's name and number meanwhile stays all the same, whichever
+/// way it was copied: the record knows more of an entry than its number.
+/// The number is given by hand here (`renumber`), so the test does not
+/// depend on the file system it runs on.
+#[test]
+fn what_took_the_name_and_number_of_a_copied_entry_stays() {
+    for across in [false, true] {
+        let v = Volumes::new();
+        let album = v.share_path("photos").join("album");
+        v.write("photos", "album/a.jpg", "a");
+        let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+        File::options().write(true).open(album.join("a.jpg")).unwrap().set_modified(old).unwrap();
+        symlink("a.jpg", album.join("link")).unwrap();
+        fs::create_dir(album.join("empty")).unwrap();
+        let (photos, music) = (v.share("photos"), v.share("music"));
+        let mut copied = if across {
+            copy_through(&photos, &path("album"), &music, &path("album"), Taken::Refuse, true).unwrap().1
+        } else {
+            copied_for_move(&photos, "album", &music, "album")
+        };
+        // Another link, to another target; another file of the same size,
+        // written now.
+        fs::remove_file(album.join("link")).unwrap();
+        symlink("elsewhere", album.join("link")).unwrap();
+        fs::remove_file(album.join("a.jpg")).unwrap();
+        fs::write(album.join("a.jpg"), "b").unwrap();
+        // Another empty folder, made a clock tick later at least: only its
+        // change time tells it apart.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        fs::remove_dir(album.join("empty")).unwrap();
+        fs::create_dir(album.join("empty")).unwrap();
+        let folder = rustix::fs::open(&album, OFlags::PATH | OFlags::DIRECTORY, Mode::empty()).unwrap();
+        for name in [c"link", c"a.jpg", c"empty"] {
+            copied.renumber(name, &statat(&folder, name, AtFlags::SYMLINK_NOFOLLOW).unwrap());
+        }
+
+        let removed = photos.remove_copied(&path("album"), &copied);
+
+        assert_eq!(fs::read_link(album.join("link")).unwrap(), Path::new("elsewhere"), "across: {across}");
+        assert_eq!(v.read("photos", "album/a.jpg"), "b", "across: {across}");
+        assert!(album.join("empty").is_dir(), "across: {across}");
+        // The three, and the folder that holds them.
+        let left = matches!(&removed, Err(FileError::PartlyMoved(Kept { count: 4, too_many: false, .. })));
+        assert!(left, "across: {across}, {removed:?}");
+        assert_eq!(fs::read_link(v.share_path("music").join("album/link")).unwrap(), Path::new("a.jpg"));
+    }
+}
+
 #[test]
 fn a_move_whose_copy_cannot_be_written_out_keeps_its_source() {
     if rustix::process::geteuid().is_root() {
