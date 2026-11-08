@@ -291,7 +291,7 @@ const en = {
     groupsDescription: 'Groups give several accounts the same access to shares.',
     notificationsDescription: 'Where notifications go besides this interface.',
     notificationsHelp:
-      'A NAS runs unattended: what matters happens while nobody is looking. Notifications stay here until someone has seen them; email and webhooks bring them to wherever you are.',
+      'A NAS runs unattended: what matters happens while nobody is looking. The table says for each kind of notification whether it stays here until someone has seen it and which channels bring it to wherever you are.',
   },
   device: {
     title: 'Device information',

@@ -299,7 +299,7 @@ const de: Messages = {
     groupsDescription: 'Gruppen geben mehreren Konten denselben Zugriff auf Freigaben.',
     notificationsDescription: 'Wohin Benachrichtigungen außer in diese Oberfläche gehen.',
     notificationsHelp:
-      'Ein NAS läuft unbeaufsichtigt – das Wichtige passiert also, während niemand hinsieht. Benachrichtigungen bleiben hier, bis sie jemand gesehen hat; E-Mail und Webhooks bringen sie dorthin, wo Sie gerade sind.',
+      'Ein NAS läuft unbeaufsichtigt – das Wichtige passiert also, während niemand hinsieht. Die Tabelle legt je Art fest, ob eine Benachrichtigung hier bleibt, bis sie jemand gesehen hat, und welche Kanäle sie dorthin bringen, wo Sie gerade sind.',
   },
   device: {
     title: 'Geräteinformationen',
