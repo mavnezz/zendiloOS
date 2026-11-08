@@ -78,6 +78,8 @@ impl AcmePaths {
 pub(crate) struct Acme {
     systemd_run: Program,
     openssl: Program,
+    /// Run in a transient unit, to remove acme.sh's files of a certificate.
+    rm: PathBuf,
     paths: AcmePaths,
 }
 
@@ -247,6 +249,7 @@ impl Acme {
         Ok(Self {
             systemd_run: Program::new(&tools.systemd_run)?,
             openssl: Program::new(&tools.openssl)?,
+            rm: tools.rm.clone(),
             paths,
         })
     }
@@ -329,14 +332,43 @@ impl Acme {
     }
 
     /// Removes what acme.sh and nginx kept of a certificate.
-    pub(crate) fn remove(&self, certificate: u32) -> Result<Response, OperationError> {
+    ///
+    /// acme.sh's folder belongs to its account, and the agent may read
+    /// anything but write only into what is root's: that account removes
+    /// the folder, in a unit of its own.
+    pub(crate) async fn remove(&self, certificate: u32) -> Result<Response, OperationError> {
         let kept = self.paths.state.join("certificates").join(certificate.to_string());
-        for folder in [kept, self.paths.served(certificate)] {
-            match fs::remove_dir_all(&folder) {
-                Ok(()) => {}
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(OperationError::Write(folder, error)),
-            }
+        if kept.exists() {
+            let (state, kept) = (self.paths.state.display().to_string(), kept.display().to_string());
+            let (rm, uid, gid) =
+                (self.rm.display().to_string(), format!("--uid={ACME_USER}"), format!("--gid={ACME_USER}"));
+            let writable = format!("--property=ReadWritePaths={state}");
+            let args = [
+                "--quiet",
+                "--wait",
+                "--pipe",
+                "--collect",
+                "--service-type=exec",
+                uid.as_str(),
+                gid.as_str(),
+                "--property=ProtectSystem=strict",
+                writable.as_str(),
+                "--property=NoNewPrivileges=yes",
+                "--property=PrivateNetwork=yes",
+                rm.as_str(),
+                "--recursive",
+                "--force",
+                "--one-file-system",
+                "--",
+                kept.as_str(),
+            ];
+            zendiloos_exec::run(&self.systemd_run, args, QUICK).await?.success(&self.systemd_run)?;
+        }
+        let served = self.paths.served(certificate);
+        match fs::remove_dir_all(&served) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(OperationError::Write(served, error)),
         }
         Ok(Response::Done)
     }
@@ -462,14 +494,17 @@ mod tests {
             &dir.join("systemd-run"),
             &format!(
                 "#!/bin/sh\nfor a; do case \"$a\" in --property=EnvironmentFile=*) cp \"${{a##*=}}\" {seen};; esac; done\n\
-                 while [ \"$1\" != {script} ]; do shift; done\nexec \"$@\"\n",
+                 while case \"$1\" in --*) true;; *) false;; esac; do shift; done\nexec \"$@\"\n",
                 seen = dir.join("seen.env").display(),
-                script = paths.script.display()
             ),
         );
         executable(&dir.join("openssl"), "#!/bin/sh\necho 'notAfter=Feb  6 12:30:15 2027 GMT'\n");
-        let tools =
-            Tools { systemd_run: dir.join("systemd-run"), openssl: dir.join("openssl"), ..Tools::default() };
+        let tools = Tools {
+            systemd_run: dir.join("systemd-run"),
+            openssl: dir.join("openssl"),
+            rm: "/usr/bin/rm".into(),
+            ..Tools::default()
+        };
         Acme::new(&tools, paths).unwrap()
     }
 
@@ -501,9 +536,9 @@ mod tests {
             acme.issue(&order(unknown, AcmeKey::Ec256)).await.unwrap_err().to_string().contains("no DNS API")
         );
 
-        assert_eq!(acme.remove(3).unwrap(), Response::Done);
+        assert_eq!(acme.remove(3).await.unwrap(), Response::Done);
         assert!(!served.exists() && !dir.path().join("state/certificates/3").exists());
-        assert_eq!(acme.remove(3).unwrap(), Response::Done, "nothing left is fine");
+        assert_eq!(acme.remove(3).await.unwrap(), Response::Done, "nothing left is fine");
         fs::remove_file(dir.path().join("share/acme.sh")).unwrap();
         assert_eq!(acme.state(), Response::AcmeState { installed: false });
         assert!(acme.issue(&dns).await.unwrap_err().to_string().contains("not installed"));

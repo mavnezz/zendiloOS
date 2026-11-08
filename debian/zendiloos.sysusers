@@ -3,3 +3,5 @@ u zendiloos - "zendiloOS management service" /var/lib/zendiloos
 # Primary group of every account's Linux user; the agent changes only
 # users in this group (docs/architecture.md, 4.2).
 g zendiloos-users -
+# acme.sh runs as this account, never as root (docs/architecture.md, 4.11).
+u zendiloos-acme - "zendiloOS ACME client (acme.sh)" /var/lib/zendiloos-acme

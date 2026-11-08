@@ -259,7 +259,7 @@ impl Operations {
             Request::SetWebTls { minimum } => self.web.set_tls(*minimum).await,
             Request::AcmeState {} => Ok(self.acme.state()),
             Request::IssueCertificate { order } => self.acme.issue(order).await,
-            Request::RemoveCertificate { certificate } => self.acme.remove(*certificate),
+            Request::RemoveCertificate { certificate } => self.acme.remove(*certificate).await,
             Request::WebServerState {} => Ok(self.web_server.state().await),
             Request::ApplyWebServer { config, confirm_within } => {
                 self.web_server.apply(config, *confirm_within).await

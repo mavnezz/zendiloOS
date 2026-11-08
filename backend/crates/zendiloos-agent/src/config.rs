@@ -87,6 +87,8 @@ pub struct Tools {
     pub openssl: PathBuf,
     /// Checks the web server's settings (`nginx -t`), in a transient unit.
     pub nginx: PathBuf,
+    /// Run in a transient unit as acme.sh's account, to remove its files.
+    pub rm: PathBuf,
 }
 
 impl Default for Tools {
@@ -121,6 +123,7 @@ impl Default for Tools {
             setsid: PathBuf::from("/usr/bin/setsid"),
             openssl: PathBuf::from("/usr/bin/openssl"),
             nginx: PathBuf::from("/usr/sbin/nginx"),
+            rm: PathBuf::from("/usr/bin/rm"),
         }
     }
 }

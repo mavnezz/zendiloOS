@@ -79,6 +79,7 @@ impl Host {
             setsid: "/usr/bin/setsid".into(),
             openssl: "/bin/false".into(),
             nginx: "/bin/false".into(),
+            rm: "/bin/false".into(),
             dockerd: p("dockerd"),
         };
         let at = |name: &str| self.path(name);
