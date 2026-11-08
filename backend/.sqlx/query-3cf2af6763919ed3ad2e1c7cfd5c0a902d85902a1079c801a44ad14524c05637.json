@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM firewall_blocked",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "3cf2af6763919ed3ad2e1c7cfd5c0a902d85902a1079c801a44ad14524c05637"
+}

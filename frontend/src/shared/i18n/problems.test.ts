@@ -25,6 +25,8 @@ const CODES = [
   'two_factor_on',
   'two_factor_off',
   'no_two_factor_setup',
+  'would_lock_out',
+  'firewall_failed',
 ]
 
 describe('problem messages', () => {

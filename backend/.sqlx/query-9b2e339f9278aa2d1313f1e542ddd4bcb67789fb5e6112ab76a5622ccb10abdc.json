@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT service FROM firewall_blocked",
+  "describe": {
+    "columns": [
+      {
+        "name": "service",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "firewall_blocked",
+            "name": "service"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "9b2e339f9278aa2d1313f1e542ddd4bcb67789fb5e6112ab76a5622ccb10abdc"
+}

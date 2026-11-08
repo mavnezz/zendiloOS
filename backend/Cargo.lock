@@ -3052,6 +3052,7 @@ dependencies = [
  "zendiloos-apps",
  "zendiloos-certificates",
  "zendiloos-containers",
+ "zendiloos-firewall",
  "zendiloos-identity",
  "zendiloos-jobs",
  "zendiloos-kernel",
@@ -3140,6 +3141,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "zendiloos-firewall"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "zendiloos-kernel",
+ "zendiloos-notify",
+]
+
+[[package]]
 name = "zendiloos-identity"
 version = "0.1.0"
 dependencies = [
@@ -3185,6 +3198,7 @@ dependencies = [
  "zendiloos-certificates",
  "zendiloos-containers",
  "zendiloos-exec",
+ "zendiloos-firewall",
  "zendiloos-identity",
  "zendiloos-jobs",
  "zendiloos-kernel",
@@ -3328,6 +3342,7 @@ dependencies = [
  "zendiloos-apps",
  "zendiloos-certificates",
  "zendiloos-containers",
+ "zendiloos-firewall",
  "zendiloos-identity",
  "zendiloos-infra",
  "zendiloos-jobs",

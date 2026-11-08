@@ -2326,6 +2326,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/security/firewall": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The rules, a change waiting for confirmation, the services they can
+         *     name with their ports, and those the rules block. Needs
+         *     `system.manage`.
+         */
+        get: operations["firewall_setup"];
+        /**
+         * Applies new settings at once. Unless confirmed within `confirm_within`
+         *     seconds (`POST /security/firewall/confirm`), the rules from before
+         *     return by themselves. Settings that would keep out the browser sending
+         *     them are refused unless `lock_out` is set. Needs `system.manage`.
+         */
+        put: operations["apply_firewall"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/security/firewall/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Keeps the change waiting for confirmation. Needs `system.manage`. */
+        post: operations["confirm_firewall"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/security/sessions": {
         parameters: {
             query?: never;
@@ -4375,6 +4419,82 @@ export interface components {
         };
         /** @enum {string} */
         FindingCode: "overall_failed" | "attribute_failing" | "attribute_failed_in_past" | "reallocated_sectors" | "pending_sectors" | "uncorrectable_sectors" | "error_log_entries" | "self_test_failed" | "nvme_critical_warning" | "nvme_spare_low" | "nvme_worn_out" | "nvme_media_errors";
+        /** @enum {string} */
+        FirewallAction: "allow" | "deny";
+        /**
+         * @description New settings. `lock_out`: apply them although they would keep out
+         *     the browser sending them (they go back unless confirmed anyway).
+         */
+        FirewallChange: {
+            enabled: boolean;
+            fallback: components["schemas"]["FirewallAction"];
+            lock_out?: boolean;
+            rules: components["schemas"]["FirewallRule"][];
+        };
+        /** @enum {string} */
+        FirewallProtocol: "tcp" | "udp" | "both";
+        /** @description One rule. The first that matches a new connection decides. */
+        FirewallRule: {
+            action: components["schemas"]["FirewallAction"];
+            enabled: boolean;
+            /** @description None: every interface. */
+            interface?: string | null;
+            /** @description For `ports`: `80, 443, 8000-8100`. */
+            ports?: string | null;
+            /** @description The Docker project, for `project`. */
+            project?: string | null;
+            protocol?: components["schemas"]["FirewallProtocol"] | null;
+            service: components["schemas"]["FirewallServiceKind"];
+            /**
+             * @description `any`, an address, a network (`192.168.1.0/24`) or a range
+             *     (`192.168.1.10-192.168.1.20`); IPv4 or IPv6.
+             */
+            source: string;
+        };
+        /** @description A service rules can name, with the ports it stands for now. */
+        FirewallService: {
+            /** @description `smb`, `project:<name>`: as `blocked` names it. */
+            key: string;
+            /**
+             * @description It runs (the web interface always; a project when it publishes
+             *     ports).
+             */
+            on: boolean;
+            project?: string | null;
+            service: components["schemas"]["FirewallServiceKind"];
+            /** @description The TCP and UDP ports, as `80, 443`; empty for none. */
+            tcp: string;
+            udp: string;
+        };
+        /**
+         * @description What a rule is about: every port, one of the NAS's services, a Docker
+         *     project's published ports, or ports by number.
+         * @enum {string}
+         */
+        FirewallServiceKind: "all" | "web_interface" | "smb" | "nfs" | "ssh" | "discovery" | "ping" | "project" | "ports";
+        FirewallSettings: {
+            enabled: boolean;
+            /** @description What happens to a connection no rule matches. */
+            fallback: components["schemas"]["FirewallAction"];
+            rules: components["schemas"]["FirewallRule"][];
+        };
+        FirewallSetup: {
+            /** @description Services on that the rules in force block from everywhere, by key. */
+            blocked: string[];
+            /**
+             * Format: int32
+             * @description How long a change waits for confirmation, in seconds.
+             */
+            confirm_within: number;
+            current: components["schemas"]["FirewallSettings"];
+            /** @description Interfaces rules can name. */
+            interfaces: string[];
+            /** @description The networks the NAS is in, as sources. */
+            local_networks: string[];
+            pending?: components["schemas"]["PendingFirewall"] | null;
+            /** @description The NAS's services and the Docker projects that publish ports. */
+            services: components["schemas"]["FirewallService"][];
+        };
         Folder: {
             entries: components["schemas"]["FileEntry"][];
             /** @description The folder, relative to the share's root; empty for the root. */
@@ -4619,7 +4739,7 @@ export interface components {
             older?: string | null;
         };
         /** @enum {string} */
-        KindGroup: "storage" | "folders" | "system" | "certificates";
+        KindGroup: "storage" | "folders" | "system" | "certificates" | "security";
         /** @enum {string} */
         KindLevel: "info" | "success" | "warning" | "error";
         /** @description What the server sends. */
@@ -4945,6 +5065,14 @@ export interface components {
             mixed_case: boolean;
             /** @description A character that is neither a letter nor a digit; a space counts. */
             symbol: boolean;
+        };
+        PendingFirewall: {
+            /**
+             * Format: int64
+             * @description When the rules from before return unless confirmed, in Unix seconds.
+             */
+            revert_at: number;
+            settings: components["schemas"]["FirewallSettings"];
         };
         PendingNetworkChange: {
             interface: string;
@@ -11835,6 +11963,112 @@ export interface operations {
             };
             /** @description `invalid_input` */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    firewall_setup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FirewallSetup"];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    apply_firewall: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FirewallChange"];
+            };
+        };
+        responses: {
+            /** @description Applied; waits for confirmation. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FirewallSetup"];
+                };
+            };
+            /** @description `would_lock_out`, `change_pending` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `firewall_failed`: nftables refused the rules; nothing changed */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    confirm_firewall: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Kept. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `refused`: nothing waits */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

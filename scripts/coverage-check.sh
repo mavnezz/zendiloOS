@@ -22,7 +22,7 @@ crate_min=90
 context_min=93
 domain_min=97
 glue=(zendiloosd)
-contexts=(identity system storage sharing apps containers updates network certificates)
+contexts=(identity system storage sharing apps containers updates network certificates firewall)
 
 summary=$(jq -r '
   .data[0] as $d

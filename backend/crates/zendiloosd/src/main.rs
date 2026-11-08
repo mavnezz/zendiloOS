@@ -18,18 +18,20 @@ use zendiloos_api::{ApiState, UseCases};
 use zendiloos_apps::application::{Catalogs, Docker, InstallPorts, Installs, TemplatePorts, Templates};
 use zendiloos_certificates::application::{Certificates, CertificatesPorts};
 use zendiloos_containers::application::{Containers, ContainersPorts};
+use zendiloos_firewall::application::{Firewall, FirewallPorts};
 use zendiloos_identity::application::commands::{PendingSetup, PurgeExpiredSessions};
 use zendiloos_identity::application::{IdentityConfig, IdentityPorts, IdentityUseCases};
 use zendiloos_infra::SystemClock;
 use zendiloos_infra::agent::{
-    AgentAcme, AgentApps, AgentDockerData, AgentDockerEngine, AgentFiles, AgentNetwork, AgentPowerControl,
-    AgentSharing, AgentSsh, AgentStorage, AgentSystemAccounts, AgentTime, AgentUpdates, AgentWebTls,
-    RandomPlanTokens, agent_version,
+    AgentAcme, AgentApps, AgentDockerData, AgentDockerEngine, AgentFiles, AgentFirewall, AgentNetwork,
+    AgentPowerControl, AgentSharing, AgentSsh, AgentStorage, AgentSystemAccounts, AgentTime, AgentUpdates,
+    AgentWebTls, RandomPlanTokens, agent_version,
 };
 use zendiloos_infra::apps::{
     ContainersForApps, FilesForApps, HttpsCatalogs, RandomSecrets, SharingForApps, YamlFiller,
 };
 use zendiloos_infra::containers::{HttpsRegistries, SharesForProjects};
+use zendiloos_infra::firewall::ServicesForFirewall;
 use zendiloos_infra::host::{HostSystemInfo, IpNetworkReader, JournalctlReader, MetricsHub, ProcListening};
 use zendiloos_infra::identity::{
     Argon2PasswordHasher, FileSetupCodes, RandomSessionTokens, SharingFollowsGroups, TotpCodes,
@@ -38,9 +40,10 @@ use zendiloos_infra::notify::NetworkChannels;
 use zendiloos_infra::sharing::DrivesForFiles;
 use zendiloos_infra::sqlite::{
     Database, Occupants, SqliteAccountAddresses, SqliteAccounts, SqliteAppSources, SqliteAuditLog,
-    SqliteCertificates, SqliteChannels, SqliteGroups, SqliteInstalledApps, SqliteJobs, SqliteNotifications,
-    SqlitePreferences, SqliteProjects, SqliteSecurity, SqliteSelfTestPlans, SqliteSessions,
-    SqliteShareProjects, SqliteShares, SqliteSystemUpdates, SqliteTwoFactor, SqliteUpdateSettings,
+    SqliteCertificates, SqliteChannels, SqliteFirewall, SqliteGroups, SqliteInstalledApps, SqliteJobs,
+    SqliteNotifications, SqlitePreferences, SqliteProjects, SqliteSecurity, SqliteSelfTestPlans,
+    SqliteSessions, SqliteShareProjects, SqliteShares, SqliteSystemUpdates, SqliteTwoFactor,
+    SqliteUpdateSettings,
 };
 use zendiloos_infra::updates::GitHubReleases;
 use zendiloos_jobs::Jobs;
@@ -307,6 +310,22 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     });
     let certificate_renewal = spawn_certificate_renewal(certificates.clone());
 
+    let firewall = Firewall::new(FirewallPorts {
+        repository: Arc::new(SqliteFirewall::new(database.clone())),
+        facts: Arc::new(ServicesForFirewall::new(
+            certificates.clone(),
+            system.clone(),
+            sharing.clone(),
+            containers.clone(),
+            network.clone(),
+        )),
+        host: Arc::new(AgentFirewall::new(agent.clone())),
+        notifier: notifier.clone(),
+        audit: audit.clone(),
+        clock: Arc::new(SystemClock),
+    });
+    let firewall_upkeep = spawn_firewall_upkeep(firewall.clone(), jobs.clone());
+
     let snapshots = spawn_snapshot_schedules(sharing.clone());
     let self_tests = spawn_self_test_schedule(storage.self_test_schedule.clone());
     let use_cases = UseCases {
@@ -326,6 +345,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         containers,
         updates,
         certificates,
+        firewall,
     };
     let state = ApiState::new(use_cases, config.secure_cookies);
     let app = zendiloos_api::router(state);
@@ -364,6 +384,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     image_updates.abort();
     update_checks.abort();
     certificate_renewal.abort();
+    firewall_upkeep.abort();
     monitor.abort();
     snapshots.abort();
     self_tests.abort();
@@ -581,6 +602,33 @@ fn spawn_certificate_renewal(certificates: Certificates) -> JoinHandle<()> {
                 Ok(jobs) if !jobs.is_empty() => tracing::info!(count = jobs.len(), "certificates: renewing"),
                 Ok(_) => {}
                 Err(error) => tracing::warn!(%error, "certificates: cannot look for renewals"),
+            }
+        }
+    })
+}
+
+/// Keeps the firewall's rules in force with the ports the services use:
+/// at the start, when a job ends (a project deployed, stopped or removed),
+/// when asked (SSH, the file services or the web interface's ports
+/// changed, a change not confirmed in time), and every 30 seconds.
+fn spawn_firewall_upkeep(firewall: Firewall, jobs: Jobs) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let context = RequestContext::default();
+        let mut events = jobs.subscribe();
+        let mut every = tokio::time::interval(Duration::from_secs(30));
+        every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                _ = every.tick() => {}
+                () = firewall.nudged() => {}
+                event = events.recv() => match event {
+                    Ok(job) if job.state == zendiloos_jobs::JobState::Running => continue,
+                    Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => events = jobs.subscribe(),
+                },
+            }
+            if let Err(error) = firewall.refresh(&context).await {
+                tracing::warn!(%error, "firewall: cannot bring the rules up to date");
             }
         }
     })

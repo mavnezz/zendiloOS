@@ -224,6 +224,10 @@ vm-pool-delete-test:
 vm-notify-test:
     scripts/vm-notify-test.sh
 
+# The firewall in the second VM: rules for SMB and a project, the lock-out check, going back, a reboot
+vm-firewall-test:
+    scripts/vm-firewall-test.sh
+
 # Network changes with confirmation, in the second VM (ZENDILOOS_VM=2)
 vm-network-test:
     scripts/vm-network-test.sh

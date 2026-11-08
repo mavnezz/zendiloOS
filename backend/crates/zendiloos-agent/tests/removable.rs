@@ -42,6 +42,7 @@ impl Host {
             openssl: "/bin/false".into(),
             nginx: "/bin/false".into(),
             rm: "/bin/false".into(),
+            nft: "/bin/false".into(),
             lsblk: script("lsblk", &format!("cat {}", root.join("lsblk.json").display())),
             // Refuses to write a drive while `read-only` exists, as for a
             // write-protected stick.

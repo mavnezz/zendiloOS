@@ -12,6 +12,7 @@ publish.workspace = true
 [dependencies]
 zendiloos-apps.workspace = true
 zendiloos-certificates.workspace = true
+zendiloos-firewall.workspace = true
 zendiloos-containers.workspace = true
 zendiloos-agent-proto.workspace = true
 zendiloos-api.workspace = true

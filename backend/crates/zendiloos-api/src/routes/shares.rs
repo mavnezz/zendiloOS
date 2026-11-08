@@ -1002,6 +1002,8 @@ async fn set_file_services(
     auth.require(Permission::SystemManage)?;
     let services = request.into();
     let stored = state.sharing.set_file_services(services, &auth.0.actor(), &client).await?;
+    // SMB, NFS and discovery may have come or gone.
+    state.firewall.nudge();
     Ok(Json(stored.into()))
 }
 

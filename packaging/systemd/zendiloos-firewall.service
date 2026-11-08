@@ -1,0 +1,28 @@
+[Unit]
+Description=zendiloOS firewall
+Documentation=https://github.com/mavnezz/zendiloOS
+# The rules are in force before the network comes up: early, without the
+# usual dependencies, after Debian's own nftables.service (whose
+# /etc/nftables.conf flushes everything) and again whenever that restarts.
+DefaultDependencies=no
+Wants=network-pre.target
+Before=network-pre.target shutdown.target
+After=local-fs.target nftables.service
+PartOf=nftables.service
+Conflicts=shutdown.target
+# Written by zendiloos-agent once the firewall was turned on.
+ConditionPathExists=/etc/zendiloos/firewall/zendiloos.nft
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# The file replaces the table inet zendiloos_firewall, and only it, in one
+# transaction; the agent has it loaded again (reload) after every change.
+# Stopping leaves the rules as they are; removing the package takes them.
+ExecStart=/usr/sbin/nft -f /etc/zendiloos/firewall/zendiloos.nft
+ExecReload=/usr/sbin/nft -f /etc/zendiloos/firewall/zendiloos.nft
+ProtectSystem=full
+ProtectHome=yes
+
+[Install]
+WantedBy=sysinit.target

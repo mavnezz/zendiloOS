@@ -17,6 +17,7 @@ use crate::apps::Apps;
 use crate::config::Tools;
 use crate::docker::Docker;
 use crate::files::Files;
+use crate::firewall::{Firewall, FirewallPaths};
 use crate::network::{Network, NetworkPaths};
 use crate::packages::Packages;
 use crate::pools::{Erasable, HostPaths, Pools};
@@ -40,6 +41,7 @@ pub struct Paths {
     pub web: WebPaths,
     pub acme: AcmePaths,
     pub web_server: WebServerPaths,
+    pub firewall: FirewallPaths,
 }
 
 const MDSTAT: &str = "/proc/mdstat";
@@ -68,6 +70,7 @@ pub struct Operations {
     web: Web,
     acme: Acme,
     web_server: std::sync::Arc<WebServer>,
+    firewall: std::sync::Arc<Firewall>,
     docker: Docker,
     projects: Projects,
     removable: Removable,
@@ -104,6 +107,7 @@ impl Operations {
             web: Web::new(tools, paths.web)?,
             acme: Acme::new(tools, paths.acme)?,
             web_server: std::sync::Arc::new(WebServer::new(tools, paths.web_server)?),
+            firewall: std::sync::Arc::new(Firewall::new(tools, paths.firewall)?),
             docker: Docker::new(Program::new(&tools.docker)?, Program::new(&tools.setsid)?),
             projects: Projects::new(
                 Program::new(&tools.docker)?,
@@ -130,12 +134,13 @@ impl Operations {
         })
     }
 
-    /// Work left from before a restart: network and web server changes
-    /// nobody confirmed go back. Call once, before serving.
+    /// Work left from before a restart: network, web server and firewall
+    /// changes nobody confirmed go back. Call once, before serving.
     pub async fn recover(&self) {
         if self.role == Role::System {
             self.network.restore_unconfirmed().await;
             self.web_server.restore_unconfirmed().await;
+            self.firewall.restore_unconfirmed().await;
         }
     }
 
@@ -266,6 +271,11 @@ impl Operations {
             }
             Request::ConfirmWebServer {} => self.web_server.confirm().await,
             Request::ReloadWebCertificate {} => self.web_server.reload_certificate().await,
+            Request::FirewallState {} => Ok(self.firewall.state().await),
+            Request::ApplyFirewall { config, confirm_within } => {
+                self.firewall.apply(config.as_ref(), *confirm_within).await
+            }
+            Request::ConfirmFirewall {} => self.firewall.confirm().await,
             Request::TimeState {} => self.time.state().await,
             Request::SetTime { zone, network_time, servers, clock } => {
                 self.time.set(zone, *network_time, servers, *clock).await

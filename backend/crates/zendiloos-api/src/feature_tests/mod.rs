@@ -4,4 +4,5 @@
 mod certificates;
 mod docker;
 mod errors;
+mod firewall;
 mod two_factor;

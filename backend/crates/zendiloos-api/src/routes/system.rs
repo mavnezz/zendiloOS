@@ -470,6 +470,8 @@ async fn set_ssh(
         off_after_minutes: request.off_after_minutes,
     };
     let status = state.system.set_ssh.execute(settings, &auth.0.actor(), &client).await?;
+    // Its port, or whether it runs, may have changed.
+    state.firewall.nudge();
     Ok(Json(status.into()))
 }
 

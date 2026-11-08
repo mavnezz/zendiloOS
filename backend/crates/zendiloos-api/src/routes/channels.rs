@@ -195,6 +195,7 @@ pub enum KindGroup {
     Folders,
     System,
     Certificates,
+    Security,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, ToSchema)]
@@ -332,6 +333,7 @@ fn route(route: KindRoute) -> NotificationRoute {
             Group::Folders => KindGroup::Folders,
             Group::System => KindGroup::System,
             Group::Certificates => KindGroup::Certificates,
+            Group::Security => KindGroup::Security,
         },
         level: match route.kind.level {
             Level::Info => KindLevel::Info,

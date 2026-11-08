@@ -280,6 +280,10 @@ pub(crate) struct Harness {
     pub(crate) acme: Arc<zendiloos_certificates::testing::FakeAcmeHost>,
     /// Ports something listens on, for the web interface's settings.
     pub(crate) listening: Arc<zendiloos_certificates::testing::FakePorts>,
+    /// nftables pretended, and the services as a test sets them.
+    pub(crate) firewall_host: Arc<zendiloos_firewall::testing::FakeFirewallHost>,
+    pub(crate) firewall_facts: Arc<zendiloos_firewall::testing::FixedFacts>,
+    pub(crate) firewall: zendiloos_firewall::application::Firewall,
 }
 
 /// The App Center's projects, from the Docker fakes, as zendiloosd's
@@ -507,8 +511,21 @@ impl Harness {
                 clock: identity.clock.clone(),
             },
         );
+        let firewall_host = Arc::new(zendiloos_firewall::testing::FakeFirewallHost::default());
+        firewall_host.set_now(zendiloos_kernel::Clock::now(identity.clock.as_ref()));
+        let firewall_facts = Arc::new(zendiloos_firewall::testing::FixedFacts::default());
+        let firewall =
+            zendiloos_firewall::application::Firewall::new(zendiloos_firewall::application::FirewallPorts {
+                repository: Arc::new(zendiloos_firewall::testing::MemoryFirewall::default()),
+                facts: firewall_facts.clone(),
+                host: firewall_host.clone(),
+                notifier: notifier.clone(),
+                audit: identity.audit.clone(),
+                clock: identity.clock.clone(),
+            });
         let use_cases = UseCases {
             certificates,
+            firewall: firewall.clone(),
             containers: docker_test.containers,
             system,
             identity: identity.use_cases.clone(),
@@ -576,6 +593,9 @@ impl Harness {
             docker_jobs,
             acme,
             listening,
+            firewall_host,
+            firewall_facts,
+            firewall,
         }
     }
 
@@ -1740,6 +1760,8 @@ fn openapi_documents_every_route() {
             "/api/v1/password-policy",
             "/api/v1/preferences",
             "/api/v1/security/blocked",
+            "/api/v1/security/firewall",
+            "/api/v1/security/firewall/confirm",
             "/api/v1/security/sessions",
             "/api/v1/security/sessions/{id}",
             "/api/v1/security/settings",
