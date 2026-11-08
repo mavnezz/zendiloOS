@@ -107,6 +107,37 @@ pub const OUTPUT_LINE_CHARS: usize = 300;
 /// come; a line waits that long at most.
 const OUTPUT_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
 
+/// What a line reports the progress of, if it is one such line: a layer
+/// of an image being pulled (`76a9dff22e25 Downloading [==>  ] …`) or a
+/// container, network or volume Compose works on (`Container web-1
+/// Created`). A newer line of the same thing takes the older one's place,
+/// as a terminal shows it, instead of a line each step.
+pub fn progress_key(line: &str) -> Option<&str> {
+    const LAYER_STATES: [&str; 9] = [
+        "Pulling fs layer",
+        "Waiting",
+        "Downloading",
+        "Verifying Checksum",
+        "Download complete",
+        "Extracting",
+        "Pull complete",
+        "Already exists",
+        "Retrying",
+    ];
+    let line = line.trim_start();
+    let (first, rest) = line.split_once(' ')?;
+    if first.len() == 12 && first.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+        let rest = rest.trim_start();
+        return LAYER_STATES.iter().any(|state| rest.starts_with(state)).then_some(first);
+    }
+    if matches!(first, "Container" | "Network" | "Volume") {
+        let name_end = rest.find(char::is_whitespace)?;
+        let thing = &line[..first.len() + 1 + name_end];
+        return (!line[thing.len()..].trim().is_empty()).then_some(thing);
+    }
+    None
+}
+
 /// A line of output as a job keeps it: terminal escape sequences (colours,
 /// cursor moves) and other control characters out, tabs as spaces, at most
 /// [`OUTPUT_LINE_CHARS`] characters; `None` if nothing is left.
@@ -260,6 +291,13 @@ impl Progress {
     pub fn line(&self, line: &str) {
         let Some(line) = clean_line(line) else { return };
         self.change(|job| {
+            if let Some(key) = progress_key(&line) {
+                let older = job.output.iter_mut().rev().find(|old| progress_key(old) == Some(key));
+                if let Some(older) = older {
+                    *older = line;
+                    return;
+                }
+            }
             job.output.push(line);
             let excess = job.output.len().saturating_sub(OUTPUT_LINES);
             job.output.drain(..excess);
@@ -436,6 +474,61 @@ mod tests {
         assert_eq!((done.state, done.progress), (JobState::Succeeded, Some(1.0)));
         assert!(done.finished_at.is_some());
         assert_eq!(repository.all()[0], done, "stored as published");
+    }
+
+    #[test]
+    fn progress_lines_are_told_by_what_they_report_on() {
+        assert_eq!(progress_key("76a9dff22e25 Downloading [==>   ]  2.21MB/42.67MB"), Some("76a9dff22e25"));
+        assert_eq!(progress_key(" 76a9dff22e25 Pull complete"), Some("76a9dff22e25"));
+        assert_eq!(progress_key("Container web-1  Recreated"), Some("Container web-1"));
+        assert_eq!(progress_key(" Network tesla_default  Created"), Some("Network tesla_default"));
+        // Not progress: said once.
+        assert_eq!(progress_key("jellyfin Pulling"), None);
+        assert_eq!(progress_key("76a9dff22e25 is a layer"), None);
+        assert_eq!(progress_key("Container"), None);
+        assert_eq!(progress_key("Container web-1"), None);
+        assert_eq!(progress_key("abcdefabcdeg Downloading"), None);
+    }
+
+    #[tokio::test]
+    async fn a_newer_progress_line_takes_the_older_ones_place() {
+        let (jobs, _) = jobs();
+        let mut events = jobs.subscribe();
+        jobs.start("containers.project_deploy", None, None, |progress| async move {
+            for line in [
+                " jellyfin Pulling",
+                "76a9dff22e25 Pulling fs layer",
+                "6dd3dbc22433 Pulling fs layer",
+                "76a9dff22e25 Downloading [>     ]  1MB/42MB",
+                "76a9dff22e25 Downloading [===>  ]  20MB/42MB",
+                "6dd3dbc22433 Download complete",
+                "76a9dff22e25 Pull complete",
+                " jellyfin Pulled",
+                "Container jellyfin-1  Creating",
+                "Container jellyfin-1  Started",
+            ] {
+                progress.line(line);
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+        let done = loop {
+            let job = next(&mut events).await;
+            if job.state != JobState::Running {
+                break job;
+            }
+        };
+        assert_eq!(
+            done.output,
+            [
+                " jellyfin Pulling",
+                "76a9dff22e25 Pull complete",
+                "6dd3dbc22433 Download complete",
+                " jellyfin Pulled",
+                "Container jellyfin-1  Started",
+            ]
+        );
     }
 
     #[test]
