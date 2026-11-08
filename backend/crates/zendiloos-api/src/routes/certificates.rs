@@ -57,7 +57,7 @@ impl From<CertificatesError> for ApiError {
             CertificatesError::Pending => rejected(StatusCode::CONFLICT, "change_pending", None),
             CertificatesError::Refused(detail) => rejected(StatusCode::CONFLICT, "refused", Some(detail)),
             CertificatesError::HostFailed(detail) => {
-                rejected(StatusCode::BAD_GATEWAY, "host_failed", Some(detail))
+                rejected(StatusCode::BAD_GATEWAY, "web_server_failed", Some(detail))
             }
             CertificatesError::Port(e) => ApiError::internal(e),
         }
@@ -781,7 +781,7 @@ async fn web_server(
         (status = ACCEPTED, body = WebServerSetup, description = "Applied; waits for confirmation."),
         (status = CONFLICT, body = Problem, description = "`change_pending`, `port_in_use`, or `refused`"),
         (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_input`: a reserved port, the same port twice, a certificate that does not hold"),
-        (status = BAD_GATEWAY, body = Problem, description = "`host_failed`: nginx refused the settings; nothing changed"),
+        (status = BAD_GATEWAY, body = Problem, description = "`web_server_failed`: nginx refused the settings; nothing changed"),
     )
 )]
 async fn apply_web_server(

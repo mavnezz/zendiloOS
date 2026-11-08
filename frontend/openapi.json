@@ -10180,7 +10180,7 @@
             }
           },
           "502": {
-            "description": "`host_failed`: nginx refused the settings; nothing changed",
+            "description": "`web_server_failed`: nginx refused the settings; nothing changed",
             "content": {
               "application/json": {
                 "schema": {

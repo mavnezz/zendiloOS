@@ -13172,7 +13172,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description `host_failed`: nginx refused the settings; nothing changed */
+            /** @description `web_server_failed`: nginx refused the settings; nothing changed */
             502: {
                 headers: {
                     [name: string]: unknown;
