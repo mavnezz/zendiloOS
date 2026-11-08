@@ -3094,6 +3094,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "zendiloos-certificates"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "zendiloos-jobs",
+ "zendiloos-kernel",
+ "zendiloos-notify",
+]
+
+[[package]]
 name = "zendiloos-containers"
 version = "0.1.0"
 dependencies = [
