@@ -1517,10 +1517,6 @@ const de: Messages = {
   },
   storage: {
     pages: {
-      overview: {
-        title: 'Speicherübersicht',
-        description: 'Wie es Pools, Volumes und Datenträgern geht, und was Aufmerksamkeit braucht.',
-      },
       pools: {
         title: 'Pools',
         description:
@@ -1550,10 +1546,6 @@ const de: Messages = {
       state: 'Status',
     },
     poolCount: 'Kein Pool | Ein Pool | {count} Pools',
-    concernCount: 'Eine Sache ansehen | {count} Dinge ansehen',
-    concernsTitle: 'Was Sie ansehen sollten',
-    ofTotal: 'von {total}',
-    diskCount: 'eine Platte | {count} Platten',
     scrubNow: 'Daten jetzt prüfen',
     stopScrub: 'Prüfung anhalten',
     plan: {
@@ -1618,7 +1610,6 @@ const de: Messages = {
       understood: '{disk} löschen und als Ersatz verwenden.',
       submit: 'Löschen und ersetzen',
     },
-    pools: 'Pools',
     noPools: 'Noch keine Pools.',
     underway: 'Läuft; das kann einige Minuten dauern.',
     steps: {
@@ -1681,17 +1672,9 @@ const de: Messages = {
     },
     otherArrays: 'Andere RAID-Verbünde (nur lesend)',
     verdict: {
-      good: 'Alles in Ordnung',
-      goodDetail: 'Die Pools sind gesund und keine Platte zeigt Verschleiß.',
       notice: 'Gut zu wissen',
       warning: 'Braucht Aufmerksamkeit',
       critical: 'Jetzt handeln',
-    },
-    summary: {
-      pools: 'Pools',
-      disks: 'Datenplatten',
-      used: 'Belegt',
-      available: 'Frei',
     },
     concerns: {
       pool_unavailable: 'Pool {pool} ist {state}: Seine Daten sind nicht erreichbar.',

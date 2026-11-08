@@ -1489,10 +1489,6 @@ const en = {
   },
   storage: {
     pages: {
-      overview: {
-        title: 'Storage overview',
-        description: 'How the pools, volumes and disks are doing, and what needs attention.',
-      },
       pools: {
         title: 'Pools',
         description: 'Disks joined into pools; the layout decides how many may fail.',
@@ -1520,10 +1516,6 @@ const en = {
       state: 'State',
     },
     poolCount: 'No pool | One pool | {count} pools',
-    concernCount: 'One thing to look at | {count} things to look at',
-    concernsTitle: 'What to look at',
-    ofTotal: 'of {total}',
-    diskCount: 'one disk | {count} disks',
     scrubNow: 'Check data now',
     stopScrub: 'Stop the check',
     plan: {
@@ -1587,7 +1579,6 @@ const en = {
       understood: 'Erase {disk} and use it as replacement.',
       submit: 'Erase and replace',
     },
-    pools: 'Pools',
     noPools: 'No pools yet.',
     underway: 'Under way; this may take a few minutes.',
     steps: {
@@ -1649,17 +1640,9 @@ const en = {
     },
     otherArrays: 'Other RAID arrays (read only)',
     verdict: {
-      good: 'Everything is fine',
-      goodDetail: 'The pools are healthy and no disk shows signs of wear.',
       notice: 'Worth knowing',
       warning: 'Needs attention',
       critical: 'Act now',
-    },
-    summary: {
-      pools: 'Pools',
-      disks: 'Data disks',
-      used: 'Used',
-      available: 'Available',
     },
     concerns: {
       pool_unavailable: 'Pool {pool} is {state}: its data cannot be reached.',

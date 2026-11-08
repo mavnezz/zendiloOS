@@ -14,8 +14,6 @@ const props = defineProps<{
   place: PlacedSlot
   form: SlotForm
   orientation: EnclosureOrientation
-  /** Only the colour of its health: the overview's small drawing. */
-  compact?: boolean
   /** The disk in it, as the disk list has it. */
   disk?: Disk
   blinking?: boolean
@@ -26,7 +24,7 @@ const { t } = useI18n()
 // The disk list asks for the same reports, so they are shared, not asked twice.
 const { data: report } = useSmartReport(
   () => props.place.disk ?? '',
-  () => !props.compact && !!props.place.disk,
+  () => !!props.place.disk,
 )
 
 const tone = computed<SlotTone>(() => slotTone(props.place, report.value))
@@ -62,9 +60,7 @@ const description = computed(() =>
   <component
     :is="place.disk ? 'button' : 'div'"
     :type="place.disk ? 'button' : undefined"
-    :role="compact && !place.disk ? 'img' : undefined"
-    :aria-label="compact || place.disk ? description : undefined"
-    :title="compact ? description : undefined"
+    :aria-label="place.disk ? description : undefined"
     :data-tone="tone"
     :class="
       cn(
@@ -72,15 +68,7 @@ const description = computed(() =>
         tones[tone].tile,
         place.disk && 'cursor-pointer hover:border-primary/60',
         upright ? 'flex-col' : 'flex-row items-center',
-        compact
-          ? upright
-            ? 'h-14'
-            : 'h-6'
-          : upright
-            ? 'min-h-36'
-            : form === 'm2'
-              ? 'min-h-12'
-              : 'min-h-14',
+        upright ? 'min-h-36' : form === 'm2' ? 'min-h-12' : 'min-h-14',
       )
     "
     @click="place.disk && $emit('select', place.disk)"
@@ -101,7 +89,7 @@ const description = computed(() =>
       aria-hidden="true"
       class="absolute top-1.5 right-1.5 size-2 animate-ping rounded-full bg-primary motion-reduce:animate-none"
     />
-    <span v-if="!compact" class="grid min-w-0 flex-1 content-start gap-0.5 px-2 py-1.5 text-xs">
+    <span class="grid min-w-0 flex-1 content-start gap-0.5 px-2 py-1.5 text-xs">
       <span class="truncate font-semibold">{{ place.label }}</span>
       <template v-if="place.disk">
         <span class="truncate font-mono font-medium">{{ place.disk }}</span>

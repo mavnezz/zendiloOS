@@ -90,7 +90,7 @@ const array: RaidArray = {
   },
 }
 
-type Page = 'overview' | 'pools' | 'disks'
+type Page = 'pools' | 'disks'
 
 async function open(page: Page, canManage = true): Promise<VueWrapper> {
   const { wrapper } = await mountApp(StoragePage, { props: { page, canManage } })
@@ -178,7 +178,9 @@ beforeEach(() => {
     used_bytes: 1e12,
     available_bytes: 3e12,
     verdict: 'warning',
-    concerns: [{ code: 'pool_degraded', params: { pool: 'cold' }, severity: 'warning' }],
+    concerns: [
+      { code: 'pool_degraded', params: { pool: 'cold', state: 'degraded' }, severity: 'warning' },
+    ],
   })
 })
 
@@ -355,13 +357,33 @@ describe('the storage pages', () => {
     rows[0]!.click()
     await settle()
     expect(wrapper.findComponent({ name: 'DiskDetail' }).exists()).toBe(true)
-    await wrapper.setProps({ page: 'overview' })
+    await wrapper.setProps({ page: 'pools' })
     await settle()
     expect(wrapper.findComponent({ name: 'DiskDetail' }).exists()).toBe(false)
   })
 
+  it('lists the concerns above the pools and the disks, but not in a disk', async () => {
+    on('GET', '/api/v1/storage/disks/sdc/smart', problem(404, 'not_found'))
+    const concern =
+      'Pool cold is degraded: it works, but with less protection against a disk failing.'
+    const wrapper = await open('pools')
+    expect(page()).toContain(t('storage.verdict.warning'))
+    expect(page()).toContain(concern)
+    await wrapper.setProps({ page: 'disks' })
+    await settle()
+    expect(page()).toContain(concern)
+
+    const rows = [...document.querySelectorAll<HTMLElement>('tr')].filter((row) =>
+      row.textContent?.includes('Disk sdc'),
+    )
+    rows[0]!.click()
+    await settle()
+    expect(wrapper.findComponent({ name: 'DiskDetail' }).exists()).toBe(true)
+    expect(page()).not.toContain(concern)
+  })
+
   it('refreshes everything on request', async () => {
-    await open('overview')
+    await open('disks')
     const before = called('GET', '/api/v1/storage/overview').length
     await click(new RegExp(t('storage.refresh')))
     expect(called('GET', '/api/v1/storage/overview').length).toBeGreaterThan(before)

@@ -65,7 +65,6 @@ const address = computed(
 
 /** The storage page a `storage-…` section shows. */
 const STORAGE_PAGES = {
-  'storage-overview': 'overview',
   'storage-pools': 'pools',
   'storage-disks': 'disks',
 } as const

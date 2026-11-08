@@ -9,11 +9,11 @@ import { PageHeader } from '@/shared/ui/page'
 import { useRefreshStorage } from '../api'
 import DiskDetail from './DiskDetail.vue'
 import DisksSection from './DisksSection.vue'
-import OverviewSection from './OverviewSection.vue'
 import PoolsSection from './PoolsSection.vue'
+import StorageConcerns from './StorageConcerns.vue'
 
 const props = defineProps<{
-  page: 'overview' | 'pools' | 'disks'
+  page: 'pools' | 'disks'
   /** Whether the signed-in account may change pools (`storage.manage`). */
   canManage: boolean
 }>()
@@ -41,6 +41,7 @@ watch(
         {{ t('storage.refresh') }}
       </Button>
     </PageHeader>
+    <StorageConcerns v-if="!selectedDisk" class="mb-5" />
     <PoolsSection v-if="page === 'pools'" :can-manage="canManage" />
     <DiskDetail
       v-else-if="selectedDisk"
@@ -48,7 +49,6 @@ watch(
       :can-manage="canManage"
       @back="selectedDisk = null"
     />
-    <OverviewSection v-else-if="page === 'overview'" @select="selectedDisk = $event" />
     <DisksSection v-else :can-manage="canManage" @select="selectedDisk = $event" />
   </div>
 </template>
