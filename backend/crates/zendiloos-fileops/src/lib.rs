@@ -32,10 +32,12 @@ use zendiloos_agent_proto::{
 };
 
 mod archive;
+mod copied;
 mod stream;
 
 pub use archive::{ArchivePlan, MAX_ARCHIVE_ENTRIES, MAX_ARCHIVE_NAME_BYTES};
-pub use stream::{PIECES_IN_FLIGHT, Piece, Sent, Taken, copy_through, settle};
+pub use copied::{Copied, Kept, MAX_MOVED_ENTRIES, MAX_MOVED_NAME_BYTES};
+pub use stream::{PIECES_IN_FLIGHT, Piece, Taken, copy_through, settle};
 
 pub use zendiloos_agent_proto::RECYCLE_DIRECTORY;
 /// Uploads are written to hidden files with this prefix, then renamed.
@@ -57,6 +59,18 @@ pub enum FileError {
     Exists,
     #[error("{0}")]
     Invalid(&'static str),
+    /// Two names of the source are one name to the target's file system
+    /// (FAT, exFAT, NTFS), which does not tell upper from lower case.
+    #[error("“{0}” and “{1}” differ only in case, which the target does not tell apart")]
+    CaseClash(String, String),
+    /// A move across file systems left part of its source; it is in the
+    /// target too, as far as it was copied.
+    #[error("moved in part: {0}")]
+    PartlyMoved(Kept),
+    /// The copy could not be written out to its file system: a move keeps
+    /// its source.
+    #[error("the copy could not be written out ({0}); nothing was removed")]
+    NotDurable(#[source] std::io::Error),
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
@@ -80,6 +94,37 @@ fn nested(error: FileError) -> FileError {
         FileError::Exists => FileError::Io(std::io::Error::other("a name in the copy was taken meanwhile")),
         other => other,
     }
+}
+
+/// Why `name` could not be made in `folder`, a folder of a copy that was
+/// empty when it was made: another entry of the source of a name that
+/// differs only in case, where the file system does not tell such names
+/// apart (FAT, exFAT, NTFS); otherwise an entry somebody else made there
+/// meanwhile. Reads the folder once, for the message.
+fn clash(folder: BorrowedFd<'_>, name: &CStr) -> FileError {
+    let wanted = String::from_utf8_lossy(name.to_bytes());
+    let folded = wanted.to_lowercase();
+    let mut alike = None;
+    for entry in Dir::read_from(folder).into_iter().flatten().flatten() {
+        let other = entry.file_name();
+        if other.to_bytes() == name.to_bytes() {
+            return nested(FileError::Exists);
+        }
+        let other = String::from_utf8_lossy(other.to_bytes());
+        if alike.is_none() && other.to_lowercase() == folded {
+            alike = Some(other.into_owned());
+        }
+    }
+    match alike {
+        Some(other) => FileError::CaseClash(other, wanted.into_owned()),
+        None => nested(FileError::Exists),
+    }
+}
+
+/// Whether `name` is an upload under way, which copies leave alone: it is
+/// half written, and only where it began is a leftover ever removed.
+fn upload_under_way(name: &CStr) -> bool {
+    name.to_bytes().starts_with(UPLOAD_PREFIX.as_bytes())
 }
 
 /// What a search found, and why it ended early, if it did.
@@ -223,8 +268,24 @@ fn open_beneath_flags(base: BorrowedFd<'_>, name: &CStr, flags: OFlags) -> Resul
     Ok(openat(base, name, flags | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty())?)
 }
 
+/// A symbolic link `name` in `directory`, opened as itself, its facts and
+/// its target: all of the one link, whatever has the name by now. None if
+/// it is no link (any more).
+fn open_link(directory: BorrowedFd<'_>, name: &CStr) -> Result<Option<(Stat, CString)>, FileError> {
+    let link = open_beneath_flags(directory, name, OFlags::PATH)?;
+    let stat = fstat(&link)?;
+    if kind(&stat) != FileType::Symlink {
+        return Ok(None);
+    }
+    Ok(Some((stat, readlinkat(&link, c"", Vec::new())?)))
+}
+
 /// Copies `name` from `source` to a new `target_name` in `target`, which
-/// must not exist yet. On failure, what was created is removed again.
+/// must not exist yet, and records in `copied` what it copied, each entry
+/// as the descriptor it was read through says it was before it was read.
+/// On failure, what was created is removed again. Uploads under way are
+/// left out (the top refused), and so are devices, pipes, sockets and
+/// file systems mounted inside.
 fn copy_new(
     source: BorrowedFd<'_>,
     name: &CStr,
@@ -232,7 +293,15 @@ fn copy_new(
     target_name: &CStr,
     file_system: u64,
     depth: u32,
+    copied: &mut Copied,
 ) -> Result<(), FileError> {
+    if upload_under_way(name) {
+        return if depth == 0 {
+            Err(FileError::Invalid("an upload under way is not copied"))
+        } else {
+            Ok(())
+        };
+    }
     let stat = statat(source, name, AtFlags::SYMLINK_NOFOLLOW)?;
     match kind(&stat) {
         FileType::Directory => {
@@ -243,6 +312,10 @@ fn copy_new(
                 return Err(FileError::Invalid("folders are nested too deeply"));
             }
             let from = open_beneath_flags(source, name, OFlags::RDONLY | OFlags::DIRECTORY)?;
+            let opened = fstat(&from)?;
+            if device(&opened) != file_system {
+                return Ok(()); // mounted on meanwhile
+            }
             mkdirat(target, target_name, Mode::from_raw_mode(0o777))?;
             // Whoever may write the target could put a folder of their own
             // (or of the user's) in the new one's place: only an empty
@@ -253,6 +326,7 @@ fn copy_new(
             if !some_names(&to, 1)?.is_empty() {
                 return Err(nested(FileError::Exists));
             }
+            let folder = copied.folder(name, &opened);
             let filled = (|| {
                 // Read as it goes: what is copied lands in another folder.
                 for entry in Dir::read_from(&from)? {
@@ -261,11 +335,15 @@ fn copy_new(
                     if child == c"." || child == c".." {
                         continue;
                     }
-                    copy_new(from.as_fd(), child, to.as_fd(), child, file_system, depth + 1)
-                        .map_err(nested)?;
+                    match copy_new(from.as_fd(), child, to.as_fd(), child, file_system, depth + 1, copied) {
+                        Ok(()) => {}
+                        Err(FileError::Exists) => return Err(clash(to.as_fd(), child)),
+                        Err(error) => return Err(nested(error)),
+                    }
                 }
                 Ok(())
             })();
+            copied.leave(folder);
             if let Err(error) = filled {
                 // A copy into another share lies on another file system.
                 let _ = remove_entry(target, target_name, device(&made), 0, Some(identity(&made)));
@@ -274,27 +352,35 @@ fn copy_new(
         }
         FileType::RegularFile => {
             let from = open_beneath_flags(source, name, OFlags::RDONLY | OFlags::NONBLOCK)?;
+            // Before reading: whatever changes it from now on, the move sees.
+            let opened = fstat(&from)?;
+            if kind(&opened) != FileType::RegularFile {
+                return Ok(()); // something else in its place meanwhile
+            }
             let to = openat(
                 target,
                 target_name,
                 OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
                 Mode::from_raw_mode(0o666),
             )?;
-            let copied = (|| {
+            let made = fstat(&to)?;
+            let written = (|| {
                 let (mut from, mut to) = (File::from(from), File::from(to));
                 // copy_file_range: on ZFS, blocks are cloned instead of copied.
                 std::io::copy(&mut from, &mut to)?;
-                futimens(&to, &timestamps(&stat))?;
+                futimens(&to, &timestamps(&opened))?;
                 Ok::<_, FileError>(())
             })();
-            if let Err(error) = copied {
-                let _ = unlinkat(target, target_name, AtFlags::empty());
+            if let Err(error) = written {
+                let _ = remove_entry(target, target_name, device(&made), 0, Some(identity(&made)));
                 return Err(nested(error));
             }
+            copied.file(name, &opened);
         }
         FileType::Symlink => {
-            let link = readlinkat(source, name, Vec::new())?;
+            let Some((opened, link)) = open_link(source, name)? else { return Ok(()) };
             symlinkat(link.as_c_str(), target, target_name)?;
+            copied.link(name, &opened, &link);
         }
         // Devices, pipes and sockets are not copied.
         _ => {}
@@ -721,8 +807,10 @@ impl ShareRoot {
     }
 
     /// Renames or moves `from` to `to` in `target`, which may be another
-    /// share: then by copying and removing. With `replace`, a file replaces
-    /// a file; a folder is never replaced.
+    /// share: then by copying, writing the copy out and removing what was
+    /// copied (see [`ShareRoot::remove_copied`]), which may leave part of
+    /// the source ([`FileError::PartlyMoved`]). With `replace`, a file
+    /// replaces a file; a folder is never replaced.
     pub fn move_entry(
         &self,
         from: &SharePath,
@@ -749,18 +837,41 @@ impl ShareRoot {
         }
         let flags = if replace { RenameFlags::empty() } else { RenameFlags::NOREPLACE };
         match renameat_with(&from_parent, from_name, &to_parent, to_name, flags) {
+            // Within one root a move is a rename, never a copy.
+            Err(Errno::XDEV) if self.same_as(target) => {
+                Err(FileError::Invalid("not a rename within one place"))
+            }
             // Another share is another file system.
             Err(Errno::XDEV) => {
                 let (from_name, to_name) = (c_name(from_name)?, c_name(to_name)?);
-                // Only what was there before the copy goes after it: whoever
-                // may write the folder could put something else in its place
-                // meanwhile, which the user's rights would then delete.
-                let source = identity(&statat(&from_parent, &from_name, AtFlags::SYMLINK_NOFOLLOW)?);
-                copy_new(from_parent.as_fd(), &from_name, to_parent.as_fd(), &to_name, self.file_system, 0)?;
-                remove_entry(from_parent.as_fd(), &from_name, self.file_system, 0, Some(source))
+                // Only what was copied goes after it, and only as it was
+                // copied: whoever may write the folder could change or add
+                // something meanwhile, or put something else in its place,
+                // which the user's rights would then delete.
+                let mut copied = Copied::recording();
+                copy_new(
+                    from_parent.as_fd(),
+                    &from_name,
+                    to_parent.as_fd(),
+                    &to_name,
+                    self.file_system,
+                    0,
+                    &mut copied,
+                )?;
+                target.sync()?;
+                self.remove_copied(from, &copied)
             }
             other => Ok(other?),
         }
+    }
+
+    /// Writes out what the root's file system holds in memory (`syncfs`),
+    /// and says whether that worked: a move removes its source only once
+    /// the copy is on the target for sure, which a drive pulled out right
+    /// after it would otherwise lose. Whoever may use the root may read it.
+    pub fn sync(&self) -> Result<(), FileError> {
+        let root = self.resolve(&SharePath::root(), OFlags::RDONLY | OFlags::DIRECTORY)?;
+        rustix::fs::syncfs(&root).map_err(|error| FileError::NotDurable(error.into()))
     }
 
     /// Copies `from` to `to` in `target`; if `to` exists, to the first free
@@ -790,6 +901,7 @@ impl ShareRoot {
                 &c_name(&name)?,
                 self.file_system,
                 0,
+                &mut Copied::off(),
             ) {
                 Ok(()) => {
                     return directory.join(&name).map_err(|_| FileError::Invalid("the path is too long"));

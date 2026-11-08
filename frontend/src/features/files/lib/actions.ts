@@ -242,6 +242,22 @@ export function shortcut(
   }
 }
 
+/**
+ * What dropping entries from `from` onto a folder of `into` does: within one
+ * place (a folder on a volume, the personal folder, a drive) they move,
+ * into another place they are copied, so nothing leaves a place by a slip
+ * of the mouse. Ctrl (or Alt) copies and Shift moves, either way.
+ */
+export function dropMode(
+  from: Place,
+  into: Place,
+  keys: Pick<MouseEvent, 'ctrlKey' | 'altKey' | 'shiftKey'>,
+): 'copy' | 'move' {
+  if (keys.ctrlKey || keys.altKey) return 'copy'
+  if (keys.shiftKey) return 'move'
+  return from === into ? 'move' : 'copy'
+}
+
 /** What a file is, by its extension: `PDF`, or `null` without one. */
 export function extension(name: string): string | null {
   const dot = name.lastIndexOf('.')

@@ -26,7 +26,7 @@ use rustix::thread::{
     CapabilitySet, capabilities, set_capabilities, set_thread_groups, set_thread_res_gid, set_thread_res_uid,
 };
 use zendiloos_agent_proto::{EntryFacts, FileLocation, FileRoot, Request, Response, SharePath, UserName};
-use zendiloos_fileops::{FileError, PIECES_IN_FLIGHT, SearchBounds, Sent, ShareRoot, Taken, settle};
+use zendiloos_fileops::{Copied, FileError, PIECES_IN_FLIGHT, SearchBounds, ShareRoot, Taken, settle};
 
 use crate::accounts::{AccountFiles, ID_MAX, ID_MIN, USERS_GROUP};
 use crate::operations::OperationError;
@@ -245,15 +245,41 @@ struct Side {
 }
 
 /// Copies `from` to `to`, each side on a thread of its own with its own
-/// rights; says where the copy went and what was copied.
-async fn across(from: Side, to: Side, taken: Taken) -> Result<(SharePath, Sent), OperationError> {
+/// rights, then writes the copy out (`syncfs`) on the target's side when it
+/// is a move's or lands on a removable drive; says where the copy went and
+/// what was copied, for a move (`Taken::Refuse`) entry by entry.
+async fn across(from: Side, to: Side, taken: Taken) -> Result<(SharePath, Copied), OperationError> {
     let (out, pieces) = std::sync::mpsc::sync_channel(PIECES_IN_FLIGHT);
     let (source, from_path) = (from.root, from.path);
     let (target, to_path) = (to.root, to.path);
-    let reading = spawn_as(from.acting, move || source.send_entry(&from_path, &out));
-    let writing = spawn_as(to.acting, move || target.receive_entry(&to_path, &pieces, taken));
+    let moving = taken == Taken::Refuse;
+    let reading = spawn_as(from.acting, move || source.send_entry(&from_path, &out, moving));
+    let filled = Arc::clone(&target);
+    let writing = spawn_as(to.acting.clone(), move || filled.receive_entry(&to_path, &pieces, taken));
     let (read, written) = tokio::join!(reading, writing);
-    settle(read?, written?).map_err(OperationError::File)
+    let copy = settle(read?, written?).map_err(OperationError::File)?;
+    if moving || to.acting == Acting::Drive {
+        run(to.acting, move || target.sync()).await?;
+    }
+    Ok(copy)
+}
+
+/// A move's answer: done, or what stayed where it was.
+fn moved(result: Result<(), OperationError>) -> Result<(Response, Option<OwnedFd>), OperationError> {
+    match result {
+        Ok(()) => Ok((Response::Done, None)),
+        Err(OperationError::File(FileError::PartlyMoved(kept))) => {
+            tracing::info!(
+                kept = kept.count,
+                too_many = kept.too_many,
+                "files: a move left part of its source"
+            );
+            let response =
+                Response::PartlyMoved { kept: kept.count, example: kept.example, too_many: kept.too_many };
+            Ok((response, None))
+        }
+        Err(error) => Err(error),
+    }
 }
 
 impl Files {
@@ -396,22 +422,21 @@ impl Files {
                 let (source, target) = (self.writable(from, user)?, self.writable(to, user)?);
                 let (from, to, replace) = (from.path.clone(), to.path.clone(), *replace);
                 if reader == writer {
-                    run(reader, move || source.move_entry(&from, &target, &to, replace)).await?;
-                    return Ok((Response::Done, None));
+                    return moved(run(reader, move || source.move_entry(&from, &target, &to, replace)).await);
                 }
                 if replace {
                     return Err(OperationError::File(FileError::Invalid(
                         "nothing is replaced between a drive and a volume",
                     )));
                 }
-                // A copy, then what was copied goes from where it was.
+                // A copy, written out, then what was copied goes from where
+                // it was, as far as it is still what was copied.
                 let source = Arc::new(source);
                 let from_side =
                     Side { acting: reader.clone(), root: Arc::clone(&source), path: from.clone() };
                 let to_side = Side { acting: writer, root: Arc::new(target), path: to };
-                let (_, sent) = across(from_side, to_side, Taken::Refuse).await?;
-                run(reader, move || source.remove_sent(&from, sent)).await?;
-                Ok((Response::Done, None))
+                let (_, copied) = across(from_side, to_side, Taken::Refuse).await?;
+                moved(run(reader, move || source.remove_copied(&from, &copied)).await)
             }
             Request::CopyEntry { user, from, to } => {
                 let identity = self.identity(user)?;
@@ -419,7 +444,16 @@ impl Files {
                 let (source, target) = (self.share(from, user)?, self.writable(to, user)?);
                 let (from, to) = (from.path.clone(), to.path.clone());
                 let path = if reader == writer {
-                    run(reader, move || source.copy_entry(&from, &target, &to)).await?
+                    // Onto a drive: written out before it counts as done.
+                    let drive = writer == Acting::Drive;
+                    run(reader, move || {
+                        let path = source.copy_entry(&from, &target, &to)?;
+                        if drive {
+                            target.sync()?;
+                        }
+                        Ok(path)
+                    })
+                    .await?
                 } else {
                     let from = Side { acting: reader, root: Arc::new(source), path: from };
                     let to = Side { acting: writer, root: Arc::new(target), path: to };
@@ -626,6 +660,35 @@ mod tests {
         assert!(matches!(refused, Err(OperationError::File(FileError::Exists))), "{refused:?}");
         let missing = across(side("photos", "gone"), side("music", "gone"), Taken::Beside).await;
         assert!(matches!(missing, Err(OperationError::File(FileError::NotFound))), "{missing:?}");
+        // For a move, what was sent is recorded, and only that goes.
+        let (went, copied) =
+            across(side("photos", "album"), side("music", "moved"), Taken::Refuse).await.unwrap();
+        assert_eq!((went.as_str(), copied.count()), ("moved", 2));
+        std::fs::write(directory.path().join("volume1/photos/album/new.jpg"), "new").unwrap();
+        let source = root("photos");
+        let removed =
+            run(Acting::Drive, move || source.remove_copied(&SharePath::parse("album").unwrap(), &copied));
+        let answer = moved(removed.await);
+        assert!(
+            matches!(&answer, Ok((Response::PartlyMoved { kept: 1, too_many: false, .. }, None))),
+            "{answer:?}"
+        );
+        assert!(directory.path().join("volume1/photos/album/new.jpg").exists());
+        assert!(!directory.path().join("volume1/photos/album/a.jpg").exists());
+    }
+
+    #[test]
+    fn a_move_answers_what_it_left_where_it_was() {
+        let example = Some(SharePath::parse("album/new.txt").unwrap());
+        let kept = zendiloos_fileops::Kept { count: 3, example: example.clone(), too_many: false };
+        let answer = moved(Err(OperationError::File(FileError::PartlyMoved(kept))));
+        assert!(
+            matches!(&answer, Ok((Response::PartlyMoved { kept: 3, example: e, too_many: false }, None)) if *e == example),
+            "{answer:?}"
+        );
+        assert!(matches!(moved(Ok(())), Ok((Response::Done, None))));
+        let denied = moved(Err(OperationError::File(FileError::Denied)));
+        assert!(matches!(denied, Err(OperationError::File(FileError::Denied))), "{denied:?}");
     }
 
     /// `/dev/shm` is a file system of its own below `/dev`, as a drive is

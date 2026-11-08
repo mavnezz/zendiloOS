@@ -2204,6 +2204,10 @@ const de: Messages = {
       invalid_operation: 'Nicht möglich.',
       agent_failed: 'Das System konnte es nicht ausführen.',
       refused: 'Das System hat aus Sicherheitsgründen abgelehnt.',
+      partly_moved:
+        'Zum Teil verschoben: {example} ist geblieben, wo es war, da es sich während des Verschiebens geändert hat oder nicht verschoben werden kann. Was davon kopiert wurde, liegt auch im Ziel. |Zum Teil verschoben: {count} Einträge sind geblieben, wo sie waren, etwa {example}, da sie sich während des Verschiebens geändert haben oder nicht verschoben werden können. Was davon kopiert wurde, liegt auch im Ziel.',
+      copied_not_moved:
+        'Kopiert, nicht verschoben: {count} Einträge sind zu viele, um jeden vor dem Entfernen zu prüfen, daher sind die Originale geblieben, etwa {example}. Löschen Sie sie, sobald Sie die Kopie geprüft haben.',
     },
   },
   updates: {
@@ -2593,7 +2597,11 @@ const de: Messages = {
     uploading: '{name} wird hochgeladen',
     cancelUpload: 'Hochladen abbrechen',
     dismiss: 'Ausblenden',
-    dropHere: 'Dateien hier ablegen, um sie hochzuladen',
+    drop: {
+      upload: 'Dateien hier ablegen, um sie hochzuladen',
+      move: 'Hierher verschieben (Strg kopiert)',
+      copy: 'Hierher kopieren (Umschalt verschiebt)',
+    },
     preview: 'Anzeigen',
     snapshots: 'Zeitpunkt',
     snapshotsHint: 'Die Freigabe ansehen, wie sie bei einem Snapshot war',

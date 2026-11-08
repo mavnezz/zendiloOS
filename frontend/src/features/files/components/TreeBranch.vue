@@ -65,6 +65,11 @@ const item = computed(() =>
   }),
 )
 
+function draggedOver(event: DragEvent): void {
+  over.value = !locked.value
+  if (!locked.value) explorer.over(event, props.share)
+}
+
 function dropped(event: DragEvent): void {
   over.value = false
   if (!locked.value) explorer.drop(event, props.share, props.path)
@@ -85,7 +90,7 @@ function dropped(event: DragEvent): void {
       :style="{ paddingLeft: `${depth * 12 + 4}px` }"
       :data-over="over || undefined"
       @contextmenu="explorer.aim(item)"
-      @dragover.prevent="over = !locked"
+      @dragover.prevent="draggedOver"
       @dragleave="over = false"
       @drop.prevent.stop="dropped"
     >

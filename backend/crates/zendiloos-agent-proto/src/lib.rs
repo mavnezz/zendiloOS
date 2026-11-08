@@ -661,8 +661,11 @@ pub enum Request {
         user: UserName,
         location: FileLocation,
     },
-    /// Renames or moves; between shares by copying and removing. `conflict`
-    /// if `to` exists, unless `replace` and both are files.
+    /// Renames or moves; between shares by copying, writing the copy out and
+    /// removing what was copied, unchanged since. `conflict` if `to`
+    /// exists, unless `replace` and both are files. A move that left part
+    /// of its source answers [`Response::PartlyMoved`]. Within one root it
+    /// is a rename, and quick ([`Request::is_long`]).
     MoveEntry {
         user: UserName,
         from: FileLocation,
@@ -900,6 +903,18 @@ pub enum Response {
     },
     Copied {
         path: SharePath,
+    },
+    /// A move across file systems ([`Request::MoveEntry`]) removed only part
+    /// of its source: `kept` entries stayed where they were, such as
+    /// `example`, because they changed or came since they were copied, were
+    /// never copied (pipes, uploads under way), or could not be removed;
+    /// what of them was copied is in the target too. With `too_many`, more
+    /// entries than a move checks one by one: the copy is complete, and the
+    /// source stayed whole.
+    PartlyMoved {
+        kept: u64,
+        example: Option<SharePath>,
+        too_many: bool,
     },
     DockerState {
         /// The `docker` program is there.
@@ -1218,8 +1233,10 @@ impl Request {
     /// ones waiting; clients wait for them longer.
     pub fn is_long(&self) -> bool {
         match self {
+            // Within one root a move is a rename (an upload's last step,
+            // F2), which never waits behind hours of copying.
+            Request::MoveEntry { from, to, .. } => !from.same_share(to),
             Request::CopyEntry { .. }
-            | Request::MoveEntry { .. }
             // Planning walks the whole folder.
             | Request::ArchiveFolder { .. }
             // Restarts Docker.
@@ -2089,6 +2106,68 @@ mod tests {
         assert!(Request::MountRemovable { id: id() }.is_long());
         assert!(Request::EjectRemovable { id: id(), power_off: true }.is_long());
         assert!(!Request::CleanRemovable {}.is_long());
+    }
+
+    #[test]
+    fn a_rename_within_one_place_is_quick_a_move_between_places_long() {
+        let user = || UserName::parse("anna").unwrap();
+        let at = |root: FileRoot, path: &str| FileLocation {
+            volume: VolumeNumber::new(1).unwrap(),
+            root,
+            path: SharePath::parse(path).unwrap(),
+            snapshot: None,
+        };
+        let photos = |path: &str| at(FileRoot::Share(ShareName::parse("photos").unwrap()), path);
+        // An upload's last step: the hidden file to its name.
+        let upload = Request::MoveEntry {
+            user: user(),
+            from: photos("album/.zendiloos-upload-0123456789abcdef"),
+            to: photos("album/beach.jpg"),
+            replace: true,
+        };
+        // F2, and a move into another folder of the same place.
+        let rename = Request::MoveEntry {
+            user: user(),
+            from: photos("album/beach.jpg"),
+            to: photos("album/sea.jpg"),
+            replace: false,
+        };
+        let within = Request::MoveEntry {
+            user: user(),
+            from: photos("a.jpg"),
+            to: photos("album/a.jpg"),
+            replace: false,
+        };
+        for request in [upload, rename, within] {
+            assert!(!request.is_long() && request.acting_user().is_none(), "{request:?}");
+        }
+        let drive = || FileRoot::Removable(RemovableId::parse("1A2B-3C4D").unwrap());
+        for to in [
+            at(FileRoot::Share(ShareName::parse("music").unwrap()), "a.jpg"),
+            at(FileRoot::Home, "a.jpg"),
+            at(drive(), "a.jpg"),
+            FileLocation { volume: VolumeNumber::new(2).unwrap(), ..photos("a.jpg") },
+        ] {
+            let across = Request::MoveEntry { user: user(), from: photos("a.jpg"), to, replace: false };
+            assert!(across.is_long(), "{across:?}");
+            assert_eq!(across.acting_user(), Some(&user()), "one long place each");
+        }
+        let on_the_drive =
+            Request::MoveEntry { user: user(), from: at(drive(), "a"), to: at(drive(), "b"), replace: false };
+        assert!(!on_the_drive.is_long());
+    }
+
+    #[test]
+    fn a_partial_move_says_what_stayed() {
+        let partly = Response::PartlyMoved {
+            kept: 2,
+            example: Some(SharePath::parse("album/new.txt").unwrap()),
+            too_many: false,
+        };
+        let wire =
+            json!({ "status": "partly_moved", "kept": 2, "example": "album/new.txt", "too_many": false });
+        assert_eq!(serde_json::to_value(&partly).unwrap(), wire);
+        assert_eq!(serde_json::from_value::<Response>(wire).unwrap(), partly);
     }
 
     #[test]

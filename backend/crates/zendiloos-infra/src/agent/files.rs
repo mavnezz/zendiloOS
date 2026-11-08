@@ -219,7 +219,15 @@ impl FileHost for AgentFiles {
     ) -> Result<(), FileHostError> {
         let request =
             Request::MoveEntry { user: user(user_name)?, from: location(from)?, to: location(to)?, replace };
-        self.done(request, context).await
+        match self.call(request, context).await? {
+            (Response::Done, _) => Ok(()),
+            (Response::PartlyMoved { kept, example, too_many }, _) => Err(FileHostError::PartlyMoved {
+                kept,
+                example: example.and_then(|path| FilePath::parse(path.as_str()).ok()),
+                too_many,
+            }),
+            (other, _) => Err(unexpected(other).into()),
+        }
     }
 
     async fn copy_entry(
@@ -293,6 +301,40 @@ mod tests {
     use zendiloos_sim::SimulatedAgent;
 
     use super::*;
+
+    #[tokio::test]
+    async fn a_move_that_left_part_of_its_source_says_what() {
+        let partly = |example: Option<&str>| Response::PartlyMoved {
+            kept: 2,
+            example: example.map(|path| proto::SharePath::parse(path).unwrap()),
+            too_many: false,
+        };
+        let agent = Arc::new(crate::agent::scripted::Scripted::answering([
+            partly(Some("album/new.txt")),
+            partly(None),
+            Response::Copied { path: proto::SharePath::parse("x").unwrap() },
+        ]));
+        let files = AgentFiles::new(agent);
+        let context = RequestContext::default();
+        let at = |share: &str, path: &str| FileLocation {
+            volume: 1,
+            root: FileRoot::Share(ShareName::parse(share).unwrap()),
+            path: FilePath::parse(path).unwrap(),
+            snapshot: None,
+        };
+        let (from, to) = (at("photos", "album"), at("music", "album"));
+
+        let moved = files.move_entry("anna", &from, &to, false, &context).await;
+        assert!(
+            matches!(&moved, Err(FileHostError::PartlyMoved { kept: 2, example: Some(e), too_many: false })
+                if e.as_str() == "album/new.txt"),
+            "{moved:?}"
+        );
+        let moved = files.move_entry("anna", &from, &to, false, &context).await;
+        assert!(matches!(moved, Err(FileHostError::PartlyMoved { example: None, .. })), "{moved:?}");
+        let odd = files.move_entry("anna", &from, &to, false, &context).await;
+        assert!(matches!(odd, Err(FileHostError::Port(_))), "{odd:?}");
+    }
 
     #[tokio::test]
     async fn files_travel_through_the_agent() {

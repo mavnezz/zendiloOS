@@ -65,6 +65,7 @@ import {
 import {
   type ActionId,
   actionsFor,
+  dropMode,
   type EntryInfo,
   extension,
   type Item,
@@ -1020,9 +1021,13 @@ function emptyBin(): void {
   void removeAll(list.filter((i) => !i.unreadable))
 }
 
-// Dragging entries onto folders, and files from the computer.
+// Dragging entries onto folders, and files from the computer. Within one
+// place entries move, into another they are copied (`dropMode`).
 const ENTRIES = 'application/x-zendiloos-entries'
-const dragging = ref(false)
+/** What a drop onto the entries shown would do, while something is dragged over them. */
+const dropping = ref<'upload' | 'copy' | 'move' | null>(null)
+/** The place the entries being dragged come from: what is dragged can be read only once dropped. */
+let draggedFrom: Place | null = null
 
 function dragStart(item: Item, event: DragEvent): void {
   const list = selected.value.has(item.key) ? chosen.value : [item]
@@ -1031,10 +1036,26 @@ function dragStart(item: Item, event: DragEvent): void {
     JSON.stringify({ share: item.share, paths: list.map((i) => i.path) }),
   )
   if (event.dataTransfer) event.dataTransfer.effectAllowed = 'copyMove'
+  draggedFrom = item.share
+}
+
+/** What dropping onto a folder of `into` would do; the pointer shows it too. */
+function dragOver(event: DragEvent, into: Place): 'upload' | 'copy' | 'move' {
+  const from = draggedFrom
+  const types = event.dataTransfer?.types ?? []
+  if (from === null || !types.includes(ENTRIES)) return 'upload'
+  const mode = dropMode(from, into, event)
+  if (event.dataTransfer) event.dataTransfer.dropEffect = mode
+  return mode
+}
+
+function dragOverHere(event: DragEvent): void {
+  const into = container(here.value)
+  dropping.value = into ? dragOver(event, into.share) : null
 }
 
 function dropOn(event: DragEvent, share: Place, path: string): void {
-  dragging.value = false
+  dropping.value = null
   const files = [...(event.dataTransfer?.files ?? [])]
   if (files.length) {
     void upload(files, { share, path })
@@ -1043,7 +1064,7 @@ function dropOn(event: DragEvent, share: Place, path: string): void {
   const raw = event.dataTransfer?.getData(ENTRIES)
   if (!raw) return
   const dragged = JSON.parse(raw) as { share: Place; paths: string[] }
-  void transfer(event.ctrlKey || event.altKey ? 'copy' : 'move', dragged.share, dragged.paths, {
+  void transfer(dropMode(dragged.share, share, event), dragged.share, dragged.paths, {
     share,
     path,
   })
@@ -1052,7 +1073,7 @@ function dropOn(event: DragEvent, share: Place, path: string): void {
 function dropHere(event: DragEvent): void {
   const into = container(here.value)
   if (into && situation(here.value).writable) dropOn(event, into.share, into.path)
-  else dragging.value = false
+  else dropping.value = null
 }
 
 // Keys where the entries have the focus.
@@ -1190,6 +1211,7 @@ provide(EXPLORER, {
   current: location,
   go,
   aim: (item: Item) => (aimed.value = item),
+  over: (event: DragEvent, share: Place) => void dragOver(event, share),
   drop: (event: DragEvent, share: Place, path: string) => dropOn(event, share, path),
 })
 </script>
@@ -1364,8 +1386,8 @@ provide(EXPLORER, {
           @keydown="keydown"
           @contextmenu.capture="aimed = null"
           @click.self="selected = new Set()"
-          @dragover.prevent="dragging = location.kind === 'folder'"
-          @dragleave.self="dragging = false"
+          @dragover.prevent="dragOverHere"
+          @dragleave.self="dropping = null"
           @drop.prevent="dropHere"
         >
           <Alert v-if="placesError" variant="destructive" class="m-4">{{
@@ -1428,10 +1450,10 @@ provide(EXPLORER, {
             </p>
           </template>
           <div
-            v-if="dragging"
+            v-if="dropping"
             class="pointer-events-none absolute inset-2 grid place-items-center rounded-xl border-2 border-dashed border-primary bg-primary/5 text-sm font-medium text-primary"
           >
-            {{ t('files.dropHere') }}
+            {{ t(`files.drop.${dropping}`) }}
           </div>
         </div>
       </ContextMenu>

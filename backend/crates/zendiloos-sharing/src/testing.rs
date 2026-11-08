@@ -677,6 +677,14 @@ impl FileHost for Files {
         if to.path.name() == Some("taken.jpg") && replace.is_empty() {
             return Err(FileHostError::Exists);
         }
+        // Written to while it was moved: what changed stays.
+        if from.path.name() == Some("changing") {
+            let example = from.path.join("new.txt").ok();
+            return Err(FileHostError::PartlyMoved { kept: 2, example, too_many: false });
+        }
+        if from.path.name() == Some("huge") {
+            return Err(FileHostError::PartlyMoved { kept: 1_000_001, example: None, too_many: true });
+        }
         Ok(())
     }
 

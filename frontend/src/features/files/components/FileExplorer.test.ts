@@ -237,18 +237,24 @@ async function goTo(name: string): Promise<void> {
   treeButton(name).click()
   await settle()
 }
-function dropEvent(data: { files?: File[]; entries?: unknown }, init: MouseEventInit = {}): Event {
+function dropEvent(
+  data: { files?: File[]; entries?: unknown },
+  init: MouseEventInit = {},
+  kind = 'drop',
+): MouseEvent & { dataTransfer: { dropEffect: string } } {
   const store: Record<string, string> = {}
   if (data.entries) store['application/x-zendiloos-entries'] = JSON.stringify(data.entries)
-  const event = new MouseEvent('drop', { bubbles: true, cancelable: true, ...init })
+  const event = new MouseEvent(kind, { bubbles: true, cancelable: true, ...init })
   Object.defineProperty(event, 'dataTransfer', {
     value: {
       files: data.files ?? [],
+      types: [...Object.keys(store), ...(data.files?.length ? ['Files'] : [])],
+      dropEffect: 'none',
       getData: (t: string) => store[t] ?? '',
       setData: () => undefined,
     },
   })
-  return event
+  return event as MouseEvent & { dataTransfer: { dropEffect: string } }
 }
 function notified(text: string): boolean {
   return useNotifications().items.some((n) => n.title.includes(text))
@@ -534,6 +540,26 @@ describe('choosing and acting', () => {
     serve()
     await show()
     await goTo('photos')
+    // While dragged, the pointer and the folder say what a drop would do.
+    await fire(row('b.txt'), 'dragstart')
+    const over = dropEvent({ entries: { share: 1, paths: ['b.txt'] } }, {}, 'dragover')
+    row('Album').dispatchEvent(over)
+    await settle()
+    expect(over.dataTransfer.dropEffect).toBe('move')
+    expect(page()).toContain('Move here (Ctrl copies)')
+    const copying = dropEvent(
+      { entries: { share: 1, paths: ['b.txt'] } },
+      { ctrlKey: true },
+      'dragover',
+    )
+    row('Album').dispatchEvent(copying)
+    await settle()
+    expect(copying.dataTransfer.dropEffect).toBe('copy')
+    expect(page()).toContain('Copy here (Shift moves)')
+    row('Album').dispatchEvent(dropEvent({ files: [] }, {}, 'dragover'))
+    await settle()
+    expect(page()).toContain('Drop files here to upload them')
+
     row('Album').dispatchEvent(dropEvent({ entries: { share: 1, paths: ['b.txt'] } }))
     await settle()
     expect(callsTo('POST', '/api/v1/files/shares/1/transfer')[0]!.body).toMatchObject({
@@ -906,18 +932,36 @@ describe('removable drives', () => {
       target_path: '',
     })
 
-    // Dragged onto the drive in the tree: it lights up, then gets it.
+    // Dragged onto the drive in the tree: it lights up, then gets a copy,
+    // as another place does; with Shift it is moved.
+    await fire(row('b.txt'), 'dragstart')
     const target = node('STICK')
-    await fire(target, 'dragover')
+    const over = dropEvent({ entries: { share: 1, paths: ['b.txt'] } }, {}, 'dragover')
+    target.dispatchEvent(over)
+    await settle()
     expect(target.dataset.over).toBe('true')
+    expect(over.dataTransfer.dropEffect).toBe('copy')
     target.dispatchEvent(dropEvent({ entries: { share: 1, paths: ['b.txt'] } }))
     await settle()
     expect(target.dataset.over).toBeUndefined()
     expect(callsTo('POST', '/api/v1/files/shares/1/transfer')[0]!.body).toEqual({
-      mode: 'move',
+      mode: 'copy',
       paths: ['b.txt'],
       target_drive: '1A2B-3C4D',
       target_path: '',
+    })
+    const moving = dropEvent(
+      { entries: { share: 1, paths: ['b.txt'] } },
+      { shiftKey: true },
+      'dragover',
+    )
+    target.dispatchEvent(moving)
+    expect(moving.dataTransfer.dropEffect).toBe('move')
+    target.dispatchEvent(dropEvent({ entries: { share: 1, paths: ['b.txt'] } }, { shiftKey: true }))
+    await settle()
+    expect(callsTo('POST', '/api/v1/files/shares/1/transfer')[1]!.body).toMatchObject({
+      mode: 'move',
+      target_drive: '1A2B-3C4D',
     })
   })
 

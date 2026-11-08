@@ -57,6 +57,7 @@ impl From<FileHostError> for FilesError {
             FileHostError::Denied => FilesError::Denied,
             FileHostError::Exists => FilesError::Exists,
             FileHostError::Invalid(reason) => FilesError::Invalid(reason),
+            partly @ FileHostError::PartlyMoved { .. } => FilesError::Invalid(partly.to_string()),
             FileHostError::Port(error) => FilesError::Port(error),
         }
     }
@@ -68,9 +69,35 @@ fn job_error(error: FileHostError) -> JobError {
         FileHostError::Denied => "denied",
         FileHostError::Exists => "name_taken",
         FileHostError::Invalid(_) => "invalid_operation",
+        FileHostError::PartlyMoved { kept, example, too_many } => {
+            return left_behind(&Left {
+                kept: *kept,
+                example: example.as_ref().map(|e| e.as_str().to_owned()),
+                too_many: *too_many,
+            });
+        }
         FileHostError::Port(_) => "agent_failed",
     };
     JobError::new(code, Some(error.to_string()))
+}
+
+/// What the moves of one job left where they were.
+#[derive(Debug, Default)]
+struct Left {
+    kept: u64,
+    /// The first of it, after the name of its place: `photos/album/a.jpg`.
+    example: Option<String>,
+    too_many: bool,
+}
+
+/// A move that left part of its source is never a plain success: the job
+/// fails with `partly_moved` (what changed or came during the move, or
+/// could not be removed, stayed), or `copied_not_moved` (too many entries to
+/// check: the copy is complete, the source stayed whole). The detail is
+/// the number of entries that stayed, a space, and one of them.
+fn left_behind(left: &Left) -> JobError {
+    let code = if left.too_many { "copied_not_moved" } else { "partly_moved" };
+    JobError::new(code, Some(format!("{} {}", left.kept, left.example.as_deref().unwrap_or_default())))
 }
 
 /// A share the user may use, and how.
@@ -669,19 +696,37 @@ impl FilesUseCases {
         };
         let files = Arc::clone(&self.ports.files);
         let (user, context) = (actor.name.clone(), context.clone());
+        let source_name = source.name().to_owned();
         let job = self
             .ports
             .jobs
             .start(kind, Some(destination.name().to_owned()), Some(actor), move |progress| async move {
                 let total = moves.len();
+                // What moves left where it was: the job goes on with the
+                // others, and says so at the end.
+                let mut left = Left::default();
                 for (done, (from, to)) in moves.iter().enumerate() {
                     #[allow(clippy::cast_precision_loss)]
                     progress.step(step, Some(done as f32 / total as f32)).await;
                     match mode {
                         Transfer::Copy => files.copy_entry(&user, from, to, &context).await.map(drop),
-                        Transfer::Move => files.move_entry(&user, from, to, false, &context).await,
+                        Transfer::Move => match files.move_entry(&user, from, to, false, &context).await {
+                            Err(FileHostError::PartlyMoved { kept, example, too_many }) => {
+                                left.kept += kept;
+                                left.too_many |= too_many;
+                                let example = example.unwrap_or_else(|| from.path.clone());
+                                left.example
+                                    .get_or_insert_with(|| format!("{source_name}/{}", example.as_str()));
+                                Ok(())
+                            }
+                            other => other,
+                        },
                     }
                     .map_err(job_error)?;
+                }
+                if left.kept > 0 {
+                    tracing::warn!(user, kept = left.kept, "files: moves left part of their sources");
+                    return Err(left_behind(&left));
                 }
                 tracing::info!(user, entries = total, kind = step, "files: transferred");
                 Ok(())

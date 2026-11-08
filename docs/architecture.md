@@ -793,7 +793,8 @@ TLS is rustls with ring and the system's certificate authorities
   in a folder on a volume belongs to the person and takes the folder's
   inherited ACL exactly as an upload does, and only what the person may
   read there reaches a drive; a move removes the source once the copy is
-  complete, and only what was copied (by device and inode). Paths are resolved
+  complete and written out, and only what was copied (see Moves below).
+  Paths are resolved
   relative to the share's root with
   `openat2(RESOLVE_BENEATH | RESOLVE_NO_XDEV | RESOLVE_NO_MAGICLINKS)`, so
   neither `..` nor a symbolic link leads out of the share; copying and
@@ -813,12 +814,49 @@ TLS is rustls with ring and the system's certificate authorities
   folder: whoever may write the folder could rename one of the user's
   folders to the upload's name. zendiloosd records each upload under way
   (`pending_uploads`); what one left when zendiloosd stopped in the middle
-  is removed when it starts again, as that user. Likewise a move between
-  shares removes its source only if it still is what was copied (device
-  and inode), and a failed copy removes only the folder it made; folders
-  are emptied in batches, never read whole. New files belong to the user and inherit the
-  share's ACLs, exactly as over SMB. Copies, moves and deletions run as
-  jobs. Verified end to end in the test VM (`just vm-sharing-test`).
+  is removed when it starts again, as that user. A failed copy removes
+  only what it made, taken by the descriptor it made it through (a link
+  only while a link has the name); folders are emptied in batches, never
+  read whole. Copies leave uploads under way out (a half-written file
+  that nothing would ever remove there). New files belong to the user and inherit the
+  share's ACLs, exactly as over SMB. Copies, moves into another place and
+  deletions run as jobs; a rename is a quick request. Verified end to end
+  in the test VM (`just vm-sharing-test`).
+- **Moves into another place** (another share, the personal folder, a
+  drive: another file system) copy, then remove what was copied, and
+  nothing else. The copy records each entry it copied as it goes, a
+  compact tree in memory: name, device and inode, kind and change time,
+  for a file also its modification time and size, for a link its target,
+  all from the descriptor it copied through, taken before it read. Device
+  and inode alone do not tell an entry: ext4 gives a new entry the number
+  of one just removed, and ZFS reuses object numbers too; what is put in a
+  copied entry's place has a change time of its own, and a link its own
+  target. Before anything is
+  removed, the target's file system is written out (`syncfs` on the
+  target's root, on the target's side); if that fails, the source stays
+  and the move says so: a drive pulled out after "done" would otherwise
+  lose both. Removing then walks the record, never the folders: what is
+  missing by then is passed by; what changed since (another entry under
+  the name, a file written to, which its change time or size tells; FAT
+  keeps times in two-second steps, hence the size) stays and is counted;
+  files and links that are still what was copied go; a folder goes once
+  that left it empty, otherwise it stays and is counted (something new
+  came into it, an upload under way, a pipe, a file system mounted inside,
+  none of which are copied). A folder's change time is compared before
+  what is in it goes, which changes it too: one that changed since it was
+  copied (something came, went or was renamed in it, or another, empty
+  folder took its place and number) stays once what in it is still as
+  copied went. A move that left anything is never a plain
+  success: the job ends as `partly_moved`, with the number of entries that
+  stayed and one of them, which the explorer shows. The record has a
+  budget like an archive's plan (half a million entries, 16 MiB of names,
+  some 50 MB of the files agent's memory at most): a
+  move of more keeps the complete copy and the whole source and says so
+  (`copied_not_moved`). A name of the source that the target takes for
+  another one, as FAT, exFAT and NTFS do with names that differ only in
+  case, fails the copy with both names, not as a name "taken meanwhile".
+  A plain copy onto a drive is written out the same way before it counts
+  as done.
 - **Downloads and previews.** A download answers one byte range
   (`Range`, 206 or 416), so browsers resume a broken download (`If-Range`
   with the `Last-Modified` it was given; a file changed since comes again
@@ -901,8 +939,11 @@ TLS is rustls with ring and the system's certificate authorities
   who manage shares taken, deleted and rolled back), eject and mount a
   drive, and properties (general, permissions, sharing, NFS). Keys
   do the same (Del, F2, Ctrl+C/X/V/A, Enter, Backspace and Alt+arrows);
-  entries dragged onto a folder move (Ctrl copies), files dragged from the
-  computer upload. The volumes come from `GET /files/volumes`: someone who
+  entries dragged onto a folder of the same place move, onto another place
+  (another folder on a volume, the personal folder, a drive) they are
+  copied, so nothing leaves a place by a slip of the mouse; Ctrl (or Alt)
+  copies and Shift moves either way, and the pointer and the folder say
+  which while dragging. Files dragged from the computer upload. The volumes come from `GET /files/volumes`: someone who
   manages shares sees every folder on them, those they may not open
   marked, and makes new ones ("new folder" on a volume: off the network,
   for its maker only); everyone else sees only the folders open to them.
@@ -917,7 +958,11 @@ TLS is rustls with ring and the system's certificate authorities
   uploaded to, copied and moved within and to and from folders on volumes
   (`transfer` takes `target_share` or `target_drive`), deleted for good
   (a drive has no recycle bin, no snapshots and no favourites, and is never
-  shared). `zendiloosd` lets only someone who manages storage name a drive,
+  shared). Copies and moves onto a drive are written out (`syncfs`) before
+  they count as done, and a move removes its source only then. nginx
+  passes uploads to a drive and downloads and archives from one on as they
+  come, of any size and for up to an hour, as for shares, instead of
+  holding them on the system disk. `zendiloosd` lets only someone who manages storage name a drive,
   and only one the disks show mounted at its place now (the Storage
   context's `RemovableDrives::mounted`, through a port of the Sharing
   context); write-protected, it is read only. "Eject" (the context menu of
@@ -1085,8 +1130,11 @@ TLS is rustls with ring and the system's certificate authorities
 - Operations that walk whole trees or disks (copying, moving and deleting
   trees, permissions of a whole share, preparing and destroying pools,
   fetching and running apps and projects, moving Docker's data) have two
-  places of their own; quick ones have four. One user's large copies never
-  keep others from listing, downloading or uploading. Each user has one
+  places of their own; quick ones have four. A move within one place (a
+  folder on a volume, the personal folder, a drive) is a rename and quick,
+  so renames and the last step of an upload never wait behind hours of
+  copying; only moves into another place are long. One user's large copies
+  never keep others from listing, downloading or uploading. Each user has one
   long place at a time (a second copy waits behind the first, not in a
   place of everybody's), changes of whole shares' permissions have two of
   their own, and a folder download read at less than a mebibyte in five

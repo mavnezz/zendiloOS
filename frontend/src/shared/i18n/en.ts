@@ -2164,6 +2164,10 @@ const en = {
       invalid_operation: 'Not possible.',
       agent_failed: 'The system could not do it.',
       refused: 'The system refused for safety reasons.',
+      partly_moved:
+        'Moved in part: {example} stayed where it was, as it changed during the move or cannot be moved. What of it was copied is in the target too. | Moved in part: {count} entries stayed where they were, such as {example}, as they changed during the move or cannot be moved. What of them was copied is in the target too.',
+      copied_not_moved:
+        'Copied, not moved: {count} entries are too many to check one by one before removing them, so the originals stayed, such as {example}. Delete them once you have checked the copy.',
     },
   },
   updates: {
@@ -2549,7 +2553,11 @@ const en = {
     uploading: 'Uploading {name}',
     cancelUpload: 'Cancel the upload',
     dismiss: 'Dismiss',
-    dropHere: 'Drop files here to upload them',
+    drop: {
+      upload: 'Drop files here to upload them',
+      move: 'Move here (Ctrl copies)',
+      copy: 'Copy here (Shift moves)',
+    },
     preview: 'Show',
     snapshots: 'Point in time',
     snapshotsHint: 'Look at the share as it was when a snapshot was taken',

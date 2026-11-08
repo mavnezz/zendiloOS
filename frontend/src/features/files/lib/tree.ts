@@ -9,6 +9,8 @@ export interface Explorer {
   go(location: Location): void
   /** A right click (or long press) on a node: the menu is about `item`. */
   aim(item: Item): void
+  /** Something dragged over a folder of `share`: the pointer shows whether it would move or copy. */
+  over(event: DragEvent, share: Place): void
   /** Something dropped on the folder `share` / `path`. */
   drop(event: DragEvent, share: Place, path: string): void
 }
