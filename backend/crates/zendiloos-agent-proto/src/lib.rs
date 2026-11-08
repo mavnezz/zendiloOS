@@ -2250,6 +2250,7 @@ mod tests {
             json!({ "status": "partly_moved", "kept": 2, "example": "album/new.txt", "too_many": false });
         assert_eq!(serde_json::to_value(&partly).unwrap(), wire);
         assert_eq!(serde_json::from_value::<Response>(wire).unwrap(), partly);
+    }
 
     #[test]
     fn volume_backups_go_to_the_system_agent_and_take_long() {
