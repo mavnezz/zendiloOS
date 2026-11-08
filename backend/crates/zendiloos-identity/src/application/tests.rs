@@ -300,15 +300,39 @@ async fn an_account_is_locked_after_five_failures_from_any_address() {
 }
 
 #[tokio::test]
-async fn disabled_accounts_cannot_log_in() {
+async fn disabled_accounts_cannot_log_in_and_do_not_tell_the_password_was_right() {
     let t = TestIdentity::new();
     let alice = t.add_account("alice", PASSWORD, Role::User);
     t.accounts.update(alice.id, |a| a.disabled = true);
 
-    let error = password_login(&t.use_cases.login, login_input("alice", PASSWORD), &from(1)).await;
+    let right = password_login(&t.use_cases.login, login_input("alice", PASSWORD), &from(1)).await;
+    let wrong = password_login(&t.use_cases.login, login_input("alice", "wrong password"), &from(1)).await;
 
-    assert!(matches!(error, Err(IdentityError::AccountDisabled)), "{error:?}");
+    assert!(matches!(right, Err(IdentityError::InvalidCredentials)), "{right:?}");
+    assert!(matches!(wrong, Err(IdentityError::InvalidCredentials)), "{wrong:?}");
+    assert_eq!(t.hasher.checks(), 2, "the password is checked either way");
+    let logged: Vec<_> = t.audit.entries().iter().map(|e| (e.outcome, e.reason)).collect();
+    assert_eq!(logged, [(Outcome::Denied, Some("disabled")), (Outcome::Failure, Some("wrong_password"))]);
     assert!(t.sessions.all().is_empty());
+}
+
+#[tokio::test]
+async fn sign_ins_to_a_disabled_account_count_as_failed_ones() {
+    let t = TestIdentity::new();
+    let alice = t.add_account("alice", PASSWORD, Role::User);
+    t.accounts.update(alice.id, |a| a.disabled = true);
+    for address in 1..=5 {
+        let disabled =
+            password_login(&t.use_cases.login, login_input("alice", PASSWORD), &from(address)).await;
+        assert!(matches!(disabled, Err(IdentityError::InvalidCredentials)), "{disabled:?}");
+    }
+
+    // As after five wrong passwords: the account waits out its lock.
+    t.accounts.update(alice.id, |a| a.disabled = false);
+    let locked = password_login(&t.use_cases.login, login_input("alice", PASSWORD), &from(7)).await;
+    assert!(matches!(locked, Err(IdentityError::TooManyAttempts { .. })), "{locked:?}");
+    t.clock.advance(Duration::from_secs(15 * 60));
+    assert!(password_login(&t.use_cases.login, login_input("alice", PASSWORD), &from(7)).await.is_ok());
 }
 
 // Logins at the same time
@@ -456,7 +480,9 @@ async fn a_login_for_an_account_disabled_or_deleted_meanwhile_starts_no_session(
         t.use_cases.update_account.execute(&admin, alice.id, changes, &from(9)).await.unwrap();
     })
     .await;
-    assert!(matches!(login, Err(IdentityError::AccountDisabled)), "{login:?}");
+    assert!(matches!(login, Err(IdentityError::InvalidCredentials)), "{login:?}");
+    let entry = t.audit.entries().pop().unwrap();
+    assert_eq!((entry.outcome, entry.reason), (Outcome::Denied, Some("disabled")));
 
     let changes = AccountChanges { disabled: Some(false), ..Default::default() };
     t.use_cases.update_account.execute(&admin, alice.id, changes, &from(9)).await.unwrap();
@@ -466,21 +492,6 @@ async fn a_login_for_an_account_disabled_or_deleted_meanwhile_starts_no_session(
     .await;
     assert!(matches!(login, Err(IdentityError::InvalidCredentials)), "{login:?}");
     assert!(t.sessions.all().iter().all(|s| s.account_id != alice.id));
-}
-
-#[tokio::test]
-async fn an_attempt_stopped_otherwise_does_not_count_as_failed() {
-    let t = TestIdentity::new();
-    let alice = t.add_account("alice", PASSWORD, Role::User);
-    t.accounts.update(alice.id, |a| a.disabled = true);
-    for address in 1..=6 {
-        let disabled =
-            password_login(&t.use_cases.login, login_input("alice", PASSWORD), &from(address)).await;
-        assert!(matches!(disabled, Err(IdentityError::AccountDisabled)), "{disabled:?}");
-    }
-
-    t.accounts.update(alice.id, |a| a.disabled = false);
-    assert!(password_login(&t.use_cases.login, login_input("alice", PASSWORD), &from(7)).await.is_ok());
 }
 
 // Sessions

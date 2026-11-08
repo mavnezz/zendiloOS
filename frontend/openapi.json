@@ -1289,7 +1289,7 @@
             }
           },
           "401": {
-            "description": "`invalid_credentials`",
+            "description": "`invalid_credentials`: also for a disabled account, which does not tell that the password was right",
             "content": {
               "application/json": {
                 "schema": {
@@ -1299,7 +1299,7 @@
             }
           },
           "403": {
-            "description": "`account_disabled`, `csrf_rejected`",
+            "description": "`csrf_rejected`",
             "content": {
               "application/json": {
                 "schema": {

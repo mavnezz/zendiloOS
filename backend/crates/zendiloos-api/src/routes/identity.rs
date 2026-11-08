@@ -196,8 +196,8 @@ pub struct SecondFactorChallenge {
     responses(
         (status = OK, body = SessionInfo, description = "Signed in; the session cookie is set."),
         (status = ACCEPTED, body = SecondFactorChallenge, description = "The password checked out; a code from the authenticator app is asked for."),
-        (status = UNAUTHORIZED, body = Problem, description = "`invalid_credentials`"),
-        (status = FORBIDDEN, body = Problem, description = "`account_disabled`, `csrf_rejected`"),
+        (status = UNAUTHORIZED, body = Problem, description = "`invalid_credentials`: also for a disabled account, which does not tell that the password was right"),
+        (status = FORBIDDEN, body = Problem, description = "`csrf_rejected`"),
         (status = TOO_MANY_REQUESTS, body = Problem, description = "`too_many_attempts`"),
     )
 )]

@@ -7931,7 +7931,7 @@ export interface operations {
                     "application/json": components["schemas"]["SecondFactorChallenge"];
                 };
             };
-            /** @description `invalid_credentials` */
+            /** @description `invalid_credentials`: also for a disabled account, which does not tell that the password was right */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -7940,7 +7940,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description `account_disabled`, `csrf_rejected` */
+            /** @description `csrf_rejected` */
             403: {
                 headers: {
                     [name: string]: unknown;

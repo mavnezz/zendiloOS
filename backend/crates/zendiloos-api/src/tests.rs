@@ -1461,6 +1461,21 @@ async fn login_failures_are_throttled() {
 }
 
 #[tokio::test]
+async fn a_disabled_account_is_answered_as_a_wrong_password() {
+    let h = Harness::new();
+    let alice = h.identity.add_account("alice", PASSWORD, Role::User);
+    h.identity.accounts.update(alice.id, |account| account.disabled = true);
+    let login =
+        |password: &str| json(post("/api/v1/auth/login"), json!({ "name": "alice", "password": password }));
+
+    let right = h.send(login(PASSWORD)).await;
+    let wrong = h.send(login("wrong password")).await;
+
+    assert_problem(&right, StatusCode::UNAUTHORIZED, "invalid_credentials");
+    assert_eq!((right.status, &right.body), (wrong.status, &wrong.body), "nothing tells them apart");
+}
+
+#[tokio::test]
 async fn logins_sent_at_once_are_throttled_as_if_one_after_another() {
     let h = Harness::new();
     h.identity.add_account("alice", PASSWORD, Role::User);
