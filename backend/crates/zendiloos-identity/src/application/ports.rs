@@ -259,17 +259,29 @@ pub trait PreferenceRepository: Send + Sync {
 
 /// Told about changes to groups that others keep state about. The
 /// Sharing context gives members of groups denied a share an ACL entry of
-/// their own, which has to follow the group's members.
+/// their own, which has to follow the group's members, and hands what
+/// those who leave a group that writes own over to root.
+///
+/// What follows a change elsewhere is named for whoever made it: e.g. the
+/// shares whose files are given their permissions in the background.
 #[async_trait]
 pub trait GroupObserver: Send + Sync {
-    /// The members of `group` changed; `before` were its members until now.
+    /// The members of `group` are about to become `after`; nothing has
+    /// changed yet. Returns what will have to follow; an error refuses the
+    /// change.
+    async fn members_changing(&self, group: GroupId, after: &[AccountId]) -> Result<Vec<String>, PortError>;
+
+    /// The members of `group` changed; `before` were its members until now,
+    /// `following` what [`Self::members_changing`] returned. Returns what
+    /// follows.
     async fn members_changed(
         &self,
         group: GroupId,
         before: &[AccountId],
+        following: &[String],
         actor: &Actor,
         context: &RequestContext,
-    ) -> Result<(), PortError>;
+    ) -> Result<Vec<String>, PortError>;
 
     /// `group` is about to be deleted; it and its members still exist.
     async fn deleting(
@@ -278,4 +290,40 @@ pub trait GroupObserver: Send + Sync {
         actor: &Actor,
         context: &RequestContext,
     ) -> Result<(), PortError>;
+}
+
+/// What happens to an account's access everywhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccessChange {
+    Disabled,
+    /// Enabled again.
+    Enabled,
+    Deleted,
+}
+
+/// Told when an account's access ends or comes back. The Sharing context
+/// keeps a disabled or deleted account out of the shares' files (which NFS
+/// clients reach by the account's ID, not by its sign-in), as if denied.
+/// What follows is named as for [`GroupObserver`].
+#[async_trait]
+pub trait AccountObserver: Send + Sync {
+    /// `account` is about to be disabled, enabled again or deleted;
+    /// nothing has changed yet. Returns what will have to follow; an error
+    /// refuses the change.
+    async fn access_changing(
+        &self,
+        account: AccountId,
+        change: AccessChange,
+    ) -> Result<Vec<String>, PortError>;
+
+    /// The change was made; `following` is what [`Self::access_changing`]
+    /// returned. Returns what follows.
+    async fn access_changed(
+        &self,
+        account: AccountId,
+        change: AccessChange,
+        following: &[String],
+        actor: &Actor,
+        context: &RequestContext,
+    ) -> Result<Vec<String>, PortError>;
 }

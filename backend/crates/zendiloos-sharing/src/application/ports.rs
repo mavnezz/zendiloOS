@@ -84,6 +84,21 @@ pub trait ShareRepository: Send + Sync {
 
     /// Replaces the account's favourites.
     async fn set_favourites(&self, account: i64, favourites: &[Favourite]) -> Result<(), PortError>;
+
+    /// Marks the files of `shares` as owing them their rules: whatever
+    /// happens next, they are walked until a walk that read the rules after
+    /// this mark ends without errors (docs/architecture.md, 4.4). Each mark
+    /// is newer than all before it.
+    async fn owe_access(&self, shares: &[ShareId]) -> Result<(), PortError>;
+
+    /// The shares, not being deleted, whose files owe them their rules,
+    /// each with its latest mark.
+    async fn access_owed(&self) -> Result<Vec<(ShareId, u64)>, PortError>;
+
+    /// A walk that read the share's rules when its latest mark was `mark`
+    /// gave them to every file: what it owed up to that mark is settled,
+    /// a later mark stays.
+    async fn access_settled(&self, share: ShareId, mark: u64) -> Result<(), PortError>;
 }
 
 /// Names of accounts and groups by ID, from the Identity context.
@@ -93,6 +108,8 @@ pub struct Names {
     pub groups: HashMap<i64, String>,
     /// The accounts in each group, by ID.
     pub members: HashMap<i64, Vec<i64>>,
+    /// Disabled accounts: on the shares they may do nothing, as if denied.
+    pub disabled: std::collections::HashSet<i64>,
 }
 
 /// An upload remembered by [`ShareRepository::add_upload`].

@@ -11,9 +11,9 @@ use zendiloos_kernel::{AuditEntry, AuditLog, Clock, PortError, Secret, Timestamp
 use zendiloos_kernel::RequestContext;
 
 use crate::application::ports::{
-    AccountRepository, Creation, GroupObserver, GroupRepository, IssuedToken, OneTimeCodes, PasswordHasher,
-    PreferenceRepository, SecurityRepository, SessionRepository, SessionTokens, SetupCodes, SystemAccounts,
-    TwoFactorRepository,
+    AccessChange, AccountObserver, AccountRepository, Creation, GroupObserver, GroupRepository, IssuedToken,
+    OneTimeCodes, PasswordHasher, PreferenceRepository, SecurityRepository, SessionRepository, SessionTokens,
+    SetupCodes, SystemAccounts, TwoFactorRepository,
 };
 use crate::application::{IdentityConfig, IdentityPorts, IdentityUseCases};
 use crate::domain::{
@@ -731,26 +731,42 @@ impl Clock for ManualClock {
     }
 }
 
-/// Records what it is told about groups, as `members <group> <before>` or
-/// `deleting <group>`; refuses deletions while `refuse` is set.
+fn ids(ids: &[AccountId]) -> String {
+    ids.iter().map(|id| id.get().to_string()).collect::<Vec<_>>().join(",")
+}
+
+/// Records what it is told about groups, as `changing <group> <after>`,
+/// `members <group> <before> <following>` or `deleting <group>`; answers
+/// `following` as what follows a change of members. Refuses what is about
+/// to happen while `refuse` is set.
 #[derive(Default)]
 pub struct RecordingGroupObserver {
     pub events: Mutex<Vec<String>>,
     pub refuse: std::sync::atomic::AtomicBool,
+    pub following: Mutex<Vec<String>>,
 }
 
 #[async_trait]
 impl GroupObserver for RecordingGroupObserver {
+    async fn members_changing(&self, group: GroupId, after: &[AccountId]) -> Result<Vec<String>, PortError> {
+        if self.refuse.load(Ordering::Relaxed) {
+            return Err(PortError::new("sharing", "refused"));
+        }
+        self.events.lock().unwrap().push(format!("changing {} [{}]", group.get(), ids(after)));
+        Ok(self.following.lock().unwrap().clone())
+    }
+
     async fn members_changed(
         &self,
         group: GroupId,
         before: &[AccountId],
+        following: &[String],
         _: &zendiloos_kernel::Actor,
         _: &RequestContext,
-    ) -> Result<(), PortError> {
-        let before: Vec<String> = before.iter().map(|id| id.get().to_string()).collect();
-        self.events.lock().unwrap().push(format!("members {} [{}]", group.get(), before.join(",")));
-        Ok(())
+    ) -> Result<Vec<String>, PortError> {
+        let line = format!("members {} [{}] [{}]", group.get(), ids(before), following.join(","));
+        self.events.lock().unwrap().push(line);
+        Ok(self.following.lock().unwrap().clone())
     }
 
     async fn deleting(
@@ -767,12 +783,60 @@ impl GroupObserver for RecordingGroupObserver {
     }
 }
 
+/// Records what it is told about accounts, as `disabling <account>` (and
+/// `enabling`, `deleting`) before and `disabled <account> <following>`
+/// (and `enabled`, `deleted`) after; answers `following` as what follows.
+/// Refuses what is about to happen while `refuse` is set.
+#[derive(Default)]
+pub struct RecordingAccountObserver {
+    pub events: Mutex<Vec<String>>,
+    pub refuse: std::sync::atomic::AtomicBool,
+    pub following: Mutex<Vec<String>>,
+}
+
+fn change_words(change: AccessChange) -> (&'static str, &'static str) {
+    match change {
+        AccessChange::Disabled => ("disabling", "disabled"),
+        AccessChange::Enabled => ("enabling", "enabled"),
+        AccessChange::Deleted => ("deleting", "deleted"),
+    }
+}
+
+#[async_trait]
+impl AccountObserver for RecordingAccountObserver {
+    async fn access_changing(
+        &self,
+        account: AccountId,
+        change: AccessChange,
+    ) -> Result<Vec<String>, PortError> {
+        if self.refuse.load(Ordering::Relaxed) {
+            return Err(PortError::new("sharing", "refused"));
+        }
+        self.events.lock().unwrap().push(format!("{} {}", change_words(change).0, account.get()));
+        Ok(self.following.lock().unwrap().clone())
+    }
+
+    async fn access_changed(
+        &self,
+        account: AccountId,
+        change: AccessChange,
+        following: &[String],
+        _: &zendiloos_kernel::Actor,
+        _: &RequestContext,
+    ) -> Result<Vec<String>, PortError> {
+        let line = format!("{} {} [{}]", change_words(change).1, account.get(), following.join(","));
+        self.events.lock().unwrap().push(line);
+        Ok(self.following.lock().unwrap().clone())
+    }
+}
+
 /// The use cases wired to in-memory ports, with handles to inspect them.
 pub struct TestIdentity {
     pub use_cases: IdentityUseCases,
     pub accounts: Arc<InMemoryAccounts>,
     pub groups: Arc<InMemoryGroups>,
     pub group_observer: Arc<RecordingGroupObserver>,
+    pub account_observer: Arc<RecordingAccountObserver>,
     pub sessions: Arc<InMemorySessions>,
     pub security: Arc<InMemorySecurity>,
     pub system: Arc<FakeSystemAccounts>,
@@ -799,12 +863,14 @@ impl TestIdentity {
         let audit = Arc::new(MemoryAudit::default());
         let clock = Arc::new(ManualClock::default());
         let group_observer = Arc::new(RecordingGroupObserver::default());
+        let account_observer = Arc::new(RecordingAccountObserver::default());
         let hasher = Arc::new(FakeHasher::default());
         let two_factor = Arc::new(InMemoryTwoFactor::default());
         let ports = IdentityPorts {
             accounts: accounts.clone(),
             groups: groups.clone(),
             group_observer: group_observer.clone(),
+            account_observer: account_observer.clone(),
             sessions: sessions.clone(),
             security: security.clone(),
             preferences: Arc::new(InMemoryPreferences::default()),
@@ -822,6 +888,7 @@ impl TestIdentity {
             accounts,
             groups,
             group_observer,
+            account_observer,
             sessions,
             security,
             system,

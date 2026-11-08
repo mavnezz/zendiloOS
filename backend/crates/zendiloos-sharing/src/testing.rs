@@ -74,7 +74,17 @@ pub struct Shares(
     Mutex<std::collections::HashSet<ShareId>>,
     /// Uploads under way, with when they began.
     pub Mutex<Vec<(ports::PendingUpload, Timestamp)>>,
+    /// The latest mark of what each share's files owe, and the latest
+    /// settled.
+    pub Mutex<std::collections::HashMap<ShareId, (u64, u64)>>,
 );
+
+impl Shares {
+    /// Whether the share's files owe it its rules.
+    pub fn owes(&self, share: ShareId) -> bool {
+        self.8.lock().unwrap().get(&share).is_some_and(|(owed, given)| given < owed)
+    }
+}
 
 #[async_trait]
 impl ShareRepository for Shares {
@@ -154,6 +164,37 @@ impl ShareRepository for Shares {
         self.0.lock().unwrap().retain(|s| s.id != id);
         self.1.lock().unwrap().remove(&id);
         self.6.lock().unwrap().remove(&id);
+        self.8.lock().unwrap().remove(&id);
+        Ok(())
+    }
+
+    async fn owe_access(&self, shares: &[ShareId]) -> Result<(), PortError> {
+        let known: Vec<ShareId> = self.0.lock().unwrap().iter().map(|s| s.id).collect();
+        let mut owed = self.8.lock().unwrap();
+        for id in shares.iter().filter(|id| known.contains(id)) {
+            owed.entry(*id).or_default().0 += 1;
+        }
+        Ok(())
+    }
+
+    async fn access_owed(&self) -> Result<Vec<(ShareId, u64)>, PortError> {
+        let hidden = self.6.lock().unwrap();
+        let mut owed: Vec<(ShareId, u64)> = self
+            .8
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(id, (owed, given))| given < owed && !hidden.contains(id))
+            .map(|(id, (owed, _))| (*id, *owed))
+            .collect();
+        owed.sort();
+        Ok(owed)
+    }
+
+    async fn access_settled(&self, share: ShareId, mark: u64) -> Result<(), PortError> {
+        if let Some((_, given)) = self.8.lock().unwrap().get_mut(&share) {
+            *given = (*given).max(mark);
+        }
         Ok(())
     }
 
@@ -263,6 +304,10 @@ pub struct Host {
     /// How many changes of whole trees are waiting or have waited.
     pub walks_held: std::sync::atomic::AtomicUsize,
     pub let_walks_on: tokio::sync::Notify,
+    /// Changes of whole trees fail after the folder, as when more than 100
+    /// entries could not be changed or the agent stopped; recorded as
+    /// `failed access …`.
+    pub fail_walks: std::sync::atomic::AtomicBool,
 }
 
 impl Host {
@@ -468,12 +513,17 @@ impl ShareHost for Host {
             self.walks_held.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             self.let_walks_on.notified().await;
         }
+        let failing = recursive && self.fail_walks.load(std::sync::atomic::Ordering::Relaxed);
         self.calls.lock().unwrap().push(format!(
-            "access {volume} {name} [{}] -[{}]{}",
+            "{}access {volume} {name} [{}] -[{}]{}",
+            if failing { "failed " } else { "" },
             access.join(","),
             removed.join(","),
             if recursive { " recursive" } else { "" }
         ));
+        if failing {
+            return Err(HostError::Port(PortError::new("files agent", "the change stopped")));
+        }
         Ok(())
     }
 }

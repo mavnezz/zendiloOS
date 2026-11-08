@@ -361,6 +361,42 @@ impl ShareRepository for SqliteShares {
         Ok(())
     }
 
+    async fn owe_access(&self, shares: &[ShareId]) -> Result<(), PortError> {
+        let mut tx = self.db.pool().begin().await.map_err(db_error)?;
+        for id in shares.iter().map(|id| id.get()) {
+            sqlx::query!("UPDATE shares SET access_owed = access_owed + 1 WHERE id = ?", id)
+                .execute(&mut *tx)
+                .await
+                .map_err(db_error)?;
+        }
+        tx.commit().await.map_err(db_error)
+    }
+
+    async fn access_owed(&self) -> Result<Vec<(ShareId, u64)>, PortError> {
+        let rows = sqlx::query!(
+            r#"SELECT id AS "id!", access_owed FROM shares
+               WHERE deleting = 0 AND access_given < access_owed ORDER BY name"#
+        )
+        .fetch_all(self.db.pool())
+        .await
+        .map_err(db_error)?;
+        rows.into_iter()
+            .map(|row| {
+                let mark = u64::try_from(row.access_owed).map_err(|_| stored("owed access"))?;
+                Ok((ShareId::new(row.id), mark))
+            })
+            .collect()
+    }
+
+    async fn access_settled(&self, share: ShareId, mark: u64) -> Result<(), PortError> {
+        let (id, mark) = (share.get(), i64::try_from(mark).map_err(|_| stored("owed access"))?);
+        sqlx::query!("UPDATE shares SET access_given = MAX(access_given, ?) WHERE id = ?", mark, id)
+            .execute(self.db.pool())
+            .await
+            .map_err(db_error)?;
+        Ok(())
+    }
+
     async fn snapshot_schedules(&self, id: ShareId) -> Result<Vec<SnapshotSchedule>, PortError> {
         let id = id.get();
         let rows =
@@ -666,10 +702,11 @@ impl ShareRepository for SqliteShares {
 #[async_trait]
 impl Directory for SqliteShares {
     async fn names(&self) -> Result<Names, PortError> {
-        let accounts = sqlx::query!(r#"SELECT id AS "id!", name FROM accounts"#)
-            .fetch_all(self.db.pool())
-            .await
-            .map_err(db_error)?;
+        let accounts =
+            sqlx::query!(r#"SELECT id AS "id!", name, disabled AS "disabled: bool" FROM accounts"#)
+                .fetch_all(self.db.pool())
+                .await
+                .map_err(db_error)?;
         let groups = sqlx::query!(r#"SELECT id AS "id!", name FROM groups"#)
             .fetch_all(self.db.pool())
             .await
@@ -686,6 +723,7 @@ impl Directory for SqliteShares {
             members.entry(row.group_id).or_default().push(row.account_id);
         }
         Ok(Names {
+            disabled: accounts.iter().filter(|a| a.disabled).map(|a| a.id).collect(),
             accounts: accounts.into_iter().map(|a| (a.id, a.name)).collect(),
             groups: groups.into_iter().map(|g| (g.id, g.name)).collect(),
             members,
@@ -866,6 +904,73 @@ mod tests {
         shares.delete(share.id).await.unwrap();
         assert!(shares.list().await.unwrap().is_empty());
         assert!(shares.snapshot_schedules(share.id).await.unwrap().is_empty(), "they go with the share");
+        db.close().await;
+    }
+
+    fn share_named(name: &str) -> NewShare {
+        NewShare {
+            name: ShareName::parse(name).unwrap(),
+            description: None,
+            pool: "tank".into(),
+            volume: 1,
+            shared: true,
+            recycle_bin: true,
+            access: vec![],
+            nfs: vec![],
+            settings: ShareSettings::default(),
+            created_at: Timestamp::from_unix_seconds(100),
+        }
+    }
+
+    #[tokio::test]
+    async fn what_a_shares_files_owe_is_settled_only_up_to_the_mark_a_walk_read() {
+        let (_dir, db) = temporary_database().await;
+        let shares = SqliteShares::new(db.clone());
+        let photos = shares.create(share_named("photos")).await.unwrap().unwrap().id;
+        let media = shares.create(share_named("media")).await.unwrap().unwrap().id;
+        assert!(shares.access_owed().await.unwrap().is_empty(), "a new share owes nothing");
+
+        shares.owe_access(&[photos, media]).await.unwrap();
+        assert_eq!(shares.access_owed().await.unwrap(), [(media, 1), (photos, 1)]);
+        // A walk of photos read mark 1; meanwhile its rules changed again.
+        shares.owe_access(&[photos]).await.unwrap();
+        shares.access_settled(photos, 1).await.unwrap();
+        shares.access_settled(media, 1).await.unwrap();
+        assert_eq!(shares.access_owed().await.unwrap(), [(photos, 2)], "the later mark stays");
+        shares.access_settled(photos, 2).await.unwrap();
+        shares.access_settled(photos, 1).await.unwrap();
+        assert!(shares.access_owed().await.unwrap().is_empty(), "an older walk takes nothing back");
+
+        shares.owe_access(&[media]).await.unwrap();
+        shares.set_deleting(media, true).await.unwrap();
+        assert!(shares.access_owed().await.unwrap().is_empty(), "a share being deleted is walked no more");
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn disabled_accounts_are_named_as_such() {
+        let (_dir, db) = temporary_database().await;
+        let accounts = SqliteAccounts::new(db.clone());
+        let new = |name: &str| NewAccount {
+            name: AccountName::parse(name).unwrap(),
+            full_name: None,
+            description: None,
+            email: None,
+            role: Role::User,
+            password_hash: PasswordHash::new("$argon2id$x"),
+            password_change_required: false,
+            password_locked: false,
+            created_at: Timestamp::from_unix_seconds(100),
+        };
+        let alice = accounts.create(new("alice")).await.unwrap().unwrap();
+        let mut bob = accounts.create(new("bob")).await.unwrap().unwrap();
+        bob.disabled = true;
+        accounts.update(&bob).await.unwrap();
+
+        let names = SqliteShares::new(db.clone()).names().await.unwrap();
+        assert_eq!(names.accounts.len(), 2);
+        assert_eq!(names.disabled, [bob.id.get()].into_iter().collect());
+        assert!(!names.disabled.contains(&alice.id.get()));
         db.close().await;
     }
 }

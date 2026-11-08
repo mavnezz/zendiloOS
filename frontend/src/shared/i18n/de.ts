@@ -2006,6 +2006,7 @@ const de: Messages = {
     enable: 'Aktivieren',
     disable: 'Deaktivieren',
     toggleFailed: 'Das Konto konnte nicht geändert werden',
+    sharesFollow: 'Die Dateien in {shares} bekommen ihre Berechtigungen im Hintergrund.',
     description: 'Beschreibung',
     email: 'E-Mail',
     groups: 'Gruppen',
@@ -2643,7 +2644,8 @@ const de: Messages = {
       rollbackLater:
         'Der spätere Snapshot wird ebenfalls gelöscht. | Die {count} späteren Snapshots werden ebenfalls gelöscht.',
       rollbackConfirm: 'Geben Sie zur Bestätigung {share} ein',
-      rolledBack: 'Die Freigabe ist wieder auf dem Stand vom {time}.',
+      rolledBack:
+        'Die Freigabe ist wieder auf dem Stand vom {time}. Ihre Dateien bekommen im Hintergrund wieder die Berechtigungen von jetzt.',
       open: 'Snapshots',
       title: 'Snapshots von {name}',
       description:

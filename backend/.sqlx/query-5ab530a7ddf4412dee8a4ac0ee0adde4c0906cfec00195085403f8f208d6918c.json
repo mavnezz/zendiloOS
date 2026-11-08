@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", access_owed FROM shares\n               WHERE deleting = 0 AND access_given < access_owed ORDER BY name",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "shares",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "access_owed",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "shares",
+            "name": "access_owed"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "5ab530a7ddf4412dee8a4ac0ee0adde4c0906cfec00195085403f8f208d6918c"
+}

@@ -75,12 +75,22 @@ describe('the users', () => {
   })
 
   it('turns an account off and on, and says when that fails', async () => {
-    on('PATCH', '/api/v1/accounts/5', () => ({ ...anna, disabled: true }))
+    on('PATCH', '/api/v1/accounts/5', () => ({
+      ...anna,
+      disabled: true,
+      pending_shares: ['photos', 'media'],
+    }))
     on('PATCH', '/api/v1/accounts/6', () => problem(409, 'last_admin'))
     await show()
 
     await pick('Actions for anna', 'Disable')
     expect(callsTo('PATCH', '/api/v1/accounts/5')[0]!.body).toEqual({ disabled: true })
+    // Kept out of the shares' files too, which follow in the background.
+    expect(
+      useNotifications().items.some(
+        (n) => n.body === 'The files in photos, media get their permissions in the background.',
+      ),
+    ).toBe(true)
     await pick('Actions for ben', 'Enable')
     expect(callsTo('PATCH', '/api/v1/accounts/6')[0]!.body).toEqual({ disabled: false })
     expect(

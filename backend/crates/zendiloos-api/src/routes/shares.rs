@@ -713,11 +713,17 @@ pub struct RollbackRequest {
 pub struct RolledBack {
     /// Labels of the later snapshots that went with the rollback.
     pub destroyed: Vec<String>,
+    /// Gives the files the permissions recorded now, instead of those the
+    /// snapshot brought back; absent if it could not be started yet (it
+    /// is started later).
+    pub job: Option<Job>,
 }
 
 /// Returns the share to a snapshot: everything changed since is lost, and
-/// so are the snapshots taken after it. Needs `shares.manage` and the
-/// share's name as confirmation.
+/// so are the snapshots taken after it. The share's folder gets the
+/// permissions recorded now at once, its files in a job. Needs
+/// `shares.manage` and the share's name as confirmation; refused while
+/// permissions are being applied to its files.
 #[utoipa::path(
     post,
     path = "/shares/{id}/snapshots/{label}/rollback",
@@ -728,6 +734,7 @@ pub struct RolledBack {
     responses(
         (status = OK, body = RolledBack),
         (status = NOT_FOUND, body = Problem, description = "`not_found`"),
+        (status = CONFLICT, body = Problem, description = "`refused`: permissions being applied to the files"),
         (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`confirmation_mismatch`"),
     )
 )]
@@ -739,11 +746,11 @@ async fn rollback_snapshot(
     ApiJson(request): ApiJson<RollbackRequest>,
 ) -> Result<Json<RolledBack>, ApiError> {
     auth.require(Permission::SharesManage)?;
-    let destroyed = state
+    let (destroyed, job) = state
         .sharing
         .rollback_snapshot(ShareId::new(id), &label, &request.confirm, &auth.0.actor(), &client)
         .await?;
-    Ok(Json(RolledBack { destroyed }))
+    Ok(Json(RolledBack { destroyed, job: job.map(Job::from) }))
 }
 
 /// Replaces how often the share is snapshotted and how many to keep, one

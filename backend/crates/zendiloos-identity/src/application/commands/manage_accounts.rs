@@ -7,7 +7,9 @@ use std::sync::Arc;
 
 use zendiloos_kernel::{AuditEntry, Outcome, RequestContext, Secret};
 
+use super::manage_groups::{join, pending};
 use crate::application::context::Context;
+use crate::application::ports::AccessChange;
 use crate::application::{AuthContext, IdentityError};
 use crate::domain::{
     Account, AccountId, AccountName, AuditAction, NewAccount, NewPassword, Permission, Role, text,
@@ -100,7 +102,9 @@ pub struct AccountChanges {
 }
 
 /// Command: an administrator changes another account's name, role or
-/// whether it is enabled. Disabling ends its sessions and its SMB access.
+/// whether it is enabled. Disabling ends its sessions and its SMB access,
+/// and others keep it out of what they hold (the shares' files, which NFS
+/// clients reach by the account's ID).
 #[derive(Clone)]
 pub struct UpdateAccount {
     context: Arc<Context>,
@@ -111,13 +115,15 @@ impl UpdateAccount {
         Self { context }
     }
 
+    /// Returns the account and what follows its being disabled or enabled
+    /// in the background, named; the audit names it too.
     pub async fn execute(
         &self,
         auth: &AuthContext,
         id: AccountId,
         changes: AccountChanges,
         request: &RequestContext,
-    ) -> Result<Account, IdentityError> {
+    ) -> Result<(Account, Vec<String>), IdentityError> {
         let c = &self.context;
         Context::require(auth, Permission::UsersManage)?;
         let full_name = changes.full_name.map(|name| text::full_name(name.as_deref())).transpose()?;
@@ -142,7 +148,15 @@ impl UpdateAccount {
             return Err(IdentityError::LastAdmin);
         }
 
-        if disabled != account.disabled {
+        let change = (disabled != account.disabled).then_some(if disabled {
+            AccessChange::Disabled
+        } else {
+            AccessChange::Enabled
+        });
+        let mut following = Vec::new();
+        if let Some(change) = change {
+            // Others note what has to follow first, as for groups' members.
+            following = c.ports.account_observer.access_changing(id, change).await?;
             c.ports.system.set_enabled(&account.name, !disabled, request).await?;
             if disabled {
                 c.ports.sessions.delete_all(id).await?;
@@ -166,10 +180,19 @@ impl UpdateAccount {
         account.disabled = disabled;
         account.updated_at = now;
         c.ports.accounts.update(&account).await?;
+        if let Some(change) = change {
+            let actor = auth.actor();
+            match c.ports.account_observer.access_changed(id, change, &following, &actor, request).await {
+                Ok(more) => join(&mut following, more),
+                Err(error) => {
+                    tracing::warn!(%error, account = account.name.as_str(), "others follow the account later");
+                }
+            }
+        }
 
         let entry = AuditEntry::new(now, AuditAction::AccountUpdate.as_str(), Outcome::Success, request);
-        c.audit(entry.by(&auth.actor()).target(account.name.as_str())).await?;
-        Ok(account)
+        c.audit(entry.by(&auth.actor()).target(pending(account.name.as_str(), &following))).await?;
+        Ok((account, following))
     }
 }
 
@@ -216,7 +239,8 @@ impl ResetPassword {
 }
 
 /// Command: an administrator deletes another account, with its Linux user
-/// and Samba entry. Its files stay on the volumes.
+/// and Samba entry. Its files stay on the volumes; others take away what
+/// its ID still holds there (the shares' entries, its files' ownership).
 #[derive(Clone)]
 pub struct DeleteAccount {
     context: Arc<Context>,
@@ -246,13 +270,27 @@ impl DeleteAccount {
         if enabled_admin && !c.another_enabled_admin(id).await? {
             return Err(IdentityError::LastAdmin);
         }
+        // Its ID stays in entries and on files: others note where first.
+        let mut following = c.ports.account_observer.access_changing(id, AccessChange::Deleted).await?;
         c.ports.system.delete_user(&account.name, request).await?;
         c.ports.two_factor.delete(id).await?;
         c.ports.accounts.delete(id).await?;
         c.end_sign_ins_of(id);
+        let actor = auth.actor();
+        match c
+            .ports
+            .account_observer
+            .access_changed(id, AccessChange::Deleted, &following, &actor, request)
+            .await
+        {
+            Ok(more) => join(&mut following, more),
+            Err(error) => {
+                tracing::warn!(%error, account = account.name.as_str(), "others follow the deletion later");
+            }
+        }
 
         let entry = AuditEntry::new(now, AuditAction::AccountDelete.as_str(), Outcome::Success, request);
-        c.audit(entry.by(&auth.actor()).target(account.name.as_str())).await?;
+        c.audit(entry.by(&auth.actor()).target(pending(account.name.as_str(), &following))).await?;
         Ok(())
     }
 }

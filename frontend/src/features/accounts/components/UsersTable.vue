@@ -93,7 +93,18 @@ async function run(account: Account, action: string): Promise<void> {
   else if (action === 'delete') deleting.value = account
   else if (action === 'toggle') {
     try {
-      await accountActions.updateAccount(account.id, { disabled: !account.disabled })
+      const updated = await accountActions.updateAccount(account.id, {
+        disabled: !account.disabled,
+      })
+      // Disabled, it is kept out of the shares' files too (NFS): they
+      // follow in the background.
+      if (updated.pending_shares.length) {
+        notifications.notify(
+          'success',
+          t('users.saved', { name: account.name }),
+          t('people.sharesFollow', { shares: updated.pending_shares.join(', ') }),
+        )
+      }
     } catch (failure) {
       notifications.notify('error', t('people.toggleFailed'), problemMessage(failure))
     }

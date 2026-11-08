@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id AS \"id!\", name FROM accounts",
+  "query": "SELECT id AS \"id!\", name, disabled AS \"disabled: bool\" FROM accounts",
   "describe": {
     "columns": [
       {
@@ -24,6 +24,17 @@
             "name": "name"
           }
         }
+      },
+      {
+        "name": "disabled: bool",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "accounts",
+            "name": "disabled"
+          }
+        }
       }
     ],
     "parameters": {
@@ -31,8 +42,9 @@
     },
     "nullable": [
       false,
+      false,
       false
     ]
   },
-  "hash": "df2750cbafce2587e2320d707f2574651fcdaf7656972e59ac7bb2a3d1dc472d"
+  "hash": "ac7e07da00b805effa3e5bc7ad9d51130fb844b01a6cd0f2da5ac64953bae076"
 }

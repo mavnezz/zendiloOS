@@ -164,7 +164,7 @@
         "tags": [
           "accounts"
         ],
-        "summary": "Changes another account's full name, role or whether it is enabled.\nDisabling ends its sessions and SMB access.",
+        "summary": "Changes another account's full name, role or whether it is enabled.\nDisabling ends its sessions and SMB access, and keeps it out of the\nshares' files as if denied (NFS): the files of the shares it could use\nfollow in the background.",
         "operationId": "update_account",
         "parameters": [
           {
@@ -192,7 +192,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Account"
+                  "$ref": "#/components/schemas/UpdatedAccount"
                 }
               }
             }
@@ -6627,7 +6627,7 @@
         "tags": [
           "accounts"
         ],
-        "summary": "Changes a group's description or members.",
+        "summary": "Changes a group's description or members. The change stands at once;\nthe files of the shares it touches follow in the background.",
         "operationId": "update_group",
         "parameters": [
           {
@@ -6655,7 +6655,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Group"
+                  "$ref": "#/components/schemas/UpdatedGroup"
                 }
               }
             }
@@ -9113,7 +9113,7 @@
         "tags": [
           "shares"
         ],
-        "summary": "Returns the share to a snapshot: everything changed since is lost, and\nso are the snapshots taken after it. Needs `shares.manage` and the\nshare's name as confirmation.",
+        "summary": "Returns the share to a snapshot: everything changed since is lost, and\nso are the snapshots taken after it. The share's folder gets the\npermissions recorded now at once, its files in a job. Needs\n`shares.manage` and the share's name as confirmation; refused while\npermissions are being applied to its files.",
         "operationId": "rollback_snapshot",
         "parameters": [
           {
@@ -9156,6 +9156,16 @@
           },
           "404": {
             "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`refused`: permissions being applied to the files",
             "content": {
               "application/json": {
                 "schema": {
@@ -18304,6 +18314,17 @@
               "type": "string"
             },
             "description": "Labels of the later snapshots that went with the rollback."
+          },
+          "job": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Job",
+                "description": "Gives the files the permissions recorded now, instead of those the\nsnapshot brought back; absent if it could not be started yet (it\nis started later)."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -20443,6 +20464,52 @@
           }
         },
         "additionalProperties": false
+      },
+      "UpdatedAccount": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Account"
+          },
+          {
+            "type": "object",
+            "required": [
+              "pending_shares"
+            ],
+            "properties": {
+              "pending_shares": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Names of the shares whose files are given their permissions anew\nin the background, e.g. after the account was disabled."
+              }
+            }
+          }
+        ],
+        "description": "An account as changed, and the shares whose files follow the change in\nthe background."
+      },
+      "UpdatedGroup": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Group"
+          },
+          {
+            "type": "object",
+            "required": [
+              "pending_shares"
+            ],
+            "properties": {
+              "pending_shares": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Names of the shares whose files are given their permissions anew in\nthe background: where the group is denied, or where it may write\nand someone left it."
+              }
+            }
+          }
+        ],
+        "description": "A group as changed, and the shares whose files follow the change in the\nbackground."
       },
       "UpdatesOverview": {
         "type": "object",

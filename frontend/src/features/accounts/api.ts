@@ -14,6 +14,8 @@ import type {
   ShareRuleLevel,
   SubjectKind,
   UpdateAccountRequest,
+  UpdatedAccount,
+  UpdatedGroup,
   UpdateGroupRequest,
 } from '@/shared/api/types'
 
@@ -47,7 +49,8 @@ export function useAccountActions() {
   return {
     createAccount: (body: CreateAccountRequest): Promise<Account> =>
       refreshing(unwrap(api.POST('/api/v1/accounts', { body }))),
-    updateAccount: (id: number, body: UpdateAccountRequest): Promise<Account> =>
+    /** Answers the account and the shares whose files follow the change. */
+    updateAccount: (id: number, body: UpdateAccountRequest): Promise<UpdatedAccount> =>
       refreshing(unwrap(api.PATCH('/api/v1/accounts/{id}', { ...path(id), body }))),
     resetPassword: async (id: number, password: string): Promise<void> => {
       await refreshing(
@@ -62,7 +65,8 @@ export function useAccountActions() {
     },
     createGroup: (body: CreateGroupRequest): Promise<Group> =>
       refreshing(unwrap(api.POST('/api/v1/groups', { body }))),
-    updateGroup: (id: number, body: UpdateGroupRequest): Promise<Group> =>
+    /** Answers the group and the shares whose files follow the change. */
+    updateGroup: (id: number, body: UpdateGroupRequest): Promise<UpdatedGroup> =>
       refreshing(unwrap(api.PATCH('/api/v1/groups/{id}', { ...path(id), body }))),
     deleteGroup: async (id: number): Promise<void> => {
       await refreshing(unwrap(api.DELETE('/api/v1/groups/{id}', path(id))))

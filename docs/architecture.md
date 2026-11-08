@@ -243,8 +243,8 @@ Deliberate simplifications:
 - **No event bus.** A use case applies its own changes through its ports
   (a share's Samba configuration through `ShareHost`). A context whose
   changes another must follow declares an observer port (Identity's
-  `GroupObserver`), which `zendiloos-infra` bridges to the context that
-  follows (Sharing); no broker.
+  `GroupObserver` and `AccountObserver`), which `zendiloos-infra` bridges
+  to the context that follows (Sharing); no broker.
 
 **Alternatives considered:**
 
@@ -647,12 +647,29 @@ TLS is rustls with ring and the system's certificate authorities
   entry comes before the group entries), but cannot deny a group: its
   members get a named entry without permissions of their own instead, so a
   member's own grant is replaced. Samba keeps the group itself in
-  `invalid users` and follows its members. When a denied group's members
-  change, or the group is deleted, the Sharing context hears it from the
-  Identity context (`GroupObserver`, bridged in infrastructure) and
-  rewrites the entries of the shares that deny it, existing files in a job;
-  where the group may write, the share's folder is set again, which makes
-  the new members' recycle bins.
+  `invalid users` and follows its members. A disabled account may do
+  nothing anywhere while it is disabled: Samba has it disabled
+  (`smbpasswd -d`), and the ACLs deny it as a rule would, wherever the
+  rules name it, itself or through a group, since NFS clients reach the
+  files by its ID and not by signing in; what it owns passes to root where
+  it wrote (see Owners).
+- **Following groups and accounts.** The Sharing context hears of changes
+  to groups' members and to accounts (disabled, enabled again, deleted)
+  from the Identity context (`GroupObserver`, `AccountObserver`, bridged in
+  infrastructure), before the change, to mark the shares it will touch
+  (see Owed access), and after it. Where a group is denied, members who
+  left lose their entry and new ones get one; where it may write, those
+  who left hand over what they own (see Owners) and the share's folder is
+  set again, which makes the new members' recycle bins; a disabled,
+  enabled or deleted account's entries and files follow wherever the rules
+  named it. Each share is handled on its own: one that cannot be changed
+  now does not keep the others from it. The change itself is never refused
+  for a walk under way: it stands in the Identity context already. The
+  share's folder then waits for the walk queued next, which gives it the
+  rules first (changed now, the walk under way would give the folder back
+  the rules it read). The answer and the audit entry of the change name the
+  shares whose files follow in the background. When a group is deleted,
+  its rules go first, as a change of each share's rules.
 - **Personal folders:** one dataset `<pool>/zendiloos.homes` on one pool,
   mounted at `/volume<N>/@homes` (root, 0711); each account given one has
   `@homes/<name>` (its own, 0700) and a ZFS `userquota`. Samba offers them
@@ -665,27 +682,58 @@ TLS is rustls with ring and the system's certificate authorities
   the same name) is moved aside (`<name>.previous-<uid>`) and a fresh one
   made, so the new account is never locked out of its own folder.
 - Changed rules apply to the share's directory at once and to existing
-  files in a job, except the users' recycle bins. Access is taken away
-  from the whole tree before any is given, so a revocation holds even if
-  adding fails; the job may run for hours. The job applies the rules the
-  database has when it gets to run, never those of the change that
+  files in a job (a walk), except the users' recycle bins. Access is taken
+  away from the whole tree before any is given, so a revocation holds even
+  if adding fails; the job may run for hours. The job applies the rules
+  the database has when it gets to run, never those of the change that
   started it: zendiloosd runs one such job per share at a time, each reads
-  the rules once it is its turn, and while one is under way a change of
-  that share's rules is refused ("try again once that has ended"; changes
-  of an app's access and of a denied group's members too), so the last job
-  always gives the last rules, whatever order the jobs ran in.
+  the rules once it is its turn, so the last job always gives the last
+  rules, whatever order the jobs ran in. While one is under way, a change
+  of that share's rules is refused ("try again once that has ended";
+  changes of an app's access and rollbacks too): it would change the
+  folder under the walk, which gives it the rules it read.
+- **Owed access.** A share's files end up with its rules whatever stops a
+  walk. Whatever they have to follow (its rules, the members of a group it
+  names, an account disabled, enabled again or deleted, a snapshot rolled
+  back) marks the share in the database first, in the same step as the
+  change (`shares.access_owed`, a generation each mark raises); a change in
+  the Identity context marks it again once made, as a walk may have read
+  the directory in between. Only a walk that read the rules after the
+  latest mark and ended without errors settles it (`access_given`). One
+  with errors (an entry it could not change, folders nested too deeply,
+  more than 100 failures, the files agent stopping or its deadline passing,
+  zendiloosd stopping) settles nothing. A share that still owes its files
+  their rules is walked again: when zendiloosd starts, after each walk and
+  every five minutes, unless a walk of it is queued or under way or its
+  volume is not mounted. After a failed walk the next waits five minutes,
+  twice as long after each further failure, up to a day, so a share that
+  keeps failing is not walked through again and again; a change of its
+  rules walks it at once. The update that brought this marked every share
+  once, so that every share's files got exactly its rules. Verified with
+  the ACLs on disk in the test VM (`just vm-permissions-test`).
+- **Rolling back** a share to a snapshot (5) brings back the ACLs, owners
+  and recycle bins its files had then. It is refused while a walk goes
+  through the share. Under the same lock as the rollback, the share's
+  folder gets the rules recorded now and its recycle bins are made again,
+  before anybody else could make one of them, and a walk gives the files
+  the rules, owed until it ended without errors.
 - **Owners:** the kernel asks a file's owner entry (`user::`) before any
   named one, and lets the owner change mode and ACL; a named entry cannot
   take an owner's rights away. So in a share only those who may write own
   anything: when the rules are applied to the tree, what an account
   zendiloOS manages (UIDs 2000 to 59999, people and apps, accounts gone
   since among them) owns passes to root (its group stays) unless the
-  account may write, by its own rule or, without one, by a group's. That
-  takes in its recycle bin and private folders with what is in them, which
-  stay private, now root's alone, and are not given back when the account
-  may write again (an administrator can; a new bin is made). Files of other
-  UIDs (system accounts, the users containers run as) keep their owners.
-  Over SMB, Samba's `read only` and `write list` hold besides.
+  account may write, by its own rule or, without one, by a group's, and is
+  not disabled; the files agent reads who may write from the accounts and
+  groups as they are when the walk runs. That takes in its recycle bin and
+  private folders with what is in them, which stay private, now root's
+  alone: what passes to root from there keeps only its owner's entry, as
+  its former owner may have opened it to the owning group (everyone's
+  `zendiloos-users`), to others or to named people. They are not given back
+  when the account may write again (an administrator can; a new bin is
+  made). Files of other UIDs (system accounts, the users containers run as)
+  keep their owners. Over SMB, Samba's `read only` and `write list` hold
+  besides.
 - The files agent walks the tree itself, depth first, by descriptor
   (`O_NOFOLLOW`, only the folders on the
   way down open, each read as it goes, never held whole: a folder of
@@ -693,7 +741,15 @@ TLS is rustls with ring and the system's certificate authorities
   each ACL through its descriptor
   (`system.posix_acl_*` via `/proc/self/fd`, the edits of `setfacl -x/-m`
   with the mask recomputed), so a folder swapped for a link meanwhile
-  changes nothing. Links, other file systems, what is neither folder nor
+  changes nothing. A walk replaces what the rules decide, whatever it was
+  told to remove: on every entry it changes, the named entries of the IDs
+  zendiloOS hands out (2000 to 59999: people, apps and groups, those
+  deleted since among them) that the rules do not grant go, and the owning
+  group (`group::`) and others (`other::`) get nothing, as on the share's
+  folder, whose default entries new files inherit; entries of other IDs
+  (system accounts, the users containers run as, set by hand) stay. So
+  whatever a walk that failed or stopped halfway left, the next makes
+  good. Links, other file systems, what is neither folder nor
   file are left alone, and so are the entries of the bins and of private
   folders (only their owner may enter: a bin a writer renamed, one passed
   to root) with what is in them, whose owners alone change; an entry that
@@ -1679,7 +1735,7 @@ the interface and the agent deal with a single tool chain (`zpool`, `zfs`).
 | Mounting | `mountpoint=legacy` and a systemd mount unit per volume (`volume1.mount`, after `zfs-import.target`): mounts happen in the host's namespace rather than the hardened agent's, and the boot order is explicit |
 | Dataset defaults | `compression=lz4`, `atime=off`, `xattr=sa`, `acltype=posixacl` (for Samba ACLs), `dnodesize=auto`, `setuid=off`, `devices=off`; `normalization=formD`, `utf8only=on` (fixed at creation) |
 | Share | a child dataset of the volume, mounted at `/volume<N>/<share>` by its own unit (`volume1-photos.mount`); created with `setuid=off` and `devices=off` also on pools made before those were defaults. Per share, stored in the database and set at every change and at startup: a quota on its own data (`refquota`, snapshots not counted, at least 1 GiB, never below what it holds), compression (`lz4`, `zstd` or off) and record size (16 KiB, 128 KiB, 1 MiB); what it holds comes live from ZFS |
-| Snapshots | per share (child dataset), by hand or on schedules (hourly, daily, weekly, monthly, each keeping 1 to 100). Named after their UTC time, `zdl-YYYY-MM-DD_HH.MM.SS`, the form Samba's `vfs_shadow_copy2` reads, so Windows offers every snapshot as "Previous Versions" (`shadow:snapdir = .zfs/snapshot`); the schedules a snapshot was taken for and a note are ZFS user properties (`zendiloos:schedule`, `zendiloos:note`), the schedules themselves live in the database. `zendiloosd` looks every five minutes: a schedule that never took one, or missed its time while the machine was off, takes one at once; when several are due, one snapshot counts for all of them. Each schedule keeps its newest; a snapshot goes only when every schedule it was taken for lets it go, never one taken by hand or of a removed schedule. A failing schedule becomes one notification until it works again. The agent takes and destroys snapshots only of a share dataset on a pool zendiloos created, and the label's shape rules out ZFS's ranges and lists. The file manager looks into a snapshot as it was: the files agent opens `.zfs/snapshot/<label>` of the mounted share as a root of its own (the label's shape checked; opening it for reading makes ZFS mount it, which `RESOLVE_NO_XDEV` from the share would refuse), read only, and refuses every change in it; folders list, files download and preview, folders download as archives from it, and entries are copied back into the share, into the folder they were in and beside a name that is taken, so nothing is replaced (a job). A share can be rolled back to one of its snapshots (`zfs rollback -r`, the agent only on its own share datasets): what changed since is lost and so are the later snapshots, which the interface lists, so the share's name must be typed to confirm |
+| Snapshots | per share (child dataset), by hand or on schedules (hourly, daily, weekly, monthly, each keeping 1 to 100). Named after their UTC time, `zdl-YYYY-MM-DD_HH.MM.SS`, the form Samba's `vfs_shadow_copy2` reads, so Windows offers every snapshot as "Previous Versions" (`shadow:snapdir = .zfs/snapshot`); the schedules a snapshot was taken for and a note are ZFS user properties (`zendiloos:schedule`, `zendiloos:note`), the schedules themselves live in the database. `zendiloosd` looks every five minutes: a schedule that never took one, or missed its time while the machine was off, takes one at once; when several are due, one snapshot counts for all of them. Each schedule keeps its newest; a snapshot goes only when every schedule it was taken for lets it go, never one taken by hand or of a removed schedule. A failing schedule becomes one notification until it works again. The agent takes and destroys snapshots only of a share dataset on a pool zendiloos created, and the label's shape rules out ZFS's ranges and lists. The file manager looks into a snapshot as it was: the files agent opens `.zfs/snapshot/<label>` of the mounted share as a root of its own (the label's shape checked; opening it for reading makes ZFS mount it, which `RESOLVE_NO_XDEV` from the share would refuse), read only, and refuses every change in it; folders list, files download and preview, folders download as archives from it, and entries are copied back into the share, into the folder they were in and beside a name that is taken, so nothing is replaced (a job). A share can be rolled back to one of its snapshots (`zfs rollback -r`, the agent only on its own share datasets): what changed since is lost and so are the later snapshots, which the interface lists, so the share's name must be typed to confirm; the files get the permissions recorded now again, not those of the snapshot (4.4) |
 | Monitoring | `zpool status` (health, resilver and scrub progress, errors per device) every minute, SMART of disks holding data every six hours; changes become notifications (degraded or recovered pool, finished resilver or scrub, volume 80 or 90 % full, a disk's SMART getting worse); scrub monthly (second Sunday) by the cron job of `zfsutils-linux`, and on demand; a running scrub can be stopped (`zpool scrub -s`), a resilver cannot; while a scan runs, its speed and the time left are estimated as `zpool status` does (bytes issued in the current pass over its time minus pauses); the package depends on a cron daemon, which Debian's cloud image lacks. The concerns, when there are any, are listed above the Pools and Disks pages under one verdict, the worst first: pool unavailable or degraded, unrepairable files, device errors, volume 80 or 90 % full, a disk's SMART verdict, no redundancy, no check for 40 days; SMART verdicts are the monitor's last, so asking reads no disk; a disk can test itself (short or long SMART self-test, `smartctl --test`), its report shows the progress and the drive's own estimate of how long each test takes, and a running test can be stopped; a disk that sleeps, reports no SMART or cannot test itself is refused rather than woken. Self-tests also run on a schedule: one plan per kind (the long test weekly or monthly), the disks by serial number or all that can, starting from a local hour (the host's time zone, read with `jiff`) within four hours, so a NAS switched on late still tests the same night; the long test goes first, a disk already testing is left alone, a sleeping one is woken because the plan asked for it, and a failed test reaches the owner through the monitor's SMART notifications |
 | Existing storage | mdadm arrays found on the system are shown read-only on the Pools page; other filesystems (Btrfs, ext4, XFS) only through `GET /storage/volumes`. zendiloos does not create or change them |
 | Removable drives | USB sticks and disks, memory cards, for administrators only (`storage.manage`), never shared: a file system that passes the checks of 4.7 is named by its UUID and mounted at **`/run/zendiloos-removable/<id>`**, root's, outside the volumes (so no share, Samba or NFS export reaches it) and on a tmpfs (so nothing of it outlives a restart). `nosuid,nodev,noexec,noatime`; FAT (`utf8,shortname=mixed,flush`), exFAT and NTFS (the kernel's `ntfs3`, `windows_names`) have no owners of their own, so everything on them belongs to root and the group `zendiloos-users` (`uid=0,gid=…,fmask=0117,dmask=0007`): readable and writable by the accounts the files agent acts as, by nobody else, executable by nobody; ext4 keeps its owners and permissions, which the files agent overrides there with root's access to files, on threads of their own (4.4), so a drive formatted elsewhere is fully usable; what it writes there belongs to root. A drive that cannot be written (write-protected, NTFS that Windows left hibernated) is mounted read-only. Mounting happens in the host's namespace: the agent asks systemd for a transient mount unit (`systemd-mount --collect --fsck=no`), gone at the next boot and bound to its device, so systemd unmounts it when the drive is pulled out; `umount`, removing the place (`rmdir`) and powering off run in transient services (`systemd-run`), outside the agent's sandbox, which keeps `/run` read-only and only sees the mounts. `zendiloosd` mounts a drive when it sees it, as Windows does: whenever the drives are listed (the file explorer asks while it is open) and once a minute besides; the agent and `zendiloosd` speak `AF_UNIX` only, so no udev or netlink hook is needed. Ejecting unmounts (refused while files on it are open, `drive_in_use`), removes the place and, by default, takes the disk off the bus (this binary as `power-off-drive <disk>`: the SCSI device is deleted, which writes its cache out and stops it, then its USB device is removed, which powers the port off where the hub can), so it can be pulled out; without powering off, the drive stays plugged in and unmounted until it is pulled out or mounted by hand, e.g. to make a pool of it. A drive pulled out while mounted becomes a notification (`removable_pulled`), and what is left of it is let go of lazily (`umount --lazy` once its device is gone) and its place removed; so are empty places from before a restart. The API: `GET /storage/removable` (id, label, file system, device and disk, model, size, state `mounted`, `ejected`, `failed` with the agent's reason, or `unmounted`, `read_only`, `path`, space while mounted), `POST /storage/removable/{id}/mount` and `…/eject` (`power_off`, true by default). The simulation offers a USB stick (`1A2B-3C4D`, FAT) |

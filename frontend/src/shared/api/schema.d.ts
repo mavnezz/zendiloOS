@@ -38,7 +38,9 @@ export interface paths {
         head?: never;
         /**
          * Changes another account's full name, role or whether it is enabled.
-         *     Disabling ends its sessions and SMB access.
+         *     Disabling ends its sessions and SMB access, and keeps it out of the
+         *     shares' files as if denied (NFS): the files of the shares it could use
+         *     follow in the background.
          */
         patch: operations["update_account"];
         trace?: never;
@@ -1875,7 +1877,10 @@ export interface paths {
         delete: operations["delete_group"];
         options?: never;
         head?: never;
-        /** Changes a group's description or members. */
+        /**
+         * Changes a group's description or members. The change stands at once;
+         *     the files of the shares it touches follow in the background.
+         */
         patch: operations["update_group"];
         trace?: never;
     };
@@ -2635,8 +2640,10 @@ export interface paths {
         put?: never;
         /**
          * Returns the share to a snapshot: everything changed since is lost, and
-         *     so are the snapshots taken after it. Needs `shares.manage` and the
-         *     share's name as confirmation.
+         *     so are the snapshots taken after it. The share's folder gets the
+         *     permissions recorded now at once, its files in a job. Needs
+         *     `shares.manage` and the share's name as confirmation; refused while
+         *     permissions are being applied to its files.
          */
         post: operations["rollback_snapshot"];
         delete?: never;
@@ -5792,6 +5799,7 @@ export interface components {
         RolledBack: {
             /** @description Labels of the later snapshots that went with the rollback. */
             destroyed: string[];
+            job?: components["schemas"]["Job"] | null;
         };
         /**
          * @description Whether root may log in over SSH.
@@ -6542,6 +6550,29 @@ export interface components {
              */
             shared?: boolean | null;
         };
+        /**
+         * @description An account as changed, and the shares whose files follow the change in
+         *     the background.
+         */
+        UpdatedAccount: components["schemas"]["Account"] & {
+            /**
+             * @description Names of the shares whose files are given their permissions anew
+             *     in the background, e.g. after the account was disabled.
+             */
+            pending_shares: string[];
+        };
+        /**
+         * @description A group as changed, and the shares whose files follow the change in the
+         *     background.
+         */
+        UpdatedGroup: components["schemas"]["Group"] & {
+            /**
+             * @description Names of the shares whose files are given their permissions anew in
+             *     the background: where the group is denied, or where it may write
+             *     and someone left it.
+             */
+            pending_shares: string[];
+        };
         UpdatesOverview: {
             /**
              * Format: int64
@@ -6816,7 +6847,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Account"];
+                    "application/json": components["schemas"]["UpdatedAccount"];
                 };
             };
             /** @description `forbidden`, `csrf_rejected` */
@@ -11393,7 +11424,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Group"];
+                    "application/json": components["schemas"]["UpdatedGroup"];
                 };
             };
             /** @description `not_found` */
@@ -13169,6 +13200,15 @@ export interface operations {
             };
             /** @description `not_found` */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `refused`: permissions being applied to the files */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

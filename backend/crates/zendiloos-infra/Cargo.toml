@@ -56,6 +56,7 @@ zendiloos-sim.workspace = true
 zendiloos-apps = { workspace = true, features = ["testing"] }
 zendiloos-containers = { workspace = true, features = ["testing"] }
 zendiloos-updates = { workspace = true, features = ["testing"] }
+zendiloos-identity = { workspace = true, features = ["testing"] }
 zendiloos-sharing = { workspace = true, features = ["testing"] }
 zendiloos-storage = { workspace = true, features = ["testing"] }
 zendiloos-jobs = { workspace = true, features = ["testing"] }
