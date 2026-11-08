@@ -13356,21 +13356,42 @@
       },
       "NfsRule": {
         "type": "object",
-        "description": "A host or network that may mount the share over NFS.",
+        "description": "A host or network that may mount the share over NFS, and how.",
         "required": [
           "network",
           "write"
         ],
         "properties": {
+          "async": {
+            "type": "boolean",
+            "description": "Writes answered before they are on disk; off if not given."
+          },
+          "insecure": {
+            "type": "boolean",
+            "description": "Also from ports above 1024; off if not given."
+          },
           "network": {
             "type": "string",
-            "description": "An IP address or CIDR network, e.g. `192.168.1.0/24`."
+            "description": "An IP address or CIDR network (`192.168.1.0/24`), a host name\n(`nas.local`) or a pattern with `*` and `?` (`*.example.com`)."
+          },
+          "squash": {
+            "$ref": "#/components/schemas/NfsSquashKind",
+            "description": "Whose identity the client's requests keep; `root` if not given."
           },
           "write": {
             "type": "boolean"
           }
         },
         "additionalProperties": false
+      },
+      "NfsSquashKind": {
+        "type": "string",
+        "description": "Whose identity an NFS client's requests keep: `none` (root stays root),\n`root` (root becomes the anonymous user), `all` (everyone does).",
+        "enum": [
+          "none",
+          "root",
+          "all"
+        ]
       },
       "Notification": {
         "type": "object",

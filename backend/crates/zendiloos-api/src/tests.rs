@@ -2700,6 +2700,39 @@ async fn admins_create_change_and_delete_shares() {
 }
 
 #[tokio::test]
+async fn nfs_rules_keep_their_host_names_and_options() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let body = json!({
+        "name": "media",
+        "pool": "tank",
+        "nfs": [
+            { "network": "192.168.1.0/24", "write": false },
+            { "network": "*.Example.com", "write": true, "squash": "all", "async": true, "insecure": true },
+        ],
+    });
+    let created = h.send(json(with_csrf(post("/api/v1/shares"), &admin), body)).await;
+    assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
+    let nfs = &created.body["nfs"];
+    assert_eq!(
+        nfs[0],
+        json!({ "network": "192.168.1.0/24", "write": false, "squash": "root", "async": false, "insecure": false }),
+        "what was not given stays as it always was"
+    );
+    assert_eq!(
+        nfs[1],
+        json!({ "network": "*.example.com", "write": true, "squash": "all", "async": true, "insecure": true })
+    );
+    let unknown = h
+        .send(json(
+            with_csrf(post("/api/v1/shares"), &admin),
+            json!({ "name": "x", "pool": "tank", "nfs": [{ "network": "nas.lan", "write": true, "squash": "some" }] }),
+        ))
+        .await;
+    assert_eq!(unknown.status, StatusCode::UNPROCESSABLE_ENTITY, "{:?}", unknown.body);
+}
+
+#[tokio::test]
 async fn shares_validate_their_rules() {
     let h = Harness::new();
     let admin = h.sign_in("alice", Role::Admin).await;
@@ -2712,7 +2745,8 @@ async fn shares_validate_their_rules() {
     let volume = create(json!({ "name": "x", "pool": "cold" })).await;
     assert_problem(&volume, StatusCode::UNPROCESSABLE_ENTITY, "volume_not_found");
     let network =
-        create(json!({ "name": "x", "pool": "tank", "nfs": [{ "network": "*", "write": true }] })).await;
+        create(json!({ "name": "x", "pool": "tank", "nfs": [{ "network": "nas (rw)", "write": true }] }))
+            .await;
     assert_problem(&network, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
 
     let user = h.sign_in("bob", Role::User).await;

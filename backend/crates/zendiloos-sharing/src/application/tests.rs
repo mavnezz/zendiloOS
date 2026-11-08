@@ -14,8 +14,8 @@ use super::{
     Transfer,
 };
 use crate::domain::{
-    Access, AccessRule, Favourite, FilePath, FileServices, Permission, Principal, ShareId, SmbProtocol,
-    Subject,
+    Access, AccessRule, Favourite, FilePath, FileServices, NfsClient, Permission, Principal, ShareId,
+    SmbProtocol, Subject,
 };
 use crate::testing::{Files, Host, Projects, Shares, Volumes};
 
@@ -133,7 +133,7 @@ fn input(name: &str, pool: &str) -> NewShareInput {
         shared: true,
         recycle_bin: true,
         access: vec![rule(Subject::Group(10), Access::ReadWrite), rule(Subject::Account(2), Access::Read)],
-        nfs: vec![("192.168.1.0/24".into(), false)],
+        nfs: vec![NfsClient::new("192.168.1.0/24", false)],
         settings: crate::domain::ShareSettings::default(),
     }
 }
@@ -197,7 +197,7 @@ async fn bad_requests_change_nothing() {
     twice.access.push(rule(Subject::Group(10), Access::Read));
     assert!(matches!(create(twice).await, Err(SharingError::Duplicate)));
     let mut network = input("photos", "tank");
-    network.nfs = vec![("*".into(), true)];
+    network.nfs = vec![NfsClient::new("nas local", true)];
     assert!(matches!(create(network).await, Err(SharingError::InvalidNetwork(_))));
     assert_eq!(s.host.calls(), Vec::<String>::new());
 }

@@ -1,0 +1,86 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT share_id AS \"share_id!\", network AS \"network!\", write AS \"write!: bool\",\n                      squash AS \"squash!\", async AS \"asynchronous!: bool\", insecure AS \"insecure!: bool\"\n               FROM share_nfs_clients ORDER BY position",
+  "describe": {
+    "columns": [
+      {
+        "name": "share_id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "share_nfs_clients",
+            "name": "share_id"
+          }
+        }
+      },
+      {
+        "name": "network!",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "share_nfs_clients",
+            "name": "network"
+          }
+        }
+      },
+      {
+        "name": "write!: bool",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "share_nfs_clients",
+            "name": "write"
+          }
+        }
+      },
+      {
+        "name": "squash!",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "share_nfs_clients",
+            "name": "squash"
+          }
+        }
+      },
+      {
+        "name": "asynchronous!: bool",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "share_nfs_clients",
+            "name": "async"
+          }
+        }
+      },
+      {
+        "name": "insecure!: bool",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "share_nfs_clients",
+            "name": "insecure"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "4daac7b5157786a5451e052f510cdeaff89a7f6efe24972da8d04344252cb921"
+}

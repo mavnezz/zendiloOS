@@ -5,9 +5,9 @@ use zendiloos_kernel::{PortError, Timestamp};
 use zendiloos_sharing::application::ports::{Directory, Names, PendingUpload, ShareRepository};
 use zendiloos_sharing::domain::{
     Access, AccessRule, AppAccess, Compression, Favourite, FileLocation, FilePath, FileRoot, FileServices,
-    Frequency, Home, HomesLocation, NewShare, NfsClient, Permission, REMOVABLE_PREFIX, RecordSize, Share,
-    ShareId, ShareName, ShareSettings, SmbEncryption, SmbProtocol, SmbSigning, SnapshotSchedule, Subject,
-    TimeMachine, is_drive_id,
+    Frequency, Home, HomesLocation, NewShare, NfsClient, NfsSquash, Permission, REMOVABLE_PREFIX, RecordSize,
+    Share, ShareId, ShareName, ShareSettings, SmbEncryption, SmbProtocol, SmbSigning, SnapshotSchedule,
+    Subject, TimeMachine, is_drive_id,
 };
 
 use super::Database;
@@ -97,11 +97,16 @@ async fn replace_rules(
     }
     for (position, client) in nfs.iter().enumerate() {
         let position = position as i64;
+        let squash = client.squash.as_str();
         sqlx::query!(
-            "INSERT INTO share_nfs_clients (share_id, network, write, position) VALUES (?, ?, ?, ?)",
+            "INSERT INTO share_nfs_clients (share_id, network, write, squash, async, insecure, position)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
             id,
             client.network,
             client.write,
+            squash,
+            client.asynchronous,
+            client.insecure,
             position
         )
         .execute(&mut *tx)
@@ -119,7 +124,8 @@ impl SqliteShares {
         .await
         .map_err(db_error)?;
         let clients = sqlx::query!(
-            r#"SELECT share_id AS "share_id!", network AS "network!", write AS "write!: bool"
+            r#"SELECT share_id AS "share_id!", network AS "network!", write AS "write!: bool",
+                      squash AS "squash!", async AS "asynchronous!: bool", insecure AS "insecure!: bool"
                FROM share_nfs_clients ORDER BY position"#
         )
         .fetch_all(self.db.pool())
@@ -142,9 +148,14 @@ impl SqliteShares {
         }
         let mut nfs: HashMap<i64, Vec<NfsClient>> = HashMap::new();
         for client in clients {
-            nfs.entry(client.share_id)
-                .or_default()
-                .push(NfsClient { network: client.network, write: client.write });
+            let squash = NfsSquash::parse(&client.squash).ok_or_else(|| stored("NFS squash"))?;
+            nfs.entry(client.share_id).or_default().push(NfsClient {
+                network: client.network,
+                write: client.write,
+                squash,
+                asynchronous: client.asynchronous,
+                insecure: client.insecure,
+            });
         }
         rows.into_iter()
             .map(|row| {
@@ -795,7 +806,15 @@ mod tests {
                 AccessRule { subject: Subject::Group(family.id.get()), permission: Permission::ReadWrite },
                 AccessRule { subject: Subject::Account(alice.id.get()), permission: Permission::Read },
             ],
-            nfs: vec![NfsClient { network: "192.168.1.0/24".into(), write: false }],
+            nfs: vec![
+                NfsClient::new("192.168.1.0/24", false),
+                NfsClient {
+                    squash: NfsSquash::All,
+                    asynchronous: true,
+                    insecure: true,
+                    ..NfsClient::new("*.example.com", true)
+                },
+            ],
             settings: ShareSettings {
                 quota_bytes: Some(5 << 30),
                 compression: Compression::Zstd,

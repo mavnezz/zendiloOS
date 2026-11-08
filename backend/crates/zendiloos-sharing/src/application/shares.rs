@@ -12,9 +12,9 @@ use zendiloos_kernel::{Actor, AuditEntry, Outcome, PortError, RequestContext};
 use super::SharingPorts;
 use super::ports::{HostError, Names};
 use crate::domain::{
-    Access, AccessRule, AppAccess, FileServices, HomesSpec, InvalidFileServices, InvalidNetwork,
+    Access, AccessRule, AppAccess, FileServices, HomesSpec, InvalidFileServices, InvalidNfsHost,
     InvalidShareName, NewShare, NfsClient, NfsSpec, Permission, Principal, Share, ShareId, ShareName,
-    ShareSettings, ShareUsage, SharingConfig, SmbSpec, Subject, network,
+    ShareSettings, ShareUsage, SharingConfig, SmbSpec, Subject, nfs_host,
 };
 
 pub const MAX_DESCRIPTION_CHARS: usize = 200;
@@ -24,7 +24,7 @@ pub enum SharingError {
     #[error(transparent)]
     InvalidName(#[from] InvalidShareName),
     #[error(transparent)]
-    InvalidNetwork(#[from] InvalidNetwork),
+    InvalidNetwork(#[from] InvalidNfsHost),
     #[error(transparent)]
     InvalidServices(#[from] InvalidFileServices),
     #[error("the description must be at most {MAX_DESCRIPTION_CHARS} characters, without line breaks")]
@@ -85,7 +85,8 @@ pub struct NewShareInput {
     pub recycle_bin: bool,
     pub access: Vec<AccessRule>,
     /// Networks as typed; validated here.
-    pub nfs: Vec<(String, bool)>,
+    /// As given: each client is checked and normalized ([`nfs_host`]).
+    pub nfs: Vec<NfsClient>,
     pub settings: ShareSettings,
 }
 
@@ -97,7 +98,7 @@ pub struct ShareChanges {
     pub shared: Option<bool>,
     pub recycle_bin: Option<bool>,
     pub access: Option<Vec<AccessRule>>,
-    pub nfs: Option<Vec<(String, bool)>>,
+    pub nfs: Option<Vec<NfsClient>>,
     pub settings: Option<ShareSettings>,
 }
 
@@ -109,14 +110,14 @@ fn description(value: Option<&str>) -> Result<Option<String>, SharingError> {
     Ok(Some(value.to_owned()))
 }
 
-fn clients(input: Vec<(String, bool)>) -> Result<Vec<NfsClient>, SharingError> {
+fn clients(input: Vec<NfsClient>) -> Result<Vec<NfsClient>, SharingError> {
     let mut clients: Vec<NfsClient> = Vec::new();
-    for (value, write) in input {
-        let normalized = network(&value)?;
+    for client in input {
+        let normalized = nfs_host(&client.network)?;
         if clients.iter().any(|c| c.network == normalized) {
             return Err(SharingError::Duplicate);
         }
-        clients.push(NfsClient { network: normalized, write });
+        clients.push(NfsClient { network: normalized, ..client });
     }
     Ok(clients)
 }

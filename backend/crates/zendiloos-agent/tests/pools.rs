@@ -10,8 +10,8 @@ use tempfile::TempDir;
 use zendiloos_agent::config::Tools;
 use zendiloos_agent::{AccountFiles, Erasable, ErasePolicy, HostPaths, Operations, Paths};
 use zendiloos_agent_proto::{
-    AppName, DiskId, ErrorCode, FileServices, GroupName, Layout, Network, NfsClient, NfsExport, PoolName,
-    Principal, Request, Response, Role, ShareAccess, ShareCompression, ShareName, SharePermission,
+    AppName, DiskId, ErrorCode, FileServices, GroupName, Layout, NfsClient, NfsExport, NfsHost, NfsSquash,
+    PoolName, Principal, Request, Response, Role, ShareAccess, ShareCompression, ShareName, SharePermission,
     ShareRecordSize, SmbProtocol, SmbShare, SnapshotFrequency, SnapshotLabel, SnapshotNote, VolumeNumber,
     Workgroup,
 };
@@ -522,7 +522,13 @@ async fn writes_samba_and_nfs_configuration_after_checking_it() {
     let nfs = vec![NfsExport {
         name: share("photos"),
         volume: VolumeNumber::new(1).unwrap(),
-        clients: vec![NfsClient { network: Network::parse("192.168.1.0/24").unwrap(), write: false }],
+        clients: vec![NfsClient {
+            network: NfsHost::parse("192.168.1.0/24").unwrap(),
+            write: false,
+            squash: NfsSquash::Root,
+            asynchronous: false,
+            insecure: false,
+        }],
     }];
 
     let request = Request::ApplySharing { smb, nfs, services: services(true), homes: None };
@@ -570,7 +576,13 @@ async fn servers_that_are_off_stop_and_stay_off_with_their_configuration_kept() 
     let nfs = vec![NfsExport {
         name: share("photos"),
         volume: VolumeNumber::new(1).unwrap(),
-        clients: vec![NfsClient { network: Network::parse("192.168.1.0/24").unwrap(), write: false }],
+        clients: vec![NfsClient {
+            network: NfsHost::parse("192.168.1.0/24").unwrap(),
+            write: false,
+            squash: NfsSquash::Root,
+            asynchronous: false,
+            insecure: false,
+        }],
     }];
 
     let request = Request::ApplySharing { smb: vec![], nfs, services: services(false), homes: None };

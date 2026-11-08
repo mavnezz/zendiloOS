@@ -4138,12 +4138,27 @@ export interface components {
         };
         /** @enum {string} */
         NewPoolLayout: "single" | "mirror" | "raidz1" | "raidz2" | "raidz3";
-        /** @description A host or network that may mount the share over NFS. */
+        /** @description A host or network that may mount the share over NFS, and how. */
         NfsRule: {
-            /** @description An IP address or CIDR network, e.g. `192.168.1.0/24`. */
+            /** @description Writes answered before they are on disk; off if not given. */
+            async?: boolean;
+            /** @description Also from ports above 1024; off if not given. */
+            insecure?: boolean;
+            /**
+             * @description An IP address or CIDR network (`192.168.1.0/24`), a host name
+             *     (`nas.local`) or a pattern with `*` and `?` (`*.example.com`).
+             */
             network: string;
+            /** @description Whose identity the client's requests keep; `root` if not given. */
+            squash?: components["schemas"]["NfsSquashKind"];
             write: boolean;
         };
+        /**
+         * @description Whose identity an NFS client's requests keep: `none` (root stays root),
+         *     `root` (root becomes the anonymous user), `all` (everyone does).
+         * @enum {string}
+         */
+        NfsSquashKind: "none" | "root" | "all";
         /**
          * @description Something an administrator should know, as a code with parameters for
          *     the interface to word, e.g. `pool_trouble` with `pool` and `state`.
