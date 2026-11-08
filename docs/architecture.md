@@ -310,9 +310,13 @@ frontend/src/
   their own, so a window has one navigation. The dock's resource meters
   open the monitor's page.
 - The account's **interface preferences** (`account_preferences`,
-  `GET/PUT /api/v1/preferences`) are language, scheme, background, widgets
+  `GET/PATCH /api/v1/preferences`) are language, scheme, background, widgets
   and the order of the icons, kept with the account so that every browser
-  looks the same. A background may be a single colour (`color`, with its
+  looks the same. A browser sends only what was chosen in it, and a field
+  left out stays as it is, so a tab loaded before another one chose
+  something takes nothing back; before the account's choices arrived (or
+  when loading them failed) a choice applies in that browser only and is
+  not saved. A background may be a single colour (`color`, with its
   `#rrggbb`, kept while an image is chosen); its brightness sets
   `data-wallpaper-tone`, so icon labels turn dark on a light colour in
   either scheme, and glass lets less of it through in the dark one.

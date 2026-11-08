@@ -8487,11 +8487,11 @@
           }
         ]
       },
-      "put": {
+      "patch": {
         "tags": [
           "identity"
         ],
-        "summary": "Replaces the signed-in account's interface preferences; the star prompt\nonly moves forward.",
+        "summary": "Changes the signed-in account's interface preferences: only those sent,\na field left out (or `null`) stays as it is. The star prompt only moves\nforward.",
         "operationId": "save_preferences",
         "requestBody": {
           "content": {
@@ -16270,7 +16270,7 @@
       },
       "InterfacePreferences": {
         "type": "object",
-        "description": "How the signed-in account wants the interface. `null` means not chosen:\neach browser keeps what it shows.",
+        "description": "How the signed-in account wants the interface. `null` means not chosen:\neach browser keeps what it shows. Sent to change them, a field left out\n(or `null`) stays as it is.",
         "properties": {
           "desktop_icons": {
             "type": [

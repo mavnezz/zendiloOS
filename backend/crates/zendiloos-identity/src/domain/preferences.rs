@@ -219,6 +219,25 @@ pub struct Preferences {
     pub star_prompt: Option<StarPrompt>,
 }
 
+impl Preferences {
+    /// These choices with those of `change` made: a choice it leaves out
+    /// (`None`) stays as it is, and the reminder to star zendiloOS never
+    /// goes back ([`StarPrompt::further`]). A browser thus changes only what
+    /// was chosen in it, and one that knows less than is kept (its first
+    /// load failed, or another tab chose since) takes nothing away.
+    pub fn changed_by(self, change: Preferences) -> Self {
+        Self {
+            language: change.language.or(self.language),
+            theme: change.theme.or(self.theme),
+            wallpaper: change.wallpaper.or(self.wallpaper),
+            wallpaper_color: change.wallpaper_color.or(self.wallpaper_color),
+            widgets: change.widgets.or(self.widgets),
+            desktop_icons: change.desktop_icons.or(self.desktop_icons),
+            star_prompt: StarPrompt::further(self.star_prompt, change.star_prompt),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -295,5 +314,32 @@ mod tests {
         assert_eq!(StarPrompt::further(shown, later), later);
         assert_eq!(StarPrompt::further(later, declined), declined, "answered in the same showing");
         assert_eq!(StarPrompt::further(None, None), None);
+    }
+
+    #[test]
+    fn a_change_leaves_the_choices_it_does_not_make() {
+        let kept = Preferences {
+            language: Some(Language::German),
+            theme: Some(Theme::Light),
+            wallpaper: Wallpaper::parse("color"),
+            wallpaper_color: WallpaperColor::parse("#134e4a"),
+            widgets: Layout::parse("status"),
+            desktop_icons: Layout::parse("files,storage"),
+            star_prompt: StarPrompt::new(1, Timestamp::from_unix_seconds(100), Some(StarAnswer::Later)),
+        };
+        let theme = Preferences { theme: Some(Theme::Dark), ..Preferences::default() };
+        assert_eq!(kept.clone().changed_by(theme), Preferences { theme: Some(Theme::Dark), ..kept.clone() });
+        assert_eq!(kept.clone().changed_by(Preferences::default()), kept, "nothing sent, nothing changed");
+
+        let everything = Preferences {
+            language: Some(Language::English),
+            theme: Some(Theme::System),
+            wallpaper: Wallpaper::parse("tide"),
+            wallpaper_color: WallpaperColor::parse("#dfe2e6"),
+            widgets: Layout::parse(""),
+            desktop_icons: Layout::parse("apps"),
+            star_prompt: StarPrompt::new(2, Timestamp::from_unix_seconds(200), None),
+        };
+        assert_eq!(kept.changed_by(everything.clone()), everything);
     }
 }

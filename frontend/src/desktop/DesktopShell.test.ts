@@ -73,7 +73,7 @@ beforeEach(() => {
     desktop_icons: null,
     wallpaper: null,
   })
-  on('PUT', '/api/v1/preferences', (call: { body: unknown }) => call.body)
+  on('PATCH', '/api/v1/preferences', (call: { body: unknown }) => call.body)
   on('GET', '/api/v1/system/info', {
     hostname: 'nas',
     kernel_release: '6.12',
@@ -208,7 +208,7 @@ describe('the desktop', () => {
     await settle()
     icons[0]!.dispatchEvent(new Event('dragend', { bubbles: true }))
     expect(
-      called('PUT', '/api/v1/preferences').some((call) => 'desktop_icons' in (call.body as object)),
+      called('PATCH', '/api/v1/preferences').some((call) => 'desktop_icons' in (call.body as object)),
     ).toBe(true)
 
     await click(t('desktop.editWidgets'))
@@ -220,7 +220,7 @@ describe('the desktop', () => {
     await settle()
     await click(t('desktop.done'))
     expect(
-      called('PUT', '/api/v1/preferences').some((call) => 'widgets' in (call.body as object)),
+      called('PATCH', '/api/v1/preferences').some((call) => 'widgets' in (call.body as object)),
     ).toBe(true)
   })
 

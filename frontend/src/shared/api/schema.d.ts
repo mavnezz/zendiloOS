@@ -2452,16 +2452,17 @@ export interface paths {
         };
         /** The signed-in account's interface preferences, the same in every browser. */
         get: operations["preferences"];
-        /**
-         * Replaces the signed-in account's interface preferences; the star prompt
-         *     only moves forward.
-         */
-        put: operations["save_preferences"];
+        put?: never;
         post?: never;
         delete?: never;
         options?: never;
         head?: never;
-        patch?: never;
+        /**
+         * Changes the signed-in account's interface preferences: only those sent,
+         *     a field left out (or `null`) stays as it is. The star prompt only moves
+         *     forward.
+         */
+        patch: operations["save_preferences"];
         trace?: never;
     };
     "/api/v1/security/blocked": {
@@ -5092,7 +5093,8 @@ export interface components {
         };
         /**
          * @description How the signed-in account wants the interface. `null` means not chosen:
-         *     each browser keeps what it shows.
+         *     each browser keeps what it shows. Sent to change them, a field left out
+         *     (or `null`) stays as it is.
          */
         InterfacePreferences: {
             /** @description The app icons on the desktop, in order, by id. */

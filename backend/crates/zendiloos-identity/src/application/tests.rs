@@ -1086,7 +1086,32 @@ async fn a_browser_that_missed_the_star_prompt_does_not_bring_it_back() {
     t.use_cases.save_preferences.execute(&alice, missed_the_answer).await.unwrap();
 
     let kept = t.use_cases.preferences.execute(&alice).await.unwrap();
-    assert_eq!((kept.theme, kept.star_prompt), (None, declined));
+    assert_eq!((kept.theme, kept.star_prompt), (Some(Theme::Dark), declined));
+}
+
+#[tokio::test]
+async fn a_save_changes_only_the_choices_it_makes() {
+    use crate::domain::{Layout, Preferences, Theme, Wallpaper, WallpaperColor};
+
+    let t = TestIdentity::new();
+    let alice = signed_in(&t, "alice", Role::Admin).await;
+    let chosen = Preferences {
+        theme: Some(Theme::Light),
+        wallpaper: Wallpaper::parse("color"),
+        wallpaper_color: WallpaperColor::parse("#134e4a"),
+        widgets: Layout::parse("status"),
+        desktop_icons: Layout::parse("files,storage"),
+        ..Preferences::default()
+    };
+    t.use_cases.save_preferences.execute(&alice, chosen.clone()).await.unwrap();
+
+    // A browser whose first load failed, or a tab loaded before the
+    // background was chosen in another, sends only the theme chosen in it.
+    let only_theme = Preferences { theme: Some(Theme::Dark), ..Preferences::default() };
+    t.use_cases.save_preferences.execute(&alice, only_theme).await.unwrap();
+
+    let kept = t.use_cases.preferences.execute(&alice).await.unwrap();
+    assert_eq!(kept, Preferences { theme: Some(Theme::Dark), ..chosen });
 }
 
 // Security: idle time, account lock, blocked addresses, sessions
