@@ -136,6 +136,17 @@
   --glass-shadow-lifted: 0 28px 70px -20px oklch(0 0 0 / 0.75), 0 6px 18px -6px oklch(0 0 0 / 0.5);
 }
 
+/*
+ * The dark scheme's light text on a light background (Daybreak, a light
+ * solid colour): glass that lets less of it through, so the dock's labels
+ * and the widgets keep their contrast.
+ */
+.dark[data-wallpaper-tone='light'] {
+  --glass-surface: color-mix(in oklab, var(--background) 80%, transparent);
+  --glass-surface-strong: color-mix(in oklab, var(--background) 88%, transparent);
+  --glass-surface-thin: color-mix(in oklab, var(--background) 72%, transparent);
+}
+
 @layer components {
   .glass {
     background-color: var(--glass-surface);

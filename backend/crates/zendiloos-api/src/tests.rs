@@ -3087,16 +3087,26 @@ async fn each_account_keeps_its_interface_preferences() {
         (none.status, none.body.clone()),
         (
             StatusCode::OK,
-            json!({ "language": null, "theme": null, "wallpaper": null, "widgets": null, "desktop_icons": null })
+            json!({
+                "language": null,
+                "theme": null,
+                "wallpaper": null,
+                "wallpaper_color": null,
+                "widgets": null,
+                "desktop_icons": null,
+                "star_prompt": null
+            })
         )
     );
 
     let chosen = json!({
         "language": "de",
         "theme": "dark",
-        "wallpaper": "nebula",
+        "wallpaper": "color",
+        "wallpaper_color": "#134e4a",
         "widgets": ["status", "storage"],
-        "desktop_icons": ["files", "storage"]
+        "desktop_icons": ["files", "storage"],
+        "star_prompt": { "times_shown": 1, "last_shown_at": 1_790_000_000, "answer": "later" }
     });
     let saved =
         h.send(json(with_csrf(changing(Method::PUT, "/api/v1/preferences"), &alice), chosen.clone())).await;
@@ -3109,11 +3119,46 @@ async fn each_account_keeps_its_interface_preferences() {
     let refused =
         h.send(json(with_csrf(changing(Method::PUT, "/api/v1/preferences"), &alice), unknown)).await;
     assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
-    for bad in [json!({ "wallpaper": "../etc" }), json!({ "widgets": ["status", "status"] })] {
+    for bad in [
+        json!({ "wallpaper": "../etc" }),
+        json!({ "widgets": ["status", "status"] }),
+        json!({ "wallpaper_color": "#134E4A" }),
+        json!({ "wallpaper_color": "#134e4" }),
+        json!({ "wallpaper_color": "teal" }),
+        json!({ "star_prompt": { "times_shown": 0, "last_shown_at": 1_790_000_000 } }),
+        json!({ "star_prompt": { "times_shown": 3, "last_shown_at": 1_790_000_000 } }),
+        json!({ "star_prompt": { "times_shown": 1, "last_shown_at": -1 } }),
+    ] {
         let refused =
             h.send(json(with_csrf(changing(Method::PUT, "/api/v1/preferences"), &alice), bad)).await;
-        assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_problem(&refused, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
     }
+}
+
+#[tokio::test]
+async fn the_star_prompt_only_moves_forward() {
+    let h = Harness::new();
+    let alice = h.sign_in("alice", Role::Admin).await;
+    let put = |body: Value| json(with_csrf(changing(Method::PUT, "/api/v1/preferences"), &alice), body);
+    let declined = json!({ "times_shown": 1, "last_shown_at": 1_790_000_000, "answer": "declined" });
+    assert_eq!(h.send(put(json!({ "star_prompt": declined }))).await.status, StatusCode::NO_CONTENT);
+
+    // A browser that loaded the preferences before the reminder appeared.
+    assert_eq!(h.send(put(json!({ "theme": "light" }))).await.status, StatusCode::NO_CONTENT);
+
+    let kept = h.send(empty(with_cookie(get("/api/v1/preferences"), &alice))).await.body;
+    assert_eq!((&kept["theme"], &kept["star_prompt"]), (&json!("light"), &declined));
+}
+
+#[tokio::test]
+async fn the_session_says_when_the_account_was_created() {
+    let h = Harness::new();
+    let alice = h.sign_in("alice", Role::Admin).await;
+
+    let me = h.send(empty(with_cookie(get("/api/v1/auth/session"), &alice))).await;
+
+    let created = h.identity.accounts.all()[0].created_at.unix_seconds();
+    assert_eq!(me.body["account"]["created_at"], json!(created));
 }
 
 #[tokio::test]

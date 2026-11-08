@@ -7909,7 +7909,7 @@
         "tags": [
           "identity"
         ],
-        "summary": "Replaces the signed-in account's interface preferences.",
+        "summary": "Replaces the signed-in account's interface preferences; the star prompt\nonly moves forward.",
         "operationId": "save_preferences",
         "requestBody": {
           "content": {
@@ -7926,7 +7926,7 @@
             "description": "Saved."
           },
           "422": {
-            "description": "`invalid_input`: no such wallpaper name or layout",
+            "description": "`invalid_input`: no such wallpaper name, colour or layout, or a star prompt shown neither once nor twice",
             "content": {
               "application/json": {
                 "schema": {
@@ -13164,9 +13164,15 @@
           "role",
           "permissions",
           "password_change_required",
-          "password_locked"
+          "password_locked",
+          "created_at"
         ],
         "properties": {
+          "created_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When the account was created, in Unix seconds."
+          },
           "full_name": {
             "type": [
               "string",
@@ -15461,6 +15467,17 @@
               }
             ]
           },
+          "star_prompt": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/InterfaceStarPrompt",
+                "description": "`null` until the reminder to star zendiloOS was first shown."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "theme": {
             "oneOf": [
               {
@@ -15476,7 +15493,14 @@
               "string",
               "null"
             ],
-            "description": "The desktop's background, by the interface's name for it (lowercase\nletters)."
+            "description": "The desktop's background, by the interface's name for it (lowercase\nletters); `color` for one of a single colour."
+          },
+          "wallpaper_color": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The colour of the background `color`, as `#rrggbb` in lowercase.\nKept while another background is chosen."
           },
           "widgets": {
             "type": [
@@ -15510,6 +15534,40 @@
           },
           "ipv6": {
             "$ref": "#/components/schemas/Ipv6Input"
+          }
+        },
+        "additionalProperties": false
+      },
+      "InterfaceStarPrompt": {
+        "type": "object",
+        "description": "The reminder to star zendiloOS on GitHub, once it was shown. When it is\ndue is the interface's business; nothing of it leaves the machine. It\nnever goes back: a save that knows less than what is kept (shown fewer\ntimes, earlier, or not answered) leaves what is kept.",
+        "required": [
+          "times_shown",
+          "last_shown_at"
+        ],
+        "properties": {
+          "answer": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/StarPromptAnswer",
+                "description": "`null`: not answered."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_shown_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When it was last shown, in Unix seconds."
+          },
+          "times_shown": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How often it was shown: once or twice.",
+            "maximum": 2,
+            "minimum": 1
           }
         },
         "additionalProperties": false
@@ -19488,6 +19546,15 @@
             "type": "boolean"
           }
         }
+      },
+      "StarPromptAnswer": {
+        "type": "string",
+        "description": "What an administrator answered the reminder to star zendiloOS on\nGitHub.",
+        "enum": [
+          "later",
+          "starred",
+          "declined"
+        ]
       },
       "StartSelfTestRequest": {
         "type": "object",

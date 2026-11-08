@@ -1,7 +1,8 @@
 /**
  * The desktop backgrounds zendiloOS ships with: one image and gradients,
- * which cost nothing to ship and stay sharp at any resolution. Names are
- * proper names, the same in every language.
+ * which cost nothing to ship and stay sharp at any resolution, and one of
+ * a single colour the account picks. Names are proper names, the same in
+ * every language; the single colour's is the colour itself.
  */
 export interface Wallpaper {
   /** Kept in the account's preferences. */
@@ -81,7 +82,54 @@ export const WALLPAPERS: readonly Wallpaper[] = [
 
 export const DEFAULT_WALLPAPER = WALLPAPERS[0]!
 
-export function findWallpaper(id: string | null | undefined): Wallpaper {
+/** The background of one colour, as the account's preferences name it. */
+export const SOLID_WALLPAPER = 'color'
+
+/** Colours offered beside the picker: calm ones that suit the desktop. */
+export const SOLID_COLORS = [
+  { id: 'slate', color: '#1e293b' },
+  { id: 'navy', color: '#1b2a4e' },
+  { id: 'teal', color: '#134e4a' },
+  { id: 'aubergine', color: '#3b1f3a' },
+  { id: 'warmGrey', color: '#5c5650' },
+  { id: 'lightGrey', color: '#dfe2e6' },
+] as const
+
+export const DEFAULT_SOLID_COLOR: string = SOLID_COLORS[0].color
+
+/** `#rrggbb` in lowercase, as the colour picker gives it and the server keeps it. */
+export function isHexColor(value: string | null | undefined): value is string {
+  return typeof value === 'string' && /^#[0-9a-f]{6}$/.test(value)
+}
+
+/** Relative luminance of `#rrggbb` (WCAG 2): 0 for black, 1 for white. */
+export function luminance(color: string): number {
+  const channel = (at: number) => {
+    const value = parseInt(color.slice(at, at + 2), 16) / 255
+    return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4
+  }
+  return 0.2126 * channel(1) + 0.7152 * channel(3) + 0.0722 * channel(5)
+}
+
+/**
+ * Whether text on `color` reads better dark or light: whichever of black
+ * and white contrasts more with it. They contrast equally at a luminance
+ * of about 0.18.
+ */
+export function toneOf(color: string): Wallpaper['tone'] {
+  const level = luminance(color)
+  return (level + 0.05) / 0.05 > 1.05 / (level + 0.05) ? 'light' : 'dark'
+}
+
+/** The background of one colour; one that is not `#rrggbb` gives the default colour. */
+export function solidWallpaper(color: string | null | undefined): Wallpaper {
+  const valid = isHexColor(color) ? color : DEFAULT_SOLID_COLOR
+  return { id: SOLID_WALLPAPER, name: valid, image: 'none', color: valid, tone: toneOf(valid) }
+}
+
+/** The background named `id`; `color` is the one of the background of one colour. */
+export function findWallpaper(id: string | null | undefined, color?: string | null): Wallpaper {
+  if (id === SOLID_WALLPAPER) return solidWallpaper(color)
   return WALLPAPERS.find((wallpaper) => wallpaper.id === id) ?? DEFAULT_WALLPAPER
 }
 
@@ -94,7 +142,11 @@ export function applyWallpaper(wallpaper: Wallpaper): void {
   root.setProperty('--wallpaper-color', wallpaper.color)
   document.documentElement.dataset.wallpaperTone = wallpaper.tone
   try {
-    localStorage.setItem(STORAGE_KEY, wallpaper.id)
+    // A colour is kept as itself: names never start with `#`.
+    localStorage.setItem(
+      STORAGE_KEY,
+      wallpaper.id === SOLID_WALLPAPER ? wallpaper.color : wallpaper.id,
+    )
   } catch {
     // Applies to this page only.
   }
@@ -103,7 +155,8 @@ export function applyWallpaper(wallpaper: Wallpaper): void {
 /** The background this browser showed last, before the account's is known. */
 export function storedWallpaper(): Wallpaper {
   try {
-    return findWallpaper(localStorage.getItem(STORAGE_KEY))
+    const stored = localStorage.getItem(STORAGE_KEY)
+    return isHexColor(stored) ? solidWallpaper(stored) : findWallpaper(stored)
   } catch {
     return DEFAULT_WALLPAPER
   }

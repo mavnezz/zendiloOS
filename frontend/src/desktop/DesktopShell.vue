@@ -21,6 +21,7 @@ import DesktopIcons from './DesktopIcons.vue'
 import NotificationCenter from './NotificationCenter.vue'
 import PowerOverlay from './PowerOverlay.vue'
 import DesktopDock from './DesktopDock.vue'
+import StarPrompt from './StarPrompt.vue'
 import ToastStack from './ToastStack.vue'
 import UserMenu from './UserMenu.vue'
 import WidgetPanel from './WidgetPanel.vue'
@@ -187,6 +188,8 @@ async function signOut(): Promise<void> {
       <AppLauncher v-if="launcherOpen" :apps="apps" @close="launcherOpen = false" @open="open" />
     </div>
   </div>
-  <ToastStack />
+  <ToastStack>
+    <StarPrompt />
+  </ToastStack>
   <PowerOverlay />
 </template>

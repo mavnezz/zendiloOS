@@ -32,6 +32,7 @@ export function signIn(permissions: string[] = ADMIN): void {
       permissions,
       password_change_required: false,
       password_locked: false,
+      created_at: 1_700_000_000,
     },
     csrf_token: 'csrf',
     expires_at: 2_000_000_000,

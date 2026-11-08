@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::application::context::Context;
 use crate::application::{AuthContext, IdentityError};
-use crate::domain::{Permission, Preferences};
+use crate::domain::{Permission, Preferences, StarPrompt};
 
 /// Command: keeps the caller's interface choices with their account.
 #[derive(Clone)]
@@ -15,8 +15,17 @@ impl SavePreferences {
         Self { context }
     }
 
-    pub async fn execute(&self, auth: &AuthContext, preferences: Preferences) -> Result<(), IdentityError> {
+    /// Replaces the choices, except that the reminder to star zendiloOS
+    /// never goes back to an earlier state ([`StarPrompt::further`]).
+    pub async fn execute(
+        &self,
+        auth: &AuthContext,
+        mut preferences: Preferences,
+    ) -> Result<(), IdentityError> {
         Context::require(auth, Permission::AccountSelf)?;
-        Ok(self.context.ports.preferences.save(auth.account.id, preferences).await?)
+        let repository = &self.context.ports.preferences;
+        let kept = repository.load(auth.account.id).await?;
+        preferences.star_prompt = StarPrompt::further(kept.star_prompt, preferences.star_prompt);
+        Ok(repository.save(auth.account.id, preferences).await?)
     }
 }

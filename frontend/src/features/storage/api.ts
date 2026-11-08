@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
-import { type MaybeRefOrGetter, toValue } from 'vue'
+import { computed, type MaybeRefOrGetter, toValue } from 'vue'
 
 import { api, unwrap } from '@/shared/api/client'
 import type {
@@ -97,11 +97,13 @@ export async function forgetDisk(serial: string): Promise<void> {
   await unwrap(api.DELETE('/api/v1/storage/inventory/{serial}', { params: { path: { serial } } }))
 }
 
-export function useStorageOverview() {
+/** `enabled` false: not asked for now, e.g. while nobody needs to know. */
+export function useStorageOverview(enabled: MaybeRefOrGetter<boolean> = true) {
   return useQuery({
     queryKey: ['storage', 'overview'],
     queryFn: () => unwrap(api.GET('/api/v1/storage/overview')),
     refetchInterval: DEVICE_REFRESH_MS,
+    enabled: computed(() => toValue(enabled)),
   })
 }
 

@@ -6,6 +6,7 @@ import { live, push, sample } from '@/shared/test-support/live'
 import { click, mountApp, page, press, screen, settle, type } from '@/desktop/testing/mount'
 import { called, on, reset } from '@/shared/test-support/server'
 import { i18n } from '@/shared/i18n'
+import { DELAY_MS, RETRY_MS } from '@/shared/lib/star-prompt'
 
 import DesktopShell from './DesktopShell.vue'
 import { useWindows } from './windows'
@@ -45,6 +46,7 @@ beforeEach(() => {
   reset()
   screen.compact = false
   localStorage.clear()
+  sessionStorage.clear()
   on('GET', '/api/v1/apps/docker', {
     installed: true,
     running: true,
@@ -244,5 +246,19 @@ describe('the desktop', () => {
     await shell(['files.read', 'files.write'])
     expect(page()).toContain(t('apps.files'))
     expect(page()).not.toContain(t('apps.docker'))
+  })
+
+  it('asks an administrator for a star where the toasts appear, once all is calm', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      on('GET', '/api/v1/notifications', { notifications: [], read_up_to: 0 })
+      await shell()
+      await vi.advanceTimersByTimeAsync(DELAY_MS + RETRY_MS)
+      await settle()
+      const card = document.querySelector(`section[aria-label="${t('desktop.starPrompt.label')}"]`)
+      expect(card?.closest('[aria-live="polite"]')).not.toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

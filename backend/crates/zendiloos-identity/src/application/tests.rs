@@ -995,6 +995,29 @@ async fn each_account_keeps_its_own_preferences() {
     assert_eq!(t.use_cases.preferences.execute(&bob).await.unwrap(), Preferences::default());
 }
 
+#[tokio::test]
+async fn a_browser_that_missed_the_star_prompt_does_not_bring_it_back() {
+    use crate::domain::{Preferences, StarAnswer, StarPrompt, Theme};
+    use zendiloos_kernel::Timestamp;
+
+    let t = TestIdentity::new();
+    let alice = signed_in(&t, "alice", Role::Admin).await;
+    let at = Timestamp::from_unix_seconds(1_700_000_000);
+    let declined = StarPrompt::new(1, at, Some(StarAnswer::Declined));
+    let answered = Preferences { star_prompt: declined, ..Preferences::default() };
+    t.use_cases.save_preferences.execute(&alice, answered).await.unwrap();
+
+    // Loaded before the reminder appeared elsewhere, then a theme chosen.
+    let stale = Preferences { theme: Some(Theme::Dark), ..Preferences::default() };
+    t.use_cases.save_preferences.execute(&alice, stale).await.unwrap();
+    let missed_the_answer =
+        Preferences { star_prompt: StarPrompt::new(1, at, None), ..Preferences::default() };
+    t.use_cases.save_preferences.execute(&alice, missed_the_answer).await.unwrap();
+
+    let kept = t.use_cases.preferences.execute(&alice).await.unwrap();
+    assert_eq!((kept.theme, kept.star_prompt), (None, declined));
+}
+
 // Security: idle time, account lock, blocked addresses, sessions
 
 #[tokio::test]

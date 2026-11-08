@@ -20,7 +20,9 @@ pub use password::{
     InvalidPolicy, MAX_AGE_DAYS, MAX_MIN_LENGTH, MAX_PASSWORD_BYTES, MIN_PASSWORD_CHARS, NewPassword,
     PasswordHash, PasswordPolicy, PasswordRejected,
 };
-pub use preferences::{Language, Layout, Preferences, Theme, Wallpaper};
+pub use preferences::{
+    Language, Layout, Preferences, StarAnswer, StarPrompt, Theme, Wallpaper, WallpaperColor,
+};
 pub use role::{Permission, Role};
 pub use security::{
     AddressRange, AutoBlock, BlockedAddress, FailureLimit, InvalidAddressRange, InvalidSecuritySettings,

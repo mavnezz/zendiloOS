@@ -2,6 +2,8 @@
 //! that every browser it signs in with looks the same (docs/architecture.md,
 //! 4.2).
 
+use zendiloos_kernel::Timestamp;
+
 /// Languages of the interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Language {
@@ -71,6 +73,98 @@ impl Wallpaper {
     }
 }
 
+/// The colour of a desktop background of one colour (the wallpaper the
+/// interface names `color`): `#rrggbb`, lowercase.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WallpaperColor(String);
+
+impl WallpaperColor {
+    pub fn parse(value: &str) -> Option<Self> {
+        let valid = value.len() == 7
+            && value.starts_with('#')
+            && value.bytes().skip(1).all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+        valid.then(|| Self(value.to_owned()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// What an administrator answered the reminder to star zendiloOS on GitHub.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StarAnswer {
+    /// Once more, some time later.
+    Later,
+    /// Went to GitHub. Whether a star was given is nobody's business.
+    Starred,
+    Declined,
+}
+
+impl StarAnswer {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            StarAnswer::Later => "later",
+            StarAnswer::Starred => "starred",
+            StarAnswer::Declined => "declined",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "later" => StarAnswer::Later,
+            "starred" => StarAnswer::Starred,
+            "declined" => StarAnswer::Declined,
+            _ => return None,
+        })
+    }
+}
+
+/// The reminder to star zendiloOS on GitHub, once it was shown: how often
+/// (at most [`StarPrompt::MAX_SHOWN`] times), when last, and the answer.
+/// When it is due is the interface's business; nothing of it leaves the
+/// machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StarPrompt {
+    times_shown: u8,
+    last_shown: Timestamp,
+    answer: Option<StarAnswer>,
+}
+
+impl StarPrompt {
+    pub const MAX_SHOWN: u8 = 2;
+
+    pub fn new(times_shown: u8, last_shown: Timestamp, answer: Option<StarAnswer>) -> Option<Self> {
+        let valid = (1..=Self::MAX_SHOWN).contains(&times_shown) && last_shown.unix_seconds() >= 0;
+        valid.then_some(Self { times_shown, last_shown, answer })
+    }
+
+    pub fn times_shown(self) -> u8 {
+        self.times_shown
+    }
+
+    pub fn last_shown(self) -> Timestamp {
+        self.last_shown
+    }
+
+    pub fn answer(self) -> Option<StarAnswer> {
+        self.answer
+    }
+
+    /// Of what is kept and what a browser sends, the one further along:
+    /// shown more often, later, or answered. A browser that loaded the
+    /// preferences before the reminder appeared in another one thus does
+    /// not bring it back by saving a theme.
+    pub fn further(kept: Option<Self>, sent: Option<Self>) -> Option<Self> {
+        let progress = |prompt: &Self| (prompt.times_shown, prompt.last_shown, prompt.answer.is_some());
+        match (kept, sent) {
+            (Some(kept), Some(sent)) if progress(&kept) > progress(&sent) => Some(kept),
+            (kept, None) => kept,
+            (_, sent) => sent,
+        }
+    }
+}
+
 /// An order of things on the desktop, by their ids: widgets, app icons. At
 /// most 32, each a lowercase letter, then letters, digits and `-`, at most
 /// 32 long, none twice. Ids the interface does not know are skipped there.
@@ -114,10 +208,15 @@ pub struct Preferences {
     pub language: Option<Language>,
     pub theme: Option<Theme>,
     pub wallpaper: Option<Wallpaper>,
+    /// The colour of the background of one colour, also while another one
+    /// is chosen.
+    pub wallpaper_color: Option<WallpaperColor>,
     /// The widgets beside the desktop, in order; empty shows none.
     pub widgets: Option<Layout>,
     /// The app icons on the desktop, in order.
     pub desktop_icons: Option<Layout>,
+    /// `None` until the reminder to star zendiloOS was first shown.
+    pub star_prompt: Option<StarPrompt>,
 }
 
 #[cfg(test)]
@@ -148,5 +247,53 @@ mod tests {
         assert!(Layout::parse("status,status").is_none(), "twice");
         assert!(Layout::parse("Status").is_none());
         assert!(Layout::new(vec!["a".into(); 33]).is_none());
+    }
+
+    #[test]
+    fn wallpaper_colours_are_lowercase_hex() {
+        assert_eq!(WallpaperColor::parse("#1e293b").unwrap().as_str(), "#1e293b");
+        for bad in ["#1E293B", "1e293b", "#1e293", "#1e293b0", "#1e29gb", "", "red", "#é9293b"] {
+            assert!(WallpaperColor::parse(bad).is_none(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn star_answers_read_back() {
+        for answer in [StarAnswer::Later, StarAnswer::Starred, StarAnswer::Declined] {
+            assert_eq!(StarAnswer::parse(answer.as_str()), Some(answer));
+        }
+        assert_eq!(StarAnswer::parse("maybe"), None);
+    }
+
+    #[test]
+    fn the_star_prompt_is_shown_once_or_twice() {
+        let at = Timestamp::from_unix_seconds(1_700_000_000);
+        let prompt = StarPrompt::new(1, at, Some(StarAnswer::Later)).unwrap();
+        assert_eq!(
+            (prompt.times_shown(), prompt.last_shown(), prompt.answer()),
+            (1, at, Some(StarAnswer::Later))
+        );
+        assert!(StarPrompt::new(2, at, None).is_some());
+        assert!(StarPrompt::new(0, at, None).is_none(), "never shown is no prompt");
+        assert!(StarPrompt::new(3, at, None).is_none());
+        assert!(StarPrompt::new(1, Timestamp::from_unix_seconds(-1), None).is_none());
+    }
+
+    #[test]
+    fn the_star_prompt_never_goes_back() {
+        let at = |seconds| Timestamp::from_unix_seconds(seconds);
+        let shown = StarPrompt::new(1, at(100), None);
+        let later = StarPrompt::new(1, at(100), Some(StarAnswer::Later));
+        let declined = StarPrompt::new(1, at(100), Some(StarAnswer::Declined));
+        let again = StarPrompt::new(2, at(200), Some(StarAnswer::Later));
+
+        assert_eq!(StarPrompt::further(None, shown), shown);
+        assert_eq!(StarPrompt::further(later, None), later, "a browser that knew nothing yet");
+        assert_eq!(StarPrompt::further(declined, shown), declined, "one that missed the answer");
+        assert_eq!(StarPrompt::further(again, later), again);
+        assert_eq!(StarPrompt::further(later, again), again);
+        assert_eq!(StarPrompt::further(shown, later), later);
+        assert_eq!(StarPrompt::further(later, declined), declined, "answered in the same showing");
+        assert_eq!(StarPrompt::further(None, None), None);
     }
 }

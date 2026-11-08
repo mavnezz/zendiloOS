@@ -47,7 +47,8 @@ function drop(target: string): void {
         cn(
           'rounded-xl transition',
           dragging === app.id && 'opacity-40',
-          over === app.id && 'ring-2 ring-white/70',
+          over === app.id &&
+            'ring-2 ring-white/70 in-data-[wallpaper-tone=light]:ring-neutral-900/50',
         )
       "
       @dragstart="dragging = app.id"
@@ -58,15 +59,16 @@ function drop(target: string): void {
     >
       <button
         type="button"
-        class="group flex w-24 flex-col items-center gap-1.5 rounded-xl p-2 outline-none transition hover:bg-white/10 focus-visible:bg-white/15 focus-visible:ring-2 focus-visible:ring-white/70"
+        class="group flex w-24 flex-col items-center gap-1.5 rounded-xl p-2 outline-none transition hover:bg-white/10 focus-visible:bg-white/15 focus-visible:ring-2 focus-visible:ring-white/70 in-data-[wallpaper-tone=light]:hover:bg-neutral-900/8 in-data-[wallpaper-tone=light]:focus-visible:bg-neutral-900/10 in-data-[wallpaper-tone=light]:focus-visible:ring-neutral-900/50"
         @click="emit('open', app)"
       >
         <AppTile
           :app="app"
           class="transition-transform group-hover:scale-105 group-active:scale-95"
         />
+        <!-- Dark on a light background in either scheme: the theme's own text colour would be light in the dark one. -->
         <span
-          class="line-clamp-2 text-center text-xs font-medium text-white [text-shadow:0_1px_3px_rgb(0_0_0/0.6)] in-data-[wallpaper-tone=light]:text-foreground in-data-[wallpaper-tone=light]:[text-shadow:none]"
+          class="line-clamp-2 text-center text-xs font-medium text-white [text-shadow:0_1px_3px_rgb(0_0_0/0.6)] in-data-[wallpaper-tone=light]:text-neutral-900 in-data-[wallpaper-tone=light]:[text-shadow:0_1px_2px_rgb(255_255_255/0.5)]"
         >
           {{ t(`apps.${app.id}`) }}
         </span>

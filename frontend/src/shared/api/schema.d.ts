@@ -2296,7 +2296,10 @@ export interface paths {
         };
         /** The signed-in account's interface preferences, the same in every browser. */
         get: operations["preferences"];
-        /** Replaces the signed-in account's interface preferences. */
+        /**
+         * Replaces the signed-in account's interface preferences; the star prompt
+         *     only moves forward.
+         */
         put: operations["save_preferences"];
         post?: never;
         delete?: never;
@@ -4045,6 +4048,11 @@ export interface components {
             shared?: boolean;
         };
         CurrentAccount: {
+            /**
+             * Format: int64
+             * @description When the account was created, in Unix seconds.
+             */
+            created_at: number;
             full_name?: string | null;
             /** Format: int64 */
             id: number;
@@ -4826,12 +4834,18 @@ export interface components {
             /** @description The app icons on the desktop, in order, by id. */
             desktop_icons?: string[] | null;
             language?: components["schemas"]["InterfaceLanguage"] | null;
+            star_prompt?: components["schemas"]["InterfaceStarPrompt"] | null;
             theme?: components["schemas"]["InterfaceTheme"] | null;
             /**
              * @description The desktop's background, by the interface's name for it (lowercase
-             *     letters).
+             *     letters); `color` for one of a single colour.
              */
             wallpaper?: string | null;
+            /**
+             * @description The colour of the background `color`, as `#rrggbb` in lowercase.
+             *     Kept while another background is chosen.
+             */
+            wallpaper_color?: string | null;
             /** @description The widgets beside the desktop, in order, by id; empty for none. */
             widgets?: string[] | null;
         };
@@ -4840,6 +4854,25 @@ export interface components {
             dns?: string[];
             ipv4: components["schemas"]["Ipv4Input"];
             ipv6: components["schemas"]["Ipv6Input"];
+        };
+        /**
+         * @description The reminder to star zendiloOS on GitHub, once it was shown. When it is
+         *     due is the interface's business; nothing of it leaves the machine. It
+         *     never goes back: a save that knows less than what is kept (shown fewer
+         *     times, earlier, or not answered) leaves what is kept.
+         */
+        InterfaceStarPrompt: {
+            answer?: components["schemas"]["StarPromptAnswer"] | null;
+            /**
+             * Format: int64
+             * @description When it was last shown, in Unix seconds.
+             */
+            last_shown_at: number;
+            /**
+             * Format: int32
+             * @description How often it was shown: once or twice.
+             */
+            times_shown: number;
         };
         /** @enum {string} */
         InterfaceState: "up" | "no_carrier" | "down" | "unknown";
@@ -6214,6 +6247,12 @@ export interface components {
             root_login?: components["schemas"]["RootLoginMode"] | null;
             running: boolean;
         };
+        /**
+         * @description What an administrator answered the reminder to star zendiloOS on
+         *     GitHub.
+         * @enum {string}
+         */
+        StarPromptAnswer: "later" | "starred" | "declined";
         StartSelfTestRequest: {
             kind: components["schemas"]["SelfTestKind"];
         };
@@ -12243,7 +12282,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description `invalid_input`: no such wallpaper name or layout */
+            /** @description `invalid_input`: no such wallpaper name, colour or layout, or a star prompt shown neither once nor twice */
             422: {
                 headers: {
                     [name: string]: unknown;

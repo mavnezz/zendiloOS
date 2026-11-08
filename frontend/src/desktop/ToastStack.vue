@@ -9,12 +9,13 @@ const { t } = useI18n()
 const notifications = useNotifications()
 </script>
 
-<!-- New notifications, briefly, in the corner. -->
+<!-- New notifications, briefly, in the corner; above them what stays a while (the slot). -->
 <template>
   <div
     class="pointer-events-none fixed top-4 right-4 z-[950] flex w-80 flex-col gap-2"
     aria-live="polite"
   >
+    <slot />
     <TransitionGroup
       enter-from-class="translate-x-4 opacity-0"
       leave-to-class="translate-x-4 opacity-0"

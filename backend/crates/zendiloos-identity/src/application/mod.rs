@@ -147,6 +147,7 @@ pub struct AccountSummary {
     pub role: Role,
     pub password_change_required: bool,
     pub password_locked: bool,
+    pub created_at: Timestamp,
 }
 
 /// What a password that checked out leads to.

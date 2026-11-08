@@ -494,5 +494,6 @@ pub(crate) fn summary(account: &Account) -> AccountSummary {
         role: account.role,
         password_change_required: account.password_change_required,
         password_locked: account.password_locked,
+        created_at: account.created_at,
     }
 }
