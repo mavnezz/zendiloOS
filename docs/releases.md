@@ -79,8 +79,10 @@ machine's name, root's password and the disk for the system, never chosen
 for you: on a NAS the wrong disk would cost data. Packages come from
 Debian's mirror, with `contrib` for ZFS, which DKMS builds for the
 installed kernel (no ZFS module is shipped, see architecture 4.10); at the
-end the release's package is installed from the ISO. The console then
-shows the address of the web interface and the setup code.
+end the release's package is installed from the ISO, and the setup is left
+open (architecture 4.5): no setup code, the console shows the address of
+the web interface, and whoever opens it first from the own network creates
+the administrator.
 
 Each release carries it as `zendiloos-amd64-netinst.iso`, listed in the
 signed `SHA256SUMS`, so the newest stable one is always

@@ -57,7 +57,7 @@ data, and a network connection. arm64 is planned.
 1. Download the [installation ISO](https://github.com/mavnezz/zendiloOS/releases/latest/download/zendiloos-amd64-netinst.iso) of the newest stable release and write it to a USB stick.
 2. Start the NAS from it and choose **Install zendiloOS**.
 3. Answer what the installer asks: language, keyboard, the machine's name, root's password and the disk for the system. Everything else is set up for you; the installer needs the network.
-4. After the restart the console shows the address of the web interface and a setup code. Open the address and create the first administrator with it.
+4. After the restart the console shows the address of the web interface. Open it in a browser on your network and create the first administrator: no setup code is needed, whoever comes first sets the NAS up, so do it right away.
 
 ### Install on an existing Debian 13
 

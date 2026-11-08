@@ -4,10 +4,12 @@
 #
 #   1. the installer runs from the ISO with the ISO's answers; what a person
 #      would answer (the disk, root's password) comes as boot parameters
-#   2. the installed system starts, zendiloOS answers over HTTPS and shows
-#      its setup code on the console
-#   3. the first administrator is set up, and a ZFS pool is made on the
-#      second disk: ZFS was built for the installed kernel
+#   2. the installed system starts, zendiloOS answers over HTTPS, and its
+#      setup is open: no code, on the console nor asked for
+#   3. the first administrator is set up without a code (from the host,
+#      which QEMU's NAT makes 10.0.2.2, an address of the own network), and
+#      a ZFS pool is made on the second disk: ZFS was built for the
+#      installed kernel
 #
 # Usage: scripts/iso-test.sh [ISO]   (the newest dist/zendiloos-*.iso)
 #   ZENDILOOS_ISO_TEST_REUSE=1  skips the installation and starts the
@@ -88,18 +90,19 @@ say "2. Starting the installed system"
     -nic "user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$port-:443"
 wait_for "zendiloOS over HTTPS" "curl -skf $api/health" 600
 if curl -skf "$api/setup" | jq -e .required >/dev/null; then
-    wait_for "the setup code on the console" "grep -q 'Setup code for the first administrator' $dir/boot.log" 120
-    code=$(tr -d '\r' <"$dir/boot.log" | sed -n 's/.*Setup code for the first administrator: \([A-Z0-9-]*\).*/\1/p' | tail -1)
-    [[ -n $code ]] || fail "no setup code on the console"
+    curl -skf "$api/setup" | jq -e '.code_required == false' >/dev/null || fail "the setup asks for a code"
+    wait_for "the open setup on the console" "grep -q 'to create the first administrator' $dir/boot.log" 120
+    ! grep -q 'Setup code for the first administrator' "$dir/boot.log" || fail "a setup code on the console"
+    setup=true
 else
-    code=""
+    setup=false
 fi
 
 say "3. The first administrator, and a ZFS pool on the second disk"
 work=$(mktemp -d)
-if [[ -n $code ]]; then
+if $setup; then
     curl -skf -H "Origin: $base" -H 'Content-Type: application/json' \
-        -d "$(jq -n --arg code "$code" --arg password "$password" '{setup_code: $code, name: "admin", password: $password}')" \
+        -d "$(jq -n --arg password "$password" '{name: "admin", password: $password}')" \
         "$api/setup" >/dev/null || fail "setup"
 fi
 curl -sk -c "$work/jar" -H "Origin: $base" -H 'Content-Type: application/json' \

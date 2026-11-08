@@ -4,7 +4,8 @@ Documentation=https://github.com/mavnezz/zendiloOS
 Requires=zendiloosd.socket
 Wants=zendiloos-agent.socket
 After=zendiloosd.socket zendiloos-agent.socket network.target
-# The console login prompt shows the setup code written during startup.
+# The console login prompt shows the setup code written during startup (or
+# that the setup is open, on a machine installed from the ISO).
 Before=getty.target
 
 [Service]

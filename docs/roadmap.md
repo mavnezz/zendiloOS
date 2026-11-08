@@ -11,7 +11,7 @@ Included:
 
 | Area | Scope |
 |---|---|
-| Access | initial setup with setup code, login, sessions, roles admin/user/readonly, audit log |
+| Access | initial setup with setup code (open to the own network when installed from the ISO), login, sessions, roles admin/user/readonly, audit log |
 | Interface | desktop with windows, taskbar, launcher, notifications, light/dark mode, English (default) and German; home screen on phones |
 | System | dashboard with live metrics (CPU, memory, network, disk I/O, temperatures), system information, logs, reboot/power off |
 | Storage | disks with SMART status; create ZFS pools (single disk, mirror, RAIDZ1/2/3), each one volume; state, resilver progress, capacity; replace a disk in a degraded pool; scheduled scrub |

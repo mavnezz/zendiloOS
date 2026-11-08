@@ -81,11 +81,12 @@ The Debian package `zendiloos` (built with `just deb`) installs:
 | `/run/zendiloos/agent.sock` | `zendiloos-agent.socket`, `root:zendiloos 0660`: only zendiloosd reaches the system agent |
 | `/run/zendiloos/files.sock` | `zendiloos-files.socket`, `root:zendiloos 0660`: the files agent, the same program with `--role files` |
 | `/etc/samba/smb.conf` | installed from `/usr/share/zendiloos/smb.conf` only if it is Debian's unchanged default (kept as `smb.conf.debian`); it includes `/etc/samba/zendiloos.conf`, which the agent writes |
-| `/var/lib/zendiloos/` | database, backups, setup code, console text (`0700`) |
-| `/run/issue.d/zendiloos.issue` | the console text, written by the agent from its own template (0600): the login prompt shows the address and, until setup is done, the setup code. zendiloosd only names the code; nothing it controls is read by agetty |
+| `/var/lib/zendiloos/` | database, backups, setup code or the marker of an open setup (`setup-open`), console text (`0700`) |
+| `/run/issue.d/zendiloos.issue` | the console text, written by the agent from its own template (0600): the login prompt shows the address and, until setup is done, the setup code, or for an open setup that the first administrator is created in the browser. zendiloosd only names the code; nothing it controls is read by agetty |
 
 `zendiloosd` uses `Type=notify` and is ordered before `getty.target`, so the
-console prompt appears only once the setup code is written. All services
+console prompt appears only once the setup code (or the open setup) is
+written. All services
 run with strict systemd sandboxing; see 4.6 for what each may do.
 
 ### 1.4 Alternatives Considered
@@ -412,7 +413,7 @@ Loopback, `veth`, `tun`/`tap` and Docker's bridges are left out.
 
 | Attacker | Goal | Main countermeasures |
 |---|---|---|
-| Device on the LAN without an account | log in, take over during initial setup | throttling, setup code, no default password, TLS |
+| Device on the LAN without an account | log in, take over during initial setup | throttling, setup code (none on a machine installed from the ISO, whose setup is open to the own network only: **accepted**, as on other NAS systems, between installing and setting it up), no default password, TLS |
 | Signed-in user without admin rights | other users' files, privilege escalation | server-side permission checks, file access with the user's own kernel permissions |
 | Web page in the same browser | CSRF, WebSocket hijacking | `SameSite=Strict`, CSRF header, origin check including the WebSocket upgrade, strict CSP |
 | Compromised `zendiloosd` | root | the agent offers only validated domain operations, no generic execution; system disk protected. **Accepted limit:** an administrator may run any Compose project and give an app the Docker socket (4.9), and the agent carries that out as asked, so whoever controls `zendiloosd` controls Docker and with it the machine; an administrator's account is as good as root, as on other NAS systems |
@@ -804,11 +805,27 @@ rustls with ring and the system's certificate authorities
   current one is verified.
 - **Initial setup:** as long as no admin exists, the interface shows a setup
   wizard. It requires a one-time **setup code**, stored in
-  `/var/lib/zendiloos/setup-code` (0600) and logged to the journal as a
-  warning; showing it on the console (HDMI/serial) follows with the
-  packaging **[Step 7]**. Nobody on the LAN can complete the setup before
-  the owner. The first administrator is created atomically, so two
-  concurrent setups cannot both succeed.
+  `/var/lib/zendiloos/setup-code` (0600), logged to the journal as a
+  warning and shown on the console (HDMI/serial). Nobody on the LAN can
+  complete the setup before the owner. The first administrator is created
+  atomically, so two concurrent setups cannot both succeed.
+- **Open setup (installed from the ISO):** the ISO's installer leaves the
+  marker `/var/lib/zendiloos/setup-open`. While it exists and no admin
+  does, no code is made: the console says to open the address in a browser,
+  the setup page asks only for a name and a password, and whoever is first
+  becomes the administrator. Only from the NAS's own network: the address
+  nginx passes in `X-Real-IP` (its `$remote_addr`, set for every location,
+  never taken from the client; zendiloosd trusts it only from nginx's
+  socket or loopback) must be loopback, private IPv4 (10/8, 172.16/12,
+  192.168/16), link-local, the shared range 100.64/10 (Tailscale and
+  similar VPNs), or IPv6 unique local (fc00::/7) or link-local (fe80::/10),
+  IPv4-mapped forms included; anything else gets `setup_not_local` (403).
+  A NAS behind another reverse proxy of the LAN sees that proxy's address:
+  set it up before publishing it. Throttling applies as for codes; the
+  audit log records `open_setup`, or `open_setup_from_elsewhere` for a
+  refusal. The setup, or an admin found at startup, removes the marker. A
+  NAS installed with apt on an existing Debian (possibly reachable from the
+  internet) never gets the marker and keeps the code.
 - **[Later]** TOTP second factor, passkeys.
 
 ### 4.6 Agent Hardening
