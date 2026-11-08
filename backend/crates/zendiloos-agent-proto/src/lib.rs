@@ -37,9 +37,9 @@ pub use docker::{
     NetworkName, ProjectAction, ProjectConfig, ProjectDirectory, ProjectName, Subnet, TerminalSize,
 };
 pub use files::{
-    DirectoryEntry, EntryKind, FileLocation, FileRoot, FoundEntry, HOMES_DIRECTORY, InvalidSearchText,
-    InvalidSharePath, MAX_DIRECTORY_ENTRIES, MAX_SEARCH_RESULTS, SearchStop, SearchText, SharePath,
-    is_file_name,
+    CountStop, DirectoryEntry, EntryFacts, EntryKind, FileLocation, FileRoot, FoundEntry, HOMES_DIRECTORY,
+    InvalidSearchText, InvalidSharePath, MAX_COUNTED, MAX_DIRECTORY_ENTRIES, MAX_SEARCH_RESULTS, SearchStop,
+    SearchText, SharePath, is_file_name,
 };
 pub use framing::{FrameError, read_message, write_message};
 pub use network::{
@@ -568,6 +568,14 @@ pub enum Request {
         #[serde(default)]
         hidden: bool,
     },
+    /// What `location` is: kind, times and owner, and for a folder its
+    /// files, folders and hidden entries counted as the user may see them.
+    /// Answers [`Response::Facts`]: at most [`MAX_COUNTED`] entries within
+    /// half a minute, ending early once its client hangs up.
+    EntryFacts {
+        user: UserName,
+        location: FileLocation,
+    },
     /// Opens a regular file for reading; [`Response::File`] carries it.
     OpenFile {
         user: UserName,
@@ -721,6 +729,7 @@ impl Request {
             Request::SetGroupMembers { .. } => "set_group_members",
             Request::ListDirectory { .. } => "list_directory",
             Request::SearchFiles { .. } => "search_files",
+            Request::EntryFacts { .. } => "entry_facts",
             Request::OpenFile { .. } => "open_file",
             Request::CreateUpload { .. } => "create_upload",
             Request::MakeDirectory { .. } => "make_directory",
@@ -785,6 +794,10 @@ pub enum Response {
         entries: Vec<FoundEntry>,
         /// Why it did not look everywhere, if it did not.
         stopped: Option<SearchStop>,
+    },
+    /// What [`Request::EntryFacts`] found out.
+    Facts {
+        facts: EntryFacts,
     },
     /// A regular file, opened for reading; its descriptor comes along.
     File {
@@ -1123,6 +1136,7 @@ impl Request {
             | Request::MakeHome { .. }
             | Request::ListDirectory { .. }
             | Request::SearchFiles { .. }
+            | Request::EntryFacts { .. }
             | Request::OpenFile { .. }
             | Request::CreateUpload { .. }
             | Request::MakeDirectory { .. }

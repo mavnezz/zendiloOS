@@ -3725,6 +3725,80 @@
         ]
       }
     },
+    "/api/v1/files/removable/{drive}/facts": {
+      "get": {
+        "tags": [
+          "files"
+        ],
+        "summary": "What a file or folder on a removable drive is, and for a folder what is\nin it, counted as in a share. Needs `files.read` and `storage.manage`.",
+        "operationId": "drive_facts",
+        "parameters": [
+          {
+            "name": "drive",
+            "in": "path",
+            "description": "The drive's ID, as `/storage/removable` lists it",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "description": "Relative to the share's root, e.g. `photos/2024`; empty for the root.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "snapshot",
+            "in": "query",
+            "description": "In this snapshot of the share, read only (its label).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EntryFacts"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`: not someone who manages storage",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no such drive mounted, or nothing at that path",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/files/removable/{drive}/folder": {
       "get": {
         "tags": [
@@ -4517,6 +4591,80 @@
           },
           "422": {
             "description": "`invalid_operation`: not a file",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/files/shares/{id}/facts": {
+      "get": {
+        "tags": [
+          "files"
+        ],
+        "summary": "What a file or folder is: when it was made and changed, whose it is;\nfor a folder, its files, folders and hidden entries counted below it\nas the user may see them, and what the files hold. Walks as a search\ndoes; at most ten million entries within half a minute, counted so far\nwhen that is up or the request is dropped. Needs `files.read`.",
+        "operationId": "entry_facts",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "description": "Relative to the share's root, e.g. `photos/2024`; empty for the root.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "snapshot",
+            "in": "query",
+            "description": "In this snapshot of the share, read only (its label).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EntryFacts"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`permission_denied`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no such share, or not shared with the user, or nothing at that path",
             "content": {
               "application/json": {
                 "schema": {
@@ -10616,6 +10764,14 @@
           }
         }
       },
+      "CountStop": {
+        "type": "string",
+        "description": "Why counting a folder ended before it had looked everywhere.",
+        "enum": [
+          "entries",
+          "time"
+        ]
+      },
       "CreateAccountRequest": {
         "type": "object",
         "required": [
@@ -11642,6 +11798,83 @@
           }
         },
         "additionalProperties": false
+      },
+      "EntryFacts": {
+        "type": "object",
+        "description": "What a file or folder is; for a folder, what is in it, counted as the\nperson may see it.",
+        "required": [
+          "path",
+          "folder",
+          "bytes",
+          "files",
+          "folders",
+          "hidden"
+        ],
+        "properties": {
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "A file's size; for a folder, what the files counted in it hold.",
+            "minimum": 0
+          },
+          "created": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Unix seconds, where the file system keeps when it was made."
+          },
+          "files": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "folder": {
+            "type": "boolean"
+          },
+          "folders": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Folders below it, itself not counted.",
+            "minimum": 0
+          },
+          "hidden": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Entries whose name starts with `.`: counted, not looked into.",
+            "minimum": 0
+          },
+          "modified": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "owner": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Its owner's account, where the NAS knows it."
+          },
+          "path": {
+            "type": "string",
+            "description": "Relative to the root, as asked for."
+          },
+          "stopped": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CountStop",
+                "description": "Set when the count is short: what was counted by then."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
       },
       "EnvironmentVariable": {
         "type": "object",

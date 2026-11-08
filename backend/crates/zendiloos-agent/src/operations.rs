@@ -293,6 +293,7 @@ impl Operations {
             }
             Request::ListDirectory { .. }
             | Request::SearchFiles { .. }
+            | Request::EntryFacts { .. }
             | Request::OpenFile { .. }
             | Request::CreateUpload { .. }
             | Request::MakeDirectory { .. }

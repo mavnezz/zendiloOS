@@ -19,8 +19,9 @@ use zendiloos_kernel::{Actor, PortError, RequestContext, Timestamp};
 use super::SharingPorts;
 use super::ports::FileHostError;
 use crate::domain::{
-    self, Access, Favourite, FileLocation, FilePath, FileRoot, Found, HOME_SHARE, InvalidFilePath, Listing,
-    MAX_FAVOURITES, MAX_SEARCH_BYTES, PlaceId, Share, ShareId, ShareName, is_new_file_name,
+    self, Access, EntryFacts, Favourite, FileLocation, FilePath, FileRoot, Found, HOME_SHARE,
+    InvalidFilePath, Listing, MAX_FAVOURITES, MAX_SEARCH_BYTES, PlaceId, Share, ShareId, ShareName,
+    is_new_file_name,
 };
 
 /// Most entries one copy, move or delete takes.
@@ -347,6 +348,21 @@ impl FilesUseCases {
         let share = self.share(actor, id, context).await?.place;
         let at = at_snapshot(&share, path, snapshot)?;
         Ok(self.ports.files.search(&actor.name, &at, text, hidden, context).await?)
+    }
+
+    /// What `path` is; for a folder, its files, folders and hidden entries
+    /// counted as the person may see them. From a snapshot if given.
+    pub async fn facts(
+        &self,
+        actor: &Actor,
+        id: impl Into<PlaceId>,
+        path: FilePath,
+        snapshot: Option<&str>,
+        context: &RequestContext,
+    ) -> Result<EntryFacts, FilesError> {
+        let share = self.share(actor, id, context).await?.place;
+        let at = at_snapshot(&share, path, snapshot)?;
+        Ok(self.ports.files.facts(&actor.name, &at, context).await?)
     }
 
     /// A file for download, and its size; from a snapshot if given.

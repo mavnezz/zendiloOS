@@ -19,15 +19,16 @@ use std::time::Instant;
 
 use rustix::fs::Timespec;
 use rustix::fs::{
-    Access, AtFlags, Dir, FileType, Mode, OFlags, RenameFlags, ResolveFlags, Stat, Timestamps, accessat,
-    fstat, futimens, mkdirat, open, openat, openat2, readlinkat, renameat_with, statat, symlinkat, unlinkat,
+    Access, AtFlags, Dir, FileType, Mode, OFlags, RenameFlags, ResolveFlags, Stat, StatxFlags, Timestamps,
+    accessat, fstat, futimens, mkdirat, open, openat, openat2, readlinkat, renameat_with, statat, statx,
+    symlinkat, unlinkat,
 };
 use rustix::io::Errno;
 use rustix::rand::{GetRandomFlags, getrandom};
 use zendiloos_agent_proto::{
-    DirectoryEntry, EntryKind, FoundEntry, HOMES_DIRECTORY, MAX_DIRECTORY_ENTRIES, MAX_SEARCH_RESULTS,
-    RemovableId, SearchStop, SearchText, ShareName, SharePath, SnapshotLabel, UserName, VolumeNumber,
-    is_file_name,
+    CountStop, DirectoryEntry, EntryKind, FoundEntry, HOMES_DIRECTORY, MAX_COUNTED, MAX_DIRECTORY_ENTRIES,
+    MAX_SEARCH_RESULTS, RemovableId, SearchStop, SearchText, ShareName, SharePath, SnapshotLabel, UserName,
+    VolumeNumber, is_file_name,
 };
 
 mod archive;
@@ -98,6 +99,23 @@ pub struct SearchBounds<'a> {
 
 /// Entries looked at between two looks at the clock and the stop flag.
 const SEARCH_CHECK_EVERY: usize = 64;
+
+/// What a file or folder is, and for a folder what is in it, counted.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Facts {
+    pub folder: bool,
+    /// A file's size; for a folder, what the files counted in it hold.
+    pub bytes: u64,
+    pub files: u64,
+    pub folders: u64,
+    /// Entries whose name starts with `.`: counted, not looked into.
+    pub hidden: u64,
+    pub stopped: Option<CountStop>,
+    /// Unix seconds, where the file system keeps the time it was made.
+    pub created: Option<i64>,
+    pub modified: Option<i64>,
+    pub uid: u32,
+}
 
 /// A directory listing.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -567,6 +585,92 @@ impl ShareRoot {
             stack.push(Level { folder: Dir::new(inner)?, path: found_path, depth });
         };
         Ok(Found { entries, stopped })
+    }
+
+    /// What `path` is: a file or a folder, when it was made (where the file
+    /// system keeps that) and last changed, whose it is; for a folder, its
+    /// files, folders and hidden entries below it counted as the calling
+    /// thread may see them, and what the files hold. Walks as
+    /// [`ShareRoot::search`] does: by descriptor, no link followed, no other
+    /// file system entered, no deeper than 256 folders; a folder it may not
+    /// read is passed by. Hidden entries are counted, not looked into, so
+    /// the recycle bins and uploads under way are not counted through. At
+    /// most [`MAX_COUNTED`] entries, ending early at `bounds`.
+    pub fn facts(&self, path: &SharePath, bounds: SearchBounds<'_>) -> Result<Facts, FileError> {
+        let at = self.resolve(path, OFlags::PATH)?;
+        let stat = fstat(&at)?;
+        let times = statx(&at, "", AtFlags::EMPTY_PATH, StatxFlags::BASIC_STATS | StatxFlags::BTIME)?;
+        let created = times.stx_mask & StatxFlags::BTIME.bits() != 0;
+        let mut facts = Facts {
+            folder: kind(&stat) == FileType::Directory,
+            created: created.then_some(times.stx_btime.tv_sec),
+            modified: Some(times.stx_mtime.tv_sec),
+            uid: times.stx_uid,
+            ..Facts::default()
+        };
+        if !facts.folder {
+            facts.bytes = if kind(&stat) == FileType::RegularFile {
+                u64::try_from(stat.st_size).unwrap_or(0)
+            } else {
+                0
+            };
+            return Ok(facts);
+        }
+        let folder = self.resolve(path, OFlags::RDONLY | OFlags::DIRECTORY)?;
+        if identity(&fstat(&folder)?) != identity(&stat) {
+            return Err(FileError::Invalid("the folder was replaced meanwhile"));
+        }
+        let mut stack = vec![(Dir::new(folder)?, 0u32)];
+        let mut looked = 0usize;
+        facts.stopped = loop {
+            let Some((dir, depth)) = stack.last_mut() else { break None };
+            looked += 1;
+            if looked.is_multiple_of(SEARCH_CHECK_EVERY)
+                && (Instant::now() >= bounds.until || bounds.stop.load(Ordering::Relaxed))
+            {
+                break Some(CountStop::Time);
+            }
+            let item = match dir.next() {
+                Some(Ok(item)) => item,
+                Some(Err(_)) | None => {
+                    stack.pop();
+                    continue;
+                }
+            };
+            let depth = *depth;
+            let raw = item.file_name();
+            if raw == c"." || raw == c".." || raw.to_bytes().starts_with(UPLOAD_PREFIX.as_bytes()) {
+                continue;
+            }
+            if raw.to_bytes().starts_with(b".") {
+                facts.hidden += 1;
+            } else {
+                let base = dir.fd()?;
+                let Ok(entry) = statat(base, raw, AtFlags::SYMLINK_NOFOLLOW) else { continue };
+                if kind(&entry) != FileType::Directory {
+                    facts.files += 1;
+                    if kind(&entry) == FileType::RegularFile {
+                        facts.bytes = facts.bytes.saturating_add(u64::try_from(entry.st_size).unwrap_or(0));
+                    }
+                } else {
+                    facts.folders += 1;
+                    let enter = device(&entry) == self.file_system && depth + 1 < MAX_DEPTH;
+                    // Only the folder looked at: whoever may write here could
+                    // swap it for another meanwhile.
+                    let opened = enter
+                        .then(|| open_beneath_flags(base, raw, OFlags::RDONLY | OFlags::DIRECTORY).ok())
+                        .flatten()
+                        .filter(|inner| fstat(inner).map(|o| identity(&o)).ok() == Some(identity(&entry)));
+                    if let Some(inner) = opened {
+                        stack.push((Dir::new(inner)?, depth + 1));
+                    }
+                }
+            }
+            if facts.files + facts.folders + facts.hidden >= MAX_COUNTED {
+                break Some(CountStop::Entries);
+            }
+        };
+        Ok(facts)
     }
 
     /// A regular file, opened for reading, and its size.

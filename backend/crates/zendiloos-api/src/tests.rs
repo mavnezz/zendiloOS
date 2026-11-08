@@ -2773,6 +2773,47 @@ fn operation_ids_are_unique() {
 }
 
 #[tokio::test]
+async fn what_is_in_a_folder_is_counted_for_who_may_see_it() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let carol = h.sign_in("carol", Role::User).await;
+    let carol_id =
+        h.identity.accounts.all().into_iter().find(|a| a.name.as_str() == "carol").unwrap().id.get();
+    let created = h
+        .send(json(
+            with_csrf(post("/api/v1/shares"), &admin),
+            json!({ "name": "photos", "pool": "tank",
+                    "access": [{ "kind": "account", "id": carol_id, "access": "read" }] }),
+        ))
+        .await;
+    let files = format!("/api/v1/files/shares/{}", created.body["id"]);
+    let facts = |session: &Session, query: &str| {
+        h.send(empty(with_cookie(get(&format!("{files}/facts?{query}")), session)))
+    };
+
+    let top = facts(&carol, "path=").await;
+    assert_eq!(top.status, StatusCode::OK, "{:?}", top.body);
+    assert_eq!(
+        top.body,
+        json!({ "path": "", "folder": true, "bytes": 1000, "files": 12, "folders": 3, "hidden": 1,
+                "stopped": null, "created": 1_700_000_000, "modified": 1_700_000_100, "owner": "carol" })
+    );
+    assert_eq!(facts(&carol, "path=2024/big").await.body["stopped"], "time");
+    let one = facts(&carol, "path=2024/a.jpg").await;
+    assert_eq!((one.body["folder"].clone(), one.body["bytes"].clone()), (json!(false), json!(4)));
+    assert_problem(&facts(&carol, "path=../x").await, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
+    assert_problem(&facts(&admin, "path=").await, StatusCode::NOT_FOUND, "not_found");
+
+    // A drive, for someone who manages storage, while it is mounted.
+    let stick = "/api/v1/files/removable/1A2B-3C4D/facts?path=";
+    let on_stick = |session: &Session| h.send(empty(with_cookie(get(stick), session)));
+    assert_problem(&on_stick(&carol).await, StatusCode::FORBIDDEN, "forbidden");
+    h.storage.plug_stick();
+    h.send(empty(with_cookie(get("/api/v1/storage/removable"), &admin))).await;
+    assert_eq!(on_stick(&admin).await.status, StatusCode::OK);
+}
+
+#[tokio::test]
 async fn a_search_looks_below_a_folder_the_user_may_see() {
     let h = Harness::new();
     let admin = h.sign_in("alice", Role::Admin).await;

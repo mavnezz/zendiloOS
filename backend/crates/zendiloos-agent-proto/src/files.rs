@@ -75,6 +75,42 @@ pub enum SearchStop {
     Time,
 }
 
+/// The most entries [`crate::Request::EntryFacts`] counts in a folder.
+pub const MAX_COUNTED: u64 = 10_000_000;
+
+/// Why counting a folder ended before it had looked everywhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CountStop {
+    /// [`MAX_COUNTED`] entries were counted.
+    Entries,
+    /// Its time was up, or nobody waited for it any more.
+    Time,
+}
+
+/// What a file or folder is; for a folder, what is in it, counted as the
+/// user may see it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EntryFacts {
+    pub folder: bool,
+    /// A file's size; for a folder, what the files counted in it hold.
+    pub bytes: u64,
+    pub files: u64,
+    /// Folders below it, itself not counted.
+    pub folders: u64,
+    /// Entries whose name starts with `.`: counted, not looked into.
+    pub hidden: u64,
+    /// Why the count is short, if it is.
+    pub stopped: Option<CountStop>,
+    /// Unix seconds, where the file system keeps when it was made.
+    pub created: Option<i64>,
+    pub modified: Option<i64>,
+    pub owner_uid: u32,
+    /// The owner's account, where this system knows it.
+    pub owner: Option<String>,
+}
+
 /// A path inside a share, relative to its root: names separated by `/`.
 /// No name is empty, `.` or `..`, longer than 255 bytes or contains NUL;
 /// the whole path has at most 4096 bytes. Empty means the share's root.

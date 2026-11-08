@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use zendiloos_kernel::{PortError, RequestContext, Timestamp};
 
 use crate::domain::{
-    Access, AppAccess, Favourite, FileLocation, FilePath, FileServices, Found, Frequency, Home,
+    Access, AppAccess, EntryFacts, Favourite, FileLocation, FilePath, FileServices, Found, Frequency, Home,
     HomesLocation, Listing, NewShare, Permission, Principal, Share, ShareId, ShareName, ShareSettings,
     ShareUsage, SharingConfig, Snapshot, SnapshotSchedule,
 };
@@ -298,6 +298,15 @@ pub trait FileHost: Send + Sync {
         hidden: bool,
         context: &RequestContext,
     ) -> Result<Found, FileHostError>;
+
+    /// What `at` is; for a folder, what is in it, counted as the user may
+    /// see it, within half a minute.
+    async fn facts(
+        &self,
+        user: &str,
+        at: &FileLocation,
+        context: &RequestContext,
+    ) -> Result<EntryFacts, FileHostError>;
 
     /// A regular file, opened for reading, and its size.
     async fn open(

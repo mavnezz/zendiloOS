@@ -25,7 +25,7 @@ use rustix::process::{Gid, Uid, getegid, geteuid, getgid, getuid};
 use rustix::thread::{
     CapabilitySet, capabilities, set_capabilities, set_thread_groups, set_thread_res_gid, set_thread_res_uid,
 };
-use zendiloos_agent_proto::{FileLocation, FileRoot, Request, Response, SharePath, UserName};
+use zendiloos_agent_proto::{EntryFacts, FileLocation, FileRoot, Request, Response, SharePath, UserName};
 use zendiloos_fileops::{FileError, PIECES_IN_FLIGHT, SearchBounds, Sent, ShareRoot, Taken, settle};
 
 use crate::accounts::{AccountFiles, ID_MAX, ID_MIN, USERS_GROUP};
@@ -49,6 +49,8 @@ pub(crate) struct Files {
 const CONCURRENT_ARCHIVES: usize = 4;
 /// How long a search looks before it answers with what it found.
 const SEARCH_TIME: std::time::Duration = std::time::Duration::from_secs(8);
+/// How long counting a folder may take; what was counted by then is told.
+const COUNT_TIME: std::time::Duration = std::time::Duration::from_secs(30);
 /// An archive nobody reads for this long is given up.
 const ARCHIVE_STALL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
@@ -339,6 +341,34 @@ impl Files {
                 })
                 .await?;
                 Ok((Response::Found { entries: found.entries, stopped: found.stopped }, None))
+            }
+            Request::EntryFacts { user, location } => {
+                let identity = self.identity(user)?;
+                let (share, path) = (self.share(location, user)?, location.path.clone());
+                let stop = Arc::new(AtomicBool::new(false));
+                let _watching = crate::waiting::flag_when_given_up(Arc::clone(&stop));
+                let until = std::time::Instant::now() + COUNT_TIME;
+                let facts = run(Acting::at(location, &identity), move || {
+                    share.facts(&path, SearchBounds { until, stop: &stop })
+                })
+                .await?;
+                let passwd = read(&self.accounts.passwd)?;
+                let owner = passwd::accounts(&passwd)
+                    .find(|(_, uid, _)| *uid == facts.uid)
+                    .map(|(name, _, _)| name.to_owned());
+                let facts = EntryFacts {
+                    folder: facts.folder,
+                    bytes: facts.bytes,
+                    files: facts.files,
+                    folders: facts.folders,
+                    hidden: facts.hidden,
+                    stopped: facts.stopped,
+                    created: facts.created,
+                    modified: facts.modified,
+                    owner_uid: facts.uid,
+                    owner,
+                };
+                Ok((Response::Facts { facts }, None))
             }
             Request::OpenFile { user, location } => {
                 let identity = self.identity(user)?;
@@ -634,6 +664,17 @@ mod tests {
         let found = files.execute(&search("SONG")).await;
         let Ok((Response::Found { entries, stopped: None }, None)) = found else { panic!("{found:?}") };
         assert_eq!(entries.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), [format!("{top}/song.mp3")]);
+        let facts = files.execute(&Request::EntryFacts { user: anna.clone(), location: at("") }).await;
+        let Ok((Response::Facts { facts }, None)) = facts else { panic!("{facts:?}") };
+        assert!(facts.folder);
+        assert_eq!(
+            (facts.files, facts.folders, facts.hidden, facts.bytes, facts.stopped),
+            (1, 0, 0, 4, None)
+        );
+        assert_eq!(facts.owner_uid, rustix::process::getuid().as_raw());
+        let song = files.execute(&Request::EntryFacts { user: anna.clone(), location: at("song.mp3") }).await;
+        let Ok((Response::Facts { facts: song }, None)) = song else { panic!("{song:?}") };
+        assert_eq!((song.folder, song.bytes), (false, 4));
         files.execute(&Request::MakeDirectory { user: anna.clone(), location: at("new") }).await.unwrap();
         let copied = files
             .execute(&Request::CopyEntry { user: anna.clone(), from: at("song.mp3"), to: at("new/song.mp3") })
