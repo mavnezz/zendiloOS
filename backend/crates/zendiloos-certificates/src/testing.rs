@@ -194,6 +194,10 @@ pub const ISSUED_FOR: Duration = Duration::from_secs(90 * 24 * 3600);
 pub struct FakeAcmeHost {
     installed: AtomicBool,
     failure: Mutex<Option<String>>,
+    /// nginx does not take a renewed certificate, for this reason.
+    reload_failure: Mutex<Option<String>>,
+    /// Confirming a change of the web server fails.
+    confirm_fails: AtomicBool,
     pending_until: Mutex<Option<Timestamp>>,
     applied: Mutex<Option<WebServer>>,
     calls: Mutex<Vec<String>>,
@@ -210,6 +214,21 @@ impl FakeAcmeHost {
     /// Issuing fails from now on, with this reason.
     pub fn fail_with(&self, reason: Option<&str>) {
         *self.failure.lock().unwrap() = reason.map(str::to_owned);
+    }
+
+    /// nginx refuses to reload from now on, with this reason.
+    pub fn fail_reload_with(&self, reason: Option<&str>) {
+        *self.reload_failure.lock().unwrap() = reason.map(str::to_owned);
+    }
+
+    /// Confirming a change of the web server fails from now on.
+    pub fn fail_confirm(&self) {
+        self.confirm_fails.store(true, Ordering::SeqCst);
+    }
+
+    /// Forgets the calls so far.
+    pub fn forget_calls(&self) {
+        self.calls.lock().unwrap().clear();
     }
 
     /// The time issuing starts from (the fake's own clock).
@@ -270,6 +289,11 @@ impl AcmeHost for FakeAcmeHost {
         Ok(())
     }
 
+    async fn remove_account(&self, account_id: i64, _context: &RequestContext) -> Result<(), PortError> {
+        self.call(format!("remove account {account_id}"));
+        Ok(())
+    }
+
     async fn web_state(&self, _context: &RequestContext) -> Result<WebServerState, PortError> {
         Ok(WebServerState { pending_until: *self.pending_until.lock().unwrap() })
     }
@@ -292,6 +316,9 @@ impl AcmeHost for FakeAcmeHost {
     }
 
     async fn confirm_web(&self, _context: &RequestContext) -> Result<(), HostError> {
+        if self.confirm_fails.load(Ordering::SeqCst) {
+            return Err(HostError::Failed("cannot remove the settings from before".into()));
+        }
         let mut pending = self.pending_until.lock().unwrap();
         if pending.take().is_none() {
             return Err(HostError::Refused("no change waits for confirmation".into()));
@@ -302,7 +329,10 @@ impl AcmeHost for FakeAcmeHost {
 
     async fn reload_certificate(&self, _context: &RequestContext) -> Result<(), HostError> {
         self.call("reload".into());
-        Ok(())
+        match self.reload_failure.lock().unwrap().clone() {
+            Some(reason) => Err(HostError::Failed(reason)),
+            None => Ok(()),
+        }
     }
 }
 

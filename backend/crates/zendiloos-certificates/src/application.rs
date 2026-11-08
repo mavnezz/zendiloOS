@@ -2,6 +2,7 @@
 //! certificates kept, certificates issued and renewed in jobs, and the web
 //! interface's ports and certificate changed with confirmation.
 
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use async_trait::async_trait;
@@ -105,8 +106,10 @@ pub trait AcmeHost: Send + Sync {
         lines: &dyn Lines,
         context: &RequestContext,
     ) -> Result<Timestamp, HostError>;
-    /// Removes what acme.sh kept of it.
+    /// Removes what acme.sh and nginx kept of a certificate.
     async fn remove(&self, certificate_id: i64, context: &RequestContext) -> Result<(), PortError>;
+    /// Removes what acme.sh kept of an account: its key and settings.
+    async fn remove_account(&self, account_id: i64, context: &RequestContext) -> Result<(), PortError>;
     async fn web_state(&self, context: &RequestContext) -> Result<WebServerState, PortError>;
     /// Applies the settings; they go back unless confirmed in time.
     async fn apply_web(
@@ -116,8 +119,8 @@ pub trait AcmeHost: Send + Sync {
         context: &RequestContext,
     ) -> Result<(), HostError>;
     async fn confirm_web(&self, context: &RequestContext) -> Result<(), HostError>;
-    /// The certificate the web interface shows was renewed: nginx takes the
-    /// new one.
+    /// The certificate the web interface shows (or a change waiting would)
+    /// was renewed: nginx takes the new one.
     async fn reload_certificate(&self, context: &RequestContext) -> Result<(), HostError>;
 }
 
@@ -198,6 +201,21 @@ pub struct Certificates {
     ports: Arc<CertificatesPorts>,
     /// Settings applied and waiting for confirmation; saved once confirmed.
     pending: Arc<Mutex<Option<WebServer>>>,
+    /// Certificates being issued now: not issued twice at once, nor deleted.
+    issuing: Arc<Mutex<BTreeSet<i64>>>,
+}
+
+/// Takes a certificate out of [`Certificates::issuing`] when its issuance
+/// ends, however it ends.
+struct Issuing {
+    set: Arc<Mutex<BTreeSet<i64>>>,
+    id: i64,
+}
+
+impl Drop for Issuing {
+    fn drop(&mut self) {
+        self.set.lock().unwrap_or_else(PoisonError::into_inner).remove(&self.id);
+    }
 }
 
 /// A job's output, forwarded and kept for the certificate.
@@ -218,7 +236,11 @@ impl Lines for JobLines {
 
 impl Certificates {
     pub fn new(ports: CertificatesPorts) -> Self {
-        Self { ports: Arc::new(ports), pending: Arc::new(Mutex::new(None)) }
+        Self {
+            ports: Arc::new(ports),
+            pending: Arc::new(Mutex::new(None)),
+            issuing: Arc::new(Mutex::new(BTreeSet::new())),
+        }
     }
 
     fn now(&self) -> Timestamp {
@@ -289,6 +311,14 @@ impl Certificates {
     ) -> Result<AcmeAccount, CertificatesError> {
         let account = account.check()?;
         let made = self.ports.repository.create_account(&account, self.now()).await?;
+        // Its number may have been another's before: nothing acme.sh kept of
+        // that one (its key at the authority) goes over to it.
+        if let Err(error) = self.ports.host.remove_account(made.id, context).await {
+            if let Err(error) = self.ports.repository.delete_account(made.id).await {
+                tracing::error!(%error, id = made.id, "certificates: cannot take back the account made");
+            }
+            return Err(error.into());
+        }
         self.record("certificates.account_create", Outcome::Success, &made.name, actor, context).await;
         Ok(made)
     }
@@ -319,6 +349,9 @@ impl Certificates {
         }
         if !self.ports.repository.delete_account(id).await? {
             return Err(CertificatesError::NotFound);
+        }
+        if let Err(error) = self.ports.host.remove_account(id, context).await {
+            tracing::warn!(%error, id, "certificates: cannot remove what acme.sh kept of the account");
         }
         self.record("certificates.account_delete", Outcome::Success, &id.to_string(), actor, context).await;
         Ok(())
@@ -416,6 +449,14 @@ impl Certificates {
     ) -> Result<Certificate, CertificatesError> {
         let certificate = self.checked(certificate).await?;
         let made = self.ports.repository.create_certificate(&certificate, self.now()).await?;
+        // Its number may have been another's before: nothing acme.sh or
+        // nginx kept of that one (its key) goes over to it.
+        if let Err(error) = self.ports.host.remove(made.id, context).await {
+            if let Err(error) = self.ports.repository.delete_certificate(made.id).await {
+                tracing::error!(%error, id = made.id, "certificates: cannot take back the certificate made");
+            }
+            return Err(error.into());
+        }
         self.record("certificates.certificate_create", Outcome::Success, made.common_name(), actor, context)
             .await;
         Ok(made)
@@ -453,6 +494,8 @@ impl Certificates {
         if shown || pending {
             return Err(CertificatesError::InUse("the web interface"));
         }
+        // Held until it is deleted: no issuance begins meanwhile.
+        let _issuing = self.begin_issuing(id).ok_or(CertificatesError::InUse("an issuance under way"))?;
         if !self.ports.repository.delete_certificate(id).await? {
             return Err(CertificatesError::NotFound);
         }
@@ -489,8 +532,15 @@ impl Certificates {
         })
     }
 
+    /// Marks certificate `id` as being issued; `None` if it is already.
+    fn begin_issuing(&self, id: i64) -> Option<Issuing> {
+        let fresh = self.issuing.lock().unwrap_or_else(PoisonError::into_inner).insert(id);
+        fresh.then(|| Issuing { set: Arc::clone(&self.issuing), id })
+    }
+
     /// Issues a certificate now (or again), in a job whose output is what
     /// acme.sh writes. `actor` `None`: the daily renewal, which notifies.
+    /// One issuance of a certificate at a time.
     pub async fn issue(
         &self,
         id: i64,
@@ -512,6 +562,9 @@ impl Certificates {
                 "an HTTP challenge needs the web interface to answer plain HTTP on port 80".into(),
             ));
         }
+        let issuing = self
+            .begin_issuing(id)
+            .ok_or_else(|| CertificatesError::Refused("the certificate is being issued already".into()))?;
         let this = self.clone();
         let (who, context) = (actor.cloned(), context.clone());
         let name = certificate.common_name().to_owned();
@@ -519,6 +572,7 @@ impl Certificates {
             .ports
             .jobs
             .start("certificates.issue", Some(name.clone()), actor, move |progress| async move {
+                let _issuing = issuing;
                 progress.step("issuing", Some(0.05)).await;
                 let lines = JobLines { progress: progress.clone(), kept: Mutex::new(Vec::new()) };
                 let done = this.ports.host.issue(&order, &lines, &context).await;
@@ -530,7 +584,8 @@ impl Certificates {
     }
 
     /// Records what came of an issuance, has nginx take a renewed
-    /// certificate it shows, and tells of renewals.
+    /// certificate it shows (or a change waiting would), and tells of
+    /// renewals: one nginx did not take is told as that.
     async fn issued(
         &self,
         certificate: &Certificate,
@@ -553,10 +608,26 @@ impl Certificates {
         match outcome {
             Ok(_) => {
                 let shown = self.ports.repository.web_server().await.ok().and_then(|w| w.certificate_id);
-                if shown == Some(certificate.id)
-                    && let Err(error) = self.ports.host.reload_certificate(context).await
-                {
+                let waiting = self
+                    .pending
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .and_then(|w| w.certificate_id);
+                let reloaded = if shown == Some(certificate.id) || waiting == Some(certificate.id) {
+                    self.ports.host.reload_certificate(context).await
+                } else {
+                    Ok(())
+                };
+                if let Err(error) = reloaded {
                     tracing::error!(%error, "certificates: nginx did not take the renewed certificate");
+                    let told = NewNotification::new(Level::Error, "certificate_not_taken")
+                        .with("name", name)
+                        .with("reason", error.to_string());
+                    self.ports.notifier.notify(told).await;
+                    return Err(JobError::new(
+                        "agent_failed",
+                        Some(format!("the web interface did not take the new certificate: {error}")),
+                    ));
                 }
                 if automatic {
                     let told = NewNotification::new(Level::Success, "certificate_renewed").with("name", name);
@@ -585,7 +656,9 @@ impl Certificates {
         let now = self.now();
         let mut started = Vec::new();
         for certificate in self.ports.repository.certificates().await? {
-            if !certificate.renewal_due(now) {
+            let issuing =
+                self.issuing.lock().unwrap_or_else(PoisonError::into_inner).contains(&certificate.id);
+            if !certificate.renewal_due(now) || issuing {
                 continue;
             }
             match self.issue(certificate.id, None, &context).await {
@@ -653,11 +726,19 @@ impl Certificates {
         let Some(web) = waiting else {
             return Err(CertificatesError::Refused("no change waits for confirmation".into()));
         };
+        // Saved first: once the host keeps the change, the database says so
+        // too. Kept back if the host cannot keep it.
+        let before = self.ports.repository.web_server().await?;
+        self.ports.repository.save_web_server(&web).await?;
         let confirmed = self.ports.host.confirm_web(context).await;
         let outcome = if confirmed.is_ok() { Outcome::Success } else { Outcome::Failure };
         self.record("certificates.web_confirm", outcome, &describe(&web), actor, context).await;
-        confirmed?;
-        self.ports.repository.save_web_server(&web).await?;
+        if let Err(error) = confirmed {
+            if let Err(error) = self.ports.repository.save_web_server(&before).await {
+                tracing::error!(%error, "certificates: cannot keep the web server's settings from before");
+            }
+            return Err(error.into());
+        }
         *self.pending.lock().unwrap_or_else(PoisonError::into_inner) = None;
         Ok(())
     }

@@ -297,6 +297,7 @@ impl Operations {
             Request::AcmeState {} => Ok(self.acme.state()),
             Request::IssueCertificate { order } => self.acme.issue(order).await,
             Request::RemoveCertificate { certificate } => self.acme.remove(*certificate).await,
+            Request::RemoveAcmeAccount { account } => self.acme.remove_account(*account).await,
             Request::WebServerState {} => Ok(self.web_server.state().await),
             Request::ApplyWebServer { config, confirm_within } => {
                 self.web_server.apply(config, *confirm_within).await

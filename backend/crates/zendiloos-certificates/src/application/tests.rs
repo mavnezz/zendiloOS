@@ -97,7 +97,15 @@ async fn certificate(s: &Setup, dns: bool, domains: &[&str]) -> Certificate {
         challenge_id: challenge.id,
         auto_renew: true,
     };
-    s.certificates.create_certificate(new, &alice(), &context).await.unwrap()
+    let made = s.certificates.create_certificate(new, &alice(), &context).await.unwrap();
+    // What was kept under their numbers before is cleared first.
+    let calls = s.host.calls();
+    assert_eq!(
+        calls[calls.len() - 2..],
+        [format!("remove account {}", account.id), format!("remove {}", made.id)]
+    );
+    s.host.forget_calls();
+    made
 }
 
 async fn stored(s: &Setup, id: i64) -> Certificate {
@@ -394,4 +402,75 @@ async fn web_settings_not_confirmed_go_back() {
         s.certificates.apply_web_server(reserved, &alice(), &context).await,
         Err(CertificatesError::Invalid(_))
     ));
+}
+
+/// A certificate being issued is not deleted meanwhile, nor issued twice at
+/// once.
+#[tokio::test]
+async fn a_certificate_being_issued_is_neither_deleted_nor_issued_again() {
+    let s = setup();
+    let context = RequestContext::default();
+    let made = certificate(&s, true, &["nas.example.org"]).await;
+    let issuing = s.certificates.begin_issuing(made.id).unwrap();
+
+    let deleted = s.certificates.delete_certificate(made.id, &alice(), &context).await;
+    assert!(matches!(deleted, Err(CertificatesError::InUse(_))), "{deleted:?}");
+    let again = s.certificates.issue(made.id, Some(&alice()), &context).await;
+    assert!(matches!(again, Err(CertificatesError::Refused(_))), "{again:?}");
+    drop(issuing);
+
+    let job = s.certificates.issue(made.id, Some(&alice()), &context).await.unwrap();
+    assert_eq!(finished(&s.jobs, job).await.state, JobState::Succeeded);
+    s.certificates.delete_certificate(made.id, &alice(), &context).await.unwrap();
+}
+
+/// A renewal nginx does not take is told as that, not as renewed; the
+/// certificate of a change waiting is reloaded too.
+#[tokio::test]
+async fn a_renewal_nginx_does_not_take_is_told_as_that() {
+    let s = setup();
+    let context = RequestContext::default();
+    let made = certificate(&s, true, &["nas.example.org"]).await;
+    let job = s.certificates.issue(made.id, Some(&alice()), &context).await.unwrap();
+    finished(&s.jobs, job).await;
+    let waiting = WebServer { certificate_id: Some(made.id), ..WebServer::default() };
+    s.certificates.apply_web_server(waiting, &alice(), &context).await.unwrap();
+    s.host.forget_calls();
+
+    due(&s, made.id).await;
+    s.host.fail_reload_with(Some("nginx: [emerg] cannot load certificate"));
+    let jobs = s.certificates.renew_due().await.unwrap();
+    assert_eq!(finished(&s.jobs, jobs[0].clone()).await.state, JobState::Failed);
+    assert_eq!(s.host.calls(), ["issue nas.example.org", "reload"], "the change waiting shows it");
+    let told = s.notifications.all();
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert_eq!((told[0].code.as_str(), told[0].level), ("certificate_not_taken", Level::Error));
+    assert_eq!(told[0].params["reason"], "nginx: [emerg] cannot load certificate");
+}
+
+/// Confirming saves the settings first, and takes them back if the host
+/// cannot keep the change.
+#[tokio::test]
+async fn web_settings_the_host_cannot_keep_are_not_saved() {
+    let s = setup();
+    let context = RequestContext::default();
+    let moved = WebServer { http_port: Some(8081), https_port: 8444, certificate_id: None };
+    s.certificates.apply_web_server(moved, &alice(), &context).await.unwrap();
+    s.host.fail_confirm();
+    assert!(s.certificates.confirm_web_server(&alice(), &context).await.is_err());
+    assert_eq!(s.repository.web_server().await.unwrap(), WebServer::default());
+}
+
+/// An account's key at the authority goes with it.
+#[tokio::test]
+async fn what_acme_sh_kept_of_an_account_goes_with_it() {
+    let s = setup();
+    let context = RequestContext::default();
+    let account =
+        NewAccount { name: "LE".into(), server: AcmeServer::LetsEncrypt, email: "Admin@Example.ORG".into() };
+    let made = s.certificates.create_account(account, &alice(), &context).await.unwrap();
+    assert_eq!(made.email, "Admin@example.org");
+    s.host.forget_calls();
+    s.certificates.delete_account(made.id, &alice(), &context).await.unwrap();
+    assert_eq!(s.host.calls(), [format!("remove account {}", made.id)]);
 }

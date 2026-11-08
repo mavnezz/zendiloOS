@@ -9,7 +9,7 @@ use zendiloos_agent_proto::{
     PackageTask, Report, Request, Response, WebPort, WebServerConfig,
 };
 use zendiloos_certificates::application::{AcmeHost, HostError, Lines, Order, WebServerState};
-use zendiloos_certificates::domain::{AcmeServer, ChallengeMethod, KeyType, WebServer};
+use zendiloos_certificates::domain::{AcmeServer, ChallengeMethod, KeyType, WebServer, normalize_email};
 use zendiloos_kernel::{PortError, RequestContext, Timestamp};
 
 use super::{WHAT, agent_error, call, call_raw, call_raw_reporting, expect_done, unexpected};
@@ -72,7 +72,8 @@ fn order(order: &Order) -> Result<AcmeOrder, HostError> {
             AcmeServer::LetsEncrypt => AcmeCa::LetsEncrypt,
             AcmeServer::LetsEncryptStaging => AcmeCa::LetsEncryptStaging,
         },
-        email: AcmeEmail::parse(&order.email).map_err(|_| invalid("e-mail address"))?,
+        // Stored before addresses were normalized, too.
+        email: AcmeEmail::parse(&normalize_email(&order.email)).map_err(|_| invalid("e-mail address"))?,
         domains: AcmeDomains::new(domains).map_err(|_| invalid("set of host names"))?,
         key: match order.key {
             KeyType::Ec256 => AcmeKey::Ec256,
@@ -167,6 +168,11 @@ impl AcmeHost for AgentAcme {
         let certificate =
             u32::try_from(certificate_id).map_err(|_| PortError::new(WHAT, "certificate number"))?;
         expect_done(self.transport(), Request::RemoveCertificate { certificate }, context).await
+    }
+
+    async fn remove_account(&self, account_id: i64, context: &RequestContext) -> Result<(), PortError> {
+        let account = u32::try_from(account_id).map_err(|_| PortError::new(WHAT, "account number"))?;
+        expect_done(self.transport(), Request::RemoveAcmeAccount { account }, context).await
     }
 
     async fn web_state(&self, context: &RequestContext) -> Result<WebServerState, PortError> {

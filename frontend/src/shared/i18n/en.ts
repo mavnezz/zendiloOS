@@ -1411,6 +1411,7 @@ const en = {
         updates_failed: 'Update failed',
         certificate_renewed: 'Certificate renewed',
         certificate_renewal_failed: 'Certificate not renewed',
+        certificate_not_taken: 'New certificate not taken',
         firewall_blocked: 'Firewall blocks a service',
         docker_backup_failed: 'Backup of a Docker volume failed',
       },
@@ -2367,6 +2368,10 @@ const en = {
     certificate_renewal_failed: {
       title: 'Certificate for {name} not renewed',
       body: '{reason} The current one holds until it ends; it is tried again tomorrow.',
+    },
+    certificate_not_taken: {
+      title: 'New certificate for {name} not taken',
+      body: '{reason} The web interface still shows the one before. Issue it again in the ACME client (App Center).',
     },
     docker_backup_failed: {
       title: 'No backup of the volume {volume}',

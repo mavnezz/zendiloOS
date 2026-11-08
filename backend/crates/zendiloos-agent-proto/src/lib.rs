@@ -501,6 +501,11 @@ pub enum Request {
     RemoveCertificate {
         certificate: u32,
     },
+    /// Removes what acme.sh kept of an account at the authority: its key
+    /// and settings.
+    RemoveAcmeAccount {
+        account: u32,
+    },
     /// A change of the web server that waits to be confirmed. Answers
     /// [`Response::WebServerState`].
     WebServerState {},
@@ -853,6 +858,7 @@ impl Request {
             Request::AcmeState {} => "acme_state",
             Request::IssueCertificate { .. } => "issue_certificate",
             Request::RemoveCertificate { .. } => "remove_certificate",
+            Request::RemoveAcmeAccount { .. } => "remove_acme_account",
             Request::WebServerState {} => "web_server_state",
             Request::ApplyWebServer { .. } => "apply_web_server",
             Request::ConfirmWebServer {} => "confirm_web_server",

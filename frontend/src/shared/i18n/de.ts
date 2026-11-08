@@ -1439,6 +1439,7 @@ const de: Messages = {
         updates_failed: 'Update fehlgeschlagen',
         certificate_renewed: 'Zertifikat erneuert',
         certificate_renewal_failed: 'Zertifikat nicht erneuert',
+        certificate_not_taken: 'Neues Zertifikat nicht übernommen',
         firewall_blocked: 'Firewall sperrt einen Dienst',
         docker_backup_failed: 'Sicherung eines Docker-Volumes fehlgeschlagen',
       },
@@ -2411,6 +2412,10 @@ const de: Messages = {
     certificate_renewal_failed: {
       title: 'Zertifikat für {name} nicht erneuert',
       body: '{reason} Das bisherige gilt, bis es abläuft; morgen wird es erneut versucht.',
+    },
+    certificate_not_taken: {
+      title: 'Neues Zertifikat für {name} nicht übernommen',
+      body: '{reason} Die Weboberfläche zeigt weiter das bisherige. Im ACME-Client (App Center) lässt es sich erneut ausstellen.',
     },
     docker_backup_failed: {
       title: 'Keine Sicherung des Volumes {volume}',

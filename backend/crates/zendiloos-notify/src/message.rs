@@ -204,6 +204,21 @@ pub fn message(notification: &Notification, host: &str, language: Language) -> M
             format!("Certificate for {} not renewed", param("name")),
             format!("{}\nThe current one holds until it ends; it is tried again tomorrow.", param("reason")),
         ),
+        "certificate_not_taken" if german => (
+            format!("Neues Zertifikat für {} nicht übernommen", param("name")),
+            format!(
+                "{}\nDie Weboberfläche zeigt weiter das bisherige. Im ACME-Client (App Center) lässt es sich \
+                 erneut ausstellen.",
+                param("reason")
+            ),
+        ),
+        "certificate_not_taken" => (
+            format!("New certificate for {} not taken", param("name")),
+            format!(
+                "{}\nThe web interface still shows the one before. Issue it again in the ACME client (App Center).",
+                param("reason")
+            ),
+        ),
         "firewall_blocked" => {
             let service = blocked_service(param("service"), param("project"), german);
             if german {
@@ -417,6 +432,12 @@ mod tests {
                 vec![("name", "nas.example.org"), ("reason", "acme.sh: Verify error")],
                 "Certificate for nas.example.org not renewed",
                 "Zertifikat für nas.example.org nicht erneuert",
+            ),
+            (
+                "certificate_not_taken",
+                vec![("name", "nas.example.org"), ("reason", "nginx: emerg")],
+                "New certificate for nas.example.org not taken",
+                "Neues Zertifikat für nas.example.org nicht übernommen",
             ),
             (
                 "removable_pulled",

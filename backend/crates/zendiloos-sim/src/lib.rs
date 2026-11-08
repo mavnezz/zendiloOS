@@ -806,6 +806,7 @@ impl AgentTransport for SimulatedAgent {
                 self.acme.lock().unwrap_or_else(PoisonError::into_inner).issued.remove(certificate);
                 Response::Done
             }
+            Request::RemoveAcmeAccount { .. } => Response::Done,
             Request::WebServerState {} => {
                 let now = i64::try_from((self.clock)()).unwrap_or(i64::MAX);
                 let mut acme = self.acme.lock().unwrap_or_else(PoisonError::into_inner);

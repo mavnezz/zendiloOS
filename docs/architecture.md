@@ -1761,7 +1761,8 @@ Docker's) when an administrator asks. Its context, `zendiloos-certificates`,
 keeps three things in the database (migration 0033, which also holds the
 web interface's settings in `web_server`): **accounts** at an ACME
 server (Let's Encrypt, or its staging server for trying out) with a contact
-address; **challenges**, how the server is shown a name is ours: DNS-01
+address (its domain kept in lowercase, and only characters acme.sh is
+handed); **challenges**, how the server is shown a name is ours: DNS-01
 through a DNS provider's API (a curated list of acme.sh's `dnsapi` scripts
 with their variables: IONOS, Cloudflare, Hetzner, deSEC, INWX, netcup, OVH,
 Gandi, Porkbun, Route 53, Hurricane Electric, Duck DNS, dynv6), or HTTP-01
@@ -1789,28 +1790,45 @@ of variables that steer programs (`PATH`, `LD_*`) or acme.sh itself (`LE_*`,
 `ACME_*`) are refused while the request is read, and the script must be one
 acme.sh brings. acme.sh's lines reach the job as they come; acme.sh's own
 renewal (a cron job) is never set up. Once issued, the agent copies the
-chain and key, opened without following links and size-limited, to
-`/etc/zendiloos/web/certificates/<n>` (root's; the key 0600) and reads the
-end date with `openssl x509 -enddate`. acme.sh's folder of a removed
-certificate is removed by its account, in a unit of its own: the agent may
-read anything but write only what is root's.
+chain and key, size-limited, to `/etc/zendiloos/web/certificates/<n>`
+(root's; the key 0600). It opens them folder by folder without following a
+link (acme.sh's account owns those folders) and without waiting (a pipe in
+place of a file is refused). The pair goes to `<n>.zendiloos-new` first, on
+disk, is checked there (`openssl x509 -enddate` reads the chain, and the
+key's public key is the certificate's) and only then takes the place of the
+pair served, in one step (`RENAME_EXCHANGE`): whatever fails, nginx finds
+the working pair from before, never half a pair. acme.sh's folder of a
+removed certificate, and of a removed account (its key at the authority),
+is removed by its account, in a unit of its own: the agent may read anything
+but write only what is root's. Numbers of accounts and certificates can come
+again after one was removed, so a new one first has whatever acme.sh and
+nginx kept under its number removed; it is not made when that fails. One
+issuance of a certificate runs at a time, and it is not deleted while one
+runs.
 
 **Renewal.** zendiloosd looks once a day (the first time five minutes after
 its start) and renews, each in a job, every certificate set to renew itself
 that ends within 30 days, unless a try failed in the last 20 hours. A
 renewal tells: `certificate_renewed` (success) or `certificate_renewal_failed`
 (error, with acme.sh's last complaint); issuing by hand does not. A renewed
-certificate the web interface shows is taken by nginx at once (`nginx -t`,
-reload).
+certificate the web interface shows, or a change of it waiting for
+confirmation would, is taken by nginx at once (`nginx -t`, reload, under the
+lock the agent changes the web server with); when nginx does not take it,
+that is told (`certificate_not_taken`, an error, also when issued by hand)
+and the job fails, rather than calling it renewed.
 
 **The web interface's settings** (Control panel → Web interface): the HTTP
 port, whether plain HTTP redirects to HTTPS or is not served, the HTTPS port,
 and the certificate: the machine's own, self-signed one, or an issued one
 that holds. Plain HTTP never serves the interface itself (the session cookie
 is HTTPS-only): it points to HTTPS and answers HTTP challenges from acme.sh's
-`webroot`, which needs it on port 80. Ports are 1 to 65535, not those of the
-file services or SSH (22, 111, 137–139, 445, 2049, 3702, 5353), not the same
-twice, and a new one must be free (`/proc/net/tcp*`). nginx's site includes
+`webroot`, which needs it on port 80 (as plain text whatever the name, and
+never through a link: `types { }`, `disable_symlinks on`). Ports are 1 to
+65535, not those of the file services, discovery or SSH, also while they are
+stopped (22, 111, 137–139, 445, 2049, 3702, 5353, 5355, 5357, and NFS's
+helpers on 20048, 32765–32767), not the same twice, and a new one must be
+free (`/proc/net/tcp*`); an SSH port moved elsewhere is caught only while
+sshd listens on it. nginx's site includes
 two files the agent writes, `/etc/zendiloos/web/http.conf` (the HTTP server,
 or nothing) and `https.conf` (the HTTPS server's `listen` lines and
 certificate); postinst writes the defaults (80 to HTTPS on 443, the own
@@ -1818,9 +1836,11 @@ certificate). A change works as a network change does: the files it replaces
 are kept beside them, `nginx -t` checks the new ones (in a transient unit: it
 opens nginx's log and temporary folders) and nginx reloads; unless the
 browser confirms within 90 seconds, from the new address if it moved, the
-old files return, by a timer and after a restart of the agent. zendiloosd
-saves the settings once confirmed, so the database never holds settings
-that went back.
+old files return, by a timer and after a restart of the agent (holding the
+lock changes take, so no change begins while they return). zendiloosd
+saves the settings as it confirms them (first, and takes them back if the
+agent cannot keep the change), so the database never holds settings that
+went back.
 
 ### 4.12 Firewall
 

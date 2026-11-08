@@ -191,6 +191,7 @@ fn requests() -> Vec<Value> {
             "domains": ["nas.example.org"], "key": "ec256", "challenge": { "method": "http" },
         } }),
         json!({ "op": "remove_certificate", "certificate": 3 }),
+        json!({ "op": "remove_acme_account", "account": 1 }),
         json!({ "op": "web_server_state" }),
         json!({ "op": "apply_web_server", "config": { "http": 80, "https": 443, "certificate": null }, "confirm_within": 90 }),
         json!({ "op": "confirm_web_server" }),
