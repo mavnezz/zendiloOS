@@ -120,6 +120,10 @@ const KNOWN_PROBLEMS = [
   'duplicate_rule',
   'permission_denied',
   'invalid_operation',
+  'in_use',
+  'acme_installed',
+  'acme_not_installed',
+  'web_server_failed',
   'network',
 ] as const
 
@@ -156,6 +160,9 @@ export function problemMessage(error: unknown): string {
     'share_used_by_projects',
     'pool_in_use',
     'jobs_running',
+    'in_use',
+    'port_in_use',
+    'web_server_failed',
   ]
   if (isKnown(error.code)) {
     const message = t(`errors.${error.code}`)

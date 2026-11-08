@@ -184,6 +184,95 @@ const en = {
       description: 'What extends the NAS beyond its own functions. More are to come.',
       installing: 'Installing',
       needsSetUp: 'Not set up',
+      certificates: 'No certificates | One certificate | {n} certificates',
+    },
+    acme: {
+      name: 'ACME client',
+      subtitle: "Certificates from Let's Encrypt for the web interface, renewed by themselves",
+      notInstalled: 'Not installed',
+      installed: 'Installed',
+      failed: 'The ACME client could not be installed. What apt said:',
+      installing: 'Installing acme.sh …',
+      about:
+        "The ACME client gets certificates from Let's Encrypt, which browsers trust, for the names the NAS is reached by, and renews each a month before it ends. It is acme.sh from Debian, and it runs under an account of its own, never as root.",
+      aboutUse:
+        'Once a certificate is issued, choose it for the web interface under Control panel → Web interface.',
+      needsPackages: 'The Debian package acme.sh (about 2 MB)',
+      needsName:
+        'A domain of your own: pointing to the NAS and reachable on port 80 from the internet, or at a DNS provider whose API acme.sh speaks',
+      needsNetwork: "Internet access to Let's Encrypt",
+      certificates: 'Certificates',
+      accounts: 'Accounts',
+      challenges: 'Challenges',
+      noCertificates: 'No certificates yet.',
+      noAccounts: "No account yet: certificates are issued to an account at Let's Encrypt.",
+      noChallenges: "No challenge yet: it is how Let's Encrypt is shown that a name is yours.",
+      firstAccount: 'A certificate needs an account and a challenge first.',
+      add: 'Add',
+      edit: 'Change',
+      delete: 'Delete',
+      issue: 'Issue now',
+      renew: 'Renew now',
+      log: 'Last log',
+      validUntil: 'Valid until {date}',
+      expired: 'Ended {date}',
+      notIssued: 'Not issued yet',
+      lastFailed: 'The last try failed',
+      autoRenew: 'Renews by itself',
+      manual: 'Renewed by hand',
+      servers: {
+        letsencrypt: "Let's Encrypt",
+        letsencrypt_staging: "Let's Encrypt staging (for trying out)",
+      },
+      methods: { dns: 'DNS', http: 'HTTP' },
+      keys: { ec256: 'ECDSA P-256 (recommended)', rsa2048: 'RSA 2048', rsa4096: 'RSA 4096' },
+      account: {
+        title: 'Account',
+        name: 'Name',
+        email: 'E-mail address',
+        emailHint:
+          "Let's Encrypt writes here about the account, such as before a certificate ends.",
+        server: 'Server',
+        stagingHint:
+          "Staging certificates are not trusted by browsers: they are for trying out a challenge without running into Let's Encrypt's limits.",
+      },
+      challenge: {
+        title: 'Challenge',
+        name: 'Name',
+        method: 'Method',
+        dns: "DNS: a TXT record through the provider's API",
+        http: 'HTTP: a file the NAS serves on port 80',
+        provider: 'DNS provider',
+        dnsHint:
+          "acme.sh makes a TXT record through the provider's API and removes it afterwards. This works for names the internet cannot reach, and for wildcards.",
+        httpHint:
+          "Let's Encrypt fetches a file from the name on port 80: the name must point to the NAS, port 80 must reach it from the internet, and plain HTTP must be on port 80 (Control panel → Web interface). Wildcards are not possible.",
+        secretSet: 'Saved; leave empty to keep it',
+        optional: 'optional',
+      },
+      certificate: {
+        title: 'Certificate',
+        names: 'Names',
+        namesHint:
+          'One per line; the first is its common name. *.example.org covers every name directly below example.org and needs a DNS challenge.',
+        key: 'Key',
+        account: 'Account',
+        challenge: 'Challenge',
+        autoRenew: 'Renew it by itself 30 days before it ends',
+      },
+      confirmDelete: {
+        certificate: 'Delete the certificate for {name}?',
+        account: 'Delete the account {name}?',
+        challenge: 'Delete the challenge {name}?',
+        hint: 'What uses it must let go of it first.',
+      },
+      logTitle: 'acme.sh',
+      logWaiting: 'Waiting for acme.sh …',
+      logRunning: 'Issuing …',
+      logSucceeded: 'Issued.',
+      logFailed: 'Not issued.',
+      logNone: 'acme.sh has not written anything for this certificate yet.',
+      hide: 'Close, keep running',
     },
     docker: {
       subtitle: 'The container runtime for the apps from the store',
@@ -275,6 +364,7 @@ const en = {
     accounts: 'Users',
     groups: 'Groups',
     fileServices: 'File services',
+    webInterface: 'Web interface',
     terminal: 'Terminal',
     security: 'Security',
     notifications: 'Notifications',
@@ -1115,7 +1205,12 @@ const en = {
       kind: 'Notification',
       inApp: 'In zendiloOS',
       cell: '{kind}: {to}',
-      groups: { storage: 'Storage', folders: 'Folders', system: 'System' },
+      groups: {
+        storage: 'Storage',
+        folders: 'Folders',
+        system: 'System',
+        certificates: 'Certificates',
+      },
       kinds: {
         pool_trouble: 'Pool degraded or failing',
         pool_recovered: 'Pool healthy again',
@@ -1129,8 +1224,38 @@ const en = {
         updates_available: 'Updates available',
         updates_installed: 'Updates installed',
         updates_failed: 'Update failed',
+        certificate_renewed: 'Certificate renewed',
+        certificate_renewal_failed: 'Certificate not renewed',
       },
     },
+  },
+  webServer: {
+    description: 'Where the web interface answers, and with which certificate',
+    http: 'HTTP',
+    httpRedirect: 'Redirect to HTTPS',
+    httpOff: 'Off',
+    httpPort: 'HTTP port',
+    httpHint:
+      "Plain HTTP only ever points to HTTPS, since signing in works over HTTPS only. It also answers Let's Encrypt's HTTP challenges, which need port 80.",
+    httpsPort: 'HTTPS port',
+    portHint:
+      'From 1 to 65535; not one of the file services or SSH (22, 111, 137–139, 445, 2049, 3702, 5353).',
+    certificate: 'Certificate',
+    own: "This NAS's own (self-signed)",
+    issued: '{name}, valid until {date}',
+    certificateHint:
+      'Browsers trust a certificate for its names only: reach the NAS by one of them. Certificates come from the ACME client in the App Center.',
+    noCertificates: 'Certificates browsers trust come from the ACME client in the App Center.',
+    invalidPort: 'A port is a number from 1 to 65535.',
+    samePorts: 'HTTP and HTTPS need different ports.',
+    pending: {
+      title: 'The web interface answers with new settings',
+      hint: 'Confirm them, or the old settings return in {seconds} seconds.',
+      elsewhere:
+        'It answers at a new address now. Open it, sign in and confirm there, on this page:',
+      confirm: 'Keep the new settings',
+    },
+    help: 'A change applies at once. If the browser cannot reach the web interface afterwards, it goes back by itself after a minute and a half.',
   },
   network: {
     kinds: {
@@ -1784,6 +1909,8 @@ const en = {
       containers_data_move: 'Move Docker’s data',
       apps_update: 'Update app',
       apps_uninstall: 'Remove app',
+      certificates_acme_install: 'Install the ACME client',
+      certificates_issue: 'Issue certificate',
     },
     errors: {
       not_found: 'A file or folder no longer exists.',
@@ -1862,6 +1989,14 @@ const en = {
     checkDailyHint: 'The NAS tells you about new updates; they are installed only when you click.',
   },
   notices: {
+    certificate_renewed: {
+      title: 'Certificate for {name} renewed',
+      body: 'If the web interface shows it, it uses the new one already.',
+    },
+    certificate_renewal_failed: {
+      title: 'Certificate for {name} not renewed',
+      body: '{reason} The current one holds until it ends; it is tried again tomorrow.',
+    },
     states: {
       degraded: 'degraded',
       faulted: 'failed',
@@ -2347,6 +2482,10 @@ const en = {
     permission_denied: 'Your permissions in this share do not allow this.',
     invalid_operation: 'This is not possible.',
     network: 'The server cannot be reached.',
+    in_use: 'It is still in use',
+    acme_installed: 'The ACME client is installed already.',
+    acme_not_installed: 'Install the ACME client first.',
+    web_server_failed: 'nginx did not take the settings; nothing changed',
     unknown: 'Something went wrong ({code}).',
   },
 }

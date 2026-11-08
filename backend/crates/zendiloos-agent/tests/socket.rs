@@ -52,6 +52,9 @@ impl Agent {
             path
         };
         let tools = Tools {
+            openssl: "/bin/false".into(),
+            nginx: "/bin/false".into(),
+            rm: "/bin/false".into(),
             systemd_mount: "/bin/false".into(),
             umount: "/bin/false".into(),
             rmdir: "/bin/false".into(),

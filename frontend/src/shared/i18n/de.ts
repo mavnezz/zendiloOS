@@ -192,6 +192,96 @@ const de: Messages = {
       description: 'Was das NAS über seine eigenen Funktionen hinaus erweitert. Weitere folgen.',
       installing: 'Wird installiert',
       needsSetUp: 'Nicht eingerichtet',
+      certificates: 'Keine Zertifikate | Ein Zertifikat | {n} Zertifikate',
+    },
+    acme: {
+      name: 'ACME-Client',
+      subtitle: "Zertifikate von Let's Encrypt für die Weboberfläche, die sich selbst erneuern",
+      notInstalled: 'Nicht installiert',
+      installed: 'Installiert',
+      failed: 'Der ACME-Client konnte nicht installiert werden. Was apt meldete:',
+      installing: 'acme.sh wird installiert …',
+      about:
+        "Der ACME-Client holt Zertifikate von Let's Encrypt, denen Browser vertrauen, für die Namen, unter denen das NAS erreichbar ist, und erneuert jedes einen Monat vor seinem Ablauf. Es ist acme.sh aus Debian; es läuft unter einem eigenen Konto, nie als root.",
+      aboutUse:
+        'Ist ein Zertifikat ausgestellt, wählen Sie es für die Weboberfläche unter Systemsteuerung → Weboberfläche.',
+      needsPackages: 'Das Debian-Paket acme.sh (etwa 2 MB)',
+      needsName:
+        'Eine eigene Domain: auf das NAS zeigend und aus dem Internet über Port 80 erreichbar, oder bei einem DNS-Anbieter, dessen API acme.sh beherrscht',
+      needsNetwork: "Internetzugang zu Let's Encrypt",
+      certificates: 'Zertifikate',
+      accounts: 'Konten',
+      challenges: 'Challenges',
+      noCertificates: 'Noch keine Zertifikate.',
+      noAccounts:
+        "Noch kein Konto: Zertifikate werden für ein Konto bei Let's Encrypt ausgestellt.",
+      noChallenges:
+        "Noch keine Challenge: So zeigen Sie Let's Encrypt, dass ein Name Ihnen gehört.",
+      firstAccount: 'Ein Zertifikat braucht zuerst ein Konto und eine Challenge.',
+      add: 'Hinzufügen',
+      edit: 'Ändern',
+      delete: 'Löschen',
+      issue: 'Jetzt ausstellen',
+      renew: 'Jetzt erneuern',
+      log: 'Letztes Protokoll',
+      validUntil: 'Gültig bis {date}',
+      expired: 'Abgelaufen {date}',
+      notIssued: 'Noch nicht ausgestellt',
+      lastFailed: 'Der letzte Versuch schlug fehl',
+      autoRenew: 'Erneuert sich selbst',
+      manual: 'Wird von Hand erneuert',
+      servers: {
+        letsencrypt: "Let's Encrypt",
+        letsencrypt_staging: "Let's Encrypt Staging (zum Ausprobieren)",
+      },
+      methods: { dns: 'DNS', http: 'HTTP' },
+      keys: { ec256: 'ECDSA P-256 (empfohlen)', rsa2048: 'RSA 2048', rsa4096: 'RSA 4096' },
+      account: {
+        title: 'Konto',
+        name: 'Name',
+        email: 'E-Mail-Adresse',
+        emailHint: "Hierhin schreibt Let's Encrypt zum Konto, etwa bevor ein Zertifikat abläuft.",
+        server: 'Server',
+        stagingHint:
+          "Staging-Zertifikaten vertrauen Browser nicht: Sie sind zum Ausprobieren einer Challenge, ohne an die Grenzen von Let's Encrypt zu stoßen.",
+      },
+      challenge: {
+        title: 'Challenge',
+        name: 'Name',
+        method: 'Verfahren',
+        dns: 'DNS: ein TXT-Eintrag über die API des Anbieters',
+        http: 'HTTP: eine Datei, die das NAS auf Port 80 bereitstellt',
+        provider: 'DNS-Anbieter',
+        dnsHint:
+          'acme.sh legt über die API des Anbieters einen TXT-Eintrag an und entfernt ihn danach. Das geht auch für Namen, die aus dem Internet nicht erreichbar sind, und für Wildcards.',
+        httpHint:
+          "Let's Encrypt holt eine Datei vom Namen auf Port 80: Der Name muss auf das NAS zeigen, Port 80 muss es aus dem Internet erreichen, und HTTP muss auf Port 80 laufen (Systemsteuerung → Weboberfläche). Wildcards sind nicht möglich.",
+        secretSet: 'Gespeichert; leer lassen, um es zu behalten',
+        optional: 'optional',
+      },
+      certificate: {
+        title: 'Zertifikat',
+        names: 'Namen',
+        namesHint:
+          'Einer pro Zeile; der erste ist der Common Name. *.example.org deckt jeden Namen direkt unter example.org ab und braucht eine DNS-Challenge.',
+        key: 'Schlüssel',
+        account: 'Konto',
+        challenge: 'Challenge',
+        autoRenew: '30 Tage vor Ablauf selbst erneuern',
+      },
+      confirmDelete: {
+        certificate: 'Das Zertifikat für {name} löschen?',
+        account: 'Das Konto {name} löschen?',
+        challenge: 'Die Challenge {name} löschen?',
+        hint: 'Was es nutzt, muss es zuerst loslassen.',
+      },
+      logTitle: 'acme.sh',
+      logWaiting: 'Warte auf acme.sh …',
+      logRunning: 'Wird ausgestellt …',
+      logSucceeded: 'Ausgestellt.',
+      logFailed: 'Nicht ausgestellt.',
+      logNone: 'acme.sh hat zu diesem Zertifikat noch nichts geschrieben.',
+      hide: 'Schließen, weiterlaufen lassen',
     },
     docker: {
       subtitle: 'Container-Laufzeit für die Apps aus dem Store',
@@ -283,6 +373,7 @@ const de: Messages = {
     accounts: 'Benutzer',
     groups: 'Gruppen',
     fileServices: 'Dateidienste',
+    webInterface: 'Weboberfläche',
     terminal: 'Terminal',
     security: 'Sicherheit',
     notifications: 'Benachrichtigungen',
@@ -1138,7 +1229,12 @@ const de: Messages = {
       kind: 'Benachrichtigung',
       inApp: 'In zendiloOS',
       cell: '{kind}: {to}',
-      groups: { storage: 'Speicher', folders: 'Ordner', system: 'System' },
+      groups: {
+        storage: 'Speicher',
+        folders: 'Ordner',
+        system: 'System',
+        certificates: 'Zertifikate',
+      },
       kinds: {
         pool_trouble: 'Pool beeinträchtigt oder ausgefallen',
         pool_recovered: 'Pool wieder intakt',
@@ -1152,8 +1248,38 @@ const de: Messages = {
         updates_available: 'Updates verfügbar',
         updates_installed: 'Updates installiert',
         updates_failed: 'Update fehlgeschlagen',
+        certificate_renewed: 'Zertifikat erneuert',
+        certificate_renewal_failed: 'Zertifikat nicht erneuert',
       },
     },
+  },
+  webServer: {
+    description: 'Wo die Weboberfläche antwortet, und mit welchem Zertifikat',
+    http: 'HTTP',
+    httpRedirect: 'Auf HTTPS umleiten',
+    httpOff: 'Aus',
+    httpPort: 'HTTP-Port',
+    httpHint:
+      "Unverschlüsseltes HTTP verweist nur auf HTTPS, denn die Anmeldung geht nur über HTTPS. Es beantwortet außerdem die HTTP-Challenges von Let's Encrypt, die Port 80 brauchen.",
+    httpsPort: 'HTTPS-Port',
+    portHint:
+      'Von 1 bis 65535; keiner der Dateidienste oder von SSH (22, 111, 137–139, 445, 2049, 3702, 5353).',
+    certificate: 'Zertifikat',
+    own: 'Das eigene dieses NAS (selbst signiert)',
+    issued: '{name}, gültig bis {date}',
+    certificateHint:
+      'Browser vertrauen einem Zertifikat nur für seine Namen: Rufen Sie das NAS unter einem davon auf. Zertifikate kommen vom ACME-Client im App Center.',
+    noCertificates: 'Zertifikate, denen Browser vertrauen, kommen vom ACME-Client im App Center.',
+    invalidPort: 'Ein Port ist eine Zahl von 1 bis 65535.',
+    samePorts: 'HTTP und HTTPS brauchen verschiedene Ports.',
+    pending: {
+      title: 'Die Weboberfläche antwortet mit neuen Einstellungen',
+      hint: 'Bestätigen Sie sie, sonst kehren die alten in {seconds} Sekunden zurück.',
+      elsewhere:
+        'Sie antwortet jetzt unter einer neuen Adresse. Öffnen Sie sie, melden Sie sich an und bestätigen Sie dort, auf dieser Seite:',
+      confirm: 'Neue Einstellungen behalten',
+    },
+    help: 'Eine Änderung gilt sofort. Erreicht der Browser die Weboberfläche danach nicht, kehrt sie nach anderthalb Minuten von selbst zurück.',
   },
   network: {
     change: {
@@ -1817,6 +1943,8 @@ const de: Messages = {
       containers_data_move: 'Docker-Daten umziehen',
       apps_update: 'App aktualisieren',
       apps_uninstall: 'App entfernen',
+      certificates_acme_install: 'ACME-Client installieren',
+      certificates_issue: 'Zertifikat ausstellen',
     },
     errors: {
       not_found: 'Eine Datei oder ein Ordner existiert nicht mehr.',
@@ -1897,6 +2025,14 @@ const de: Messages = {
       'Das NAS benachrichtigt Sie über neue Updates; installiert wird nur auf Ihren Klick.',
   },
   notices: {
+    certificate_renewed: {
+      title: 'Zertifikat für {name} erneuert',
+      body: 'Zeigt die Weboberfläche es, nutzt sie das neue schon.',
+    },
+    certificate_renewal_failed: {
+      title: 'Zertifikat für {name} nicht erneuert',
+      body: '{reason} Das bisherige gilt, bis es abläuft; morgen wird es erneut versucht.',
+    },
     states: {
       degraded: 'beeinträchtigt',
       faulted: 'ausgefallen',
@@ -2394,6 +2530,10 @@ const de: Messages = {
     permission_denied: 'Ihre Rechte in dieser Freigabe erlauben das nicht.',
     invalid_operation: 'Das ist nicht möglich.',
     network: 'Der Server ist nicht erreichbar.',
+    in_use: 'Es wird noch genutzt',
+    acme_installed: 'Der ACME-Client ist schon installiert.',
+    acme_not_installed: 'Installieren Sie zuerst den ACME-Client.',
+    web_server_failed: 'nginx hat die Einstellungen nicht übernommen; nichts wurde geändert',
     unknown: 'Etwas ist schiefgegangen ({code}).',
   },
 }

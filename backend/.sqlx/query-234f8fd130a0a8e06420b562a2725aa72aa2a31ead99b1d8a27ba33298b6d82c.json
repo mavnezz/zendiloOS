@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE acme_challenges SET name = ?, method = ?, provider = ?, credentials = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "234f8fd130a0a8e06420b562a2725aa72aa2a31ead99b1d8a27ba33298b6d82c"
+}

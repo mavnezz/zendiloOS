@@ -303,6 +303,17 @@ describe('the App Center', () => {
     titled(true).click()
     await settle()
     expect(section.value).toBe('plugins')
+
+    // The ACME client is the second plugin, opened and left the same way.
+    expect(page()).toContain(t('appStore.acme.name'))
+    ;[...document.querySelectorAll('button')]
+      .find((b) => b.textContent?.includes(t('appStore.acme.subtitle')))!
+      .click()
+    await settle()
+    expect(section.value).toBe('acme')
+    titled(false).click()
+    await settle()
+    expect(section.value).toBe('plugins')
   })
 
   it('sends a ready engine to the store', async () => {

@@ -4,3 +4,13 @@ d /run/issue.d 0755 root root -
 # Removable drives are mounted here, a folder each, named by the UUID of
 # their file system: root's, outside the volumes, gone at the next boot.
 d /run/zendiloos-removable 0755 root root -
+# What acme.sh keeps, its account's: accounts and certificates only it
+# enters; the files for HTTP challenges nginx serves (docs/architecture.md, 4.11).
+d /var/lib/zendiloos-acme 0711 zendiloos-acme zendiloos-acme -
+d /var/lib/zendiloos-acme/accounts 0700 zendiloos-acme zendiloos-acme -
+d /var/lib/zendiloos-acme/certificates 0700 zendiloos-acme zendiloos-acme -
+d /var/lib/zendiloos-acme/webroot 0755 zendiloos-acme zendiloos-acme -
+# A DNS provider's credentials while acme.sh runs: root's, read by systemd.
+d /run/zendiloos-acme 0700 root root -
+# Issued certificates as nginx reads them.
+d /etc/zendiloos/web/certificates 0700 root root -

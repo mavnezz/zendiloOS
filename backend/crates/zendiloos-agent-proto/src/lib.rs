@@ -9,6 +9,7 @@
 //!
 //! See docs/architecture.md, section 3.2.
 
+mod acme;
 mod apps;
 mod client;
 mod descriptor;
@@ -27,6 +28,12 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+pub use acme::{
+    AcmeCa, AcmeChallenge, AcmeDomain, AcmeDomains, AcmeEmail, AcmeKey, AcmeOrder, DnsApi, DnsCredentials,
+    DnsValue, DnsVariableName, InvalidAcmeDomain, InvalidAcmeDomains, InvalidAcmeEmail, InvalidDnsApi,
+    InvalidDnsCredentials, InvalidDnsValue, InvalidDnsVariableName, InvalidWebPort, PendingWebServer,
+    WebPort, WebServerConfig,
+};
 pub use apps::{
     AppFolder, AppName, DevicePath, InvalidAppFolder, InvalidAppName, InvalidDevicePath, MAX_LOG_LINES,
 };
@@ -409,6 +416,33 @@ pub enum Request {
     SetWebTls {
         minimum: TlsMinimum,
     },
+    /// Whether acme.sh is installed. Answers [`Response::AcmeState`].
+    AcmeState {},
+    /// Issues a certificate (again) with acme.sh, which runs in a unit of
+    /// its own as the account `zendiloos-acme`, reporting what it writes
+    /// line by line; then puts the certificate where nginx reads it.
+    /// Answers [`Response::CertificateIssued`].
+    IssueCertificate {
+        order: AcmeOrder,
+    },
+    /// Removes what acme.sh and nginx kept of a certificate.
+    RemoveCertificate {
+        certificate: u32,
+    },
+    /// A change of the web server that waits to be confirmed. Answers
+    /// [`Response::WebServerState`].
+    WebServerState {},
+    /// Writes nginx's ports and certificate, checks them (`nginx -t`) and
+    /// reloads nginx; unless [`Request::ConfirmWebServer`] comes within
+    /// `confirm_within`, the old settings return (also after a restart).
+    ApplyWebServer {
+        config: WebServerConfig,
+        confirm_within: ConfirmWithin,
+    },
+    /// Keeps the change that waits to be confirmed.
+    ConfirmWebServer {},
+    /// nginx reads the certificate it serves again: it was renewed.
+    ReloadWebCertificate {},
     /// The clock's settings and state, and the time zones there are.
     /// Answers [`Response::TimeState`].
     TimeState {},
@@ -707,6 +741,13 @@ impl Request {
             Request::SetSsh { .. } => "set_ssh",
             Request::WebTlsState {} => "web_tls_state",
             Request::SetWebTls { .. } => "set_web_tls",
+            Request::AcmeState {} => "acme_state",
+            Request::IssueCertificate { .. } => "issue_certificate",
+            Request::RemoveCertificate { .. } => "remove_certificate",
+            Request::WebServerState {} => "web_server_state",
+            Request::ApplyWebServer { .. } => "apply_web_server",
+            Request::ConfirmWebServer {} => "confirm_web_server",
+            Request::ReloadWebCertificate {} => "reload_web_certificate",
             Request::TimeState {} => "time_state",
             Request::SetTime { .. } => "set_time",
             Request::ListSnapshots {} => "list_snapshots",
@@ -859,6 +900,17 @@ pub enum Response {
     WebTlsState {
         /// The settings file zendiloOS wrote; empty if none.
         config: String,
+    },
+    AcmeState {
+        /// acme.sh is installed.
+        installed: bool,
+    },
+    CertificateIssued {
+        /// Until when it holds, in Unix seconds.
+        not_after: i64,
+    },
+    WebServerState {
+        pending: Option<PendingWebServer>,
     },
     SshState {
         /// The server is installed.
@@ -1101,7 +1153,9 @@ impl Request {
             // Images fetched, projects brought up or down: up to half an hour.
             | Request::PullImage { .. }
             | Request::PruneImages {}
-            | Request::ControlProject { .. } => true,
+            | Request::ControlProject { .. }
+            // The ACME server checks the names: up to minutes with DNS.
+            | Request::IssueCertificate { .. } => true,
             Request::SetShareAccess { recursive, .. } => *recursive,
             // Into the user's recycle bin it is a rename; for good (what is
             // in the bin already, or without one) it walks the tree.

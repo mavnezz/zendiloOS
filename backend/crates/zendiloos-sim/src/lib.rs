@@ -73,12 +73,58 @@ pub struct SimulatedAgent {
     tls: Mutex<zendiloos_agent_proto::TlsMinimum>,
     /// The SSH server's settings and the time it turns itself off.
     ssh: Mutex<(zendiloos_agent_proto::SshConfig, Option<i64>)>,
+    /// Certificates issued, and a change of the web server waiting to be
+    /// confirmed; nothing is changed.
+    acme: Mutex<SimAcme>,
+}
+
+#[derive(Debug, Default)]
+struct SimAcme {
+    issued: std::collections::BTreeSet<u32>,
+    pending: Option<zendiloos_agent_proto::PendingWebServer>,
+}
+
+/// What acme.sh writes while it issues a certificate, and whether it
+/// succeeds: names under `.invalid` fail, as a name nobody can show is
+/// theirs would.
+fn acme_lines(order: &zendiloos_agent_proto::AcmeOrder) -> (Vec<String>, bool) {
+    let main = order.domains.main().as_str();
+    let mut lines = vec![
+        format!(
+            "Using CA: https://acme{}-v02.api.letsencrypt.org/directory",
+            if order.ca == zendiloos_agent_proto::AcmeCa::LetsEncryptStaging { "-staging" } else { "" }
+        ),
+        "Creating domain key".to_owned(),
+        format!("Single domain='{main}'"),
+        format!("Getting webroot for domain='{main}'"),
+    ];
+    let dns = matches!(order.challenge, zendiloos_agent_proto::AcmeChallenge::Dns { .. });
+    let fails = order.domains.as_slice().iter().any(|d| d.as_str().ends_with(".invalid"));
+    if dns {
+        lines.push(format!("Adding TXT value for domain: _acme-challenge.{}", main.trim_start_matches("*.")));
+        lines.push("Sleeping for 20 seconds to wait for the TXT records to take effect".into());
+    }
+    lines.push(format!("Verifying: {main}"));
+    if fails {
+        lines.push(format!("{main}: Verify error: DNS problem: NXDOMAIN looking up A for {main}"));
+        return (lines, false);
+    }
+    lines.extend([
+        "Success".to_owned(),
+        "Verification finished, beginning signing.".to_owned(),
+        "Let's finalize the order.".to_owned(),
+        "Downloading cert.".to_owned(),
+        "Cert success.".to_owned(),
+    ]);
+    (lines, true)
 }
 
 /// Docker's packages and the latest run of apt, simulated.
 #[derive(Debug)]
 struct SimPackages {
     docker: bool,
+    /// acme.sh is installed: not at first, so its plugin can be installed.
+    acme: bool,
     /// Kept while Docker is installed, with share contents.
     marker: Option<PathBuf>,
     run: Option<(PackageRun, std::time::Instant)>,
@@ -95,7 +141,7 @@ impl SimPackages {
         let (run, started) = self.run.as_ref()?;
         let mut run = run.clone();
         let steps: &[(u64, &str)] = match run.task {
-            PackageTask::InstallDocker => &[(0, "lists"), (1, "install"), (3, "")],
+            PackageTask::InstallDocker | PackageTask::InstallAcme => &[(0, "lists"), (1, "install"), (3, "")],
             PackageTask::Check => &[(0, "lists"), (2, "")],
             PackageTask::Update if run.release.is_some() => {
                 &[(0, "lists"), (1, "debian"), (3, "zendiloos"), (4, "modules"), (5, "")]
@@ -110,7 +156,7 @@ impl SimPackages {
             if step.is_empty() {
                 run.state = PackageRunState::Succeeded;
                 run.finished_at = Some(run.started_at + i64::try_from(*at).unwrap_or(0));
-                if run.task != PackageTask::InstallDocker {
+                if !matches!(run.task, PackageTask::InstallDocker | PackageTask::InstallAcme) {
                     let done = run.task == PackageTask::Update;
                     run.report = Some(self.report(!done && self.pending, done || self.updated));
                 }
@@ -255,6 +301,7 @@ impl SimulatedAgent {
             docker: Mutex::default(),
             packages: Mutex::new(SimPackages {
                 docker: true,
+                acme: false,
                 marker: None,
                 run: None,
                 runs: 0,
@@ -275,6 +322,7 @@ impl SimulatedAgent {
                 },
                 None,
             )),
+            acme: Mutex::default(),
         }
     }
 
@@ -564,6 +612,11 @@ impl AgentTransport for SimulatedAgent {
                         let _ = std::fs::write(marker, "");
                     }
                 }
+                if run.as_ref().is_some_and(|run| {
+                    run.state == PackageRunState::Succeeded && run.task == PackageTask::InstallAcme
+                }) {
+                    packages.acme = true;
+                }
                 Response::Packages { run }
             }
             Request::EnableDocker { .. }
@@ -680,6 +733,58 @@ impl AgentTransport for SimulatedAgent {
                 *self.tls.lock().unwrap_or_else(PoisonError::into_inner) = *minimum;
                 Response::Done
             }
+            Request::AcmeState {} => Response::AcmeState {
+                installed: self.packages.lock().unwrap_or_else(PoisonError::into_inner).acme,
+            },
+            Request::IssueCertificate { order } => {
+                if !self.packages.lock().unwrap_or_else(PoisonError::into_inner).acme {
+                    error(ErrorCode::Failed, "the system is not set up for this: acme.sh is not installed")
+                } else if acme_lines(order).1 {
+                    self.acme.lock().unwrap_or_else(PoisonError::into_inner).issued.insert(order.certificate);
+                    let now = i64::try_from((self.clock)()).unwrap_or(i64::MAX);
+                    Response::CertificateIssued { not_after: now + 90 * 24 * 3600 }
+                } else {
+                    let main = order.domains.main().as_str();
+                    error(
+                        ErrorCode::Failed,
+                        &format!(
+                            "acme.sh: {main}: Verify error: DNS problem: NXDOMAIN looking up A for {main}"
+                        ),
+                    )
+                }
+            }
+            Request::RemoveCertificate { certificate } => {
+                self.acme.lock().unwrap_or_else(PoisonError::into_inner).issued.remove(certificate);
+                Response::Done
+            }
+            Request::WebServerState {} => {
+                let now = i64::try_from((self.clock)()).unwrap_or(i64::MAX);
+                let mut acme = self.acme.lock().unwrap_or_else(PoisonError::into_inner);
+                if acme.pending.is_some_and(|p| p.revert_at <= now) {
+                    acme.pending = None;
+                }
+                Response::WebServerState { pending: acme.pending }
+            }
+            Request::ApplyWebServer { config, confirm_within } => {
+                let mut acme = self.acme.lock().unwrap_or_else(PoisonError::into_inner);
+                let now = i64::try_from((self.clock)()).unwrap_or(i64::MAX);
+                if acme.pending.is_some_and(|p| p.revert_at > now) {
+                    error(ErrorCode::Conflict, "a change waits for confirmation")
+                } else if config.certificate.is_some_and(|n| !acme.issued.contains(&n)) {
+                    error(ErrorCode::Forbidden, "refused: the certificate is not issued")
+                } else {
+                    let revert_at = now + i64::from(confirm_within.get());
+                    acme.pending = Some(zendiloos_agent_proto::PendingWebServer { revert_at });
+                    Response::Done
+                }
+            }
+            Request::ConfirmWebServer {} => {
+                match self.acme.lock().unwrap_or_else(PoisonError::into_inner).pending.take() {
+                    Some(_) => Response::Done,
+                    None => error(ErrorCode::Forbidden, "no change waits for confirmation"),
+                }
+            }
+            Request::ReloadWebCertificate {} => Response::Done,
             Request::SshState {} => {
                 let (config, off_at) = self.ssh.lock().unwrap_or_else(PoisonError::into_inner).clone();
                 let mut text = format!("# simulated\nPort {}\n", config.port.get());
@@ -898,6 +1003,13 @@ impl AgentTransport for SimulatedAgent {
     ) -> Result<Response, TransportError> {
         for line in docker::compose_lines(&request) {
             report.line(&line);
+        }
+        if let Request::IssueCertificate { order } = &request
+            && self.packages.lock().unwrap_or_else(PoisonError::into_inner).acme
+        {
+            for line in acme_lines(order).0 {
+                report.line(&format!("[Sat Nov  7 12:00:00 UTC 2026] {line}"));
+            }
         }
         self.call(request, request_id).await
     }
@@ -1436,5 +1548,73 @@ mod tests {
         let stats = &zfs(&agent).await["pools"]["tank"]["scan_stats"];
         assert_eq!((stats["state"].as_str(), stats["end_time"].as_u64()), (Some("CANCELED"), Some(1_002)));
         assert_eq!(stats["pass_start"], 1_000);
+    }
+
+    #[tokio::test]
+    async fn certificates_are_issued_and_the_web_server_waits_for_confirmation() {
+        use zendiloos_agent_proto::{
+            AcmeCa, AcmeChallenge, AcmeDomain, AcmeDomains, AcmeEmail, AcmeKey, AcmeOrder, ConfirmWithin,
+            WebPort, WebServerConfig,
+        };
+        let now = Arc::new(std::sync::atomic::AtomicU64::new(1_000));
+        let clock = now.clone();
+        let agent =
+            SimulatedAgent::with_clock(Arc::new(move || clock.load(std::sync::atomic::Ordering::Relaxed)));
+        let order = |name: &str| AcmeOrder {
+            certificate: 3,
+            account: 1,
+            ca: AcmeCa::LetsEncryptStaging,
+            email: AcmeEmail::parse("admin@example.org").unwrap(),
+            domains: AcmeDomains::new(vec![AcmeDomain::parse(name).unwrap()]).unwrap(),
+            key: AcmeKey::Ec256,
+            challenge: AcmeChallenge::Http,
+        };
+        let issue = |name: &str| Request::IssueCertificate { order: order(name) };
+        assert_eq!(
+            agent.call(Request::AcmeState {}, None).await.unwrap(),
+            Response::AcmeState { installed: false }
+        );
+        refused(&agent.call(issue("nas.example.org"), None).await.unwrap(), ErrorCode::Failed);
+        agent.packages.lock().unwrap().acme = true;
+
+        struct Lines(Mutex<Vec<String>>);
+        impl Report for Lines {
+            fn step(&self, _: &str, _: Option<u8>) {}
+            fn line(&self, line: &str) {
+                self.0.lock().unwrap().push(line.to_owned());
+            }
+        }
+        let lines = Lines(Mutex::default());
+        let issued = agent.call_reporting(issue("nas.example.org"), None, &lines).await.unwrap();
+        assert_eq!(issued, Response::CertificateIssued { not_after: 1_000 + 90 * 24 * 3600 });
+        assert!(lines.0.lock().unwrap().last().unwrap().ends_with("Cert success."));
+        refused(&agent.call(issue("nas.example.invalid"), None).await.unwrap(), ErrorCode::Failed);
+
+        let config =
+            |certificate| WebServerConfig { http: None, https: WebPort::new(8443).unwrap(), certificate };
+        let within = ConfirmWithin::seconds(90).unwrap();
+        let apply =
+            |certificate| Request::ApplyWebServer { config: config(certificate), confirm_within: within };
+        refused(&agent.call(apply(Some(4)), None).await.unwrap(), ErrorCode::Forbidden);
+        assert_eq!(agent.call(apply(Some(3)), None).await.unwrap(), Response::Done);
+        refused(&agent.call(apply(None), None).await.unwrap(), ErrorCode::Conflict);
+        let state = agent.call(Request::WebServerState {}, None).await.unwrap();
+        assert!(
+            matches!(state, Response::WebServerState { pending: Some(p) } if p.revert_at == 1_090),
+            "{state:?}"
+        );
+        assert_eq!(agent.call(Request::ConfirmWebServer {}, None).await.unwrap(), Response::Done);
+        refused(&agent.call(Request::ConfirmWebServer {}, None).await.unwrap(), ErrorCode::Forbidden);
+
+        // Not confirmed in time: back by itself.
+        assert_eq!(agent.call(apply(None), None).await.unwrap(), Response::Done);
+        now.store(1_091, std::sync::atomic::Ordering::Relaxed);
+        let state = agent.call(Request::WebServerState {}, None).await.unwrap();
+        assert_eq!(state, Response::WebServerState { pending: None });
+        assert_eq!(
+            agent.call(Request::RemoveCertificate { certificate: 3 }, None).await.unwrap(),
+            Response::Done
+        );
+        refused(&agent.call(apply(Some(3)), None).await.unwrap(), ErrorCode::Forbidden);
     }
 }

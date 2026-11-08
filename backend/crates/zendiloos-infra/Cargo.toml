@@ -10,6 +10,7 @@ publish.workspace = true
 [dependencies]
 zendiloos-agent-proto.workspace = true
 zendiloos-apps.workspace = true
+zendiloos-certificates.workspace = true
 zendiloos-containers.workspace = true
 zendiloos-updates.workspace = true
 zendiloos-catalog.workspace = true

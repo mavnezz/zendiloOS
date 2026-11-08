@@ -25,6 +25,7 @@ zendiloos-infra = { path = "crates/zendiloos-infra" }
 zendiloos-jobs = { path = "crates/zendiloos-jobs" }
 zendiloos-kernel = { path = "crates/zendiloos-kernel" }
 zendiloos-logging = { path = "crates/zendiloos-logging" }
+zendiloos-certificates = { path = "crates/zendiloos-certificates" }
 zendiloos-network = { path = "crates/zendiloos-network" }
 zendiloos-notify = { path = "crates/zendiloos-notify" }
 zendiloos-sharing = { path = "crates/zendiloos-sharing" }

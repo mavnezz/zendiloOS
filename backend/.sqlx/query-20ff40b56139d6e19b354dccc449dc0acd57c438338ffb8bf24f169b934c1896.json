@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO certificates (domains, key_type, account_id, challenge_id, auto_renew, created_at)\n             VALUES (?, ?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "20ff40b56139d6e19b354dccc449dc0acd57c438338ffb8bf24f169b934c1896"
+}

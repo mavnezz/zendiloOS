@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import { computed } from 'vue'
 
 import { api, unwrap } from '@/shared/api/client'
-import type { PowerAction, SshRequest, TimeRequest } from '@/shared/api/types'
+import type { PowerAction, SshRequest, TimeRequest, WebServer } from '@/shared/api/types'
 
 export function useSystemInfo() {
   return useQuery({
@@ -57,4 +57,46 @@ export function useSetSsh() {
     mutationFn: (body: SshRequest) => unwrap(api.PUT('/api/v1/system/ssh', { body })),
     onSuccess: (state) => client.setQueryData(['system', 'ssh'], state),
   })
+}
+
+/** The web interface's ports and certificate, and a change waiting to be confirmed. */
+export function useWebServer() {
+  return useQuery({
+    queryKey: ['system', 'web-server'],
+    queryFn: () => unwrap(api.GET('/api/v1/system/web-server')),
+    // While a change waits, its time runs out on the server.
+    refetchInterval: (query) => (query.state.data?.pending ? 3_000 : false),
+  })
+}
+
+/** Certificates from the ACME client, for the web interface to show. */
+export function useWebCertificates(enabled: () => boolean) {
+  return useQuery({
+    queryKey: ['certificates', 'list'],
+    queryFn: () => unwrap(api.GET('/api/v1/certificates')),
+    enabled,
+    retry: false,
+  })
+}
+
+/** Applying new settings (they go back unless confirmed) and confirming them. */
+export function useWebServerActions() {
+  const client = useQueryClient()
+  const refresh = () => client.invalidateQueries({ queryKey: ['system', 'web-server'] })
+  return {
+    apply: async (body: WebServer) => {
+      try {
+        return await unwrap(api.PUT('/api/v1/system/web-server', { body }))
+      } finally {
+        await refresh()
+      }
+    },
+    confirm: async () => {
+      try {
+        await unwrap(api.POST('/api/v1/system/web-server/confirm'))
+      } finally {
+        await refresh()
+      }
+    },
+  }
 }

@@ -16,6 +16,7 @@ import { useSystemInfo } from '@/features/system/api'
 import DeviceInfoPage from '@/features/system/components/DeviceInfoPage.vue'
 import ResourceMonitor from '@/features/system/components/ResourceMonitor.vue'
 import TerminalPage from '@/features/system/components/TerminalPage.vue'
+import WebInterfacePage from '@/features/system/components/WebInterfacePage.vue'
 import { api, unwrap } from '@/shared/api/client'
 import { useWindowSection } from '@/shared/lib/window-section'
 import { AppFrame, type NavGroup } from '@/shared/ui/frame'
@@ -124,6 +125,10 @@ const { data: pools } = useQuery({
       v-else-if="section === 'terminal'"
       :hostname="info?.hostname"
       :address="address"
+    />
+    <WebInterfacePage
+      v-else-if="section === 'web-interface'"
+      :can-manage="session.can('system.manage')"
     />
     <SecurityPage v-else-if="section === 'security'" />
     <div v-else-if="section === 'notifications'">

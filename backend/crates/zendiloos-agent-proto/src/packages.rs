@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 pub enum PackageTask {
     /// `docker.io` and `docker-compose` from Debian, so apps can run.
     InstallDocker,
+    /// `acme.sh` from Debian, for certificates from Let's Encrypt.
+    InstallAcme,
     /// apt's lists fetched again, and a [`PackageReport`] of what an
     /// update would bring; nothing installed.
     Check,
@@ -20,12 +22,13 @@ pub enum PackageTask {
 }
 
 impl PackageTask {
-    const ALL: [Self; 3] = [Self::InstallDocker, Self::Check, Self::Update];
+    const ALL: [Self; 4] = [Self::InstallDocker, Self::InstallAcme, Self::Check, Self::Update];
 
     /// The name the runner is started with.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::InstallDocker => "install-docker",
+            Self::InstallAcme => "install-acme",
             Self::Check => "check",
             Self::Update => "update",
         }
@@ -169,6 +172,7 @@ mod tests {
     fn tasks_have_names_for_the_runner() {
         assert_eq!(PackageTask::parse("update"), Some(PackageTask::Update));
         assert_eq!(PackageTask::parse("install-docker"), Some(PackageTask::InstallDocker));
+        assert_eq!(PackageTask::parse("install-acme"), Some(PackageTask::InstallAcme));
         assert_eq!(PackageTask::parse("install-anything"), None);
         let json = serde_json::to_string(&PackageTask::InstallDocker).unwrap();
         assert_eq!(json, "\"install_docker\"");

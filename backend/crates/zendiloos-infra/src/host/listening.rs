@@ -6,12 +6,14 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 use zendiloos_apps::application::ports::ListeningPorts as AppPorts;
+use zendiloos_certificates::application::PortsInUse;
 use zendiloos_kernel::PortError;
 use zendiloos_system::application::ports::ListeningPorts as SystemPorts;
 
 const WHAT: &str = "socket tables";
 
-/// For the apps (every port in use) and for SSH (TCP listeners).
+/// For the apps (every port in use), and for SSH and the web interface
+/// (TCP listeners).
 #[derive(Debug, Clone)]
 pub struct ProcListening {
     proc_net: PathBuf,
@@ -79,6 +81,13 @@ impl SystemPorts for ProcListening {
     }
 }
 
+#[async_trait]
+impl PortsInUse for ProcListening {
+    async fn is_listening(&self, port: u16) -> Result<bool, PortError> {
+        SystemPorts::is_listening(self, port).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -122,9 +131,12 @@ mod tests {
     async fn ssh_sees_tcp_listeners_only() {
         let dir = tables();
         let ports = ProcListening::at(dir.path());
-        assert!(ports.is_listening(8080).await.unwrap());
-        assert!(ports.is_listening(2222).await.unwrap(), "IPv6");
-        assert!(!ports.is_listening(22).await.unwrap(), "a connection, not a listener");
-        assert!(!ports.is_listening(5353).await.unwrap(), "UDP");
+        assert!(SystemPorts::is_listening(&ports, 8080).await.unwrap());
+        assert!(SystemPorts::is_listening(&ports, 2222).await.unwrap(), "IPv6");
+        assert!(!SystemPorts::is_listening(&ports, 22).await.unwrap(), "a connection, not a listener");
+        assert!(!SystemPorts::is_listening(&ports, 5353).await.unwrap(), "UDP");
+        // The web interface asks the same.
+        assert!(PortsInUse::is_listening(&ports, 8080).await.unwrap());
+        assert!(!PortsInUse::is_listening(&ports, 5353).await.unwrap());
     }
 }

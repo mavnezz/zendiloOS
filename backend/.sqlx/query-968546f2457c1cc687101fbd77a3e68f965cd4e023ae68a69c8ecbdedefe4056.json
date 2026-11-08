@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE certificates SET domains = ?, key_type = ?, account_id = ?, challenge_id = ?, auto_renew = ?\n             WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "968546f2457c1cc687101fbd77a3e68f965cd4e023ae68a69c8ecbdedefe4056"
+}

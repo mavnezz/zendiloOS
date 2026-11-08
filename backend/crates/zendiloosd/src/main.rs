@@ -16,14 +16,15 @@ use tokio::task::JoinHandle;
 use zendiloos_agent_proto::{AgentTransport, ConsoleSetupCode, Request, Response, UnixTransport};
 use zendiloos_api::{ApiState, UseCases};
 use zendiloos_apps::application::{Catalogs, Docker, InstallPorts, Installs, TemplatePorts, Templates};
+use zendiloos_certificates::application::{Certificates, CertificatesPorts};
 use zendiloos_containers::application::{Containers, ContainersPorts};
 use zendiloos_identity::application::commands::{PendingSetup, PurgeExpiredSessions};
 use zendiloos_identity::application::{IdentityConfig, IdentityPorts, IdentityUseCases};
 use zendiloos_infra::SystemClock;
 use zendiloos_infra::agent::{
-    AgentApps, AgentDockerData, AgentDockerEngine, AgentFiles, AgentNetwork, AgentPowerControl, AgentSharing,
-    AgentSsh, AgentStorage, AgentSystemAccounts, AgentTime, AgentUpdates, AgentWebTls, RandomPlanTokens,
-    agent_version,
+    AgentAcme, AgentApps, AgentDockerData, AgentDockerEngine, AgentFiles, AgentNetwork, AgentPowerControl,
+    AgentSharing, AgentSsh, AgentStorage, AgentSystemAccounts, AgentTime, AgentUpdates, AgentWebTls,
+    RandomPlanTokens, agent_version,
 };
 use zendiloos_infra::apps::{
     ContainersForApps, FilesForApps, HttpsCatalogs, RandomSecrets, SharingForApps, YamlFiller,
@@ -37,9 +38,9 @@ use zendiloos_infra::notify::NetworkChannels;
 use zendiloos_infra::sharing::DrivesForFiles;
 use zendiloos_infra::sqlite::{
     Database, Occupants, SqliteAccountAddresses, SqliteAccounts, SqliteAppSources, SqliteAuditLog,
-    SqliteChannels, SqliteGroups, SqliteInstalledApps, SqliteJobs, SqliteNotifications, SqlitePreferences,
-    SqliteProjects, SqliteSecurity, SqliteSelfTestPlans, SqliteSessions, SqliteShareProjects, SqliteShares,
-    SqliteSystemUpdates, SqliteUpdateSettings,
+    SqliteCertificates, SqliteChannels, SqliteGroups, SqliteInstalledApps, SqliteJobs, SqliteNotifications,
+    SqlitePreferences, SqliteProjects, SqliteSecurity, SqliteSelfTestPlans, SqliteSessions,
+    SqliteShareProjects, SqliteShares, SqliteSystemUpdates, SqliteUpdateSettings,
 };
 use zendiloos_infra::updates::GitHubReleases;
 use zendiloos_jobs::Jobs;
@@ -295,6 +296,17 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     let image_updates = spawn_image_updates(containers.clone());
     let update_checks = spawn_update_checks(updates.clone());
 
+    let certificates = Certificates::new(CertificatesPorts {
+        repository: Arc::new(SqliteCertificates::new(database.clone())),
+        host: Arc::new(AgentAcme::new(agent.clone())),
+        listening: Arc::new(ProcListening::default()),
+        jobs: jobs.clone(),
+        notifier: notifier.clone(),
+        audit: audit.clone(),
+        clock: Arc::new(SystemClock),
+    });
+    let certificate_renewal = spawn_certificate_renewal(certificates.clone());
+
     let snapshots = spawn_snapshot_schedules(sharing.clone());
     let self_tests = spawn_self_test_schedule(storage.self_test_schedule.clone());
     let use_cases = UseCases {
@@ -313,6 +325,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         templates,
         containers,
         updates,
+        certificates,
     };
     let state = ApiState::new(use_cases, config.secure_cookies);
     let app = zendiloos_api::router(state);
@@ -350,6 +363,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     container_sampler.abort();
     image_updates.abort();
     update_checks.abort();
+    certificate_renewal.abort();
     monitor.abort();
     snapshots.abort();
     self_tests.abort();
@@ -546,6 +560,25 @@ fn spawn_update_checks(updates: Updates) -> JoinHandle<()> {
             every.tick().await;
             if let Err(error) = updates.tick().await {
                 tracing::info!(%error, "updates: cannot look for updates");
+            }
+        }
+    })
+}
+
+/// Renews certificates a month before they end, looked at daily (the
+/// first time five minutes after the start); acme.sh's own renewal is
+/// never set up.
+fn spawn_certificate_renewal(certificates: Certificates) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(300)).await;
+        let mut daily = tokio::time::interval(Duration::from_secs(24 * 3600));
+        daily.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            daily.tick().await;
+            match certificates.renew_due().await {
+                Ok(jobs) if !jobs.is_empty() => tracing::info!(count = jobs.len(), "certificates: renewing"),
+                Ok(_) => {}
+                Err(error) => tracing::warn!(%error, "certificates: cannot look for renewals"),
             }
         }
     })

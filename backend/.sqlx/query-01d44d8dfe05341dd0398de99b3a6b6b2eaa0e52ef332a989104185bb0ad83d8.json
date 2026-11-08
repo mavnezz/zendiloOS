@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO acme_challenges (name, method, provider, credentials, created_at) VALUES (?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "01d44d8dfe05341dd0398de99b3a6b6b2eaa0e52ef332a989104185bb0ad83d8"
+}

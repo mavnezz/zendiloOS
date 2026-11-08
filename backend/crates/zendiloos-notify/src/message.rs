@@ -169,6 +169,27 @@ pub fn message(notification: &Notification, host: &str, language: Language) -> M
             "Unter Einstellungen → Aktualisieren & Wiederherstellen steht, woran es lag.".to_owned(),
         ),
         "updates_failed" => ("Update failed".to_owned(), "Settings → Update & restore says why.".to_owned()),
+        "certificate_renewed" if german => (
+            format!("Zertifikat für {} erneuert", param("name")),
+            "Let's Encrypt hat das Zertifikat erneuert; zeigt die Weboberfläche es, nutzt sie es schon."
+                .to_owned(),
+        ),
+        "certificate_renewed" => (
+            format!("Certificate for {} renewed", param("name")),
+            "Let's Encrypt renewed the certificate; if the web interface shows it, it uses it already."
+                .to_owned(),
+        ),
+        "certificate_renewal_failed" if german => (
+            format!("Zertifikat für {} nicht erneuert", param("name")),
+            format!(
+                "{}\nDas bisherige gilt weiter, bis es abläuft; morgen wird es erneut versucht.",
+                param("reason")
+            ),
+        ),
+        "certificate_renewal_failed" => (
+            format!("Certificate for {} not renewed", param("name")),
+            format!("{}\nThe current one holds until it ends; it is tried again tomorrow.", param("reason")),
+        ),
         "channel_test" if german => (
             "Testnachricht".to_owned(),
             "Dieser Kanal erreicht Sie. So kommen Meldungen des NAS an.".to_owned(),
@@ -290,6 +311,18 @@ mod tests {
                 "Kein Snapshot von photos",
             ),
             ("channel_test", vec![], "Test message", "Testnachricht"),
+            (
+                "certificate_renewed",
+                vec![("name", "nas.example.org")],
+                "Certificate for nas.example.org renewed",
+                "Zertifikat für nas.example.org erneuert",
+            ),
+            (
+                "certificate_renewal_failed",
+                vec![("name", "nas.example.org"), ("reason", "acme.sh: Verify error")],
+                "Certificate for nas.example.org not renewed",
+                "Zertifikat für nas.example.org nicht erneuert",
+            ),
             (
                 "removable_pulled",
                 vec![("drive", "STICK")],

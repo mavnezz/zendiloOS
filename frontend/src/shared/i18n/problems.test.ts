@@ -16,6 +16,10 @@ const CODES = [
   'nothing_to_update',
   'update_busy',
   'password_locked',
+  'in_use',
+  'acme_installed',
+  'acme_not_installed',
+  'web_server_failed',
 ]
 
 describe('problem messages', () => {

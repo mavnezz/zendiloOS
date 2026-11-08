@@ -46,6 +46,7 @@ pub const API_V1: &str = "/api/v1";
         (name = "jobs", description = "Long-running operations and their progress"),
         (name = "shares", description = "Shares over SMB and NFS and their permissions"),
         (name = "files", description = "The file manager: share contents as the signed-in user"),
+        (name = "certificates", description = "The ACME client plugin: accounts, challenges and certificates"),
     ),
     components(schemas(
         routes::live::LiveRequest,

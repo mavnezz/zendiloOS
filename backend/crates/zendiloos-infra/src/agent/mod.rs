@@ -3,6 +3,7 @@
 //! the agent's socket or the simulation.
 
 mod accounts;
+mod acme;
 mod apps;
 mod docker;
 mod docker_data;
@@ -27,6 +28,7 @@ use zendiloos_system::application::ports::PowerControl;
 use zendiloos_system::domain::PowerAction;
 
 pub use accounts::AgentSystemAccounts;
+pub use acme::AgentAcme;
 pub use apps::AgentApps;
 pub use docker_data::AgentDockerData;
 pub use engine::AgentDockerEngine;

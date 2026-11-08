@@ -1,0 +1,158 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, domains, key_type, account_id, challenge_id, auto_renew AS \"auto_renew: bool\",\n                      created_at, issued_at, not_after, last_attempt_at, last_error, last_output\n               FROM certificates ORDER BY id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "certificates",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "domains",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "certificates",
+            "name": "domains"
+          }
+        }
+      },
+      {
+        "name": "key_type",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "certificates",
+            "name": "key_type"
+          }
+        }
+      },
+      {
+        "name": "account_id",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "certificates",
+            "name": "account_id"
+          }
+        }
+      },
+      {
+        "name": "challenge_id",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "certificates",
+            "name": "challenge_id"
+          }
+        }
+      },
+      {
+        "name": "auto_renew: bool",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "certificates",
+            "name": "auto_renew"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "certificates",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "name": "issued_at",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "certificates",
+            "name": "issued_at"
+          }
+        }
+      },
+      {
+        "name": "not_after",
+        "ordinal": 8,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "certificates",
+            "name": "not_after"
+          }
+        }
+      },
+      {
+        "name": "last_attempt_at",
+        "ordinal": 9,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "certificates",
+            "name": "last_attempt_at"
+          }
+        }
+      },
+      {
+        "name": "last_error",
+        "ordinal": 10,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "certificates",
+            "name": "last_error"
+          }
+        }
+      },
+      {
+        "name": "last_output",
+        "ordinal": 11,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "certificates",
+            "name": "last_output"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "0a96977ae34d2aef7aa6f3692a85a60fc68a48da1f4c43bc6dcd663095ed52c4"
+}

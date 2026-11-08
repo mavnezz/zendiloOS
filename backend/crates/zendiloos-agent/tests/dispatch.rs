@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 use zendiloos_agent::config::Tools;
 use zendiloos_agent::{
-    AccountFiles, Erasable, ErasePolicy, HostPaths, NetworkPaths, Operations, Paths, SshPaths, TimePaths,
-    WebPaths,
+    AccountFiles, AcmePaths, Erasable, ErasePolicy, HostPaths, NetworkPaths, Operations, Paths, SshPaths,
+    TimePaths, WebPaths, WebServerPaths,
 };
 use zendiloos_agent_proto::{ErrorCode, Request, Response, Role};
 
@@ -77,6 +77,9 @@ impl Host {
             systemd_run: p("systemd-run"),
             docker: p("docker"),
             setsid: "/usr/bin/setsid".into(),
+            openssl: "/bin/false".into(),
+            nginx: "/bin/false".into(),
+            rm: "/bin/false".into(),
             dockerd: p("dockerd"),
         };
         let at = |name: &str| self.path(name);
@@ -111,6 +114,19 @@ impl Host {
             time: TimePaths { servers: at("timesyncd.conf") },
             ssh: SshPaths { config: at("sshd_config.d/00-zendiloos.conf") },
             web: WebPaths { tls: at("nginx/tls.conf") },
+            acme: AcmePaths {
+                script: at("acme/acme.sh"),
+                state: at("acme-state"),
+                runtime: at("acme-run"),
+                certificates: at("web/certificates"),
+            },
+            web_server: WebServerPaths {
+                directory: at("web"),
+                certificates: at("web/certificates"),
+                own_certificate: at("tls/zendiloos.crt"),
+                own_key: at("tls/zendiloos.key"),
+                webroot: at("acme-state/webroot"),
+            },
         };
         Operations::with_paths(role, &tools, Erasable::Policy(ErasePolicy::None), paths).unwrap()
     }
@@ -163,6 +179,16 @@ fn requests() -> Vec<Value> {
         json!({ "op": "ssh_state" }),
         json!({ "op": "web_tls_state" }),
         json!({ "op": "set_web_tls", "minimum": "tls1_3" }),
+        json!({ "op": "acme_state" }),
+        json!({ "op": "issue_certificate", "order": {
+            "certificate": 3, "account": 1, "ca": "lets_encrypt_staging", "email": "admin@example.org",
+            "domains": ["nas.example.org"], "key": "ec256", "challenge": { "method": "http" },
+        } }),
+        json!({ "op": "remove_certificate", "certificate": 3 }),
+        json!({ "op": "web_server_state" }),
+        json!({ "op": "apply_web_server", "config": { "http": 80, "https": 443, "certificate": null }, "confirm_within": 90 }),
+        json!({ "op": "confirm_web_server" }),
+        json!({ "op": "reload_web_certificate" }),
         json!({ "op": "time_state" }),
         json!({ "op": "share_usage" }),
         json!({ "op": "show_on_console" }),

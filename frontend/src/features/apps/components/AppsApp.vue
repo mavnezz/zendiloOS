@@ -9,6 +9,7 @@ import { Button } from '@/shared/ui/button'
 import { Input } from '@/shared/ui/input'
 
 import { useAppProjects, useCatalog, useDocker, useInstalled } from '../api'
+import AcmeSection from './AcmeSection.vue'
 import AppDetail from './AppDetail.vue'
 import DockerSection from './DockerSection.vue'
 import InstalledSection from './InstalledSection.vue'
@@ -74,9 +75,14 @@ const section = useWindowSection(() => [
   'sources',
   'plugins',
   'docker',
+  'acme',
 ])
 /** A plugin's own page belongs under Plugins in the navigation. */
-const shownSection = computed(() => (section.value === 'docker' ? 'plugins' : section.value))
+/** The plugins' own pages, shown under Plugins in the navigation. */
+const PLUGIN_PAGES = ['docker', 'acme']
+const shownSection = computed(() =>
+  PLUGIN_PAGES.includes(section.value) ? 'plugins' : section.value,
+)
 const category = computed(() =>
   section.value.startsWith('category:') ? section.value.slice('category:'.length) : null,
 )
@@ -137,14 +143,15 @@ function open(app: { source_id: number; id: string }, install = false): void {
       @back="opened = null"
       @installed="section = 'installed'"
     />
-    <template v-else-if="section === 'docker'">
+    <template v-else-if="PLUGIN_PAGES.includes(section)">
       <Button variant="ghost" size="sm" class="mb-3 w-fit" @click="section = 'plugins'">
         <ArrowLeft />
         {{ t('appStore.plugins.title') }}
       </Button>
-      <DockerSection @store="section = 'all'" />
+      <DockerSection v-if="section === 'docker'" @store="section = 'all'" />
+      <AcmeSection v-else />
     </template>
-    <PluginsSection v-else-if="section === 'plugins'" @open="section = 'docker'" />
+    <PluginsSection v-else-if="section === 'plugins'" @open="(plugin) => (section = plugin)" />
     <InstalledSection v-else-if="section === 'installed'" @open="open" @store="section = 'all'" />
     <SourcesSection v-else-if="section === 'sources'" />
     <StoreSection

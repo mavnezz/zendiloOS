@@ -47,6 +47,44 @@ web_tls_defaults() {
     fi
 }
 
+# The web interface's ports and certificate, which the control panel
+# rewrites; nginx's site includes both files. Until then: plain HTTP on 80
+# pointing to HTTPS on 443, with the machine's own certificate.
+web_server_defaults() {
+    mkdir -p /etc/zendiloos/web
+    if [ ! -e /etc/zendiloos/web/http.conf ]; then
+        cat >/etc/zendiloos/web/http.conf <<'EOF'
+# Written by zendiloOS; changes made here are replaced. Change it in the web interface.
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_tokens off;
+
+    # Let's Encrypt's HTTP challenges, answered with what acme.sh wrote.
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/lib/zendiloos-acme/webroot;
+        default_type text/plain;
+        try_files $uri =404;
+    }
+
+    # Everything else to HTTPS: the session cookie is HTTPS-only.
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+EOF
+    fi
+    if [ ! -e /etc/zendiloos/web/https.conf ]; then
+        cat >/etc/zendiloos/web/https.conf <<'EOF'
+# Written by zendiloOS; changes made here are replaced. Change it in the web interface.
+listen 443 ssl default_server;
+listen [::]:443 ssl default_server;
+ssl_certificate     /etc/zendiloos/tls/zendiloos.crt;
+ssl_certificate_key /etc/zendiloos/tls/zendiloos.key;
+EOF
+    fi
+}
+
 case "$1" in
     configure)
         load_zfs
@@ -56,6 +94,7 @@ case "$1" in
         configure_samba
         /usr/libexec/zendiloos/make-certificate
         web_tls_defaults
+        web_server_defaults
         retire_default_site
         if nginx -t >/dev/null 2>&1; then
             deb-systemd-invoke reload nginx.service || true

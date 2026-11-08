@@ -3050,6 +3050,7 @@ dependencies = [
  "utoipa",
  "utoipa-axum",
  "zendiloos-apps",
+ "zendiloos-certificates",
  "zendiloos-containers",
  "zendiloos-identity",
  "zendiloos-jobs",
@@ -3091,6 +3092,19 @@ dependencies = [
  "serde-saphyr",
  "serde_json",
  "sha2 0.11.1",
+]
+
+[[package]]
+name = "zendiloos-certificates"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "zendiloos-jobs",
+ "zendiloos-kernel",
+ "zendiloos-notify",
 ]
 
 [[package]]
@@ -3166,6 +3180,7 @@ dependencies = [
  "zendiloos-agent-proto",
  "zendiloos-apps",
  "zendiloos-catalog",
+ "zendiloos-certificates",
  "zendiloos-containers",
  "zendiloos-exec",
  "zendiloos-identity",
@@ -3309,6 +3324,7 @@ dependencies = [
  "zendiloos-agent-proto",
  "zendiloos-api",
  "zendiloos-apps",
+ "zendiloos-certificates",
  "zendiloos-containers",
  "zendiloos-identity",
  "zendiloos-infra",
