@@ -50,6 +50,11 @@ export function setLocale(next: Locale): void {
 const KNOWN_PROBLEMS = [
   'invalid_credentials',
   'wrong_password',
+  'invalid_code',
+  'sign_in_expired',
+  'two_factor_on',
+  'two_factor_off',
+  'no_two_factor_setup',
   'forbidden',
   'account_disabled',
   'invalid_setup_code',

@@ -21,7 +21,11 @@ import AccountRules from './AccountRules.vue'
 import UsersPage from './UsersPage.vue'
 
 const me = account(1, 'admin', { role: 'admin', full_name: 'The Admin' })
-const anna = account(5, 'anna', { email: 'anna@example.org', description: 'Photos' })
+const anna = account(5, 'anna', {
+  email: 'anna@example.org',
+  description: 'Photos',
+  two_factor: true,
+})
 const ben = account(6, 'ben', { disabled: true })
 const cara = account(7, 'cara', { password_change_required: true })
 
@@ -109,6 +113,35 @@ describe('the users', () => {
     expect(page()).toContain('too common')
     await click('Cancel')
     expect(page()).not.toContain('Set a password for anna')
+  })
+
+  it('shows who signs in with a code, and resets that once confirmed', async () => {
+    on('DELETE', '/api/v1/accounts/5/two-factor', () => undefined)
+    await show()
+
+    const badges = [...document.querySelectorAll('[data-testid="two-factor"]')]
+    expect(badges.map((b) => b.textContent?.trim())).toEqual(['2FA'])
+    await pick('Actions for anna', 'Reset two-factor sign-in')
+    expect(page()).toContain('Reset two-factor sign-in of anna?')
+    await click('Reset two-factor sign-in')
+
+    expect(callsTo('DELETE', '/api/v1/accounts/5/two-factor')).toHaveLength(1)
+    expect(
+      useNotifications().items.some((n) => n.title === 'Two-factor sign-in of anna was reset'),
+    ).toBe(true)
+  })
+
+  it('says when a reset of two-factor sign-in fails', async () => {
+    on('DELETE', '/api/v1/accounts/5/two-factor', () => problem(409, 'two_factor_off'))
+    await show()
+
+    await pick('Actions for anna', 'Reset two-factor sign-in')
+    await click('Reset two-factor sign-in')
+
+    const failed = useNotifications().items.find(
+      (n) => n.title === 'Two-factor sign-in could not be reset',
+    )
+    expect(failed?.body).toBe('Two-factor sign-in is off.')
   })
 
   it('deletes an account once confirmed', async () => {

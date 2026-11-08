@@ -20,6 +20,7 @@ const account = (id: number, name: string, more: Partial<Account> = {}): Account
   password_changed_at: 0,
   password_change_required: false,
   password_locked: false,
+  two_factor: false,
   ...more,
 })
 

@@ -1,5 +1,12 @@
 import { ApiProblem, api, unwrap } from '@/shared/api/client'
-import type { SessionInfo, SetupRequest, SetupStatus } from '@/shared/api/types'
+import type {
+  SecondFactorChallenge,
+  SessionInfo,
+  SetupRequest,
+  SetupStatus,
+  TwoFactorSetup,
+  TwoFactorStatus,
+} from '@/shared/api/types'
 
 /** The current session, or `null` if nobody is signed in. */
 export async function fetchSession(): Promise<SessionInfo | null> {
@@ -24,8 +31,46 @@ export function completeSetup(request: SetupRequest): Promise<SessionInfo> {
   return unwrap(api.POST('/api/v1/setup', { body: request }))
 }
 
-export function login(name: string, password: string): Promise<SessionInfo> {
-  return unwrap(api.POST('/api/v1/auth/login', { body: { name, password } }))
+/** What came of the password: a session, or the second factor asked for. */
+export type LoginResult =
+  | { kind: 'signed_in'; session: SessionInfo }
+  | { kind: 'second_factor'; challenge: SecondFactorChallenge }
+
+export async function login(name: string, password: string): Promise<LoginResult> {
+  const answer = await unwrap(api.POST('/api/v1/auth/login', { body: { name, password } }))
+  return 'token' in answer
+    ? { kind: 'second_factor', challenge: answer }
+    : { kind: 'signed_in', session: answer }
+}
+
+/** The second step of a sign-in: a code from the app, or a recovery code. */
+export function completeSignIn(token: string, code: string): Promise<SessionInfo> {
+  return unwrap(api.POST('/api/v1/auth/login/second-factor', { body: { token, code } }))
+}
+
+export function fetchTwoFactor(): Promise<TwoFactorStatus> {
+  return unwrap(api.GET('/api/v1/auth/two-factor'))
+}
+
+/** A new secret for the authenticator app, waiting for its first code. */
+export function beginTwoFactor(): Promise<TwoFactorSetup> {
+  return unwrap(api.POST('/api/v1/auth/two-factor/setup'))
+}
+
+/** Turns two-factor sign-in on; gives the recovery codes, shown this once. */
+export async function confirmTwoFactor(code: string): Promise<string[]> {
+  return (await unwrap(api.POST('/api/v1/auth/two-factor/confirm', { body: { code } })))
+    .recovery_codes
+}
+
+export async function disableTwoFactor(password: string, code: string): Promise<void> {
+  await unwrap(api.POST('/api/v1/auth/two-factor/disable', { body: { password, code } }))
+}
+
+/** New recovery codes; the old ones stop working. */
+export async function renewRecoveryCodes(code: string): Promise<string[]> {
+  return (await unwrap(api.POST('/api/v1/auth/two-factor/recovery-codes', { body: { code } })))
+    .recovery_codes
 }
 
 export async function logout(): Promise<void> {
