@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { click, mountApp, page, press, settle, submit, type } from '@/shared/test-support/mount'
 import { called, on, problem, reset } from '@/shared/test-support/server'
-import type { Disk, Pool, PoolDevice, RaidArray, Volume } from '@/shared/api/types'
+import type { Disk, Pool, PoolDevice, RaidArray } from '@/shared/api/types'
 import { i18n } from '@/shared/i18n'
 
 import StoragePage from './StoragePage.vue'
@@ -70,20 +70,6 @@ function pool(name: string, extra: Partial<Pool> = {}): Pool {
   }
 }
 
-const volume: Volume = {
-  id: 'v1',
-  label: 'tank',
-  filesystem: 'zfs',
-  devices: ['sda', 'sdb'],
-  disks: ['sda', 'sdb'],
-  mount_points: ['/volume1'],
-  size_bytes: 4e12,
-  used_bytes: 1e12,
-  available_bytes: 3e12,
-  pool: 'tank',
-  array: null,
-}
-
 const array: RaidArray = {
   name: 'md0',
   level: 'raid1',
@@ -104,7 +90,7 @@ const array: RaidArray = {
   },
 }
 
-type Page = 'overview' | 'volumes' | 'pools' | 'disks'
+type Page = 'overview' | 'pools' | 'disks'
 
 async function open(page: Page, canManage = true): Promise<VueWrapper> {
   const { wrapper } = await mountApp(StoragePage, { props: { page, canManage } })
@@ -173,18 +159,6 @@ beforeEach(() => {
     }),
   ])
   on('GET', '/api/v1/storage/arrays', [array])
-  on('GET', '/api/v1/storage/volumes', [
-    volume,
-    {
-      ...volume,
-      id: 'v2',
-      label: null,
-      size_bytes: null,
-      used_bytes: null,
-      pool: null,
-      mount_points: [],
-    },
-  ])
   on('GET', '/api/v1/storage/self-test-plans', {
     plans: [{ kind: 'short', frequency: 'weekly', hour: 3, disks: [] }],
   })
@@ -199,12 +173,6 @@ beforeEach(() => {
 })
 
 describe('the storage pages', () => {
-  it('shows the volumes and their use', async () => {
-    await open('volumes')
-    expect(page()).toContain('/volume1')
-    expect(page()).toContain('zfs')
-  })
-
   it('shows pools with their scans, errors and devices', async () => {
     await open('pools')
     expect(page()).toContain('tank')

@@ -87,7 +87,7 @@ async function replace(): Promise<void> {
       <label
         v-for="candidate in candidates"
         :key="candidate.name"
-        class="flex items-center gap-2 rounded-lg border px-3 py-2 text-sm hover:bg-accent/60"
+        class="flex min-w-0 items-center gap-2 rounded-lg border px-3 py-2 text-sm hover:bg-accent/60"
       >
         <input v-model="disk" type="radio" :value="candidate.name" class="size-4 accent-primary" />
         <span class="font-medium">{{ candidate.name }}</span>

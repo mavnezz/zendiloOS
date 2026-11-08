@@ -96,14 +96,6 @@ export function usePools() {
   })
 }
 
-export function useVolumes() {
-  return useQuery({
-    queryKey: ['storage', 'volumes'],
-    queryFn: () => unwrap(api.GET('/api/v1/storage/volumes')),
-    refetchInterval: DEVICE_REFRESH_MS,
-  })
-}
-
 /** Reads everything again, SMART included. */
 export function useRefreshStorage() {
   const client = useQueryClient()
