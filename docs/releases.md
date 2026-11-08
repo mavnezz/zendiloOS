@@ -70,7 +70,8 @@ CI checks, builds the package with the tag's version, signs `SHA256SUMS`
 and creates the GitHub release (a pre-release for a tag with a `-`), with
 notes generated from the commits; edit them on GitHub as needed, they are
 what the NAS shows as the release notes. Pushes to `main` replace the
-release `dev`.
+release `dev`; its notes list the changes since the last release tag (the
+newest 50 commit subjects).
 
 ## Installation ISO
 

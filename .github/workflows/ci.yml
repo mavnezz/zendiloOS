@@ -175,9 +175,20 @@ jobs:
             gh release create "$GITHUB_REF_NAME" "${files[@]}" "${kind[@]}" \
               --title "zendiloOS $VERSION" --generate-notes --verify-tag
           else
-            # One rolling development build: the latest commit on main.
+            # One rolling development build: the latest commit on main. Its
+            # notes list what changed since the last release (the subjects of
+            # the squashed pull requests), as the NAS shows them before an update.
+            notes=dist/dev-notes.md
+            echo "The state of main at $GITHUB_SHA. Untested; for the development channel only." > "$notes"
+            if last=$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null); then
+              total=$(git rev-list --no-merges --count "$last..$GITHUB_SHA")
+              {
+                printf '\nChanges since %s:\n\n' "$last"
+                git log --no-merges --format='- %s' -n 50 "$last..$GITHUB_SHA"
+                [ "$total" -le 50 ] || printf -- '- … and %d earlier changes\n' "$((total - 50))"
+              } >> "$notes"
+            fi
             gh release delete dev --cleanup-tag --yes 2>/dev/null || true
             gh release create dev "${files[@]}" --prerelease --target "$GITHUB_SHA" \
-              --title "Development build $VERSION" \
-              --notes "The state of main at $GITHUB_SHA. Untested; for the development channel only."
+              --title "Development build $VERSION" --notes-file "$notes"
           fi
