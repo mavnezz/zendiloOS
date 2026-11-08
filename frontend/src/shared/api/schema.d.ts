@@ -3109,6 +3109,11 @@ export interface components {
         ComposeChange: {
             accept_risks?: boolean;
             compose: string;
+            /**
+             * @description Pulls the newest images under the file's tags before the containers
+             *     are made again; otherwise only missing images are pulled.
+             */
+            pull?: boolean;
         };
         ComposeCheck: {
             compose: string;

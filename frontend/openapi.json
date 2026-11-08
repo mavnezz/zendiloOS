@@ -10238,6 +10238,10 @@
           },
           "compose": {
             "type": "string"
+          },
+          "pull": {
+            "type": "boolean",
+            "description": "Pulls the newest images under the file's tags before the containers\nare made again; otherwise only missing images are pulled."
           }
         },
         "additionalProperties": false
