@@ -542,6 +542,7 @@ const de: Messages = {
     },
     deploy: {
       title: 'Bereitstellung',
+      show: 'Fortschritt anzeigen',
       waiting: 'Warten auf Docker Compose …',
       running: 'Wird bereitgestellt …',
       succeeded: 'Bereitgestellt.',

@@ -26,12 +26,13 @@ import { ConfirmDialog } from '@/shared/ui/confirm-dialog'
 import { PageTabs } from '@/shared/ui/page'
 
 import { useProject, useProjectAction, useProjectCompose, useRedeploy, useUsage } from '../api'
-import { projectStatus, statusVariant } from '../lib/status'
+import { deploymentOf, projectStatus, statusVariant } from '../lib/status'
 import ContainerRow from './ContainerRow.vue'
 import { DeployLogDialog } from '@/shared/ui/deploy-log'
 import ProjectLog from './ProjectLog.vue'
 import ProjectUsage from './ProjectUsage.vue'
 import RedeployDialog from './RedeployDialog.vue'
+import DeployingBadge from './DeployingBadge.vue'
 import ProjectIcon from './ProjectIcon.vue'
 
 const props = defineProps<{ name: string }>()
@@ -56,6 +57,11 @@ const deleting = ref(false)
 const asking = ref(false)
 const deploying = ref<number | null>(null)
 const showing = ref(false)
+/** Opens the output of a deployment running now, closed before. */
+function watchDeploy(id: number): void {
+  deploying.value = id
+  showing.value = true
+}
 
 const names = computed(() => project.value?.containers.map((c) => c.name) ?? [])
 // What the network does now: from the last of the 20-second samples.
@@ -131,7 +137,11 @@ function open(container: string): void {
       <div class="grid min-w-0 flex-1 gap-0.5">
         <span class="flex flex-wrap items-center gap-2">
           <span class="text-lg font-semibold">{{ name }}</span>
-          <Badge v-if="project" :variant="statusVariant(projectStatus(project))">{{
+          <DeployingBadge
+            v-if="project && deploymentOf(jobs.running, name)"
+            @show="watchDeploy(deploymentOf(jobs.running, name)!.id)"
+          />
+          <Badge v-else-if="project" :variant="statusVariant(projectStatus(project))">{{
             t(`docker.status.${projectStatus(project)}`)
           }}</Badge>
           <Badge v-if="project && project.kind !== 'own'" variant="outline">{{

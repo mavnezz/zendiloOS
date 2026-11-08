@@ -15,6 +15,7 @@ import {
 import { called, on, problem, reset } from '@/shared/test-support/server'
 import type { DockerContainer, DockerProject } from '@/shared/api/types'
 import { i18n } from '@/shared/i18n'
+import { useJobsStore } from '@/shared/jobs/store'
 import { WINDOW_SECTION } from '@/shared/lib/window-section'
 
 import DockerApp from './DockerApp.vue'
@@ -295,6 +296,30 @@ describe('the Docker app', () => {
     await settle()
     expect(shown.value).toBe('containers')
     expect(wrapper.findComponent({ name: 'ContainerDetail' }).exists()).toBe(true)
+  })
+
+  it('says a project is being deployed, and shows the output again on a click', async () => {
+    on('GET', '/api/v1/docker/projects', [project('tesla', { running: 0, containers: [] })])
+    await open('projects')
+    useJobsStore().update({
+      id: 12,
+      kind: 'containers.project_deploy',
+      target: 'tesla',
+      state: 'running',
+      created_at: 0,
+      updated_at: 0,
+      output: ['76a9dff22e25 Downloading [=>  ]  2MB/42MB'],
+    })
+    await settle()
+    const badge = [...document.querySelectorAll('button')].find(
+      (b) => b.textContent?.trim() === t('docker.deploy.running'),
+    )!
+    expect(badge).toBeDefined()
+    expect(page()).not.toContain(t('docker.status.empty'))
+    badge.click()
+    await settle()
+    expect(page()).toContain(t('docker.deploy.title'))
+    expect(page()).toContain('76a9dff22e25 Downloading')
   })
 
   it('acts on a project from its own page', async () => {

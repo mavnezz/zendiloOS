@@ -14,9 +14,10 @@ import { ConfirmDialog } from '@/shared/ui/confirm-dialog'
 import { Input } from '@/shared/ui/input'
 
 import { useProjectAction, useProjects, useRedeploy, useUpdatable } from '../api'
-import { projectStatus, statusVariant } from '../lib/status'
+import { deploymentOf, projectStatus, statusVariant } from '../lib/status'
 import { DeployLogDialog } from '@/shared/ui/deploy-log'
 import ProjectIcon from './ProjectIcon.vue'
+import DeployingBadge from './DeployingBadge.vue'
 import RedeployDialog from './RedeployDialog.vue'
 
 const emit = defineEmits<{ open: [name: string]; create: [] }>()
@@ -84,6 +85,11 @@ const jobs = useJobsStore()
 const asking = ref<string | null>(null)
 const deploying = ref<number | null>(null)
 const showing = ref(false)
+/** Opens the output of a deployment running now, closed before. */
+function watchDeploy(id: number): void {
+  deploying.value = id
+  showing.value = true
+}
 function deploy(pull: boolean): void {
   const name = asking.value
   if (!name) return
@@ -141,7 +147,11 @@ function confirmDelete(): void {
         <div class="grid min-w-40 flex-1 gap-1">
           <span class="truncate font-medium">{{ project.name }}</span>
           <span class="flex flex-wrap gap-1.5">
-            <Badge :variant="statusVariant(projectStatus(project))">{{
+            <DeployingBadge
+              v-if="deploymentOf(jobs.running, project.name)"
+              @show="watchDeploy(deploymentOf(jobs.running, project.name)!.id)"
+            />
+            <Badge v-else :variant="statusVariant(projectStatus(project))">{{
               t(`docker.status.${projectStatus(project)}`)
             }}</Badge>
             <Badge v-if="project.kind !== 'own'" variant="outline">{{

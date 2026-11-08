@@ -530,6 +530,7 @@ const en = {
     },
     deploy: {
       title: 'Deployment',
+      show: 'Show progress',
       waiting: 'Waiting for Docker Compose …',
       running: 'Deploying …',
       succeeded: 'Deployed.',
