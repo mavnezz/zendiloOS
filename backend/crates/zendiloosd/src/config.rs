@@ -18,7 +18,8 @@ pub struct Config {
     /// Address of the HTTP listener. Keep it on loopback: the reverse proxy
     /// is the only thing that should reach it.
     pub listen: SocketAddr,
-    /// Directory for the database, its backups and the setup code. Created
+    /// Directory for the database, its backups and the setup code (or the
+    /// marker of an open setup, which the ISO's installer leaves). Created
     /// with mode 0700 if missing. A relative path is resolved against the
     /// working directory.
     pub state_dir: PathBuf,
@@ -127,6 +128,13 @@ impl Config {
 
     pub fn setup_code_path(&self) -> PathBuf {
         self.state_dir.join("setup-code")
+    }
+
+    /// While this file exists and no administrator does, the setup is open:
+    /// no code, the first one in from the NAS's own network sets it up. The
+    /// ISO's installer creates it; the setup removes it.
+    pub fn setup_open_path(&self) -> PathBuf {
+        self.state_dir.join("setup-open")
     }
 }
 

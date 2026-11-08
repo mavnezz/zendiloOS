@@ -541,15 +541,25 @@ impl SessionTokens for FakeTokens {
     }
 }
 
-/// Issues [`SETUP_CODE`].
+/// Issues [`SETUP_CODE`]; open once [`MemorySetupCodes::open`] was called.
 #[derive(Default)]
 pub struct MemorySetupCodes {
     code: Mutex<Option<String>>,
+    open: Mutex<bool>,
 }
 
 impl MemorySetupCodes {
     pub fn is_present(&self) -> bool {
         self.code.lock().unwrap().is_some()
+    }
+
+    /// As the ISO's installer leaves it: no code, the first one in.
+    pub fn open(&self) {
+        *self.open.lock().unwrap() = true;
+    }
+
+    pub fn is_still_open(&self) -> bool {
+        *self.open.lock().unwrap()
     }
 }
 
@@ -567,6 +577,15 @@ impl SetupCodes for MemorySetupCodes {
 
     async fn consume(&self) -> Result<(), PortError> {
         self.code.lock().unwrap().take();
+        Ok(())
+    }
+
+    async fn is_open(&self) -> Result<bool, PortError> {
+        Ok(*self.open.lock().unwrap())
+    }
+
+    async fn close(&self) -> Result<(), PortError> {
+        *self.open.lock().unwrap() = false;
         Ok(())
     }
 }

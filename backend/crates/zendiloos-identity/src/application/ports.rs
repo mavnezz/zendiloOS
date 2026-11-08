@@ -192,7 +192,8 @@ pub trait SessionTokens: Send + Sync {
     fn csrf_token(&self) -> Secret;
 }
 
-/// Where the setup code lives while the initial setup is pending.
+/// Where the setup code lives while the initial setup is pending, and
+/// whether the setup is open instead.
 #[async_trait]
 pub trait SetupCodes: Send + Sync {
     async fn current(&self) -> Result<Option<SetupCode>, PortError>;
@@ -202,6 +203,14 @@ pub trait SetupCodes: Send + Sync {
 
     /// Removes the code; a no-op if there is none.
     async fn consume(&self) -> Result<(), PortError>;
+
+    /// Whether the setup is open: this machine was installed from
+    /// zendiloOS's ISO, so no code is asked for and whoever comes first from
+    /// the NAS's own network becomes the first administrator.
+    async fn is_open(&self) -> Result<bool, PortError>;
+
+    /// Ends an open setup; a no-op if it is not open.
+    async fn close(&self) -> Result<(), PortError>;
 }
 
 /// Each account's [`Preferences`].

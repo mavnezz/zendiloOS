@@ -17,7 +17,7 @@ use zendiloos_agent_proto::{AgentTransport, ConsoleSetupCode, Request, Response,
 use zendiloos_api::{ApiState, UseCases};
 use zendiloos_apps::application::{Catalogs, Docker, InstallPorts, Installs, TemplatePorts, Templates};
 use zendiloos_containers::application::{Containers, ContainersPorts};
-use zendiloos_identity::application::commands::PurgeExpiredSessions;
+use zendiloos_identity::application::commands::{PendingSetup, PurgeExpiredSessions};
 use zendiloos_identity::application::{IdentityConfig, IdentityPorts, IdentityUseCases};
 use zendiloos_infra::SystemClock;
 use zendiloos_infra::agent::{
@@ -216,7 +216,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     });
     // After sharing: shares follow the members of groups they deny.
     let identity = identity(&config, &database, audit.clone(), agent.clone(), sharing.clone())?;
-    let setup_code = announce_setup(&config, &identity).await?;
+    let setup = announce_setup(&config, &identity).await?;
     let purge = spawn_session_purge(identity.purge_expired_sessions.clone());
     let files = FilesUseCases::new(sharing_ports);
     // Uploads that began before now were cut off when zendiloosd stopped:
@@ -311,9 +311,14 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     let app = zendiloos_api::router(state);
 
     // The console shows where the interface is and, until the setup is done,
-    // the setup code; the agent writes it, zendiloosd only names the code.
-    let code = setup_code.as_deref().and_then(|code| ConsoleSetupCode::parse(code).ok());
-    match console_agent.call(Request::ShowOnConsole { setup_code: code }, None).await {
+    // the setup code or that it is open; the agent writes it, zendiloosd only
+    // names the code.
+    let (code, open_setup) = match &setup {
+        Announced::Code(code) => (ConsoleSetupCode::parse(code).ok(), false),
+        Announced::Open => (None, true),
+        Announced::Done => (None, false),
+    };
+    match console_agent.call(Request::ShowOnConsole { setup_code: code, open_setup }, None).await {
         Ok(Response::Done) => {}
         other => tracing::warn!(answer = ?other, "cannot show the address on the console"),
     }
@@ -425,25 +430,45 @@ fn identity(
         system: Arc::new(AgentSystemAccounts::new(agent)),
         hasher: Arc::new(Argon2PasswordHasher::new()?),
         tokens: Arc::new(RandomSessionTokens),
-        setup_codes: Arc::new(FileSetupCodes::new(config.setup_code_path())),
+        setup_codes: Arc::new(
+            FileSetupCodes::new(config.setup_code_path()).with_open_marker(config.setup_open_path()),
+        ),
         audit,
         clock: Arc::new(SystemClock),
     };
     Ok(IdentityUseCases::new(ports, IdentityConfig::default()))
 }
 
+/// How the initial setup stands, for the console.
+enum Announced {
+    Done,
+    Code(String),
+    Open,
+}
+
 /// While no administrator exists, shows the setup code to whoever can read
-/// this machine's logs. Nobody else can complete the setup.
-/// Returns the setup code while it is needed, for the console.
-async fn announce_setup(config: &Config, identity: &IdentityUseCases) -> anyhow::Result<Option<String>> {
-    let Some(code) = identity.prepare_setup.execute().await? else { return Ok(None) };
-    let code = code.reveal();
-    tracing::warn!(
-        setup_code = %code,
-        file = %config.setup_code_path().display(),
-        "initial setup required: open the web interface and enter the setup code"
-    );
-    Ok(Some(code))
+/// this machine's logs; nobody else can complete the setup. An open setup
+/// (installed from the ISO) has no code: it is said so instead.
+async fn announce_setup(config: &Config, identity: &IdentityUseCases) -> anyhow::Result<Announced> {
+    Ok(match identity.prepare_setup.execute().await? {
+        PendingSetup::Done => Announced::Done,
+        PendingSetup::Code(code) => {
+            let code = code.reveal();
+            tracing::warn!(
+                setup_code = %code,
+                file = %config.setup_code_path().display(),
+                "initial setup required: open the web interface and enter the setup code"
+            );
+            Announced::Code(code)
+        }
+        PendingSetup::Open => {
+            tracing::warn!(
+                marker = %config.setup_open_path().display(),
+                "initial setup open: whoever first opens the web interface from this network becomes its administrator"
+            );
+            Announced::Open
+        }
+    })
 }
 
 /// Looks at pools and disks every minute and notifies about changes;

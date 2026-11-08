@@ -4,16 +4,19 @@ use zendiloos_kernel::{AuditEntry, Outcome, RequestContext, Secret};
 
 use crate::application::context::Context;
 use crate::application::{IdentityError, SignedIn};
-use crate::domain::{AccountName, AuditAction, NewAccount, NewPassword, Role};
+use crate::domain::{AccountName, AuditAction, NewAccount, NewPassword, Role, is_own_network};
 
 pub struct SetupInput {
-    pub setup_code: Secret,
+    /// The code shown on the console; none for an open setup.
+    pub setup_code: Option<Secret>,
     pub name: String,
     pub password: Secret,
 }
 
 /// Command: creates the first administrator, which completes the initial
-/// setup, and signs them in. Requires the setup code shown on the console.
+/// setup, and signs them in. Requires the setup code shown on the console;
+/// an open setup (a machine installed from the ISO) asks for none, but only
+/// from the NAS's own network.
 #[derive(Clone)]
 pub struct CompleteSetup {
     context: Arc<Context>,
@@ -39,11 +42,23 @@ impl CompleteSetup {
             return Err(IdentityError::SetupCompleted);
         }
 
-        let code = c.ports.setup_codes.current().await?;
-        if !code.is_some_and(|code| code.matches(input.setup_code.expose())) {
-            attempt.failed(request).await?;
-            c.audit(audit(Outcome::Failure).reason("wrong_setup_code")).await?;
-            return Err(IdentityError::InvalidSetupCode);
+        let open = c.ports.setup_codes.is_open().await?;
+        if open {
+            // Behind nginx the address is the connection's own (X-Real-IP is
+            // set by nginx, never passed on from the client).
+            if !request.client_ip.is_some_and(is_own_network) {
+                attempt.failed(request).await?;
+                c.audit(audit(Outcome::Failure).reason("open_setup_from_elsewhere")).await?;
+                return Err(IdentityError::SetupNotLocal);
+            }
+        } else {
+            let code = c.ports.setup_codes.current().await?;
+            let given = input.setup_code.as_ref().map(Secret::expose);
+            if !code.zip(given).is_some_and(|(code, given)| code.matches(given)) {
+                attempt.failed(request).await?;
+                c.audit(audit(Outcome::Failure).reason("wrong_setup_code")).await?;
+                return Err(IdentityError::InvalidSetupCode);
+            }
         }
         drop(attempt);
 
@@ -77,7 +92,12 @@ impl CompleteSetup {
         };
 
         c.ports.setup_codes.consume().await?;
-        c.audit(audit(Outcome::Success).by(&account.actor())).await?;
+        c.ports.setup_codes.close().await?;
+        let mut entry = audit(Outcome::Success).by(&account.actor());
+        if open {
+            entry = entry.reason("open_setup");
+        }
+        c.audit(entry).await?;
         c.start_session(&account, request, now).await
     }
 }

@@ -1,6 +1,7 @@
 mod account;
 mod audit;
 mod group;
+mod own_network;
 mod password;
 mod preferences;
 mod role;
@@ -13,6 +14,7 @@ mod throttle;
 pub use account::{Account, AccountId, AccountName, InvalidAccountName, NewAccount};
 pub use audit::AuditAction;
 pub use group::{Group, GroupId, GroupName, NewGroup};
+pub use own_network::is_own_network;
 pub use password::{
     InvalidPolicy, MAX_AGE_DAYS, MAX_MIN_LENGTH, MAX_PASSWORD_BYTES, MIN_PASSWORD_CHARS, NewPassword,
     PasswordHash, PasswordPolicy, PasswordRejected,

@@ -54,6 +54,8 @@ pub enum ApiError {
     },
     SetupCompleted,
     InvalidSetupCode,
+    /// An open setup is completed from the NAS's own network only.
+    SetupNotLocal,
     /// The name is used by another account or group, or by the system.
     NameTaken,
     /// The change would leave no enabled administrator.
@@ -97,6 +99,7 @@ impl From<IdentityError> for ApiError {
             IdentityError::TooManyAttempts { retry_after } => ApiError::TooManyAttempts { retry_after },
             IdentityError::SetupCompleted => ApiError::SetupCompleted,
             IdentityError::InvalidSetupCode => ApiError::InvalidSetupCode,
+            IdentityError::SetupNotLocal => ApiError::SetupNotLocal,
             IdentityError::Unauthenticated => ApiError::Unauthenticated,
             IdentityError::InvalidText(e) => ApiError::InvalidInput(e.to_string()),
             IdentityError::Forbidden => ApiError::Forbidden,
@@ -148,6 +151,7 @@ impl IntoResponse for ApiError {
             }
             ApiError::SetupCompleted => (StatusCode::CONFLICT, "setup_completed", None),
             ApiError::InvalidSetupCode => (StatusCode::UNPROCESSABLE_ENTITY, "invalid_setup_code", None),
+            ApiError::SetupNotLocal => (StatusCode::FORBIDDEN, "setup_not_local", None),
             ApiError::NameTaken => (StatusCode::CONFLICT, "name_taken", None),
             ApiError::LastAdmin => (StatusCode::CONFLICT, "last_admin", None),
             ApiError::OwnAccount => (StatusCode::CONFLICT, "own_account", None),

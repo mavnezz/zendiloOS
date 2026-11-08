@@ -24,6 +24,9 @@ pub enum IdentityError {
     SetupCompleted,
     #[error("wrong setup code")]
     InvalidSetupCode,
+    /// An open setup (no code) is completed from the NAS's own network only.
+    #[error("set up the NAS from your own network")]
+    SetupNotLocal,
     #[error("not signed in")]
     Unauthenticated,
     #[error(transparent)]

@@ -4712,11 +4712,18 @@ export interface components {
             password: string;
             /**
              * Format: password
-             * @description The code shown on the system's console, e.g. `ABCD-EFGH-JKLM`.
+             * @description The code shown on the system's console, e.g. `ABCD-EFGH-JKLM`; left
+             *     out for an open setup (`code_required` false).
              */
-            setup_code: string;
+            setup_code?: string | null;
         };
         SetupStatus: {
+            /**
+             * @description The setup asks for the code shown on the console. Not for an open
+             *     setup (a machine installed from the ISO), which is completed from the
+             *     NAS's own network without one.
+             */
+            code_required: boolean;
             /** @description No administrator exists yet; the interface must offer the setup. */
             required: boolean;
         };
@@ -10244,6 +10251,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SessionInfo"];
+                };
+            };
+            /** @description `setup_not_local`: an open setup from outside the NAS's own network */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
                 };
             };
             /** @description `setup_completed` */

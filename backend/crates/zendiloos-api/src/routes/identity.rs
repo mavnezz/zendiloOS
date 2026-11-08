@@ -33,6 +33,10 @@ pub(super) fn routes() -> OpenApiRouter<ApiState> {
 pub struct SetupStatus {
     /// No administrator exists yet; the interface must offer the setup.
     pub required: bool,
+    /// The setup asks for the code shown on the console. Not for an open
+    /// setup (a machine installed from the ISO), which is completed from the
+    /// NAS's own network without one.
+    pub code_required: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -108,15 +112,17 @@ fn signed_in(jar: CookieJar, signed_in: &SignedIn, state: &ApiState) -> (CookieJ
 #[utoipa::path(get, path = "/setup", tag = "identity", responses((status = OK, body = SetupStatus)))]
 async fn setup_status(State(state): State<ApiState>) -> Result<axum::Json<SetupStatus>, ApiError> {
     let status = state.identity.setup_status.execute().await?;
-    Ok(axum::Json(SetupStatus { required: status.required }))
+    Ok(axum::Json(SetupStatus { required: status.required, code_required: status.code_required }))
 }
 
 #[derive(Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SetupRequest {
-    /// The code shown on the system's console, e.g. `ABCD-EFGH-JKLM`.
+    /// The code shown on the system's console, e.g. `ABCD-EFGH-JKLM`; left
+    /// out for an open setup (`code_required` false).
     #[schema(format = Password)]
-    pub setup_code: String,
+    #[serde(default)]
+    pub setup_code: Option<String>,
     /// Name of the first administrator account.
     pub name: String,
     #[schema(format = Password)]
@@ -131,6 +137,7 @@ pub struct SetupRequest {
     request_body = SetupRequest,
     responses(
         (status = OK, body = SessionInfo, description = "Signed in; the session cookie is set."),
+        (status = FORBIDDEN, body = Problem, description = "`setup_not_local`: an open setup from outside the NAS's own network"),
         (status = CONFLICT, body = Problem, description = "`setup_completed`"),
         (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_setup_code`, `invalid_input`"),
         (status = TOO_MANY_REQUESTS, body = Problem, description = "`too_many_attempts`"),
@@ -144,7 +151,7 @@ async fn complete_setup(
     ApiJson(request): ApiJson<SetupRequest>,
 ) -> Result<(CookieJar, axum::Json<SessionInfo>), ApiError> {
     let input = SetupInput {
-        setup_code: Secret::new(request.setup_code),
+        setup_code: request.setup_code.map(Secret::new),
         name: request.name,
         password: Secret::new(request.password),
     };

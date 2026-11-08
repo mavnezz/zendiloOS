@@ -446,11 +446,15 @@ pub enum Request {
     /// What the share datasets hold and may take (`zfs list -d 1`).
     ShareUsage {},
     /// What the console login prompt shows: where the web interface is and,
-    /// while the initial setup is pending, the setup code. The agent writes
+    /// while the initial setup is pending, the setup code, or that the setup
+    /// is open (no code: a machine installed from the ISO). The agent writes
     /// the text itself; only the code comes from zendiloosd.
     ShowOnConsole {
         #[serde(default)]
         setup_code: Option<ConsoleSetupCode>,
+        /// Sent only when set, so an older agent still understands the rest.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        open_setup: bool,
     },
     /// Creates dataset `<pool>/<name>` of a pool zendiloos created and
     /// mounts it at `/volume<volume>/<name>` through a systemd mount unit.

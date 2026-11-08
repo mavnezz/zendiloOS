@@ -262,8 +262,8 @@ impl Operations {
                     .await
             }
             Request::ShareUsage {} => self.pools.share_usage().await,
-            Request::ShowOnConsole { setup_code } => {
-                crate::console::show(&self.console_issue, setup_code.as_ref())
+            Request::ShowOnConsole { setup_code, open_setup } => {
+                crate::console::show(&self.console_issue, setup_code.as_ref(), *open_setup)
             }
             Request::CreateShare { pool, volume, name } => self.pools.create_share(pool, *volume, name).await,
             Request::DestroyShare { pool, volume, name } => {

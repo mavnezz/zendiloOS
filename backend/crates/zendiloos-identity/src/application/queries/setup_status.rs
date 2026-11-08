@@ -8,6 +8,9 @@ use crate::application::context::Context;
 pub struct SetupStatus {
     /// No administrator exists yet; the interface must show the setup.
     pub required: bool,
+    /// The setup asks for the code shown on the console; not when it is
+    /// open (a machine installed from the ISO).
+    pub code_required: bool,
 }
 
 /// Query: whether the initial setup is still pending.
@@ -22,6 +25,8 @@ impl GetSetupStatus {
     }
 
     pub async fn execute(&self) -> Result<SetupStatus, PortError> {
-        Ok(SetupStatus { required: !self.context.ports.accounts.any_admin().await? })
+        let required = !self.context.ports.accounts.any_admin().await?;
+        let open = required && self.context.ports.setup_codes.is_open().await?;
+        Ok(SetupStatus { required, code_required: required && !open })
     }
 }

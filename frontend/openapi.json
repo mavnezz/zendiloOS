@@ -6957,6 +6957,16 @@
               }
             }
           },
+          "403": {
+            "description": "`setup_not_local`: an open setup from outside the NAS's own network",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "409": {
             "description": "`setup_completed`",
             "content": {
@@ -14963,7 +14973,6 @@
       "SetupRequest": {
         "type": "object",
         "required": [
-          "setup_code",
           "name",
           "password"
         ],
@@ -14977,9 +14986,12 @@
             "format": "password"
           },
           "setup_code": {
-            "type": "string",
+            "type": [
+              "string",
+              "null"
+            ],
             "format": "password",
-            "description": "The code shown on the system's console, e.g. `ABCD-EFGH-JKLM`."
+            "description": "The code shown on the system's console, e.g. `ABCD-EFGH-JKLM`; left\nout for an open setup (`code_required` false)."
           }
         },
         "additionalProperties": false
@@ -14987,9 +14999,14 @@
       "SetupStatus": {
         "type": "object",
         "required": [
-          "required"
+          "required",
+          "code_required"
         ],
         "properties": {
+          "code_required": {
+            "type": "boolean",
+            "description": "The setup asks for the code shown on the console. Not for an open\nsetup (a machine installed from the ISO), which is completed from the\nNAS's own network without one."
+          },
           "required": {
             "type": "boolean",
             "description": "No administrator exists yet; the interface must offer the setup."

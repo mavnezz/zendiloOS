@@ -5,7 +5,8 @@ use zendiloos_kernel::{RequestContext, Secret};
 
 use super::IdentityError;
 use super::commands::{
-    AccountChanges, ChangePasswordInput, GroupChanges, LoginInput, NewAccountInput, NewGroupInput, SetupInput,
+    AccountChanges, ChangePasswordInput, GroupChanges, LoginInput, NewAccountInput, NewGroupInput,
+    PendingSetup, SetupInput,
 };
 use zendiloos_kernel::Outcome;
 
@@ -24,7 +25,17 @@ fn from(last_octet: u8) -> RequestContext {
 }
 
 fn setup_input(code: &str, name: &str, password: &str) -> SetupInput {
-    SetupInput { setup_code: Secret::new(code), name: name.to_owned(), password: Secret::new(password) }
+    SetupInput { setup_code: Some(Secret::new(code)), name: name.to_owned(), password: Secret::new(password) }
+}
+
+/// An open setup's: no code.
+fn open_input(name: &str, password: &str) -> SetupInput {
+    SetupInput { setup_code: None, name: name.to_owned(), password: Secret::new(password) }
+}
+
+/// From the NAS's own network.
+fn at_home(last_octet: u8) -> RequestContext {
+    RequestContext { client_ip: Some(IpAddr::from([192, 168, 1, last_octet])), ..from(1) }
 }
 
 fn login_input(name: &str, password: &str) -> LoginInput {
@@ -36,13 +47,16 @@ fn login_input(name: &str, password: &str) -> LoginInput {
 #[tokio::test]
 async fn prepare_setup_issues_a_code_only_while_no_admin_exists() {
     let t = TestIdentity::new();
-    let code = t.use_cases.prepare_setup.execute().await.unwrap().expect("a code");
+    let PendingSetup::Code(code) = t.use_cases.prepare_setup.execute().await.unwrap() else {
+        panic!("a code")
+    };
     assert_eq!(code.reveal(), SETUP_CODE);
-    assert!(t.use_cases.setup_status.execute().await.unwrap().required);
+    let status = t.use_cases.setup_status.execute().await.unwrap();
+    assert!(status.required && status.code_required);
 
     t.add_account("alice", PASSWORD, Role::Admin);
 
-    assert!(t.use_cases.prepare_setup.execute().await.unwrap().is_none());
+    assert!(matches!(t.use_cases.prepare_setup.execute().await.unwrap(), PendingSetup::Done));
     assert!(!t.setup_codes.is_present(), "a leftover code is removed");
     assert!(!t.use_cases.setup_status.execute().await.unwrap().required);
 }
@@ -132,6 +146,76 @@ async fn setup_validates_name_and_password() {
     assert!(matches!(bad_name, Err(IdentityError::InvalidAccountName(_))), "{bad_name:?}");
     assert!(matches!(bad_password, Err(IdentityError::PasswordRejected(_))), "{bad_password:?}");
     assert!(t.setup_codes.is_present(), "a failed setup keeps the code");
+}
+
+// An open setup: installed from the ISO, no code
+
+#[tokio::test]
+async fn an_open_setup_issues_no_code_and_asks_for_none() {
+    let t = TestIdentity::new();
+    t.setup_codes.open();
+
+    assert!(matches!(t.use_cases.prepare_setup.execute().await.unwrap(), PendingSetup::Open));
+    assert!(!t.setup_codes.is_present(), "no code is made");
+    let status = t.use_cases.setup_status.execute().await.unwrap();
+    assert!(status.required && !status.code_required);
+
+    let signed_in =
+        t.use_cases.complete_setup.execute(open_input("alice", PASSWORD), &at_home(20)).await.unwrap();
+
+    assert_eq!(signed_in.session.account.name.as_str(), "alice");
+    assert_eq!(t.accounts.all()[0].role, Role::Admin);
+    assert!(!t.setup_codes.is_still_open(), "the setup is closed");
+    let audit = t.audit.entries();
+    assert_eq!((audit[0].outcome, audit[0].reason), (Outcome::Success, Some("open_setup")));
+    let status = t.use_cases.setup_status.execute().await.unwrap();
+    assert!(!status.required && !status.code_required);
+    let again = t.use_cases.complete_setup.execute(open_input("mallory", PASSWORD), &at_home(21)).await;
+    assert!(matches!(again, Err(IdentityError::SetupCompleted)), "{again:?}");
+}
+
+#[tokio::test]
+async fn an_open_setup_is_done_only_from_the_own_network() {
+    let t = TestIdentity::new();
+    t.setup_codes.open();
+    t.use_cases.prepare_setup.execute().await.unwrap();
+
+    // 192.0.2.0/24 is no private range.
+    let elsewhere = t.use_cases.complete_setup.execute(open_input("mallory", PASSWORD), &from(7)).await;
+    assert!(matches!(elsewhere, Err(IdentityError::SetupNotLocal)), "{elsewhere:?}");
+    let unknown = RequestContext { client_ip: None, ..from(7) };
+    let nowhere = t.use_cases.complete_setup.execute(open_input("mallory", PASSWORD), &unknown).await;
+    assert!(
+        matches!(nowhere, Err(IdentityError::SetupNotLocal)),
+        "no address is no own network: {nowhere:?}"
+    );
+    assert!(t.accounts.all().is_empty());
+    assert!(t.setup_codes.is_still_open());
+    assert_eq!(t.audit.entries()[0].reason, Some("open_setup_from_elsewhere"));
+
+    // A VPN's address of the shared range counts as the own network.
+    let vpn = RequestContext { client_ip: Some(IpAddr::from([100, 101, 7, 8])), ..from(1) };
+    assert!(t.use_cases.complete_setup.execute(open_input("alice", PASSWORD), &vpn).await.is_ok());
+}
+
+#[tokio::test]
+async fn once_set_up_the_setup_is_no_longer_open() {
+    let t = TestIdentity::new();
+    t.setup_codes.open();
+    t.add_account("alice", PASSWORD, Role::Admin);
+
+    assert!(matches!(t.use_cases.prepare_setup.execute().await.unwrap(), PendingSetup::Done));
+    assert!(!t.setup_codes.is_still_open(), "a leftover marker is removed");
+}
+
+#[tokio::test]
+async fn without_an_open_setup_the_code_is_still_asked_for() {
+    let t = TestIdentity::new();
+    t.use_cases.prepare_setup.execute().await.unwrap();
+
+    let without = t.use_cases.complete_setup.execute(open_input("alice", PASSWORD), &at_home(20)).await;
+    assert!(matches!(without, Err(IdentityError::InvalidSetupCode)), "{without:?}");
+    assert!(t.accounts.all().is_empty());
 }
 
 #[tokio::test]

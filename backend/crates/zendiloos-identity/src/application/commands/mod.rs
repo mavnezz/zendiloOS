@@ -19,7 +19,7 @@ pub use manage_accounts::{
 };
 pub use manage_groups::{CreateGroup, DeleteGroup, GroupChanges, NewGroupInput, UpdateGroup};
 pub use password_policy::SetPasswordPolicy;
-pub use prepare_setup::PrepareSetup;
+pub use prepare_setup::{PendingSetup, PrepareSetup};
 pub use purge_expired_sessions::PurgeExpiredSessions;
 pub use save_preferences::SavePreferences;
 pub use security::{BlockAddress, EndSession, SetSecurity, UnblockAddress};

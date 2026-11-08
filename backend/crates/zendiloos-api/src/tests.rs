@@ -1297,7 +1297,10 @@ async fn the_live_socket_streams_job_changes() {
 async fn setup_creates_the_admin_and_sets_a_strict_session_cookie() {
     let h = Harness::new();
     h.identity.use_cases.prepare_setup.execute().await.unwrap();
-    assert_eq!(h.send(empty(get("/api/v1/setup"))).await.body, json!({ "required": true }));
+    assert_eq!(
+        h.send(empty(get("/api/v1/setup"))).await.body,
+        json!({ "required": true, "code_required": true })
+    );
 
     let reply = h
         .send(json(
@@ -1315,7 +1318,10 @@ async fn setup_creates_the_admin_and_sets_a_strict_session_cookie() {
     assert!(!cookie.contains("Max-Age"), "a browser-session cookie: {cookie}");
     assert_eq!(reply.body["account"]["role"], "admin");
     assert!(reply.body["account"]["permissions"].as_array().unwrap().contains(&json!("users.manage")));
-    assert_eq!(h.send(empty(get("/api/v1/setup"))).await.body, json!({ "required": false }));
+    assert_eq!(
+        h.send(empty(get("/api/v1/setup"))).await.body,
+        json!({ "required": false, "code_required": false })
+    );
 
     let session = Session::from(&reply);
     let me = h.send(empty(with_cookie(get("/api/v1/auth/session"), &session))).await;
@@ -1344,6 +1350,40 @@ async fn setup_rejects_a_wrong_code_and_explains_invalid_input() {
     assert_problem(&wrong_code, StatusCode::UNPROCESSABLE_ENTITY, "invalid_setup_code");
     assert_problem(&bad_name, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
     assert_eq!(bad_name.body["detail"], "the name must start with a lowercase letter");
+}
+
+#[tokio::test]
+async fn an_open_setup_needs_no_code_but_the_own_network() {
+    let h = Harness::new();
+    h.identity.setup_codes.open();
+    h.identity.use_cases.prepare_setup.execute().await.unwrap();
+    assert_eq!(
+        h.send(empty(get("/api/v1/setup"))).await.body,
+        json!({ "required": true, "code_required": false })
+    );
+    let body = json!({ "name": "alice", "password": PASSWORD });
+
+    let outside = h.send(json(from_address(post("/api/v1/setup"), "203.0.113.9"), body.clone())).await;
+    let unknown = h.send(json(post("/api/v1/setup"), body.clone())).await;
+    let home = h.send(json(from_address(post("/api/v1/setup"), "192.168.1.20"), body)).await;
+
+    assert_problem(&outside, StatusCode::FORBIDDEN, "setup_not_local");
+    assert_problem(&unknown, StatusCode::FORBIDDEN, "setup_not_local");
+    assert_eq!(home.status, StatusCode::OK, "{:?}", home.body);
+    assert_eq!(home.body["account"]["role"], "admin");
+    assert_eq!(
+        h.send(empty(get("/api/v1/setup"))).await.body,
+        json!({ "required": false, "code_required": false })
+    );
+}
+
+#[tokio::test]
+async fn without_an_open_setup_the_code_cannot_be_left_out() {
+    let h = Harness::new();
+    h.identity.use_cases.prepare_setup.execute().await.unwrap();
+    let home = from_address(post("/api/v1/setup"), "192.168.1.20");
+    let reply = h.send(json(home, json!({ "name": "alice", "password": PASSWORD }))).await;
+    assert_problem(&reply, StatusCode::UNPROCESSABLE_ENTITY, "invalid_setup_code");
 }
 
 // Login

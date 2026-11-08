@@ -194,6 +194,7 @@ async fn the_frameworks_own_errors() {
     assert_maps(ApiError::AccountDisabled, StatusCode::FORBIDDEN, "account_disabled").await;
     assert_maps(ApiError::SetupCompleted, StatusCode::CONFLICT, "setup_completed").await;
     assert_maps(ApiError::InvalidSetupCode, StatusCode::UNPROCESSABLE_ENTITY, "invalid_setup_code").await;
+    assert_maps(ApiError::SetupNotLocal, StatusCode::FORBIDDEN, "setup_not_local").await;
     assert_maps(ApiError::LastAdmin, StatusCode::CONFLICT, "last_admin").await;
     assert_maps(ApiError::OwnAccount, StatusCode::CONFLICT, "own_account").await;
     let response = ApiError::TooManyAttempts { retry_after: Duration::from_millis(10) }.into_response();

@@ -203,6 +203,7 @@ fn requests() -> Vec<Value> {
         json!({ "op": "set_share_properties", "pool": tank, "volume": 1, "share": "media", "quota_bytes": 1_073_741_824u64,
                 "compression": "zstd", "record_size": "m1" }),
         json!({ "op": "show_on_console", "setup_code": "ABCD-EFGH-JKLM" }),
+        json!({ "op": "show_on_console", "open_setup": true }),
         json!({ "op": "set_smb_password", "name": "anna", "password": "correct horse battery" }),
         json!({ "op": "start_packages", "task": "update", "release": "zendiloos_9.9.9_amd64.deb" }),
     ]
