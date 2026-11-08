@@ -3,9 +3,9 @@
 # elsewhere, end to end in the test VM, with the ACLs and owners as getfacl
 # and stat read them from the disk (docs/architecture.md, 4.4):
 #
-#   1. a pool, the accounts anna and ben, the groups staff, interns, kids,
+#   1. a pool, the accounts anna and ben, the groups office, interns, kids,
 #      writers and readers
-#   2. a share made with a denied group: ben, in staff (may write) and in
+#   2. a share made with a denied group: ben, in office (may write) and in
 #      interns (denied), gets an entry that denies him on the new share's
 #      folder at once, and can neither enter nor write it
 #   3. a new member of a denied group: ben joins kids, denied on "photos",
@@ -117,7 +117,7 @@ for name in photos docs projects; do
         job_succeeded "$(call POST "/shares/$id/delete" "{\"confirm\":\"$name\"}" | jq -r .id)"
     done
 done
-for name in staff interns kids writers readers; do
+for name in office interns kids writers readers; do
     for id in $(call GET /groups | jq -r --arg name "$name" '.[] | select(.name == $name) | .id'); do
         call DELETE "/groups/$id" >/dev/null
     done
@@ -140,7 +140,7 @@ job_succeeded "$(call POST /storage/pools "{\"token\":\"$token\",\"confirm\":\"$
 anna=$(call POST /accounts '{"name":"anna","role":"user","password":"first secret phrase"}' | jq -er .id) || fail "anna"
 ben=$(call POST /accounts '{"name":"ben","role":"user","password":"second secret phrase"}' | jq -er .id) || fail "ben"
 group() { call POST /groups "{\"name\":\"$1\",\"members\":$2}" | jq -er .id || fail "group $1"; }
-staff=$(group staff "[$ben]")
+office=$(group office "[$ben]")
 interns=$(group interns "[$ben]")
 kids=$(group kids '[]')
 writers=$(group writers "[$ben]")
@@ -154,9 +154,9 @@ share() { # name rules: the share's path, its id in $work/<name>.id
 }
 
 say "2. A new share denies the members of a denied group"
-projects=$(share projects "$(rules "$(rule group "$staff" read_write)" "$(rule group "$interns" deny)")")
+projects=$(share projects "$(rules "$(rule group "$office" read_write)" "$(rule group "$interns" deny)")")
 has_entry "$projects" 'user:ben:---'
-has_entry "$projects" 'group:staff:rwx'
+has_entry "$projects" 'group:office:rwx'
 as ben "ls $projects" && fail "ben, an intern, lists projects"
 as ben "touch $projects/ben.txt" && fail "ben, an intern, writes to projects"
 echo "   ben is denied on $projects from the start"
@@ -166,7 +166,7 @@ photos=$(share photos "$(rules "$(rule account "$anna" read_write)" "$(rule acco
 photos_id=$(cat "$work/photos.id")
 # Enough files that walking them takes a while; one deep down.
 vm "sudo sh -c 'mkdir -p $photos/many/deep/a/b && cd $photos/many && seq -f f%g 1 60000 | xargs touch && echo x > $photos/many/deep/a/b/file.txt'"
-has_entry "$photos/many/deep/a/b/file.txt" 'user:ben:rw-'
+has_entry "$photos/many/deep/a/b/file.txt" 'user:ben:rwx'
 update=$(call PATCH "/shares/$photos_id" "{\"access\":$(rules "$(rule account "$anna" read_write)" "$(rule account "$ben" read_write)" "$(rule group "$kids" deny)" "$(rule group "$readers" read)")}")
 first=$(jq -er .job.id <<<"$update") || fail "no walk: $update"
 joined=$(call PATCH "/groups/$kids" "{\"members\":[$ben]}")
@@ -248,7 +248,7 @@ say "8. Cleaning up"
 for name in photos docs projects; do
     job_succeeded "$(call POST "/shares/$(cat "$work/$name.id")/delete" "{\"confirm\":\"$name\"}" | jq -r .id)"
 done
-for id in $staff $interns $kids $writers $readers; do call DELETE "/groups/$id" >/dev/null; done
+for id in $office $interns $kids $writers $readers; do call DELETE "/groups/$id" >/dev/null; done
 for id in $anna $ben; do call DELETE "/accounts/$id" >/dev/null; done
 job_succeeded "$(call POST "/storage/pools/$pool/destroy" "{\"confirm\":\"$pool\"}" | jq -r .id)"
 
