@@ -478,12 +478,9 @@ const de: Messages = {
       general: 'Sicherheit',
       accounts: 'Kontosicherheit',
       firewall: 'Firewall',
-      certificate: 'Zertifikat',
     },
     soon: {
       firewall: 'Festlegen, welche Adressen welche Dienste dieses NAS erreichen.',
-      certificate:
-        'Ein eigenes Zertifikat für die Weboberfläche hochladen statt des selbst erstellten.',
     },
     idle: 'Abmeldung',
     idleBefore: 'Nach',
