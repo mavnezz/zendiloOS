@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { LogOut, Power, RotateCcw, Settings } from 'lucide-vue-next'
+import { KeyRound, LogOut, Power, RotateCcw, Settings } from 'lucide-vue-next'
 import {
   DropdownMenuContent,
   DropdownMenuItem,
@@ -12,11 +12,13 @@ import {
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
+import ChangePasswordForm from '@/features/auth/components/ChangePasswordForm.vue'
 import { useSessionStore } from '@/features/auth/store'
 import type { PowerAction } from '@/shared/api/types'
 import { problemMessage } from '@/shared/i18n'
 import { useNotifications } from '@/shared/lib/notifications'
 import { ConfirmDialog } from '@/shared/ui/confirm-dialog'
+import { ModalDialog } from '@/shared/ui/dialog'
 
 import { usePower } from './power'
 
@@ -28,6 +30,8 @@ const power = usePower()
 const notifications = useNotifications()
 
 const account = computed(() => session.info?.account)
+/** The own password is being changed, in a dialog of its own. */
+const changingPassword = ref(false)
 const confirming = ref<PowerAction | null>(null)
 const dialogOpen = computed({
   get: () => confirming.value !== null,
@@ -77,6 +81,10 @@ async function confirmed(): Promise<void> {
           </p>
         </DropdownMenuLabel>
         <DropdownMenuSeparator class="my-1 h-px bg-border" />
+        <DropdownMenuItem :class="item" @select="changingPassword = true">
+          <KeyRound class="size-4" />
+          {{ t('settings.changePassword') }}
+        </DropdownMenuItem>
         <DropdownMenuItem :class="item" @select="emit('openSettings')">
           <Settings class="size-4" />
           {{ t('apps.settings') }}
@@ -99,6 +107,18 @@ async function confirmed(): Promise<void> {
       </DropdownMenuContent>
     </DropdownMenuPortal>
   </DropdownMenuRoot>
+
+  <ModalDialog
+    v-model:open="changingPassword"
+    :title="t('settings.changePassword')"
+    :description="t('myAccount.passwordHint')"
+    :close-label="t('desktop.close')"
+  >
+    <p v-if="account?.password_locked" class="text-sm text-muted-foreground">
+      {{ t('myAccount.passwordLocked') }}
+    </p>
+    <ChangePasswordForm v-else @changed="changingPassword = false" />
+  </ModalDialog>
 
   <ConfirmDialog
     v-model:open="dialogOpen"

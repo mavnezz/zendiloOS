@@ -141,10 +141,11 @@ describe('the control panel', () => {
     i18n.global.locale.value = 'en'
   })
 
-  it('shows the own account', async () => {
-    await open('account')
-    expect(page()).toContain('alice')
-    expect(page()).toContain(t('settings.roles.admin'))
+  it('lists the users under connectivity and access, with no page of the own account', async () => {
+    await open('device')
+    const groups = [...document.querySelectorAll('nav > div')].map((g) => g.textContent ?? '')
+    const access = groups.find((g) => g.includes(t('controlPanel.groupServices')))!
+    expect(access).toContain(t('controlPanel.accounts'))
   })
 
   it('opens the other pages', async () => {

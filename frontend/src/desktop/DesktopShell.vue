@@ -15,7 +15,7 @@ import { usePreferences } from '@/shared/preferences/store'
 import { BrandMark } from '@/shared/ui/brand'
 
 import AppLauncher from './AppLauncher.vue'
-import { ACCOUNT_SECTION, APPS, type AppDefinition, findApp, SETTINGS_APP } from './apps'
+import { APPS, type AppDefinition, findApp, SETTINGS_APP } from './apps'
 import AppWindow from './AppWindow.vue'
 import DesktopIcons from './DesktopIcons.vue'
 import NotificationCenter from './NotificationCenter.vue'
@@ -136,10 +136,7 @@ async function signOut(): Promise<void> {
       <BrandMark class="size-8" />
       <div class="glass glass-thin flex items-center rounded-panel">
         <NotificationCenter />
-        <UserMenu
-          @open-settings="open(findApp(SETTINGS_APP)!, ACCOUNT_SECTION)"
-          @sign-out="signOut"
-        />
+        <UserMenu @open-settings="open(findApp(SETTINGS_APP)!)" @sign-out="signOut" />
       </div>
     </header>
     <div class="px-4">
