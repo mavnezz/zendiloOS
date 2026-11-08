@@ -10,8 +10,6 @@ import EnclosureSlot from './EnclosureSlot.vue'
 
 const props = defineProps<{
   enclosure: Enclosure
-  /** Health colours only, for the overview. */
-  compact?: boolean
   disks?: Disk[]
   /** The disks blinking now, by name. */
   blinking?: string[]
@@ -23,10 +21,10 @@ const { t } = useI18n()
 const style = computed(() => props.enclosure.chassis.style)
 const panel = computed(() => props.enclosure.chassis.panel ?? null)
 
-/** Columns wide enough for what a tile shows; narrower when only colours. */
+/** Columns wide enough for what a tile shows. */
 function columns(group: PlacedGroup): string {
   const upright = group.orientation === 'vertical' && group.form !== 'm2'
-  const width = props.compact ? (upright ? '1.75rem' : '4rem') : upright ? '6.5rem' : '10rem'
+  const width = upright ? '6.5rem' : '10rem'
   return `repeat(${group.columns}, minmax(${width}, 1fr))`
 }
 
@@ -47,7 +45,6 @@ function disk(name: string | null | undefined): Disk | undefined {
         style === 'tower' && 'rounded-2xl border-2 border-border bg-muted/40 p-3',
         style === 'rack' && 'rounded-md border-2 border-border bg-muted/40 px-6 py-2',
         panel?.side === 'right' && 'flex-row-reverse',
-        compact && 'gap-2 p-2',
       )
     "
     data-testid="enclosure"
@@ -78,9 +75,9 @@ function disk(name: string | null | undefined): Disk | undefined {
         v-for="group in enclosure.groups"
         :key="group.id"
         :aria-label="group.name"
-        :class="cn('grid min-w-0 gap-1', !compact && 'max-w-full')"
+        class="grid max-w-full min-w-0 gap-1"
       >
-        <h4 v-if="!compact" class="truncate text-xs font-medium text-muted-foreground">
+        <h4 class="truncate text-xs font-medium text-muted-foreground">
           {{ group.name }}
         </h4>
         <ul
@@ -100,7 +97,6 @@ function disk(name: string | null | undefined): Disk | undefined {
               :place="place"
               :form="group.form"
               :orientation="group.orientation"
-              :compact="compact"
               :disk="disk(place.disk)"
               :blinking="!!place.disk && !!blinking?.includes(place.disk)"
               @select="$emit('select', $event)"

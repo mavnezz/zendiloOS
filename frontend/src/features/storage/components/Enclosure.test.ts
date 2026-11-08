@@ -131,7 +131,7 @@ const stored: InventoryDisk = {
   disk: null,
 }
 
-async function open(page: 'overview' | 'disks' | 'pools', canManage = true): Promise<VueWrapper> {
+async function open(page: 'disks' | 'pools', canManage = true): Promise<VueWrapper> {
   const { wrapper } = await mountApp(StoragePage, { props: { page, canManage } })
   return wrapper
 }
@@ -330,23 +330,6 @@ describe('the enclosure on the disks page', () => {
 })
 
 describe('the enclosure elsewhere', () => {
-  it('is drawn small on the overview, and a slot opens its disk', async () => {
-    on('GET', '/api/v1/storage/overview', {
-      pools: 1,
-      disks: 4,
-      used_bytes: 1,
-      available_bytes: 1,
-      verdict: null,
-      concerns: [],
-    })
-    on('GET', '/api/v1/storage/pools', [])
-    const wrapper = await open('overview')
-    expect(page()).toContain(t('storage.enclosure.title'))
-    labelled(t('storage.enclosure.tile', { slot: 'Bay 1', disk: 'sda', state: 'healthy' })).click()
-    await settle()
-    expect(wrapper.findComponent({ name: 'DiskDetail' }).props('name')).toBe('sda')
-  })
-
   it('names the slot of the disk being replaced', async () => {
     const tank: Pool = {
       name: 'tank',

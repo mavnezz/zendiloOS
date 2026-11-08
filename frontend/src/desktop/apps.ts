@@ -8,7 +8,6 @@ import {
   Container,
   Disc3,
   FolderOpen,
-  Gauge,
   Globe,
   HardDrive,
   Info,
@@ -98,13 +97,6 @@ export const SETTINGS_SECTIONS: AppSection[] = [
     icon: RefreshCw,
     group: 'controlPanel.groupGeneral',
     permission: 'system.manage',
-  },
-  {
-    id: 'storage-overview',
-    label: 'storage.pages.overview.title',
-    icon: Gauge,
-    group: 'controlPanel.groupStorage',
-    permission: 'storage.view',
   },
   {
     id: 'storage-pools',
