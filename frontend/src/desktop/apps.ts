@@ -28,7 +28,6 @@ import {
   SquareTerminal,
   Store,
   UserRound,
-  UsersRound,
 } from 'lucide-vue-next'
 import { type Component, defineAsyncComponent } from 'vue'
 
@@ -69,7 +68,6 @@ export interface AppDefinition {
 }
 
 export const SETTINGS_APP: AppId = 'settings'
-export const ACCOUNT_SECTION = 'account'
 /** The resource monitor's page in the control panel. */
 export const MONITOR_SECTION = 'monitor'
 
@@ -133,14 +131,8 @@ export const SETTINGS_SECTIONS: AppSection[] = [
     id: 'accounts',
     label: 'controlPanel.accounts',
     icon: UserRound,
-    group: 'controlPanel.groupAccounts',
+    group: 'controlPanel.groupServices',
     permission: 'users.manage',
-  },
-  {
-    id: ACCOUNT_SECTION,
-    label: 'controlPanel.myAccount',
-    icon: UsersRound,
-    group: 'controlPanel.groupAccounts',
   },
   {
     id: 'file-services',

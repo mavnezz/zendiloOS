@@ -22,7 +22,6 @@ import { AppFrame, type NavGroup } from '@/shared/ui/frame'
 import { ComingLater, PageDescription, PageHeader } from '@/shared/ui/page'
 
 import { MONITOR_SECTION, SETTINGS_SECTIONS } from '../apps'
-import AccountPage from './settings/AccountPage.vue'
 import AppearancePage from './settings/AppearancePage.vue'
 import LocalePage from './settings/LocalePage.vue'
 import UpdatePage from './settings/UpdatePage.vue'
@@ -115,7 +114,6 @@ const { data: pools } = useQuery({
     <UpdatePage v-else-if="section === 'update'" />
     <LocalePage v-else-if="section === 'locale'" />
     <UsersPage v-else-if="section === 'accounts'" :own-account-id="session.info?.account.id" />
-    <AccountPage v-else-if="section === 'account'" />
     <FileServicesPage
       v-else-if="section === 'file-services'"
       :can-manage="session.can('system.manage')"

@@ -182,6 +182,19 @@ describe('the desktop', () => {
     await settle()
   })
 
+  it('changes the own password from the account menu', async () => {
+    await shell()
+    await pointer(document.querySelector(`button[aria-label="${t('desktop.account')}"]`)!)
+    const change = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((item) =>
+      item.textContent?.includes(t('settings.changePassword')),
+    )!
+    change.click()
+    await settle()
+    const dialog = document.querySelector('[role="dialog"]')!
+    expect(dialog.textContent).toContain(t('myAccount.passwordHint'))
+    expect(dialog.querySelectorAll('input[type="password"]').length).toBeGreaterThan(0)
+  })
+
   it('arranges the icons and the widgets', async () => {
     await shell()
     const icons = [...document.querySelectorAll<HTMLElement>('[draggable="true"]')]

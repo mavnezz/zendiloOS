@@ -249,10 +249,6 @@ const en = {
     toLogin: 'Go to sign-in',
   },
   login: {
-    welcome: 'Welcome back',
-    subtitle: 'Sign in to manage your NAS',
-    firstTime:
-      'Forgotten your password? An administrator can set a new one under Control panel → Users.',
     title: 'Sign in',
     name: 'Name',
     password: 'Password',
@@ -267,7 +263,6 @@ const en = {
   controlPanel: {
     groupGeneral: 'General',
     groupStorage: 'Storage',
-    groupAccounts: 'Accounts',
     groupServices: 'Connectivity & access',
     groupMonitoring: 'Monitoring',
     groupSecurity: 'Security',
@@ -279,7 +274,6 @@ const en = {
     update: 'Update & restore',
     accounts: 'Users',
     groups: 'Groups',
-    myAccount: 'My account',
     fileServices: 'File services',
     terminal: 'Terminal',
     security: 'Security',
@@ -930,11 +924,6 @@ const en = {
   },
   myAccount: {
     passwordLocked: 'An administrator sets the password of this account; ask them for a new one.',
-    title: 'Account',
-    description: 'Your account for this interface and the shares',
-    profile: 'Profile',
-    name: 'User name',
-    role: 'Role',
     passwordHint:
       'It is also your password for the shares. All your other sessions are signed out.',
   },

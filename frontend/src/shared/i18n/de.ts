@@ -257,10 +257,6 @@ const de: Messages = {
     toLogin: 'Zur Anmeldung',
   },
   login: {
-    welcome: 'Willkommen zurück',
-    subtitle: 'Melden Sie sich an, um Ihr NAS zu verwalten',
-    firstTime:
-      'Passwort vergessen? Ein Administrator kann unter Systemsteuerung → Benutzer ein neues setzen.',
     title: 'Anmelden',
     name: 'Name',
     password: 'Passwort',
@@ -275,7 +271,6 @@ const de: Messages = {
   controlPanel: {
     groupGeneral: 'Allgemein',
     groupStorage: 'Speicher',
-    groupAccounts: 'Konten',
     groupServices: 'Konnektivität & Zugriff',
     groupMonitoring: 'Überwachung',
     groupSecurity: 'Sicherheit',
@@ -287,7 +282,6 @@ const de: Messages = {
     update: 'Aktualisieren & Wiederherstellen',
     accounts: 'Benutzer',
     groups: 'Gruppen',
-    myAccount: 'Mein Konto',
     fileServices: 'Dateidienste',
     terminal: 'Terminal',
     security: 'Sicherheit',
@@ -953,11 +947,6 @@ const de: Messages = {
   myAccount: {
     passwordLocked:
       'Das Passwort dieses Kontos setzt ein Administrator; fragen Sie dort nach einem neuen.',
-    title: 'Konto',
-    description: 'Ihr Konto für diese Oberfläche und die Freigaben',
-    profile: 'Profil',
-    name: 'Benutzername',
-    role: 'Rolle',
     passwordHint:
       'Es ist auch Ihr Passwort für die Freigaben. Alle Ihre anderen Sitzungen werden abgemeldet.',
   },

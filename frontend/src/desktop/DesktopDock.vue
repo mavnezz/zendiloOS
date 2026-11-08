@@ -6,7 +6,7 @@ import { useI18n } from 'vue-i18n'
 import { formatPercent, formatRate } from '@/shared/lib/format'
 import { Gauge } from '@/shared/ui/gauge'
 
-import { ACCOUNT_SECTION, type AppDefinition, findApp, MONITOR_SECTION, SETTINGS_APP } from './apps'
+import { type AppDefinition, findApp, MONITOR_SECTION, SETTINGS_APP } from './apps'
 import AppTile from './AppTile.vue'
 import DockButton from './DockButton.vue'
 import { memoryRatio, networkRates, useLatestMetrics } from './liveMetrics'
@@ -133,6 +133,6 @@ function openApp(id: string, section?: string): void {
     <DockButton :label="t('desktop.search')" @click="emit('launcher')">
       <Search class="size-5" />
     </DockButton>
-    <UserMenu @open-settings="openApp(SETTINGS_APP, ACCOUNT_SECTION)" @sign-out="emit('signOut')" />
+    <UserMenu @open-settings="openApp(SETTINGS_APP)" @sign-out="emit('signOut')" />
   </nav>
 </template>
