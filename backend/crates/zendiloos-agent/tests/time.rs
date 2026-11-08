@@ -69,6 +69,8 @@ impl Host {
             systemd_run: any.clone(),
             docker: any.clone(),
             setsid: "/usr/bin/setsid".into(),
+            openssl: "/bin/false".into(),
+            nginx: "/bin/false".into(),
             dockerd: any,
         };
         let paths = Paths {

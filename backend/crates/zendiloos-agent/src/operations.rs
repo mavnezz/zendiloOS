@@ -12,6 +12,7 @@ use zendiloos_exec::{ExecError, Limits, Output, Program};
 use zendiloos_fileops::FileError;
 
 use crate::accounts::{AccountFiles, Accounts};
+use crate::acme::{Acme, AcmePaths};
 use crate::apps::Apps;
 use crate::config::Tools;
 use crate::docker::Docker;
@@ -25,6 +26,7 @@ use crate::sharing::Sharing;
 use crate::ssh::{Ssh, SshPaths};
 use crate::time::{Time, TimePaths};
 use crate::web::{Web, WebPaths};
+use crate::web_server::{WebServer, WebServerPaths};
 
 /// Where the agent finds the host's account databases, devices and units;
 /// other than the real places only in tests.
@@ -36,6 +38,8 @@ pub struct Paths {
     pub time: TimePaths,
     pub ssh: SshPaths,
     pub web: WebPaths,
+    pub acme: AcmePaths,
+    pub web_server: WebServerPaths,
 }
 
 const MDSTAT: &str = "/proc/mdstat";
@@ -62,6 +66,8 @@ pub struct Operations {
     time: Time,
     ssh: Ssh,
     web: Web,
+    acme: Acme,
+    web_server: std::sync::Arc<WebServer>,
     docker: Docker,
     projects: Projects,
     removable: Removable,
@@ -96,6 +102,8 @@ impl Operations {
             time: Time::new(tools, paths.time)?,
             ssh: Ssh::new(tools, paths.ssh)?,
             web: Web::new(tools, paths.web)?,
+            acme: Acme::new(tools, paths.acme)?,
+            web_server: std::sync::Arc::new(WebServer::new(tools, paths.web_server)?),
             docker: Docker::new(Program::new(&tools.docker)?, Program::new(&tools.setsid)?),
             projects: Projects::new(
                 Program::new(&tools.docker)?,
@@ -122,11 +130,12 @@ impl Operations {
         })
     }
 
-    /// Work left from before a restart: network changes nobody confirmed
-    /// go back. Call once, before serving.
+    /// Work left from before a restart: network and web server changes
+    /// nobody confirmed go back. Call once, before serving.
     pub async fn recover(&self) {
         if self.role == Role::System {
             self.network.restore_unconfirmed().await;
+            self.web_server.restore_unconfirmed().await;
         }
     }
 
@@ -248,6 +257,15 @@ impl Operations {
             Request::ProjectLogs { project, lines } => self.docker.project_logs(project, *lines).await,
             Request::ProjectFiles { project } => self.docker.project_files(project).await,
             Request::SetWebTls { minimum } => self.web.set_tls(*minimum).await,
+            Request::AcmeState {} => Ok(self.acme.state()),
+            Request::IssueCertificate { order } => self.acme.issue(order).await,
+            Request::RemoveCertificate { certificate } => self.acme.remove(*certificate),
+            Request::WebServerState {} => Ok(self.web_server.state().await),
+            Request::ApplyWebServer { config, confirm_within } => {
+                self.web_server.apply(config, *confirm_within).await
+            }
+            Request::ConfirmWebServer {} => self.web_server.confirm().await,
+            Request::ReloadWebCertificate {} => self.web_server.reload_certificate().await,
             Request::TimeState {} => self.time.state().await,
             Request::SetTime { zone, network_time, servers, clock } => {
                 self.time.set(zone, *network_time, servers, *clock).await

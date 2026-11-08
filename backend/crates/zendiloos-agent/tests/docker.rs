@@ -91,6 +91,8 @@ esac
             systemd_run: any.clone(),
             docker,
             setsid: "/usr/bin/setsid".into(),
+            openssl: "/bin/false".into(),
+            nginx: "/bin/false".into(),
             dockerd: any,
         };
         let host = HostPaths {

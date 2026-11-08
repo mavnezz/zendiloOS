@@ -210,6 +210,10 @@ fn steps(
             step("install")?;
             apt(&["install", "--yes", "docker.io", "docker-compose"])
         }
+        PackageTask::InstallAcme => {
+            step("install")?;
+            apt(&["install", "--yes", "acme.sh"])
+        }
         PackageTask::Check => {
             *report = Some(host_report()?);
             Ok(())

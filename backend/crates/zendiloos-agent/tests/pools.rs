@@ -169,6 +169,8 @@ fn host(erasable: Erasable) -> Host {
         time: Default::default(),
         ssh: Default::default(),
         web: Default::default(),
+        acme: Default::default(),
+        web_server: Default::default(),
         accounts: AccountFiles {
             passwd: root.join("passwd"),
             group: root.join("group"),

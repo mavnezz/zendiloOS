@@ -83,6 +83,10 @@ pub struct Tools {
     /// Starts a terminal's program as the leader of its own session
     /// (util-linux): `docker exec` for a terminal in a container.
     pub setsid: PathBuf,
+    /// Reads when an issued certificate ends.
+    pub openssl: PathBuf,
+    /// Checks the web server's settings (`nginx -t`), in a transient unit.
+    pub nginx: PathBuf,
 }
 
 impl Default for Tools {
@@ -115,6 +119,8 @@ impl Default for Tools {
             docker: PathBuf::from("/usr/bin/docker"),
             dockerd: PathBuf::from("/usr/sbin/dockerd"),
             setsid: PathBuf::from("/usr/bin/setsid"),
+            openssl: PathBuf::from("/usr/bin/openssl"),
+            nginx: PathBuf::from("/usr/sbin/nginx"),
         }
     }
 }

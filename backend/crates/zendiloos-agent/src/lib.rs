@@ -7,6 +7,7 @@
 
 mod accounts;
 mod acl;
+mod acme;
 mod app_shares;
 mod apps;
 pub mod config;
@@ -28,8 +29,10 @@ mod ssh;
 mod time;
 mod waiting;
 mod web;
+mod web_server;
 
 pub use accounts::AccountFiles;
+pub use acme::AcmePaths;
 pub use app_shares::{pin_project, pin_shares, unpin_project, unpin_shares};
 pub use files::lower_file_overrides;
 pub use network::NetworkPaths;
@@ -41,3 +44,4 @@ pub use server::{Server, serve};
 pub use ssh::SshPaths;
 pub use time::TimePaths;
 pub use web::WebPaths;
+pub use web_server::WebServerPaths;

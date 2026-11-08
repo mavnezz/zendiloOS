@@ -39,6 +39,8 @@ impl Host {
         let any = script("tool", "");
         let table = mountinfo.display();
         let tools = Tools {
+            openssl: "/bin/false".into(),
+            nginx: "/bin/false".into(),
             lsblk: script("lsblk", &format!("cat {}", root.join("lsblk.json").display())),
             // Refuses to write a drive while `read-only` exists, as for a
             // write-protected stick.
