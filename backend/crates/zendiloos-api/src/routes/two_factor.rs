@@ -98,20 +98,38 @@ pub struct TwoFactorSetup {
     pub uri: String,
 }
 
-/// Begins setting up the signed-in account's authenticator app: a new
-/// secret, which waits for its first code. One begun before is replaced.
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TwoFactorSetupRequest {
+    /// The account's password: a session alone does not turn this on.
+    #[schema(format = Password)]
+    pub password: String,
+}
+
+/// Begins setting up the signed-in account's authenticator app, with its
+/// password: a new secret, which waits for its first code. One begun
+/// before is replaced. A wrong password counts as a failed login.
 #[utoipa::path(
     post,
     path = "/auth/two-factor/setup",
     tag = "identity",
     security(("session" = [])),
+    request_body = TwoFactorSetupRequest,
     responses(
         (status = OK, body = TwoFactorSetup),
         (status = CONFLICT, body = Problem, description = "`two_factor_on`"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`wrong_password`"),
+        (status = TOO_MANY_REQUESTS, body = Problem, description = "`too_many_attempts`"),
     )
 )]
-async fn begin(auth: Auth, State(state): State<ApiState>) -> Result<Json<TwoFactorSetup>, ApiError> {
-    let setup = state.identity.begin_two_factor.execute(&auth.0).await?;
+async fn begin(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    ApiJson(request): ApiJson<TwoFactorSetupRequest>,
+) -> Result<Json<TwoFactorSetup>, ApiError> {
+    let password = Secret::new(request.password);
+    let setup = state.identity.begin_two_factor.execute(&auth.0, &password, &client).await?;
     Ok(Json(TwoFactorSetup { secret: setup.secret.expose().to_owned(), uri: setup.uri.expose().to_owned() }))
 }
 
@@ -164,6 +182,16 @@ pub struct DisableTwoFactorRequest {
     pub code: String,
 }
 
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RenewRecoveryCodesRequest {
+    #[schema(format = Password)]
+    pub password: String,
+    /// Six digits from the authenticator app; a recovery code does not do.
+    #[schema(format = Password)]
+    pub code: String,
+}
+
 /// Turns the signed-in account's second factor off. Ends its other sessions.
 #[utoipa::path(
     post,
@@ -189,18 +217,18 @@ async fn disable(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// New recovery codes for a code from the app; the old ones stop working.
-/// Ends the account's other sessions.
+/// New recovery codes for the password and a code from the app; the old
+/// ones stop working. Ends the account's other sessions.
 #[utoipa::path(
     post,
     path = "/auth/two-factor/recovery-codes",
     tag = "identity",
     security(("session" = [])),
-    request_body = TwoFactorCodeRequest,
+    request_body = RenewRecoveryCodesRequest,
     responses(
         (status = OK, body = RecoveryCodes),
         (status = CONFLICT, body = Problem, description = "`two_factor_off`"),
-        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_code`"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`wrong_password`, `invalid_code`"),
         (status = TOO_MANY_REQUESTS, body = Problem, description = "`too_many_attempts`"),
     )
 )]
@@ -208,10 +236,11 @@ async fn renew_recovery_codes(
     auth: Auth,
     State(state): State<ApiState>,
     Client(client): Client,
-    ApiJson(request): ApiJson<TwoFactorCodeRequest>,
+    ApiJson(request): ApiJson<RenewRecoveryCodesRequest>,
 ) -> Result<Json<RecoveryCodes>, ApiError> {
-    let code = Secret::new(request.code);
-    let recovery_codes = state.identity.renew_recovery_codes.execute(&auth.0, &code, &client).await?;
+    let (password, code) = (Secret::new(request.password), Secret::new(request.code));
+    let recovery_codes =
+        state.identity.renew_recovery_codes.execute(&auth.0, &password, &code, &client).await?;
     Ok(Json(RecoveryCodes { recovery_codes }))
 }
 

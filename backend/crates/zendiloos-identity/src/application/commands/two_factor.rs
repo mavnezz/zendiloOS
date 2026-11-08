@@ -9,8 +9,34 @@ use zendiloos_kernel::{AuditEntry, Outcome, RequestContext, Secret};
 use crate::application::context::{CodeUsed, Context, spend};
 use crate::application::{AuthContext, IdentityError, SignedIn};
 use crate::domain::{
-    AccountId, AuditAction, Permission, ThrottleKey, TwoFactor, TypedCode, otpauth_uri, show_recovery_code,
+    Account, AccountId, AuditAction, Permission, ThrottleKey, TwoFactor, TypedCode, otpauth_uri,
+    show_recovery_code,
 };
+
+/// The signed-in account if `password` is its password, `None` if it is
+/// not. Argon2 runs outside the lock of account changes, as it takes a
+/// while: [`unchanged`] checks under it that the password is still the one
+/// checked.
+async fn password_checked(
+    c: &Context,
+    auth: &AuthContext,
+    password: &Secret,
+) -> Result<Option<Account>, IdentityError> {
+    let account =
+        c.ports.accounts.find_by_id(auth.account.id).await?.ok_or(IdentityError::Unauthenticated)?;
+    Ok(c.ports.hasher.verify(password, Some(&account.password_hash)).await?.then_some(account))
+}
+
+/// With the lock of account changes held: `account`'s password is the one
+/// checked and the account is still enabled.
+async fn unchanged(c: &Context, account: &Account) -> Result<(), IdentityError> {
+    let stored = c.ports.accounts.find_by_id(account.id).await?;
+    if stored.is_some_and(|now| now.password_hash == account.password_hash && !now.disabled) {
+        Ok(())
+    } else {
+        Err(IdentityError::Unauthenticated)
+    }
+}
 
 /// Command: the second step of a sign-in. The token
 /// [`Login`](super::Login) gave and a code from the app or a recovery code
@@ -97,8 +123,10 @@ pub struct TwoFactorSetup {
     pub uri: Secret,
 }
 
-/// Command: the signed-in account begins setting up its second factor. A
-/// new secret waits for its first code; one begun before is replaced.
+/// Command: the signed-in account begins setting up its second factor,
+/// with its password: a session alone (left open, taken over) cannot lock
+/// its owner out with a phone of someone else's. A new secret waits for
+/// its first code; one begun before is replaced.
 #[derive(Clone)]
 pub struct BeginTwoFactor {
     context: Arc<Context>,
@@ -109,11 +137,30 @@ impl BeginTwoFactor {
         Self { context }
     }
 
-    pub async fn execute(&self, auth: &AuthContext) -> Result<TwoFactorSetup, IdentityError> {
+    pub async fn execute(
+        &self,
+        auth: &AuthContext,
+        password: &Secret,
+        request: &RequestContext,
+    ) -> Result<TwoFactorSetup, IdentityError> {
         let c = &self.context;
+        let now = c.now();
+        if c.ports.two_factor.find(auth.account.id).await?.is_some_and(|t| t.is_on()) {
+            return Err(IdentityError::TwoFactorOn);
+        }
+        let keys = Context::throttle_keys(request, Some(&auth.account.name));
+        let attempt = c.begin_attempt(keys, request, now).await?;
+        let Some(account) = password_checked(c, auth, password).await? else {
+            attempt.failed(request).await?;
+            let entry =
+                AuditEntry::new(now, AuditAction::TwoFactorEnable.as_str(), Outcome::Failure, request);
+            c.audit(entry.by(&auth.actor()).reason("wrong_password")).await?;
+            return Err(IdentityError::WrongPassword);
+        };
+        drop(attempt);
+
         let _changes = c.changes.lock().await;
-        let account =
-            c.ports.accounts.find_by_id(auth.account.id).await?.ok_or(IdentityError::Unauthenticated)?;
+        unchanged(c, &account).await?;
         let mut two_factor = c.ports.two_factor.find(account.id).await?.unwrap_or(TwoFactor::new(account.id));
         if two_factor.is_on() {
             return Err(IdentityError::TwoFactorOn);
@@ -203,25 +250,19 @@ impl DisableTwoFactor {
         let audit = |outcome| {
             AuditEntry::new(now, AuditAction::TwoFactorDisable.as_str(), outcome, request).by(&auth.actor())
         };
-        let keys = Context::throttle_keys(request, Some(&auth.account.name));
-        let attempt = c.begin_attempt(keys, request, now).await?;
-        let account =
-            c.ports.accounts.find_by_id(auth.account.id).await?.ok_or(IdentityError::Unauthenticated)?;
-        if !c.ports.two_factor.find(account.id).await?.is_some_and(|t| t.is_on()) {
+        if !c.ports.two_factor.find(auth.account.id).await?.is_some_and(|t| t.is_on()) {
             return Err(IdentityError::TwoFactorOff);
         }
-        // Argon2 outside the lock, as it takes a while.
-        if !c.ports.hasher.verify(password, Some(&account.password_hash)).await? {
+        let keys = Context::throttle_keys(request, Some(&auth.account.name));
+        let attempt = c.begin_attempt(keys, request, now).await?;
+        let Some(account) = password_checked(c, auth, password).await? else {
             attempt.failed(request).await?;
             c.audit(audit(Outcome::Failure).reason("wrong_password")).await?;
             return Err(IdentityError::WrongPassword);
-        }
+        };
 
         let _changes = c.changes.lock().await;
-        let now_stored = c.ports.accounts.find_by_id(account.id).await?;
-        if !now_stored.is_some_and(|now| now.password_hash == account.password_hash && !now.disabled) {
-            return Err(IdentityError::Unauthenticated);
-        }
+        unchanged(c, &account).await?;
         let two_factor = c
             .ports
             .two_factor
@@ -243,9 +284,9 @@ impl DisableTwoFactor {
     }
 }
 
-/// Command: new recovery codes for the signed-in account, for a code from
-/// the app; the old ones stop working. Gives them, shown this once. Ends
-/// the account's other sessions.
+/// Command: new recovery codes for the signed-in account, for its password
+/// and a code from the app; the old ones stop working. Gives them, shown
+/// this once. Ends the account's other sessions.
 #[derive(Clone)]
 pub struct RenewRecoveryCodes {
     context: Arc<Context>,
@@ -259,6 +300,7 @@ impl RenewRecoveryCodes {
     pub async fn execute(
         &self,
         auth: &AuthContext,
+        password: &Secret,
         code: &Secret,
         request: &RequestContext,
     ) -> Result<Vec<String>, IdentityError> {
@@ -267,9 +309,19 @@ impl RenewRecoveryCodes {
         let audit = |outcome| {
             AuditEntry::new(now, AuditAction::RecoveryCodesRenew.as_str(), outcome, request).by(&auth.actor())
         };
+        if !c.ports.two_factor.find(auth.account.id).await?.is_some_and(|t| t.is_on()) {
+            return Err(IdentityError::TwoFactorOff);
+        }
         let keys = Context::throttle_keys(request, Some(&auth.account.name));
         let attempt = c.begin_attempt(keys, request, now).await?;
+        let Some(account) = password_checked(c, auth, password).await? else {
+            attempt.failed(request).await?;
+            c.audit(audit(Outcome::Failure).reason("wrong_password")).await?;
+            return Err(IdentityError::WrongPassword);
+        };
+
         let _changes = c.changes.lock().await;
+        unchanged(c, &account).await?;
         let mut two_factor = c
             .ports
             .two_factor

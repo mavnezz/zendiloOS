@@ -3,6 +3,7 @@ import { Copy, Download, ShieldCheck, ShieldOff } from 'lucide-vue-next'
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
+import { ApiProblem } from '@/shared/api/client'
 import type { TwoFactorSetup, TwoFactorStatus } from '@/shared/api/types'
 import { problemMessage } from '@/shared/i18n'
 import { useNotifications } from '@/shared/lib/notifications'
@@ -30,11 +31,11 @@ const session = useSessionStore()
 const notifications = useNotifications()
 
 /**
- * `status`: on or off, with what can be done; `setup`: the QR code and the
- * first code; `codes`: recovery codes, shown once; `renew` and `disable`:
- * their forms.
+ * `status`: on or off, with what can be done; `password`: the password, to
+ * begin setting it up; `setup`: the QR code and the first code; `codes`:
+ * recovery codes, shown once; `renew` and `disable`: their forms.
  */
-type Step = 'status' | 'setup' | 'codes' | 'renew' | 'disable'
+type Step = 'status' | 'password' | 'setup' | 'codes' | 'renew' | 'disable'
 
 const step = ref<Step>('status')
 const status = ref<TwoFactorStatus | null>(null)
@@ -86,7 +87,8 @@ async function attempt(request: () => Promise<void>): Promise<void> {
     await request()
   } catch (failure) {
     error.value = problemMessage(failure)
-    code.value = ''
+    if (failure instanceof ApiProblem && failure.code === 'wrong_password') password.value = ''
+    else code.value = ''
   } finally {
     pending.value = false
   }
@@ -94,7 +96,7 @@ async function attempt(request: () => Promise<void>): Promise<void> {
 
 const begin = () =>
   attempt(async () => {
-    setup.value = await beginTwoFactor()
+    setup.value = await beginTwoFactor(password.value)
     go('setup')
   })
 
@@ -108,7 +110,7 @@ const confirm = () =>
 
 const renew = () =>
   attempt(async () => {
-    recoveryCodes.value = await renewRecoveryCodes(code.value)
+    recoveryCodes.value = await renewRecoveryCodes(password.value, code.value)
     go('codes')
   })
 
@@ -187,9 +189,29 @@ function download(): void {
             {{ t('twoFactor.disable') }}
           </Button>
         </template>
-        <Button v-else :disabled="pending" @click="begin">{{ t('twoFactor.setUp') }}</Button>
+        <Button v-else @click="go('password')">{{ t('twoFactor.setUp') }}</Button>
       </div>
     </template>
+
+    <form v-else-if="step === 'password'" class="grid gap-4" @submit.prevent="begin">
+      <p class="text-sm text-muted-foreground">{{ t('twoFactor.passwordHint') }}</p>
+      <div class="grid gap-2">
+        <Label for="two-factor-password">{{ t('twoFactor.password') }}</Label>
+        <Input
+          id="two-factor-password"
+          v-model="password"
+          type="password"
+          autocomplete="current-password"
+          required
+        />
+      </div>
+      <div class="flex flex-wrap justify-end gap-2">
+        <Button type="button" variant="outline" @click="go('status')">
+          {{ t('twoFactor.back') }}
+        </Button>
+        <Button type="submit" :disabled="pending">{{ t('twoFactor.continue') }}</Button>
+      </div>
+    </form>
 
     <form v-else-if="step === 'setup' && setup" class="grid gap-4" @submit.prevent="confirm">
       <p class="text-sm text-muted-foreground">{{ t('twoFactor.scan') }}</p>
@@ -264,6 +286,16 @@ function download(): void {
 
     <form v-else-if="step === 'renew'" class="grid gap-4" @submit.prevent="renew">
       <p class="text-sm text-muted-foreground">{{ t('twoFactor.renewHint') }}</p>
+      <div class="grid gap-2">
+        <Label for="two-factor-password">{{ t('twoFactor.password') }}</Label>
+        <Input
+          id="two-factor-password"
+          v-model="password"
+          type="password"
+          autocomplete="current-password"
+          required
+        />
+      </div>
       <div class="grid gap-2">
         <Label for="two-factor-code">{{ t('twoFactor.code') }}</Label>
         <Input

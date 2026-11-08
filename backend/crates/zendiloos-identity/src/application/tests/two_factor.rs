@@ -14,7 +14,7 @@ use crate::testing::TestIdentity;
 /// Sets up the second factor of `auth`'s account and moves the clock on to
 /// the next time step, whose code is not taken yet; gives the recovery codes.
 async fn turn_on(t: &TestIdentity, auth: &AuthContext) -> Vec<String> {
-    t.use_cases.begin_two_factor.execute(auth).await.unwrap();
+    t.use_cases.begin_two_factor.execute(auth, &Secret::new(PASSWORD), &from(9)).await.unwrap();
     let code = Secret::new(t.code_now(auth.account.id, 0));
     let codes = t.use_cases.confirm_two_factor.execute(auth, &code, &from(9)).await.unwrap();
     t.clock.advance(Duration::from_secs(30));
@@ -59,7 +59,7 @@ async fn setting_up_a_second_factor_takes_its_first_code() {
     let elsewhere =
         password_login(&t.use_cases.login, login_input("alice", PASSWORD), &from(2)).await.unwrap();
 
-    let setup = t.use_cases.begin_two_factor.execute(&alice).await.unwrap();
+    let setup = t.use_cases.begin_two_factor.execute(&alice, &Secret::new(PASSWORD), &from(9)).await.unwrap();
 
     let secret = TotpSecret::from_base32(setup.secret.expose()).expect("base32");
     assert_eq!(t.two_factor.get(alice.account.id).unwrap().pending, Some(secret.clone()));
@@ -93,7 +93,7 @@ async fn setting_up_a_second_factor_takes_its_first_code() {
     assert_ne!(sessions[0].id, elsewhere.session.session_id);
     assert_eq!(last_audit(&t), (AuditAction::TwoFactorEnable.as_str(), Outcome::Success, None));
 
-    let again = t.use_cases.begin_two_factor.execute(&alice).await;
+    let again = t.use_cases.begin_two_factor.execute(&alice, &Secret::new(PASSWORD), &from(9)).await;
     assert!(matches!(again, Err(IdentityError::TwoFactorOn)), "{again:?}");
 }
 
@@ -101,15 +101,58 @@ async fn setting_up_a_second_factor_takes_its_first_code() {
 async fn a_setup_begun_again_takes_the_new_secret_only() {
     let t = TestIdentity::new();
     let alice = signed_in(&t, "alice", Role::User).await;
-    t.use_cases.begin_two_factor.execute(&alice).await.unwrap();
+    t.use_cases.begin_two_factor.execute(&alice, &Secret::new(PASSWORD), &from(9)).await.unwrap();
     let first = Secret::new(t.code_now(alice.account.id, 0));
 
-    t.use_cases.begin_two_factor.execute(&alice).await.unwrap();
+    t.use_cases.begin_two_factor.execute(&alice, &Secret::new(PASSWORD), &from(9)).await.unwrap();
 
     let refused = t.use_cases.confirm_two_factor.execute(&alice, &first, &from(9)).await;
     assert!(matches!(refused, Err(IdentityError::InvalidCode)), "{refused:?}");
     let code = Secret::new(t.code_now(alice.account.id, 0));
     assert!(t.use_cases.confirm_two_factor.execute(&alice, &code, &from(9)).await.is_ok());
+}
+
+#[tokio::test]
+async fn setting_up_takes_the_password_and_wrong_ones_count() {
+    let t = TestIdentity::new();
+    let alice = signed_in(&t, "alice", Role::User).await;
+    let wrong = Secret::new("wrong password");
+
+    let refused = t.use_cases.begin_two_factor.execute(&alice, &wrong, &from(9)).await;
+
+    assert!(matches!(refused, Err(IdentityError::WrongPassword)), "{refused:?}");
+    assert!(t.two_factor.get(alice.account.id).is_none(), "no secret is made");
+    assert_eq!(
+        last_audit(&t),
+        (AuditAction::TwoFactorEnable.as_str(), Outcome::Failure, Some("wrong_password"))
+    );
+    for _ in 0..4 {
+        let _ = t.use_cases.begin_two_factor.execute(&alice, &wrong, &from(9)).await;
+    }
+    let locked = t.use_cases.login.execute(login_input("alice", PASSWORD), &from(2)).await;
+    assert!(matches!(locked, Err(IdentityError::TooManyAttempts { .. })), "{locked:?}");
+}
+
+#[tokio::test]
+async fn a_setup_whose_password_changed_meanwhile_makes_no_secret() {
+    let t = TestIdentity::new();
+    let admin = signed_in(&t, "admin", Role::Admin).await;
+    let alice = signed_in(&t, "alice", Role::User).await;
+    t.hasher.hold(1);
+    let begin = t.use_cases.begin_two_factor.clone();
+    let (auth, request) = (alice.clone(), from(9));
+    let running = tokio::spawn(async move { begin.execute(&auth, &Secret::new(PASSWORD), &request).await });
+    while t.hasher.waiting() == 0 {
+        tokio::task::yield_now().await;
+    }
+
+    let password = Secret::new("a much better passphrase");
+    t.use_cases.reset_password.execute(&admin, alice.account.id, password, &from(9)).await.unwrap();
+    t.hasher.release();
+
+    let refused = running.await.unwrap();
+    assert!(matches!(refused, Err(IdentityError::Unauthenticated)), "{refused:?}");
+    assert!(t.two_factor.get(alice.account.id).is_none());
 }
 
 #[tokio::test]
@@ -126,7 +169,7 @@ async fn confirming_needs_a_setup_begun() {
 async fn codes_typed_wrong_while_setting_up_do_not_lock_the_account() {
     let t = TestIdentity::new();
     let alice = signed_in(&t, "alice", Role::User).await;
-    t.use_cases.begin_two_factor.execute(&alice).await.unwrap();
+    t.use_cases.begin_two_factor.execute(&alice, &Secret::new(PASSWORD), &from(9)).await.unwrap();
 
     for _ in 0..10 {
         let _ = t.use_cases.confirm_two_factor.execute(&alice, &Secret::new("000000"), &from(9)).await;
@@ -139,7 +182,7 @@ async fn codes_typed_wrong_while_setting_up_do_not_lock_the_account() {
 async fn a_setup_not_confirmed_leaves_the_password_alone_enough() {
     let t = TestIdentity::new();
     let alice = signed_in(&t, "alice", Role::User).await;
-    t.use_cases.begin_two_factor.execute(&alice).await.unwrap();
+    t.use_cases.begin_two_factor.execute(&alice, &Secret::new(PASSWORD), &from(9)).await.unwrap();
 
     assert!(password_login(&t.use_cases.login, login_input("alice", PASSWORD), &from(2)).await.is_ok());
 }
@@ -390,11 +433,24 @@ async fn new_recovery_codes_replace_the_old_ones() {
     let by_recovery = code_step(&t, &waiting, &old[9], &from(2)).await.unwrap().session.session_id;
     let waiting = password_step(&t, &from(2)).await;
 
-    let by_recovery_code =
-        t.use_cases.renew_recovery_codes.execute(&alice, &Secret::new(&old[0]), &from(9)).await;
+    let by_recovery_code = t
+        .use_cases
+        .renew_recovery_codes
+        .execute(&alice, &Secret::new(PASSWORD), &Secret::new(&old[0]), &from(9))
+        .await;
     assert!(matches!(by_recovery_code, Err(IdentityError::InvalidCode)), "only the app's code");
     let code = Secret::new(t.code_now(alice.account.id, 0));
-    let new = t.use_cases.renew_recovery_codes.execute(&alice, &code, &from(9)).await.unwrap();
+    let wrong = Secret::new("wrong password");
+    let without_password = t.use_cases.renew_recovery_codes.execute(&alice, &wrong, &code, &from(9)).await;
+    assert!(matches!(without_password, Err(IdentityError::WrongPassword)), "{without_password:?}");
+    let entry = (AuditAction::RecoveryCodesRenew.as_str(), Outcome::Failure, Some("wrong_password"));
+    assert_eq!(last_audit(&t), entry);
+    let new = t
+        .use_cases
+        .renew_recovery_codes
+        .execute(&alice, &Secret::new(PASSWORD), &code, &from(9))
+        .await
+        .unwrap();
 
     assert_eq!(new.len(), 10);
     assert!(new.iter().all(|code| !old.contains(code)));

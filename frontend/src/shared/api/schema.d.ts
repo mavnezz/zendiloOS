@@ -536,8 +536,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * New recovery codes for a code from the app; the old ones stop working.
-         *     Ends the account's other sessions.
+         * New recovery codes for the password and a code from the app; the old
+         *     ones stop working. Ends the account's other sessions.
          */
         post: operations["renew_recovery_codes"];
         delete?: never;
@@ -556,8 +556,9 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Begins setting up the signed-in account's authenticator app: a new
-         *     secret, which waits for its first code. One begun before is replaced.
+         * Begins setting up the signed-in account's authenticator app, with its
+         *     password: a new secret, which waits for its first code. One begun
+         *     before is replaced. A wrong password counts as a failed login.
          */
         post: operations["begin"];
         delete?: never;
@@ -5244,6 +5245,15 @@ export interface components {
             name: string;
             path: string;
         };
+        RenewRecoveryCodesRequest: {
+            /**
+             * Format: password
+             * @description Six digits from the authenticator app; a recovery code does not do.
+             */
+            code: string;
+            /** Format: password */
+            password: string;
+        };
         ReplaceDiskRequest: {
             token: string;
         };
@@ -5916,6 +5926,13 @@ export interface components {
             secret: string;
             /** @description The `otpauth://` address, for the QR code. */
             uri: string;
+        };
+        TwoFactorSetupRequest: {
+            /**
+             * Format: password
+             * @description The account's password: a session alone does not turn this on.
+             */
+            password: string;
         };
         TwoFactorStatus: {
             /** @description Sign-ins of this account ask for a code from its authenticator app. */
@@ -7343,7 +7360,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["TwoFactorCodeRequest"];
+                "application/json": components["schemas"]["RenewRecoveryCodesRequest"];
             };
         };
         responses: {
@@ -7364,7 +7381,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description `invalid_code` */
+            /** @description `wrong_password`, `invalid_code` */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -7391,7 +7408,11 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TwoFactorSetupRequest"];
+            };
+        };
         responses: {
             200: {
                 headers: {
@@ -7403,6 +7424,24 @@ export interface operations {
             };
             /** @description `two_factor_on` */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `wrong_password` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `too_many_attempts` */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };

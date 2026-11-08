@@ -362,6 +362,8 @@ const en = {
     offStatus: 'Your password alone signs you in.',
     codesLeft: 'No recovery codes left | One recovery code left | {n} recovery codes left',
     setUp: 'Set up',
+    passwordHint: 'Enter your password to set up two-factor sign-in.',
+    continue: 'Continue',
     scan: 'Scan this code with an authenticator app, such as Aegis, Google Authenticator or 1Password.',
     qrLabel: 'QR code for the authenticator app',
     orType: 'Or type in this key',
@@ -380,7 +382,7 @@ const en = {
     done: 'I have saved them',
     renew: 'New recovery codes',
     renewHint:
-      'The recovery codes you have now stop working, and your other sessions are signed out. Enter a code from the app.',
+      'Enter your password and a code from the app. The recovery codes you have now stop working, and your other sessions are signed out.',
     renewAction: 'Make new codes',
     disable: 'Turn off',
     disableHint:

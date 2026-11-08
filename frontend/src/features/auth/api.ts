@@ -53,8 +53,8 @@ export function fetchTwoFactor(): Promise<TwoFactorStatus> {
 }
 
 /** A new secret for the authenticator app, waiting for its first code. */
-export function beginTwoFactor(): Promise<TwoFactorSetup> {
-  return unwrap(api.POST('/api/v1/auth/two-factor/setup'))
+export function beginTwoFactor(password: string): Promise<TwoFactorSetup> {
+  return unwrap(api.POST('/api/v1/auth/two-factor/setup', { body: { password } }))
 }
 
 /** Turns two-factor sign-in on; gives the recovery codes, shown this once. */
@@ -68,9 +68,9 @@ export async function disableTwoFactor(password: string, code: string): Promise<
 }
 
 /** New recovery codes; the old ones stop working. */
-export async function renewRecoveryCodes(code: string): Promise<string[]> {
-  return (await unwrap(api.POST('/api/v1/auth/two-factor/recovery-codes', { body: { code } })))
-    .recovery_codes
+export async function renewRecoveryCodes(password: string, code: string): Promise<string[]> {
+  const body = { password, code }
+  return (await unwrap(api.POST('/api/v1/auth/two-factor/recovery-codes', { body }))).recovery_codes
 }
 
 export async function logout(): Promise<void> {

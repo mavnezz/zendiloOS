@@ -48,12 +48,17 @@ beforeEach(() => {
 })
 
 describe('two-factor sign-in', () => {
-  it('is set up with a QR code and its first code, and shows the recovery codes once', async () => {
+  it('is set up with the password, a QR code and its first code, and shows the recovery codes once', async () => {
     answer('GET', '/api/v1/auth/two-factor', { enabled: false, recovery_codes_left: 0 })
-    on('POST', '/api/v1/auth/two-factor/setup', () => ({
-      secret: SECRET,
-      uri: `otpauth://totp/zendiloOS:alice?secret=${SECRET}&issuer=zendiloOS`,
-    }))
+    let setups = 0
+    on('POST', '/api/v1/auth/two-factor/setup', () =>
+      ++setups === 1
+        ? problem(422, 'wrong_password')
+        : {
+            secret: SECRET,
+            uri: `otpauth://totp/zendiloOS:alice?secret=${SECRET}&issuer=zendiloOS`,
+          },
+    )
     let tries = 0
     on('POST', '/api/v1/auth/two-factor/confirm', () =>
       ++tries === 1 ? problem(422, 'invalid_code') : { recovery_codes: CODES },
@@ -62,6 +67,18 @@ describe('two-factor sign-in', () => {
     expect(page()).toContain('Your password alone signs you in.')
 
     await click('Set up')
+    expect(page()).toContain('Enter your password to set up two-factor sign-in.')
+    expect(document.querySelector('svg[role="img"]')).toBeNull()
+    await type('#two-factor-password', 'wrong')
+    await click('Continue')
+    expect(page()).toContain('The current password is wrong.')
+    expect(document.querySelector<HTMLInputElement>('#two-factor-password')!.value).toBe('')
+    await type('#two-factor-password', 'correct horse battery')
+    await click('Continue')
+
+    expect(callsTo('POST', '/api/v1/auth/two-factor/setup')[1]!.body).toEqual({
+      password: 'correct horse battery',
+    })
 
     expect(document.querySelector('svg[role="img"]')?.getAttribute('aria-label')).toBe(
       'QR code for the authenticator app',
@@ -100,6 +117,8 @@ describe('two-factor sign-in', () => {
     answer('POST', '/api/v1/auth/two-factor/confirm', { recovery_codes: CODES })
     await show()
     await click('Set up')
+    await type('#two-factor-password', 'correct horse battery')
+    await click('Continue')
 
     await press('Copy key')
     expect(writeText).toHaveBeenLastCalledWith(SECRET)
@@ -115,17 +134,19 @@ describe('two-factor sign-in', () => {
     expect(await blob.text()).toContain('abcde-fghjk\nmnpqr-stuvw')
   })
 
-  it('makes new recovery codes for a code from the app', async () => {
+  it('makes new recovery codes for the password and a code from the app', async () => {
     answer('GET', '/api/v1/auth/two-factor', { enabled: true, recovery_codes_left: 1 })
     answer('POST', '/api/v1/auth/two-factor/recovery-codes', { recovery_codes: CODES })
     await show()
     expect(page()).toContain('One recovery code left')
 
     await click('New recovery codes')
+    await type('#two-factor-password', 'correct horse battery')
     await type('#two-factor-code', '654321')
     await click('Make new codes')
 
     expect(callsTo('POST', '/api/v1/auth/two-factor/recovery-codes')[0]!.body).toEqual({
+      password: 'correct horse battery',
       code: '654321',
     })
     expect(page()).toContain('mnpqr-stuvw')

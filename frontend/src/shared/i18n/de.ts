@@ -373,6 +373,8 @@ const de: Messages = {
     codesLeft:
       'Keine Wiederherstellungscodes mehr | Noch ein Wiederherstellungscode | Noch {n} Wiederherstellungscodes',
     setUp: 'Einrichten',
+    passwordHint: 'Geben Sie Ihr Passwort ein, um die Zwei-Faktor-Anmeldung einzurichten.',
+    continue: 'Weiter',
     scan: 'Scannen Sie diesen Code mit einer Authenticator-App, etwa Aegis, Google Authenticator oder 1Password.',
     qrLabel: 'QR-Code für die Authenticator-App',
     orType: 'Oder tippen Sie diesen Schlüssel ein',
@@ -391,7 +393,7 @@ const de: Messages = {
     done: 'Ich habe sie gespeichert',
     renew: 'Neue Wiederherstellungscodes',
     renewHint:
-      'Die Wiederherstellungscodes, die Sie jetzt haben, gelten dann nicht mehr, und Ihre anderen Sitzungen werden abgemeldet. Geben Sie einen Code aus der App ein.',
+      'Geben Sie Ihr Passwort und einen Code aus der App ein. Die Wiederherstellungscodes, die Sie jetzt haben, gelten dann nicht mehr, und Ihre anderen Sitzungen werden abgemeldet.',
     renewAction: 'Neue Codes erzeugen',
     disable: 'Ausschalten',
     disableHint:

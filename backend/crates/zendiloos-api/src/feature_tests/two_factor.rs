@@ -51,7 +51,7 @@ async fn password_step(h: &Harness) -> Value {
 /// clock moved on to a step whose code is not taken yet.
 async fn alice_with_two_factor(h: &Harness) -> (Session, App, Vec<String>) {
     let alice = h.sign_in("alice", Role::User).await;
-    let setup = h.send(empty(with_csrf(post("/api/v1/auth/two-factor/setup"), &alice))).await;
+    let setup = begin_setup(h, &alice, PASSWORD).await;
     assert_eq!(setup.status, StatusCode::OK, "{:?}", setup.body);
     let app = App(TotpSecret::from_base32(setup.body["secret"].as_str().unwrap()).unwrap());
     let body = json!({ "code": app.code(h, 0) });
@@ -61,6 +61,12 @@ async fn alice_with_two_factor(h: &Harness) -> (Session, App, Vec<String>) {
     let codes = codes.iter().map(|code| code.as_str().unwrap().to_owned()).collect();
     h.identity.clock.advance(Duration::from_secs(30));
     (alice, app, codes)
+}
+
+/// Begins setting up the authenticator app of `session`'s account.
+async fn begin_setup(h: &Harness, session: &Session, password: &str) -> Reply {
+    let body = json!({ "password": password });
+    h.send(json(with_csrf(post("/api/v1/auth/two-factor/setup"), session), body)).await
 }
 
 fn id_of(h: &Harness, name: &str) -> i64 {
@@ -73,10 +79,15 @@ async fn an_authenticator_app_is_set_up_with_its_first_code() {
     let alice = h.sign_in("alice", Role::User).await;
     let status = h.send(empty(with_cookie(get("/api/v1/auth/two-factor"), &alice))).await;
     assert_eq!(status.body, json!({ "enabled": false, "recovery_codes_left": 0 }));
-    let without_csrf = h.send(empty(with_cookie(post("/api/v1/auth/two-factor/setup"), &alice))).await;
+    let body = json!({ "password": PASSWORD });
+    let without_csrf = h.send(json(with_cookie(post("/api/v1/auth/two-factor/setup"), &alice), body)).await;
     assert_problem(&without_csrf, StatusCode::FORBIDDEN, "csrf_rejected");
+    let without_password = h.send(empty(with_csrf(post("/api/v1/auth/two-factor/setup"), &alice))).await;
+    assert_eq!(without_password.body["code"], "invalid_body", "{:?}", without_password.body);
+    let wrong = begin_setup(&h, &alice, "wrong password").await;
+    assert_problem(&wrong, StatusCode::UNPROCESSABLE_ENTITY, "wrong_password");
 
-    let setup = h.send(empty(with_csrf(post("/api/v1/auth/two-factor/setup"), &alice))).await;
+    let setup = begin_setup(&h, &alice, PASSWORD).await;
 
     let secret = setup.body["secret"].as_str().unwrap();
     assert_eq!(secret.len(), 32);
@@ -99,8 +110,23 @@ async fn an_authenticator_app_is_set_up_with_its_first_code() {
     assert_eq!(confirmed.body["recovery_codes"].as_array().unwrap().len(), 10);
     let status = h.send(empty(with_cookie(get("/api/v1/auth/two-factor"), &alice))).await;
     assert_eq!(status.body, json!({ "enabled": true, "recovery_codes_left": 10 }));
-    let again = h.send(empty(with_csrf(post("/api/v1/auth/two-factor/setup"), &alice))).await;
+    let again = begin_setup(&h, &alice, PASSWORD).await;
     assert_problem(&again, StatusCode::CONFLICT, "two_factor_on");
+}
+
+#[tokio::test]
+async fn wrong_passwords_at_the_setup_are_throttled_like_failed_logins() {
+    let h = Harness::new();
+    let alice = h.sign_in("alice", Role::User).await;
+    for _ in 0..5 {
+        let wrong = begin_setup(&h, &alice, "wrong password").await;
+        assert_problem(&wrong, StatusCode::UNPROCESSABLE_ENTITY, "wrong_password");
+    }
+
+    let locked = begin_setup(&h, &alice, PASSWORD).await;
+
+    assert_problem(&locked, StatusCode::TOO_MANY_REQUESTS, "too_many_attempts");
+    assert_problem(&login(&h, "alice").await, StatusCode::TOO_MANY_REQUESTS, "too_many_attempts");
 }
 
 #[tokio::test]
@@ -217,8 +243,13 @@ async fn new_recovery_codes_and_turning_it_off() {
     let h = Harness::new();
     let (alice, app, old) = alice_with_two_factor(&h).await;
 
-    let body = json!({ "code": app.code(&h, 0) });
-    let renewed = h.send(json(with_csrf(post("/api/v1/auth/two-factor/recovery-codes"), &alice), body)).await;
+    let renew = |password: &str| {
+        let body = json!({ "password": password, "code": app.code(&h, 0) });
+        json(with_csrf(post("/api/v1/auth/two-factor/recovery-codes"), &alice), body)
+    };
+    let wrong = h.send(renew("wrong password")).await;
+    assert_problem(&wrong, StatusCode::UNPROCESSABLE_ENTITY, "wrong_password");
+    let renewed = h.send(renew(PASSWORD)).await;
     assert_eq!(renewed.status, StatusCode::OK, "{:?}", renewed.body);
     let new = renewed.body["recovery_codes"].as_array().unwrap();
     assert_eq!(new.len(), 10);

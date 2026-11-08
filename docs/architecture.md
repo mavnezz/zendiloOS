@@ -910,15 +910,20 @@ TLS is rustls with ring and the system's certificate authorities
   RFC 6238 as authenticator apps compute it: HMAC-SHA-1, six digits,
   30-second steps, one step of drift either way, a 160-bit secret from the
   operating system's random source, shown as an `otpauth://totp/zendiloOS:
-  <name>?secret=…&issuer=zendiloOS` QR code and as base32 for typing in. A
-  secret being set up waits for its first code, which turns it on; until
-  then the password alone signs in. The time step of the last code taken is
+  <name>?secret=…&issuer=zendiloOS` QR code and as base32 for typing in.
+  Setting it up takes the account's password, so a session alone (left
+  open, taken over) cannot turn it on with someone else's phone and lock
+  the owner out; a wrong password counts against the account lock and the
+  address block like a failed login (`wrong_password`). A secret being set
+  up waits for its first code, which turns it on; until then the password
+  alone signs in. The time step of the last code taken is
   stored, and a code of that step or an earlier one is refused, so no code
   signs in twice, not even two sign-ins at once (the check and the update
   run under the lock of account changes). Ten recovery codes (ten
   characters from 31 that cannot be mistaken for one another, about 49
   bits each) come with it, are shown once and kept as SHA-256 digests; each
-  signs in once, and new ones (for a code from the app) replace the old.
+  signs in once, and new ones (for the password and a code from the app)
+  replace the old.
   The secret is stored as it is in `zendiloosd`'s private database
   (`account_two_factor`, 0600), as the server must compute codes from it;
   whoever reads that database has the secrets as well as the digests, which

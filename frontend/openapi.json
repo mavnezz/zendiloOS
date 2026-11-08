@@ -1639,13 +1639,13 @@
         "tags": [
           "identity"
         ],
-        "summary": "New recovery codes for a code from the app; the old ones stop working.\nEnds the account's other sessions.",
+        "summary": "New recovery codes for the password and a code from the app; the old\nones stop working. Ends the account's other sessions.",
         "operationId": "renew_recovery_codes",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/TwoFactorCodeRequest"
+                "$ref": "#/components/schemas/RenewRecoveryCodesRequest"
               }
             }
           },
@@ -1672,7 +1672,7 @@
             }
           },
           "422": {
-            "description": "`invalid_code`",
+            "description": "`wrong_password`, `invalid_code`",
             "content": {
               "application/json": {
                 "schema": {
@@ -1704,8 +1704,18 @@
         "tags": [
           "identity"
         ],
-        "summary": "Begins setting up the signed-in account's authenticator app: a new\nsecret, which waits for its first code. One begun before is replaced.",
+        "summary": "Begins setting up the signed-in account's authenticator app, with its\npassword: a new secret, which waits for its first code. One begun\nbefore is replaced. A wrong password counts as a failed login.",
         "operationId": "begin",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TwoFactorSetupRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -1718,6 +1728,26 @@
           },
           "409": {
             "description": "`two_factor_on`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`wrong_password`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`too_many_attempts`",
             "content": {
               "application/json": {
                 "schema": {
@@ -16562,6 +16592,25 @@
         },
         "additionalProperties": false
       },
+      "RenewRecoveryCodesRequest": {
+        "type": "object",
+        "required": [
+          "password",
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "format": "password",
+            "description": "Six digits from the authenticator app; a recovery code does not do."
+          },
+          "password": {
+            "type": "string",
+            "format": "password"
+          }
+        },
+        "additionalProperties": false
+      },
       "ReplaceDiskRequest": {
         "type": "object",
         "required": [
@@ -18470,6 +18519,20 @@
             "description": "The `otpauth://` address, for the QR code."
           }
         }
+      },
+      "TwoFactorSetupRequest": {
+        "type": "object",
+        "required": [
+          "password"
+        ],
+        "properties": {
+          "password": {
+            "type": "string",
+            "format": "password",
+            "description": "The account's password: a session alone does not turn this on."
+          }
+        },
+        "additionalProperties": false
       },
       "TwoFactorStatus": {
         "type": "object",
