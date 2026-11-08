@@ -1,3 +1,27 @@
+zendiloos (0.2.0) unstable; urgency=medium
+
+  * A file explorer replaces the Shares app: folders on a volume with their
+    own permissions, shared over SMB and NFS when asked, folder properties,
+    previous versions from snapshots, one recycle bin, a deep search.
+  * Removable drives (FAT, exFAT, NTFS, ext4) are mounted, browsed and
+    ejected by administrators.
+  * The App Center installs apps as Docker projects of one's own; the
+    Docker app has pages for containers and projects, a live deploy log,
+    a terminal into containers and image updates.
+  * Plugins: Docker, and an ACME client for Let's Encrypt certificates; the
+    web interface's ports, HTTP redirect and certificate, confirmed or
+    rolled back.
+  * Notifications through one mail server to e-mail and webhook channels,
+    chosen per kind.
+  * Two-factor sign-in with an authenticator app.
+  * A firewall in nftables, Docker's published ports included.
+  * The first administrator is created on the first visit, without a code
+    on the console.
+  * Storage, the resource monitor and the logs move into the control panel.
+  * Fixes and hardening from three rounds of audits.
+
+ -- zendiloOS <julian@stuch.info>  Sun, 08 Nov 2026 11:13:07 +0000
+
 zendiloos (0.1.1) unstable; urgency=medium
 
   * The community catalog's current format: optional versions, the Docker
