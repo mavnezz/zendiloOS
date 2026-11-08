@@ -2168,7 +2168,7 @@ const en = {
     },
     updates_failed: {
       title: 'Update failed',
-      body: 'Settings → Update & restore says why.',
+      body: 'Control panel → Update & restore says why.',
     },
     snapshot_failed: {
       title: 'No snapshot of {share}',
