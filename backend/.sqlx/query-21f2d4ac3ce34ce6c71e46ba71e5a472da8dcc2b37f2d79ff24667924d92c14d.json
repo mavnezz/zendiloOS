@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT enabled AS \"enabled: bool\", fallback FROM firewall_settings WHERE id = 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "enabled: bool",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "firewall_settings",
+            "name": "enabled"
+          }
+        }
+      },
+      {
+        "name": "fallback",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "firewall_settings",
+            "name": "fallback"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "21f2d4ac3ce34ce6c71e46ba71e5a472da8dcc2b37f2d79ff24667924d92c14d"
+}

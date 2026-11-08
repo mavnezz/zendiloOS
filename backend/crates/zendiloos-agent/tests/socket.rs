@@ -55,6 +55,7 @@ impl Agent {
             openssl: "/bin/false".into(),
             nginx: "/bin/false".into(),
             rm: "/bin/false".into(),
+            nft: "/bin/false".into(),
             systemd_mount: "/bin/false".into(),
             umount: "/bin/false".into(),
             rmdir: "/bin/false".into(),

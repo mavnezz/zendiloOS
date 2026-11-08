@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 use zendiloos_agent::config::Tools;
 use zendiloos_agent::{
-    AccountFiles, AcmePaths, Erasable, ErasePolicy, HostPaths, NetworkPaths, Operations, Paths, SshPaths,
-    TimePaths, WebPaths, WebServerPaths,
+    AccountFiles, AcmePaths, Erasable, ErasePolicy, FirewallPaths, HostPaths, NetworkPaths, Operations,
+    Paths, SshPaths, TimePaths, WebPaths, WebServerPaths,
 };
 use zendiloos_agent_proto::{ErrorCode, Request, Response, Role};
 
@@ -80,6 +80,7 @@ impl Host {
             openssl: "/bin/false".into(),
             nginx: "/bin/false".into(),
             rm: "/bin/false".into(),
+            nft: "/bin/false".into(),
             dockerd: p("dockerd"),
         };
         let at = |name: &str| self.path(name);
@@ -127,6 +128,7 @@ impl Host {
                 own_key: at("tls/zendiloos.key"),
                 webroot: at("acme-state/webroot"),
             },
+            firewall: FirewallPaths { directory: at("firewall") },
         };
         Operations::with_paths(role, &tools, Erasable::Policy(ErasePolicy::None), paths).unwrap()
     }
@@ -189,6 +191,13 @@ fn requests() -> Vec<Value> {
         json!({ "op": "apply_web_server", "config": { "http": 80, "https": 443, "certificate": null }, "confirm_within": 90 }),
         json!({ "op": "confirm_web_server" }),
         json!({ "op": "reload_web_certificate" }),
+        json!({ "op": "firewall_state" }),
+        json!({ "op": "apply_firewall", "config": { "rules": [{
+            "interface": "enp1s0", "source": { "kind": "network", "address": "192.168.1.0", "prefix": 24 },
+            "traffic": { "kind": "tcp", "ports": [{ "from": 445, "to": 445 }] }, "forward": false, "verdict": "accept",
+        }], "fallback": "drop" }, "confirm_within": 90 }),
+        json!({ "op": "apply_firewall", "config": null, "confirm_within": null }),
+        json!({ "op": "confirm_firewall" }),
         json!({ "op": "time_state" }),
         json!({ "op": "share_usage" }),
         json!({ "op": "show_on_console" }),

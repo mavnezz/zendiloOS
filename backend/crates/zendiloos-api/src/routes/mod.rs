@@ -4,6 +4,7 @@ mod certificates;
 mod channels;
 mod docker;
 mod files;
+mod firewall;
 mod identity;
 pub(crate) mod jobs;
 pub(crate) mod live;
@@ -42,4 +43,5 @@ pub(crate) fn v1() -> OpenApiRouter<ApiState> {
         .merge(docker::routes())
         .merge(updates::routes())
         .merge(certificates::routes())
+        .merge(firewall::routes())
 }

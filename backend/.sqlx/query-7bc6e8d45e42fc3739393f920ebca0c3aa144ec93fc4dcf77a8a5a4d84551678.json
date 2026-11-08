@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO firewall_settings (id, enabled, fallback) VALUES (1, ?, ?)\n             ON CONFLICT (id) DO UPDATE SET enabled = excluded.enabled, fallback = excluded.fallback",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "7bc6e8d45e42fc3739393f920ebca0c3aa144ec93fc4dcf77a8a5a4d84551678"
+}

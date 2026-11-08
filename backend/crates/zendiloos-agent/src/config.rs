@@ -89,6 +89,9 @@ pub struct Tools {
     pub nginx: PathBuf,
     /// Run in a transient unit as acme.sh's account, to remove its files.
     pub rm: PathBuf,
+    /// Checks the firewall's rules (`nft -c`), in a transient unit; the
+    /// unit zendiloos-firewall.service puts them in force.
+    pub nft: PathBuf,
 }
 
 impl Default for Tools {
@@ -124,6 +127,7 @@ impl Default for Tools {
             openssl: PathBuf::from("/usr/bin/openssl"),
             nginx: PathBuf::from("/usr/sbin/nginx"),
             rm: PathBuf::from("/usr/bin/rm"),
+            nft: PathBuf::from("/usr/sbin/nft"),
         }
     }
 }

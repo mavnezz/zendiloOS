@@ -190,6 +190,23 @@ pub fn message(notification: &Notification, host: &str, language: Language) -> M
             format!("Certificate for {} not renewed", param("name")),
             format!("{}\nThe current one holds until it ends; it is tried again tomorrow.", param("reason")),
         ),
+        "firewall_blocked" => {
+            let service = blocked_service(param("service"), param("project"), german);
+            if german {
+                (
+                    format!("Die Firewall sperrt {service}"),
+                    "Keine Regel lässt eine Adresse durch. Unter Systemsteuerung → Sicherheit → Firewall lässt \
+                     es sich freigeben."
+                        .to_owned(),
+                )
+            } else {
+                (
+                    format!("The firewall blocks {service}"),
+                    "No rule lets any address in. Allow it under Control panel → Security → Firewall."
+                        .to_owned(),
+                )
+            }
+        }
         "channel_test" if german => (
             "Testnachricht".to_owned(),
             "Dieser Kanal erreicht Sie. So kommen Meldungen des NAS an.".to_owned(),
@@ -205,6 +222,22 @@ pub fn message(notification: &Notification, host: &str, language: Language) -> M
         }
     };
     Message { title: format!("[{host}] {title}"), body }
+}
+
+/// A service the firewall blocks, by its key (`smb`, `project:<name>`).
+fn blocked_service(key: &str, project: &str, german: bool) -> String {
+    match (key, german) {
+        ("web_interface", false) => "the web interface".to_owned(),
+        ("web_interface", true) => "die Weboberfläche".to_owned(),
+        ("smb", _) => "SMB".to_owned(),
+        ("nfs", _) => "NFS".to_owned(),
+        ("ssh", _) => "SSH".to_owned(),
+        ("discovery", false) => "network discovery".to_owned(),
+        ("discovery", true) => "die Netzwerkerkennung".to_owned(),
+        (_, false) if !project.is_empty() => format!("the Docker project {project}"),
+        (_, true) if !project.is_empty() => format!("das Docker-Projekt {project}"),
+        (key, _) => key.to_owned(),
+    }
 }
 
 fn count(errors: u64, none: &str, one: &str, many: &str) -> String {
@@ -311,6 +344,48 @@ mod tests {
                 "Kein Snapshot von photos",
             ),
             ("channel_test", vec![], "Test message", "Testnachricht"),
+            (
+                "firewall_blocked",
+                vec![("service", "smb")],
+                "The firewall blocks SMB",
+                "Die Firewall sperrt SMB",
+            ),
+            (
+                "firewall_blocked",
+                vec![("service", "web_interface")],
+                "The firewall blocks the web interface",
+                "Die Firewall sperrt die Weboberfläche",
+            ),
+            (
+                "firewall_blocked",
+                vec![("service", "discovery")],
+                "The firewall blocks network discovery",
+                "Die Firewall sperrt die Netzwerkerkennung",
+            ),
+            (
+                "firewall_blocked",
+                vec![("service", "nfs")],
+                "The firewall blocks NFS",
+                "Die Firewall sperrt NFS",
+            ),
+            (
+                "firewall_blocked",
+                vec![("service", "ssh")],
+                "The firewall blocks SSH",
+                "Die Firewall sperrt SSH",
+            ),
+            (
+                "firewall_blocked",
+                vec![("service", "project:media"), ("project", "media")],
+                "The firewall blocks the Docker project media",
+                "Die Firewall sperrt das Docker-Projekt media",
+            ),
+            (
+                "firewall_blocked",
+                vec![("service", "odd")],
+                "The firewall blocks odd",
+                "Die Firewall sperrt odd",
+            ),
             (
                 "certificate_renewed",
                 vec![("name", "nas.example.org")],

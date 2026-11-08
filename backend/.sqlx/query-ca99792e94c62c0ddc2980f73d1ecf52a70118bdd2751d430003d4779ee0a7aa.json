@@ -1,0 +1,110 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT enabled AS \"enabled: bool\", interface, service, project, protocol, ports, source, action\n               FROM firewall_rules ORDER BY position",
+  "describe": {
+    "columns": [
+      {
+        "name": "enabled: bool",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "firewall_rules",
+            "name": "enabled"
+          }
+        }
+      },
+      {
+        "name": "interface",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "firewall_rules",
+            "name": "interface"
+          }
+        }
+      },
+      {
+        "name": "service",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "firewall_rules",
+            "name": "service"
+          }
+        }
+      },
+      {
+        "name": "project",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "firewall_rules",
+            "name": "project"
+          }
+        }
+      },
+      {
+        "name": "protocol",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "firewall_rules",
+            "name": "protocol"
+          }
+        }
+      },
+      {
+        "name": "ports",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "firewall_rules",
+            "name": "ports"
+          }
+        }
+      },
+      {
+        "name": "source",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "firewall_rules",
+            "name": "source"
+          }
+        }
+      },
+      {
+        "name": "action",
+        "ordinal": 7,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "firewall_rules",
+            "name": "action"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "ca99792e94c62c0ddc2980f73d1ecf52a70118bdd2751d430003d4779ee0a7aa"
+}

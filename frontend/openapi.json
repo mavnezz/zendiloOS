@@ -8044,6 +8044,134 @@
         ]
       }
     },
+    "/api/v1/security/firewall": {
+      "get": {
+        "tags": [
+          "security"
+        ],
+        "summary": "The rules, a change waiting for confirmation, the services they can\nname with their ports, and those the rules block. Needs\n`system.manage`.",
+        "operationId": "firewall_setup",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FirewallSetup"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "security"
+        ],
+        "summary": "Applies new settings at once. Unless confirmed within `confirm_within`\nseconds (`POST /security/firewall/confirm`), the rules from before\nreturn by themselves. Settings that would keep out the browser sending\nthem are refused unless `lock_out` is set. Needs `system.manage`.",
+        "operationId": "apply_firewall",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FirewallChange"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Applied; waits for confirmation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FirewallSetup"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`would_lock_out`, `change_pending`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`firewall_failed`: nftables refused the rules; nothing changed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/security/firewall/confirm": {
+      "post": {
+        "tags": [
+          "security"
+        ],
+        "summary": "Keeps the change waiting for confirmation. Needs `system.manage`.",
+        "operationId": "confirm_firewall",
+        "responses": {
+          "204": {
+            "description": "Kept."
+          },
+          "409": {
+            "description": "`refused`: nothing waits",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/security/sessions": {
       "get": {
         "tags": [
@@ -14000,6 +14128,241 @@
           "nvme_media_errors"
         ]
       },
+      "FirewallAction": {
+        "type": "string",
+        "enum": [
+          "allow",
+          "deny"
+        ]
+      },
+      "FirewallChange": {
+        "type": "object",
+        "description": "New settings. `lock_out`: apply them although they would keep out\nthe browser sending them (they go back unless confirmed anyway).",
+        "required": [
+          "enabled",
+          "fallback",
+          "rules"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "fallback": {
+            "$ref": "#/components/schemas/FirewallAction"
+          },
+          "lock_out": {
+            "type": "boolean"
+          },
+          "rules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FirewallRule"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "FirewallProtocol": {
+        "type": "string",
+        "enum": [
+          "tcp",
+          "udp",
+          "both"
+        ]
+      },
+      "FirewallRule": {
+        "type": "object",
+        "description": "One rule. The first that matches a new connection decides.",
+        "required": [
+          "enabled",
+          "service",
+          "source",
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/FirewallAction"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "interface": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "None: every interface."
+          },
+          "ports": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For `ports`: `80, 443, 8000-8100`."
+          },
+          "project": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The Docker project, for `project`."
+          },
+          "protocol": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FirewallProtocol",
+                "description": "For `ports`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "service": {
+            "$ref": "#/components/schemas/FirewallServiceKind"
+          },
+          "source": {
+            "type": "string",
+            "description": "`any`, an address, a network (`192.168.1.0/24`) or a range\n(`192.168.1.10-192.168.1.20`); IPv4 or IPv6."
+          }
+        },
+        "additionalProperties": false
+      },
+      "FirewallService": {
+        "type": "object",
+        "description": "A service rules can name, with the ports it stands for now.",
+        "required": [
+          "key",
+          "service",
+          "on",
+          "tcp",
+          "udp"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "`smb`, `project:<name>`: as `blocked` names it."
+          },
+          "on": {
+            "type": "boolean",
+            "description": "It runs (the web interface always; a project when it publishes\nports)."
+          },
+          "project": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "service": {
+            "$ref": "#/components/schemas/FirewallServiceKind"
+          },
+          "tcp": {
+            "type": "string",
+            "description": "The TCP and UDP ports, as `80, 443`; empty for none."
+          },
+          "udp": {
+            "type": "string"
+          }
+        }
+      },
+      "FirewallServiceKind": {
+        "type": "string",
+        "description": "What a rule is about: every port, one of the NAS's services, a Docker\nproject's published ports, or ports by number.",
+        "enum": [
+          "all",
+          "web_interface",
+          "smb",
+          "nfs",
+          "ssh",
+          "discovery",
+          "ping",
+          "project",
+          "ports"
+        ]
+      },
+      "FirewallSettings": {
+        "type": "object",
+        "required": [
+          "enabled",
+          "fallback",
+          "rules"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "fallback": {
+            "$ref": "#/components/schemas/FirewallAction",
+            "description": "What happens to a connection no rule matches."
+          },
+          "rules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FirewallRule"
+            }
+          }
+        }
+      },
+      "FirewallSetup": {
+        "type": "object",
+        "required": [
+          "current",
+          "confirm_within",
+          "blocked",
+          "services",
+          "interfaces",
+          "local_networks"
+        ],
+        "properties": {
+          "blocked": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Services on that the rules in force block from everywhere, by key."
+          },
+          "confirm_within": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How long a change waits for confirmation, in seconds.",
+            "minimum": 0
+          },
+          "current": {
+            "$ref": "#/components/schemas/FirewallSettings"
+          },
+          "interfaces": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Interfaces rules can name."
+          },
+          "local_networks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The networks the NAS is in, as sources."
+          },
+          "pending": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PendingFirewall"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "services": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FirewallService"
+            },
+            "description": "The NAS's services and the Docker projects that publish ports."
+          }
+        }
+      },
       "Folder": {
         "type": "object",
         "required": [
@@ -14756,7 +15119,8 @@
           "storage",
           "folders",
           "system",
-          "certificates"
+          "certificates",
+          "security"
         ]
       },
       "KindLevel": {
@@ -15746,6 +16110,23 @@
           }
         },
         "additionalProperties": false
+      },
+      "PendingFirewall": {
+        "type": "object",
+        "required": [
+          "settings",
+          "revert_at"
+        ],
+        "properties": {
+          "revert_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When the rules from before return unless confirmed, in Unix seconds."
+          },
+          "settings": {
+            "$ref": "#/components/schemas/FirewallSettings"
+          }
+        }
       },
       "PendingNetworkChange": {
         "type": "object",

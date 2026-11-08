@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO firewall_rules\n                     (position, enabled, interface, service, project, protocol, ports, source, action)\n                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 9
+    },
+    "nullable": []
+  },
+  "hash": "75fcab34f8d48119a7a56ccccf8c60cf8e22d7966e2710cf81e3d03089b9b9d4"
+}

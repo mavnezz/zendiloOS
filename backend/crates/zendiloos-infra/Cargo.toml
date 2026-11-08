@@ -11,6 +11,7 @@ publish.workspace = true
 zendiloos-agent-proto.workspace = true
 zendiloos-apps.workspace = true
 zendiloos-certificates.workspace = true
+zendiloos-firewall.workspace = true
 zendiloos-containers.workspace = true
 zendiloos-updates.workspace = true
 zendiloos-catalog.workspace = true

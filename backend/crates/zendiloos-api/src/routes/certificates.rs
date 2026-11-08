@@ -792,6 +792,8 @@ async fn apply_web_server(
 ) -> Result<(StatusCode, Json<WebServerSetup>), ApiError> {
     auth.require(Permission::SystemManage)?;
     state.certificates.apply_web_server(input.into(), &auth.0.actor(), &client).await?;
+    // The firewall lets the browser in at the new ports at once.
+    state.firewall.nudge();
     Ok((StatusCode::ACCEPTED, Json(setup_dto(state.certificates.web_server(&client).await?))))
 }
 
@@ -813,5 +815,6 @@ async fn confirm_web_server(
 ) -> Result<StatusCode, ApiError> {
     auth.require(Permission::SystemManage)?;
     state.certificates.confirm_web_server(&auth.0.actor(), &client).await?;
+    state.firewall.nudge();
     Ok(StatusCode::NO_CONTENT)
 }

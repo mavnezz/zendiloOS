@@ -15,6 +15,7 @@ mod client;
 mod descriptor;
 mod docker;
 mod files;
+mod firewall;
 mod framing;
 mod network;
 mod packages;
@@ -47,6 +48,11 @@ pub use files::{
     CountStop, DirectoryEntry, EntryFacts, EntryKind, FileLocation, FileRoot, FoundEntry, HOMES_DIRECTORY,
     InvalidSearchText, InvalidSharePath, MAX_COUNTED, MAX_DIRECTORY_ENTRIES, MAX_SEARCH_RESULTS, SearchStop,
     SearchText, SharePath, is_file_name,
+};
+pub use firewall::{
+    FirewallConfig, FirewallPortRange, FirewallPorts, FirewallRule, FirewallRules, FirewallSource,
+    FirewallTraffic, FirewallVerdict, InvalidFirewallPorts, InvalidFirewallSource, PendingFirewall,
+    TooManyFirewallRules,
 };
 pub use framing::{FrameError, read_message, write_message};
 pub use network::{
@@ -443,6 +449,21 @@ pub enum Request {
     ConfirmWebServer {},
     /// nginx reads the certificate it serves again: it was renewed.
     ReloadWebCertificate {},
+    /// A change of the firewall that waits to be confirmed. Answers
+    /// [`Response::FirewallState`].
+    FirewallState {},
+    /// Writes the firewall's rules (none: no rules at all) for nftables,
+    /// checks them (`nft -c`) and puts them in force. With
+    /// `confirm_within`, unless [`Request::ConfirmFirewall`] comes in time
+    /// the rules from before return (also after a restart), one change at
+    /// a time; without, a change waiting stays waiting, and what returns is
+    /// still the rules from before it.
+    ApplyFirewall {
+        config: Option<FirewallConfig>,
+        confirm_within: Option<ConfirmWithin>,
+    },
+    /// Keeps the change that waits to be confirmed.
+    ConfirmFirewall {},
     /// The clock's settings and state, and the time zones there are.
     /// Answers [`Response::TimeState`].
     TimeState {},
@@ -748,6 +769,9 @@ impl Request {
             Request::ApplyWebServer { .. } => "apply_web_server",
             Request::ConfirmWebServer {} => "confirm_web_server",
             Request::ReloadWebCertificate {} => "reload_web_certificate",
+            Request::FirewallState {} => "firewall_state",
+            Request::ApplyFirewall { .. } => "apply_firewall",
+            Request::ConfirmFirewall {} => "confirm_firewall",
             Request::TimeState {} => "time_state",
             Request::SetTime { .. } => "set_time",
             Request::ListSnapshots {} => "list_snapshots",
@@ -911,6 +935,9 @@ pub enum Response {
     },
     WebServerState {
         pending: Option<PendingWebServer>,
+    },
+    FirewallState {
+        pending: Option<PendingFirewall>,
     },
     SshState {
         /// The server is installed.
