@@ -633,11 +633,7 @@ impl Certificates {
                 return Err(CertificatesError::PortBusy(port));
             }
         }
-        if self.pending.lock().unwrap_or_else(PoisonError::into_inner).is_some()
-            && self.ports.host.web_state(context).await?.pending_until.is_some()
-        {
-            return Err(CertificatesError::Pending);
-        }
+        // Another change waiting on the host is refused there (`Pending`).
         let applied = self.ports.host.apply_web(&web, CONFIRM_WITHIN_SECONDS, context).await;
         let outcome = if applied.is_ok() { Outcome::Success } else { Outcome::Failure };
         self.record("certificates.web_apply", outcome, &describe(&web), actor, context).await;
