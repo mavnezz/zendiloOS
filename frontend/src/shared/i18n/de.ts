@@ -224,7 +224,7 @@ const de: Messages = {
       },
     },
     sources: {
-      hint: 'Apps stammen aus dem zendiloOS-Community-Katalog und aus Katalogen, die Sie hinzufügen, wie bei HACS.',
+      hint: 'Apps stammen aus dem zendiloOS-Community-Katalog und aus Katalogen, die Sie hinzufügen.',
       refresh: 'Alle neu lesen',
       official: 'Community-Katalog',
       remove: 'Diesen Katalog entfernen',
