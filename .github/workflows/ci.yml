@@ -105,7 +105,11 @@ jobs:
     permissions:
       contents: write
     steps:
+      # The whole history with its tags: a development build's notes list
+      # the changes since the last release tag.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
 
@@ -180,8 +184,8 @@ jobs:
             # the squashed pull requests), as the NAS shows them before an update.
             notes=dist/dev-notes.md
             echo "The state of main at $GITHUB_SHA. Untested; for the development channel only." > "$notes"
-            if last=$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null); then
-              total=$(git rev-list --no-merges --count "$last..$GITHUB_SHA")
+            if last=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "$GITHUB_SHA" 2>/dev/null) &&
+               total=$(git rev-list --no-merges --count "$last..$GITHUB_SHA") && [ "$total" -gt 0 ]; then
               {
                 printf '\nChanges since %s:\n\n' "$last"
                 git log --no-merges --format='- %s' -n 50 "$last..$GITHUB_SHA"
