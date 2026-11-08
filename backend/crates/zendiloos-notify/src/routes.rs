@@ -7,8 +7,9 @@
 //! each channel. A kind nobody ticked anything for yet follows defaults:
 //! kept in zendiloOS, and sent on a channel if the channel's level (the
 //! choice of the time before routes, kept as its baseline) carries the
-//! kind's usual level; so kinds added in a later version reach the channels
-//! that would have carried them.
+//! most serious level the kind is raised at; so a channel for errors only
+//! still gets a failing pool, and kinds added in a later version reach the
+//! channels that would have carried them.
 
 use std::collections::BTreeMap;
 
@@ -43,7 +44,9 @@ impl Group {
 pub struct Kind {
     pub key: &'static str,
     pub group: Group,
-    /// How serious it usually is: what decides the default for a channel.
+    /// The most serious level it is raised at: what decides the default
+    /// for a channel, so a default never keeps an error from a channel
+    /// that took errors.
     pub level: Level,
 }
 
@@ -53,17 +56,22 @@ const fn kind(key: &'static str, group: Group, level: Level) -> Kind {
 
 /// Every kind zendiloOS raises, in the order the table shows them.
 pub const KINDS: [Kind; 12] = [
-    kind("pool_trouble", Group::Storage, Level::Warning),
+    // Degraded a warning; faulted, removed or unavailable an error.
+    kind("pool_trouble", Group::Storage, Level::Error),
     kind("pool_recovered", Group::Storage, Level::Success),
-    kind("disk_health", Group::Storage, Level::Warning),
-    kind("volume_filling", Group::Storage, Level::Warning),
+    // SMART getting worse a warning, failing an error.
+    kind("disk_health", Group::Storage, Level::Error),
+    // 80 % a warning, 90 % an error.
+    kind("volume_filling", Group::Storage, Level::Error),
     kind("scrub_errors", Group::Storage, Level::Warning),
     kind("scrub_finished", Group::Storage, Level::Info),
-    kind("resilver_finished", Group::Storage, Level::Success),
+    // Without errors good news, with errors a warning.
+    kind("resilver_finished", Group::Storage, Level::Warning),
     kind("removable_pulled", Group::Storage, Level::Warning),
     kind("snapshot_failed", Group::Folders, Level::Warning),
     kind("updates_available", Group::System, Level::Info),
-    kind("updates_installed", Group::System, Level::Success),
+    // Done a success; the ZFS module missing for the new kernel an error.
+    kind("updates_installed", Group::System, Level::Error),
     kind("updates_failed", Group::System, Level::Error),
 ];
 
@@ -151,7 +159,12 @@ mod tests {
         assert!(routes.to_channel(1, Level::Warning, "pool_recovered", Level::Success), "the good news");
         assert!(!routes.to_channel(1, Level::Warning, "scrub_finished", Level::Info));
         assert!(routes.to_channel(1, Level::Warning, "scrub_errors", Level::Warning));
-        assert!(!routes.to_channel(1, Level::Error, "pool_trouble", Level::Error), "by the kind's level");
+        // By the kind's most serious level: a channel for errors only gets
+        // all of a kind that can be an error, and none of one that cannot.
+        assert!(routes.to_channel(1, Level::Error, "pool_trouble", Level::Error));
+        assert!(routes.to_channel(1, Level::Error, "pool_trouble", Level::Warning));
+        assert!(!routes.to_channel(1, Level::Error, "scrub_errors", Level::Warning));
+        assert!(!routes.to_channel(1, Level::Error, "pool_recovered", Level::Success));
         assert!(routes.to_channel(1, Level::Info, "scrub_finished", Level::Info));
         // A kind this version does not know goes by the notification's level.
         assert!(routes.to_channel(1, Level::Error, "something_new", Level::Error));

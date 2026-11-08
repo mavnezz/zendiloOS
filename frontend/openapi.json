@@ -14034,7 +14034,7 @@
           },
           "level": {
             "$ref": "#/components/schemas/KindLevel",
-            "description": "How serious it usually is."
+            "description": "The most serious level it is raised at, which decides where it goes\nby default."
           }
         }
       },

@@ -3582,7 +3582,7 @@ async fn administrators_choose_where_each_kind_of_notification_goes() {
     assert_eq!(routes.body.as_array().unwrap().len(), zendiloos_notify::routes::KINDS.len());
     assert_eq!(
         kind(&routes.body, "pool_trouble"),
-        json!({ "kind": "pool_trouble", "group": "storage", "level": "warning", "in_app": true,
+        json!({ "kind": "pool_trouble", "group": "storage", "level": "error", "in_app": true,
                 "channels": [chat_id] })
     );
     assert_eq!(

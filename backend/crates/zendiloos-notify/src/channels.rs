@@ -963,28 +963,36 @@ mod tests {
         let chat =
             t.channels.create(webhook("Chat", "https://chat.example"), &alice(), &request()).await.unwrap();
 
-        // By default: by each channel's level and the kind's usual level.
+        // By default: by each channel's level and the kind's most serious
+        // level. The chat carries errors only, so it gets all pool trouble
+        // (which can be an error), but no data check that found errors
+        // (never more than a warning).
         t.channels.deliver(&degraded(Level::Warning)).await;
-        assert_eq!(sent_to(&t.sender), ["me@example.org"], "the chat carries errors only");
+        assert_eq!(sent_to(&t.sender), ["me@example.org", "https://chat.example"]);
+        let scrub = Notification { code: "scrub_finished".into(), ..degraded(Level::Warning) };
+        t.channels.deliver(&scrub).await;
+        assert_eq!(sent_to(&t.sender)[2..], ["me@example.org"], "found errors: a warning");
         let routes = t.channels.routes().await.unwrap();
         let trouble = routes.iter().find(|r| r.kind.key == "pool_trouble").unwrap();
-        assert_eq!((trouble.in_app, trouble.channels.clone()), (true, vec![mail.id]));
-        let failed = routes.iter().find(|r| r.kind.key == "updates_failed").unwrap();
-        assert_eq!(failed.channels, [mail.id, chat.id]);
+        assert_eq!((trouble.in_app, trouble.channels.clone()), (true, vec![mail.id, chat.id]));
+        let errors = routes.iter().find(|r| r.kind.key == "scrub_errors").unwrap();
+        assert_eq!(errors.channels, [mail.id]);
+        let finished = routes.iter().find(|r| r.kind.key == "scrub_finished").unwrap();
+        assert!(finished.channels.is_empty(), "a routine check goes nowhere by default");
+        t.sender.sent.lock().unwrap().clear();
 
         let choice = KindChoice { kind: "pool_trouble".into(), in_app: false, channels: vec![chat.id] };
         let routes = t.channels.set_routes(vec![choice], &alice(), &request()).await.unwrap();
         let trouble = routes.iter().find(|r| r.kind.key == "pool_trouble").unwrap();
         assert_eq!((trouble.in_app, trouble.channels.clone()), (false, vec![chat.id]));
         t.channels.deliver(&degraded(Level::Warning)).await;
-        assert_eq!(sent_to(&t.sender)[1], "https://chat.example");
-        assert_eq!(sent_to(&t.sender).len(), 2, "no longer by mail");
-        let untouched = routes.iter().find(|r| r.kind.key == "updates_failed").unwrap();
-        assert_eq!(untouched.channels, [mail.id, chat.id], "the other kinds keep theirs");
+        assert_eq!(sent_to(&t.sender), ["https://chat.example"], "no longer by mail");
+        let untouched = routes.iter().find(|r| r.kind.key == "scrub_errors").unwrap();
+        assert_eq!(untouched.channels, [mail.id], "the other kinds keep theirs");
 
         // A test goes to its channel alone, whatever the routes.
         t.channels.test(mail.id, &alice(), &request()).await.unwrap();
-        assert_eq!(sent_to(&t.sender)[2], "me@example.org");
+        assert_eq!(sent_to(&t.sender)[1], "me@example.org");
 
         let unknown = KindChoice { kind: "weather".into(), in_app: true, channels: vec![] };
         let refused = t.channels.set_routes(vec![unknown], &alice(), &request()).await;

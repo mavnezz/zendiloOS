@@ -41,8 +41,10 @@ WHERE kind = 'email';
 
 -- What was chosen per kind: kept in zendiloOS (no channel) or sent on a
 -- channel. A kind without a row follows the defaults: kept, and sent on a
--- channel whose min_level carries the kind's usual level; so channels as
--- they were go on carrying what they carried.
+-- channel whose min_level carries the most serious level the kind is
+-- raised at; so channels as they were go on carrying what they carried
+-- (a channel for errors only now also gets the warnings of a kind that
+-- can be an error).
 CREATE TABLE notification_routes (
     kind       TEXT    NOT NULL,
     channel_id INTEGER REFERENCES notification_channels (id) ON DELETE CASCADE,

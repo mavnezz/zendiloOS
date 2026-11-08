@@ -506,6 +506,17 @@ mod tests {
             assert_eq!(carried(ionos), kind.level != Level::Info, "{}", kind.key);
             assert_eq!(carried(chat), kind.level == Level::Error, "{}", kind.key);
         }
+        // The chat took errors only: it gets every kind that can be one,
+        // a faulted pool among them, and nothing that never is.
+        let errors: Vec<&str> = KINDS
+            .iter()
+            .filter(|kind| routes.to_channel(chat.id, chat.settings.min_level, kind.key, kind.level))
+            .map(|kind| kind.key)
+            .collect();
+        assert_eq!(
+            errors,
+            ["pool_trouble", "disk_health", "volume_filling", "updates_installed", "updates_failed"]
+        );
         db.close().await;
     }
 }

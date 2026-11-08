@@ -514,14 +514,16 @@ set up, so that a failing disk is noticed without the interface open.
 - **Routes.** Notifications come in kinds (`zendiloos_notify::routes::KINDS`),
   each a code, except a data check that found errors (`scrub_finished`
   as a warning or error), which is `scrub_errors`; grouped as storage,
-  folders and system, each with its usual level. Per kind, administrators
+  folders and system, each with the most serious level it is raised at
+  (a degraded pool is a warning, a faulted one an error: `pool_trouble`
+  is an error kind). Per kind, administrators
   tick whether it is kept in zendiloOS and on which channels it goes out
   (`notification_routes`: a row per kind and channel, the channel NULL
   for zendiloOS). A kind not kept is not stored, listed or published to
   browsers, but still goes out where ticked. A kind nobody chose for
   follows the defaults: kept, and sent on a channel whose level (its
   former "sends everything / warnings and errors / errors only") carries
-  the kind's usual level. A new channel starts at warnings and errors; a
+  that level. A new channel starts at warnings and errors; a
   change of a channel keeps its level; so new kinds reach existing
   channels as their level did before.
 - **Delivery.** Each notification raised is delivered on a task of its
@@ -535,9 +537,12 @@ set up, so that a failing disk is noticed without the interface open.
   server became the mail server (another channel's different server is
   not kept: it sends through the first one's); email channels kept their
   recipients; no route is written, so each channel carries what it
-  carried by its level, judged by a kind's usual level: a snapshot that
-  failed as an error, usually a warning, no longer reaches a channel for
-  errors only unless ticked.
+  carried by its level. A tick is per kind, not per level, so a channel
+  for errors only now gets all of a kind that can be an error: also a
+  degraded pool, a disk's SMART getting worse, a volume 80 % full and
+  updates installed, besides the faulted pool, the failing disk, the
+  volume 90 % full and the missing ZFS module it got before; untick them
+  to have fewer. It never misses an error it got before.
 
 TLS is rustls with ring and the system's certificate authorities
 (`ca-certificates`).

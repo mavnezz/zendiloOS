@@ -212,7 +212,8 @@ pub struct NotificationRoute {
     /// that found errors.
     pub kind: String,
     pub group: KindGroup,
-    /// How serious it usually is.
+    /// The most serious level it is raised at, which decides where it goes
+    /// by default.
     pub level: KindLevel,
     /// Kept in zendiloOS's notification center.
     pub in_app: bool,

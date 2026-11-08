@@ -4387,7 +4387,10 @@ export interface components {
              *     that found errors.
              */
             kind: string;
-            /** @description How serious it usually is. */
+            /**
+             * @description The most serious level it is raised at, which decides where it goes
+             *     by default.
+             */
             level: components["schemas"]["KindLevel"];
         };
         NvmeHealth: {
