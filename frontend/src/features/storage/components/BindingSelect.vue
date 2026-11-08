@@ -4,6 +4,8 @@ import { useI18n } from 'vue-i18n'
 import type { Disk } from '@/shared/api/types'
 import { cn } from '@/shared/lib/utils'
 
+import { ownSerial } from '../lib/enclosure'
+
 defineProps<{
   /** The slot's label, which names the list. */
   label: string
@@ -48,9 +50,12 @@ function describe(disk: Disk): string {
         <option v-if="disk.id_path" :value="`port:${disk.id_path}`">{{ describe(disk) }}</option>
       </template>
     </optgroup>
+    <!-- A serial number another disk reports too names neither: those go by their port. -->
     <optgroup :label="t('storage.enclosure.dialog.bySerial')">
       <template v-for="disk in disks" :key="disk.name">
-        <option v-if="disk.serial" :value="`serial:${disk.serial}`">{{ describe(disk) }}</option>
+        <option v-if="ownSerial(disk, disks)" :value="`serial:${disk.serial}`">
+          {{ describe(disk) }}
+        </option>
       </template>
     </optgroup>
     <option v-if="absent" :value="absent.value">{{ absent.label }}</option>

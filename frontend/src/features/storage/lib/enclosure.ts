@@ -73,12 +73,24 @@ export function cell(
   }
 }
 
-/** What a disk is bound by: its port, or its serial number on USB or without a port. */
+/**
+ * Whether the disk's serial number tells it apart among `present`: no other
+ * disk reports it, as the disks of some USB docks report their bridge's.
+ */
+export function ownSerial(disk: Pick<Disk, 'serial'>, present: Pick<Disk, 'serial'>[]): boolean {
+  return !!disk.serial && present.filter((other) => other.serial === disk.serial).length <= 1
+}
+
+/**
+ * What a disk is bound by: its port, or its serial number on USB or without
+ * a port, while no other disk of `present` reports the same one.
+ */
 export function bindingFor(
   disk: Pick<Disk, 'transport' | 'serial' | 'id_path'>,
+  present: Pick<Disk, 'serial'>[] = [disk],
 ): SlotBinding | null {
   if (disk.id_path && disk.transport !== 'usb') return { kind: 'port', value: disk.id_path }
-  if (disk.serial) return { kind: 'serial', value: disk.serial }
+  if (disk.serial && ownSerial(disk, present)) return { kind: 'serial', value: disk.serial }
   return disk.id_path ? { kind: 'port', value: disk.id_path } : null
 }
 
@@ -93,13 +105,18 @@ function portKey(path: string): string {
   return path.replace(/-ata-(\d+)\.0(?=-|$)/g, '-ata-$1')
 }
 
-/** The disk a binding names, among those present. */
+/**
+ * The disk a binding names, among those present; a serial number two of them
+ * report names neither, as the backend places them.
+ */
 export function boundDisk(binding: SlotBinding | null, disks: Disk[]): Disk | undefined {
   if (!binding) return undefined
-  return disks.find((disk) =>
-    binding.kind === 'serial'
-      ? disk.serial === binding.value
-      : disk.id_path != null && sameBinding(binding, { kind: 'port', value: disk.id_path }),
+  if (binding.kind === 'serial') {
+    const reporting = disks.filter((disk) => disk.serial === binding.value)
+    return reporting.length === 1 ? reporting[0] : undefined
+  }
+  return disks.find(
+    (disk) => disk.id_path != null && sameBinding(binding, { kind: 'port', value: disk.id_path }),
   )
 }
 
@@ -143,8 +160,12 @@ export function groupsOf(model: EnclosureModel): DraftGroup[] {
   }))
 }
 
-/** What is chosen now, to edit; a model of the catalog when none is, the detected one first. */
-export function draftOf(enclosure: Enclosure, models: EnclosureModel[], name = 'Bays'): Draft {
+/**
+ * What is chosen now, to edit; while nothing is, the model the machine was
+ * recognised as, or else a layout of one's own: no model is taken for a
+ * machine that is not known to be it.
+ */
+export function draftOf(enclosure: Enclosure, name = 'Bays'): Draft {
   if (enclosure.source === 'custom') {
     return {
       source: 'custom',
@@ -171,7 +192,7 @@ export function draftOf(enclosure: Enclosure, models: EnclosureModel[], name = '
     }
     return { source: 'model', model: enclosure.model.id, overrides }
   }
-  const model = enclosure.detected ?? models[0]
+  const model = enclosure.detected
   return model
     ? { source: 'model', model: model.id, overrides: {} }
     : { source: 'custom', groups: [newGroup([], name)] }

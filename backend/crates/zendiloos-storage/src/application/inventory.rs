@@ -35,14 +35,15 @@ impl DiskInventory {
     }
 
     /// Notes the disks present now; call regularly. Disks without a serial
-    /// number cannot be told apart and are not kept.
+    /// number cannot be told apart and are not kept; disks reporting the
+    /// same one are kept apart by their port ([`domain::serial_key`]).
     pub async fn observe(&self, context: &RequestContext) -> Result<Vec<Disk>, StorageError> {
         let disks = domain::disks(&self.devices.block_devices(context).await?, &[]);
         let seen: Vec<SeenDisk> = disks
             .iter()
             .filter_map(|disk| {
                 Some(SeenDisk {
-                    serial: disk.serial.clone()?,
+                    serial: domain::serial_key(disk, &disks)?,
                     model: disk.model.clone(),
                     size_bytes: disk.size_bytes,
                 })
@@ -61,10 +62,7 @@ impl DiskInventory {
             .records()
             .await?
             .into_iter()
-            .map(|record| {
-                let disk = disks.iter().find(|d| d.serial.as_deref() == Some(record.serial.as_str()));
-                InventoryEntry { disk: disk.map(|d| d.name.clone()), record }
-            })
+            .map(|record| InventoryEntry { disk: present_as(&record.serial, &disks), record })
             .collect();
         entries.sort_by(|a, b| match (&a.disk, &b.disk) {
             (Some(a), Some(b)) => a.cmp(b),
@@ -75,6 +73,9 @@ impl DiskInventory {
         Ok(entries)
     }
 
+    /// Notes what the owner says about a disk of the inventory. The answer
+    /// is the disk as kept; while the disks cannot be read, without whether
+    /// it is present: what was noted is kept all the same.
     pub async fn update(
         &self,
         serial: &str,
@@ -83,15 +84,25 @@ impl DiskInventory {
         context: &RequestContext,
     ) -> Result<InventoryEntry, StorageError> {
         let found = self.store.set_details(serial, &details).await;
-        self.record("storage.inventory_update", serial, found.is_ok(), actor, context).await;
+        self.record("storage.inventory_update", serial, matches!(found, Ok(true)), actor, context).await;
         if !found? {
             return Err(StorageError::InventoryNotFound);
         }
-        self.list(context)
+        let record = self
+            .store
+            .records()
             .await?
             .into_iter()
-            .find(|entry| entry.record.serial == serial)
-            .ok_or(StorageError::InventoryNotFound)
+            .find(|record| record.serial == serial)
+            .ok_or(StorageError::InventoryNotFound)?;
+        let disk = match self.devices.block_devices(context).await {
+            Ok(devices) => present_as(serial, &domain::disks(&devices, &[])),
+            Err(error) => {
+                tracing::warn!(%error, "noted, but cannot read the disks to say whether it is present");
+                None
+            }
+        };
+        Ok(InventoryEntry { record, disk })
     }
 
     /// Forgets a disk that is no longer present.
@@ -101,29 +112,41 @@ impl DiskInventory {
         actor: &Actor,
         context: &RequestContext,
     ) -> Result<(), StorageError> {
-        let present = self.observe(context).await?.iter().any(|disk| disk.serial.as_deref() == Some(serial));
-        if present {
-            return Err(StorageError::DiskPresent);
-        }
-        let removed = self.store.remove(serial).await;
+        let removed = self.forget(serial, context).await;
         self.record("storage.inventory_remove", serial, removed.is_ok(), actor, context).await;
-        if removed? { Ok(()) } else { Err(StorageError::InventoryNotFound) }
+        removed
     }
 
+    async fn forget(&self, serial: &str, context: &RequestContext) -> Result<(), StorageError> {
+        if present_as(serial, &self.observe(context).await?).is_some() {
+            return Err(StorageError::DiskPresent);
+        }
+        if self.store.remove(serial).await? { Ok(()) } else { Err(StorageError::InventoryNotFound) }
+    }
+
+    /// `done`: the change was made; one refused (no such disk kept, the
+    /// disk present) or failed is a failure.
     async fn record(
         &self,
         action: &'static str,
         serial: &str,
-        ok: bool,
+        done: bool,
         actor: &Actor,
         context: &RequestContext,
     ) {
-        let outcome = if ok { Outcome::Success } else { Outcome::Failure };
+        let outcome = if done { Outcome::Success } else { Outcome::Failure };
         let entry = AuditEntry::new(self.clock.now(), action, outcome, context).by(actor).target(serial);
         if let Err(error) = self.audit.record(entry).await {
             tracing::error!(%error, "cannot write the audit log");
         }
     }
+}
+
+/// The kernel name of the disk among `disks` the inventory keeps as
+/// `serial`.
+fn present_as(serial: &str, disks: &[Disk]) -> Option<String> {
+    let disk = disks.iter().find(|disk| domain::serial_key(disk, disks).as_deref() == Some(serial))?;
+    Some(disk.name.clone())
 }
 
 #[cfg(test)]
@@ -132,7 +155,7 @@ mod tests {
 
     use super::*;
     use crate::domain::CalendarDate;
-    use crate::testing::use_cases;
+    use crate::testing::{DOCK_SERIAL, use_cases};
 
     fn admin() -> Actor {
         Actor { account_id: 1, name: "alice".into() }
@@ -198,5 +221,71 @@ mod tests {
         let serials: Vec<_> =
             inventory.list(&request).await.unwrap().into_iter().map(|e| e.record.serial).collect();
         assert_eq!(serials[5..], ["OLD2", "OLD1"]);
+    }
+
+    #[tokio::test]
+    async fn disks_reporting_one_serial_number_are_kept_apart() {
+        let (use_cases, fake, _) = use_cases();
+        let inventory = &use_cases.inventory;
+        let request = RequestContext::default();
+        *fake.dock.lock().unwrap() = true;
+
+        let entries = inventory.list(&request).await.unwrap();
+
+        let dock = |n: u8| format!("{DOCK_SERIAL}@pci-0000:00:14.0-usb-0:2:1.0-scsi-0:0:0:{n}");
+        let listed: Vec<_> =
+            entries[5..].iter().map(|e| (e.record.serial.clone(), e.disk.as_deref())).collect();
+        assert_eq!(listed, [(dock(0), Some("sdg")), (dock(1), Some("sdh"))]);
+        let noted = InventoryDetails::new(None, None, Some("Shop"), None).unwrap();
+        let updated = inventory.update(&dock(1), noted, &admin(), &request).await.unwrap();
+        assert_eq!(
+            (updated.disk.as_deref(), updated.record.details.vendor.as_deref()),
+            (Some("sdh"), Some("Shop"))
+        );
+        assert!(matches!(
+            inventory.remove(&dock(0), &admin(), &request).await,
+            Err(StorageError::DiskPresent)
+        ));
+    }
+
+    #[tokio::test]
+    async fn changes_refused_are_logged_as_failures() {
+        let (use_cases, _, audit) = use_cases();
+        let inventory = &use_cases.inventory;
+        let request = RequestContext::default();
+        inventory.list(&request).await.unwrap();
+        let last = || {
+            let entry = audit.entries().pop().unwrap();
+            (entry.action, entry.outcome, entry.target)
+        };
+
+        let unknown = inventory.update("X9", InventoryDetails::default(), &admin(), &request).await;
+        assert!(matches!(unknown, Err(StorageError::InventoryNotFound)), "{unknown:?}");
+        assert_eq!(last(), ("storage.inventory_update", Outcome::Failure, Some("X9".to_owned())));
+        let present = inventory.remove("T1", &admin(), &request).await;
+        assert!(matches!(present, Err(StorageError::DiskPresent)), "{present:?}");
+        assert_eq!(last(), ("storage.inventory_remove", Outcome::Failure, Some("T1".to_owned())));
+        let unknown = inventory.remove("X9", &admin(), &request).await;
+        assert!(matches!(unknown, Err(StorageError::InventoryNotFound)), "{unknown:?}");
+        assert_eq!(last(), ("storage.inventory_remove", Outcome::Failure, Some("X9".to_owned())));
+
+        inventory.update("T1", InventoryDetails::default(), &admin(), &request).await.unwrap();
+        assert_eq!(last(), ("storage.inventory_update", Outcome::Success, Some("T1".to_owned())));
+    }
+
+    #[tokio::test]
+    async fn a_note_kept_is_answered_while_the_disks_cannot_be_read() {
+        let (use_cases, fake, _) = use_cases();
+        let inventory = &use_cases.inventory;
+        let request = RequestContext::default();
+        inventory.list(&request).await.unwrap();
+        *fake.devices_fail.lock().unwrap() = true;
+        let noted = InventoryDetails::new(Some("2024-03-01"), None, Some("Shop"), None).unwrap();
+
+        let updated = inventory.update("T1", noted.clone(), &admin(), &request).await.unwrap();
+
+        assert_eq!((updated.record.serial.as_str(), &updated.record.details), ("T1", &noted));
+        assert_eq!(updated.disk, None, "whether it is present is not known now");
+        assert_eq!(fake.inventory.lock().unwrap()[0].details, noted);
     }
 }

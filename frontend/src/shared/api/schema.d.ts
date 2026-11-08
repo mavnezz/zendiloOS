@@ -2933,7 +2933,9 @@ export interface paths {
         get: operations["enclosure"];
         /**
          * Chooses the enclosure: a model of the catalog (with other bindings for
-         *     some slots), or a layout of one's own. Needs `storage.manage`.
+         *     some slots, each slot once at most), or a layout of one's own. Saved,
+         *     it is answered also while the disks cannot be read, with none placed.
+         *     Needs `storage.manage`.
          */
         put: operations["set_enclosure"];
         post?: never;
@@ -5149,7 +5151,11 @@ export interface components {
         InterfaceTheme: "light" | "dark" | "system";
         /** @description A disk the NAS has seen, by serial number. */
         InventoryDisk: {
-            /** @description Its kernel name while present; `null`: stored, no longer present. */
+            /**
+             * @description Its kernel name while present; `null`: stored, no longer present
+             *     (or, in the answer to a change, not known while the disks cannot be
+             *     read).
+             */
             disk?: string | null;
             /**
              * Format: int64
@@ -5158,7 +5164,7 @@ export interface components {
             first_seen: number;
             /**
              * Format: int64
-             * @description Unix seconds; while present, up to an hour behind.
+             * @description Unix seconds; while present, up to an hour behind. Never goes back.
              */
             last_seen: number;
             /** @description As last seen. */
@@ -5166,6 +5172,10 @@ export interface components {
             note?: string | null;
             /** @description `YYYY-MM-DD`. */
             purchased?: string | null;
+            /**
+             * @description Its serial number; while another disk present reports the same one
+             *     (the disks of some USB docks), with its port: `SERIAL@ID_PATH`.
+             */
             serial: string;
             /** Format: int64 */
             size_bytes: number;
@@ -14265,7 +14275,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description `invalid_input` */
+            /** @description `invalid_input`, also for a slot bound otherwise twice */
             422: {
                 headers: {
                     [name: string]: unknown;

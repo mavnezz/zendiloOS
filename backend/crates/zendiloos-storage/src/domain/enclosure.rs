@@ -6,7 +6,7 @@
 //! `ID_PATH`), so a disk replaced in that slot shows up there by itself;
 //! or to a serial number, for ports that are not stable (USB, some HBAs).
 
-use super::disk::Disk;
+use super::disk::{Disk, serial_key};
 
 /// Most groups in one enclosure.
 pub const MAX_GROUPS: usize = 16;
@@ -121,11 +121,14 @@ pub enum Binding {
 }
 
 impl Binding {
-    /// Whether `disk` is the one this binding names.
-    fn holds(&self, disk: &Disk) -> bool {
+    /// Whether `disk`, known by `serial_key` among the disks present
+    /// ([`serial_key`]), is the one this binding names. A serial number
+    /// two disks present report names neither: which one is meant cannot
+    /// be told, and one must not take the other's slot.
+    fn holds(&self, disk: &Disk, serial_key: Option<&str>) -> bool {
         match self {
             Binding::Port(port) => disk.id_path.as_deref().is_some_and(|path| same_port(port, path)),
-            Binding::Serial(serial) => disk.serial.as_deref() == Some(serial.as_str()),
+            Binding::Serial(serial) => serial_key == Some(serial.as_str()),
         }
     }
 
@@ -219,6 +222,8 @@ pub enum InvalidEnclosure {
     DuplicateBinding(String),
     #[error("there is no slot {0:?}")]
     UnknownSlot(String),
+    #[error("the slot {0:?} is bound otherwise twice")]
+    DuplicateOverride(String),
     #[error("there is no model {0:?}")]
     UnknownModel(String),
 }
@@ -287,10 +292,14 @@ impl Layout {
         self.slots().find(|slot| slot.id == id)
     }
 
-    /// The same layout with other bindings for some slots.
+    /// The same layout with other bindings for some slots, each at most
+    /// once.
     pub fn with_overrides(&self, overrides: &[Override]) -> Result<Self, InvalidEnclosure> {
         let mut groups = self.groups.clone();
-        for change in overrides {
+        for (index, change) in overrides.iter().enumerate() {
+            if overrides[..index].iter().any(|earlier| earlier.slot == change.slot) {
+                return Err(InvalidEnclosure::DuplicateOverride(change.slot.clone()));
+            }
             let slot = groups
                 .iter_mut()
                 .flat_map(|group| &mut group.slots)
@@ -513,6 +522,7 @@ impl Placement {
 /// Places the present disks: by port first, then by serial number; a
 /// disk is in one slot at most.
 pub fn place(layout: &Layout, disks: &[Disk]) -> Placement {
+    let keys: Vec<Option<String>> = disks.iter().map(|disk| serial_key(disk, disks)).collect();
     let mut taken = vec![false; disks.len()];
     let mut found: Vec<Option<usize>> = vec![None; layout.slots().count()];
     for port_pass in [true, false] {
@@ -521,7 +531,8 @@ pub fn place(layout: &Layout, disks: &[Disk]) -> Placement {
             if matches!(binding, Binding::Port(_)) != port_pass {
                 continue;
             }
-            if let Some(disk) = (0..disks.len()).find(|&d| !taken[d] && binding.holds(&disks[d])) {
+            let holds = |d: usize| binding.holds(&disks[d], keys[d].as_deref());
+            if let Some(disk) = (0..disks.len()).find(|&d| !taken[d] && holds(d)) {
                 taken[disk] = true;
                 found[index] = Some(disk);
             }
@@ -755,6 +766,17 @@ mod tests {
         assert!(matches!(twice, Err(InvalidEnclosure::DuplicateBinding(_))));
     }
 
+    #[test]
+    fn a_slot_is_bound_otherwise_once_at_most() {
+        let layout = Layout::new(vec![bays()]).unwrap();
+        let again = layout.with_overrides(&[
+            Override { slot: "bay1".into(), binding: None },
+            Override { slot: "bay2".into(), binding: serial("S2") },
+            Override { slot: "bay1".into(), binding: serial("S1") },
+        ]);
+        assert_eq!(again.unwrap_err(), InvalidEnclosure::DuplicateOverride("bay1".into()));
+    }
+
     fn model() -> EnclosureModel {
         EnclosureModel {
             id: "acme-4".into(),
@@ -832,5 +854,43 @@ mod tests {
         let placement = place(&unbound, &disks[..1]);
         assert_eq!(placement.slots[0].state, SlotState::Empty);
         assert_eq!(placement.unplaced, ["sda"]);
+    }
+
+    #[test]
+    fn a_serial_number_two_disks_report_places_neither() {
+        // A two-bay USB dock whose bridge reports its own serial number for
+        // both disks; the slots are bound to it, and to their ports.
+        let dock = "pci-0000:00:14.0-usb-0:2:1.0-scsi-0:0:0";
+        let usb = group(
+            "usb",
+            1,
+            3,
+            vec![
+                slot("usb1", serial("BRIDGE1")),
+                slot("usb2", port(&format!("{dock}:1"))),
+                slot("usb3", serial("WD-1")),
+            ],
+        );
+        let layout = Layout::new(vec![usb]).unwrap();
+        let first = disk("sdf", Some("BRIDGE1"), Some(&format!("{dock}:0")));
+        let second = disk("sdg", Some("BRIDGE1"), Some(&format!("{dock}:1")));
+        let own = disk("sdh", Some("WD-1"), None);
+
+        let placement = place(&layout, &[first.clone(), second.clone(), own.clone()]);
+        let states: Vec<_> =
+            placement.slots.iter().map(|p| (p.slot.as_str(), p.state, p.disk.as_deref())).collect();
+        assert_eq!(
+            states,
+            [
+                ("usb1", SlotState::Missing, None),
+                ("usb2", SlotState::Occupied, Some("sdg")),
+                ("usb3", SlotState::Occupied, Some("sdh")),
+            ]
+        );
+        assert_eq!(placement.unplaced, ["sdf"], "which of the two it was cannot be told");
+
+        // Alone in the dock, its serial number is its own again.
+        let placement = place(&layout, &[first, own]);
+        assert_eq!(placement.slot_of("sdf"), Some("usb1"));
     }
 }

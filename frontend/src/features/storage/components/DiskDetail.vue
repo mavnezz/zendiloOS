@@ -300,7 +300,7 @@ function finding(item: SmartFinding): string {
       </template>
     </template>
 
-    <InventoryForm v-if="disk" :serial="disk.serial" :can-manage="canManage" />
+    <InventoryForm v-if="disk" :disk="disk.name" :serial="disk.serial" :can-manage="canManage" />
 
     <section v-if="disk?.partitions.length" class="grid gap-2">
       <h4 class="font-medium">{{ t('storage.partitions') }}</h4>

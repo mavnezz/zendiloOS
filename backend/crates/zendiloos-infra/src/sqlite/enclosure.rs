@@ -242,12 +242,15 @@ impl DiskInventoryStore for SqliteDiskInventory {
     async fn seen(&self, disks: &[SeenDisk], at: Timestamp) -> Result<(), PortError> {
         let mut transaction = self.db.pool().begin().await.map_err(inventory_error)?;
         let (at, step) = (at.unix_seconds(), LAST_SEEN_STEP_SECONDS);
+        // The last time seen never goes back: not for a clock set back (an
+        // RTC before NTP), nor for a model written at once.
         for disk in disks {
             let size = i64::try_from(disk.size_bytes).unwrap_or(i64::MAX);
             sqlx::query!(
                 "INSERT INTO disk_inventory (serial, model, size_bytes, first_seen, last_seen) VALUES (?, ?, ?, ?, ?) \
                  ON CONFLICT (serial) DO UPDATE SET \
-                 model = excluded.model, size_bytes = excluded.size_bytes, last_seen = excluded.last_seen \
+                 model = excluded.model, size_bytes = excluded.size_bytes, \
+                 last_seen = MAX(disk_inventory.last_seen, excluded.last_seen) \
                  WHERE disk_inventory.last_seen <= excluded.last_seen - ? \
                  OR disk_inventory.model IS NOT excluded.model OR disk_inventory.size_bytes != excluded.size_bytes",
                 disk.serial,
@@ -370,6 +373,25 @@ mod tests {
         assert!(store.remove("B2").await.unwrap());
         assert!(!store.remove("B2").await.unwrap());
         assert_eq!(store.records().await.unwrap().len(), 1);
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn the_last_time_a_disk_was_seen_never_goes_back() {
+        let (_dir, db) = temporary_database().await;
+        let store = SqliteDiskInventory::new(db.clone());
+        let at = |seconds| Timestamp::from_unix_seconds(seconds);
+        store.seen(&[seen("A1", "HDD")], at(2_000_000)).await.unwrap();
+
+        // The clock set back by a day (an RTC before NTP), and the model
+        // changed, which is written at once.
+        store.seen(&[seen("A1", "HDD v2")], at(1_913_600)).await.unwrap();
+        store.seen(&[seen("A1", "HDD v2")], at(1_000_000)).await.unwrap();
+
+        let record = store.records().await.unwrap().remove(0);
+        assert_eq!((record.model.as_deref(), record.last_seen), (Some("HDD v2"), at(2_000_000)));
+        store.seen(&[seen("A1", "HDD v2")], at(2_003_600)).await.unwrap();
+        assert_eq!(store.records().await.unwrap()[0].last_seen, at(2_003_600));
         db.close().await;
     }
 }

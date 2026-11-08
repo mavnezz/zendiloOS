@@ -193,6 +193,21 @@ describe('a disk’s purchase and warranty', () => {
     }
   }
 
+  it('are noted for the disk itself where another one reports its serial number', async () => {
+    const dock = 'pci-0000:00:14.0-usb-0:2:1.0-scsi-0:0:0'
+    disks.value = [sda({ serial: 'BRIDGE1', transport: 'usb', id_path: `${dock}:0` })]
+    inventory.value = [
+      seen({ serial: `BRIDGE1@${dock}:1`, disk: 'sdb', vendor: 'Other shop' }),
+      seen({ serial: `BRIDGE1@${dock}:0`, vendor: 'Shop' }),
+    ]
+    const wrapper = mountDetail()
+    expect((wrapper.get('#inventory-vendor').element as HTMLInputElement).value).toBe('Shop')
+
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(saveInventory).toHaveBeenCalledWith(`BRIDGE1@${dock}:0`, expect.anything())
+  })
+
   it('are noted by serial number', async () => {
     disks.value = [sda()]
     inventory.value = [seen({ vendor: 'Shop', purchased: '2024-03-01' })]

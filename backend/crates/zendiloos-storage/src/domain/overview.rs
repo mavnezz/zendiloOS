@@ -116,8 +116,8 @@ impl Overview {
 }
 
 /// What is wrong with `pools` and `disks`. `health` holds the SMART
-/// verdicts last read, by serial number (or name for disks without one);
-/// disks not in it are not judged.
+/// verdicts last read, by [`health_key`](super::health_key); disks not in
+/// it are not judged.
 pub fn overview(
     pools: &[Pool],
     disks: &[Disk],
@@ -129,9 +129,9 @@ pub fn overview(
         concerns.extend(pool_concerns(pool, now));
     }
     for disk in disks {
-        let key = disk.serial.as_deref().unwrap_or(&disk.name);
+        let key = super::health_key(disk, disks);
         let (disk_name, model) = (disk.name.clone(), disk.model.clone());
-        match health.get(key) {
+        match health.get(&key) {
             Some(Health::Failing) => concerns.push(Concern::DiskFailing { disk: disk_name, model }),
             Some(Health::Warning) => concerns.push(Concern::DiskWorn { disk: disk_name, model }),
             Some(Health::Good) | None => {}

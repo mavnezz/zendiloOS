@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO disk_inventory (serial, model, size_bytes, first_seen, last_seen) VALUES (?, ?, ?, ?, ?) ON CONFLICT (serial) DO UPDATE SET model = excluded.model, size_bytes = excluded.size_bytes, last_seen = MAX(disk_inventory.last_seen, excluded.last_seen) WHERE disk_inventory.last_seen <= excluded.last_seen - ? OR disk_inventory.model IS NOT excluded.model OR disk_inventory.size_bytes != excluded.size_bytes",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "3a22d795776da78d18c0aefd02b9da5aabdec6db947a9b8428780f3df25f7cff"
+}

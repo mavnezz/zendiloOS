@@ -54,8 +54,19 @@ pub struct FakeStorage {
     pub chosen: Mutex<Option<EnclosureChoice>>,
     /// The disks seen.
     pub inventory: Mutex<Vec<InventoryRecord>>,
+    /// Reading the block devices fails while set.
+    pub devices_fail: Mutex<bool>,
+    /// A USB dock with two disks (`sdg`, `sdh`) whose bridge reports its
+    /// own serial number, [`DOCK_SERIAL`], for both, while set.
+    pub dock: Mutex<bool>,
+    /// While set, each SMART read waits for a permit of it (and gives it
+    /// back), as a slow disk would.
+    pub smart_gate: Mutex<Option<Arc<tokio::sync::Semaphore>>>,
     tokens: AtomicU64,
 }
+
+/// The serial number both disks of [`FakeStorage::dock`] report.
+pub const DOCK_SERIAL: &str = "BRIDGE1";
 
 /// The model of [`test_catalog`]: four bays and two M.2 slots, the
 /// machine `TEST` `NAS 4`.
@@ -70,6 +81,8 @@ fn port_of(name: &str) -> Option<String> {
         "sdd" => "pci-0000:05:00.0-ata-4.0",
         "sde" => "pci-0000:00:17.0-ata-1.0",
         "sdf" => "pci-0000:00:14.0-usb-0:1:1.0-scsi-0:0:0:0",
+        "sdg" => "pci-0000:00:14.0-usb-0:2:1.0-scsi-0:0:0:0",
+        "sdh" => "pci-0000:00:14.0-usb-0:2:1.0-scsi-0:0:0:1",
         "nvme0n1" => "pci-0000:01:00.0-nvme-1",
         _ => return None,
     };
@@ -458,6 +471,9 @@ fn member(name: &str, serial: &str) -> BlockDevice {
 #[async_trait]
 impl BlockDeviceSource for FakeStorage {
     async fn block_devices(&self, _: &RequestContext) -> Result<Vec<BlockDevice>, PortError> {
+        if *self.devices_fail.lock().unwrap() {
+            return Err(PortError::new("block devices", std::io::Error::other("the agent does not answer")));
+        }
         let root = BlockDevice {
             filesystem: filesystem("ext4", None, None),
             mount_points: vec!["/".to_owned()],
@@ -496,6 +512,11 @@ impl BlockDeviceSource for FakeStorage {
         if let Some(mounted) = *self.stick.lock().unwrap() {
             devices.push(stick(mounted));
         }
+        if *self.dock.lock().unwrap() {
+            for name in ["sdg", "sdh"] {
+                devices.push(BlockDevice { transport: Some("usb".to_owned()), ..unused(name, DOCK_SERIAL) });
+            }
+        }
         Ok(devices)
     }
 }
@@ -520,6 +541,10 @@ impl SmartSource for FakeStorage {
     }
 
     async fn smart_report(&self, disk: &str, _: &RequestContext) -> Result<SmartReport, PortError> {
+        let gate = self.smart_gate.lock().unwrap().clone();
+        if let Some(gate) = gate {
+            let _permit = gate.acquire().await.expect("the gate stays open");
+        }
         if disk == "sdb" {
             return Ok(SmartReport::Standby);
         }
@@ -686,7 +711,7 @@ impl DiskInventoryStore for FakeStorage {
                 Some(record) => {
                     record.model.clone_from(&disk.model);
                     record.size_bytes = disk.size_bytes;
-                    record.last_seen = at;
+                    record.last_seen = record.last_seen.max(at);
                 }
                 None => records.push(InventoryRecord {
                     serial: disk.serial.clone(),

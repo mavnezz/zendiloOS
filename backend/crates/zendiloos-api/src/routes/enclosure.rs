@@ -516,7 +516,9 @@ impl TryFrom<SetEnclosure> for storage::EnclosureChoice {
 }
 
 /// Chooses the enclosure: a model of the catalog (with other bindings for
-/// some slots), or a layout of one's own. Needs `storage.manage`.
+/// some slots, each slot once at most), or a layout of one's own. Saved,
+/// it is answered also while the disks cannot be read, with none placed.
+/// Needs `storage.manage`.
 #[utoipa::path(
     put,
     path = "/storage/enclosure",
@@ -525,7 +527,7 @@ impl TryFrom<SetEnclosure> for storage::EnclosureChoice {
     request_body = SetEnclosure,
     responses(
         (status = OK, body = Enclosure),
-        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_input`"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_input`, also for a slot bound otherwise twice"),
         (status = FORBIDDEN, body = Problem, description = "`forbidden`"),
     )
 )]
@@ -671,6 +673,8 @@ async fn stop_locate(
 /// A disk the NAS has seen, by serial number.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct InventoryDisk {
+    /// Its serial number; while another disk present reports the same one
+    /// (the disks of some USB docks), with its port: `SERIAL@ID_PATH`.
     pub serial: String,
     /// As last seen.
     pub model: Option<String>,
@@ -684,9 +688,11 @@ pub struct InventoryDisk {
     pub note: Option<String>,
     /// Unix seconds.
     pub first_seen: i64,
-    /// Unix seconds; while present, up to an hour behind.
+    /// Unix seconds; while present, up to an hour behind. Never goes back.
     pub last_seen: i64,
-    /// Its kernel name while present; `null`: stored, no longer present.
+    /// Its kernel name while present; `null`: stored, no longer present
+    /// (or, in the answer to a change, not known while the disks cannot be
+    /// read).
     pub disk: Option<String>,
 }
 

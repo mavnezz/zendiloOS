@@ -86,7 +86,7 @@ watch(
     }
     if (filled || !current || !models) return
     filled = true
-    draft.value = draftOf(current, models, firstGroup())
+    draft.value = draftOf(current, firstGroup())
     failure.value = null
   },
   { immediate: true },
@@ -231,12 +231,12 @@ function bind(slot: string, value: string): void {
 /** Present disks the draft puts in no slot. */
 const unplaced = computed(() =>
   (disks.value ?? []).filter(
-    (disk) => !slots.value.some((slot) => boundDisk(slot.binding, [disk]) === disk),
+    (disk) => !slots.value.some((slot) => boundDisk(slot.binding, disks.value ?? []) === disk),
   ),
 )
 
 function place(disk: Disk, slot: string): void {
-  const binding = bindingFor(disk)
+  const binding = bindingFor(disk, disks.value ?? [])
   if (slot && binding) bind(slot, encode(binding))
 }
 
@@ -510,7 +510,7 @@ async function remove(): Promise<void> {
             <span class="min-w-0 flex-1 truncate">{{ diskLabel(disk) }}</span>
             <select
               value=""
-              :disabled="!bindingFor(disk)"
+              :disabled="!bindingFor(disk, disks ?? [])"
               :aria-label="t('storage.enclosure.dialog.putInto', { disk: disk.name })"
               class="h-8 w-56 rounded-md border bg-background px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-50 dark:bg-input/30"
               @change="place(disk, ($event.target as HTMLSelectElement).value)"

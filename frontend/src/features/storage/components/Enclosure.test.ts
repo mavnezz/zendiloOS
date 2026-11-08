@@ -208,6 +208,17 @@ describe('the enclosure on the disks page', () => {
     expect(body.groups[0]!.slots).toHaveLength(4)
   })
 
+  it('takes no model of the catalog for a machine not recognised as one', async () => {
+    on('GET', '/api/v1/storage/enclosure', { ...notSetUp, detected: null })
+    await open('disks')
+    await click(t('storage.enclosure.setUp'))
+    expect(select('#enclosure-source').value).toBe('custom')
+    expect(page()).not.toContain(t('storage.enclosure.dialog.unverified'))
+    // The catalog's models are still there to choose.
+    await choose(select('#enclosure-source'), 'ugreen-dxp4800-plus')
+    expect(page()).toContain(t('storage.enclosure.dialog.unverified'))
+  })
+
   it('says why the model could not be chosen', async () => {
     on('GET', '/api/v1/storage/enclosure', notSetUp)
     on('PUT', '/api/v1/storage/enclosure', problem(422, 'invalid_input', 'there is no model'))
