@@ -28,6 +28,7 @@ const session: SessionInfo = {
     permissions: ['system.view'],
     password_change_required: false,
     password_locked: false,
+    created_at: 1_700_000_000,
   },
   csrf_token: 'csrf-1',
   expires_at: 0,

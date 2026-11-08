@@ -120,6 +120,76 @@ describe('the preferences', () => {
   })
 })
 
+describe('the solid background', () => {
+  it('comes in the account’s colour, which stays while an image is chosen', async () => {
+    on('GET', '/api/v1/preferences', () => ({
+      language: null,
+      theme: null,
+      wallpaper: 'color',
+      wallpaper_color: '#dfe2e6',
+    }))
+    on('PUT', '/api/v1/preferences', ({ body }) => body)
+    const preferences = await store()
+    await preferences.load()
+    expect(preferences.wallpaper.color).toBe('#dfe2e6')
+    expect(document.documentElement.dataset.wallpaperTone).toBe('light')
+
+    preferences.chooseWallpaper(findWallpaper('tide'))
+    await settle()
+    expect(preferences.solidColor).toBe('#dfe2e6')
+    expect(callsTo('PUT', '/api/v1/preferences').at(-1)!.body).toMatchObject({
+      wallpaper: 'tide',
+      wallpaper_color: '#dfe2e6',
+    })
+
+    preferences.showWallpaper(findWallpaper('color', '#134e4a'))
+    expect(preferences.solidColor).toBe('#134e4a')
+    expect(callsTo('PUT', '/api/v1/preferences')).toHaveLength(1)
+  })
+})
+
+describe('the reminder to star zendiloOS', () => {
+  it('is kept with the account: when it was shown, how often, and the answer', async () => {
+    on('GET', '/api/v1/preferences', () => ({
+      language: null,
+      theme: null,
+      star_prompt: { times_shown: 1, last_shown_at: 100, answer: 'later' },
+    }))
+    on('PUT', '/api/v1/preferences', ({ body }) => body)
+    const preferences = await store()
+    preferences.answerStarPrompt('declined')
+    expect(preferences.starPrompt, 'unknown before the account’s choices arrive').toBeNull()
+    expect(preferences.loaded).toBe(false)
+
+    await preferences.load()
+    expect(preferences.loaded).toBe(true)
+    preferences.starPromptShown(200)
+    preferences.answerStarPrompt('starred')
+    await settle()
+    const sent = callsTo('PUT', '/api/v1/preferences').map((call) => call.body)
+    expect(sent).toEqual([
+      expect.objectContaining({
+        star_prompt: { times_shown: 2, last_shown_at: 200, answer: 'later' },
+      }),
+      expect.objectContaining({
+        star_prompt: { times_shown: 2, last_shown_at: 200, answer: 'starred' },
+      }),
+    ])
+
+    preferences.reset()
+    expect([preferences.starPrompt, preferences.loaded]).toEqual([null, false])
+  })
+
+  it('counts its first showing', async () => {
+    on('GET', '/api/v1/preferences', () => ({ language: null, theme: null }))
+    on('PUT', '/api/v1/preferences', ({ body }) => body)
+    const preferences = await store()
+    await preferences.load()
+    preferences.starPromptShown(300)
+    expect(preferences.starPrompt).toEqual({ times_shown: 1, last_shown_at: 300, answer: null })
+  })
+})
+
 describe('the colour scheme', () => {
   it('is remembered in this browser, and follows the system unless chosen', () => {
     const system = media(true)

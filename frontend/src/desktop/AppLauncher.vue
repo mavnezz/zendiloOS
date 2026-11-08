@@ -76,7 +76,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey))
     role="dialog"
     aria-modal="true"
     :aria-label="t('desktop.allApps')"
-    class="absolute inset-0 z-40 flex flex-col items-center gap-8 overflow-y-auto bg-black/25 p-10 backdrop-blur-2xl motion-safe:animate-window-in"
+    class="absolute inset-0 z-40 flex flex-col items-center gap-8 overflow-y-auto bg-black/25 p-10 backdrop-blur-2xl motion-safe:animate-window-in in-data-[wallpaper-tone=light]:bg-black/55"
     @click.self="emit('close')"
   >
     <div class="relative w-full max-w-md shrink-0">

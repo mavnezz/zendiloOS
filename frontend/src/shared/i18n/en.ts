@@ -456,6 +456,7 @@ const en = {
     firmware: 'Firmware',
     storage: 'Storage',
     poolUse: '{used} of {total} · {percent}',
+    github: 'zendiloOS on GitHub',
   },
   appearance: {
     description: 'How zendiloOS looks for this account.',
@@ -464,6 +465,17 @@ const en = {
     theme: 'Design',
     themes: { light: 'Light', dark: 'Dark', system: 'As the system' },
     wallpaper: 'Background',
+    solid: 'Solid colour',
+    colour: 'Colour',
+    pickColour: 'Any colour',
+    colours: {
+      slate: 'Slate',
+      navy: 'Navy',
+      teal: 'Deep teal',
+      aubergine: 'Aubergine',
+      warmGrey: 'Warm grey',
+      lightGrey: 'Light grey',
+    },
   },
   locale: {
     language: 'Language',
@@ -1124,6 +1136,13 @@ const en = {
     poweredOff: 'zendiloOS has been shut down.',
     poweredOffHint: 'You can close this page.',
     powerFailed: 'The system could not be restarted or shut down.',
+    starPrompt: {
+      label: 'zendiloOS on GitHub',
+      text: 'Do you like zendiloOS? A star on GitHub helps others find it.',
+      view: 'View on GitHub',
+      later: 'Later',
+      decline: 'No thanks',
+    },
   },
   about: {
     machine: 'Machine',

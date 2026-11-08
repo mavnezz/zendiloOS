@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { Clock, Cpu, Database, Server } from 'lucide-vue-next'
+import { Clock, Cpu, Database, ExternalLink, Server } from 'lucide-vue-next'
 import { computed, onScopeDispose, shallowRef } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import { live } from '@/shared/api/live'
 import type { Metrics, Pool } from '@/shared/api/types'
 import { formatBytes, formatDateTime, formatDuration, formatPercent } from '@/shared/lib/format'
+import { PROJECT_URL } from '@/shared/lib/star-prompt'
 import { Meter } from '@/shared/ui/meter'
 import { DefinitionList, PageCard, PageHeader } from '@/shared/ui/page'
 
@@ -92,6 +93,15 @@ const share = (pool: Pool) => {
           <div>
             <p class="text-2xl font-semibold tracking-tight">{{ info.hostname }}</p>
             <p class="text-sm text-muted-foreground">zendiloOS {{ info.version }}</p>
+            <a
+              :href="PROJECT_URL"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="mt-1 inline-flex items-center gap-1 text-sm text-primary hover:underline"
+            >
+              {{ t('device.github') }}
+              <ExternalLink class="size-3.5" aria-hidden="true" />
+            </a>
           </div>
           <DefinitionList :items="device" />
         </div>

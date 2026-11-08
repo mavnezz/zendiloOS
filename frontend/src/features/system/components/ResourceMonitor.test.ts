@@ -116,6 +116,13 @@ describe('the device page', () => {
     })
     expect(page()).toContain('Acme NAS 4')
     expect(page()).toContain('F12 · UEFI')
+    const github = document.querySelector('a')!
+    expect([github.textContent?.trim(), github.href, github.target, github.rel]).toEqual([
+      t('device.github'),
+      'https://github.com/mavnezz/zendiloOS',
+      '_blank',
+      'noopener noreferrer',
+    ])
     push('metrics', sample(6))
     await settle()
     expect(page()).toContain('0.50 · 0.40 · 0.30')

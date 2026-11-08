@@ -467,6 +467,7 @@ const de: Messages = {
     firmware: 'Firmware',
     storage: 'Speicher',
     poolUse: '{used} von {total} · {percent}',
+    github: 'zendiloOS auf GitHub',
   },
   appearance: {
     description: 'Wie zendiloOS für dieses Konto aussieht.',
@@ -475,6 +476,17 @@ const de: Messages = {
     theme: 'Design',
     themes: { light: 'Hell', dark: 'Dunkel', system: 'Wie das System' },
     wallpaper: 'Hintergrund',
+    solid: 'Volltonfarbe',
+    colour: 'Farbe',
+    pickColour: 'Beliebige Farbe',
+    colours: {
+      slate: 'Schiefer',
+      navy: 'Marineblau',
+      teal: 'Tiefes Petrol',
+      aubergine: 'Aubergine',
+      warmGrey: 'Warmes Grau',
+      lightGrey: 'Hellgrau',
+    },
   },
   locale: {
     language: 'Sprache',
@@ -1150,6 +1162,13 @@ const de: Messages = {
     poweredOff: 'zendiloOS wurde heruntergefahren.',
     poweredOffHint: 'Du kannst diese Seite schließen.',
     powerFailed: 'Das System konnte nicht neu gestartet oder heruntergefahren werden.',
+    starPrompt: {
+      label: 'zendiloOS auf GitHub',
+      text: 'Gefällt Ihnen zendiloOS? Ein Stern auf GitHub hilft anderen, es zu finden.',
+      view: 'Auf GitHub ansehen',
+      later: 'Später',
+      decline: 'Nein danke',
+    },
   },
   about: {
     machine: 'Gerät',

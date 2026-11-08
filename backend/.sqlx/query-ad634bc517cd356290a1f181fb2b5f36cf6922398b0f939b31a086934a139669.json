@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO account_preferences (account_id, language, theme, wallpaper, wallpaper_color, widgets,\n                desktop_icons, star_prompt_shown, star_prompt_shown_at, star_prompt_answer)\n             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\n             ON CONFLICT (account_id) DO UPDATE SET language = excluded.language, theme = excluded.theme,\n                wallpaper = excluded.wallpaper, wallpaper_color = excluded.wallpaper_color,\n                widgets = excluded.widgets, desktop_icons = excluded.desktop_icons,\n                star_prompt_shown = excluded.star_prompt_shown, star_prompt_shown_at = excluded.star_prompt_shown_at,\n                star_prompt_answer = excluded.star_prompt_answer",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 10
+    },
+    "nullable": []
+  },
+  "hash": "ad634bc517cd356290a1f181fb2b5f36cf6922398b0f939b31a086934a139669"
+}

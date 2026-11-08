@@ -309,6 +309,22 @@ frontend/src/
   `logs.view`); features hand them over as pages, never with a frame of
   their own, so a window has one navigation. The dock's resource meters
   open the monitor's page.
+- The account's **interface preferences** (`account_preferences`,
+  `GET/PUT /api/v1/preferences`) are language, scheme, background, widgets
+  and the order of the icons, kept with the account so that every browser
+  looks the same. A background may be a single colour (`color`, with its
+  `#rrggbb`, kept while an image is chosen); its brightness sets
+  `data-wallpaper-tone`, so icon labels turn dark on a light colour in
+  either scheme, and glass lets less of it through in the dark one.
+- The preferences also hold the **reminder to star zendiloOS on GitHub**:
+  a card where the toasts appear, for administrators only, from the
+  account's 14th day, at most once per browser session and twice in all,
+  the second time 60 days after "Later"; the link and "No thanks" end it.
+  It waits for a calm moment: no job running, no dialog open, no unread
+  warning or error and the storage overview fine. The decision is one pure
+  function (`shared/lib/star-prompt.ts`); the server only keeps how often
+  it was shown, when, and the answer, and never lets that go back. It is
+  only a link: nothing is asked of GitHub, counted or sent.
 - Pages adapt to the window size with **container queries**, not to the
   screen size.
 - On phones there are no windows: the desktop becomes a home screen and apps

@@ -12,8 +12,10 @@ use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 use zendiloos_identity::application::commands::{ChangePasswordInput, LoginInput, SetupInput};
 use zendiloos_identity::application::{AuthContext, LoginOutcome, SignedIn};
-use zendiloos_identity::domain::{Language, Layout, Preferences, Role, Theme, Wallpaper};
-use zendiloos_kernel::Secret;
+use zendiloos_identity::domain::{
+    Language, Layout, Preferences, Role, StarAnswer, StarPrompt, Theme, Wallpaper, WallpaperColor,
+};
+use zendiloos_kernel::{Secret, Timestamp};
 
 use crate::auth::{Auth, AuthAllowPending, SameOrigin, removal_cookie, session_cookie};
 use crate::error::{ApiError, Problem};
@@ -71,6 +73,8 @@ pub struct CurrentAccount {
     pub password_change_required: bool,
     /// Only administrators set this account's password.
     pub password_locked: bool,
+    /// When the account was created, in Unix seconds.
+    pub created_at: i64,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -95,6 +99,7 @@ impl From<&AuthContext> for SessionInfo {
                 permissions: account.role.permissions().map(|p| p.as_str().to_owned()).collect(),
                 password_change_required: account.password_change_required,
                 password_locked: account.password_locked,
+                created_at: account.created_at.unix_seconds(),
             },
             csrf_token: auth.csrf_token.expose().to_owned(),
             expires_at: auth.expires_at.unix_seconds(),
@@ -302,6 +307,35 @@ pub enum InterfaceTheme {
     System,
 }
 
+/// What an administrator answered the reminder to star zendiloOS on
+/// GitHub.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum StarPromptAnswer {
+    /// Once more, some time later.
+    Later,
+    /// Went to GitHub; whether a star was given is not known.
+    Starred,
+    Declined,
+}
+
+/// The reminder to star zendiloOS on GitHub, once it was shown. When it is
+/// due is the interface's business; nothing of it leaves the machine. It
+/// never goes back: a save that knows less than what is kept (shown fewer
+/// times, earlier, or not answered) leaves what is kept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct InterfaceStarPrompt {
+    /// How often it was shown: once or twice.
+    #[schema(minimum = 1, maximum = 2)]
+    pub times_shown: u8,
+    /// When it was last shown, in Unix seconds.
+    pub last_shown_at: i64,
+    /// `null`: not answered.
+    #[serde(default)]
+    pub answer: Option<StarPromptAnswer>,
+}
+
 /// How the signed-in account wants the interface. `null` means not chosen:
 /// each browser keeps what it shows.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -312,15 +346,22 @@ pub struct InterfacePreferences {
     #[serde(default)]
     pub theme: Option<InterfaceTheme>,
     /// The desktop's background, by the interface's name for it (lowercase
-    /// letters).
+    /// letters); `color` for one of a single colour.
     #[serde(default)]
     pub wallpaper: Option<String>,
+    /// The colour of the background `color`, as `#rrggbb` in lowercase.
+    /// Kept while another background is chosen.
+    #[serde(default)]
+    pub wallpaper_color: Option<String>,
     /// The widgets beside the desktop, in order, by id; empty for none.
     #[serde(default)]
     pub widgets: Option<Vec<String>>,
     /// The app icons on the desktop, in order, by id.
     #[serde(default)]
     pub desktop_icons: Option<Vec<String>>,
+    /// `null` until the reminder to star zendiloOS was first shown.
+    #[serde(default)]
+    pub star_prompt: Option<InterfaceStarPrompt>,
 }
 
 impl From<Preferences> for InterfacePreferences {
@@ -336,8 +377,18 @@ impl From<Preferences> for InterfacePreferences {
                 Theme::System => InterfaceTheme::System,
             }),
             wallpaper: preferences.wallpaper.map(|wallpaper| wallpaper.as_str().to_owned()),
+            wallpaper_color: preferences.wallpaper_color.map(|color| color.as_str().to_owned()),
             widgets: preferences.widgets.map(|layout| layout.ids().to_vec()),
             desktop_icons: preferences.desktop_icons.map(|layout| layout.ids().to_vec()),
+            star_prompt: preferences.star_prompt.map(|prompt| InterfaceStarPrompt {
+                times_shown: prompt.times_shown(),
+                last_shown_at: prompt.last_shown().unix_seconds(),
+                answer: prompt.answer().map(|answer| match answer {
+                    StarAnswer::Later => StarPromptAnswer::Later,
+                    StarAnswer::Starred => StarPromptAnswer::Starred,
+                    StarAnswer::Declined => StarPromptAnswer::Declined,
+                }),
+            }),
         }
     }
 }
@@ -350,13 +401,29 @@ impl TryFrom<InterfacePreferences> for Preferences {
         let layout = |ids: Option<Vec<String>>, what: &str| {
             ids.map(|ids| Layout::new(ids).ok_or_else(|| invalid(what))).transpose()
         };
+        let star_prompt = |prompt: InterfaceStarPrompt| {
+            let answer = prompt.answer.map(|answer| match answer {
+                StarPromptAnswer::Later => StarAnswer::Later,
+                StarPromptAnswer::Starred => StarAnswer::Starred,
+                StarPromptAnswer::Declined => StarAnswer::Declined,
+            });
+            StarPrompt::new(prompt.times_shown, Timestamp::from_unix_seconds(prompt.last_shown_at), answer)
+                .ok_or_else(|| invalid("star prompt (shown once or twice)"))
+        };
         Ok(Self {
             wallpaper: preferences
                 .wallpaper
                 .map(|name| Wallpaper::parse(&name).ok_or_else(|| invalid("wallpaper")))
                 .transpose()?,
+            wallpaper_color: preferences
+                .wallpaper_color
+                .map(|color| {
+                    WallpaperColor::parse(&color).ok_or_else(|| invalid("wallpaper colour (#rrggbb)"))
+                })
+                .transpose()?,
             widgets: layout(preferences.widgets, "widget layout")?,
             desktop_icons: layout(preferences.desktop_icons, "icon layout")?,
+            star_prompt: preferences.star_prompt.map(star_prompt).transpose()?,
             language: preferences.language.map(|language| match language {
                 InterfaceLanguage::En => Language::English,
                 InterfaceLanguage::De => Language::German,
@@ -385,7 +452,8 @@ async fn preferences(
     Ok(Json(state.identity.preferences.execute(&auth.0).await?.into()))
 }
 
-/// Replaces the signed-in account's interface preferences.
+/// Replaces the signed-in account's interface preferences; the star prompt
+/// only moves forward.
 #[utoipa::path(
     put,
     path = "/preferences",
@@ -394,7 +462,7 @@ async fn preferences(
     request_body = InterfacePreferences,
     responses(
         (status = NO_CONTENT, description = "Saved."),
-        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_input`: no such wallpaper name or layout"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_input`: no such wallpaper name, colour or layout, or a star prompt shown neither once nor twice"),
     )
 )]
 async fn save_preferences(

@@ -22,6 +22,7 @@ const session: SessionInfo = {
     permissions: [],
     password_change_required: true,
     password_locked: false,
+    created_at: 1_700_000_000,
   },
   csrf_token: 'csrf-1',
   expires_at: 0,
