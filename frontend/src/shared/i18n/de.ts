@@ -275,7 +275,6 @@ const de: Messages = {
     device: 'Info',
     appearance: 'Darstellung',
     network: 'Netzwerk',
-    power: 'Hardware & Energie',
     locale: 'Uhrzeit & Sprache',
     update: 'Aktualisieren & Wiederherstellen',
     accounts: 'Benutzer',
@@ -283,12 +282,10 @@ const de: Messages = {
     myAccount: 'Mein Konto',
     fileServices: 'Dateidienste',
     terminal: 'Terminal',
-    connection: 'Geräteverbindung',
     security: 'Sicherheit',
     notifications: 'Benachrichtigungen',
     soon: {
       update: 'zendiloOS und die Debian-Pakete des NAS aktuell halten, aus dem gewählten Kanal.',
-      connection: 'Dieses NAS per Namen erreichen, auch von außerhalb des Heimnetzes.',
     },
     networkDescription: 'Netzwerkschnittstellen und Adressen dieses Systems',
     networkHelp:
@@ -332,12 +329,6 @@ const de: Messages = {
     theme: 'Design',
     themes: { light: 'Hell', dark: 'Dunkel', system: 'Wie das System' },
     wallpaper: 'Hintergrund',
-  },
-  power: {
-    description: 'System neu starten oder herunterfahren',
-    now: 'Sofort',
-    title: 'Energie',
-    hint: 'Neustart oder Herunterfahren unterbricht alle Dateiübertragungen und laufenden Apps.',
   },
   locale: {
     language: 'Sprache',
@@ -874,10 +865,8 @@ const de: Messages = {
       'Time Machine braucht die macOS-Kompatibilität von SMB (Erweitert → macOS).',
     timeMachineTooSmall: 'Ein Time-Machine-Ordner fasst mindestens 1 GiB.',
     soon: {
-      ftp: 'FTP und FTPS für ältere Geräte und Programme, die nichts anderes sprechen, mit denselben Konten und Rechten wie SMB.',
       rsync:
         'Ein rsync-Server, damit ein anderes NAS oder jedes rsync-fähige Gerät auf dieses sichern kann.',
-      webdav: 'Freigegebene Ordner über HTTPS mit WebDAV, auch von außerhalb des Heimnetzes.',
     },
     explanation:
       'Wer welchen freigegebenen Ordner nutzen darf, wird je Ordner unter „Freigegebene Ordner“ eingestellt. Ein ausgeschalteter Dienst stoppt sofort und bleibt auch nach einem Neustart aus; Ordner und Rechte bleiben, wie sie sind.',

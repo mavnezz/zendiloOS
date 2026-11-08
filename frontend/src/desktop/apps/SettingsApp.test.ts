@@ -74,7 +74,7 @@ describe('the control panel', () => {
   it('opens on the device and lists only what the account may open', async () => {
     await open('device', ['files.read'])
     expect(page()).toContain('x86_64')
-    expect(page()).not.toContain(t('controlPanel.power'))
+    expect(page()).not.toContain(t('controlPanel.terminal'))
     expect(page()).not.toContain(t('controlPanel.groupStorage'))
     expect(page()).not.toContain(t('controlPanel.monitor'))
     expect(page()).not.toContain(t('logs.sections.journal'))
@@ -139,25 +139,6 @@ describe('the control panel', () => {
     await type('#locale-language', 'de')
     expect(i18n.global.locale.value).toBe('de')
     i18n.global.locale.value = 'en'
-  })
-
-  it('restarts and shuts down once confirmed', async () => {
-    on('POST', '/api/v1/system/power', (call: { body: { action: string } }) =>
-      call.body.action === 'reboot' ? problem(409, 'jobs_running', 'files.copy photos') : null,
-    )
-    const wrapper = await open('power')
-    await click(new RegExp(t('desktop.restartAction')))
-    wrapper.findComponent({ name: 'ConfirmDialog' }).vm.$emit('confirm')
-    await settle()
-    expect(page()).toContain('files.copy photos')
-
-    await click(new RegExp(t('desktop.shutDownAction')))
-    wrapper.findComponent({ name: 'ConfirmDialog' }).vm.$emit('confirm')
-    await settle()
-    expect(called('POST', '/api/v1/system/power').map((call) => call.body)).toEqual([
-      { action: 'reboot' },
-      { action: 'power_off' },
-    ])
   })
 
   it('shows the own account', async () => {

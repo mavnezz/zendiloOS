@@ -25,7 +25,6 @@ import { MONITOR_SECTION, SETTINGS_SECTIONS } from '../apps'
 import AccountPage from './settings/AccountPage.vue'
 import AppearancePage from './settings/AppearancePage.vue'
 import LocalePage from './settings/LocalePage.vue'
-import PowerPage from './settings/PowerPage.vue'
 import UpdatePage from './settings/UpdatePage.vue'
 
 const { t } = useI18n()
@@ -113,7 +112,6 @@ const { data: pools } = useQuery({
         <p>{{ t('controlPanel.networkWarning') }}</p>
       </PageDescription>
     </div>
-    <PowerPage v-else-if="section === 'power'" />
     <UpdatePage v-else-if="section === 'update'" />
     <LocalePage v-else-if="section === 'locale'" />
     <UsersPage v-else-if="section === 'accounts'" :own-account-id="session.info?.account.id" />

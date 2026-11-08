@@ -267,7 +267,6 @@ const en = {
     device: 'Info',
     appearance: 'Appearance',
     network: 'Network',
-    power: 'Hardware & power',
     locale: 'Time & language',
     update: 'Update & restore',
     accounts: 'Users',
@@ -275,12 +274,10 @@ const en = {
     myAccount: 'My account',
     fileServices: 'File services',
     terminal: 'Terminal',
-    connection: 'Device connection',
     security: 'Security',
     notifications: 'Notifications',
     soon: {
       update: "Keeping zendiloOS and the NAS's Debian packages current, from the channel chosen.",
-      connection: 'Reaching this NAS by name and from outside the home network.',
     },
     networkDescription: 'Network interfaces and addresses of this system',
     networkHelp:
@@ -324,12 +321,6 @@ const en = {
     theme: 'Design',
     themes: { light: 'Light', dark: 'Dark', system: 'As the system' },
     wallpaper: 'Background',
-  },
-  power: {
-    description: 'Restart or shut down the system',
-    now: 'Now',
-    title: 'Power',
-    hint: 'Restarting or shutting down interrupts all file transfers and running apps.',
   },
   locale: {
     language: 'Language',
@@ -856,9 +847,7 @@ const en = {
     timeMachineNeedsMac: 'Time Machine needs the macOS compatibility of SMB (Advanced → macOS).',
     timeMachineTooSmall: 'A Time Machine folder holds at least 1 GiB.',
     soon: {
-      ftp: 'FTP and FTPS for older devices and programs that speak nothing else, with the same accounts and permissions as SMB.',
       rsync: 'An rsync server, so another NAS or any rsync-capable device can back up to this one.',
-      webdav: 'Shared folders over HTTPS with WebDAV, also from outside the home network.',
     },
     explanation:
       'Who may use which shared folder is set for each folder under Shared folders. A service that is off stops at once and stays off after a restart; folders and permissions stay as they are.',

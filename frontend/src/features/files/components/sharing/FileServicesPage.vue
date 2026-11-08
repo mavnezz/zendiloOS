@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useQuery } from '@tanstack/vue-query'
-import { Copy, FolderSync, Globe, Server, Settings2 } from 'lucide-vue-next'
+import { Copy, FolderSync, Settings2 } from 'lucide-vue-next'
 import { computed, ref, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
@@ -105,13 +105,11 @@ async function copy(text: string): Promise<void> {
 
 const tabs = computed(() => [
   { id: 'smb', label: 'SMB' },
-  { id: 'ftp', label: 'FTP' },
   { id: 'nfs', label: 'NFS' },
   { id: 'rsync', label: 'rsync' },
-  { id: 'webdav', label: 'WebDAV' },
   { id: 'advanced', label: t('fileServices.tabs.advanced') },
 ])
-const soon = { ftp: Server, rsync: FolderSync, webdav: Globe } as const
+const soon = { rsync: FolderSync } as const
 const isSoon = (id: string): id is keyof typeof soon => id in soon
 </script>
 

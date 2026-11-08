@@ -10,7 +10,6 @@ import {
   Disc3,
   FolderOpen,
   Gauge,
-  Globe,
   HardDrive,
   Info,
   Languages,
@@ -20,7 +19,6 @@ import {
   LibraryBig,
   Network,
   Palette,
-  Power,
   RefreshCw,
   ScrollText,
   Settings,
@@ -91,13 +89,6 @@ export const SETTINGS_SECTIONS: AppSection[] = [
     group: 'controlPanel.groupGeneral',
   },
   {
-    id: 'power',
-    label: 'controlPanel.power',
-    icon: Power,
-    group: 'controlPanel.groupGeneral',
-    permission: 'system.manage',
-  },
-  {
     id: 'locale',
     label: 'controlPanel.locale',
     icon: Languages,
@@ -164,13 +155,6 @@ export const SETTINGS_SECTIONS: AppSection[] = [
     icon: SquareTerminal,
     group: 'controlPanel.groupServices',
     permission: 'system.manage',
-  },
-  {
-    id: 'connection',
-    label: 'controlPanel.connection',
-    icon: Globe,
-    group: 'controlPanel.groupServices',
-    soon: true,
   },
   {
     id: MONITOR_SECTION,
