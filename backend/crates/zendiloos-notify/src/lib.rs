@@ -154,22 +154,29 @@ impl Notifier {
 
     /// Stores and publishes it if its kind is kept in zendiloOS (keeping
     /// only the [`KEPT`] most recent ones), and hands it to the channels
-    /// either way. A storage failure is logged, since whoever notifies
-    /// cannot do anything about it.
+    /// either way, even when it cannot be stored. A storage failure is
+    /// logged, since whoever notifies cannot do anything about it.
     pub async fn notify(&self, notification: NewNotification) {
         tracing::info!(code = notification.code, params = ?notification.params, "notification");
+        let unstored = |NewNotification { level, code, params }| Notification {
+            id: 0,
+            at: self.clock.now(),
+            level,
+            code,
+            params,
+        };
         if !self.kept(&notification).await {
-            let NewNotification { level, code, params } = notification;
-            let _ = self.outgoing.send(Notification { id: 0, at: self.clock.now(), level, code, params });
+            let _ = self.outgoing.send(unstored(notification));
             return;
         }
-        match self.repository.create(self.clock.now(), notification).await {
+        match self.repository.create(self.clock.now(), notification.clone()).await {
             Ok(stored) => {
                 let _ = self.events.send(stored.clone());
                 let _ = self.outgoing.send(stored);
             }
             Err(error) => {
                 tracing::error!(%error, "cannot store a notification");
+                let _ = self.outgoing.send(unstored(notification));
                 return;
             }
         }
@@ -441,6 +448,43 @@ mod tests {
         assert_eq!((published.code.as_str(), published.params["pool"].as_str()), ("pool_degraded", "tank"));
         assert_eq!(repository.all(), std::slice::from_ref(&published));
         assert_eq!(notifier.for_account(1, 10).await.unwrap(), (vec![published], Marks::default()));
+    }
+
+    /// A database that takes nothing in.
+    struct Broken;
+
+    #[async_trait]
+    impl NotificationRepository for Broken {
+        async fn create(&self, _: Timestamp, _: NewNotification) -> Result<Notification, PortError> {
+            Err(PortError::new("notifications", "disk full"))
+        }
+        async fn recent(&self, _: i64, _: u32) -> Result<Vec<Notification>, PortError> {
+            Ok(Vec::new())
+        }
+        async fn prune(&self, _: u32) -> Result<(), PortError> {
+            Ok(())
+        }
+        async fn marks(&self, _: i64) -> Result<Marks, PortError> {
+            Ok(Marks::default())
+        }
+        async fn advance_marks(&self, _: i64, _: Marks) -> Result<(), PortError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn goes_out_even_when_it_cannot_be_stored() {
+        let notifier = Notifier::new(Arc::new(Broken), Arc::new(Fixed));
+        let (mut events, mut outgoing) = (notifier.subscribe(), notifier.outgoing());
+
+        notifier.notify(NewNotification::new(Level::Error, "pool_trouble").with("pool", "tank")).await;
+
+        let sent = outgoing.try_recv().unwrap();
+        assert_eq!(
+            (sent.id, sent.code.as_str(), sent.at),
+            (0, "pool_trouble", Timestamp::from_unix_seconds(42))
+        );
+        assert!(events.try_recv().is_err(), "nothing stored, nothing to show");
     }
 
     #[tokio::test]
