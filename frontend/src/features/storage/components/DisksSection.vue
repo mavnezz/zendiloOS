@@ -94,7 +94,9 @@ function usage(disk: Disk): string {
           <TableCell class="hidden font-mono text-xs text-muted-foreground @4xl:table-cell">
             {{ disk.serial ?? '–' }}
           </TableCell>
-          <TableCell class="text-right tabular-nums">{{ formatBytes(disk.size_bytes) }}</TableCell>
+          <TableCell class="text-right whitespace-nowrap tabular-nums">{{
+            formatBytes(disk.size_bytes)
+          }}</TableCell>
           <TableCell class="hidden text-muted-foreground @2xl:table-cell">
             {{ t(`storage.transport.${disk.transport}`) }}
           </TableCell>
