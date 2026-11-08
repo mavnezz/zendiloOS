@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO notification_routes (kind, channel_id, enabled)\n                 SELECT ?1, ?2, ?3 WHERE ?2 IS NULL OR EXISTS (SELECT 1 FROM notification_channels WHERE id = ?2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "7aeaf67bbed85e8f0b4fa097f66463f52531ce4fba883641bf97d11e9cec78df"
+}

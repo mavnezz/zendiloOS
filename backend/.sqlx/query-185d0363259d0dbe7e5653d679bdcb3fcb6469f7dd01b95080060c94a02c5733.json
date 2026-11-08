@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT email, disabled AS \"disabled: bool\" FROM accounts WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "email",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "accounts",
+            "name": "email"
+          }
+        }
+      },
+      {
+        "name": "disabled: bool",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "accounts",
+            "name": "disabled"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false
+    ]
+  },
+  "hash": "185d0363259d0dbe7e5653d679bdcb3fcb6469f7dd01b95080060c94a02c5733"
+}

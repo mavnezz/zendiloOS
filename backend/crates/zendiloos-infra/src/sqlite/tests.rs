@@ -71,8 +71,8 @@ async fn creates_a_private_database_and_applies_all_migrations() {
         OpenReport {
             created: true,
             schema_before: None,
-            schema_after: 31,
-            applied: (1..=31).collect(),
+            schema_after: 32,
+            applied: (1..=32).collect(),
             backup: None
         }
     );
@@ -109,7 +109,9 @@ async fn creates_a_private_database_and_applies_all_migrations() {
             "installed_apps",
             "jobs",
             "notification_channels",
+            "notification_mail_server",
             "notification_marks",
+            "notification_routes",
             "notifications",
             "password_policy",
             "pending_uploads",
@@ -140,8 +142,8 @@ async fn reopening_an_up_to_date_database_changes_nothing() {
         report,
         OpenReport {
             created: false,
-            schema_before: Some(31),
-            schema_after: 31,
+            schema_before: Some(32),
+            schema_after: 32,
             applied: vec![],
             backup: None
         }

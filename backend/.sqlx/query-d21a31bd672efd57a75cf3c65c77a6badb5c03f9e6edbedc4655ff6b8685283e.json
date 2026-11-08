@@ -1,0 +1,86 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT server, port AS \"port!: i64\", security, username, password, sender\n               FROM notification_mail_server WHERE id = 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "server",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "notification_mail_server",
+            "name": "server"
+          }
+        }
+      },
+      {
+        "name": "port!: i64",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "notification_mail_server",
+            "name": "port"
+          }
+        }
+      },
+      {
+        "name": "security",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "notification_mail_server",
+            "name": "security"
+          }
+        }
+      },
+      {
+        "name": "username",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "notification_mail_server",
+            "name": "username"
+          }
+        }
+      },
+      {
+        "name": "password",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "notification_mail_server",
+            "name": "password"
+          }
+        }
+      },
+      {
+        "name": "sender",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "notification_mail_server",
+            "name": "sender"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "d21a31bd672efd57a75cf3c65c77a6badb5c03f9e6edbedc4655ff6b8685283e"
+}

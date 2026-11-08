@@ -42,7 +42,7 @@ use sqlx::sqlite::{
 pub use accounts::SqliteAccounts;
 pub use app_sources::SqliteAppSources;
 pub use audit::SqliteAuditLog;
-pub use channels::SqliteChannels;
+pub use channels::{SqliteAccountAddresses, SqliteChannels};
 pub use groups::SqliteGroups;
 pub use installed_apps::SqliteInstalledApps;
 pub use jobs::SqliteJobs;

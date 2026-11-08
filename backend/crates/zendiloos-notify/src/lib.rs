@@ -5,6 +5,11 @@
 //!
 //! A notification carries a stable code and parameters, not text: the
 //! interface words it in the user's language.
+//!
+//! Where a notification goes is routed by its kind ([`routes`]): kept in
+//! the notification center (stored and published to the browsers) or not,
+//! and on which channels ([`channels`]), which get every notification
+//! raised, kept or not.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -15,6 +20,7 @@ use zendiloos_kernel::{Clock, PortError, Timestamp};
 
 pub mod channels;
 pub mod message;
+pub mod routes;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Level {
@@ -110,26 +116,67 @@ pub trait NotificationRepository: Send + Sync {
 pub struct Notifier {
     repository: Arc<dyn NotificationRepository>,
     clock: Arc<dyn Clock>,
+    /// Which kinds are kept; without, every one is.
+    routes: Option<Arc<dyn routes::RouteRepository>>,
+    /// Those kept, for the browsers.
     events: broadcast::Sender<Notification>,
+    /// Every one raised, kept or not, for the channels.
+    outgoing: broadcast::Sender<Notification>,
 }
 
 impl Notifier {
     pub fn new(repository: Arc<dyn NotificationRepository>, clock: Arc<dyn Clock>) -> Self {
         let (events, _) = broadcast::channel(64);
-        Self { repository, clock, events }
+        let (outgoing, _) = broadcast::channel(64);
+        Self { repository, clock, routes: None, events, outgoing }
     }
 
-    /// Stores and publishes, and keeps only the [`KEPT`] most recent ones. A
-    /// storage failure is logged, since whoever notifies cannot do anything
-    /// about it.
+    /// Keeps only the kinds `routes` keep in zendiloOS.
+    #[must_use]
+    pub fn routed(mut self, routes: Arc<dyn routes::RouteRepository>) -> Self {
+        self.routes = Some(routes);
+        self
+    }
+
+    /// Whether a notification is kept in the notification center; when the
+    /// routes cannot be read, it is.
+    async fn kept(&self, notification: &NewNotification) -> bool {
+        let Some(routes) = &self.routes else { return true };
+        let kind = routes::kind_of(&notification.code, notification.level);
+        match routes.routes().await {
+            Ok(routes) => routes.in_app(kind),
+            Err(error) => {
+                tracing::warn!(%error, "cannot read where notifications go; kept");
+                true
+            }
+        }
+    }
+
+    /// Stores and publishes it if its kind is kept in zendiloOS (keeping
+    /// only the [`KEPT`] most recent ones), and hands it to the channels
+    /// either way, even when it cannot be stored. A storage failure is
+    /// logged, since whoever notifies cannot do anything about it.
     pub async fn notify(&self, notification: NewNotification) {
         tracing::info!(code = notification.code, params = ?notification.params, "notification");
-        match self.repository.create(self.clock.now(), notification).await {
+        let unstored = |NewNotification { level, code, params }| Notification {
+            id: 0,
+            at: self.clock.now(),
+            level,
+            code,
+            params,
+        };
+        if !self.kept(&notification).await {
+            let _ = self.outgoing.send(unstored(notification));
+            return;
+        }
+        match self.repository.create(self.clock.now(), notification.clone()).await {
             Ok(stored) => {
-                let _ = self.events.send(stored);
+                let _ = self.events.send(stored.clone());
+                let _ = self.outgoing.send(stored);
             }
             Err(error) => {
                 tracing::error!(%error, "cannot store a notification");
+                let _ = self.outgoing.send(unstored(notification));
                 return;
             }
         }
@@ -138,8 +185,15 @@ impl Notifier {
         }
     }
 
+    /// The notifications kept, as they come: for the browsers.
     pub fn subscribe(&self) -> broadcast::Receiver<Notification> {
         self.events.subscribe()
+    }
+
+    /// Every notification raised, kept or not, as it comes: for the
+    /// channels.
+    pub fn outgoing(&self) -> broadcast::Receiver<Notification> {
+        self.outgoing.subscribe()
     }
 
     /// The most recent notifications the account has not cleared away,
@@ -234,6 +288,42 @@ pub mod testing {
     #[derive(Default)]
     pub struct MemoryChannels {
         channels: Mutex<Vec<crate::channels::Channel>>,
+        server: Mutex<Option<crate::channels::MailServer>>,
+    }
+
+    /// [`RouteRepository`](crate::routes::RouteRepository) in memory.
+    #[derive(Default)]
+    pub struct MemoryRoutes(pub Mutex<crate::routes::Routes>);
+
+    #[async_trait]
+    impl crate::routes::RouteRepository for MemoryRoutes {
+        async fn routes(&self) -> Result<crate::routes::Routes, PortError> {
+            Ok(self.0.lock().unwrap().clone())
+        }
+
+        async fn replace(&self, routes: &crate::routes::Routes) -> Result<(), PortError> {
+            *self.0.lock().unwrap() = routes.clone();
+            Ok(())
+        }
+    }
+
+    /// [`AccountAddresses`](crate::channels::AccountAddresses) in memory:
+    /// account ID → address, `None` for an account without one, `"-"` for
+    /// a disabled one; accounts not listed are gone.
+    #[derive(Default)]
+    pub struct MemoryAddresses(pub Mutex<HashMap<i64, Option<String>>>);
+
+    #[async_trait]
+    impl crate::channels::AccountAddresses for MemoryAddresses {
+        async fn address(&self, account_id: i64) -> Result<crate::channels::AccountAddress, PortError> {
+            use crate::channels::AccountAddress;
+            Ok(match self.0.lock().unwrap().get(&account_id) {
+                Some(Some(address)) if address == "-" => AccountAddress::Disabled,
+                Some(Some(address)) => AccountAddress::Address(address.clone()),
+                Some(None) => AccountAddress::Missing,
+                None => AccountAddress::Gone,
+            })
+        }
     }
 
     #[async_trait]
@@ -287,6 +377,19 @@ pub mod testing {
             if let Some(channel) = self.channels.lock().unwrap().iter_mut().find(|c| c.id == id) {
                 channel.last = Some(delivery.clone());
             }
+            Ok(())
+        }
+
+        async fn mail_server(&self) -> Result<Option<crate::channels::MailServer>, PortError> {
+            Ok(self.server.lock().unwrap().clone())
+        }
+
+        async fn set_mail_server(
+            &self,
+            server: &crate::channels::MailServer,
+            _: Timestamp,
+        ) -> Result<(), PortError> {
+            *self.server.lock().unwrap() = Some(server.clone());
             Ok(())
         }
     }
@@ -345,6 +448,43 @@ mod tests {
         assert_eq!((published.code.as_str(), published.params["pool"].as_str()), ("pool_degraded", "tank"));
         assert_eq!(repository.all(), std::slice::from_ref(&published));
         assert_eq!(notifier.for_account(1, 10).await.unwrap(), (vec![published], Marks::default()));
+    }
+
+    /// A database that takes nothing in.
+    struct Broken;
+
+    #[async_trait]
+    impl NotificationRepository for Broken {
+        async fn create(&self, _: Timestamp, _: NewNotification) -> Result<Notification, PortError> {
+            Err(PortError::new("notifications", "disk full"))
+        }
+        async fn recent(&self, _: i64, _: u32) -> Result<Vec<Notification>, PortError> {
+            Ok(Vec::new())
+        }
+        async fn prune(&self, _: u32) -> Result<(), PortError> {
+            Ok(())
+        }
+        async fn marks(&self, _: i64) -> Result<Marks, PortError> {
+            Ok(Marks::default())
+        }
+        async fn advance_marks(&self, _: i64, _: Marks) -> Result<(), PortError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn goes_out_even_when_it_cannot_be_stored() {
+        let notifier = Notifier::new(Arc::new(Broken), Arc::new(Fixed));
+        let (mut events, mut outgoing) = (notifier.subscribe(), notifier.outgoing());
+
+        notifier.notify(NewNotification::new(Level::Error, "pool_trouble").with("pool", "tank")).await;
+
+        let sent = outgoing.try_recv().unwrap();
+        assert_eq!(
+            (sent.id, sent.code.as_str(), sent.at),
+            (0, "pool_trouble", Timestamp::from_unix_seconds(42))
+        );
+        assert!(events.try_recv().is_err(), "nothing stored, nothing to show");
     }
 
     #[tokio::test]
