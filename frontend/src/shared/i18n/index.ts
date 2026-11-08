@@ -54,6 +54,7 @@ const KNOWN_PROBLEMS = [
   'account_disabled',
   'invalid_setup_code',
   'setup_completed',
+  'setup_not_local',
   'csrf_rejected',
   'name_taken',
   'last_admin',

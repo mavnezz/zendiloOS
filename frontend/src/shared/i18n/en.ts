@@ -231,6 +231,8 @@ const en = {
     intro: 'Create the first administrator account.',
     code: 'Setup code',
     codeHint: "Shown on the system's console and in /var/lib/zendiloos/setup-code.",
+    openHint:
+      'Whoever sets up the NAS first becomes its administrator. This works only from your own network.',
     name: 'Administrator name',
     nameHint: 'Lowercase letters, digits, - and _; starting with a letter.',
     password: 'Password',
@@ -2179,6 +2181,7 @@ const en = {
     account_disabled: 'This account is disabled.',
     invalid_setup_code: 'The setup code is wrong.',
     setup_completed: 'The setup has already been completed. Please sign in.',
+    setup_not_local: 'Set up the NAS from your own network, not over the internet.',
     csrf_rejected: 'The request was refused for security reasons. Reload the page and try again.',
     forbidden: 'Your account may not do this.',
     name_taken: 'This name is already taken, by another user or group or by the system.',

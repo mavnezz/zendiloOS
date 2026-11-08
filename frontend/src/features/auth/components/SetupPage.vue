@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 
@@ -11,7 +11,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/sha
 import { Input } from '@/shared/ui/input'
 import { Label } from '@/shared/ui/label'
 
-import { completeSetup } from '../api'
+import { completeSetup, fetchSetupStatus } from '../api'
 import { useSessionStore } from '../store'
 import AuthFrame from './AuthFrame.vue'
 
@@ -30,6 +30,20 @@ const error = ref<string | null>(null)
 const completedElsewhere = ref(false)
 const pending = ref(false)
 
+/**
+ * Whether the setup asks for the code on the console. An open setup (a NAS
+ * installed from the ISO) does not; unknown until asked, and asked for if
+ * the answer does not come.
+ */
+const codeRequired = ref<boolean | null>(null)
+onMounted(async () => {
+  try {
+    codeRequired.value = (await fetchSetupStatus()).code_required
+  } catch {
+    codeRequired.value = true
+  }
+})
+
 const passwordsDiffer = computed(
   () => passwordRepeat.value !== '' && password.value !== passwordRepeat.value,
 )
@@ -41,7 +55,7 @@ async function submit(): Promise<void> {
   try {
     session.start(
       await completeSetup({
-        setup_code: setupCode.value,
+        ...(codeRequired.value === false ? {} : { setup_code: setupCode.value }),
         name: name.value,
         password: password.value,
       }),
@@ -71,7 +85,10 @@ async function submit(): Promise<void> {
               {{ t('setup.toLogin') }}
             </RouterLink>
           </Alert>
-          <div class="grid gap-2">
+          <p v-if="codeRequired === false" class="text-sm text-muted-foreground">
+            {{ t('setup.openHint') }}
+          </p>
+          <div v-else-if="codeRequired" class="grid gap-2">
             <Label for="setup-code">{{ t('setup.code') }}</Label>
             <Input
               id="setup-code"

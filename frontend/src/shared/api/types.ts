@@ -5,6 +5,7 @@ type Schemas = components['schemas']
 
 export type SessionInfo = Schemas['SessionInfo']
 export type SetupRequest = Schemas['SetupRequest']
+export type SetupStatus = Schemas['SetupStatus']
 export type SystemInfo = Schemas['SystemInfo']
 export type PowerAction = Schemas['PowerActionKind']
 export type TimeState = Schemas['TimeState']

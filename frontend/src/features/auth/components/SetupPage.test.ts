@@ -100,6 +100,48 @@ describe('the setup', () => {
     expect(page()).toContain('The setup code is wrong.')
     expect(page()).not.toContain('Go to sign-in')
   })
+
+  it('asks for no code when the setup is open, and says who becomes the administrator', async () => {
+    on('GET', '/api/v1/setup', () => ({ required: true, code_required: false }))
+    on('POST', '/api/v1/setup', () => session)
+    const router = memoryRouter()
+    await router.push('/setup')
+    mountApp(SetupPage, { global: { plugins: [router] } })
+    await settle()
+
+    expect(document.body.querySelector('#setup-code')).toBeNull()
+    expect(page()).toContain('Whoever sets up the NAS first becomes its administrator.')
+    await type('#setup-name', 'admin')
+    await type('#setup-password', 'correct horse battery')
+    await type('#setup-password-repeat', 'correct horse battery')
+    await submit('#setup-name')
+
+    expect(callsTo('POST', '/api/v1/setup')[0]!.body).toEqual({
+      name: 'admin',
+      password: 'correct horse battery',
+    })
+    expect(router.currentRoute.value.name).toBe('desktop')
+  })
+
+  it('says to set it up from the own network when it is opened from elsewhere', async () => {
+    on('GET', '/api/v1/setup', () => ({ required: true, code_required: false }))
+    on('POST', '/api/v1/setup', () => problem(403, 'setup_not_local'))
+    mountApp(SetupPage, { global: { plugins: [memoryRouter()] } })
+    await settle()
+    await type('#setup-name', 'admin')
+    await type('#setup-password', 'correct horse battery')
+    await type('#setup-password-repeat', 'correct horse battery')
+    await submit('#setup-name')
+    expect(page()).toContain('Set up the NAS from your own network')
+  })
+
+  it('asks for the code when the setup says so', async () => {
+    on('GET', '/api/v1/setup', () => ({ required: true, code_required: true }))
+    mountApp(SetupPage, { global: { plugins: [memoryRouter()] } })
+    await settle()
+    expect(document.body.querySelector('#setup-code')).not.toBeNull()
+    expect(page()).not.toContain('Whoever sets up the NAS first')
+  })
 })
 
 describe('the password form', () => {

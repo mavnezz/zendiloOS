@@ -1,5 +1,5 @@
 import { ApiProblem, api, unwrap } from '@/shared/api/client'
-import type { SessionInfo, SetupRequest } from '@/shared/api/types'
+import type { SessionInfo, SetupRequest, SetupStatus } from '@/shared/api/types'
 
 /** The current session, or `null` if nobody is signed in. */
 export async function fetchSession(): Promise<SessionInfo | null> {
@@ -12,7 +12,12 @@ export async function fetchSession(): Promise<SessionInfo | null> {
 }
 
 export async function fetchSetupRequired(): Promise<boolean> {
-  return (await unwrap(api.GET('/api/v1/setup'))).required
+  return (await fetchSetupStatus()).required
+}
+
+/** Whether the setup is pending, and whether it asks for the console's code. */
+export function fetchSetupStatus(): Promise<SetupStatus> {
+  return unwrap(api.GET('/api/v1/setup'))
 }
 
 export function completeSetup(request: SetupRequest): Promise<SessionInfo> {

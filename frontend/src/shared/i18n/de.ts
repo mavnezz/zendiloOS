@@ -239,6 +239,8 @@ const de: Messages = {
     intro: 'Lege das erste Administratorkonto an.',
     code: 'Einrichtungscode',
     codeHint: 'Steht auf der Konsole des Systems und in /var/lib/zendiloos/setup-code.',
+    openHint:
+      'Wer den NAS zuerst einrichtet, wird sein Administrator. Das geht nur aus deinem eigenen Netzwerk.',
     name: 'Name des Administrators',
     nameHint: 'Kleinbuchstaben, Ziffern, - und _; beginnt mit einem Buchstaben.',
     password: 'Passwort',
@@ -2221,6 +2223,7 @@ const de: Messages = {
     account_disabled: 'Dieses Konto ist deaktiviert.',
     invalid_setup_code: 'Der Einrichtungscode ist falsch.',
     setup_completed: 'Die Einrichtung ist bereits abgeschlossen. Bitte melde dich an.',
+    setup_not_local: 'Richte den NAS aus deinem eigenen Netzwerk ein, nicht über das Internet.',
     csrf_rejected:
       'Die Anfrage wurde aus Sicherheitsgründen abgelehnt. Lade die Seite neu und versuche es erneut.',
     forbidden: 'Dein Konto darf das nicht.',
