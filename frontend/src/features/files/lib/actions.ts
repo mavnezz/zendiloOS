@@ -2,7 +2,7 @@ import type { FileKind, RemovableState } from '@/shared/api/types'
 
 import type { Place } from './location'
 
-/** Everything the toolbar and the context menu offer, in their order. */
+/** Everything the context menu offers, in its order. */
 export const ACTIONS = [
   'open',
   'openLocation',

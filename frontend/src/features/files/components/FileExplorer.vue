@@ -91,7 +91,6 @@ import { EXPLORER, folderItem } from '../lib/tree'
 import { useShareActions, useShares } from '../sharing'
 import DetailsView from './DetailsView.vue'
 import EntryPropertiesDialog from './EntryPropertiesDialog.vue'
-import ExplorerToolbar from './ExplorerToolbar.vue'
 import FilePreview from './FilePreview.vue'
 import NameDialog from './NameDialog.vue'
 import NavigationTree from './NavigationTree.vue'
@@ -540,7 +539,8 @@ function menu(target: Target): MenuAction[] {
     shortcut: KEYS[state.id],
   }))
 }
-const toolbar = computed(() => menu(here.value))
+/** What may be done here now: for the keys. */
+const available = computed(() => menu(here.value))
 const contextMenu = computed(() => menu(treeTarget.value ?? here.value))
 
 function fail(failure: unknown): void {
@@ -570,6 +570,8 @@ const previewOpen = computed({
 })
 const naming = ref<{ mode: 'folder' | 'volumeFolder' | 'rename'; target: Target } | null>(null)
 const namingError = ref<string | null>(null)
+/** The name given is being carried out; a folder on a volume takes seconds. */
+const namingBusy = ref(false)
 const deleting = ref<Target | null>(null)
 const emptying = ref<Target | null>(null)
 const deletingFolder = ref<{ id: number; name: string; path: string } | null>(null)
@@ -956,6 +958,7 @@ async function named(name: string): Promise<void> {
   const asked = naming.value
   if (!asked) return
   namingError.value = null
+  namingBusy.value = true
   const at = asked.target.location
   try {
     if (asked.mode === 'volumeFolder' && at.kind === 'volume') {
@@ -983,6 +986,8 @@ async function named(name: string): Promise<void> {
     naming.value = null
   } catch (failure) {
     namingError.value = problemMessage(failure)
+  } finally {
+    namingBusy.value = false
   }
 }
 
@@ -1059,7 +1064,7 @@ function keydown(event: KeyboardEvent): void {
   else if (key === 'back') history.back()
   else if (key === 'forward') history.forward()
   else {
-    const state = toolbar.value.find((a) => a.id === key)
+    const state = available.value.find((a) => a.id === key)
     if (state && !state.disabled) run(key, here.value)
   }
 }
@@ -1291,12 +1296,6 @@ provide(EXPLORER, {
         </Button>
       </div>
 
-      <ExplorerToolbar
-        :actions="toolbar"
-        :label="t('explorer.toolbar')"
-        @select="(id) => choose(id, here)"
-      />
-
       <div
         v-if="location.kind === 'folder' && location.snapshot !== null"
         class="flex items-center gap-2 border-b bg-amber-500/10 px-3 py-2 text-sm"
@@ -1474,7 +1473,8 @@ provide(EXPLORER, {
       :submit-label="naming?.mode === 'rename' ? t('files.rename') : t('files.create')"
       :hint="naming?.mode === 'volumeFolder' ? t('explorer.volumeFolderHint') : undefined"
       :error="namingError"
-      @update:open="(value) => !value && (naming = null)"
+      :busy="namingBusy"
+      @update:open="(value) => !value && !namingBusy && (naming = null)"
       @submit="named"
     />
     <ConfirmDialog

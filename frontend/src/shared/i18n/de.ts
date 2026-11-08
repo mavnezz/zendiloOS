@@ -1925,7 +1925,6 @@ const de: Messages = {
   },
   explorer: {
     navigation: 'Orte',
-    toolbar: 'Aktionen',
     entries: 'Einträge',
     back: 'Zurück',
     forward: 'Vor',

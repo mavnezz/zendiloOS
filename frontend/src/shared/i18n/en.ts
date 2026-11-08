@@ -1890,7 +1890,6 @@ const en = {
   },
   explorer: {
     navigation: 'Places',
-    toolbar: 'Actions',
     entries: 'Entries',
     back: 'Back',
     forward: 'Forward',

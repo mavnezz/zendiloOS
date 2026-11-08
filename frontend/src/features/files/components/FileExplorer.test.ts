@@ -176,15 +176,38 @@ async function key(name: string, init: KeyboardEventInit = {}): Promise<void> {
   entries.dispatchEvent(new KeyboardEvent('keydown', { key: name, bubbles: true, ...init }))
   await settle()
 }
-function tool(label: string): HTMLButtonElement {
-  const found = document.body.querySelector<HTMLButtonElement>(
-    `[role="toolbar"] [aria-label="${label}"]`,
-  )
-  if (!found) throw new Error(`no tool ${label}`)
-  return found
+/**
+ * The context menu of what is chosen, or of the folder with nothing
+ * chosen, opened as a right click does; its items.
+ */
+async function menuHere(): Promise<HTMLElement[]> {
+  const chosen = rows().find((r) => r.getAttribute('aria-selected') === 'true')
+  const target = chosen ?? document.body.querySelector('[aria-label="Entries"]')!
+  await fire(target, 'contextmenu', { clientX: 20, clientY: 20 })
+  return [...document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')]
 }
+async function closeMenu(): Promise<void> {
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  await settle()
+}
+/** Whether the context menu here offers `label`, and whether it is greyed out. */
+async function offered(label: string): Promise<{ shown: boolean; disabled: boolean }> {
+  const found = (await menuHere()).find((i) => i.textContent?.trim().startsWith(label))
+  const state = { shown: Boolean(found), disabled: found?.hasAttribute('data-disabled') ?? true }
+  await closeMenu()
+  return state
+}
+async function disabled(label: string): Promise<boolean> {
+  const state = await offered(label)
+  if (!state.shown) throw new Error(`the menu offers no ${label}`)
+  return state.disabled
+}
+/** Does `label` from the context menu here. */
 async function use(label: string): Promise<void> {
-  tool(label).click()
+  const items = await menuHere()
+  const found = items.find((i) => i.textContent?.trim().startsWith(label))
+  if (!found) throw new Error(`no ${label} among ${items.map((i) => i.textContent).join(', ')}`)
+  found.click()
   await settle()
 }
 /** The button with this text in the open dialog. */
@@ -337,7 +360,7 @@ describe('browsing', () => {
     const bad = row(`bad-�.txt`)
     expect(bad.querySelector('input')).toBeNull()
     await fire(bad, 'click')
-    expect(tool('Rename').disabled).toBe(true)
+    expect(await disabled('Rename')).toBe(true)
   })
 
   it('opens previews and saves files and folders', async () => {
@@ -414,16 +437,16 @@ describe('searching', () => {
 })
 
 describe('choosing and acting', () => {
-  it('chooses with clicks, Ctrl, Shift and Ctrl+A; the toolbar follows', async () => {
+  it('chooses with clicks, Ctrl, Shift and Ctrl+A; the context menu follows', async () => {
     serve()
     await show()
     await goTo('photos')
-    expect(tool('Rename').disabled).toBe(true)
+    expect(await disabled('Rename')).toBe(true)
     await fire(row('b.txt'), 'click')
-    expect(tool('Rename').disabled).toBe(false)
+    expect(await disabled('Rename')).toBe(false)
     await fire(row('a.jpg'), 'click', { ctrlKey: true })
-    expect(tool('Rename').disabled).toBe(true)
-    expect(tool('Delete').disabled).toBe(false)
+    expect(await disabled('Rename')).toBe(true)
+    expect(await disabled('Delete')).toBe(false)
     await fire(row('link'), 'click', { shiftKey: true })
     expect(rows().filter((r) => r.getAttribute('aria-selected') === 'true')).toHaveLength(4)
     await key('a', { ctrlKey: true })
@@ -436,7 +459,7 @@ describe('choosing and acting', () => {
     expect(row('a.jpg').getAttribute('aria-selected')).toBe('true')
   })
 
-  it('makes folders, renames and deletes, from the toolbar and by keys', async () => {
+  it('makes folders, renames and deletes, from the context menu and by keys', async () => {
     serve()
     await show()
     await goTo('photos')
@@ -568,9 +591,9 @@ describe('choosing and acting', () => {
     await show()
     await goTo('media')
     await fire(row('film.mkv'), 'click')
-    expect(tool('Delete').disabled).toBe(true)
-    expect(tool('Upload').disabled).toBe(true)
-    expect(tool('Copy').disabled).toBe(false)
+    expect(await disabled('Delete')).toBe(true)
+    expect(await disabled('Upload')).toBe(true)
+    expect(await disabled('Copy')).toBe(false)
   })
 
   it('tells what an entry is', async () => {
@@ -634,8 +657,8 @@ describe('recycle bins and previous versions', () => {
     expect(crumbs).toContain('2024')
 
     await fire(row('deep.jpg'), 'click')
-    expect(() => tool('Empty the recycle bin')).not.toThrow()
-    expect(tool('Empty the recycle bin').disabled).toBe(true)
+    expect((await offered('Empty the recycle bin')).shown).toBe(true)
+    expect(await disabled('Empty the recycle bin')).toBe(true)
     await use('Restore')
     expect(callsTo('POST', '/api/v1/files/shares/1/restore')[0]!.body).toEqual({
       paths: ['.recycle/anna/Album/2024/deep.jpg'],
@@ -716,7 +739,7 @@ describe('folders on a volume', () => {
     expect(page()).toContain('Shared folder')
     expect(page()).toContain('Folder on the volume')
     await fire(row('secret'), 'click')
-    expect(tool('Open').disabled).toBe(true)
+    expect(await disabled('Open')).toBe(true)
     expect(treeButton('secret').disabled).toBe(true)
   })
 
