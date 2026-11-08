@@ -179,6 +179,12 @@ const en = {
     website: 'Website',
     sourceCode: 'Source code',
     compose: 'Compose file',
+    plugins: {
+      title: 'Plugins',
+      description: 'What extends the NAS beyond its own functions. More are to come.',
+      installing: 'Installing',
+      needsSetUp: 'Not set up',
+    },
     docker: {
       subtitle: 'The container runtime for the apps from the store',
       notInstalled: 'Not installed',

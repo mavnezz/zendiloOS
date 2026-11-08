@@ -187,6 +187,12 @@ const de: Messages = {
     website: 'Website',
     sourceCode: 'Quellcode',
     compose: 'Compose-Datei',
+    plugins: {
+      title: 'Plugins',
+      description: 'Was das NAS über seine eigenen Funktionen hinaus erweitert. Weitere folgen.',
+      installing: 'Wird installiert',
+      needsSetUp: 'Nicht eingerichtet',
+    },
     docker: {
       subtitle: 'Container-Laufzeit für die Apps aus dem Store',
       notInstalled: 'Nicht installiert',
