@@ -166,7 +166,7 @@ impl Operations {
         let result = match request {
             Request::Hello {} => Ok(Response::Hello {
                 protocol_version: PROTOCOL_VERSION,
-                agent_version: env!("CARGO_PKG_VERSION").to_owned(),
+                agent_version: crate::VERSION.to_owned(),
             }),
             // systemctl returns once the job is queued; the shutdown follows.
             // Not while apt runs: dpkg cut off leaves packages half done,

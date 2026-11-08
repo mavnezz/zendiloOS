@@ -61,9 +61,11 @@ hand (`apt install ./zendiloos_….deb`).
 
 ## Making a release
 
-1. A pull request adds the release's entry to `debian/changelog`. Without
-   it a tag build only changes the version on the entry's first line and
-   keeps the previous entry's text.
+1. A pull request adds the release's entry to `debian/changelog` and sets
+   the same version in `backend/Cargo.toml` (`[workspace.package]`, with
+   `-` where Debian writes `~`); `just check` fails while the two differ.
+   Without the entry a tag build only changes the version on the entry's
+   first line and keeps the previous entry's text.
 2. On its merge commit in `main`:
 
    ```sh

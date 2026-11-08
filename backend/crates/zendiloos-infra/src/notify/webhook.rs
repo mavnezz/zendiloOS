@@ -104,7 +104,7 @@ pub(super) async fn post(
     let mut request = Request::post(path)
         .header(HOST, host_header)
         .header(CONTENT_TYPE, content_type)
-        .header(USER_AGENT, concat!("zendiloOS/", env!("CARGO_PKG_VERSION")));
+        .header(USER_AGENT, format!("zendiloOS/{}", zendiloos_kernel::VERSION));
     if hook.format == WebhookFormat::Text {
         request = request.header("Title", header_text(&message.title));
     }

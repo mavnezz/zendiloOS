@@ -118,7 +118,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         client = config.client_user,
         client_uid,
         role = ?role,
-        version = env!("CARGO_PKG_VERSION"),
+        version = zendiloos_agent::VERSION,
         "agent started"
     );
     serve(listener, Server::new(operations, client_uid), shutdown_requested()).await;

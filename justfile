@@ -20,7 +20,19 @@ test:
     cargo test --workspace --locked
 
 # Everything CI checks; the tests run measured, against the coverage thresholds
-check: lint deny coverage-backend sqlx-check api-check web-check
+check: version-check lint deny coverage-backend sqlx-check api-check web-check
+
+# The crates carry the version of the newest entry in debian/changelog
+# (Debian's ~ for a test release is Cargo's -)
+version-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    changelog=$(sed -n '1s/^zendiloos (\([^)]*\)).*/\1/p' debian/changelog | tr '~' '-')
+    crates=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' backend/Cargo.toml)
+    if [[ $crates != "$changelog" ]]; then
+        echo "backend/Cargo.toml says $crates, debian/changelog $changelog: set both in the release's pull request" >&2
+        exit 1
+    fi
 
 # Test coverage of backend and frontend, against the thresholds CI holds
 coverage: coverage-backend coverage-web
