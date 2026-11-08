@@ -216,7 +216,7 @@ const en = {
       },
     },
     sources: {
-      hint: 'Apps come from the zendiloOS community catalog and the catalogs you add, as with HACS.',
+      hint: 'Apps come from the zendiloOS community catalog and the catalogs you add.',
       refresh: 'Read all again',
       official: 'Community catalog',
       remove: 'Remove this catalog',

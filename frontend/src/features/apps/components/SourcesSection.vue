@@ -43,7 +43,7 @@ function add(): Promise<void> {
 }
 </script>
 
-<!-- The catalogs apps come from: the community catalog, and others like HACS. -->
+<!-- The catalogs apps come from: the community catalog, and others added. -->
 <template>
   <div class="grid gap-5">
     <Alert v-if="error" variant="destructive">{{ problemMessage(error) }}</Alert>
