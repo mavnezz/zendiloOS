@@ -866,7 +866,8 @@ TLS is rustls with ring and the system's certificate authorities
   minutes by default, or off), for passwords and setup codes alike. An
   attempt counts as failed from its start until it ends otherwise, so
   attempts sent at once get no more checks than attempts one after
-  another. Plus `limit_req` in nginx for login, setup and password changes.
+  another. Plus `limit_req` in nginx for login, the second sign-in step, setup,
+  password changes and the two-factor changes that check the password.
 - **Blocked addresses:** an address with too many failed logins (10 within
   5 minutes by default) is blocked from the whole API for a day, or until
   lifted; administrators block addresses and networks by hand too. Every
