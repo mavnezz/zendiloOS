@@ -21,11 +21,13 @@ const create = vi.fn(
     options.onSuccess(created),
 )
 
+const change = vi.fn()
+
 vi.mock('../api', () => ({
   usePlaces: () => ({ data: ref([{ share_id: 3, share: 'docker' }]) }),
   checkCompose: (body: unknown) => check(body),
   useCreateProject: () => ({ mutate: create, isPending: ref(false) }),
-  useChangeCompose: () => ({ mutate: vi.fn(), isPending: ref(false) }),
+  useChangeCompose: () => ({ mutate: change, isPending: ref(false) }),
 }))
 
 function editor() {
@@ -50,6 +52,7 @@ beforeEach(() => {
   created = { job: null }
   check.mockClear()
   create.mockClear()
+  change.mockClear()
 })
 
 describe('the project editor', () => {
@@ -114,6 +117,28 @@ describe('the project editor', () => {
     await flushPromises()
     expect(wrapper.emitted('done')).toEqual([['tesla']])
     wrapper.unmount()
+  })
+
+  it('saves a changed file and deploys it, with the newest images when asked', async () => {
+    const wrapper = mount(ProjectEditor, {
+      props: { name: 'tesla', compose: 'services: {}\n' },
+      global: { plugins: [i18n] },
+      attachTo: document.body,
+    })
+    const save = () =>
+      wrapper
+        .findAll('button')
+        .find((b) => b.text() === 'Save and redeploy')!
+        .trigger('click')
+    await save()
+    await flushPromises()
+    expect(change.mock.calls[0]![0]).toEqual(
+      expect.objectContaining({ name: 'tesla', pull: false }),
+    )
+    await wrapper.find('input[type=checkbox]').setValue(true)
+    await save()
+    await flushPromises()
+    expect(change.mock.calls[1]![0]).toEqual(expect.objectContaining({ pull: true }))
   })
 
   it('refuses a name Compose would not take', async () => {

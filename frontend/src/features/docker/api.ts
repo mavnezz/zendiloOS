@@ -182,11 +182,21 @@ export function useCreateProject() {
 export function useChangeCompose() {
   const refresh = useRefresh()
   return useMutation({
-    mutationFn: ({ name, compose, accept }: { name: string; compose: string; accept: boolean }) =>
+    mutationFn: ({
+      name,
+      compose,
+      accept,
+      pull = false,
+    }: {
+      name: string
+      compose: string
+      accept: boolean
+      pull?: boolean
+    }) =>
       unwrap(
         api.PUT('/api/v1/docker/projects/{name}/compose', {
           params: { path: { name } },
-          body: { compose, accept_risks: accept },
+          body: { compose, accept_risks: accept, pull },
         }),
       ),
     onSettled: refresh,

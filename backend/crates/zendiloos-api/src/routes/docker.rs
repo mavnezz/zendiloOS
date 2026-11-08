@@ -1208,6 +1208,10 @@ pub struct ComposeChange {
     pub compose: String,
     #[serde(default)]
     pub accept_risks: bool,
+    /// Pulls the newest images under the file's tags before the containers
+    /// are made again; otherwise only missing images are pulled.
+    #[serde(default)]
+    pub pull: bool,
 }
 
 /// Writes a project's changed Compose file and deploys it again, in a job.
@@ -1226,7 +1230,7 @@ async fn change_compose(
     manage(&auth)?;
     let job = state
         .containers
-        .change_compose(&name, &request.compose, request.accept_risks, &auth.0.actor(), &client)
+        .change_compose(&name, &request.compose, request.accept_risks, request.pull, &auth.0.actor(), &client)
         .await?;
     Ok((StatusCode::ACCEPTED, Json(job.into())))
 }

@@ -86,7 +86,7 @@ async fn the_folders_a_project_mounts_are_made_by_whoever_deploys_it() {
     assert_eq!(own.template, Some(template), "the App Center finds it again");
 
     let changed = format!("{compose}      - ./cache:/cache\n");
-    t.containers.change_compose("tesla", &changed, false, &alice(), &context()).await.unwrap();
+    t.containers.change_compose("tesla", &changed, false, false, &alice(), &context()).await.unwrap();
     assert!(t.storage.folders.lock().unwrap()[2..].contains(&by_alice("docker/tesla/cache")));
 }
 
@@ -221,12 +221,12 @@ async fn an_own_projects_file_is_changed_and_deployed_again() {
     assert_eq!(source.files, [("/volume1/docker/docker/tesla/compose.yaml".to_owned(), plain.to_owned())]);
 
     let changed = "services:\n  app:\n    image: nginx:1.27\n";
-    t.containers.change_compose("tesla", changed, false, &alice(), &context()).await.unwrap();
+    t.containers.change_compose("tesla", changed, false, false, &alice(), &context()).await.unwrap();
     let deployed = asked(&t, "deploy tesla pull=false").await;
     assert!(deployed.contains("nginx:1.27"), "{deployed}");
     let source = t.containers.project_compose("tesla", &alice(), &context()).await.unwrap();
     assert_eq!(source.files[0].1, changed);
-    let foreign = t.containers.change_compose("stack", changed, false, &alice(), &context()).await;
+    let foreign = t.containers.change_compose("stack", changed, false, false, &alice(), &context()).await;
     assert!(matches!(foreign, Err(ContainersError::NotOwn)), "{foreign:?}");
 }
 
@@ -276,9 +276,20 @@ async fn a_project_made_before_runs_once_its_file_is_saved() {
     let source = t.containers.project_compose("tesla", &alice(), &context()).await.unwrap();
     assert_eq!(source.files[0].1, plain, "read from the share to be saved");
 
-    t.containers.change_compose("tesla", plain, false, &alice(), &context()).await.unwrap();
+    t.containers.change_compose("tesla", plain, false, false, &alice(), &context()).await.unwrap();
     asked(&t, "deploy tesla pull=false").await;
     t.containers.redeploy("tesla", true, &alice(), &context()).await.unwrap();
+    asked(&t, "deploy tesla pull=true").await;
+}
+
+#[tokio::test]
+async fn a_changed_file_is_deployed_with_the_newest_images_when_asked() {
+    let (t, _) = setup();
+    let compose = "services:\n  web:\n    image: nginx\n";
+    t.containers.create_project(new_project("tesla", compose, false), &alice(), &context()).await.unwrap();
+    t.engine.calls.lock().unwrap().clear();
+    let changed = "services:\n  web:\n    image: nginx\n    restart: always\n";
+    t.containers.change_compose("tesla", changed, false, true, &alice(), &context()).await.unwrap();
     asked(&t, "deploy tesla pull=true").await;
 }
 
@@ -323,7 +334,7 @@ async fn apps_of_catalogs_are_left_to_the_app_center() {
         t.containers.redeploy("kuma", false, &alice(), &context()).await.map(|_| ()),
         t.containers.delete_project("kuma", &alice(), &context()).await.map(|_| ()),
         t.containers.project_compose("kuma", &alice(), &context()).await.map(|_| ()),
-        t.containers.change_compose("kuma", "x", true, &alice(), &context()).await.map(|_| ()),
+        t.containers.change_compose("kuma", "x", true, false, &alice(), &context()).await.map(|_| ()),
     ] {
         assert!(matches!(refused, Err(ContainersError::AppProject)), "{refused:?}");
     }

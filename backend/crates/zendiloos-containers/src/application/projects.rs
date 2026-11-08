@@ -282,12 +282,14 @@ impl Containers {
         }
     }
 
-    /// Writes a project's changed Compose file and deploys it again.
+    /// Writes a project's changed Compose file and deploys it again, with
+    /// the newest images under its tags if `pull`.
     pub async fn change_compose(
         &self,
         name: &str,
         compose: &str,
         accept_risks: bool,
+        pull: bool,
         actor: &Actor,
         context: &RequestContext,
     ) -> Result<Job, ContainersError> {
@@ -302,7 +304,7 @@ impl Containers {
             return Err(ContainersError::NotFound);
         }
         self.record("containers.project_change", name, !found.is_empty(), actor, context).await;
-        self.deploy(name.to_owned(), Deployment::Own(config), false, actor, context).await
+        self.deploy(name.to_owned(), Deployment::Own(config), pull, actor, context).await
     }
 
     /// The project's Compose files: an administrator's as they confirmed it

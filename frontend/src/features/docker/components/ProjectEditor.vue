@@ -47,6 +47,8 @@ const folder = ref('')
 const folderTouched = ref(false)
 const compose = ref(props.compose ?? '')
 const start = ref(true)
+/** Changing it: the newest images under its tags first, as a redeploy may. */
+const pull = ref(false)
 const checking = ref(false)
 const failure = ref<unknown>(null)
 const risks = ref<ComposeRisk[]>([])
@@ -120,7 +122,7 @@ function submit(accept: boolean): void {
   const failed = (error: unknown) => (failure.value = error)
   if (editing.value) {
     change.mutate(
-      { name: name.value, compose: compose.value, accept },
+      { name: name.value, compose: compose.value, accept, pull: pull.value },
       { onSuccess: deployed, onError: failed },
     )
   } else {
@@ -225,6 +227,10 @@ function submit(accept: boolean): void {
       <label v-if="!editing" class="flex items-center gap-2 text-sm">
         <input v-model="start" type="checkbox" class="size-4 accent-primary" />
         {{ t('docker.editor.start') }}
+      </label>
+      <label v-else class="flex items-center gap-2 text-sm" :title="t('docker.redeploy.pullHint')">
+        <input v-model="pull" type="checkbox" class="size-4 accent-primary" />
+        {{ t('docker.redeploy.pull') }}
       </label>
       <Button class="ml-auto" :disabled="!ready || busy" @click="deploy">
         <Rocket />
