@@ -150,7 +150,7 @@ tests in `zendiloos-architecture` catch, as part of `cargo test`.
 | `zendiloos-fileops` | file operations beneath a share's root (`openat2`), with the credentials of the calling thread | agent-proto |
 | `zendiloos-sim` | simulated agent behind `AgentTransport`; a model of a small NAS (disks, ZFS pools, resilver and scrub over time); executes nothing, but keeps share contents as real files in a scratch directory | agent-proto, fileops |
 | `zendiloos-jobs` | long-running operations: recorded, published to subscribers, marked as interrupted after a restart; the running ones are the kernel's `RunningWork` | kernel |
-| `zendiloos-notify` | notifications for administrators: a code with parameters, stored (the 500 most recent) and published; how far each account has read and cleared them; channels that carry them by email and to webhooks | kernel |
+| `zendiloos-notify` | notifications for administrators: a code with parameters, stored (the 500 most recent) and published; how far each account has read and cleared them; the mail server and the channels that carry them by email and to webhooks, and where each kind goes (4.3) | kernel |
 | `zendiloos-logging` | logging setup shared by `zendiloosd` and the agent | – |
 | `zendiloos-architecture` | tests only: checks this table and the rules below against the workspace (`cargo metadata`, and the sources parsed with `syn`) | – |
 
@@ -494,19 +494,53 @@ notifications, which are about pools, disks and shares. The WebSocket
 topics `jobs` and `notifications` apply the same rules.
 
 Notifications also go out on channels administrators (`system.manage`)
-set up, so that a failing disk is noticed without the interface open:
-email over SMTP (TLS, STARTTLS, or unencrypted to a relay in the own
-network, never with a password) and webhooks (one HTTP POST, as JSON with
-the fields chat services, Gotify and home automation read, or as text
-with a `Title` header for ntfy). Each channel carries everything, warnings
-and errors (with the good news that ends them), or errors only, worded on
-the server in English or German as the interface words them, the NAS's
-name in the subject. Each notification is delivered on a task of its
-own, with 30 seconds per channel; the last outcome is kept and shown, and
-a test message answers with the server's reason when it fails. TLS is
-rustls with ring and the system's certificate authorities
-(`ca-certificates`); the mail password lives in the database, which only
-`zendiloosd` reads, and the API never returns it.
+set up, so that a failing disk is noticed without the interface open.
+
+- **Mail server.** One for all email channels (`notification_mail_server`,
+  one row): SMTP over TLS, STARTTLS, or unencrypted to a relay in the own
+  network, never with a password. The password lives in the database,
+  which only `zendiloosd` reads; the API never returns it, only that one
+  is stored. Left out of a change it stays, for the same server, port,
+  encryption and user name only; another server needs it typed again, so
+  a stored password never goes anywhere it was not typed for.
+- **Channels** (at most 20): email to recipients, 1 to 10, each a
+  zendiloOS account or an address. An account is mailed at the address
+  it has when the mail goes out; one without an address, disabled or
+  deleted gets nothing, and the channel says so per recipient. Webhooks
+  send one HTTP POST, as JSON with the fields chat services, Gotify and
+  home automation read, or as text with a `Title` header for ntfy. The
+  messages are worded on the server in English or German as the
+  interface words them, the NAS's name in the subject.
+- **Routes.** Notifications come in kinds (`zendiloos_notify::routes::KINDS`),
+  each a code, except a data check that found errors (`scrub_finished`
+  as a warning or error), which is `scrub_errors`; grouped as storage,
+  folders and system, each with its usual level. Per kind, administrators
+  tick whether it is kept in zendiloOS and on which channels it goes out
+  (`notification_routes`: a row per kind and channel, the channel NULL
+  for zendiloOS). A kind not kept is not stored, listed or published to
+  browsers, but still goes out where ticked. A kind nobody chose for
+  follows the defaults: kept, and sent on a channel whose level (its
+  former "sends everything / warnings and errors / errors only") carries
+  the kind's usual level. A new channel starts at warnings and errors; a
+  change of a channel keeps its level; so new kinds reach existing
+  channels as their level did before.
+- **Delivery.** Each notification raised is delivered on a task of its
+  own, to the channels its kind is routed to, with 30 seconds per
+  channel; the last outcome is kept and shown. A test goes to that
+  channel alone and answers with the server's reason when it fails.
+  Changes to the mail server, channels and routes are audited
+  (`notify.mail_server_update`, `notify.channel_*`, `notify.routes_update`).
+- **Before routes** (migration `0032_notification_routes`), each email
+  channel carried its own server and a level. The first email channel's
+  server became the mail server (another channel's different server is
+  not kept: it sends through the first one's); email channels kept their
+  recipients; no route is written, so each channel carries what it
+  carried by its level, judged by a kind's usual level: a snapshot that
+  failed as an error, usually a warning, no longer reaches a channel for
+  errors only unless ticked.
+
+TLS is rustls with ring and the system's certificate authorities
+(`ca-certificates`).
 
 ### 4.4 Share and File Permissions
 
