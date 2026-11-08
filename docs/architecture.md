@@ -142,6 +142,7 @@ tests in `zendiloos-architecture` catch, as part of `cargo test`.
 | `zendiloos-updates` | updates of the NAS: Debian's packages and zendiloOS's releases from GitHub by channel, checked daily, installed on request (4.10) | kernel, notify |
 | `zendiloos-network` | interfaces, addresses, default routes, name servers (read-only until M6); later IP configuration, DNS, hostname | kernel |
 | `zendiloos-certificates` | the ACME client plugin (acme.sh): accounts, challenges and certificates from Let's Encrypt, renewed daily; the web interface's ports and certificate, changed with confirmation (4.11) | kernel, jobs, notify |
+| `zendiloos-firewall` | the firewall: one ordered list of rules (interface, service or ports, source, allow or deny) and what happens when none matches, enforced by nftables for the NAS and the ports Docker publishes, changed with confirmation; services nobody reaches, told (4.12) | kernel, notify |
 | `zendiloos-infra` | all secondary adapters, SQLite migrations | kernel, jobs, notify, contexts, agent-proto, exec; in tests also sim |
 | `zendiloos-api` | primary adapter: axum routes, DTOs, OpenAPI, auth middleware, WebSocket | kernel, jobs, notify, contexts |
 | `zendiloosd` | composition root (binary) | everything except agent |
@@ -1522,6 +1523,62 @@ browser confirms within 90 seconds, from the new address if it moved, the
 old files return, by a timer and after a restart of the agent. zendiloosd
 saves the settings once confirmed, so the database never holds settings
 that went back.
+
+### 4.12 Firewall
+
+**One list of rules**, kept by `zendiloos-firewall` (migration 0035): each
+rule names a network connection (or any), what it is about (all ports, the
+web interface, SMB, NFS, SSH, network discovery, ping, a Docker project, or
+ports by number with TCP, UDP or both), a source (anyone, an address, a
+network, a range; IPv4 or IPv6) and allow or deny. For a new connection the
+first rule that matches decides; when none does, the fallback, "allow" by
+default, so turning the firewall on changes nothing until there are rules.
+The services stand for the ports in use: the web interface's HTTP and HTTPS
+ports (also those of a change waiting for confirmation), the SSH server's,
+SMB's (TCP 139, 445, UDP 137, 138), NFS's (2049, rpcbind on 111, and mountd,
+statd and lockd on the ports the package fixes in
+`/etc/nfs.conf.d/zendiloos.conf`: 20048, 32765, 32768), discovery's
+(WS-Discovery, mDNS, LLMNR), and a project's published host ports while its
+containers run.
+
+**nftables, a table of its own.** zendiloosd compiles the rules into plain
+matches the agent checks once more (interface names, addresses, networks
+with their host bits zero, port ranges) and writes as
+`/etc/zendiloos/firewall/zendiloos.nft`: the table `inet zendiloos_firewall`
+created, deleted and made anew in one transaction, so nothing else (Docker's
+tables, Debian's) is touched. Its `input` chain accepts answers, the
+loopback, Docker's bridges (containers reach the NAS), what IPv6 needs and
+DHCP's answers, then the rules, then the fallback. Its `forward` chain lets
+containers' own traffic pass and sends what Docker forwards to a published
+port (`ct status dnat`) through the rules that are about all ports, a project
+or ports, matched by the port it was sent to (`ct original proto-dst`), then
+the fallback. A drop there is final; an accept never overrides Docker's own
+drops. The agent has no network of its own (`PrivateNetwork`): `nft -c`
+checks the file in a transient unit, and `zendiloos-firewall.service`
+(`nft -f`, early at boot before `network-pre.target`, after Debian's
+`nftables.service`) loads it, reloaded after each change. Off, the file only
+removes the table; removing the package removes it too.
+
+**Changes go back unless confirmed**, as network and web server changes do:
+the file replaced is kept as `zendiloos.nft.previous` and returns after 90
+seconds, by a timer in the agent and after its restart. zendiloosd saves the
+settings only once confirmed. It also refuses settings that would keep out
+the browser asking for them (its address from `X-Real-IP`, the interface
+from the address nginx was reached at, `X-Server-Addr`, and the port,
+`X-Server-Port`), unless the request says that is meant. Locked out anyway,
+`nft delete table inet zendiloos_firewall` on the console lifts the rules
+until the next change or restart.
+
+**Kept in step.** zendiloosd puts the rules in force at its start, when a
+job ends (a project deployed, stopped, removed), when SSH, the file services
+or the web interface's ports change, and every 30 seconds, asking the agent
+only when the compiled rules differ from those it gave last. What cannot be
+read (Docker not answering) stays as last seen, so a hiccup never drops a
+project's ports. A service that is on but that the rules let nobody reach (an
+"allow" for any of its ports first means someone gets in; a "deny" of all of
+them to anyone on every connection first, or a denying fallback, means
+nobody does) is listed on the Firewall tab with a way to allow it, and told
+once as `firewall_blocked` until it is reachable again.
 
 ---
 
