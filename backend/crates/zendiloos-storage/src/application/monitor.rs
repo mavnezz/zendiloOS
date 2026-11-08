@@ -187,4 +187,49 @@ mod tests {
         });
         assert_eq!((disk.level, disk.params["health"].as_str()), (Level::Error, "failing"));
     }
+
+    /// Where a notification goes by default depends on its kind's most
+    /// serious level; none raised here may be more serious than that, or a
+    /// channel for errors only would miss it.
+    #[test]
+    fn no_notification_is_more_serious_than_its_kind() {
+        use zendiloos_notify::routes::{carries, find, kind_of};
+        let pool = || "tank".to_owned();
+        let states = [
+            VdevState::Online,
+            VdevState::Degraded,
+            VdevState::Faulted,
+            VdevState::Offline,
+            VdevState::Unavailable,
+            VdevState::Removed,
+            VdevState::Suspended,
+            VdevState::Unknown,
+        ];
+        let mut events: Vec<StorageEvent> =
+            states.into_iter().map(|state| StorageEvent::PoolTrouble { pool: pool(), state }).collect();
+        events.push(StorageEvent::PoolRecovered { pool: pool() });
+        for kind in [ScanKind::Scrub, ScanKind::Resilver] {
+            for errors in [0, 3] {
+                events.push(StorageEvent::ScanFinished { pool: pool(), kind, errors });
+            }
+        }
+        for percent in [80, 90] {
+            events.push(StorageEvent::VolumeFilling { pool: pool(), percent });
+        }
+        for health in [Health::Good, Health::Warning, Health::Failing] {
+            events.push(StorageEvent::DiskHealth { disk: "sdd".into(), model: None, health });
+        }
+        for event in events {
+            let raised = notification(event);
+            let kind = find(kind_of(&raised.code, raised.level)).expect("a kind the routes know");
+            for baseline in [Level::Info, Level::Warning, Level::Error] {
+                assert!(
+                    !carries(baseline, raised.level) || carries(baseline, kind.level),
+                    "{} at {:?} is more serious than its kind",
+                    raised.code,
+                    raised.level
+                );
+            }
+        }
+    }
 }
