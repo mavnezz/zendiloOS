@@ -2,16 +2,18 @@ use std::sync::Arc;
 
 use zendiloos_kernel::{AuditEntry, Outcome, RequestContext, Secret};
 
-use crate::application::context::Context;
-use crate::application::{IdentityError, SignedIn};
-use crate::domain::{AccountName, AuditAction, ThrottleKey};
+use crate::application::context::{Context, PENDING_LIFETIME, PendingSignIn};
+use crate::application::{IdentityError, LoginOutcome, SecondFactorChallenge};
+use crate::domain::{AccountName, AuditAction, ThrottleKey, TwoFactor};
 
 pub struct LoginInput {
     pub name: String,
     pub password: Secret,
 }
 
-/// Command: checks name and password and starts a session.
+/// Command: checks name and password and starts a session, or, for an
+/// account with two-factor sign-in, holds the sign-in for its code
+/// ([`CompleteSignIn`](super::CompleteSignIn)).
 #[derive(Clone)]
 pub struct Login {
     context: Arc<Context>,
@@ -26,7 +28,7 @@ impl Login {
         &self,
         input: LoginInput,
         request: &RequestContext,
-    ) -> Result<SignedIn, IdentityError> {
+    ) -> Result<LoginOutcome, IdentityError> {
         let c = &self.context;
         let now = c.now();
         let audit = |outcome| AuditEntry::new(now, AuditAction::Login.as_str(), outcome, request);
@@ -82,21 +84,29 @@ impl Login {
             return Err(IdentityError::AccountDisabled);
         }
 
+        if let Some(two_factor) = c.ports.two_factor.find(account.id).await?.filter(TwoFactor::is_on) {
+            // The password was right; the code is an attempt of its own. The
+            // account's failures are not cleared until the code is right too,
+            // or whoever knows the password could guess codes without end.
+            drop(attempt);
+            let issued = c.ports.tokens.issue();
+            let expires_at = now.saturating_add(PENDING_LIFETIME);
+            let waiting = PendingSignIn {
+                account_id: account.id,
+                password_hash: account.password_hash.clone(),
+                enabled_at: two_factor.enabled_at,
+                client_ip: request.client_ip,
+                expires_at,
+                failures: 0,
+            };
+            c.hold_sign_in(issued.hash, waiting, now);
+            return Ok(LoginOutcome::SecondFactor(SecondFactorChallenge { token: issued.token, expires_at }));
+        }
+
         drop(attempt);
         c.clear_throttle(&ThrottleKey::Account(account.name.clone()));
-        if !account.password_locked && !account.password_change_required {
-            let policy = c.ports.accounts.password_policy().await?;
-            let expired = policy.max_age_days.is_some_and(|days| {
-                now.duration_since(account.password_changed_at)
-                    > std::time::Duration::from_secs(u64::from(days) * 86_400)
-            });
-            if expired {
-                c.ports.accounts.require_password_change(account.id).await?;
-                account.password_change_required = true;
-            }
-        }
-        let signed_in = c.start_session(&account, request, now).await?;
+        let signed_in = c.finish_sign_in(&mut account, request, now).await?;
         c.audit(audit(Outcome::Success).by(&account.actor())).await?;
-        Ok(signed_in)
+        Ok(LoginOutcome::SignedIn(signed_in))
     }
 }

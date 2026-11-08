@@ -32,7 +32,7 @@ use zendiloos_infra::apps::{
 use zendiloos_infra::containers::{HttpsRegistries, SharesForProjects};
 use zendiloos_infra::host::{HostSystemInfo, IpNetworkReader, JournalctlReader, MetricsHub, ProcListening};
 use zendiloos_infra::identity::{
-    Argon2PasswordHasher, FileSetupCodes, RandomSessionTokens, SharingFollowsGroups,
+    Argon2PasswordHasher, FileSetupCodes, RandomSessionTokens, SharingFollowsGroups, TotpCodes,
 };
 use zendiloos_infra::notify::NetworkChannels;
 use zendiloos_infra::sharing::DrivesForFiles;
@@ -40,7 +40,7 @@ use zendiloos_infra::sqlite::{
     Database, Occupants, SqliteAccountAddresses, SqliteAccounts, SqliteAppSources, SqliteAuditLog,
     SqliteCertificates, SqliteChannels, SqliteGroups, SqliteInstalledApps, SqliteJobs, SqliteNotifications,
     SqlitePreferences, SqliteProjects, SqliteSecurity, SqliteSelfTestPlans, SqliteSessions,
-    SqliteShareProjects, SqliteShares, SqliteSystemUpdates, SqliteUpdateSettings,
+    SqliteShareProjects, SqliteShares, SqliteSystemUpdates, SqliteTwoFactor, SqliteUpdateSettings,
 };
 use zendiloos_infra::updates::GitHubReleases;
 use zendiloos_jobs::Jobs;
@@ -454,6 +454,8 @@ fn identity(
         setup_codes: Arc::new(
             FileSetupCodes::new(config.setup_code_path()).with_open_marker(config.setup_open_path()),
         ),
+        two_factor: Arc::new(SqliteTwoFactor::new(database.clone())),
+        codes: Arc::new(TotpCodes),
         audit,
         clock: Arc::new(SystemClock),
     };

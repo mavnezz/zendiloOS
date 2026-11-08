@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM account_two_factor WHERE account_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "192ca28da9a79d0f546e56a5d5bf9a6d23dd2f373d4d97abcaa382da6aa93613"
+}

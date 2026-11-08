@@ -63,6 +63,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/accounts/{id}/two-factor": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Turns another account's second factor off, for someone who lost their
+         *     phone and their recovery codes. Ends that account's sessions.
+         */
+        delete: operations["reset"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/apps/catalog": {
         parameters: {
             query?: never;
@@ -369,8 +389,32 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Signs in with name and password. */
+        /**
+         * Signs in with name and password. An account with a second factor gets
+         *     no session yet: the code follows at `/auth/login/second-factor`.
+         */
         post: operations["login"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/login/second-factor": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * The second step of a sign-in: the code from the authenticator app, or a
+         *     recovery code. From the address the password came from, within five
+         *     minutes; three wrong codes end the sign-in.
+         */
+        post: operations["complete_sign_in"];
         delete?: never;
         options?: never;
         head?: never;
@@ -422,6 +466,97 @@ export interface paths {
         get: operations["session"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/two-factor": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Whether the signed-in account's sign-ins ask for a second factor. */
+        get: operations["status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/two-factor/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Turns the second factor on with the first code from the app. Ends the
+         *     account's other sessions.
+         */
+        post: operations["confirm"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/two-factor/disable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Turns the signed-in account's second factor off. Ends its other sessions. */
+        post: operations["disable"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/two-factor/recovery-codes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** New recovery codes for a code from the app; the old ones stop working. */
+        post: operations["renew_recovery_codes"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/two-factor/setup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Begins setting up the signed-in account's authenticator app: a new
+         *     secret, which waits for its first code. One begun before is replaced.
+         */
+        post: operations["begin"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3086,6 +3221,11 @@ export interface components {
             /** @description Only administrators set its password. */
             password_locked: boolean;
             role: components["schemas"]["AccountRole"];
+            /**
+             * @description Its sign-ins to the web interface ask for a code from an
+             *     authenticator app.
+             */
+            two_factor: boolean;
             /** Format: int64 */
             updated_at: number;
         };
@@ -3776,6 +3916,15 @@ export interface components {
             host: string;
             /** @description `rwm`: read, write, make nodes. */
             permissions: string;
+        };
+        DisableTwoFactorRequest: {
+            /**
+             * Format: password
+             * @description Six digits from the app, or a recovery code.
+             */
+            code: string;
+            /** Format: password */
+            password: string;
         };
         Disk: {
             /** @description The array, if `usage` is `array_member`. */
@@ -5037,6 +5186,10 @@ export interface components {
          * @enum {string}
          */
         RecipientProblem: "no_address" | "disabled" | "gone";
+        RecoveryCodes: {
+            /** @description Each signs in once instead of a code from the app. Shown this once. */
+            recovery_codes: string[];
+        };
         Redeploy: {
             /** @description Fetches the newest images under the project's tags first. */
             pull?: boolean;
@@ -5183,6 +5336,28 @@ export interface components {
          * @enum {string}
          */
         SearchStop: "results" | "time";
+        /** @description The password checked out; the account's second factor comes next. */
+        SecondFactorChallenge: {
+            /**
+             * Format: int64
+             * @description Until when the code is waited for, as Unix time in seconds.
+             */
+            expires_at: number;
+            /** @description Send it with the code to `/auth/login/second-factor`. */
+            token: string;
+        };
+        SecondFactorRequest: {
+            /**
+             * Format: password
+             * @description Six digits from the authenticator app, or a recovery code.
+             */
+            code: string;
+            /**
+             * Format: password
+             * @description The `token` the password step gave.
+             */
+            token: string;
+        };
         SecuritySettings: {
             account_lock?: components["schemas"]["FailureLimit"] | null;
             /**
@@ -5726,6 +5901,25 @@ export interface components {
         };
         /** @enum {string} */
         Transport: "sata" | "sas" | "nvme" | "usb" | "virtio" | "other";
+        TwoFactorCodeRequest: {
+            /**
+             * Format: password
+             * @description Six digits from the authenticator app.
+             */
+            code: string;
+        };
+        TwoFactorSetup: {
+            /** @description The secret in base32, for typing into the app. */
+            secret: string;
+            /** @description The `otpauth://` address, for the QR code. */
+            uri: string;
+        };
+        TwoFactorStatus: {
+            /** @description Sign-ins of this account ask for a code from its authenticator app. */
+            enabled: boolean;
+            /** @description Recovery codes not used yet. */
+            recovery_codes_left: number;
+        };
         UninstallRequest: {
             /** @description The app's id, repeated: its data goes with it. */
             confirm: string;
@@ -6149,6 +6343,53 @@ export interface operations {
             };
             /** @description `invalid_input` */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    reset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Off: the password alone signs in. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `forbidden`, `csrf_rejected` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `own_account`, `two_factor_off` */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6797,6 +7038,15 @@ export interface operations {
                     "application/json": components["schemas"]["SessionInfo"];
                 };
             };
+            /** @description The password checked out; a code from the authenticator app is asked for. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecondFactorChallenge"];
+                };
+            };
             /** @description `invalid_credentials` */
             401: {
                 headers: {
@@ -6808,6 +7058,66 @@ export interface operations {
             };
             /** @description `account_disabled`, `csrf_rejected` */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `too_many_attempts` */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    complete_sign_in: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SecondFactorRequest"];
+            };
+        };
+        responses: {
+            /** @description Signed in; the session cookie is set. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionInfo"];
+                };
+            };
+            /** @description `sign_in_expired`: sign in with the password again */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `account_disabled`, `csrf_rejected` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_code` */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6903,6 +7213,193 @@ export interface operations {
             };
             /** @description `unauthenticated` */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TwoFactorStatus"];
+                };
+            };
+        };
+    };
+    confirm: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TwoFactorCodeRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecoveryCodes"];
+                };
+            };
+            /** @description `no_two_factor_setup`, `two_factor_on` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_code` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    disable: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DisableTwoFactorRequest"];
+            };
+        };
+        responses: {
+            /** @description Off: the password alone signs in. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `two_factor_off` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `wrong_password`, `invalid_code` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `too_many_attempts` */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    renew_recovery_codes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TwoFactorCodeRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecoveryCodes"];
+                };
+            };
+            /** @description `two_factor_off` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_code` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `too_many_attempts` */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    begin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TwoFactorSetup"];
+                };
+            };
+            /** @description `two_factor_on` */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

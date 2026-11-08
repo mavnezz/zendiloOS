@@ -17,6 +17,10 @@ pub enum AuditAction {
     AddressBlock,
     AddressUnblock,
     SessionEnd,
+    TwoFactorEnable,
+    TwoFactorDisable,
+    TwoFactorReset,
+    RecoveryCodesRenew,
 }
 
 impl AuditAction {
@@ -38,6 +42,10 @@ impl AuditAction {
             AuditAction::AddressBlock => "identity.address_block",
             AuditAction::AddressUnblock => "identity.address_unblock",
             AuditAction::SessionEnd => "identity.session_end",
+            AuditAction::TwoFactorEnable => "identity.two_factor_enable",
+            AuditAction::TwoFactorDisable => "identity.two_factor_disable",
+            AuditAction::TwoFactorReset => "identity.two_factor_reset",
+            AuditAction::RecoveryCodesRenew => "identity.recovery_codes_renew",
         }
     }
 }

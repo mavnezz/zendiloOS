@@ -1,17 +1,50 @@
 //! State and helpers shared by the use cases.
 
+use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use zendiloos_kernel::{AuditEntry, Outcome, PortError, RequestContext, Secret, Timestamp};
+use zendiloos_kernel::{AuditEntry, Outcome, PortError, RequestContext, Secret, Timestamp, constant_time_eq};
 
 use super::ports::Creation;
 use super::{AccountSummary, AuthContext, IdentityConfig, IdentityError, IdentityPorts, SignedIn};
 use crate::domain::{
     Account, AccountId, AccountName, AddressRange, AuditAction, BlockedAddress, FailureLimit, LoginThrottle,
-    NewSession, Permission, Role, SecuritySettings, SessionPolicy, ThrottleKey, ThrottlePolicy, is_blocked,
+    NewSession, PasswordHash, Permission, Role, SecuritySettings, SessionPolicy, ThrottleKey, ThrottlePolicy,
+    TokenHash, TotpSecret, TwoFactor, TypedCode, is_blocked, matching_step, time_step,
 };
+
+/// How long a sign-in waits for its second factor.
+pub(crate) const PENDING_LIFETIME: Duration = Duration::from_secs(5 * 60);
+/// Sign-ins waiting at most at a time; the oldest go first.
+const MAX_PENDING: usize = 1_000;
+/// Wrong codes a waiting sign-in takes before it ends: then the password
+/// again (and the throttles count each).
+pub(crate) const MAX_CODE_FAILURES: u8 = 3;
+
+/// A sign-in whose password checked out, waiting for its second factor.
+#[derive(Debug, Clone)]
+pub(crate) struct PendingSignIn {
+    pub(crate) account_id: AccountId,
+    /// What the password and the second factor were when the password was
+    /// checked: changed in between, the sign-in ends.
+    pub(crate) password_hash: PasswordHash,
+    pub(crate) enabled_at: Option<Timestamp>,
+    /// The address the password came from; the code must come from it too.
+    pub(crate) client_ip: Option<IpAddr>,
+    pub(crate) expires_at: Timestamp,
+    pub(crate) failures: u8,
+}
+
+/// Which of the account's codes a code that checked out was.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CodeUsed {
+    /// From the app, for this time step.
+    OneTime(u64),
+    /// A recovery code: the one at this index.
+    Recovery(usize),
+}
 
 /// The security settings and blocks in force: loaded once, replaced
 /// whenever they change.
@@ -138,6 +171,8 @@ pub(crate) struct Context {
     /// Held while accounts and groups change, so that checks such as "an
     /// administrator remains" cannot be raced by a concurrent change.
     pub(crate) changes: tokio::sync::Mutex<()>,
+    /// Sign-ins waiting for their second factor, by their token's digest.
+    pending: Mutex<HashMap<TokenHash, PendingSignIn>>,
 }
 
 impl Context {
@@ -148,7 +183,91 @@ impl Context {
             attempts: Mutex::new(Attempts::new(config.throttle)),
             defences: Mutex::new(None),
             changes: tokio::sync::Mutex::new(()),
+            pending: Mutex::new(HashMap::new()),
         }
+    }
+
+    fn pending(&self) -> MutexGuard<'_, HashMap<TokenHash, PendingSignIn>> {
+        // A map of plain values: nothing a panic could leave half done.
+        self.pending.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Keeps `sign_in` waiting under `token`, making room if need be.
+    pub(crate) fn hold_sign_in(&self, token: TokenHash, sign_in: PendingSignIn, now: Timestamp) {
+        let mut pending = self.pending();
+        pending.retain(|_, waiting| waiting.expires_at > now);
+        if pending.len() >= MAX_PENDING
+            && let Some(oldest) =
+                pending.iter().min_by_key(|(_, waiting)| waiting.expires_at).map(|(k, _)| *k)
+        {
+            pending.remove(&oldest);
+        }
+        pending.insert(token, sign_in);
+    }
+
+    /// The sign-in waiting under `token`, if it has not expired.
+    pub(crate) fn waiting_sign_in(&self, token: &TokenHash, now: Timestamp) -> Option<PendingSignIn> {
+        let mut pending = self.pending();
+        match pending.get(token) {
+            Some(waiting) if waiting.expires_at > now => Some(waiting.clone()),
+            Some(_) => {
+                pending.remove(token);
+                None
+            }
+            None => None,
+        }
+    }
+
+    /// One more wrong code for the sign-in under `token`; it ends after
+    /// [`MAX_CODE_FAILURES`].
+    pub(crate) fn wrong_code(&self, token: &TokenHash) {
+        let mut pending = self.pending();
+        if let Some(waiting) = pending.get_mut(token) {
+            waiting.failures += 1;
+            if waiting.failures >= MAX_CODE_FAILURES {
+                pending.remove(token);
+            }
+        }
+    }
+
+    pub(crate) fn end_sign_in(&self, token: &TokenHash) {
+        self.pending().remove(token);
+    }
+
+    /// Ends every sign-in of `account` waiting for its second factor: its
+    /// password or second factor changed.
+    pub(crate) fn end_sign_ins_of(&self, account: AccountId) {
+        self.pending().retain(|_, waiting| waiting.account_id != account);
+    }
+
+    /// Which code of `two_factor` (on) `code` is, if any: a one-time code of
+    /// a step not taken yet, or a recovery code not used yet.
+    pub(crate) fn check_code(&self, two_factor: &TwoFactor, code: &str, now: Timestamp) -> Option<CodeUsed> {
+        match TypedCode::parse(code)? {
+            TypedCode::OneTime(digits) => {
+                let secret = two_factor.secret.as_ref()?;
+                self.one_time_step(secret, &digits, two_factor.last_step, now).map(CodeUsed::OneTime)
+            }
+            TypedCode::Recovery(normalized) => {
+                let digest = self.ports.codes.digest(&normalized);
+                two_factor
+                    .recovery
+                    .iter()
+                    .position(|kept| constant_time_eq(kept.as_str().as_bytes(), digest.as_str().as_bytes()))
+                    .map(CodeUsed::Recovery)
+            }
+        }
+    }
+
+    /// The time step a one-time `code` of `secret` belongs to.
+    pub(crate) fn one_time_step(
+        &self,
+        secret: &TotpSecret,
+        code: &str,
+        last_step: Option<u64>,
+        now: Timestamp,
+    ) -> Option<u64> {
+        matching_step(code, time_step(now), last_step, |step| self.ports.codes.code(secret, step))
     }
 
     pub(crate) fn require(auth: &AuthContext, permission: Permission) -> Result<(), IdentityError> {
@@ -305,6 +424,28 @@ impl Context {
         self.ports.audit.record(entry).await
     }
 
+    /// Starts the session of a sign-in that checked out: an account whose
+    /// password is older than the policy allows must choose a new one first.
+    pub(crate) async fn finish_sign_in(
+        &self,
+        account: &mut Account,
+        request: &RequestContext,
+        now: Timestamp,
+    ) -> Result<SignedIn, IdentityError> {
+        if !account.password_locked && !account.password_change_required {
+            let policy = self.ports.accounts.password_policy().await?;
+            let expired = policy.max_age_days.is_some_and(|days| {
+                now.duration_since(account.password_changed_at)
+                    > Duration::from_secs(u64::from(days) * 86_400)
+            });
+            if expired {
+                self.ports.accounts.require_password_change(account.id).await?;
+                account.password_change_required = true;
+            }
+        }
+        self.start_session(account, request, now).await
+    }
+
     pub(crate) async fn start_session(
         &self,
         account: &Account,
@@ -331,6 +472,17 @@ impl Context {
             token: issued.token,
             session: AuthContext { session_id, csrf_token, expires_at, account: summary(account) },
         })
+    }
+}
+
+/// Takes `used` out of `two_factor`: its time step is not taken again, a
+/// recovery code is gone.
+pub(crate) fn spend(two_factor: &mut TwoFactor, used: CodeUsed) {
+    match used {
+        CodeUsed::OneTime(step) => two_factor.last_step = Some(step),
+        CodeUsed::Recovery(index) => {
+            two_factor.recovery.remove(index);
+        }
     }
 }
 

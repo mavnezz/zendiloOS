@@ -305,6 +305,66 @@
         ]
       }
     },
+    "/api/v1/accounts/{id}/two-factor": {
+      "delete": {
+        "tags": [
+          "accounts"
+        ],
+        "summary": "Turns another account's second factor off, for someone who lost their\nphone and their recovery codes. Ends that account's sessions.",
+        "operationId": "reset",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Off: the password alone signs in."
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`own_account`, `two_factor_off`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/apps/catalog": {
       "get": {
         "tags": [
@@ -1195,7 +1255,7 @@
         "tags": [
           "identity"
         ],
-        "summary": "Signs in with name and password.",
+        "summary": "Signs in with name and password. An account with a second factor gets\nno session yet: the code follows at `/auth/login/second-factor`.",
         "operationId": "login",
         "requestBody": {
           "content": {
@@ -1218,6 +1278,16 @@
               }
             }
           },
+          "202": {
+            "description": "The password checked out; a code from the authenticator app is asked for.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecondFactorChallenge"
+                }
+              }
+            }
+          },
           "401": {
             "description": "`invalid_credentials`",
             "content": {
@@ -1230,6 +1300,77 @@
           },
           "403": {
             "description": "`account_disabled`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`too_many_attempts`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/login/second-factor": {
+      "post": {
+        "tags": [
+          "identity"
+        ],
+        "summary": "The second step of a sign-in: the code from the authenticator app, or a\nrecovery code. From the address the password came from, within five\nminutes; three wrong codes end the sign-in.",
+        "operationId": "complete_sign_in",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SecondFactorRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Signed in; the session cookie is set.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionInfo"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`sign_in_expired`: sign in with the password again",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`account_disabled`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_code`",
             "content": {
               "application/json": {
                 "schema": {
@@ -1338,6 +1479,245 @@
           },
           "401": {
             "description": "`unauthenticated`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/auth/two-factor": {
+      "get": {
+        "tags": [
+          "identity"
+        ],
+        "summary": "Whether the signed-in account's sign-ins ask for a second factor.",
+        "operationId": "status",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TwoFactorStatus"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/auth/two-factor/confirm": {
+      "post": {
+        "tags": [
+          "identity"
+        ],
+        "summary": "Turns the second factor on with the first code from the app. Ends the\naccount's other sessions.",
+        "operationId": "confirm",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TwoFactorCodeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecoveryCodes"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`no_two_factor_setup`, `two_factor_on`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_code`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/auth/two-factor/disable": {
+      "post": {
+        "tags": [
+          "identity"
+        ],
+        "summary": "Turns the signed-in account's second factor off. Ends its other sessions.",
+        "operationId": "disable",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DisableTwoFactorRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Off: the password alone signs in."
+          },
+          "409": {
+            "description": "`two_factor_off`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`wrong_password`, `invalid_code`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`too_many_attempts`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/auth/two-factor/recovery-codes": {
+      "post": {
+        "tags": [
+          "identity"
+        ],
+        "summary": "New recovery codes for a code from the app; the old ones stop working.",
+        "operationId": "renew_recovery_codes",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TwoFactorCodeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecoveryCodes"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`two_factor_off`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_code`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`too_many_attempts`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/auth/two-factor/setup": {
+      "post": {
+        "tags": [
+          "identity"
+        ],
+        "summary": "Begins setting up the signed-in account's authenticator app: a new\nsecret, which waits for its first code. One begun before is replaced.",
+        "operationId": "begin",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TwoFactorSetup"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`two_factor_on`",
             "content": {
               "application/json": {
                 "schema": {
@@ -10239,6 +10619,7 @@
           "password_change_required",
           "password_locked",
           "password_changed_at",
+          "two_factor",
           "created_at",
           "updated_at"
         ],
@@ -10291,6 +10672,10 @@
           },
           "role": {
             "$ref": "#/components/schemas/AccountRole"
+          },
+          "two_factor": {
+            "type": "boolean",
+            "description": "Its sign-ins to the web interface ask for a code from an\nauthenticator app."
           },
           "updated_at": {
             "type": "integer",
@@ -12295,6 +12680,25 @@
             "description": "`rwm`: read, write, make nodes."
           }
         }
+      },
+      "DisableTwoFactorRequest": {
+        "type": "object",
+        "required": [
+          "password",
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "format": "password",
+            "description": "Six digits from the app, or a recovery code."
+          },
+          "password": {
+            "type": "string",
+            "format": "password"
+          }
+        },
+        "additionalProperties": false
       },
       "Disk": {
         "type": "object",
@@ -16011,6 +16415,21 @@
           "gone"
         ]
       },
+      "RecoveryCodes": {
+        "type": "object",
+        "required": [
+          "recovery_codes"
+        ],
+        "properties": {
+          "recovery_codes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Each signs in once instead of a code from the app. Shown this once."
+          }
+        }
+      },
       "Redeploy": {
         "type": "object",
         "properties": {
@@ -16454,6 +16873,45 @@
           "results",
           "time"
         ]
+      },
+      "SecondFactorChallenge": {
+        "type": "object",
+        "description": "The password checked out; the account's second factor comes next.",
+        "required": [
+          "token",
+          "expires_at"
+        ],
+        "properties": {
+          "expires_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Until when the code is waited for, as Unix time in seconds."
+          },
+          "token": {
+            "type": "string",
+            "description": "Send it with the code to `/auth/login/second-factor`."
+          }
+        }
+      },
+      "SecondFactorRequest": {
+        "type": "object",
+        "required": [
+          "token",
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "format": "password",
+            "description": "Six digits from the authenticator app, or a recovery code."
+          },
+          "token": {
+            "type": "string",
+            "format": "password",
+            "description": "The `token` the password step gave."
+          }
+        },
+        "additionalProperties": false
       },
       "SecuritySettings": {
         "type": "object",
@@ -17981,6 +18439,55 @@
           "virtio",
           "other"
         ]
+      },
+      "TwoFactorCodeRequest": {
+        "type": "object",
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "format": "password",
+            "description": "Six digits from the authenticator app."
+          }
+        },
+        "additionalProperties": false
+      },
+      "TwoFactorSetup": {
+        "type": "object",
+        "required": [
+          "secret",
+          "uri"
+        ],
+        "properties": {
+          "secret": {
+            "type": "string",
+            "description": "The secret in base32, for typing into the app."
+          },
+          "uri": {
+            "type": "string",
+            "description": "The `otpauth://` address, for the QR code."
+          }
+        }
+      },
+      "TwoFactorStatus": {
+        "type": "object",
+        "required": [
+          "enabled",
+          "recovery_codes_left"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Sign-ins of this account ask for a code from its authenticator app."
+          },
+          "recovery_codes_left": {
+            "type": "integer",
+            "description": "Recovery codes not used yet.",
+            "minimum": 0
+          }
+        }
       },
       "UninstallRequest": {
         "type": "object",

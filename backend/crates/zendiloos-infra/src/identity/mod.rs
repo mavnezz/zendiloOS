@@ -3,11 +3,13 @@
 //! the Sharing context follow groups.
 
 mod groups;
+mod one_time_codes;
 mod password;
 mod setup_code;
 mod tokens;
 
 pub use groups::SharingFollowsGroups;
+pub use one_time_codes::TotpCodes;
 pub use password::Argon2PasswordHasher;
 pub use setup_code::FileSetupCodes;
 pub use tokens::RandomSessionTokens;

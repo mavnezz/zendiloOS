@@ -15,6 +15,7 @@ mod shares;
 mod storage;
 mod system;
 pub(crate) mod terminal;
+mod two_factor;
 mod updates;
 
 use utoipa_axum::router::OpenApiRouter;
@@ -26,6 +27,7 @@ pub(crate) fn v1() -> OpenApiRouter<ApiState> {
     OpenApiRouter::new()
         .merge(system::routes())
         .merge(identity::routes())
+        .merge(two_factor::routes())
         .merge(storage::routes())
         .merge(removable::routes())
         .merge(accounts::routes())

@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT account_id FROM account_two_factor WHERE secret IS NOT NULL ORDER BY account_id",
+  "describe": {
+    "columns": [
+      {
+        "name": "account_id",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "account_two_factor",
+            "name": "account_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "1580683e38ef7edc52dcf4450dcb16f9a2f8d6d36b1fc79ebf1c9db3bd33e197"
+}

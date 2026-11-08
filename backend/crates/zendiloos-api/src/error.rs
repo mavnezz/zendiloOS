@@ -122,6 +122,23 @@ impl From<IdentityError> for ApiError {
             }
             IdentityError::BlockNotFound | IdentityError::SessionNotFound => ApiError::NotFound,
             IdentityError::InvalidEmail(e) => ApiError::InvalidInput(e.to_string()),
+            IdentityError::InvalidCode => ApiError::Rejected {
+                status: StatusCode::UNPROCESSABLE_ENTITY,
+                code: "invalid_code",
+                detail: None,
+            },
+            IdentityError::SignInExpired => {
+                ApiError::Rejected { status: StatusCode::UNAUTHORIZED, code: "sign_in_expired", detail: None }
+            }
+            IdentityError::TwoFactorOn => {
+                ApiError::Rejected { status: StatusCode::CONFLICT, code: "two_factor_on", detail: None }
+            }
+            IdentityError::TwoFactorOff => {
+                ApiError::Rejected { status: StatusCode::CONFLICT, code: "two_factor_off", detail: None }
+            }
+            IdentityError::NoTwoFactorSetup => {
+                ApiError::Rejected { status: StatusCode::CONFLICT, code: "no_two_factor_setup", detail: None }
+            }
             IdentityError::Port(e) => ApiError::internal(e),
         }
     }

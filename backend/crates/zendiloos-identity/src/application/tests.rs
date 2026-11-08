@@ -3,16 +3,18 @@ use std::time::Duration;
 
 use zendiloos_kernel::{RequestContext, Secret};
 
-use super::IdentityError;
 use super::commands::{
-    AccountChanges, ChangePasswordInput, GroupChanges, LoginInput, NewAccountInput, NewGroupInput,
+    AccountChanges, ChangePasswordInput, GroupChanges, Login, LoginInput, NewAccountInput, NewGroupInput,
     PendingSetup, SetupInput,
 };
+use super::{IdentityError, LoginOutcome, SignedIn};
 use zendiloos_kernel::Outcome;
 
 use crate::application::ports::SecurityRepository;
 use crate::domain::{AddressRange, AuditAction, FailureLimit, Role, SecuritySettings};
 use crate::testing::{FakeHasher, SETUP_CODE, TestIdentity};
+
+mod two_factor;
 
 const PASSWORD: &str = "correct horse battery";
 
@@ -40,6 +42,19 @@ fn at_home(last_octet: u8) -> RequestContext {
 
 fn login_input(name: &str, password: &str) -> LoginInput {
     LoginInput { name: name.to_owned(), password: Secret::new(password) }
+}
+
+/// A login of an account without a second factor: the password starts the
+/// session.
+async fn password_login(
+    login: &Login,
+    input: LoginInput,
+    request: &RequestContext,
+) -> Result<SignedIn, IdentityError> {
+    match login.execute(input, request).await? {
+        LoginOutcome::SignedIn(signed_in) => Ok(signed_in),
+        LoginOutcome::SecondFactor(_) => panic!("no second factor was set up"),
+    }
 }
 
 // Initial setup
@@ -238,7 +253,8 @@ async fn login_starts_a_session() {
     let t = TestIdentity::new();
     t.add_account("alice", PASSWORD, Role::User);
 
-    let signed_in = t.use_cases.login.execute(login_input(" Alice ", PASSWORD), &from(1)).await.unwrap();
+    let signed_in =
+        password_login(&t.use_cases.login, login_input(" Alice ", PASSWORD), &from(1)).await.unwrap();
 
     assert_eq!(signed_in.session.account.name.as_str(), "alice", "names are matched case-insensitively");
     let sessions = t.sessions.all();
@@ -253,8 +269,9 @@ async fn login_failures_do_not_reveal_whether_the_account_exists() {
     let t = TestIdentity::new();
     t.add_account("alice", PASSWORD, Role::User);
 
-    let wrong_password = t.use_cases.login.execute(login_input("alice", "wrong password"), &from(1)).await;
-    let unknown = t.use_cases.login.execute(login_input("bob", PASSWORD), &from(1)).await;
+    let wrong_password =
+        password_login(&t.use_cases.login, login_input("alice", "wrong password"), &from(1)).await;
+    let unknown = password_login(&t.use_cases.login, login_input("bob", PASSWORD), &from(1)).await;
 
     assert!(matches!(wrong_password, Err(IdentityError::InvalidCredentials)), "{wrong_password:?}");
     assert!(matches!(unknown, Err(IdentityError::InvalidCredentials)), "{unknown:?}");
@@ -271,14 +288,15 @@ async fn an_account_is_locked_after_five_failures_from_any_address() {
     let t = TestIdentity::new();
     t.add_account("alice", PASSWORD, Role::User);
     for address in 1..=5 {
-        let _ = t.use_cases.login.execute(login_input("alice", "wrong password"), &from(address)).await;
+        let _ =
+            password_login(&t.use_cases.login, login_input("alice", "wrong password"), &from(address)).await;
     }
 
-    let error = t.use_cases.login.execute(login_input("alice", PASSWORD), &from(6)).await;
+    let error = password_login(&t.use_cases.login, login_input("alice", PASSWORD), &from(6)).await;
 
     assert!(matches!(error, Err(IdentityError::TooManyAttempts { .. })), "{error:?}");
     t.clock.advance(Duration::from_secs(15 * 60));
-    assert!(t.use_cases.login.execute(login_input("alice", PASSWORD), &from(6)).await.is_ok());
+    assert!(password_login(&t.use_cases.login, login_input("alice", PASSWORD), &from(6)).await.is_ok());
 }
 
 #[tokio::test]
@@ -287,7 +305,7 @@ async fn disabled_accounts_cannot_log_in() {
     let alice = t.add_account("alice", PASSWORD, Role::User);
     t.accounts.update(alice.id, |a| a.disabled = true);
 
-    let error = t.use_cases.login.execute(login_input("alice", PASSWORD), &from(1)).await;
+    let error = password_login(&t.use_cases.login, login_input("alice", PASSWORD), &from(1)).await;
 
     assert!(matches!(error, Err(IdentityError::AccountDisabled)), "{error:?}");
     assert!(t.sessions.all().is_empty());
@@ -306,7 +324,7 @@ async fn logins_at_once(t: &TestIdentity, logins: &[(&str, &str, u8)]) -> Runnin
         .map(|&(name, password, address)| {
             let login = t.use_cases.login.clone();
             let input = login_input(name, password);
-            tokio::spawn(async move { login.execute(input, &from(address)).await })
+            tokio::spawn(async move { password_login(&login, input, &from(address)).await })
         })
         .collect();
     settle(t, &running).await;
@@ -346,7 +364,7 @@ async fn logins_at_once_get_no_more_attempts_than_the_account_lock_allows() {
     let refused = outcomes.iter().filter(|o| matches!(o, Err(IdentityError::TooManyAttempts { .. }))).count();
     let wrong = outcomes.iter().filter(|o| matches!(o, Err(IdentityError::InvalidCredentials))).count();
     assert_eq!((t.hasher.checks(), wrong, refused), (5, 5, 25));
-    let locked = t.use_cases.login.execute(login_input("alice", PASSWORD), &from(31)).await;
+    let locked = password_login(&t.use_cases.login, login_input("alice", PASSWORD), &from(31)).await;
     assert!(matches!(locked, Err(IdentityError::TooManyAttempts { .. })), "{locked:?}");
 }
 
@@ -377,7 +395,7 @@ async fn a_login_that_succeeds_frees_its_attempt_for_others() {
 
     assert!(outcomes[0].is_ok(), "{:?}", outcomes[0]);
     // Four failed after it (or were cleared by it): one attempt is left.
-    assert!(t.use_cases.login.execute(login_input("alice", PASSWORD), &from(6)).await.is_ok());
+    assert!(password_login(&t.use_cases.login, login_input("alice", PASSWORD), &from(6)).await.is_ok());
 }
 
 /// Alice's login with [`PASSWORD`], its check held while `change` runs.
@@ -392,7 +410,7 @@ async fn login_while<F: Future>(t: &TestIdentity, change: F) -> Result<super::Si
 async fn a_login_checking_a_password_changed_meanwhile_starts_no_session() {
     let t = TestIdentity::new();
     t.add_account("alice", PASSWORD, Role::User);
-    let here = t.use_cases.login.execute(login_input("alice", PASSWORD), &from(2)).await.unwrap();
+    let here = password_login(&t.use_cases.login, login_input("alice", PASSWORD), &from(2)).await.unwrap();
     let input = ChangePasswordInput {
         current_password: Secret::new(PASSWORD),
         new_password: Secret::new("a much better passphrase"),
@@ -456,12 +474,13 @@ async fn an_attempt_stopped_otherwise_does_not_count_as_failed() {
     let alice = t.add_account("alice", PASSWORD, Role::User);
     t.accounts.update(alice.id, |a| a.disabled = true);
     for address in 1..=6 {
-        let disabled = t.use_cases.login.execute(login_input("alice", PASSWORD), &from(address)).await;
+        let disabled =
+            password_login(&t.use_cases.login, login_input("alice", PASSWORD), &from(address)).await;
         assert!(matches!(disabled, Err(IdentityError::AccountDisabled)), "{disabled:?}");
     }
 
     t.accounts.update(alice.id, |a| a.disabled = false);
-    assert!(t.use_cases.login.execute(login_input("alice", PASSWORD), &from(7)).await.is_ok());
+    assert!(password_login(&t.use_cases.login, login_input("alice", PASSWORD), &from(7)).await.is_ok());
 }
 
 // Sessions
@@ -470,7 +489,8 @@ async fn an_attempt_stopped_otherwise_does_not_count_as_failed() {
 async fn authenticate_resolves_the_session_token() {
     let t = TestIdentity::new();
     t.add_account("alice", PASSWORD, Role::ReadOnly);
-    let signed_in = t.use_cases.login.execute(login_input("alice", PASSWORD), &from(1)).await.unwrap();
+    let signed_in =
+        password_login(&t.use_cases.login, login_input("alice", PASSWORD), &from(1)).await.unwrap();
 
     let auth = t.use_cases.authenticate.execute(&signed_in.token).await.unwrap();
 
@@ -485,7 +505,8 @@ async fn authenticate_resolves_the_session_token() {
 async fn idle_sessions_end_and_active_ones_stay_alive() {
     let t = TestIdentity::new();
     t.add_account("alice", PASSWORD, Role::User);
-    let signed_in = t.use_cases.login.execute(login_input("alice", PASSWORD), &from(1)).await.unwrap();
+    let signed_in =
+        password_login(&t.use_cases.login, login_input("alice", PASSWORD), &from(1)).await.unwrap();
 
     // Active every 20 minutes: each request keeps the session alive.
     for _ in 0..3 {
@@ -504,7 +525,8 @@ async fn idle_sessions_end_and_active_ones_stay_alive() {
 async fn verifying_a_session_does_not_keep_it_alive() {
     let t = TestIdentity::new();
     t.add_account("alice", PASSWORD, Role::User);
-    let signed_in = t.use_cases.login.execute(login_input("alice", PASSWORD), &from(1)).await.unwrap();
+    let signed_in =
+        password_login(&t.use_cases.login, login_input("alice", PASSWORD), &from(1)).await.unwrap();
 
     // Checked at 10 and 20 minutes: still valid, but not renewed.
     for _ in 0..2 {
@@ -521,7 +543,8 @@ async fn verifying_a_session_does_not_keep_it_alive() {
 async fn disabling_an_account_ends_its_sessions() {
     let t = TestIdentity::new();
     let alice = t.add_account("alice", PASSWORD, Role::User);
-    let signed_in = t.use_cases.login.execute(login_input("alice", PASSWORD), &from(1)).await.unwrap();
+    let signed_in =
+        password_login(&t.use_cases.login, login_input("alice", PASSWORD), &from(1)).await.unwrap();
     t.accounts.update(alice.id, |a| a.disabled = true);
 
     let error = t.use_cases.authenticate.execute(&signed_in.token).await;
@@ -533,7 +556,8 @@ async fn disabling_an_account_ends_its_sessions() {
 async fn logout_ends_the_session() {
     let t = TestIdentity::new();
     t.add_account("alice", PASSWORD, Role::User);
-    let signed_in = t.use_cases.login.execute(login_input("alice", PASSWORD), &from(1)).await.unwrap();
+    let signed_in =
+        password_login(&t.use_cases.login, login_input("alice", PASSWORD), &from(1)).await.unwrap();
 
     t.use_cases.logout.execute(&signed_in.session, &from(1)).await.unwrap();
 
@@ -545,9 +569,9 @@ async fn logout_ends_the_session() {
 async fn purge_removes_ended_sessions() {
     let t = TestIdentity::new();
     t.add_account("alice", PASSWORD, Role::User);
-    t.use_cases.login.execute(login_input("alice", PASSWORD), &from(1)).await.unwrap();
+    password_login(&t.use_cases.login, login_input("alice", PASSWORD), &from(1)).await.unwrap();
     t.clock.advance(Duration::from_secs(10 * 60));
-    t.use_cases.login.execute(login_input("alice", PASSWORD), &from(1)).await.unwrap();
+    password_login(&t.use_cases.login, login_input("alice", PASSWORD), &from(1)).await.unwrap();
 
     t.clock.advance(Duration::from_secs(25 * 60));
     assert_eq!(t.use_cases.purge_expired_sessions.execute().await.unwrap(), 1);
@@ -568,7 +592,7 @@ async fn a_locked_password_is_only_set_by_administrators_and_never_expires() {
     t.use_cases.set_password_policy.execute(&admin, policy, &from(1)).await.unwrap();
     t.clock.advance(std::time::Duration::from_secs(31 * 86_400));
     let signed_in =
-        t.use_cases.login.execute(login_input("kiosk", "initial password"), &from(2)).await.unwrap();
+        password_login(&t.use_cases.login, login_input("kiosk", "initial password"), &from(2)).await.unwrap();
     assert!(!t.accounts.all().iter().find(|a| a.id == kiosk.id).unwrap().password_change_required);
 
     let change = ChangePasswordInput {
@@ -588,10 +612,10 @@ async fn an_old_password_must_be_changed_at_the_next_login() {
     t.use_cases.set_password_policy.execute(&admin, policy, &from(1)).await.unwrap();
 
     t.clock.advance(std::time::Duration::from_secs(89 * 86_400));
-    t.use_cases.login.execute(login_input("bob", PASSWORD), &from(2)).await.unwrap();
+    password_login(&t.use_cases.login, login_input("bob", PASSWORD), &from(2)).await.unwrap();
     assert!(!t.accounts.all().iter().find(|a| a.id == bob.id).unwrap().password_change_required);
     t.clock.advance(std::time::Duration::from_secs(2 * 86_400));
-    t.use_cases.login.execute(login_input("bob", PASSWORD), &from(2)).await.unwrap();
+    password_login(&t.use_cases.login, login_input("bob", PASSWORD), &from(2)).await.unwrap();
     assert!(t.accounts.all().iter().find(|a| a.id == bob.id).unwrap().password_change_required);
 }
 
@@ -621,8 +645,9 @@ async fn changing_the_password_ends_all_other_sessions() {
     let t = TestIdentity::new();
     let alice = t.add_account("alice", PASSWORD, Role::User);
     t.accounts.update(alice.id, |a| a.password_change_required = true);
-    let here = t.use_cases.login.execute(login_input("alice", PASSWORD), &from(1)).await.unwrap();
-    let elsewhere = t.use_cases.login.execute(login_input("alice", PASSWORD), &from(2)).await.unwrap();
+    let here = password_login(&t.use_cases.login, login_input("alice", PASSWORD), &from(1)).await.unwrap();
+    let elsewhere =
+        password_login(&t.use_cases.login, login_input("alice", PASSWORD), &from(2)).await.unwrap();
     let input = ChangePasswordInput {
         current_password: Secret::new(PASSWORD),
         new_password: Secret::new("a much better passphrase"),
@@ -641,7 +666,8 @@ async fn changing_the_password_ends_all_other_sessions() {
 async fn changing_the_password_requires_the_current_one() {
     let t = TestIdentity::new();
     t.add_account("alice", PASSWORD, Role::User);
-    let signed_in = t.use_cases.login.execute(login_input("alice", PASSWORD), &from(1)).await.unwrap();
+    let signed_in =
+        password_login(&t.use_cases.login, login_input("alice", PASSWORD), &from(1)).await.unwrap();
     let input = ChangePasswordInput {
         current_password: Secret::new("not the password"),
         new_password: Secret::new("a much better passphrase"),
@@ -663,7 +689,7 @@ impl TestIdentity {
 
 async fn signed_in(t: &TestIdentity, name: &str, role: Role) -> super::AuthContext {
     t.add_account(name, PASSWORD, role);
-    t.use_cases.login.execute(login_input(name, PASSWORD), &from(9)).await.unwrap().session
+    password_login(&t.use_cases.login, login_input(name, PASSWORD), &from(9)).await.unwrap().session
 }
 
 fn new_account(name: &str, role: Role) -> NewAccountInput {
@@ -981,10 +1007,10 @@ async fn ipv6_addresses_of_one_network_count_as_one_client() {
     };
     // Each attempt from another address of the same /64.
     for host in 0..10 {
-        let _ = t.use_cases.login.execute(login_input("nobody", PASSWORD), &at(host)).await;
+        let _ = password_login(&t.use_cases.login, login_input("nobody", PASSWORD), &at(host)).await;
     }
 
-    let blocked = t.use_cases.login.execute(login_input("alice", PASSWORD), &at(77)).await;
+    let blocked = password_login(&t.use_cases.login, login_input("alice", PASSWORD), &at(77)).await;
 
     assert!(matches!(blocked, Err(IdentityError::AddressBlocked)), "{blocked:?}");
     let entry = t.audit.entries().into_iter().find(|e| e.action == "identity.address_block").unwrap();
@@ -992,7 +1018,7 @@ async fn ipv6_addresses_of_one_network_count_as_one_client() {
     let neighbour =
         RequestContext { client_ip: Some(IpAddr::from([0x2001, 0xdb8, 0, 2, 0, 0, 0, 1])), ..from(1) };
     assert!(
-        t.use_cases.login.execute(login_input("alice", PASSWORD), &neighbour).await.is_ok(),
+        password_login(&t.use_cases.login, login_input("alice", PASSWORD), &neighbour).await.is_ok(),
         "the next /64 is another"
     );
 }
@@ -1002,14 +1028,14 @@ async fn an_address_that_fails_too_often_is_blocked_for_a_day() {
     let t = TestIdentity::new();
     t.add_account("alice", PASSWORD, Role::User);
     for _ in 0..10 {
-        let _ = t.use_cases.login.execute(login_input("nobody", PASSWORD), &from(1)).await;
+        let _ = password_login(&t.use_cases.login, login_input("nobody", PASSWORD), &from(1)).await;
     }
 
-    let blocked = t.use_cases.login.execute(login_input("alice", PASSWORD), &from(1)).await;
+    let blocked = password_login(&t.use_cases.login, login_input("alice", PASSWORD), &from(1)).await;
 
     assert!(matches!(blocked, Err(IdentityError::AddressBlocked)), "{blocked:?}");
     assert!(t.use_cases.check_address.is_blocked(from(1).client_ip).await.unwrap());
-    assert!(t.use_cases.login.execute(login_input("alice", PASSWORD), &from(2)).await.is_ok());
+    assert!(password_login(&t.use_cases.login, login_input("alice", PASSWORD), &from(2)).await.is_ok());
     let entry = t.audit.entries().into_iter().find(|e| e.action == "identity.address_block").unwrap();
     assert_eq!((entry.target.as_deref(), entry.reason), (Some("192.0.2.1"), Some("automatic")));
     t.clock.advance(Duration::from_secs(86_400));
@@ -1028,7 +1054,7 @@ async fn allowed_addresses_are_never_blocked() {
     };
     t.use_cases.set_security.execute(&admin, settings, &from(9)).await.unwrap();
     for _ in 0..12 {
-        let _ = t.use_cases.login.execute(login_input("nobody", PASSWORD), &from(1)).await;
+        let _ = password_login(&t.use_cases.login, login_input("nobody", PASSWORD), &from(1)).await;
     }
 
     assert!(!t.use_cases.check_address.is_blocked(from(1).client_ip).await.unwrap());
@@ -1045,20 +1071,25 @@ async fn accounts_lock_as_set_or_not_at_all() {
     let three = Some(FailureLimit { failures: 3, window_minutes: 1 });
     t.use_cases.set_security.execute(&admin, set(three), &from(9)).await.unwrap();
     for address in 1..=3 {
-        let _ = t.use_cases.login.execute(login_input("alice", "wrong password"), &from(address)).await;
+        let _ =
+            password_login(&t.use_cases.login, login_input("alice", "wrong password"), &from(address)).await;
     }
 
-    let locked = t.use_cases.login.execute(login_input("alice", PASSWORD), &from(4)).await;
+    let locked = password_login(&t.use_cases.login, login_input("alice", PASSWORD), &from(4)).await;
 
     assert!(matches!(locked, Err(IdentityError::TooManyAttempts { .. })), "{locked:?}");
     t.clock.advance(Duration::from_secs(60));
-    assert!(t.use_cases.login.execute(login_input("alice", PASSWORD), &from(4)).await.is_ok());
+    assert!(password_login(&t.use_cases.login, login_input("alice", PASSWORD), &from(4)).await.is_ok());
 
     t.use_cases.set_security.execute(&admin, set(None), &from(9)).await.unwrap();
     for address in 1..=6 {
-        let _ = t.use_cases.login.execute(login_input("alice", "wrong password"), &from(address)).await;
+        let _ =
+            password_login(&t.use_cases.login, login_input("alice", "wrong password"), &from(address)).await;
     }
-    assert!(t.use_cases.login.execute(login_input("alice", PASSWORD), &from(7)).await.is_ok(), "never locks");
+    assert!(
+        password_login(&t.use_cases.login, login_input("alice", PASSWORD), &from(7)).await.is_ok(),
+        "never locks"
+    );
 }
 
 #[tokio::test]
@@ -1069,7 +1100,8 @@ async fn sessions_end_after_the_idle_time_set() {
     let stored = t.use_cases.set_security.execute(&admin, settings, &from(9)).await.unwrap();
     assert_eq!(stored.idle_minutes, 5);
     t.add_account("alice", PASSWORD, Role::User);
-    let signed_in = t.use_cases.login.execute(login_input("alice", PASSWORD), &from(1)).await.unwrap();
+    let signed_in =
+        password_login(&t.use_cases.login, login_input("alice", PASSWORD), &from(1)).await.unwrap();
 
     t.clock.advance(Duration::from_secs(5 * 60));
 
@@ -1114,7 +1146,7 @@ async fn admins_see_every_session_and_end_one() {
     let admin = signed_in(&t, "admin", Role::Admin).await;
     t.add_account("bob", PASSWORD, Role::User);
     t.clock.advance(Duration::from_secs(5));
-    let bob = t.use_cases.login.execute(login_input("bob", PASSWORD), &from(3)).await.unwrap();
+    let bob = password_login(&t.use_cases.login, login_input("bob", PASSWORD), &from(3)).await.unwrap();
 
     let sessions = t.use_cases.sessions.execute(&admin).await.unwrap();
 
@@ -1125,7 +1157,7 @@ async fn admins_see_every_session_and_end_one() {
     assert!(matches!(ended, Err(IdentityError::Unauthenticated)), "{ended:?}");
     let entry = t.audit.entries().last().cloned().unwrap();
     assert_eq!((entry.action, entry.target.as_deref()), ("identity.session_end", Some("bob")));
-    let bob_again = t.use_cases.login.execute(login_input("bob", PASSWORD), &from(3)).await.unwrap();
+    let bob_again = password_login(&t.use_cases.login, login_input("bob", PASSWORD), &from(3)).await.unwrap();
     let forbidden = t.use_cases.sessions.execute(&bob_again.session).await;
     assert!(matches!(forbidden, Err(IdentityError::Forbidden)), "{forbidden:?}");
 }
