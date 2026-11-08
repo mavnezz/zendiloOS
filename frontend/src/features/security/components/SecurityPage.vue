@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { BrickWall, ShieldBan, UserRoundSearch } from 'lucide-vue-next'
+import { ShieldBan, UserRoundSearch } from 'lucide-vue-next'
 import { computed, ref, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
@@ -8,13 +8,14 @@ import { Badge } from '@/shared/ui/badge'
 import { Button } from '@/shared/ui/button'
 import { Input } from '@/shared/ui/input'
 import { NativeSelect } from '@/shared/ui/native-select'
-import { ComingLater, PageFooter, PageHeader, PageTabs, SettingRow } from '@/shared/ui/page'
+import { PageFooter, PageHeader, PageTabs, SettingRow } from '@/shared/ui/page'
 import { Switch } from '@/shared/ui/switch'
 
 import { useBlocked, useSecuritySettings, useSetSecuritySettings, useSetTls, useTls } from '../api'
 import { fromDraft, invalid, sameSettings, type SecurityDraft, toDraft } from '../lib/settings'
 import AccountActivityDialog from './AccountActivityDialog.vue'
 import BlockedAddressesDialog from './BlockedAddressesDialog.vue'
+import FirewallTab from './FirewallTab.vue'
 
 const { t } = useI18n()
 const { data: settings, isPending } = useSecuritySettings()
@@ -83,8 +84,8 @@ const line = 'flex flex-wrap items-center gap-2 text-sm'
 <!--
   How the web interface defends itself, as on the appliances people know:
   idle sessions, blocked addresses and TLS on the first tab, sessions and
-  locked accounts on the second. The firewall comes later; the certificate
-  is chosen under Web interface.
+  locked accounts on the second, the firewall on the third (with its own
+  apply). The certificate is chosen under Web interface.
 -->
 <template>
   <div class="flex min-h-full flex-col">
@@ -210,14 +211,9 @@ const line = 'flex flex-wrap items-center gap-2 text-sm'
       </SettingRow>
     </div>
 
-    <ComingLater
-      v-else-if="tab === 'firewall'"
-      :icon="BrickWall"
-      :title="t('security.tabs.firewall')"
-      :description="t('security.soon.firewall')"
-    />
+    <FirewallTab v-else-if="tab === 'firewall'" />
 
-    <div class="grow" aria-hidden="true" />
+    <div v-if="tab !== 'firewall'" class="grow" aria-hidden="true" />
     <PageFooter
       v-if="draft && (tab === 'general' || tab === 'accounts')"
       :dirty="dirty"

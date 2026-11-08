@@ -129,3 +129,32 @@ describe('the wording of update notices', () => {
     ).toContain('Do not restart')
   })
 })
+
+describe('the wording of firewall notices', () => {
+  const notice = (params: Record<string, string>): ServerNotification => ({
+    id: 1,
+    at: 0,
+    level: 'warning',
+    code: 'firewall_blocked',
+    params,
+  })
+
+  it('names the service or project the rules block', async () => {
+    const { wording } = await import('./store')
+    const { i18n } = await import('@/shared/i18n')
+    i18n.global.locale.value = 'en'
+    expect(wording(notice({ service: 'smb' })).title).toBe('The firewall blocks SMB')
+    expect(wording(notice({ service: 'web_interface' })).title).toBe(
+      'The firewall blocks the web interface',
+    )
+    expect(wording(notice({ service: 'project:media', project: 'media' })).title).toBe(
+      'The firewall blocks the Docker project media',
+    )
+    expect(wording(notice({ service: 'odd' })).title).toBe('The firewall blocks odd')
+    i18n.global.locale.value = 'de'
+    expect(wording(notice({ service: 'discovery' })).title).toBe(
+      'Die Firewall sperrt die Netzwerkerkennung',
+    )
+    i18n.global.locale.value = 'en'
+  })
+})

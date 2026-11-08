@@ -129,6 +129,8 @@ const KNOWN_PROBLEMS = [
   'acme_installed',
   'acme_not_installed',
   'web_server_failed',
+  'would_lock_out',
+  'firewall_failed',
   'network',
 ] as const
 
@@ -168,6 +170,7 @@ export function problemMessage(error: unknown): string {
     'in_use',
     'port_in_use',
     'web_server_failed',
+    'firewall_failed',
   ]
   if (isKnown(error.code)) {
     const message = t(`errors.${error.code}`)

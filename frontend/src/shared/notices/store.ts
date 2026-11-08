@@ -18,6 +18,11 @@ export function wording(notification: ServerNotification): { title: string; body
   if (notification.code === 'disk_health' && params.health) {
     params.health = t(`storage.health.${params.health === 'failing' ? 'failing' : 'warning'}`)
   }
+  if (notification.code === 'firewall_blocked') {
+    const service = `${key}.services.${params.service}`
+    if (params.project) params.service = t(`${key}.project`, { name: params.project })
+    else if (te(service)) params.service = t(service)
+  }
   if (!te(`${key}.title`)) return { title: notification.code }
   const count = Number(params.errors ?? 0)
   let body = `${key}.body`
