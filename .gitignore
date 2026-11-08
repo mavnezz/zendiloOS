@@ -5,11 +5,6 @@ backend/target/
 frontend/node_modules/
 frontend/dist/
 
-# Nix / direnv
-.direnv/
-result
-result-*
-
 # Local development state and configuration
 dev/
 *.qcow2
