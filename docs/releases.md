@@ -37,8 +37,17 @@ along (`/usr/share/zendiloos/release-signing.pub`, from
 ## The release key
 
 Set up once: the public key is `packaging/release-signing.pub` (key ID
-`B97DD0234085B950`), the secret one is the repository secret
-`MINISIGN_SECRET_KEY`, with no password (`MINISIGN_PASSWORD` stays unset).
+`B97DD0234085B950`), the secret one is `MINISIGN_SECRET_KEY`, with no
+password (`MINISIGN_PASSWORD` stays unset).
+
+It belongs in the environment `release`, which CI's release job deploys
+to, not among the repository's secrets: a workflow of a pull request or of
+another branch then never sees it. Settings → Environments → `release`
+(made by the first run that names it): deployment branches and tags
+"Selected", with the branch `main` and the tag pattern `v*`; then the
+environment secret `MINISIGN_SECRET_KEY` with the key, and the repository
+secret of that name deleted. Until then the job reads the repository
+secret as before.
 A copy of the secret key lives on the maintainer's machine in
 `~/.minisign/zendiloos-release.key`; keep a backup of it offline and nowhere
 else: whoever has it can ship code to every NAS.

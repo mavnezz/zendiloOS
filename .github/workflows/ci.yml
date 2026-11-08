@@ -99,6 +99,9 @@ jobs:
     runs-on: ubuntu-24.04
     needs: package
     if: github.event_name == 'push'
+    # The signing key lives in this environment, which only main and the
+    # tags v* may deploy to (docs/releases.md).
+    environment: release
     permissions:
       contents: write
     steps:
