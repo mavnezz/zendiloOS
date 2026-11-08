@@ -1639,7 +1639,7 @@
         "tags": [
           "identity"
         ],
-        "summary": "New recovery codes for a code from the app; the old ones stop working.",
+        "summary": "New recovery codes for a code from the app; the old ones stop working.\nEnds the account's other sessions.",
         "operationId": "renew_recovery_codes",
         "requestBody": {
           "content": {

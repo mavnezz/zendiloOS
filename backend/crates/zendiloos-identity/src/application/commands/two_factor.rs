@@ -244,7 +244,8 @@ impl DisableTwoFactor {
 }
 
 /// Command: new recovery codes for the signed-in account, for a code from
-/// the app; the old ones stop working. Gives them, shown this once.
+/// the app; the old ones stop working. Gives them, shown this once. Ends
+/// the account's other sessions.
 #[derive(Clone)]
 pub struct RenewRecoveryCodes {
     context: Arc<Context>,
@@ -293,6 +294,9 @@ impl RenewRecoveryCodes {
         two_factor.last_step = Some(step);
         two_factor.recovery = codes.iter().map(|code| c.ports.codes.digest(code.expose())).collect();
         c.ports.two_factor.save(&two_factor).await?;
+        // A session or sign-in started with an old code may be why.
+        c.ports.sessions.delete_others(auth.account.id, auth.session_id).await?;
+        c.end_sign_ins_of(auth.account.id);
         c.audit(audit(Outcome::Success)).await?;
         Ok(codes.iter().map(|code| show_recovery_code(code.expose())).collect())
     }

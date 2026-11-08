@@ -391,7 +391,7 @@ const de: Messages = {
     done: 'Ich habe sie gespeichert',
     renew: 'Neue Wiederherstellungscodes',
     renewHint:
-      'Die Wiederherstellungscodes, die Sie jetzt haben, gelten dann nicht mehr. Geben Sie einen Code aus der App ein.',
+      'Die Wiederherstellungscodes, die Sie jetzt haben, gelten dann nicht mehr, und Ihre anderen Sitzungen werden abgemeldet. Geben Sie einen Code aus der App ein.',
     renewAction: 'Neue Codes erzeugen',
     disable: 'Ausschalten',
     disableHint:

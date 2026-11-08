@@ -190,6 +190,7 @@ async fn disable(
 }
 
 /// New recovery codes for a code from the app; the old ones stop working.
+/// Ends the account's other sessions.
 #[utoipa::path(
     post,
     path = "/auth/two-factor/recovery-codes",

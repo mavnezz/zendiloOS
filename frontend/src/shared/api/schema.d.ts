@@ -535,7 +535,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** New recovery codes for a code from the app; the old ones stop working. */
+        /**
+         * New recovery codes for a code from the app; the old ones stop working.
+         *     Ends the account's other sessions.
+         */
         post: operations["renew_recovery_codes"];
         delete?: never;
         options?: never;

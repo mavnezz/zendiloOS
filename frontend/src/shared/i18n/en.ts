@@ -379,7 +379,8 @@ const en = {
     download: 'Download',
     done: 'I have saved them',
     renew: 'New recovery codes',
-    renewHint: 'The recovery codes you have now stop working. Enter a code from the app.',
+    renewHint:
+      'The recovery codes you have now stop working, and your other sessions are signed out. Enter a code from the app.',
     renewAction: 'Make new codes',
     disable: 'Turn off',
     disableHint:

@@ -386,15 +386,22 @@ async fn turning_the_second_factor_off_takes_the_password_and_a_code() {
 async fn new_recovery_codes_replace_the_old_ones() {
     let t = TestIdentity::new();
     let (alice, old) = alice_with_two_factor(&t).await;
+    let waiting = password_step(&t, &from(2)).await;
+    let by_recovery = code_step(&t, &waiting, &old[9], &from(2)).await.unwrap().session.session_id;
+    let waiting = password_step(&t, &from(2)).await;
 
-    let by_recovery = t.use_cases.renew_recovery_codes.execute(&alice, &Secret::new(&old[0]), &from(9)).await;
-    assert!(matches!(by_recovery, Err(IdentityError::InvalidCode)), "only the app's code: {by_recovery:?}");
+    let by_recovery_code =
+        t.use_cases.renew_recovery_codes.execute(&alice, &Secret::new(&old[0]), &from(9)).await;
+    assert!(matches!(by_recovery_code, Err(IdentityError::InvalidCode)), "only the app's code");
     let code = Secret::new(t.code_now(alice.account.id, 0));
     let new = t.use_cases.renew_recovery_codes.execute(&alice, &code, &from(9)).await.unwrap();
 
     assert_eq!(new.len(), 10);
     assert!(new.iter().all(|code| !old.contains(code)));
     assert_eq!(last_audit(&t), (AuditAction::RecoveryCodesRenew.as_str(), Outcome::Success, None));
+    assert!(t.sessions.all().iter().all(|s| s.id != by_recovery), "the other sessions ended");
+    let ended = code_step(&t, &waiting, &new[1], &from(2)).await;
+    assert!(matches!(ended, Err(IdentityError::SignInExpired)), "and the waiting sign-ins: {ended:?}");
     let challenge = password_step(&t, &from(2)).await;
     let gone = code_step(&t, &challenge, &old[1], &from(2)).await;
     assert!(matches!(gone, Err(IdentityError::InvalidCode)), "{gone:?}");
