@@ -279,10 +279,15 @@
   * {
     @apply border-border outline-ring/50;
   }
-  /* For browsers that colour the options themselves. */
-  option {
+  /* For browsers that colour the options themselves; a group's heading
+     too, or Chrome draws it white in the dark. */
+  option,
+  optgroup {
     background-color: var(--popover);
     color: var(--popover-foreground);
+  }
+  optgroup {
+    color: var(--muted-foreground);
   }
   body {
     @apply bg-background font-sans text-foreground antialiased;
