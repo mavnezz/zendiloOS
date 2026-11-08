@@ -27,7 +27,7 @@ const CREATED = 1_700_000_000
 /** The card, if it is there. */
 const card = () =>
   document.querySelector<HTMLElement>(`section[aria-label="${t('desktop.starPrompt.label')}"]`)
-const saved = () => called('PUT', '/api/v1/preferences').map((call) => call.body)
+const saved = () => called('PATCH', '/api/v1/preferences').map((call) => call.body)
 
 function overview(verdict: string | null): void {
   on('GET', '/api/v1/storage/overview', {
@@ -58,7 +58,7 @@ beforeEach(() => {
   sessionStorage.clear()
   vi.useFakeTimers({ shouldAdvanceTime: true })
   on('GET', '/api/v1/preferences', { language: null, theme: null })
-  on('PUT', '/api/v1/preferences', null)
+  on('PATCH', '/api/v1/preferences', null)
   overview(null)
 })
 

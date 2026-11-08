@@ -78,10 +78,14 @@ impl Login {
             return Err(IdentityError::InvalidCredentials);
         };
 
+        // Answered as a wrong password, and counted as one: a disabled
+        // account must not tell that the password was right. The log says
+        // what it was.
         if account.disabled {
+            attempt.failed(request).await?;
             let entry = audit(Outcome::Denied).by(&account.actor());
             c.audit(entry.reason("disabled")).await?;
-            return Err(IdentityError::AccountDisabled);
+            return Err(IdentityError::InvalidCredentials);
         }
 
         if let Some(two_factor) = c.ports.two_factor.find(account.id).await?.filter(TwoFactor::is_on) {

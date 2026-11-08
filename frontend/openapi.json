@@ -1289,7 +1289,7 @@
             }
           },
           "401": {
-            "description": "`invalid_credentials`",
+            "description": "`invalid_credentials`: also for a disabled account, which does not tell that the password was right",
             "content": {
               "application/json": {
                 "schema": {
@@ -1299,7 +1299,7 @@
             }
           },
           "403": {
-            "description": "`account_disabled`, `csrf_rejected`",
+            "description": "`csrf_rejected`",
             "content": {
               "application/json": {
                 "schema": {
@@ -8487,11 +8487,11 @@
           }
         ]
       },
-      "put": {
+      "patch": {
         "tags": [
           "identity"
         ],
-        "summary": "Replaces the signed-in account's interface preferences; the star prompt\nonly moves forward.",
+        "summary": "Changes the signed-in account's interface preferences: only those sent,\na field left out (or `null`) stays as it is. The star prompt only moves\nforward.",
         "operationId": "save_preferences",
         "requestBody": {
           "content": {
@@ -10144,7 +10144,7 @@
         "tags": [
           "storage"
         ],
-        "summary": "Chooses the enclosure: a model of the catalog (with other bindings for\nsome slots), or a layout of one's own. Needs `storage.manage`.",
+        "summary": "Chooses the enclosure: a model of the catalog (with other bindings for\nsome slots, each slot once at most), or a layout of one's own. Saved,\nit is answered also while the disks cannot be read, with none placed.\nNeeds `storage.manage`.",
         "operationId": "set_enclosure",
         "requestBody": {
           "content": {
@@ -10177,7 +10177,7 @@
             }
           },
           "422": {
-            "description": "`invalid_input`",
+            "description": "`invalid_input`, also for a slot bound otherwise twice",
             "content": {
               "application/json": {
                 "schema": {
@@ -16270,7 +16270,7 @@
       },
       "InterfacePreferences": {
         "type": "object",
-        "description": "How the signed-in account wants the interface. `null` means not chosen:\neach browser keeps what it shows.",
+        "description": "How the signed-in account wants the interface. `null` means not chosen:\neach browser keeps what it shows. Sent to change them, a field left out\n(or `null`) stays as it is.",
         "properties": {
           "desktop_icons": {
             "type": [
@@ -16430,7 +16430,7 @@
               "string",
               "null"
             ],
-            "description": "Its kernel name while present; `null`: stored, no longer present."
+            "description": "Its kernel name while present; `null`: stored, no longer present\n(or, in the answer to a change, not known while the disks cannot be\nread)."
           },
           "first_seen": {
             "type": "integer",
@@ -16440,7 +16440,7 @@
           "last_seen": {
             "type": "integer",
             "format": "int64",
-            "description": "Unix seconds; while present, up to an hour behind."
+            "description": "Unix seconds; while present, up to an hour behind. Never goes back."
           },
           "model": {
             "type": [
@@ -16463,7 +16463,8 @@
             "description": "`YYYY-MM-DD`."
           },
           "serial": {
-            "type": "string"
+            "type": "string",
+            "description": "Its serial number; while another disk present reports the same one\n(the disks of some USB docks), with its port: `SERIAL@ID_PATH`."
           },
           "size_bytes": {
             "type": "integer",

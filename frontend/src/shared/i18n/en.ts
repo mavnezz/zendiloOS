@@ -1915,6 +1915,7 @@ const en = {
       blinking: 'Blinking',
       inSlot: 'In {slot}',
       slot: '{slot}, {group}',
+      unconfirmed: '(bay order not confirmed yet)',
       tile: '{slot}: {disk}, {state}',
       tones: {
         good: 'healthy',
@@ -1968,7 +1969,8 @@ const en = {
         },
         label: 'Label of slot {n}',
         assign: 'Disks not placed',
-        assignHint: 'Put a disk into a slot: bound by its port, a USB disk by its serial number.',
+        assignHint:
+          'Put a disk into a slot: bound by its port, a USB disk by its serial number unless another disk reports the same one.',
         putInto: 'Put {disk} into',
         noSlot: 'No slot',
         save: 'Save',

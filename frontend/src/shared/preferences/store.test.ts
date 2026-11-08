@@ -84,10 +84,12 @@ describe('the preferences', () => {
     expect(preferences.theme).toBe('system')
   })
 
-  it('save each choice with the ones before, and keep it when saving fails', async () => {
+  it('save only the choice made, and keep it when saving fails', async () => {
     let fail = false
-    on('PUT', '/api/v1/preferences', ({ body }) => (fail ? problem(500, 'internal') : body))
+    on('GET', '/api/v1/preferences', () => ({ language: null, theme: null }))
+    on('PATCH', '/api/v1/preferences', ({ body }) => (fail ? problem(500, 'internal') : body))
     const preferences = await store()
+    await preferences.load()
 
     preferences.chooseTheme('light')
     preferences.chooseLanguage('en')
@@ -97,13 +99,13 @@ describe('the preferences', () => {
     preferences.arrangeIcons(['files'])
     await settle()
 
-    expect(callsTo('PUT', '/api/v1/preferences').at(-1)!.body).toEqual({
-      language: 'en',
-      theme: 'light',
-      wallpaper: 'daybreak',
-      widgets: ['status'],
-      desktop_icons: ['files'],
-    })
+    expect(callsTo('PATCH', '/api/v1/preferences').map((call) => call.body)).toEqual([
+      { theme: 'light' },
+      { language: 'en' },
+      { wallpaper: 'daybreak' },
+      { widgets: ['status'] },
+      { desktop_icons: ['files'] },
+    ])
     expect(preferences.desktopIcons).toEqual(['files'])
     expect(document.documentElement.dataset.wallpaperTone).toBe('light')
 
@@ -111,12 +113,35 @@ describe('the preferences', () => {
     expect(preferences.widgets).toEqual(['status', 'resources', 'network', 'storage'])
     expect(preferences.desktopIcons).toEqual([])
     fail = false
+    await preferences.load()
     preferences.chooseTheme('system')
     await settle()
-    expect(callsTo('PUT', '/api/v1/preferences').at(-1)!.body).toEqual({
-      language: null,
-      theme: 'system',
-    })
+    expect(callsTo('PATCH', '/api/v1/preferences').at(-1)!.body).toEqual({ theme: 'system' })
+  })
+
+  it('save nothing before the account’s choices arrived', async () => {
+    on('GET', '/api/v1/preferences', () => problem(500, 'internal'))
+    on('PATCH', '/api/v1/preferences', ({ body }) => body)
+    const preferences = await store()
+
+    preferences.chooseTheme('dark')
+    await preferences.load()
+    preferences.chooseWallpaper(findWallpaper('tide'))
+    preferences.chooseWidgets(['status'])
+    preferences.arrangeIcons(['files'])
+    await settle()
+
+    expect(callsTo('PATCH', '/api/v1/preferences'), 'what the account chose stays').toEqual([])
+    expect([preferences.theme, preferences.wallpaper.id]).toEqual(['dark', 'tide'])
+    expect(preferences.widgets, 'still shown in this browser').toEqual(['status'])
+
+    on('GET', '/api/v1/preferences', () => ({ language: null, theme: 'dark' }))
+    await preferences.load()
+    preferences.chooseTheme('light')
+    await settle()
+    expect(callsTo('PATCH', '/api/v1/preferences').map((call) => call.body)).toEqual([
+      { theme: 'light' },
+    ])
   })
 })
 
@@ -128,7 +153,7 @@ describe('the solid background', () => {
       wallpaper: 'color',
       wallpaper_color: '#dfe2e6',
     }))
-    on('PUT', '/api/v1/preferences', ({ body }) => body)
+    on('PATCH', '/api/v1/preferences', ({ body }) => body)
     const preferences = await store()
     await preferences.load()
     expect(preferences.wallpaper.color).toBe('#dfe2e6')
@@ -137,14 +162,20 @@ describe('the solid background', () => {
     preferences.chooseWallpaper(findWallpaper('tide'))
     await settle()
     expect(preferences.solidColor).toBe('#dfe2e6')
-    expect(callsTo('PUT', '/api/v1/preferences').at(-1)!.body).toMatchObject({
-      wallpaper: 'tide',
-      wallpaper_color: '#dfe2e6',
-    })
+    expect(
+      callsTo('PATCH', '/api/v1/preferences').at(-1)!.body,
+      'the colour stays as kept',
+    ).toEqual({ wallpaper: 'tide' })
 
-    preferences.showWallpaper(findWallpaper('color', '#134e4a'))
-    expect(preferences.solidColor).toBe('#134e4a')
-    expect(callsTo('PUT', '/api/v1/preferences')).toHaveLength(1)
+    preferences.chooseWallpaper(findWallpaper('color', '#134e4a'))
+    await settle()
+    expect(callsTo('PATCH', '/api/v1/preferences').at(-1)!.body).toEqual({
+      wallpaper: 'color',
+      wallpaper_color: '#134e4a',
+    })
+    preferences.showWallpaper(findWallpaper('color', '#336699'))
+    expect(preferences.solidColor).toBe('#336699')
+    expect(callsTo('PATCH', '/api/v1/preferences')).toHaveLength(2)
   })
 })
 
@@ -155,7 +186,7 @@ describe('the reminder to star zendiloOS', () => {
       theme: null,
       star_prompt: { times_shown: 1, last_shown_at: 100, answer: 'later' },
     }))
-    on('PUT', '/api/v1/preferences', ({ body }) => body)
+    on('PATCH', '/api/v1/preferences', ({ body }) => body)
     const preferences = await store()
     preferences.answerStarPrompt('declined')
     expect(preferences.starPrompt, 'unknown before the account’s choices arrive').toBeNull()
@@ -166,14 +197,10 @@ describe('the reminder to star zendiloOS', () => {
     preferences.starPromptShown(200)
     preferences.answerStarPrompt('starred')
     await settle()
-    const sent = callsTo('PUT', '/api/v1/preferences').map((call) => call.body)
+    const sent = callsTo('PATCH', '/api/v1/preferences').map((call) => call.body)
     expect(sent).toEqual([
-      expect.objectContaining({
-        star_prompt: { times_shown: 2, last_shown_at: 200, answer: 'later' },
-      }),
-      expect.objectContaining({
-        star_prompt: { times_shown: 2, last_shown_at: 200, answer: 'starred' },
-      }),
+      { star_prompt: { times_shown: 2, last_shown_at: 200, answer: 'later' } },
+      { star_prompt: { times_shown: 2, last_shown_at: 200, answer: 'starred' } },
     ])
 
     preferences.reset()
@@ -182,7 +209,7 @@ describe('the reminder to star zendiloOS', () => {
 
   it('counts its first showing', async () => {
     on('GET', '/api/v1/preferences', () => ({ language: null, theme: null }))
-    on('PUT', '/api/v1/preferences', ({ body }) => body)
+    on('PATCH', '/api/v1/preferences', ({ body }) => body)
     const preferences = await store()
     await preferences.load()
     preferences.starPromptShown(300)

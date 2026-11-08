@@ -2452,16 +2452,17 @@ export interface paths {
         };
         /** The signed-in account's interface preferences, the same in every browser. */
         get: operations["preferences"];
-        /**
-         * Replaces the signed-in account's interface preferences; the star prompt
-         *     only moves forward.
-         */
-        put: operations["save_preferences"];
+        put?: never;
         post?: never;
         delete?: never;
         options?: never;
         head?: never;
-        patch?: never;
+        /**
+         * Changes the signed-in account's interface preferences: only those sent,
+         *     a field left out (or `null`) stays as it is. The star prompt only moves
+         *     forward.
+         */
+        patch: operations["save_preferences"];
         trace?: never;
     };
     "/api/v1/security/blocked": {
@@ -2932,7 +2933,9 @@ export interface paths {
         get: operations["enclosure"];
         /**
          * Chooses the enclosure: a model of the catalog (with other bindings for
-         *     some slots), or a layout of one's own. Needs `storage.manage`.
+         *     some slots, each slot once at most), or a layout of one's own. Saved,
+         *     it is answered also while the disks cannot be read, with none placed.
+         *     Needs `storage.manage`.
          */
         put: operations["set_enclosure"];
         post?: never;
@@ -5092,7 +5095,8 @@ export interface components {
         };
         /**
          * @description How the signed-in account wants the interface. `null` means not chosen:
-         *     each browser keeps what it shows.
+         *     each browser keeps what it shows. Sent to change them, a field left out
+         *     (or `null`) stays as it is.
          */
         InterfacePreferences: {
             /** @description The app icons on the desktop, in order, by id. */
@@ -5147,7 +5151,11 @@ export interface components {
         InterfaceTheme: "light" | "dark" | "system";
         /** @description A disk the NAS has seen, by serial number. */
         InventoryDisk: {
-            /** @description Its kernel name while present; `null`: stored, no longer present. */
+            /**
+             * @description Its kernel name while present; `null`: stored, no longer present
+             *     (or, in the answer to a change, not known while the disks cannot be
+             *     read).
+             */
             disk?: string | null;
             /**
              * Format: int64
@@ -5156,7 +5164,7 @@ export interface components {
             first_seen: number;
             /**
              * Format: int64
-             * @description Unix seconds; while present, up to an hour behind.
+             * @description Unix seconds; while present, up to an hour behind. Never goes back.
              */
             last_seen: number;
             /** @description As last seen. */
@@ -5164,6 +5172,10 @@ export interface components {
             note?: string | null;
             /** @description `YYYY-MM-DD`. */
             purchased?: string | null;
+            /**
+             * @description Its serial number; while another disk present reports the same one
+             *     (the disks of some USB docks), with its port: `SERIAL@ID_PATH`.
+             */
             serial: string;
             /** Format: int64 */
             size_bytes: number;
@@ -7929,7 +7941,7 @@ export interface operations {
                     "application/json": components["schemas"]["SecondFactorChallenge"];
                 };
             };
-            /** @description `invalid_credentials` */
+            /** @description `invalid_credentials`: also for a disabled account, which does not tell that the password was right */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -7938,7 +7950,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description `account_disabled`, `csrf_rejected` */
+            /** @description `csrf_rejected` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -14263,7 +14275,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description `invalid_input` */
+            /** @description `invalid_input`, also for a slot bound otherwise twice */
             422: {
                 headers: {
                     [name: string]: unknown;

@@ -196,8 +196,8 @@ pub struct SecondFactorChallenge {
     responses(
         (status = OK, body = SessionInfo, description = "Signed in; the session cookie is set."),
         (status = ACCEPTED, body = SecondFactorChallenge, description = "The password checked out; a code from the authenticator app is asked for."),
-        (status = UNAUTHORIZED, body = Problem, description = "`invalid_credentials`"),
-        (status = FORBIDDEN, body = Problem, description = "`account_disabled`, `csrf_rejected`"),
+        (status = UNAUTHORIZED, body = Problem, description = "`invalid_credentials`: also for a disabled account, which does not tell that the password was right"),
+        (status = FORBIDDEN, body = Problem, description = "`csrf_rejected`"),
         (status = TOO_MANY_REQUESTS, body = Problem, description = "`too_many_attempts`"),
     )
 )]
@@ -337,7 +337,8 @@ pub struct InterfaceStarPrompt {
 }
 
 /// How the signed-in account wants the interface. `null` means not chosen:
-/// each browser keeps what it shows.
+/// each browser keeps what it shows. Sent to change them, a field left out
+/// (or `null`) stays as it is.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct InterfacePreferences {
@@ -452,10 +453,11 @@ async fn preferences(
     Ok(Json(state.identity.preferences.execute(&auth.0).await?.into()))
 }
 
-/// Replaces the signed-in account's interface preferences; the star prompt
-/// only moves forward.
+/// Changes the signed-in account's interface preferences: only those sent,
+/// a field left out (or `null`) stays as it is. The star prompt only moves
+/// forward.
 #[utoipa::path(
-    put,
+    patch,
     path = "/preferences",
     tag = "identity",
     security(("session" = [])),
@@ -468,8 +470,8 @@ async fn preferences(
 async fn save_preferences(
     auth: Auth,
     State(state): State<ApiState>,
-    ApiJson(preferences): ApiJson<InterfacePreferences>,
+    ApiJson(change): ApiJson<InterfacePreferences>,
 ) -> Result<StatusCode, ApiError> {
-    state.identity.save_preferences.execute(&auth.0, preferences.try_into()?).await?;
+    state.identity.save_preferences.execute(&auth.0, change.try_into()?).await?;
     Ok(StatusCode::NO_CONTENT)
 }

@@ -118,6 +118,11 @@ impl StarAnswer {
             _ => return None,
         })
     }
+
+    /// Whether it ends the reminder: it is not shown again.
+    pub fn is_final(self) -> bool {
+        matches!(self, StarAnswer::Starred | StarAnswer::Declined)
+    }
 }
 
 /// The reminder to star zendiloOS on GitHub, once it was shown: how often
@@ -151,12 +156,18 @@ impl StarPrompt {
         self.answer
     }
 
-    /// Of what is kept and what a browser sends, the one further along:
-    /// shown more often, later, or answered. A browser that loaded the
-    /// preferences before the reminder appeared in another one thus does
-    /// not bring it back by saving a theme.
+    /// Of what is kept and what a browser sends, the one further along. A
+    /// final answer (starred, declined) comes first: neither "later" nor a
+    /// showing in another tab that missed the answer takes it back, in
+    /// whichever order they reach the server. Then the one shown more
+    /// often, later, or answered. A browser that loaded the preferences
+    /// before the reminder appeared in another one thus does not bring it
+    /// back.
     pub fn further(kept: Option<Self>, sent: Option<Self>) -> Option<Self> {
-        let progress = |prompt: &Self| (prompt.times_shown, prompt.last_shown, prompt.answer.is_some());
+        let progress = |prompt: &Self| {
+            let ended = prompt.answer.is_some_and(StarAnswer::is_final);
+            (ended, prompt.times_shown, prompt.last_shown, prompt.answer.is_some())
+        };
         match (kept, sent) {
             (Some(kept), Some(sent)) if progress(&kept) > progress(&sent) => Some(kept),
             (kept, None) => kept,
@@ -217,6 +228,25 @@ pub struct Preferences {
     pub desktop_icons: Option<Layout>,
     /// `None` until the reminder to star zendiloOS was first shown.
     pub star_prompt: Option<StarPrompt>,
+}
+
+impl Preferences {
+    /// These choices with those of `change` made: a choice it leaves out
+    /// (`None`) stays as it is, and the reminder to star zendiloOS never
+    /// goes back ([`StarPrompt::further`]). A browser thus changes only what
+    /// was chosen in it, and one that knows less than is kept (its first
+    /// load failed, or another tab chose since) takes nothing away.
+    pub fn changed_by(self, change: Preferences) -> Self {
+        Self {
+            language: change.language.or(self.language),
+            theme: change.theme.or(self.theme),
+            wallpaper: change.wallpaper.or(self.wallpaper),
+            wallpaper_color: change.wallpaper_color.or(self.wallpaper_color),
+            widgets: change.widgets.or(self.widgets),
+            desktop_icons: change.desktop_icons.or(self.desktop_icons),
+            star_prompt: StarPrompt::further(self.star_prompt, change.star_prompt),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -295,5 +325,56 @@ mod tests {
         assert_eq!(StarPrompt::further(shown, later), later);
         assert_eq!(StarPrompt::further(later, declined), declined, "answered in the same showing");
         assert_eq!(StarPrompt::further(None, None), None);
+    }
+
+    #[test]
+    fn a_final_answer_to_the_star_prompt_is_never_taken_back() {
+        let at = |seconds| Timestamp::from_unix_seconds(seconds);
+        let declined = StarPrompt::new(1, at(100), Some(StarAnswer::Declined));
+        let starred = StarPrompt::new(1, at(100), Some(StarAnswer::Starred));
+        // Other tabs that missed the answer: shown there a little later, or
+        // shown again, and "later" chosen there.
+        let shown_later = StarPrompt::new(1, at(105), None);
+        let again = StarPrompt::new(2, at(200), None);
+        let again_later = StarPrompt::new(2, at(200), Some(StarAnswer::Later));
+        let later = StarPrompt::new(1, at(100), Some(StarAnswer::Later));
+
+        for kept in [declined, starred] {
+            for sent in [shown_later, again, again_later, later] {
+                assert_eq!(StarPrompt::further(kept, sent), kept, "{kept:?} against {sent:?}");
+            }
+        }
+        // The answer reaches the server after the other tab's showing.
+        assert_eq!(StarPrompt::further(shown_later, declined), declined);
+        assert_eq!(StarPrompt::further(again_later, starred), starred);
+        assert!(StarAnswer::Declined.is_final() && StarAnswer::Starred.is_final());
+        assert!(!StarAnswer::Later.is_final());
+    }
+
+    #[test]
+    fn a_change_leaves_the_choices_it_does_not_make() {
+        let kept = Preferences {
+            language: Some(Language::German),
+            theme: Some(Theme::Light),
+            wallpaper: Wallpaper::parse("color"),
+            wallpaper_color: WallpaperColor::parse("#134e4a"),
+            widgets: Layout::parse("status"),
+            desktop_icons: Layout::parse("files,storage"),
+            star_prompt: StarPrompt::new(1, Timestamp::from_unix_seconds(100), Some(StarAnswer::Later)),
+        };
+        let theme = Preferences { theme: Some(Theme::Dark), ..Preferences::default() };
+        assert_eq!(kept.clone().changed_by(theme), Preferences { theme: Some(Theme::Dark), ..kept.clone() });
+        assert_eq!(kept.clone().changed_by(Preferences::default()), kept, "nothing sent, nothing changed");
+
+        let everything = Preferences {
+            language: Some(Language::English),
+            theme: Some(Theme::System),
+            wallpaper: Wallpaper::parse("tide"),
+            wallpaper_color: WallpaperColor::parse("#dfe2e6"),
+            widgets: Layout::parse(""),
+            desktop_icons: Layout::parse("apps"),
+            star_prompt: StarPrompt::new(2, Timestamp::from_unix_seconds(200), None),
+        };
+        assert_eq!(kept.changed_by(everything.clone()), everything);
     }
 }

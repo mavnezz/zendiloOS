@@ -13,6 +13,7 @@ import {
   idsOf,
   modelBinding,
   newGroup,
+  ownSerial,
   overrideSlot,
   problemsOf,
   requestOf,
@@ -112,9 +113,28 @@ describe('a slot’s tile', () => {
     const groups = [
       { ...model.groups[0]!, slots: [placed('bay1', { label: 'Bay 1', disk: 'sdc' })] },
     ]
-    expect(slotOf(enclosure({ groups }), 'sdc')).toEqual({ label: 'Bay 1', group: 'Bays' })
+    expect(slotOf(enclosure({ groups }), 'sdc')).toEqual({
+      label: 'Bay 1',
+      group: 'Bays',
+      unconfirmed: false,
+    })
     expect(slotOf(enclosure({ groups }), 'sdz')).toBeNull()
     expect(slotOf(undefined, 'sdc')).toBeNull()
+  })
+
+  it('is not confirmed while a model nobody checked binds it', () => {
+    const unchecked = { ...model, verified: false }
+    const slots = [
+      placed('bay1', { label: 'Bay 1', disk: 'sdc' }),
+      placed('bay2', { label: 'Bay 2', disk: 'sdd', overridden: true }),
+    ]
+    const groups = [{ ...model.groups[0]!, slots }]
+    const chosen = enclosure({ source: 'model', model: unchecked, groups })
+    expect(slotOf(chosen, 'sdc')?.unconfirmed).toBe(true)
+    expect(slotOf(chosen, 'sdd')?.unconfirmed, 'bound by hand').toBe(false)
+    const checked = enclosure({ source: 'model', model: { ...model, verified: true }, groups })
+    expect(slotOf(checked, 'sdc')?.unconfirmed).toBe(false)
+    expect(slotOf(enclosure({ source: 'custom', groups }), 'sdc')?.unconfirmed).toBe(false)
   })
 })
 
@@ -186,18 +206,35 @@ describe('bindings', () => {
     expect(boundDisk(null, disks)).toBeUndefined()
     expect(boundDisk(port('pci-1-ata-1'), [disk('sdc', { id_path: null })])).toBeUndefined()
   })
+
+  it('go by port for disks that report one serial number', () => {
+    // A USB dock whose bridge reports its own serial number for both disks.
+    const dock = (name: string, n: number) =>
+      disk(name, {
+        transport: 'usb',
+        serial: 'BRIDGE1',
+        id_path: `pci-1-usb-0:2:1.0-scsi-0:0:0:${n}`,
+      })
+    const disks = [disk('sda'), dock('sdf', 0), dock('sdg', 1)]
+    expect(ownSerial(disks[1]!, disks)).toBe(false)
+    expect(ownSerial(disks[0]!, disks)).toBe(true)
+    expect(bindingFor(disks[1]!, disks)).toEqual(port('pci-1-usb-0:2:1.0-scsi-0:0:0:0'))
+    expect(bindingFor(disks[1]!, disks.slice(0, 2)), 'alone in the dock').toEqual(serial('BRIDGE1'))
+    expect(boundDisk(serial('BRIDGE1'), disks), 'which one cannot be told').toBeUndefined()
+    expect(boundDisk(port('pci-1-usb-0:2:1.0-scsi-0:0:0:1'), disks)?.name).toBe('sdg')
+  })
 })
 
 describe('the draft of the dialog', () => {
   it('starts from what is chosen, or the detected model', () => {
-    expect(draftOf(enclosure({ detected: model }), [])).toEqual({
+    expect(draftOf(enclosure({ detected: model }))).toEqual({
       source: 'model',
       model: 'acme-2',
       overrides: {},
     })
-    expect(draftOf(enclosure(), [model])).toMatchObject({ source: 'model', model: 'acme-2' })
-    const blank = draftOf(enclosure(), [])
-    expect(blank.source).toBe('custom')
+    const blank = draftOf(enclosure(), 'Front')
+    expect(blank.source, 'no model for a machine not known to be it').toBe('custom')
+    expect(blank.source === 'custom' && blank.groups.map((group) => group.name)).toEqual(['Front'])
 
     const chosen = enclosure({
       source: 'model',
@@ -213,7 +250,7 @@ describe('the draft of the dialog', () => {
         },
       ],
     })
-    expect(draftOf(chosen, [model])).toEqual({
+    expect(draftOf(chosen)).toEqual({
       source: 'model',
       model: 'acme-2',
       overrides: { bay1: serial('X'), bay2: null },
@@ -223,7 +260,7 @@ describe('the draft of the dialog', () => {
       source: 'custom',
       groups: [{ ...model.groups[0]!, slots: [placed('a', { label: 'A', binding: port('p') })] }],
     })
-    const draft = draftOf(own, [model])
+    const draft = draftOf(own)
     expect(draft).toMatchObject({ source: 'custom' })
     expect(draft.source === 'custom' && draft.groups[0]!.slots).toEqual([
       { id: 'a', label: 'A', binding: port('p') },

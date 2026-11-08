@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { mountApp, settle } from '@/desktop/testing/mount'
 import { i18n } from '@/shared/i18n'
+import { usePreferences } from '@/shared/preferences/store'
 import { called, on, reset } from '@/shared/test-support/server'
 
 import AppearancePage from './AppearancePage.vue'
@@ -12,7 +13,7 @@ vi.mock('@/shared/api/client', async (original) =>
 
 const t = (key: string) => i18n.global.t(key)
 const root = document.documentElement
-const saved = () => called('PUT', '/api/v1/preferences').map((call) => call.body)
+const saved = () => called('PATCH', '/api/v1/preferences').map((call) => call.body)
 
 /** The radio called `name`: a background's tile or a colour's swatch. */
 function radio(name: string): HTMLButtonElement {
@@ -26,15 +27,22 @@ function radio(name: string): HTMLButtonElement {
 const picker = () =>
   document.querySelector<HTMLInputElement>(`input[aria-label="${t('appearance.pickColour')}"]`)
 
+/** The page, once the account's choices arrived: only then are choices kept. */
+async function mountPage(): Promise<void> {
+  await mountApp(AppearancePage)
+  await usePreferences().load()
+}
+
 beforeEach(() => {
   reset()
   localStorage.clear()
-  on('PUT', '/api/v1/preferences', null)
+  on('GET', '/api/v1/preferences', { language: null, theme: null })
+  on('PATCH', '/api/v1/preferences', null)
 })
 
 describe('the solid background', () => {
   it('is a tile beside the pictures; choosing it shows its colours', async () => {
-    await mountApp(AppearancePage)
+    await mountPage()
     expect(picker(), 'only once chosen').toBeNull()
 
     radio(t('appearance.solid')).click()
@@ -50,7 +58,7 @@ describe('the solid background', () => {
   })
 
   it('takes a swatch at once, and keeps dark labels on a light one', async () => {
-    await mountApp(AppearancePage)
+    await mountPage()
     radio(t('appearance.solid')).click()
     await settle()
 
@@ -67,7 +75,7 @@ describe('the solid background', () => {
   })
 
   it('follows the picker while it moves, and keeps what it closes on', async () => {
-    await mountApp(AppearancePage)
+    await mountPage()
     radio(t('appearance.solid')).click()
     await settle()
     const before = saved().length
@@ -87,7 +95,7 @@ describe('the solid background', () => {
     radio('Tide').click()
     await settle()
     expect(picker()).toBeNull()
-    expect(saved().at(-1)).toMatchObject({ wallpaper: 'tide', wallpaper_color: '#336699' })
+    expect(saved().at(-1), 'the colour is kept as it was').toEqual({ wallpaper: 'tide' })
     expect(radio(t('appearance.solid')).style.backgroundColor, 'the tile keeps the colour').toBe(
       'rgb(51, 102, 153)',
     )

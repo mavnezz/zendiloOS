@@ -9,14 +9,16 @@ import { Input } from '@/shared/ui/input'
 
 import { saveInventory, useInventory, useRefreshStorage } from '../api'
 
-/** `canManage`: may note what it is (`storage.manage`). */
-const props = defineProps<{ serial: string | null | undefined; canManage: boolean }>()
+/** The disk by kernel name, and its serial number; `canManage`: may note what it is (`storage.manage`). */
+const props = defineProps<{ disk: string; serial: string | null | undefined; canManage: boolean }>()
 
 const { t } = useI18n()
 const { data: inventory } = useInventory()
 const refresh = useRefreshStorage()
 
-const entry = computed(() => inventory.value?.find((disk) => disk.serial === props.serial))
+// By the disk present, not its serial number: disks reporting the same one
+// are kept apart by their port.
+const entry = computed(() => inventory.value?.find((stored) => stored.disk === props.disk))
 const form = ref({ purchased: '', warranty_until: '', vendor: '', note: '' })
 const failure = ref<string | null>(null)
 const saved = ref(false)
@@ -36,12 +38,12 @@ watch(
 )
 
 async function save(): Promise<void> {
-  if (!props.serial) return
+  if (!entry.value) return
   failure.value = null
   saved.value = false
   saving.value = true
   try {
-    await saveInventory(props.serial, { ...form.value })
+    await saveInventory(entry.value.serial, { ...form.value })
     await refresh()
     saved.value = true
   } catch (problem) {

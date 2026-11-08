@@ -1,7 +1,7 @@
 //! Watches pools and disks and tells administrators what changed.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use zendiloos_kernel::{Clock, RequestContext, Timestamp};
@@ -17,8 +17,6 @@ pub const SMART_INTERVAL: Duration = Duration::from_secs(6 * 3600);
 #[derive(Default)]
 struct Seen {
     pools: Option<Vec<Pool>>,
-    /// By serial number, or name if there is none.
-    health: HashMap<String, Health>,
     smart_at: Option<Timestamp>,
 }
 
@@ -28,7 +26,12 @@ pub struct StorageMonitor {
     smart: Arc<dyn SmartSource>,
     notifier: Notifier,
     clock: Arc<dyn Clock>,
+    /// Held for a whole look, one at a time.
     seen: tokio::sync::Mutex<Seen>,
+    /// The verdicts by [`domain::health_key`]; apart from `seen`, so that
+    /// whoever asks for them does not wait for a look reading SMART from
+    /// every disk, but gets each verdict as soon as it is read.
+    health: Mutex<HashMap<String, Health>>,
 }
 
 impl StorageMonitor {
@@ -39,13 +42,15 @@ impl StorageMonitor {
         notifier: Notifier,
         clock: Arc<dyn Clock>,
     ) -> Self {
-        Self { devices, zfs, smart, notifier, clock, seen: tokio::sync::Mutex::new(Seen::default()) }
+        let seen = tokio::sync::Mutex::new(Seen::default());
+        Self { devices, zfs, smart, notifier, clock, seen, health: Mutex::default() }
     }
 
-    /// The SMART verdicts of the disks holding data, as last read, by serial
-    /// number (or name for disks without one). Empty until the first look.
+    /// The SMART verdicts of the disks holding data, as last read, by
+    /// [`domain::health_key`]. Empty until the first are read; never waits
+    /// for a look under way.
     pub async fn disk_health(&self) -> HashMap<String, Health> {
-        self.seen.lock().await.health.clone()
+        self.health.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 
     /// One look; call regularly. Failures to read are logged and the look
@@ -68,7 +73,8 @@ impl StorageMonitor {
         let due = seen.smart_at.is_none_or(|at| now.duration_since(at) >= SMART_INTERVAL);
         if due {
             seen.smart_at = Some(now);
-            for disk in domain::disks(&devices, &pools) {
+            let disks = domain::disks(&devices, &pools);
+            for disk in &disks {
                 let holds_data =
                     !matches!(disk.usage, DiskUsage::Unused | DiskUsage::Foreign | DiskUsage::Removable);
                 if !holds_data {
@@ -79,8 +85,8 @@ impl StorageMonitor {
                     continue;
                 };
                 let health = data.assess().health;
-                let key = disk.serial.clone().unwrap_or_else(|| disk.name.clone());
-                let before = seen.health.insert(key, health);
+                let key = domain::health_key(disk, &disks);
+                let before = self.health.lock().unwrap_or_else(PoisonError::into_inner).insert(key, health);
                 events.extend(domain::disk_event(&disk.name, disk.model.as_deref(), before, health));
             }
         }

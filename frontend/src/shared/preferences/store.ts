@@ -43,9 +43,11 @@ export const usePreferences = defineStore('preferences', () => {
   const desktopIcons = ref<string[]>([])
   /** `null` while the reminder to star zendiloOS was never shown. */
   const starPrompt = ref<InterfaceStarPrompt | null>(null)
-  /** Whether the account's choices arrived; until then nothing is known of them. */
+  /**
+   * Whether the account's choices arrived; until then nothing is known of
+   * them, and nothing chosen here is saved for the account.
+   */
   const loaded = ref(false)
-  let saved: InterfacePreferences = { language: null, theme: null }
 
   function showTheme(next: ThemePreference): void {
     theme.value = next
@@ -54,6 +56,7 @@ export const usePreferences = defineStore('preferences', () => {
 
   /** After signing in: what the account chose wins over this browser. */
   async function load(): Promise<void> {
+    let saved: InterfacePreferences
     try {
       saved = await unwrap(api.GET('/api/v1/preferences'))
     } catch {
@@ -73,10 +76,15 @@ export const usePreferences = defineStore('preferences', () => {
     loaded.value = true
   }
 
+  /**
+   * Keeps what was chosen here with the account, and only that: what another
+   * tab chose meanwhile stays. Before the account's choices arrived the choice
+   * applies in this browser only, so a failed load cannot overwrite them.
+   */
   async function save(change: Partial<InterfacePreferences>): Promise<void> {
-    saved = { ...saved, ...change }
+    if (!loaded.value) return
     try {
-      await unwrap(api.PUT('/api/v1/preferences', { body: saved }))
+      await unwrap(api.PATCH('/api/v1/preferences', { body: change }))
     } catch {
       // The choice still applies in this browser.
     }
@@ -135,12 +143,11 @@ export const usePreferences = defineStore('preferences', () => {
   }
 
   /**
-   * After signing out: another account may sign in next, and nothing of
-   * this one's is kept to be saved for it. Language, scheme and background
-   * stay as this browser shows them.
+   * After signing out: another account may sign in next, and nothing is
+   * saved for it before its own choices arrived. Language, scheme and
+   * background stay as this browser shows them.
    */
   function reset(): void {
-    saved = { language: null, theme: null }
     widgets.value = [...DEFAULT_WIDGETS]
     desktopIcons.value = []
     starPrompt.value = null

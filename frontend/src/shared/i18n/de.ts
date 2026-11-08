@@ -1953,6 +1953,7 @@ const de: Messages = {
       blinking: 'Blinkt',
       inSlot: 'In {slot}',
       slot: '{slot}, {group}',
+      unconfirmed: '(Reihenfolge der Einschübe noch nicht bestätigt)',
       tile: '{slot}: {disk}, {state}',
       tones: {
         good: 'gesund',
@@ -2007,7 +2008,7 @@ const de: Messages = {
         label: 'Beschriftung von Einschub {n}',
         assign: 'Nicht zugeordnete Platten',
         assignHint:
-          'Stecken Sie eine Platte in einen Einschub: nach ihrem Anschluss, eine USB-Platte nach ihrer Seriennummer.',
+          'Stecken Sie eine Platte in einen Einschub: nach ihrem Anschluss, eine USB-Platte nach ihrer Seriennummer, sofern keine andere Platte dieselbe meldet.',
         putInto: '{disk} stecken in',
         noSlot: 'Keinen Einschub',
         save: 'Speichern',

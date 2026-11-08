@@ -172,6 +172,27 @@ describe('the enclosure on the disks page', () => {
     })
   })
 
+  it('says beside the one click that the model’s bay order is not confirmed yet', async () => {
+    on('GET', '/api/v1/storage/enclosure', notSetUp)
+    await open('disks')
+    const hint = document.getElementById('enclosure-unconfirmed')
+    expect(hint?.textContent).toContain(t('storage.enclosure.unconfirmed'))
+    const use = [...document.querySelectorAll('button')].find((button) =>
+      button.textContent?.includes(
+        t('storage.enclosure.useModel', { model: 'UGREEN DXP4800 Plus' }),
+      ),
+    )
+    expect(use?.getAttribute('aria-describedby')).toBe('enclosure-unconfirmed')
+  })
+
+  it('names a checked model without the hint', async () => {
+    const checked = { ...dxp, verified: true }
+    on('GET', '/api/v1/storage/enclosure', { ...notSetUp, detected: checked })
+    await open('disks')
+    expect(page()).toContain(t('storage.enclosure.detected', { model: 'UGREEN DXP4800 Plus' }))
+    expect(page()).not.toContain(t('storage.enclosure.unconfirmed'))
+  })
+
   it('starts a layout of one’s own where no model is known', async () => {
     on('GET', '/api/v1/storage/enclosure', { ...notSetUp, detected: null })
     on('GET', '/api/v1/storage/enclosure/models', [])
@@ -185,6 +206,17 @@ describe('the enclosure on the disks page', () => {
     }
     expect(body.groups[0]).toMatchObject({ name: 'Group 1' })
     expect(body.groups[0]!.slots).toHaveLength(4)
+  })
+
+  it('takes no model of the catalog for a machine not recognised as one', async () => {
+    on('GET', '/api/v1/storage/enclosure', { ...notSetUp, detected: null })
+    await open('disks')
+    await click(t('storage.enclosure.setUp'))
+    expect(select('#enclosure-source').value).toBe('custom')
+    expect(page()).not.toContain(t('storage.enclosure.dialog.unverified'))
+    // The catalog's models are still there to choose.
+    await choose(select('#enclosure-source'), 'ugreen-dxp4800-plus')
+    expect(page()).toContain(t('storage.enclosure.dialog.unverified'))
   })
 
   it('says why the model could not be chosen', async () => {
@@ -221,6 +253,44 @@ describe('the enclosure on the disks page', () => {
     await settle()
     expect(wrapper.findComponent({ name: 'DiskDetail' }).props('name')).toBe('sdc')
     expect(page()).toContain('Bay 3, Front bays')
+  })
+
+  it('names the slots of a model nobody checked as not confirmed', async () => {
+    await open('disks')
+    expect(document.querySelector('[data-testid="enclosure-unverified"]')?.textContent).toContain(
+      t('storage.enclosure.dialog.unverified'),
+    )
+    labelled(t('storage.enclosure.tile', { slot: 'Bay 3', disk: 'sdc', state: 'failing' })).click()
+    await settle()
+    const line = document.querySelector('[data-testid="disk-slot"]')?.textContent ?? ''
+    expect(line).toContain('Bay 3, Front bays')
+    expect(line).toContain(t('storage.enclosure.unconfirmed'))
+  })
+
+  it('names a slot bound by hand as it is', async () => {
+    const byHand = chosen()
+    byHand.groups[0]!.slots[2] = placed(3, { state: 'occupied', disk: 'sdc', overridden: true })
+    on('GET', '/api/v1/storage/enclosure', byHand)
+    await open('disks')
+    labelled(
+      t('storage.enclosure.tile', { slot: 'Bay 3', disk: 'sdc', state: 'not read yet' }),
+    ).click()
+    await settle()
+    const line = document.querySelector('[data-testid="disk-slot"]')?.textContent ?? ''
+    expect(line).toContain('Bay 3, Front bays')
+    expect(line).not.toContain(t('storage.enclosure.unconfirmed'))
+  })
+
+  it('names the slots of a checked model as they are', async () => {
+    on('GET', '/api/v1/storage/enclosure', chosen({ model: { ...dxp, verified: true } }))
+    await open('disks')
+    labelled(t('storage.enclosure.tile', { slot: 'Bay 3', disk: 'sdc', state: 'failing' })).click()
+    await settle()
+    expect(document.querySelector('[data-testid="disk-slot"]')?.textContent).toContain(
+      'Bay 3, Front bays',
+    )
+    expect(page()).not.toContain(t('storage.enclosure.unconfirmed'))
+    expect(document.querySelector('[data-testid="enclosure-unverified"]')).toBeNull()
   })
 
   it('opens a disk not placed from the line below', async () => {
@@ -365,8 +435,10 @@ describe('the enclosure elsewhere', () => {
     await open('pools')
     labelled(t('storage.replaceDisk.button')).click()
     await settle()
-    expect(document.querySelector('[data-testid="replace-slot"]')?.textContent).toContain(
-      t('storage.enclosure.inSlot', { slot: 'Bay 3' }),
+    const named = document.querySelector('[data-testid="replace-slot"]')?.textContent
+    expect(named).toContain(t('storage.enclosure.inSlot', { slot: 'Bay 3' }))
+    expect(named, 'the model was not checked on a real machine').toContain(
+      t('storage.enclosure.unconfirmed'),
     )
   })
 })

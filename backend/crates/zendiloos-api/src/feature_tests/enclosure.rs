@@ -124,6 +124,15 @@ async fn the_detected_model_is_offered_chosen_and_overridden() {
         StatusCode::UNPROCESSABLE_ENTITY,
         "invalid_input",
     );
+    let twice = json!({ "source": "model", "model": TEST_MODEL, "overrides": [
+        { "slot": "bay1", "binding": null },
+        { "slot": "bay1", "binding": { "kind": "serial", "value": "T5" } },
+    ] });
+    assert_problem(
+        &send(&h, &admin, Method::PUT, "/api/v1/storage/enclosure", twice).await,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "invalid_input",
+    );
 
     let reset = delete(&h, &admin, "/api/v1/storage/enclosure").await;
     assert_eq!(reset.status, StatusCode::OK);

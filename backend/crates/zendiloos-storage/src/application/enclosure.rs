@@ -79,16 +79,17 @@ impl Enclosures {
 
     pub async fn view(&self, context: &RequestContext) -> Result<EnclosureView, StorageError> {
         let models = self.catalog.models();
-        // Without its names the machine is no model; the rest still works.
-        let machine = self.machine.machine(context).await.unwrap_or_else(|error| {
-            tracing::warn!(%error, "cannot read the machine's DMI names");
-            Machine::default()
-        });
-        let detected = domain::detect(&models, &machine).cloned();
+        let (machine, detected) = self.machine(&models, context).await;
         let chosen = match self.store.chosen().await? {
             None => None,
             Some(choice) => match choice.layout(&models) {
-                Ok(layout) => Some(self.chosen(choice, layout, &models, context).await?),
+                Ok(layout) => {
+                    let (devices, pools) =
+                        inventory(self.devices.as_ref(), self.zfs.as_ref(), context).await?;
+                    let disks = domain::disks(&devices, &pools);
+                    let verdicts = self.monitor.disk_health().await;
+                    Some(chosen(choice, layout, &models, disks, &verdicts))
+                }
                 // A model a later release dropped, or overrides it no
                 // longer takes: as if nothing were chosen.
                 Err(error) => {
@@ -100,33 +101,19 @@ impl Enclosures {
         Ok(EnclosureView { machine, detected, chosen })
     }
 
-    async fn chosen(
+    /// The machine's names and the model it is.
+    async fn machine(
         &self,
-        choice: EnclosureChoice,
-        layout: Layout,
         models: &[EnclosureModel],
         context: &RequestContext,
-    ) -> Result<ChosenEnclosure, StorageError> {
-        let (devices, pools) = inventory(self.devices.as_ref(), self.zfs.as_ref(), context).await?;
-        let disks = domain::disks(&devices, &pools);
-        let placement = domain::place(&layout, &disks);
-        let verdicts = self.monitor.disk_health().await;
-        let health = disks
-            .iter()
-            .filter(|disk| placement.slot_of(&disk.name).is_some())
-            .filter_map(|disk| {
-                let key = disk.serial.as_deref().unwrap_or(&disk.name);
-                verdicts.get(key).map(|health| (disk.name.clone(), *health))
-            })
-            .collect();
-        let (model, overridden) = match choice {
-            EnclosureChoice::Model { model, overrides } => (
-                models.iter().find(|m| m.id == model).cloned(),
-                overrides.into_iter().map(|o| o.slot).collect(),
-            ),
-            EnclosureChoice::Custom(_) => (None, Vec::new()),
-        };
-        Ok(ChosenEnclosure { model, overridden, layout, placement, disks, health })
+    ) -> (Machine, Option<EnclosureModel>) {
+        // Without its names the machine is no model; the rest still works.
+        let machine = self.machine.machine(context).await.unwrap_or_else(|error| {
+            tracing::warn!(%error, "cannot read the machine's DMI names");
+            Machine::default()
+        });
+        let detected = domain::detect(models, &machine).cloned();
+        (machine, detected)
     }
 
     /// Chooses a model or a layout of one's own; `None` sets nothing up.
@@ -153,8 +140,49 @@ impl Enclosures {
             tracing::error!(%error, "cannot write the audit log");
         }
         saved?;
-        self.view(context).await
+        match self.view(context).await {
+            Ok(view) => Ok(view),
+            // Saved all the same, and the answer says so: what was chosen,
+            // with no disk placed while they cannot be read.
+            Err(error) => {
+                tracing::warn!(%error, "the enclosure is saved, but the disks cannot be read back");
+                let models = self.catalog.models();
+                let (machine, detected) = self.machine(&models, context).await;
+                let chosen = choice.and_then(|choice| {
+                    let layout = choice.layout(&models).ok()?;
+                    Some(chosen(choice, layout, &models, Vec::new(), &HashMap::new()))
+                });
+                Ok(EnclosureView { machine, detected, chosen })
+            }
+        }
     }
+}
+
+/// What was chosen, with `disks` placed in its slots and the monitor's
+/// `verdicts` of those in one.
+fn chosen(
+    choice: EnclosureChoice,
+    layout: Layout,
+    models: &[EnclosureModel],
+    disks: Vec<Disk>,
+    verdicts: &HashMap<String, Health>,
+) -> ChosenEnclosure {
+    let placement = domain::place(&layout, &disks);
+    let health = disks
+        .iter()
+        .filter(|disk| placement.slot_of(&disk.name).is_some())
+        .filter_map(|disk| {
+            let health = verdicts.get(&domain::health_key(disk, &disks))?;
+            Some((disk.name.clone(), *health))
+        })
+        .collect();
+    let (model, overridden) = match choice {
+        EnclosureChoice::Model { model, overrides } => {
+            (models.iter().find(|m| m.id == model).cloned(), overrides.into_iter().map(|o| o.slot).collect())
+        }
+        EnclosureChoice::Custom(_) => (None, Vec::new()),
+    };
+    ChosenEnclosure { model, overridden, layout, placement, disks, health }
 }
 
 /// How long one read keeps a disk's light on, and the dark time between.
@@ -162,6 +190,9 @@ pub const LOCATE_BURST: Duration = Duration::from_millis(700);
 pub const LOCATE_PAUSE: Duration = Duration::from_millis(700);
 pub const LOCATE_DEFAULT_SECONDS: u16 = 60;
 pub const LOCATE_MAX_SECONDS: u16 = 300;
+/// The longest one burst may take, the agent's answer included: a disk or
+/// host that hangs longer ends the session.
+pub const LOCATE_BURST_DEADLINE: Duration = Duration::from_secs(5);
 
 /// A disk blinking until a time.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -251,7 +282,7 @@ impl Locator {
         Ok(LocateSession { disk, until })
     }
 
-    /// Stops a disk blinking; a read under way still ends.
+    /// Stops a disk blinking, a read under way too.
     pub async fn stop(
         &self,
         disk: &str,
@@ -274,7 +305,9 @@ impl Locator {
     }
 }
 
-/// One session: a burst, a pause, … until `length` is over or `stop`.
+/// One session: a burst, a pause, … until `length` is over or `stop`. A
+/// burst that takes longer than [`LOCATE_BURST_DEADLINE`] ends it, and
+/// `stop` ends a burst under way too.
 async fn blink(
     host: Arc<dyn DiskLocator>,
     sessions: Sessions,
@@ -286,9 +319,22 @@ async fn blink(
 ) {
     let end = tokio::time::Instant::now() + length;
     loop {
-        if let Err(error) = host.read_burst(&disk, LOCATE_BURST, &context).await {
-            tracing::warn!(%error, disk, "cannot read from the disk to make it blink");
-            break;
+        let burst =
+            tokio::time::timeout(LOCATE_BURST_DEADLINE, host.read_burst(&disk, LOCATE_BURST, &context));
+        let read = tokio::select! {
+            () = stop.notified() => break,
+            read = burst => read,
+        };
+        match read {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                tracing::warn!(%error, disk, "cannot read from the disk to make it blink");
+                break;
+            }
+            Err(_) => {
+                tracing::warn!(disk, "reading from the disk to make it blink takes too long; it stops");
+                break;
+            }
         }
         let pause = (tokio::time::Instant::now() + LOCATE_PAUSE).min(end);
         tokio::select! {
@@ -487,5 +533,119 @@ mod tests {
         locate.start("sdb", None, &admin(), &request).await.unwrap();
         tokio::time::sleep(Duration::from_secs(1)).await;
         assert!(locate.sessions().is_empty());
+    }
+
+    /// A host whose reads never come back; counts the reads given up.
+    #[derive(Default)]
+    struct Hanging {
+        given_up: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    struct GivenUp(Arc<std::sync::atomic::AtomicUsize>);
+
+    impl Drop for GivenUp {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl DiskLocator for Hanging {
+        async fn read_burst(
+            &self,
+            _: &str,
+            _: Duration,
+            _: &RequestContext,
+        ) -> Result<(), zendiloos_kernel::PortError> {
+            let _given_up = GivenUp(Arc::clone(&self.given_up));
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_read_that_hangs_ends_its_session_or_is_stopped() {
+        let (_, fake, audit) = testing_ports();
+        let host = Arc::new(Hanging::default());
+        let clock = Arc::new(zendiloos_jobs::testing::FixedClock);
+        let locate = Locator::new(fake, Arc::clone(&host) as Arc<dyn DiskLocator>, audit, clock);
+        let request = RequestContext::default();
+        let given_up = || host.given_up.load(Ordering::Relaxed);
+
+        locate.start("sda", Some(LOCATE_MAX_SECONDS), &admin(), &request).await.unwrap();
+        tokio::time::sleep(LOCATE_BURST_DEADLINE - Duration::from_millis(100)).await;
+        assert_eq!((locate.sessions().len(), given_up()), (1, 0));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(locate.sessions().is_empty(), "a burst past its deadline ends the session");
+        assert_eq!(given_up(), 1);
+
+        locate.start("sdb", Some(LOCATE_MAX_SECONDS), &admin(), &request).await.unwrap();
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        locate.stop("sdb", &admin(), &request).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        assert_eq!(given_up(), 2, "stopped in the middle of its read");
+        assert!(locate.sessions().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_slot_bound_otherwise_twice_is_refused() {
+        let (use_cases, fake, audit) = testing_ports();
+        let twice = model_choice(vec![
+            Override { slot: "bay1".into(), binding: None },
+            Override { slot: "bay1".into(), binding: Some(Binding::Serial("T5".into())) },
+        ]);
+        let refused = use_cases.enclosure.choose(Some(twice), &admin(), &RequestContext::default()).await;
+        assert!(
+            matches!(refused, Err(StorageError::InvalidEnclosure(InvalidEnclosure::DuplicateOverride(ref slot))) if slot == "bay1"),
+            "{refused:?}"
+        );
+        assert!(fake.chosen.lock().unwrap().is_none(), "nothing saved");
+        assert!(audit.entries().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_choice_saved_is_answered_while_the_disks_cannot_be_read() {
+        let (use_cases, fake, audit) = testing_ports();
+        let request = RequestContext::default();
+        *fake.devices_fail.lock().unwrap() = true;
+        let overrides = vec![Override { slot: "bay1".into(), binding: None }];
+
+        let view =
+            use_cases.enclosure.choose(Some(model_choice(overrides.clone())), &admin(), &request).await;
+
+        let chosen = view.unwrap().chosen.unwrap();
+        assert_eq!(
+            (chosen.model.unwrap().id.as_str(), chosen.overridden),
+            (TEST_MODEL, vec!["bay1".to_owned()])
+        );
+        assert!(chosen.disks.is_empty() && chosen.placement.slots.iter().all(|placed| placed.disk.is_none()));
+        assert_eq!(*fake.chosen.lock().unwrap(), Some(model_choice(overrides)));
+        assert_eq!(audit.entries().last().unwrap().outcome, Outcome::Success);
+        assert!(use_cases.enclosure.view(&request).await.is_err(), "reading it alone still fails");
+    }
+
+    #[tokio::test]
+    async fn the_slots_do_not_wait_for_smart_and_their_health_follows() {
+        let (use_cases, fake, _) = testing_ports();
+        let request = RequestContext::default();
+        use_cases.enclosure.choose(Some(model_choice(vec![])), &admin(), &request).await.unwrap();
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        *fake.smart_gate.lock().unwrap() = Some(Arc::clone(&gate));
+        let monitor = Arc::clone(&use_cases.monitor);
+        let look = tokio::spawn(async move { monitor.check().await });
+        // The look is reading SMART from the first disk, and waits.
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        assert!(!look.is_finished());
+
+        let view = tokio::time::timeout(Duration::from_secs(5), use_cases.enclosure.view(&request)).await;
+        let chosen = view.expect("not held up by the look").unwrap().chosen.unwrap();
+        assert_eq!(chosen.placement.slot_of("sda"), Some("bay1"));
+        assert!(chosen.health.is_empty(), "not read yet");
+
+        gate.add_permits(1);
+        look.await.unwrap();
+        let health = use_cases.enclosure.view(&request).await.unwrap().chosen.unwrap().health;
+        assert_eq!(health.get("sda"), Some(&Health::Good));
     }
 }

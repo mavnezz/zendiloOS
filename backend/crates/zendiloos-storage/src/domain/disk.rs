@@ -131,6 +131,27 @@ pub fn disks(devices: &[BlockDevice], pools: &[Pool]) -> Vec<Disk> {
         .collect()
 }
 
+/// What tells `disk` apart from the other disks `present` where disks are
+/// known by serial number: a slot bound to one, the inventory, the
+/// monitor's verdicts. Its serial number; while another disk present
+/// reports the same one, as the disks in some USB docks report their
+/// bridge's, the serial number with the port, `SERIAL@ID_PATH`, so they
+/// stay apart. `None` without a serial number.
+pub fn serial_key(disk: &Disk, present: &[Disk]) -> Option<String> {
+    let serial = disk.serial.as_deref()?;
+    let shared = present.iter().filter(|other| other.serial.as_deref() == Some(serial)).count() > 1;
+    Some(match &disk.id_path {
+        Some(port) if shared => format!("{serial}@{port}"),
+        _ => serial.to_owned(),
+    })
+}
+
+/// What the monitor keeps a disk's SMART verdict by: its [`serial_key`],
+/// or its kernel name without a serial number.
+pub fn health_key(disk: &Disk, present: &[Disk]) -> String {
+    serial_key(disk, present).unwrap_or_else(|| disk.name.clone())
+}
+
 fn usage(disk: &BlockDevice, pools: &[Pool]) -> DiskUsage {
     let below = disk.descendants();
     if below.iter().any(|device| device.mount_points.iter().any(|m| is_system_mount(m))) {
@@ -264,6 +285,38 @@ mod tests {
         ];
         let names: Vec<_> = disks(&devices, &[]).into_iter().map(|d| d.name).collect();
         assert_eq!(names, ["sdh"]);
+    }
+
+    #[test]
+    fn disks_reporting_one_serial_number_are_told_apart_by_their_port() {
+        let at = |name: &str, serial: Option<&str>, port: Option<&str>| BlockDevice {
+            serial: serial.map(str::to_owned),
+            id_path: port.map(str::to_owned),
+            ..disk(name, vec![])
+        };
+        let dock = "pci-0000:00:14.0-usb-0:2:1.0-scsi-0:0:0";
+        let present = disks(
+            &[
+                at("sda", Some("WD-1"), Some("pci-0000:05:00.0-ata-1")),
+                at("sdf", Some("BRIDGE1"), Some(&format!("{dock}:0"))),
+                at("sdg", Some("BRIDGE1"), Some(&format!("{dock}:1"))),
+                at("sdh", None, None),
+            ],
+            &[],
+        );
+        let keys: Vec<_> = present.iter().map(|disk| serial_key(disk, &present)).collect();
+        assert_eq!(
+            keys,
+            [
+                Some("WD-1".to_owned()),
+                Some(format!("BRIDGE1@{dock}:0")),
+                Some(format!("BRIDGE1@{dock}:1")),
+                None
+            ]
+        );
+        assert_eq!(health_key(&present[3], &present), "sdh", "by name without a serial number");
+        // Alone, the dock's disk is known by its serial number again.
+        assert_eq!(serial_key(&present[1], &present[..2]).as_deref(), Some("BRIDGE1"));
     }
 
     #[test]

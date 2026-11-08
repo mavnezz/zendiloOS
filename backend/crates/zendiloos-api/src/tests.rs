@@ -1461,6 +1461,21 @@ async fn login_failures_are_throttled() {
 }
 
 #[tokio::test]
+async fn a_disabled_account_is_answered_as_a_wrong_password() {
+    let h = Harness::new();
+    let alice = h.identity.add_account("alice", PASSWORD, Role::User);
+    h.identity.accounts.update(alice.id, |account| account.disabled = true);
+    let login =
+        |password: &str| json(post("/api/v1/auth/login"), json!({ "name": "alice", "password": password }));
+
+    let right = h.send(login(PASSWORD)).await;
+    let wrong = h.send(login("wrong password")).await;
+
+    assert_problem(&right, StatusCode::UNAUTHORIZED, "invalid_credentials");
+    assert_eq!((right.status, &right.body), (wrong.status, &wrong.body), "nothing tells them apart");
+}
+
+#[tokio::test]
 async fn logins_sent_at_once_are_throttled_as_if_one_after_another() {
     let h = Harness::new();
     h.identity.add_account("alice", PASSWORD, Role::User);
@@ -3125,7 +3140,7 @@ async fn each_account_keeps_its_interface_preferences() {
         "star_prompt": { "times_shown": 1, "last_shown_at": 1_790_000_000, "answer": "later" }
     });
     let saved =
-        h.send(json(with_csrf(changing(Method::PUT, "/api/v1/preferences"), &alice), chosen.clone())).await;
+        h.send(json(with_csrf(changing(Method::PATCH, "/api/v1/preferences"), &alice), chosen.clone())).await;
     assert_eq!(saved.status, StatusCode::NO_CONTENT, "{:?}", saved.body);
 
     assert_eq!(h.send(empty(with_cookie(get("/api/v1/preferences"), &alice))).await.body, chosen);
@@ -3133,7 +3148,7 @@ async fn each_account_keeps_its_interface_preferences() {
 
     let unknown = json!({ "language": "fr", "theme": "dark" });
     let refused =
-        h.send(json(with_csrf(changing(Method::PUT, "/api/v1/preferences"), &alice), unknown)).await;
+        h.send(json(with_csrf(changing(Method::PATCH, "/api/v1/preferences"), &alice), unknown)).await;
     assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
     for bad in [
         json!({ "wallpaper": "../etc" }),
@@ -3146,7 +3161,7 @@ async fn each_account_keeps_its_interface_preferences() {
         json!({ "star_prompt": { "times_shown": 1, "last_shown_at": -1 } }),
     ] {
         let refused =
-            h.send(json(with_csrf(changing(Method::PUT, "/api/v1/preferences"), &alice), bad)).await;
+            h.send(json(with_csrf(changing(Method::PATCH, "/api/v1/preferences"), &alice), bad)).await;
         assert_problem(&refused, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
     }
 }
@@ -3155,15 +3170,48 @@ async fn each_account_keeps_its_interface_preferences() {
 async fn the_star_prompt_only_moves_forward() {
     let h = Harness::new();
     let alice = h.sign_in("alice", Role::Admin).await;
-    let put = |body: Value| json(with_csrf(changing(Method::PUT, "/api/v1/preferences"), &alice), body);
+    let change = |body: Value| json(with_csrf(changing(Method::PATCH, "/api/v1/preferences"), &alice), body);
     let declined = json!({ "times_shown": 1, "last_shown_at": 1_790_000_000, "answer": "declined" });
-    assert_eq!(h.send(put(json!({ "star_prompt": declined }))).await.status, StatusCode::NO_CONTENT);
+    assert_eq!(h.send(change(json!({ "star_prompt": declined }))).await.status, StatusCode::NO_CONTENT);
 
     // A browser that loaded the preferences before the reminder appeared.
-    assert_eq!(h.send(put(json!({ "theme": "light" }))).await.status, StatusCode::NO_CONTENT);
+    assert_eq!(h.send(change(json!({ "theme": "light" }))).await.status, StatusCode::NO_CONTENT);
 
     let kept = h.send(empty(with_cookie(get("/api/v1/preferences"), &alice))).await.body;
     assert_eq!((&kept["theme"], &kept["star_prompt"]), (&json!("light"), &declined));
+}
+
+#[tokio::test]
+async fn a_preference_change_keeps_what_it_leaves_out() {
+    let h = Harness::new();
+    let alice = h.sign_in("alice", Role::User).await;
+    let change = |body: Value| json(with_csrf(changing(Method::PATCH, "/api/v1/preferences"), &alice), body);
+    let chosen = json!({
+        "language": "de",
+        "theme": "dark",
+        "wallpaper": "color",
+        "wallpaper_color": "#134e4a",
+        "widgets": ["status"],
+        "desktop_icons": ["files", "storage"],
+        "star_prompt": null
+    });
+    assert_eq!(h.send(change(chosen.clone())).await.status, StatusCode::NO_CONTENT);
+
+    // Another tab, or a browser whose first load failed: only its choice.
+    assert_eq!(h.send(change(json!({ "theme": "light" }))).await.status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        h.send(change(json!({ "widgets": [], "language": null }))).await.status,
+        StatusCode::NO_CONTENT
+    );
+
+    let kept = h.send(empty(with_cookie(get("/api/v1/preferences"), &alice))).await.body;
+    let mut expected = chosen;
+    expected["theme"] = json!("light");
+    expected["widgets"] = json!([]);
+    assert_eq!(kept, expected, "`null` and left out both keep the language");
+    let replaced =
+        h.send(json(with_csrf(changing(Method::PUT, "/api/v1/preferences"), &alice), json!({}))).await;
+    assert_eq!(replaced.status, StatusCode::METHOD_NOT_ALLOWED, "nothing replaces them all");
 }
 
 #[tokio::test]

@@ -14,7 +14,9 @@ mod volume;
 
 pub use array::{Array, ArrayHealth, ArrayMember, MemberState, Slots, SyncOperation, SyncProgress};
 pub use block_device::{BlockDevice, DeviceKind, Filesystem, SpaceUsage};
-pub use disk::{Disk, DiskUsage, Media, Partition, Transport, disks, is_system_mount};
+pub use disk::{
+    Disk, DiskUsage, Media, Partition, Transport, disks, health_key, is_system_mount, serial_key,
+};
 pub use enclosure::{
     Binding, Chassis, ChassisStyle, DmiMatch, EnclosureChoice, EnclosureModel, FrontPanel, InvalidEnclosure,
     Layout, MAX_GROUP_SLOTS, MAX_GROUPS, MAX_ID_CHARS, MAX_LABEL_CHARS, MAX_NAME_CHARS, Machine, Numbering,
