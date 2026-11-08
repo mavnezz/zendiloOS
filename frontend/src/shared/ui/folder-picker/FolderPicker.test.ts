@@ -20,7 +20,7 @@ const makeFolder = vi.fn((_share: number, path: string) => {
   return Promise.resolve()
 })
 
-vi.mock('../api', () => ({
+vi.mock('./folders', () => ({
   useShareList: () => ({ data: ref([{ id: 7, name: 'media' }]) }),
   listFolders: (share: number, path: string) => listFolders(share, path),
   makeFolder: (share: number, path: string) => makeFolder(share, path),

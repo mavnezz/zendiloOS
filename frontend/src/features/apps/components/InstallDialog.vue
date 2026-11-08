@@ -24,7 +24,7 @@ import {
   useShareList,
 } from '../api'
 import { appText, asksForMore, paragraphs } from '../texts'
-import FolderPicker from './FolderPicker.vue'
+import { FolderPicker } from '@/shared/ui/folder-picker'
 import PermissionList from './PermissionList.vue'
 
 const props = defineProps<{ app: CatalogAppDetail }>()

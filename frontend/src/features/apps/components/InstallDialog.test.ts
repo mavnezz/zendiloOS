@@ -49,6 +49,17 @@ vi.mock('../api', () => ({
   listFolders: (share: number, path: string) => listFolders(share, path),
   makeFolder: () => Promise.resolve(),
 }))
+// The folder picker asks for the same, through the shared module.
+vi.mock('@/shared/ui/folder-picker/folders', () => ({
+  useShareList: () => ({
+    data: ref([
+      { id: 1, name: 'family', writable: true },
+      { id: 2, name: 'media', writable: false },
+    ]),
+  }),
+  listFolders: (share: number, path: string) => listFolders(share, path),
+  makeFolder: () => Promise.resolve(),
+}))
 
 const immich: CatalogAppDetail = {
   source_id: 1,

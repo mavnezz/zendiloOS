@@ -2,7 +2,12 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import { computed, type Ref } from 'vue'
 
 import { api, unwrap } from '@/shared/api/client'
-import type { ImageUpdateSettings, NewDockerProject } from '@/shared/api/types'
+import type {
+  BackupPlanRequest,
+  ImageUpdateSettings,
+  NewDockerProject,
+  RestoreRequest,
+} from '@/shared/api/types'
 
 /** How often lists that change by themselves are asked again. */
 const REFRESH = 10_000
@@ -415,4 +420,81 @@ export function terminalUrl(
   const scheme = page.protocol === 'https:' ? 'wss' : 'ws'
   const query = new URLSearchParams({ command, columns: String(columns), rows: String(rows) })
   return `${scheme}://${page.host}/api/v1/docker/containers/${encodeURIComponent(id)}/terminal?${query.toString()}`
+}
+
+export function useVolumes() {
+  return useQuery({
+    queryKey: ['docker', 'volumes'],
+    queryFn: () => unwrap(api.GET('/api/v1/docker/volumes')),
+    refetchInterval: REFRESH,
+  })
+}
+
+/** What the volumes' data takes up: counted on the NAS, so asked apart and seldom. */
+export function useVolumeSizes() {
+  return useQuery({
+    queryKey: ['docker-volume-sizes'],
+    queryFn: () => unwrap(api.GET('/api/v1/docker/volumes/sizes')),
+    staleTime: 60_000,
+  })
+}
+
+export function useRemoveVolume() {
+  const refresh = useRefresh()
+  return useMutation({
+    mutationFn: (name: string) =>
+      unwrap(api.DELETE('/api/v1/docker/volumes/{name}', { params: { path: { name } } })),
+    onSettled: refresh,
+  })
+}
+
+export function usePruneVolumes() {
+  const refresh = useRefresh()
+  return useMutation({
+    mutationFn: () => unwrap(api.POST('/api/v1/docker/volumes/prune')),
+    onSettled: refresh,
+  })
+}
+
+/** Makes or replaces a volume's backup plan. */
+export function saveBackupPlan(name: string, body: BackupPlanRequest) {
+  return unwrap(
+    api.PUT('/api/v1/docker/volumes/{name}/backup-plan', { params: { path: { name } }, body }),
+  )
+}
+
+export function deleteBackupPlan(name: string) {
+  return unwrap(
+    api.DELETE('/api/v1/docker/volumes/{name}/backup-plan', { params: { path: { name } } }),
+  )
+}
+
+/** A volume's backups, the newest first; asked again while one of them runs. */
+export function useBackups(name: Ref<string>, running: Ref<boolean>) {
+  return useQuery({
+    queryKey: ['docker', 'volumes', name, 'backups'],
+    queryFn: () =>
+      unwrap(
+        api.GET('/api/v1/docker/volumes/{name}/backups', {
+          params: { path: { name: name.value } },
+        }),
+      ),
+    refetchInterval: () => (running.value ? 3000 : false),
+    enabled: computed(() => name.value !== ''),
+  })
+}
+
+/** Backs a volume up now, as its plan says, in a job. */
+export function backUpNow(name: string) {
+  return unwrap(api.POST('/api/v1/docker/volumes/{name}/backups', { params: { path: { name } } }))
+}
+
+/** Restores backup `id`, in a job. */
+export function restoreBackup(id: number, body: RestoreRequest) {
+  return unwrap(api.POST('/api/v1/docker/backups/{id}/restore', { params: { path: { id } }, body }))
+}
+
+/** Asks the Docker app's lists again. */
+export function useRefreshDocker() {
+  return useRefresh()
 }
