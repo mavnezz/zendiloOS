@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE acme_accounts SET name = ?, server = ?, email = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "bc5960fe97baab7ca96091cb2d02d10bd325b7944d80e63ffb176c9e1407f230"
+}

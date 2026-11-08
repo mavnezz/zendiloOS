@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO web_server (id, http_port, https_port, certificate_id) VALUES (1, ?, ?, ?)\n             ON CONFLICT (id) DO UPDATE SET http_port = excluded.http_port, https_port = excluded.https_port,\n                 certificate_id = excluded.certificate_id",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "c5034070d94b74fda967867fe13b51acdb74b43471b3a62bd08fa23cd2cb9f43"
+}

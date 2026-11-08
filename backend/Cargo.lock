@@ -3179,6 +3179,7 @@ dependencies = [
  "zendiloos-agent-proto",
  "zendiloos-apps",
  "zendiloos-catalog",
+ "zendiloos-certificates",
  "zendiloos-containers",
  "zendiloos-exec",
  "zendiloos-identity",

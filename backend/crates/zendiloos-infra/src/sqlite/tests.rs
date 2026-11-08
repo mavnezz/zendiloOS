@@ -93,11 +93,14 @@ async fn creates_a_private_database_and_applies_all_migrations() {
         [
             "account_preferences",
             "accounts",
+            "acme_accounts",
+            "acme_challenges",
             "allowed_addresses",
             "app_icons",
             "app_sources",
             "audit_log",
             "blocked_addresses",
+            "certificates",
             "docker_projects",
             "docker_update_settings",
             "file_favourites",
@@ -125,7 +128,8 @@ async fn creates_a_private_database_and_applies_all_migrations() {
             "share_snapshot_schedules",
             "shares",
             "system_update_settings",
-            "system_update_state"
+            "system_update_state",
+            "web_server"
         ]
     );
     db.close().await;
