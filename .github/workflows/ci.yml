@@ -1,6 +1,7 @@
 # Runs exactly what `just check` and `just deb` run locally, with Rust as
-# rust-toolchain.toml pins it, Node as .nvmrc pins it and the tools below in
-# fixed versions, so a green check on a workstation means a green CI.
+# rust-toolchain.toml pins it, Node as .nvmrc pins it and the other tools
+# as scripts/install-tools.sh pins them, so a green check on a workstation
+# means a green CI.
 # Actions are pinned to commit SHAs; tags can be moved, commits cannot.
 #
 # A push to main or of a tag `v*` also publishes a release
@@ -42,24 +43,19 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
-        with:
-          tool: just@1.45.0,cargo-deny@0.20.2,cargo-llvm-cov@0.9.1
-
-      # sqlx-cli has no prebuilt binaries: built once, for SQLite only, in
-      # the version of sqlx in backend/Cargo.toml.
+      # sqlx-cli has no prebuilt binaries: built once, then kept here.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        id: sqlx-cli
         with:
-          path: ~/.sqlx-cli
-          key: sqlx-cli-0.9.0-sqlite-${{ runner.os }}
+          path: |
+            ~/.local/bin/sqlx
+            ~/.local/bin/cargo-sqlx
+          key: sqlx-cli-${{ runner.os }}-${{ hashFiles('scripts/install-tools.sh') }}
 
-      - name: sqlx-cli
-        if: steps.sqlx-cli.outputs.cache-hit != 'true'
-        run: cargo install sqlx-cli --version 0.9.0 --locked --no-default-features --features sqlite --root ~/.sqlx-cli
-
-      - name: Tools on the path
-        run: echo "$HOME/.sqlx-cli/bin" >> "$GITHUB_PATH"
+      # just, cargo-deny, cargo-llvm-cov and sqlx-cli in fixed versions.
+      - name: Tools
+        run: |
+          scripts/install-tools.sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Frontend dependencies
         run: just web-install
@@ -99,9 +95,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
-        with:
-          tool: just@1.45.0
+      - name: just
+        run: |
+          scripts/install-tools.sh just
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Version
         id: version

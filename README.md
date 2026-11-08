@@ -97,16 +97,17 @@ The tools:
 - **QEMU, xorriso, curl and jq** for the test VM and the ISO.
 - **minisign** to sign releases.
 
-CI installs the same versions (`.github/workflows/ci.yml`). On Debian 13 or
-a recent Ubuntu:
+On Debian 13 or a recent Ubuntu:
 
 ```sh
-sudo apt install build-essential pkg-config rustup just docker.io \
+sudo apt install build-essential pkg-config rustup docker.io \
     qemu-system-x86 qemu-utils xorriso curl jq minisign
-nvm install        # Node from .nvmrc, with nvm (https://github.com/nvm-sh/nvm)
-cargo install --locked sqlx-cli@0.9.0 --no-default-features --features sqlite
-cargo install --locked cargo-deny@0.20.2 cargo-llvm-cov@0.9.1
+nvm install                # Node from .nvmrc, with nvm (https://github.com/nvm-sh/nvm)
+scripts/install-tools.sh   # just, cargo-deny, cargo-llvm-cov, sqlx-cli into ~/.local/bin
 ```
+
+`scripts/install-tools.sh` installs the versions CI uses, prebuilt and
+checked against their checksums, except sqlx-cli, which cargo builds.
 
 ```sh
 just               # list all recipes
