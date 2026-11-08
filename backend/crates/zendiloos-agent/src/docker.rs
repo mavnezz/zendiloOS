@@ -52,7 +52,7 @@ const TERMINAL_LIFETIME: Duration = Duration::from_secs(24 * 60 * 60);
 /// which shells use; a sequence nobody types instead.
 const DETACH_KEYS: &str = "--detach-keys=ctrl-@,ctrl-@,ctrl-@,ctrl-@";
 
-fn surroundings() -> Surroundings<'static> {
+pub(crate) fn surroundings() -> Surroundings<'static> {
     Surroundings {
         variables: DOCKER_ENVIRONMENT.iter().map(|(n, v)| ((*n).to_owned(), (*v).to_owned())).collect(),
         directory: None,
@@ -60,7 +60,7 @@ fn surroundings() -> Surroundings<'static> {
 }
 
 /// The end of what `docker` wrote to stderr, for a message.
-fn complaint(output: &Output) -> String {
+pub(crate) fn complaint(output: &Output) -> String {
     let lines: Vec<&str> = output.stderr.lines().filter(|line| !line.trim().is_empty()).collect();
     let tail = lines[lines.len().saturating_sub(5)..].join("\n");
     if tail.is_empty() { format!("it ended with {}", output.status) } else { tail }

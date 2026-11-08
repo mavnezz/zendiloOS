@@ -8,8 +8,8 @@ use tokio::net::UnixListener;
 use tokio::signal::unix::{SignalKind, signal};
 use zendiloos_agent::config::Config;
 use zendiloos_agent::{
-    HostPaths, Operations, Server, lower_file_overrides, passwd, pin_project, pin_shares, power_off_drive,
-    run_packages, serve, unpin_project, unpin_shares,
+    HostPaths, Operations, Server, VolumeJob, lower_file_overrides, passwd, pin_project, pin_shares,
+    power_off_drive, run_packages, run_volume_job, serve, unpin_project, unpin_shares,
 };
 use zendiloos_agent_proto::{AppName, DiskName, ProjectName, Role};
 
@@ -45,6 +45,12 @@ enum Command {
     RunPackages { id: String, task: String, release: Option<String> },
     /// Take an ejected removable drive's disk off the bus, so it can be pulled out
     PowerOffDrive { disk: String },
+    /// Back up a Docker volume into a share (a job of the system agent's, in a unit of its own)
+    BackupVolume { job: String },
+    /// Restore a Docker volume from an archive in a share (likewise)
+    RestoreVolume { job: String },
+    /// Remove a file a backup of a volume wrote (likewise)
+    RemoveVolumeBackup { job: String },
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -76,6 +82,25 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         return run_packages(&HostPaths::default(), id, task, release.as_deref())
             .map_err(|error| anyhow::anyhow!("{error}"));
     }
+    let volume_job = match &cli.command {
+        Some(Command::BackupVolume { job }) => Some((VolumeJob::BackUp, job)),
+        Some(Command::RestoreVolume { job }) => Some((VolumeJob::Restore, job)),
+        Some(Command::RemoveVolumeBackup { job }) => Some((VolumeJob::RemoveBackup, job)),
+        _ => None,
+    };
+    if let Some((kind, job)) = volume_job {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| i64::try_from(since.as_secs()).unwrap_or(0));
+        let job = job.clone();
+        let done =
+            tokio::task::spawn_blocking(move || run_volume_job(kind, &job, now, &mut std::io::stdout()))
+                .await?;
+        if !done {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     if let Some(Command::PowerOffDrive { disk }) = &cli.command {
         let name = DiskName::parse(disk).map_err(|_| anyhow::anyhow!("{disk:?} is no disk"))?;
         power_off_drive(&HostPaths::default(), &name).map_err(|error| anyhow::anyhow!("{error}"))?;
@@ -94,7 +119,11 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             Command::UnpinProject { project: name } => {
                 (name, "unpinned", unpin_project(&paths, &project(name)?))
             }
-            Command::RunPackages { .. } | Command::PowerOffDrive { .. } => unreachable!("handled above"),
+            Command::RunPackages { .. }
+            | Command::PowerOffDrive { .. }
+            | Command::BackupVolume { .. }
+            | Command::RestoreVolume { .. }
+            | Command::RemoveVolumeBackup { .. } => unreachable!("handled above"),
         };
         outcome.map_err(|error| anyhow::anyhow!("{name}: {error}"))?;
         println!("{name}: folders of shares {done}");

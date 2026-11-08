@@ -1,0 +1,122 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT volume, share_id, folder, frequency, day, hour, keep,\n                      stop_containers AS \"stop_containers: bool\", since\n               FROM docker_backup_plans ORDER BY volume",
+  "describe": {
+    "columns": [
+      {
+        "name": "volume",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "docker_backup_plans",
+            "name": "volume"
+          }
+        }
+      },
+      {
+        "name": "share_id",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "docker_backup_plans",
+            "name": "share_id"
+          }
+        }
+      },
+      {
+        "name": "folder",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "docker_backup_plans",
+            "name": "folder"
+          }
+        }
+      },
+      {
+        "name": "frequency",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "docker_backup_plans",
+            "name": "frequency"
+          }
+        }
+      },
+      {
+        "name": "day",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "docker_backup_plans",
+            "name": "day"
+          }
+        }
+      },
+      {
+        "name": "hour",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "docker_backup_plans",
+            "name": "hour"
+          }
+        }
+      },
+      {
+        "name": "keep",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "docker_backup_plans",
+            "name": "keep"
+          }
+        }
+      },
+      {
+        "name": "stop_containers: bool",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "docker_backup_plans",
+            "name": "stop_containers"
+          }
+        }
+      },
+      {
+        "name": "since",
+        "ordinal": 8,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "docker_backup_plans",
+            "name": "since"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "c68b167114ebae4f72106072c26c2d1034d29838cc3893be5c52b40dc169a47a"
+}

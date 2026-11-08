@@ -12,6 +12,7 @@ publish.workspace = true
 [dependencies]
 zendiloos-kernel.workspace = true
 zendiloos-jobs.workspace = true
+zendiloos-notify.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
@@ -20,10 +21,11 @@ tokio = { workspace = true, features = ["sync"] }
 [dev-dependencies]
 tokio.workspace = true
 zendiloos-jobs = { workspace = true, features = ["testing"] }
+zendiloos-notify = { workspace = true, features = ["testing"] }
 
 [features]
 # In-memory adapters, for tests here and in the API crate.
-testing = ["zendiloos-jobs/testing"]
+testing = ["zendiloos-jobs/testing", "zendiloos-notify/testing"]
 
 [lints]
 workspace = true

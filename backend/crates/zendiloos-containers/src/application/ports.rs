@@ -6,8 +6,9 @@ use async_trait::async_trait;
 use zendiloos_kernel::{Actor, PortError, RequestContext};
 
 use crate::domain::{
-    ComposeListing, ComposeModel, Container, ContainerAction, ContainerDetails, ContainerProcess, DiskUsage,
-    Image, Network, OwnProject, ProjectName, RegistryImage, UpdateSettings, UsageSample,
+    Backup, BackupFile, BackupPlan, ComposeListing, ComposeModel, Container, ContainerAction,
+    ContainerDetails, ContainerProcess, DiskUsage, Image, Network, OwnProject, ProjectName, RegistryImage,
+    UpdateSettings, UsageSample, Volume, VolumeSize, WrittenBackup,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -153,6 +154,26 @@ pub trait DockerEngine: Send + Sync {
     ) -> Result<(), EngineError>;
 
     async fn remove_network(&self, name: &str, context: &RequestContext) -> Result<(), EngineError>;
+
+    async fn volumes(&self, context: &RequestContext) -> Result<Vec<Volume>, EngineError>;
+
+    /// What the local volumes' data takes up; takes a while.
+    async fn volume_sizes(&self, context: &RequestContext) -> Result<Vec<VolumeSize>, EngineError>;
+
+    /// Docker refuses one a container uses, also a stopped one.
+    async fn remove_volume(&self, name: &str, context: &RequestContext) -> Result<(), EngineError>;
+
+    /// Removes the volumes no container uses, named ones too; says what was
+    /// freed.
+    async fn prune_volumes(&self, context: &RequestContext) -> Result<String, EngineError>;
+
+    /// A local volume with `labels`.
+    async fn create_volume(
+        &self,
+        name: &str,
+        labels: &BTreeMap<String, String>,
+        context: &RequestContext,
+    ) -> Result<(), EngineError>;
 
     /// `compose` as Compose reads it with `directory` as its folder (a
     /// `.env` there does not count); [`EngineError::Refused`] with
@@ -340,4 +361,117 @@ pub trait DockerData: Send + Sync {
         to: &DataPlace,
         context: &RequestContext,
     ) -> Result<(), EngineError>;
+}
+
+/// Where a share is on the machine: `/volume<volume>/<share>`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SharePlace {
+    pub volume: u16,
+    pub share: String,
+}
+
+/// The shares backups go to, by their ID: backups run on a schedule, with
+/// nobody signed in.
+#[async_trait]
+pub trait BackupShares: Send + Sync {
+    /// `None` once the share is gone.
+    async fn locate(&self, share_id: i64) -> Result<Option<SharePlace>, PortError>;
+}
+
+/// Where a long step reports how far it is, in percent.
+pub trait Steps: Send + Sync {
+    fn step(&self, step: &str, percent: Option<u8>);
+}
+
+/// Steps nobody follows.
+pub struct NoSteps;
+
+impl Steps for NoSteps {
+    fn step(&self, _: &str, _: Option<u8>) {}
+}
+
+/// Volumes backed up into shares and restored from them, through the
+/// privileged agent; each can take hours.
+#[async_trait]
+pub trait VolumeArchiver: Send + Sync {
+    /// Writes `<folder>/<volume>/<stem>.tar.zst` and `<stem>.json` into the
+    /// share.
+    async fn back_up(
+        &self,
+        volume: &str,
+        place: &SharePlace,
+        folder: &str,
+        stem: &str,
+        steps: &dyn Steps,
+        context: &RequestContext,
+    ) -> Result<WrittenBackup, EngineError>;
+
+    /// Replaces the volume's contents with the archive at `archive` in the
+    /// share, if its SHA-256 is `sha256`.
+    async fn restore(
+        &self,
+        volume: &str,
+        place: &SharePlace,
+        archive: &str,
+        sha256: &str,
+        steps: &dyn Steps,
+        context: &RequestContext,
+    ) -> Result<(), EngineError>;
+
+    /// Removes a file a backup wrote if it still is that file; whether it
+    /// did.
+    async fn remove(
+        &self,
+        place: &SharePlace,
+        file: &BackupFile,
+        context: &RequestContext,
+    ) -> Result<bool, EngineError>;
+}
+
+/// A run of a backup as it starts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewBackup {
+    pub volume: String,
+    pub share_id: i64,
+    pub started_at: zendiloos_kernel::Timestamp,
+    pub by: Option<String>,
+}
+
+/// The volumes' backup plans and the runs of backups.
+#[async_trait]
+pub trait BackupRepository: Send + Sync {
+    /// By volume.
+    async fn plans(&self) -> Result<Vec<BackupPlan>, PortError>;
+
+    /// Makes or replaces the volume's plan.
+    async fn save_plan(&self, plan: &BackupPlan) -> Result<(), PortError>;
+
+    /// `false` if there was none.
+    async fn delete_plan(&self, volume: &str) -> Result<bool, PortError>;
+
+    /// Runs of the plan are due from `at` on.
+    async fn ran(&self, volume: &str, at: zendiloos_kernel::Timestamp) -> Result<(), PortError>;
+
+    async fn start(&self, backup: &NewBackup) -> Result<i64, PortError>;
+
+    /// The containers stopped for the run, not yet started again.
+    async fn stopped(&self, id: i64, containers: &[String]) -> Result<(), PortError>;
+
+    /// How the run ended: succeeded with what it wrote, or failed.
+    async fn finish(
+        &self,
+        id: i64,
+        at: zendiloos_kernel::Timestamp,
+        outcome: Result<&WrittenBackup, &str>,
+    ) -> Result<(), PortError>;
+
+    /// The runs, of one volume or all, the newest first.
+    async fn backups(&self, volume: Option<&str>) -> Result<Vec<Backup>, PortError>;
+
+    async fn backup(&self, id: i64) -> Result<Option<Backup>, PortError>;
+
+    async fn forget(&self, id: i64) -> Result<(), PortError>;
+
+    /// Runs still running from before a restart, now failed; as they were.
+    async fn interrupted(&self, at: zendiloos_kernel::Timestamp) -> Result<Vec<Backup>, PortError>;
 }

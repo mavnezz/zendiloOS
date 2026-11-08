@@ -1,32 +1,40 @@
 //! Use cases of the Containers context and the ports they need. Every one
 //! is for administrators (`containers.manage`); the caller checks that.
 
+mod backups;
 mod container;
 mod data;
 mod engine;
 pub mod ports;
 mod projects;
 mod updates;
+mod volumes;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod volume_tests;
 
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use zendiloos_jobs::{JobError, Jobs};
 use zendiloos_kernel::{Actor, AuditEntry, AuditLog, Clock, Outcome, PortError, RequestContext, Timestamp};
+use zendiloos_notify::Notifier;
 
+pub use backups::{PlanInput, PlanView, RestoreTarget};
 pub use container::{ContainerDetailsView, TERMINALS_PER_ACCOUNT, Terminal, UpdateWay};
 pub use data::DataLocation;
 pub use engine::{ContainerView, ImageView, Overview};
 use ports::{
-    DockerData, DockerEngine, EngineError, ProjectRepository, ProjectStorage, Registries, StorageError,
-    UpdateSettingsRepository,
+    BackupRepository, BackupShares, DockerData, DockerEngine, EngineError, ProjectRepository, ProjectStorage,
+    Registries, StorageError, UpdateSettingsRepository, VolumeArchiver,
 };
 pub use projects::{ComposeSource, NewProject};
+pub use volumes::VolumeView;
 
-use crate::domain::{InvalidProjectName, Moment, Risk, UpdateReport, UsageHistory};
+use crate::domain::{InvalidBackupPlan, InvalidProjectName, Moment, Risk, UpdateReport, UsageHistory};
 
 /// Samples every 20 seconds; twelve hours of them.
 pub const SAMPLE_EVERY: Duration = Duration::from_secs(20);
@@ -40,7 +48,13 @@ pub struct ContainersPorts {
     pub registries: Arc<dyn Registries>,
     pub updates: Arc<dyn UpdateSettingsRepository>,
     pub data: Arc<dyn DockerData>,
+    /// Volumes backed up and restored; slow.
+    pub archiver: Arc<dyn VolumeArchiver>,
+    pub backups: Arc<dyn BackupRepository>,
+    pub backup_shares: Arc<dyn BackupShares>,
     pub jobs: Jobs,
+    /// A backup that fails is told.
+    pub notifier: Notifier,
     pub audit: Arc<dyn AuditLog>,
     pub clock: Arc<dyn Clock>,
 }
@@ -78,6 +92,13 @@ pub enum ContainersError {
     /// confirms it.
     #[error("the project's Compose file needs to be saved once to be confirmed")]
     Unconfirmed,
+    /// Running containers use the volume; restoring it stops them only
+    /// when asked to.
+    #[error("running containers use the volume: {}", .0.join(", "))]
+    VolumeInUse(Vec<String>),
+    /// A backup or restore of the volume is under way.
+    #[error("a backup or restore of the volume {0} is under way")]
+    VolumeBusy(String),
     #[error(transparent)]
     Port(#[from] PortError),
 }
@@ -89,6 +110,12 @@ impl From<EngineError> for ContainersError {
             EngineError::Failed(reason) => Self::Failed(reason),
             EngineError::Port(error) => Self::Port(error),
         }
+    }
+}
+
+impl From<InvalidBackupPlan> for ContainersError {
+    fn from(error: InvalidBackupPlan) -> Self {
+        Self::Invalid(error.to_string())
     }
 }
 
@@ -105,7 +132,9 @@ impl From<StorageError> for ContainersError {
 
 fn job_error(error: &ContainersError) -> JobError {
     let code = match error {
-        ContainersError::Refused(_) => "refused",
+        ContainersError::Refused(_) | ContainersError::VolumeInUse(_) | ContainersError::VolumeBusy(_) => {
+            "refused"
+        }
         ContainersError::Failed(_) => "agent_failed",
         _ => "internal",
     };
@@ -121,6 +150,8 @@ pub struct Containers {
     report: Arc<Mutex<Option<UpdateReport>>>,
     /// The terminals each account has open.
     terminals: Arc<container::OpenTerminals>,
+    /// The volumes being backed up or restored now.
+    busy: Arc<Mutex<BTreeSet<String>>>,
 }
 
 impl Containers {
@@ -130,6 +161,7 @@ impl Containers {
             history: Arc::new(Mutex::new(UsageHistory::new(HISTORY))),
             report: Arc::new(Mutex::new(None)),
             terminals: Arc::default(),
+            busy: Arc::default(),
         }
     }
 

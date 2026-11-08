@@ -108,7 +108,8 @@ fn allowed(name: &str, members: &BTreeSet<String>) -> Option<BTreeSet<String>> {
         "zendiloos-storage" | "zendiloos-sharing" => {
             set(&["zendiloos-kernel", "zendiloos-jobs", "zendiloos-notify"])
         }
-        "zendiloos-apps" | "zendiloos-containers" => set(&["zendiloos-kernel", "zendiloos-jobs"]),
+        "zendiloos-apps" => set(&["zendiloos-kernel", "zendiloos-jobs"]),
+        "zendiloos-containers" => set(&["zendiloos-kernel", "zendiloos-jobs", "zendiloos-notify"]),
         "zendiloos-updates" => set(&["zendiloos-kernel", "zendiloos-notify"]),
         "zendiloos-certificates" => set(&["zendiloos-kernel", "zendiloos-jobs", "zendiloos-notify"]),
         "zendiloos-firewall" => set(&["zendiloos-kernel", "zendiloos-notify"]),

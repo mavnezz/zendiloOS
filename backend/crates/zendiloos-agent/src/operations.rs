@@ -27,6 +27,7 @@ use crate::removable::Removable;
 use crate::sharing::Sharing;
 use crate::ssh::{Ssh, SshPaths};
 use crate::time::{Time, TimePaths};
+use crate::volumes::Volumes;
 use crate::web::{Web, WebPaths};
 use crate::web_server::{WebServer, WebServerPaths};
 
@@ -78,6 +79,7 @@ pub struct Operations {
     web_server: std::sync::Arc<WebServer>,
     firewall: std::sync::Arc<Firewall>,
     docker: Docker,
+    volumes: Volumes,
     projects: Projects,
     removable: Removable,
     enclosure: Enclosure,
@@ -117,6 +119,11 @@ impl Operations {
             web_server: std::sync::Arc::new(WebServer::new(tools, paths.web_server)?),
             firewall: std::sync::Arc::new(Firewall::new(tools, paths.firewall)?),
             docker: Docker::new(Program::new(&tools.docker)?, Program::new(&tools.setsid)?),
+            volumes: Volumes::new(
+                Program::new(&tools.docker)?,
+                Program::new(&tools.systemd_run)?,
+                paths.host.clone(),
+            ),
             projects: Projects::new(
                 Program::new(&tools.docker)?,
                 Program::new(&tools.systemctl)?,
@@ -257,6 +264,20 @@ impl Operations {
                 self.docker.create_network(name, subnet.as_ref(), *gateway).await
             }
             Request::RemoveNetwork { name } => self.docker.remove_network(name).await,
+            Request::DockerVolumes {} => self.volumes.list().await,
+            Request::DockerVolumeSizes {} => self.volumes.sizes().await,
+            Request::RemoveVolume { name } => self.volumes.remove(name).await,
+            Request::PruneVolumes {} => self.volumes.prune().await,
+            Request::CreateVolume { name, labels } => self.volumes.create(name, labels).await,
+            Request::BackUpVolume { volume, share, folder, name } => {
+                self.volumes.back_up(volume, share, folder, name).await
+            }
+            Request::RestoreVolume { volume, share, archive, sha256 } => {
+                self.volumes.restore(volume, share, archive, sha256).await
+            }
+            Request::RemoveVolumeBackup { share, path, device, inode } => {
+                self.volumes.remove_backup(share, path, *device, *inode).await
+            }
             Request::CheckCompose { project, directory, compose } => {
                 self.docker.check_compose(project, directory, compose).await
             }

@@ -120,6 +120,20 @@ pub fn message(notification: &Notification, host: &str, language: Language) -> M
             format!("No snapshot of {}", param("share")),
             "A scheduled snapshot could not be taken. Is the share's volume there?".to_owned(),
         ),
+        "docker_backup_failed" if german => (
+            format!("Keine Sicherung des Volumes {}", param("volume")),
+            format!(
+                "{}\nDie Container, die es nutzen, laufen wieder. Unter Docker → Volumes sehen Sie die Sicherungen.",
+                param("reason")
+            ),
+        ),
+        "docker_backup_failed" => (
+            format!("No backup of the volume {}", param("volume")),
+            format!(
+                "{}\nThe containers that use it run again. Docker → Volumes shows its backups.",
+                param("reason")
+            ),
+        ),
         "removable_pulled" if german => (
             format!("{} wurde abgezogen, ohne ausgeworfen zu werden", param("drive")),
             "Werfen Sie Laufwerke aus, bevor Sie sie abziehen; was gerade geschrieben wurde, kann fehlen."
@@ -344,6 +358,12 @@ mod tests {
                 "Kein Snapshot von photos",
             ),
             ("channel_test", vec![], "Test message", "Testnachricht"),
+            (
+                "docker_backup_failed",
+                vec![("volume", "tesla_db"), ("reason", "No space left on device")],
+                "No backup of the volume tesla_db",
+                "Keine Sicherung des Volumes tesla_db",
+            ),
             (
                 "firewall_blocked",
                 vec![("service", "smb")],

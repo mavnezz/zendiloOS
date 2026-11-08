@@ -31,6 +31,8 @@ pub enum Group {
     Certificates,
     /// The firewall.
     Security,
+    /// The Docker app: backups of volumes.
+    Docker,
 }
 
 impl Group {
@@ -41,6 +43,7 @@ impl Group {
             Self::System => "system",
             Self::Certificates => "certificates",
             Self::Security => "security",
+            Self::Docker => "docker",
         }
     }
 }
@@ -61,7 +64,7 @@ const fn kind(key: &'static str, group: Group, level: Level) -> Kind {
 }
 
 /// Every kind zendiloOS raises, in the order the table shows them.
-pub const KINDS: [Kind; 15] = [
+pub const KINDS: [Kind; 16] = [
     // Degraded a warning; faulted, removed or unavailable an error.
     kind("pool_trouble", Group::Storage, Level::Error),
     kind("pool_recovered", Group::Storage, Level::Success),
@@ -82,6 +85,7 @@ pub const KINDS: [Kind; 15] = [
     kind("certificate_renewed", Group::Certificates, Level::Success),
     kind("certificate_renewal_failed", Group::Certificates, Level::Error),
     kind("firewall_blocked", Group::Security, Level::Warning),
+    kind("docker_backup_failed", Group::Docker, Level::Error),
 ];
 
 /// The kind a notification of `code` at `level` belongs to.
@@ -155,9 +159,16 @@ mod tests {
         assert!(KINDS.iter().all(|kind| find(kind.key) == Some(kind)));
         assert_eq!(find("something_new"), None);
         assert_eq!(
-            [Group::Storage, Group::Folders, Group::System, Group::Certificates, Group::Security]
-                .map(Group::as_str),
-            ["storage", "folders", "system", "certificates", "security"]
+            [
+                Group::Storage,
+                Group::Folders,
+                Group::System,
+                Group::Certificates,
+                Group::Security,
+                Group::Docker
+            ]
+            .map(Group::as_str),
+            ["storage", "folders", "system", "certificates", "security", "docker"]
         );
     }
 

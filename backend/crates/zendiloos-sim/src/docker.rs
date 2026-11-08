@@ -28,6 +28,7 @@ pub(crate) struct SimDocker {
     networks: Vec<(String, Option<String>, Option<String>)>,
     /// Projects deployed from an administrator's file, with that file.
     own: BTreeMap<String, String>,
+    volumes: Vec<crate::volumes::SimVolume>,
     next: u64,
 }
 
@@ -109,6 +110,7 @@ impl Default for SimDocker {
                 ("stack_default".into(), Some("172.19.0.0/16".into()), Some("stack".into())),
             ],
             own: BTreeMap::new(),
+            volumes: crate::volumes::initial(),
             next: 1000,
         }
     }
@@ -279,6 +281,7 @@ impl SimDocker {
         request: &Request,
         apps: &mut BTreeMap<String, bool>,
         now: u64,
+        files: Option<&std::path::Path>,
     ) -> Option<Response> {
         let output = |text: String| Some(Response::DockerOutput { text });
         match request {
@@ -457,7 +460,7 @@ impl SimDocker {
                 let name = project.as_str();
                 self.own.insert(name.to_owned(), format!("/etc/zendiloos/projects/{name}.json"));
                 let up = Request::ControlProject { project: project.clone(), action: ProjectAction::Up };
-                self.handle(&up, apps, now)
+                self.handle(&up, apps, now, files)
             }
             Request::ControlProject { project, action } => {
                 let name = project.as_str();
@@ -526,6 +529,23 @@ impl SimDocker {
                     return output(json!({"/opt/stack/compose.yml": file}).to_string());
                 }
                 Some(failed("Compose reports no file"))
+            }
+            Request::DockerVolumes {}
+            | Request::DockerVolumeSizes {}
+            | Request::RemoveVolume { .. }
+            | Request::PruneVolumes {}
+            | Request::CreateVolume { .. }
+            | Request::BackUpVolume { .. }
+            | Request::RestoreVolume { .. }
+            | Request::RemoveVolumeBackup { .. } => {
+                // The web server's cache volume, while there is one: whether it runs.
+                let all = self.all(apps);
+                let used = |name: &str| {
+                    let web: Vec<&SimContainer> =
+                        all.iter().filter(|c| c.image.starts_with("nginx")).collect();
+                    (name == "stack_cache" && !web.is_empty()).then(|| web.iter().any(|c| c.running))
+                };
+                crate::volumes::handle(&mut self.volumes, request, &used, files, now)
             }
             _ => None,
         }

@@ -133,6 +133,10 @@ pub struct HostPaths {
     /// The keys a release may be signed with, the first that exists counts:
     /// one an administrator put in `/etc`, then the package's own.
     pub release_keys: Vec<PathBuf>,
+    /// Each share is a file system of its own, mounted at
+    /// `/volume<N>/<share>`, as on a NAS; only tests, whose shares are plain
+    /// folders, say otherwise.
+    pub share_mounts: bool,
 }
 
 impl Default for HostPaths {
@@ -164,6 +168,7 @@ impl Default for HostPaths {
                 PathBuf::from("/etc/zendiloos/release-signing.pub"),
                 PathBuf::from("/usr/share/zendiloos/release-signing.pub"),
             ],
+            share_mounts: true,
         }
     }
 }

@@ -201,6 +201,7 @@ fn host(erasable: Erasable) -> Host {
             docker_socket: root.join("docker.sock"),
             update_spool: root.join("updates"),
             release_keys: vec![root.join("release-signing.pub")],
+            share_mounts: true,
         },
     };
     let operations = Operations::with_paths(Role::System, &tools, erasable, paths).unwrap();

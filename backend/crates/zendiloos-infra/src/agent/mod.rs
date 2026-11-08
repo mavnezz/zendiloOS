@@ -16,6 +16,7 @@ mod ssh;
 mod storage;
 mod time;
 mod updates;
+mod volume_backups;
 mod web;
 
 use std::sync::Arc;
@@ -41,6 +42,7 @@ pub use ssh::AgentSsh;
 pub use storage::{AgentStorage, RandomPlanTokens};
 pub use time::AgentTime;
 pub use updates::AgentUpdates;
+pub use volume_backups::AgentVolumeArchiver;
 pub use web::AgentWebTls;
 
 const WHAT: &str = "privileged agent";

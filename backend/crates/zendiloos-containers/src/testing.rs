@@ -10,16 +10,17 @@ use zendiloos_jobs::testing::MemoryJobs;
 use zendiloos_kernel::{Actor, AuditLog, Clock, PortError, RequestContext, Timestamp};
 
 use crate::application::ports::{
-    CheckedCompose, DataPlace, DockerData, DockerEngine, EngineError, Lines, ProjectAction, ProjectPlace,
-    ProjectRepository, ProjectStorage, Registries, StorageError, TerminalInput, TerminalSession,
-    UpdateSettingsRepository,
+    BackupRepository, BackupShares, CheckedCompose, DataPlace, DockerData, DockerEngine, EngineError, Lines,
+    NewBackup, ProjectAction, ProjectPlace, ProjectRepository, ProjectStorage, Registries, SharePlace, Steps,
+    StorageError, TerminalInput, TerminalSession, UpdateSettingsRepository, VolumeArchiver,
 };
 use crate::application::{Containers, ContainersPorts};
 use crate::domain::{
-    AttachedNetwork, ComposeListing, ComposeModel, ComposeService, Container, ContainerAction,
-    ContainerDetails, ContainerProcess, ContainerState, ContainerUsage, DiskUsage, Image, Network,
-    OwnProject, Privileges, ProjectName, PublishedPort, RegistryImage, ResourceLimits, ServiceMount,
-    UpdateSettings, UsageSample,
+    AttachedNetwork, Backup, BackupFile, BackupOutcome, BackupPlan, ComposeListing, ComposeModel,
+    ComposeService, Container, ContainerAction, ContainerDetails, ContainerProcess, ContainerState,
+    ContainerUsage, DiskUsage, Image, Mount, Network, OwnProject, PROJECT_LABEL, Privileges, ProjectName,
+    PublishedPort, RegistryImage, ResourceLimits, ServiceMount, UpdateSettings, UsageSample, Volume,
+    VolumeSize, WrittenBackup,
 };
 
 /// A container of `project` (if any) from `image`.
@@ -75,12 +76,42 @@ pub fn details(container: Container) -> ContainerDetails {
     }
 }
 
+/// `container` mounting the volume `name` at `/data`.
+pub fn mounting(mut container: Container, name: &str) -> Container {
+    container.mounts.push(Mount {
+        kind: "volume".into(),
+        source: name.into(),
+        destination: "/data".into(),
+        read_only: false,
+    });
+    container
+}
+
+/// A local volume, of `project` if any.
+pub fn volume(name: &str, project: Option<&str>) -> Volume {
+    Volume {
+        name: name.to_owned(),
+        driver: "local".into(),
+        labels: project
+            .map(|p| BTreeMap::from([(PROJECT_LABEL.to_owned(), p.to_owned())]))
+            .unwrap_or_default(),
+        mounts_elsewhere: false,
+        created_at: Some(Timestamp::from_unix_seconds(1_790_000_000)),
+    }
+}
+
 /// A Docker engine with two projects: `kuma`, an app of a catalog, and
-/// `stack`, made elsewhere; images and networks to match.
+/// `stack`, made elsewhere; images and networks to match. Volumes:
+/// `kuma_data` (the running `kuma-1` uses it), `stack_db` (the stopped
+/// `stack-db`), `orphan` (nothing) and `nfs_media` (mounted from
+/// elsewhere).
 pub struct FakeEngine {
     pub containers: Mutex<Vec<Container>>,
     pub images: Mutex<Vec<Image>>,
     pub networks: Mutex<Vec<Network>>,
+    pub volumes: Mutex<Vec<Volume>>,
+    /// Containers, by ID, that will not start.
+    pub stubborn: Mutex<Vec<String>>,
     pub listings: Mutex<Vec<ComposeListing>>,
     /// What Compose reads from a file containing `privileged: true`; plain
     /// otherwise; a file containing `broken` it cannot read.
@@ -102,10 +133,17 @@ impl Default for FakeEngine {
         };
         Self {
             containers: Mutex::new(vec![
-                container("kuma-1", Some("kuma"), "kuma", true),
+                mounting(container("kuma-1", Some("kuma"), "kuma", true), "kuma_data"),
                 container("stack-web", Some("stack"), "nginx", true),
-                container("stack-db", Some("stack"), "postgres", false),
+                mounting(container("stack-db", Some("stack"), "postgres", false), "stack_db"),
                 container("lonely", None, "alpine", false),
+            ]),
+            stubborn: Mutex::new(vec![]),
+            volumes: Mutex::new(vec![
+                volume("kuma_data", Some("kuma")),
+                volume("stack_db", Some("stack")),
+                volume("orphan", None),
+                Volume { mounts_elsewhere: true, ..volume("nfs_media", None) },
             ]),
             images: Mutex::new(
                 ["kuma", "nginx", "postgres", "alpine", "unused"]
@@ -195,6 +233,9 @@ impl DockerEngine for FakeEngine {
         _: &RequestContext,
     ) -> Result<(), EngineError> {
         self.call(format!("{} {id}", action.as_str()));
+        if action == ContainerAction::Start && self.stubborn.lock().unwrap().iter().any(|s| s == id) {
+            return Err(EngineError::Failed("it exited at once".into()));
+        }
         let mut containers = self.containers.lock().unwrap();
         let container =
             containers.iter_mut().find(|c| c.id == id).ok_or_else(|| EngineError::Failed("gone".into()))?;
@@ -327,6 +368,43 @@ impl DockerEngine for FakeEngine {
     async fn remove_network(&self, name: &str, _: &RequestContext) -> Result<(), EngineError> {
         self.call(format!("network rm {name}"));
         self.networks.lock().unwrap().retain(|n| n.name != name);
+        Ok(())
+    }
+
+    async fn volumes(&self, _: &RequestContext) -> Result<Vec<Volume>, EngineError> {
+        Ok(self.volumes.lock().unwrap().clone())
+    }
+
+    async fn volume_sizes(&self, _: &RequestContext) -> Result<Vec<VolumeSize>, EngineError> {
+        Ok(self
+            .volumes
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|v| v.backed_up_here())
+            .map(|v| VolumeSize { name: v.name.clone(), bytes: 4096, complete: v.name != "orphan" })
+            .collect())
+    }
+
+    async fn remove_volume(&self, name: &str, _: &RequestContext) -> Result<(), EngineError> {
+        self.call(format!("volume rm {name}"));
+        self.volumes.lock().unwrap().retain(|v| v.name != name);
+        Ok(())
+    }
+
+    async fn prune_volumes(&self, _: &RequestContext) -> Result<String, EngineError> {
+        self.call("volume prune".into());
+        Ok("Total reclaimed space: 4kB\n".into())
+    }
+
+    async fn create_volume(
+        &self,
+        name: &str,
+        labels: &BTreeMap<String, String>,
+        _: &RequestContext,
+    ) -> Result<(), EngineError> {
+        self.call(format!("volume create {name} {}", labels.keys().cloned().collect::<Vec<_>>().join(",")));
+        self.volumes.lock().unwrap().push(Volume { labels: labels.clone(), ..volume(name, None) });
         Ok(())
     }
 
@@ -615,6 +693,221 @@ impl DockerData for FakeDockerData {
     }
 }
 
+/// Share 1 is `docker` on volume 1; no other.
+pub struct FakeBackupShares;
+
+#[async_trait]
+impl BackupShares for FakeBackupShares {
+    async fn locate(&self, share_id: i64) -> Result<Option<SharePlace>, PortError> {
+        Ok((share_id == 1).then(|| SharePlace { volume: 1, share: "docker".into() }))
+    }
+}
+
+/// Backups as the agent would make them, recorded as calls; `fail` makes
+/// the next one fail with its reason. Files removed are those of the
+/// archives written, by inode.
+#[derive(Default)]
+pub struct FakeArchiver {
+    pub calls: Mutex<Vec<String>>,
+    pub fail: Mutex<Option<String>>,
+    /// Inodes of the files there are.
+    pub files: Mutex<Vec<u64>>,
+}
+
+impl FakeArchiver {
+    pub fn calls(&self) -> Vec<String> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl VolumeArchiver for FakeArchiver {
+    async fn back_up(
+        &self,
+        volume: &str,
+        place: &SharePlace,
+        folder: &str,
+        stem: &str,
+        steps: &dyn Steps,
+        _: &RequestContext,
+    ) -> Result<WrittenBackup, EngineError> {
+        self.calls.lock().unwrap().push(format!("back up {volume} to {}/{folder} as {stem}", place.share));
+        steps.step("backing_up", Some(50));
+        if let Some(reason) = self.fail.lock().unwrap().take() {
+            return Err(EngineError::Failed(reason));
+        }
+        let mut files = self.files.lock().unwrap();
+        let inode = files.len() as u64 * 2 + 1;
+        files.extend([inode, inode + 1]);
+        let file = |name: String, inode: u64| BackupFile {
+            path: format!("{folder}/{volume}/{name}"),
+            bytes: 100,
+            device: 7,
+            inode,
+        };
+        Ok(WrittenBackup {
+            archive: file(format!("{stem}.tar.zst"), inode),
+            manifest: file(format!("{stem}.json"), inode + 1),
+            sha256: "ab".repeat(32),
+            data_bytes: 4096,
+            manifest_json: format!(
+                r#"{{"volume":"{volume}","driver":"local","labels":{{"com.docker.compose.project":"kuma"}}}}"#
+            ),
+        })
+    }
+
+    async fn restore(
+        &self,
+        volume: &str,
+        place: &SharePlace,
+        archive: &str,
+        sha256: &str,
+        _: &dyn Steps,
+        _: &RequestContext,
+    ) -> Result<(), EngineError> {
+        let short = &sha256[..4.min(sha256.len())];
+        self.calls.lock().unwrap().push(format!("restore {volume} from {}/{archive} {short}", place.share));
+        match self.fail.lock().unwrap().take() {
+            Some(reason) => Err(EngineError::Refused(reason)),
+            None => Ok(()),
+        }
+    }
+
+    async fn remove(
+        &self,
+        place: &SharePlace,
+        file: &BackupFile,
+        _: &RequestContext,
+    ) -> Result<bool, EngineError> {
+        self.calls.lock().unwrap().push(format!("remove {}/{}", place.share, file.path));
+        let mut files = self.files.lock().unwrap();
+        let before = files.len();
+        files.retain(|&inode| inode != file.inode);
+        Ok(files.len() < before)
+    }
+}
+
+/// Plans and runs in memory.
+#[derive(Default)]
+pub struct MemoryBackups {
+    pub plans: Mutex<Vec<BackupPlan>>,
+    pub runs: Mutex<Vec<Backup>>,
+}
+
+/// The labels a manifest of the fake archiver gives.
+fn manifest_labels(json: &str) -> BTreeMap<String, String> {
+    json.split_once(r#""com.docker.compose.project":""#)
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .map(|(project, _)| BTreeMap::from([(PROJECT_LABEL.to_owned(), project.to_owned())]))
+        .unwrap_or_default()
+}
+
+#[async_trait]
+impl BackupRepository for MemoryBackups {
+    async fn plans(&self) -> Result<Vec<BackupPlan>, PortError> {
+        let mut plans = self.plans.lock().unwrap().clone();
+        plans.sort_by(|a, b| a.volume.cmp(&b.volume));
+        Ok(plans)
+    }
+
+    async fn save_plan(&self, plan: &BackupPlan) -> Result<(), PortError> {
+        let mut plans = self.plans.lock().unwrap();
+        plans.retain(|p| p.volume != plan.volume);
+        plans.push(plan.clone());
+        Ok(())
+    }
+
+    async fn delete_plan(&self, volume: &str) -> Result<bool, PortError> {
+        let mut plans = self.plans.lock().unwrap();
+        let before = plans.len();
+        plans.retain(|p| p.volume != volume);
+        Ok(plans.len() < before)
+    }
+
+    async fn ran(&self, volume: &str, at: Timestamp) -> Result<(), PortError> {
+        for plan in self.plans.lock().unwrap().iter_mut().filter(|p| p.volume == volume) {
+            plan.since = at;
+        }
+        Ok(())
+    }
+
+    async fn start(&self, backup: &NewBackup) -> Result<i64, PortError> {
+        let mut runs = self.runs.lock().unwrap();
+        let id = runs.iter().map(|r| r.id).max().unwrap_or(0) + 1;
+        runs.push(Backup {
+            id,
+            volume: backup.volume.clone(),
+            share_id: backup.share_id,
+            started_at: backup.started_at,
+            finished_at: None,
+            outcome: BackupOutcome::Running,
+            driver: "local".into(),
+            labels: BTreeMap::new(),
+            stopped: vec![],
+            by: backup.by.clone(),
+        });
+        Ok(id)
+    }
+
+    async fn stopped(&self, id: i64, containers: &[String]) -> Result<(), PortError> {
+        for run in self.runs.lock().unwrap().iter_mut().filter(|r| r.id == id) {
+            run.stopped = containers.to_vec();
+        }
+        Ok(())
+    }
+
+    async fn finish(
+        &self,
+        id: i64,
+        at: Timestamp,
+        outcome: Result<&WrittenBackup, &str>,
+    ) -> Result<(), PortError> {
+        for run in self.runs.lock().unwrap().iter_mut().filter(|r| r.id == id) {
+            run.finished_at = Some(at);
+            run.outcome = match outcome {
+                Ok(written) => {
+                    run.labels = manifest_labels(&written.manifest_json);
+                    BackupOutcome::Succeeded(written.clone())
+                }
+                Err(reason) => BackupOutcome::Failed(reason.to_owned()),
+            };
+        }
+        Ok(())
+    }
+
+    async fn backups(&self, volume: Option<&str>) -> Result<Vec<Backup>, PortError> {
+        let mut runs: Vec<Backup> = self
+            .runs
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| volume.is_none_or(|v| r.volume == v))
+            .cloned()
+            .collect();
+        runs.sort_by(|a, b| b.started_at.cmp(&a.started_at).then(b.id.cmp(&a.id)));
+        Ok(runs)
+    }
+
+    async fn backup(&self, id: i64) -> Result<Option<Backup>, PortError> {
+        Ok(self.runs.lock().unwrap().iter().find(|r| r.id == id).cloned())
+    }
+
+    async fn forget(&self, id: i64) -> Result<(), PortError> {
+        self.runs.lock().unwrap().retain(|r| r.id != id);
+        Ok(())
+    }
+
+    async fn interrupted(&self, at: Timestamp) -> Result<Vec<Backup>, PortError> {
+        let mut cut = Vec::new();
+        for run in self.runs.lock().unwrap().iter_mut().filter(|r| r.outcome == BackupOutcome::Running) {
+            cut.push(run.clone());
+            run.outcome = BackupOutcome::Failed("interrupted".into());
+            run.finished_at = Some(at);
+        }
+        Ok(cut)
+    }
+}
+
 /// The use cases on in-memory adapters, with handles to look into them.
 pub struct TestContainers {
     pub containers: Containers,
@@ -623,6 +916,9 @@ pub struct TestContainers {
     pub storage: Arc<MemoryStorage>,
     pub jobs: Arc<MemoryJobs>,
     pub data: Arc<FakeDockerData>,
+    pub archiver: Arc<FakeArchiver>,
+    pub backups: Arc<MemoryBackups>,
+    pub notifications: Arc<zendiloos_notify::testing::MemoryNotifications>,
 }
 
 impl TestContainers {
@@ -632,6 +928,9 @@ impl TestContainers {
         let storage = Arc::new(MemoryStorage::default());
         let jobs = Arc::new(MemoryJobs::default());
         let data = Arc::new(FakeDockerData::default());
+        let archiver = Arc::new(FakeArchiver::default());
+        let backups = Arc::new(MemoryBackups::default());
+        let notifications = Arc::new(zendiloos_notify::testing::MemoryNotifications::default());
         let containers = Containers::new(ContainersPorts {
             engine: engine.clone(),
             projects: projects.clone(),
@@ -639,10 +938,14 @@ impl TestContainers {
             registries: Arc::new(FakeRegistries),
             updates: Arc::new(MemoryUpdateSettings::default()),
             data: data.clone(),
+            archiver: archiver.clone(),
+            backups: backups.clone(),
+            backup_shares: Arc::new(FakeBackupShares),
             jobs: Jobs::new(jobs.clone(), clock.clone()),
+            notifier: zendiloos_notify::Notifier::new(notifications.clone(), clock.clone()),
             audit,
             clock,
         });
-        Self { containers, engine, projects, storage, jobs, data }
+        Self { containers, engine, projects, storage, jobs, data, archiver, backups, notifications }
     }
 }

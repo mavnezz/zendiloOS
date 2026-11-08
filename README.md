@@ -39,6 +39,7 @@ hardened service that checks every request.
 - **Files and shared folders**: one explorer for personal folders, the folders on each volume and removable drives; folders shared over SMB and NFS, with permissions per person and group; previous versions from snapshots, which Windows shows too; one recycle bin; a search through all subfolders
 - **App Center**: apps from the [community catalog](https://github.com/mavnezz/zendiloOS.community.applications) and others you add, installed as Docker projects of your own that you can edit; plugins for Docker and for certificates from Let's Encrypt
 - **Docker**: containers, images, networks and your own Compose projects, a page per container with its log and a terminal, image updates, with consent for whatever reaches beyond the container
+- **Docker volumes**: listed with the containers that use them; backed up into a shared folder daily, weekly or monthly, as many kept as you like, the containers stopped meanwhile; restored under their own name or into another volume
 - **Updates**: Debian and zendiloOS in one place, signed releases from three channels (stable, test, development)
 - **Security**: two-factor sign-in, a firewall that covers Docker's published ports too, limits on failed logins, blocked addresses, sessions to end, SSH that switches itself off
 - **Notifications**: in the browser, by e-mail through one mail server and by webhook, chosen per kind

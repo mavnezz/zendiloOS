@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE docker_backup_plans SET since = ? WHERE volume = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "1ebe8dec43e98015f7e3befeaae00a0a71bb630762d66f270359d965ac373e27"
+}

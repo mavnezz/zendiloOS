@@ -22,6 +22,9 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 minisign-verify.workspace = true
+# Backups of Docker's volumes (docs/architecture.md, 4.9).
+tar.workspace = true
+zstd.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "sync"] }
 toml.workspace = true
