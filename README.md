@@ -15,7 +15,7 @@ _A NAS operating system on Debian, run from a desktop in the browser._
 [Architecture](docs/architecture.md) ·
 [Roadmap](docs/roadmap.md)
 
-<img src="docs/images/desktop.jpg" alt="The zendiloOS desktop: the storage manager with two pools, widgets with the system's state">
+<img src="docs/images/desktop.jpg" alt="The zendiloOS desktop: the file explorer in a shared folder, widgets with the system's state">
 
 </div>
 
@@ -26,23 +26,24 @@ _A NAS operating system on Debian, run from a desktop in the browser._
 
 Your files, photos and media belong on a machine you own, and keeping it
 should not take a weekend of shell sessions. zendiloOS turns a plain Debian 13
-into a NAS you run from the browser: ZFS for the data, shares for every
-device in the house, apps from a store, updates with a click. Underneath it
+into a NAS you run from the browser: ZFS for the data, shared folders for
+every device in the house, apps as Docker projects of your own, updates with
+a click. Underneath it
 stays Debian, and what it does to the system goes through one small,
 hardened service that checks every request.
 
 ## Features
 
-- **Storage on ZFS**: pools from mirrors to RAIDZ3 with guard rails, SMART and self-tests, scrubs, notifications before trouble grows
-- **Shared folders**: SMB and NFS, permissions per person and group, snapshots that Windows shows as previous versions, a recycle bin
-- **Files in the browser**: upload, download whole folders, previews, restore from snapshots
-- **App Store**: apps from the [community catalog](https://github.com/mavnezz/zendiloOS.community.applications) and others you add, each checked against one policy before it runs; folders of shares handed over safely
-- **Docker**: containers, images, networks and your own Compose projects, with consent for whatever reaches beyond the container
+- **Storage on ZFS**: pools from mirrors to RAIDZ3 with guard rails, SMART and self-tests, scrubs, snapshots
+- **Files and shared folders**: one explorer for personal folders, the folders on each volume and removable drives; folders shared over SMB and NFS, with permissions per person and group; previous versions from snapshots, which Windows shows too; one recycle bin; a search through all subfolders
+- **App Center**: apps from the [community catalog](https://github.com/mavnezz/zendiloOS.community.applications) and others you add, installed as Docker projects of your own that you can edit; plugins for Docker and for certificates from Let's Encrypt
+- **Docker**: containers, images, networks and your own Compose projects, a page per container with its log and a terminal, image updates, with consent for whatever reaches beyond the container
 - **Updates**: Debian and zendiloOS in one place, signed releases from three channels (stable, test, development)
-- **Security**: limits on failed logins, blocked addresses, sessions to end, SSH that switches itself off
+- **Security**: two-factor sign-in, a firewall that covers Docker's published ports too, limits on failed logins, blocked addresses, sessions to end, SSH that switches itself off
+- **Notifications**: in the browser, by e-mail through one mail server and by webhook, chosen per kind
 
 <div align="center">
-<img src="docs/images/apps.jpg" width="85%" alt="The App Store with the apps of the community catalog">
+<img src="docs/images/apps.jpg" width="85%" alt="The App Center with the apps of the community catalog">
 </div>
 
 ## Getting started
@@ -56,7 +57,7 @@ data, and a network connection. arm64 is planned.
 
 1. Download the [installation ISO](https://github.com/mavnezz/zendiloOS/releases/latest/download/zendiloos-amd64-netinst.iso) of the newest stable release and write it to a USB stick.
 2. Start the NAS from it and choose **Install zendiloOS**.
-3. Answer what the installer asks: language, keyboard, the machine's name, root's password and the disk for the system. Everything else is set up for you; the installer needs the network.
+3. Answer what the installer asks: language, location and keyboard, the machine's name, root's password and the disk for the system. Everything else is set up for you; the installer needs the network.
 4. After the restart the console shows the address of the web interface. Open it in a browser on your network and create the first administrator: no setup code is needed, whoever comes first sets the NAS up, so do it right away.
 
 ### Install on an existing Debian 13
@@ -72,7 +73,7 @@ is on the console and in `/var/lib/zendiloos/setup-code`.
 
 ### Update
 
-Settings → **Update & restore** looks for updates daily: Debian's packages
+Control panel → **Update & restore** looks for updates daily: Debian's packages
 and new releases of zendiloOS on the chosen channel. Installing is a click,
 and a restart only happens when you ask for it.
 
@@ -82,9 +83,9 @@ and a restart only happens when you ask for it.
 sudo apt purge zendiloos
 ```
 
-Pools, shares and their data stay where they are; so do Docker and its
-apps. The database in `/var/lib/zendiloos` is kept as well; remove it to
-start over.
+Pools, shared folders and their data stay where they are; so do Docker and
+its apps. The firewall's rules go with the package. The database in
+`/var/lib/zendiloos` is kept; remove it to start over.
 
 ## Development
 
@@ -127,10 +128,14 @@ real. The setup code is in `dev/state/setup-code`.
 just deb           # build dist/zendiloos_*.deb in a debian:trixie container
 just iso           # the installation ISO for it
 just vm create     # a Debian 13 test VM with 4 SATA and 1 NVMe disk
+just vm start      # boot it in the background
 just vm install    # install the newest package from dist/
 ```
 
-The test VM answers on https://127.0.0.1:8443. How releases are made and
+The test VM answers on https://127.0.0.1:8443. The VM tests (`just
+vm-*-test`) change and destroy things and run in a second VM:
+`ZENDILOOS_VM=2 just vm create` (then `start` and `install` the same way),
+on https://127.0.0.1:8444. How releases are made and
 signed: [docs/releases.md](docs/releases.md).
 
 ```text

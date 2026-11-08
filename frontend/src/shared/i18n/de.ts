@@ -2208,7 +2208,7 @@ const de: Messages = {
     },
     updates_failed: {
       title: 'Update fehlgeschlagen',
-      body: 'Unter Einstellungen → Aktualisieren & Wiederherstellen steht, woran es lag.',
+      body: 'Unter Systemsteuerung → Aktualisieren & Wiederherstellen steht, woran es lag.',
     },
     snapshot_failed: {
       title: 'Kein Snapshot von {share}',

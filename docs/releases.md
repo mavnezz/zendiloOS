@@ -26,7 +26,7 @@ a stable release is newer.
 ## What a release holds
 
 - `zendiloos_<version>_<arch>.deb`
-- `SHA256SUMS`: the package's checksum
+- `SHA256SUMS`: the checksums of the package and, if there is one, the ISO
 - `SHA256SUMS.minisig`: its signature, made with the release key
 - `zendiloos-amd64-netinst.iso`, for stable releases: the installation ISO
 
@@ -61,15 +61,23 @@ hand (`apt install ./zendiloos_….deb`).
 
 ## Making a release
 
-```sh
-git tag -s v1.2.0-rc.1 -m "zendiloOS 1.2.0, first release candidate"
-git push origin v1.2.0-rc.1
-```
+1. A pull request adds the release's entry to `debian/changelog`. Without
+   it a tag build only changes the version on the entry's first line and
+   keeps the previous entry's text.
+2. On its merge commit in `main`:
+
+   ```sh
+   git tag -a v1.2.0-rc.1 -m "zendiloOS 1.2.0, first release candidate"
+   git push origin v1.2.0-rc.1
+   ```
+
+   Tags `v*` cannot be moved or deleted, so check the version first.
 
 CI checks, builds the package with the tag's version, signs `SHA256SUMS`
 and creates the GitHub release (a pre-release for a tag with a `-`), with
-notes generated from the commits; edit them on GitHub as needed, they are
-what the NAS shows as the release notes. Pushes to `main` replace the
+notes generated from the pull requests. They are what the NAS shows as the
+release notes, so replace them with notes written for people:
+`gh release edit v1.2.0-rc.1 --notes-file notes.md`. Pushes to `main` replace the
 release `dev`; its notes list the changes since the last release tag (the
 newest 50 commit subjects).
 
@@ -103,8 +111,8 @@ Locally: `just iso` builds one for the newest package in `dist/`;
 checks that zendiloOS answers, takes its setup and makes a ZFS pool. A
 newer Debian point release is taken by changing `packaging/iso/netinst.env`.
 
-## The repository must be readable
+## The repository must stay public
 
-The NAS asks GitHub's API without an account. While the repository is
-private, it answers 404 and the NAS shows that zendiloOS's releases could
-not be fetched; Debian's updates work all the same.
+The NAS asks GitHub's API without an account. A private repository answers
+404, and the NAS shows that zendiloOS's releases could not be fetched;
+Debian's updates work all the same.

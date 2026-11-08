@@ -36,20 +36,22 @@ zendiloosd          user "zendiloos", no capabilities, never root
 zendiloos-agent     root, socket-activated, no network, closed set of operations
    │  execve of fixed paths │ atomic files at fixed locations │ systemd via D-Bus │ Docker socket
    v
-zpool · zfs · sgdisk · wipefs · smartctl · nvme · useradd · smbpasswd · …
+zpool · zfs · sgdisk · wipefs · smartctl · useradd · smbpasswd · docker · nft · …
 ```
 
 | Process | Runs as | Responsibility | Network |
 |---|---|---|---|
 | nginx | `www-data` | TLS, static files, rate limiting, proxying | yes (80/443) |
-| `zendiloosd` | `zendiloos` | API, authentication, business logic, database, live data | Unix socket only |
+| `zendiloosd` | `zendiloos` | API, authentication, business logic, database, live data | listens on a Unix socket only; connects out for updates, app catalogs, mail and webhooks |
 | `zendiloos-agent` | `root` | privileged, validated single operations | none (`PrivateNetwork`) |
 
 ### 1.2 Two Deployment Modes, One Set of Packages
 
-1. **Packages on an existing Debian 13** (phases 1–4): the `.deb` packages
-   are installed on an existing system, at first in a test VM.
-2. **Appliance from an ISO** (phase 5): the same packages, preinstalled in a
+1. **Packages on Debian 13** (phases 1–4): the `.deb` package is installed
+   on an existing system, or with the installation ISO (`just iso`):
+   Debian 13's netinst image with preseeded answers, the package installed
+   at the end (6).
+2. **Appliance image** (phase 5): the same packages, preinstalled in a
    system image with its own installer and update mechanism.
 
 This leads to a ground rule that applies from day one:
@@ -75,13 +77,22 @@ The Debian package `zendiloos` (built with `just deb`) installs:
 | `/usr/libexec/zendiloos/zendiloos-agent` | privileged agent, root, started on demand |
 | `/usr/share/zendiloos/webui/` | built web interface, served by nginx |
 | `/etc/zendiloos/zendiloosd.toml`, `agent.toml` | static configuration (conffiles, defaults commented out) |
-| `/etc/zendiloos/tls/` | self-signed certificate, created at installation or first boot (`zendiloos-certificate.service`) |
-| `/etc/nginx/conf.d/zendiloos.conf` | HTTP → HTTPS redirect, TLS, security headers, rate limits, proxy to the API socket |
+| `/etc/zendiloos/tls/` | self-signed certificate, created at installation or first boot by `/usr/libexec/zendiloos/make-certificate` (`zendiloos-certificate.service`) |
+| `/etc/nginx/conf.d/zendiloos.conf` | static files, security headers, rate limits, proxy to the API socket; includes the files below for the HTTP server, the ports, the certificate and the TLS version |
+| `/etc/zendiloos/web/` | `http.conf` (plain HTTP: a redirect to HTTPS that answers HTTP challenges, or none) and `https.conf` (ports and certificate), as set on the control panel's *Web interface* page; issued certificates in `certificates/` (4.11). Defaults written at installation, then by the agent |
+| `/etc/zendiloos/nginx/tls.conf` | the oldest TLS version (`ssl_protocols`), written at installation, then by the agent |
+| `/etc/nfs.conf.d/zendiloos.conf` | fixed ports for NFSv3's helpers (mountd, statd, lockd), so the firewall can name them |
+| `/etc/zendiloos/firewall/zendiloos.nft` | the firewall's rules, written by the agent once the firewall is on; `zendiloos-firewall.service` loads them with `nft` before the network comes up (4.12) |
+| `/etc/zendiloos/apps/`, `/etc/zendiloos/projects/` | what the agent checked and runs, root's alone: apps installed the earlier way and administrators' Compose projects (4.9) |
+| `/etc/zendiloos/id-high-water` | the highest UID and GID the agent ever handed out (4.2) |
+| `/var/lib/zendiloos-acme/` | acme.sh's accounts, certificates and files for HTTP challenges, owned by the system user `zendiloos-acme`; a DNS provider's credentials only while it runs, in `/run/zendiloos-acme/` (4.11) |
+| `/run/zendiloos-removable/` | the places removable drives are mounted at, a folder each, named by the UUID of their file system |
+| `zendiloos-nfs-flush.service` | releases a share's NFS exports in the host's network namespace (3.3) |
 | `/run/zendiloos/api.sock` | `zendiloosd.socket`, `zendiloos:www-data 0660`: only nginx reaches the API |
 | `/run/zendiloos/agent.sock` | `zendiloos-agent.socket`, `root:zendiloos 0660`: only zendiloosd reaches the system agent |
 | `/run/zendiloos/files.sock` | `zendiloos-files.socket`, `root:zendiloos 0660`: the files agent, the same program with `--role files` |
 | `/etc/samba/smb.conf` | installed from `/usr/share/zendiloos/smb.conf` only if it is Debian's unchanged default (kept as `smb.conf.debian`); it includes `/etc/samba/zendiloos.conf`, which the agent writes |
-| `/var/lib/zendiloos/` | database, backups, setup code or the marker of an open setup (`setup-open`), console text (`0700`) |
+| `/var/lib/zendiloos/` | database, backups, downloaded releases (`updates/`), setup code or the marker of an open setup (`setup-open`) (`0700`) |
 | `/run/issue.d/zendiloos.issue` | the console text, written by the agent from its own template (0600): the login prompt shows the address and, until setup is done, the setup code, or for an open setup that the first administrator is created in the browser. zendiloosd only names the code; nothing it controls is read by agetty |
 
 `zendiloosd` uses `Type=notify` and is ordered before `getty.target`, so the
@@ -122,25 +133,25 @@ tests in `zendiloos-architecture` catch, as part of `cargo test`.
 
 | Concept | In Zendiloos |
 |---|---|
-| Bounded context | one core crate each: `identity`, `system`, `storage`, `sharing`, `apps`, `containers`, `updates`, `network`, `certificates` |
+| Bounded context | one core crate each: `identity`, `system`, `storage`, `sharing`, `apps`, `containers`, `updates`, `network`, `certificates`, `firewall` |
 | Domain layer | entities, value objects, aggregates, domain rules and errors; pure Rust, no I/O |
 | Application layer | use cases (commands and queries) and the **ports** they need, as traits |
 | Primary (driving) adapter | `zendiloos-api`: HTTP and WebSocket |
-| Secondary (driven) adapters | `zendiloos-infra`: SQLite repositories, agent gateways, host probes (`sysinfo`, `/proc`, journal) |
+| Secondary (driven) adapters | `zendiloos-infra`: SQLite repositories, agent gateways, host probes (`sysinfo`, `/proc`, journal), HTTP and mail clients (GitHub, app catalogs, webhooks, SMTP) |
 | Shared kernel | `zendiloos-kernel`: IDs, validated names, `Secret`, time, common port errors |
 | Composition root | `zendiloosd`: reads the configuration and plugs adapters into ports |
 
 | Crate | Role | May depend on (internal) |
 |---|---|---|
 | `zendiloos-kernel` | shared kernel: time, `Secret`, request context, the audit entry and its port, what runs in the background (`RunningWork`), common port errors | – |
-| `zendiloos-identity` | accounts and groups with their Linux users and groups, roles and permissions, sessions, passwords, throttling, audit | kernel |
-| `zendiloos-system` | system information, metrics, power, logs | kernel |
-| `zendiloos-storage` | disks, SMART, ZFS pools and volumes, plans for erasing disks, monitoring; mdadm arrays read-only | kernel, jobs, notify |
+| `zendiloos-identity` | accounts and groups with their Linux users and groups, roles and permissions, sessions, passwords, two-factor sign-in (TOTP, recovery codes), throttling, audit | kernel |
+| `zendiloos-system` | system information, metrics, power, logs, the SSH server, time and time zone, the web interface's oldest TLS version | kernel |
+| `zendiloos-storage` | disks, SMART and its self-tests, ZFS pools and volumes, removable drives, plans for erasing disks, monitoring; mdadm arrays read-only | kernel, jobs, notify |
 | `zendiloos-sharing` | SMB and NFS shares, share permissions, and the file manager (share contents as the signed-in user) | kernel, jobs, notify |
 | `zendiloos-apps` | app catalogs and their sources, their apps filled in as templates of administrators' projects, apps installed the earlier way (4.9) | kernel, jobs |
 | `zendiloos-containers` | the Docker engine as administrators see it: containers, images, networks, Compose projects (administrators' own with their file in a share), use over time, newer images on a schedule, moving Docker's data (4.9) | kernel, jobs |
 | `zendiloos-updates` | updates of the NAS: Debian's packages and zendiloOS's releases from GitHub by channel, checked daily, installed on request (4.10) | kernel, notify |
-| `zendiloos-network` | interfaces, addresses, default routes, name servers (read-only until M6); later IP configuration, DNS, hostname | kernel |
+| `zendiloos-network` | interfaces, addresses, default routes, name servers; an interface's IP settings and name servers through systemd-networkd, changed with confirmation (6); later the hostname | kernel |
 | `zendiloos-certificates` | the ACME client plugin (acme.sh): accounts, challenges and certificates from Let's Encrypt, renewed daily; the web interface's ports and certificate, changed with confirmation (4.11) | kernel, jobs, notify |
 | `zendiloos-firewall` | the firewall: one ordered list of rules (interface, service or ports, source, allow or deny) and what happens when none matches, enforced by nftables for the NAS and the ports Docker publishes, changed with confirmation; services nobody reaches, told (4.12) | kernel, notify |
 | `zendiloos-infra` | all secondary adapters, SQLite migrations | kernel, jobs, notify, contexts, agent-proto, exec; in tests also sim |
@@ -169,8 +180,9 @@ placeholder crates.
                v         v            v           v
       bounded contexts (core)      zendiloos-agent-proto <── zendiloos-agent ──> zendiloos-exec
       identity · system · storage          │                  (root)
-      sharing · apps                       │
-      network                              │
+      sharing · apps · containers          │
+      updates · network                    │
+      certificates · firewall              │
                │                           │
                └─────────────┬─────────────┘
                              v
@@ -213,8 +225,8 @@ zendiloos-storage/src/
 │   ├── disk.rs
 │   └── pool.rs
 └── application/
-    ├── ports.rs       traits the context needs: PoolRepository, DiskInventory, …
-    ├── commands/      use cases that change state, through the domain: CreatePool, …
+    ├── ports.rs       traits the context needs: BlockDeviceSource, ZfsSource, PoolAdmin, …
+    ├── commands.rs    use cases that change state, through the domain: CreatePool, …
     └── queries/       use cases that read: ListDisks, GetSmartReport, …
 ```
 
@@ -228,8 +240,11 @@ Deliberate simplifications:
   and use every layer. `system` is mostly a pass-through and stays thin.
 - **Async ports** are traits with `#[async_trait]`, held as `Arc<dyn Port>`.
   Rust does not yet allow `dyn` traits with native `async fn`.
-- **Domain events** (for example `ShareCreated` → regenerate the Samba
-  configuration) are published in-process through a port; no broker.
+- **No event bus.** A use case applies its own changes through its ports
+  (a share's Samba configuration through `ShareHost`). A context whose
+  changes another must follow declares an observer port (Identity's
+  `GroupObserver`), which `zendiloos-infra` bridges to the context that
+  follows (Sharing); no broker.
 
 **Alternatives considered:**
 
@@ -248,7 +263,7 @@ Deliberate simplifications:
 | Client state | Pinia | windows, session, notifications; language and theme as kept with the account, with a copy in the browser for the sign-in page |
 | Server state | `@tanstack/vue-query` | caching, invalidation, loading and error states; avoids rebuilding this in every Pinia store |
 | API types | `openapi-typescript` + `openapi-fetch`, generated from utoipa | one source of truth, no drift between Rust and TypeScript |
-| Routing | Vue Router: `/setup`, `/login`, `/` (desktop) | apps are opened through the window store, not through URLs |
+| Routing | Vue Router: `/setup`, `/login`, `/password` (a password change the account must make first), `/` (desktop) | apps are opened through the window store, not through URLs |
 | i18n | vue-i18n; English first (the default and the source of all texts), German as a second language chosen in the settings | retrofitting internationalization is expensive |
 | Icons | lucide-vue-next | matches shadcn-vue |
 | Tests | Vitest with Vue Test Utils, later Playwright for end-to-end tests | |
@@ -257,32 +272,37 @@ Deliberate simplifications:
 ```text
 frontend/src/
 ├── main.ts
-├── app/                  composition root: App.vue, router, guards, plugins
+├── app/                  composition root: App.vue, router with its guards, navigation
 ├── desktop/              shell
 │   ├── windowManager.ts  pure logic (open, focus, minimize, move, resize,
 │   │                     clamp geometry), unit tested with Vitest
-│   ├── windows.store.ts  Pinia store around windowManager, layout in localStorage
-│   ├── apps.ts           app registry: id, title, icon, window size, permission,
-│   │                     lazily loaded component or sections
-│   ├── Desktop.vue · Taskbar.vue · Launcher.vue · AppWindow.vue
-│   └── NotificationCenter.vue
-├── features/             one module per backend bounded context
-│   ├── auth/  system/  storage/  shares/  files/  users/  containers/  network/
+│   ├── windows.ts        Pinia store around windowManager, layout in localStorage
+│   ├── apps.ts           app registry: id, icon, window size, permission,
+│   │                     lazily loaded component or sections; the control panel's pages
+│   ├── apps/             the explorer's and the control panel's windows, and the
+│   │                     control panel's own pages (appearance, language, update)
+│   ├── DesktopShell.vue · DesktopDock.vue · AppLauncher.vue · AppWindow.vue
+│   └── NotificationCenter.vue · ToastStack.vue · UserMenu.vue
+├── features/             one module per area, handing pages to the desktop
+│   ├── accounts/  apps/  auth/  channels/  docker/  files/
+│   ├── logs/  network/  security/  storage/  system/  updates/
 │   │   ├── api.ts        query/mutation composables (vue-query)
-│   │   ├── model.ts      types and pure logic
+│   │   ├── lib/          pure logic, unit tested (where a feature has any)
 │   │   └── components/   components and pages
 └── shared/
     ├── api/              fetch client (CSRF, error format), WebSocket client, generated schema
     ├── ui/               shadcn-vue components, own building blocks (meter, sparkline, confirm dialog)
+    ├── jobs/  notices/  preferences/   Pinia stores the features share
     ├── lib/              formatting, helpers
+    ├── styles/           global CSS
     └── i18n/             translations
 ```
 
 - Features do not import from each other, only from `shared/`.
   `desktop/apps.ts` composes feature pages into apps; features know nothing
-  about windows. Enforced with an ESLint rule (`import/no-restricted-paths`).
+  about windows. Enforced with an ESLint rule (`import-x/no-restricted-paths`).
 - The desktop's apps are the file explorer, the App Center, Docker and the
-  control panel. Storage (overview, volumes, pools, disks), the resource
+  control panel. Storage (overview, pools, disks), the resource
   monitor and the logs (system log, audit log) are pages of the control
   panel, in its groups *Storage* and *Monitoring*, each shown to the
   accounts with the permission it needs (`storage.view`, `system.view`,
@@ -316,21 +336,26 @@ frontend/src/
   image pulls) answer `202 Accepted` with a job ID. Progress arrives over the
   WebSocket; jobs are also stored in the database so a restart can mark them
   as interrupted.
-- **One WebSocket per browser tab** (`/api/v1/ws`) with topic subscriptions
-  instead of one connection per data stream:
+- **One WebSocket per browser tab** (`/api/v1/ws`) for live data, with
+  topic subscriptions (`metrics`, `jobs`, `notifications`) instead of one
+  connection per data stream. A subscription to `metrics` gets the latest
+  sample at once; `jobs` brings the whole job at every change:
 
   ```json
   → {"type":"subscribe","topic":"metrics"}
-  ← {"type":"event","topic":"metrics","data":{…}}
-  ← {"type":"event","topic":"jobs","data":{"id":"…","progress":0.42}}
-  ← {"type":"event","topic":"notifications","data":{…}}
+  ← {"type":"metrics","data":{…}}
+  ← {"type":"job","data":{"id":12,"kind":"storage.create_pool","state":"running","step":"creating_pool","progress":0.42,…}}
+  ← {"type":"notification","data":{…}}
+  → {"type":"unsubscribe","topic":"metrics"}
+  ← {"type":"error","message":"…"}
   ```
 
   A single sampler task produces metrics (every 2 s) and distributes them
   through `tokio::sync::broadcast`/`watch`; the load does not depend on the
-  number of open browsers.
+  number of open browsers. A terminal in a container uses a WebSocket of
+  its own (`/api/v1/docker/containers/{id}/terminal`).
 - In production `zendiloosd` listens on `/run/zendiloos/api.sock`, during
-  development on `127.0.0.1:8080` (Vite proxies to it).
+  development on `127.0.0.1:8780` (`just dev`; Vite proxies to it).
 
 ### 3.2 zendiloosd ↔ zendiloos-agent
 
@@ -338,11 +363,11 @@ frontend/src/
 |---|---|
 | Transport | Unix sockets created by systemd (`root:zendiloos 0660`), agents socket-activated: `/run/zendiloos/agent.sock` for the system agent (disks, ZFS, accounts, server configuration), `/run/zendiloos/files.sock` for the files agent (share contents); each refuses the other's requests |
 | Authentication | file permissions + `SO_PEERCRED`: only the UID of `zendiloos` is served |
-| Framing | one request per connection; JSON lines (NDJSON); size limits (requests 2 MiB, responses 16 MiB); before the answer of a long operation, any number of `progress` lines with the step it is at (`creating_pool`) and how far in percent, which become the job's step in zendiloosd and are named in the interface |
+| Framing | one request per connection; JSON lines (NDJSON); size limits (requests 2 MiB, responses 16 MiB); before the answer of a long operation, any number of `progress` lines with the step it is at (`creating_pool`) and how far in percent, which become the job's step in zendiloosd and are named in the interface, and `output` lines a program it runs wrote (Docker Compose's "Container x Recreated"), for a person to follow |
 | Operations | closed `enum Request` with typed arguments validated during deserialization; `deny_unknown_fields` |
-| Responses | a single response; **[Later]** a stream of frames (progress, logs) ending with a result |
+| Responses | one answer, after any number of `progress` and `output` lines |
 | Files | for downloads and uploads the files agent passes the opened file's descriptor via `SCM_RIGHTS`, attached to the response line (see 4.4) |
-| Version | `proto_version` handshake field; API and agent ship from the same package version, a mismatch is rejected |
+| Version | every request carries the protocol `version`; another one is refused. `hello` answers with the agent's protocol version and package version; API and agent ship from the same package |
 | Traceability | every operation carries a request ID that appears in the API's audit log and in the agent's journal |
 | Limits | timeout per operation, bounded concurrency, destructive storage operations serialized |
 
@@ -356,14 +381,19 @@ simple to audit.
 
 - **Programs** only through `zendiloos-exec`: absolute paths from a fixed
   list in the agent configuration, no shell, arguments as a list, empty
-  environment, no stdin except for secrets (passwords never on the command
-  line), timeout, output limit (output over it ends the program at once;
-  what it says on stderr past its limit is read and dropped, so it never
-  waits on its pipe), each in a process group of its own, killed whole on a
-  timeout. Currently: `systemctl`, `lsblk`, `smartctl`,
-  `zpool`, `zfs`, `sgdisk`, `wipefs`, `udevadm`, `useradd`, `userdel`,
-  `groupadd`, `groupdel`, `gpasswd`, `smbpasswd`, `testparm`, `exportfs`,
-  `setfacl`.
+  environment unless the caller names variables and a directory (Docker
+  Compose reads its values from there), no stdin except for secrets
+  (passwords never on the command line), timeout, output limit (output
+  over it ends the program at once; what it says on stderr past its limit
+  is read and dropped, so it never waits on its pipe), each in a process
+  group of its own, killed whole on a timeout. A terminal in a container
+  (`docker exec` through `setsid`) differs: it reads what is typed and has
+  no timeout. Currently: `systemctl`, `systemd-run`,
+  `systemd-mount`, `busctl`, `timedatectl`, `lsblk`, `smartctl`, `zpool`,
+  `zfs`, `sgdisk`, `wipefs`, `udevadm`, `umount`, `rmdir`, `rm`,
+  `useradd`, `userdel`, `groupadd`, `groupdel`, `gpasswd`, `smbpasswd`,
+  `testparm`, `exportfs`, `setfacl`, `sshd`, `docker`, `dockerd`,
+  `setsid`, `openssl`, `nginx`, `nft`.
 - **Reads** of fixed files where no program is needed: `/proc/mdstat`.
   Although it is world-readable, the agent provides it, so that all storage
   state comes from one place and the simulation can provide all of it
@@ -371,18 +401,26 @@ simple to audit.
 - **Files** only at fixed locations known to the agent code, written
   atomically (temporary file, `fsync`, `rename`), for example
   `/etc/samba/zendiloos.conf`, `/etc/exports.d/zendiloos.exports`,
-  `/etc/systemd/network/50-zendiloos-*.network`.
+  `/etc/systemd/network/05-zendiloos-<interface>.network`.
 - **Mounts** through generated systemd mount units that the agent asks
   systemd to start. The mount then lives in the host's namespace (the
   hardened agent has its own), dependencies on Samba/NFS are explicit, and
-  mounting at boot needs no `fstab` edits.
-- **systemd** through `systemctl` with fixed arguments (`reboot`,
-  `poweroff`, reloading `smbd` and `nfs-server`). What has to happen in the
-  host's network namespace runs as a unit of the package: the kernel's NFS
-  server keeps its export cache per namespace, so releasing a share's
+  mounting at boot needs no `fstab` edits. Removable drives get transient
+  mount units (`systemd-mount`), bound to their device and gone at the
+  next boot.
+- **systemd** through `systemctl` with fixed arguments: `reboot` and
+  `poweroff`, and enabling, starting, stopping and reloading the services
+  zendiloOS manages (`smbd`, `nfs-server`, `wsdd2`, `avahi-daemon`, `ssh`,
+  `docker`, `nginx`, `systemd-timesyncd`, `zendiloos-firewall`). What has
+  to run outside the agent's sandbox runs as a unit: transient ones through
+  `systemd-run` (apt, acme.sh, `nginx -t`, `nft -c`) and `systemd-mount`
+  (removable drives), or a unit of the package. The kernel's NFS server
+  keeps its export cache per network namespace, so releasing a share's
   exports before unmounting it starts `zendiloos-nfs-flush.service`
-  (`exportfs -r`, `exportfs -f`). **[Later]** D-Bus (zbus) once operations need more than
-  queueing a job, such as following a unit's state.
+  (`exportfs -r`, `exportfs -f`). D-Bus is reached through `busctl`
+  (systemd-networkd's `Reload` and `ReconfigureLink`) and `timedatectl`.
+  **[Later]** zbus once operations need more, such as following a unit's
+  state.
 - **Interpretation happens unprivileged.** The agent returns raw tool output;
   parsing happens in `zendiloosd`. Exceptions are safety checks the agent
   must make itself (is this device the system disk? is it mounted?); for
@@ -443,12 +481,14 @@ separate account.
   existing Debian system, system accounts and the owner's own user (UID 1000)
   stay untouched. "Managed" means: a user with a UID from 2000 to 59999
   whose primary group is `zendiloos-users`, or a group with a GID in that
-  range. Names the system already uses are refused (`name_taken`).
+  range. An app's account (`app-<id>`, with a group of its own) is
+  neither: only the app's own requests touch it (4.9). Names the system
+  already uses are refused (`name_taken`).
 - Groups are Linux groups as well; the agent sets their members.
 - Order of changes: the host first (where failures are most likely), then
   the database. A failed creation removes the Linux user or group again.
 - Administrators cannot change their own role or access, delete
-  themselves or reset their own password here (they use their settings),
+  themselves or reset their own password here (they use the account menu),
   and at least one enabled administrator always remains. Changes to
   accounts and groups are serialized in `zendiloosd`, so these checks cannot
   be raced.
@@ -488,13 +528,14 @@ bundle permissions, so the model can change in one place.
 | `account.self` (own password, sessions, preferences) | ✓ | ✓ | ✓ |
 
 The frontend hides apps the user lacks the permission for; that is a
-convenience. Enforcement happens only in the backend (axum extractor
-`RequirePermission<P>`).
+convenience. Enforcement happens only in the backend: the axum extractor
+`Auth` gives the signed-in account, and the handler calls
+`auth.require(Permission::…)`.
 
 Everybody sees their own jobs (file transfers, deletions); those with
 `storage.view` see all jobs, with what tools reported, and the
-notifications, which are about pools, disks and shares. The WebSocket
-topics `jobs` and `notifications` apply the same rules.
+notifications (storage, folders, updates, certificates, the firewall).
+The WebSocket topics `jobs` and `notifications` apply the same rules.
 
 Notifications also go out on channels administrators (`system.manage`)
 set up, so that a failing disk is noticed without the interface open.
@@ -517,8 +558,9 @@ set up, so that a failing disk is noticed without the interface open.
 - **Routes.** Notifications come in kinds (`zendiloos_notify::routes::KINDS`),
   each a code, except a data check that found errors (`scrub_finished`
   as a warning or error), which is `scrub_errors`; grouped as storage,
-  folders, system and certificates (the ACME client's automatic renewals,
-  4.11), each with the most serious level it is raised at
+  folders, system, certificates (the ACME client's automatic renewals,
+  4.11) and security (a service the firewall blocks from everywhere,
+  4.12), each with the most serious level it is raised at
   (a degraded pool is a warning, a faulted one an error: `pool_trouble`
   is an error kind). Per kind, administrators
   tick whether it is kept in zendiloOS and on which channels it goes out
@@ -770,15 +812,16 @@ TLS is rustls with ring and the system's certificate authorities
   filters what is shown at once; in a folder, the NAS then looks through
   everything below it (see Search above), and what it found takes its
   place, each entry with the folder it is in and "Open its folder", which
-  goes there with the entry chosen; Escape or "Clear the search" goes back. The toolbar and the context menu (a right click, or a
-  long press on a touch screen, on an entry, on empty space or on a node of
-  the tree) offer the same actions, from one list that says which belong
-  where the explorer is and which the choice allows: open, download, new
-  folder, upload, cut, copy, paste, rename, delete, restore and empty the
-  recycle bin, copy back from a snapshot, favourites, and for a folder
-  directly on a volume share on the network or stop, previous versions
-  (snapshots looked into, and for those who manage shares taken, deleted
-  and rolled back) and properties (general, permissions, sharing, NFS). Keys
+  goes there with the entry chosen; Escape or "Clear the search" goes back.
+  The context menu (a right click, or a long press on a touch screen, on an
+  entry, on empty space or on a node of the tree) offers the actions; there
+  is no toolbar. One list says which belong where the explorer is and which
+  the choice allows: open, download, new folder, upload, cut, copy, paste,
+  rename, delete, restore and empty the recycle bin, copy back from a
+  snapshot, favourites, for a folder directly on a volume share on the
+  network or stop, previous versions (snapshots looked into, and for those
+  who manage shares taken, deleted and rolled back), eject and mount a
+  drive, and properties (general, permissions, sharing, NFS). Keys
   do the same (Del, F2, Ctrl+C/X/V/A, Enter, Backspace and Alt+arrows);
   entries dragged onto a folder move (Ctrl copies), files dragged from the
   computer upload. The volumes come from `GET /files/volumes`: someone who
@@ -799,9 +842,10 @@ TLS is rustls with ring and the system's certificate authorities
   shared). `zendiloosd` lets only someone who manages storage name a drive,
   and only one the disks show mounted at its place now (the Storage
   context's `RemovableDrives::mounted`, through a port of the Sharing
-  context); write-protected, it is read only. "Eject" (toolbar, and the
-  drive's context menu in the tree) unmounts and powers it off, saying so
-  when files on it are still open (`drive_in_use`); an ejected drive, or
+  context); write-protected, it is read only. "Eject" (the context menu of
+  the drive in the tree, or of empty space in it) unmounts and powers it
+  off, saying so when files on it are still open (`drive_in_use`); an
+  ejected drive, or
   one that could not be mounted (its reason shown), offers "Mount". A
   drive ejected or pulled out while looked into sends the explorer back
   to where it starts.
@@ -812,7 +856,7 @@ TLS is rustls with ring and the system's certificate authorities
 - Alternative: the file manager runs with broad rights and checks ACLs
   itself. Simpler, but every gap in the checks becomes a data leak, and new
   files belong to the service account.
-- NFS (v4 with `sec=sys`) trusts the client's UID. Exports are therefore
+- NFS (v3 and v4, `sec=sys`) trusts the client's UID. Exports are therefore
   restricted to the computers each rule names, and the interface states
   the risk. A rule names an IP address or network, a host name or a
   pattern with `*` and `?` as `exportfs` reads them (`*.example.com`;
@@ -838,8 +882,12 @@ TLS is rustls with ring and the system's certificate authorities
 ### 4.5 Login, Sessions, CSRF
 
 - Passwords: Argon2id (19 MiB, 2 passes). At least 10 characters, at most
-  1024 bytes, must not contain the account name; no composition rules.
-  **[Later]** check against a list of common passwords. Unknown account
+  1024 bytes, no control characters, not one of the most common passwords,
+  and not containing the account name (a name of four characters or more;
+  a shorter one only as the whole password). On the accounts page an
+  administrator may require more: a longer minimum (up to 64), upper and
+  lower case, a digit, a symbol, and a change after 30 to 730 days, asked
+  for at the next login. Unknown account
   names cost as much time as wrong passwords, so response times do not
   reveal which accounts exist.
 - Sessions: 256-bit random token in a cookie (`HttpOnly`, `SameSite=Strict`,
@@ -858,10 +906,11 @@ TLS is rustls with ring and the system's certificate authorities
   logins come from the audit log.
 - CSRF: per-session token in the `X-CSRF-Token` header on every
   state-changing request, compared in constant time. In addition,
-  `Sec-Fetch-Site` must be `same-origin` and `Origin` must match `Host` when
-  the browser sends them; login and setup check this too, so a foreign page
-  cannot sign a victim into an attacker's account. The WebSocket upgrade
-  will get the same checks.
+  `Sec-Fetch-Site` must be `same-origin` or `none` and `Origin` must match
+  `Host` when the browser sends them; login and setup check this too, so a
+  foreign page cannot sign a victim into an attacker's account. WebSocket
+  upgrades (`/api/v1/ws`, a container's terminal) are GETs without a CSRF
+  token; they get the `Sec-Fetch-Site` and `Origin` checks.
 - Throttling in the backend, in memory: 20 failures per address within 15
   minutes, and the account lock as set under Security (5 failures within 15
   minutes by default, or off), for passwords and setup codes alike. An
@@ -1006,11 +1055,13 @@ TLS is rustls with ring and the system's certificate authorities
 - systemd hardening: `PrivateNetwork`, `ProtectSystem=strict` with explicit
   `ReadWritePaths`, `ProtectHome`, `CapabilityBoundingSet` limited to what
   is needed, `SystemCallFilter`, `NoNewPrivileges` where possible. New
-  operations extend this deliberately. As of M3: capabilities
-  `CAP_SYS_RAWIO` and `CAP_SYS_ADMIN` (SMART through SG_IO and NVMe admin
-  commands, partition tables, ZFS ioctls) and `CAP_CHOWN` (the shadow
-  tools); devices closed except SATA/SAS/USB, NVMe and virtio disks and
-  `/dev/zfs`; writable only `/etc` and Samba's state directories.
+  operations extend this deliberately. The system agent has the
+  capabilities `CAP_SYS_RAWIO` and `CAP_SYS_ADMIN` (SMART through SG_IO and
+  NVMe admin commands, partition tables, ZFS ioctls), `CAP_CHOWN` (the
+  shadow tools) and `CAP_DAC_READ_SEARCH` (the folders apps mount); devices
+  closed except SATA/SAS/USB and virtio disks, NVMe (read only) and
+  `/dev/zfs`; writable only `/etc`, Samba's and NFS's state directories,
+  `/run/issue.d` and `/run/zendiloos-acme`.
 - The files agent (`zendiloos-files.service`, the same program with
   `--role files`) serves only requests about share contents. It may write
   below the volumes and act as a user, but touches no disk, no system
@@ -1117,11 +1168,11 @@ below). Apps installed before it worked so keep running as they were.
 (`docs/format.md` there): per app a manifest (`app.yaml`), a Compose file
 and an icon, published as one `index.json`. The community catalog
 (`https://mavnezz.github.io/zendiloOS.community.applications/v1/index.json`)
-is built in and cannot be removed. Administrators add more, as with HACS:
-a GitHub repository (`github.com/<owner>/<repo>`, read as
+is built in and cannot be removed. Administrators add more: a GitHub
+repository (`github.com/<owner>/<repo>`, read as
 `https://<owner>.github.io/<repo>/v1/index.json`) or the https address of
 an index in the same format. Adding one is confirmed after a warning, and
-its apps carry "not from the zendiloOS catalog". `zendiloosd` fetches
+its apps say they are not from the zendiloOS community catalog. `zendiloosd` fetches
 indexes over https (redirects only to https, a size limit, a timeout) and
 checks every entry with the catalog's own checks before showing it; an
 entry that fails is left out, not repaired. Icons are cached, checked to be
@@ -1301,7 +1352,7 @@ be deleted meanwhile, Docker's data root still being there. Containers that
 restart by themselves start again. The apps' datasets stay where they are.
 
 **Docker's own data** (images, layers, containers) lives on a pool, not on
-the system disk: turning apps on creates the dataset
+the system disk: setting up the App Center's Docker plugin creates the dataset
 `<pool>/zendiloos.docker` (the dot keeps it from ever being a share),
 mounted by its own unit at `/volume<N>/@docker`; a drop-in
 (`RequiresMountsFor`) keeps Docker from starting without it, so it never
@@ -1309,7 +1360,7 @@ writes into the empty folder beneath; and the agent sets `data-root` and
 the `overlay2` driver in `/etc/docker/daemon.json`, keeping whatever else is
 there. `overlay2` runs on OpenZFS 2.3 with native overlay diffs, without
 the dataset per image layer of Docker's `zfs` driver. Docker comes from
-Debian (`docker.io`, `docker-compose`, recommended by the package); its
+Debian (`docker.io`, `docker-compose`, suggested by the package); its
 data from before stays where it was, unused. Verified in the second test
 VM, across a restart.
 
@@ -1417,10 +1468,10 @@ the upgrade would wait for that, for hours maybe. The
 record is one file, which the next check replaces: so before a check or an
 update starts, zendiloosd says how the last update went (once) and keeps
 that run in its database, where the page still finds it. Tasks
-are fixed: install Docker (`docker.io`, `docker-compose`, for the App
-Store's own item), check (lists fetched, then `apt-get --simulate upgrade`
-parsed into packages, security updates marked by Debian's security archive)
-and update.
+are fixed: install Docker (`docker.io`, `docker-compose`) and the ACME
+client (`acme.sh`), the App Center's plugins; check (lists fetched, then
+`apt-get --simulate upgrade` parsed into packages, security updates marked
+by Debian's security archive); and update.
 
 **Releases.** zendiloosd reads the repository's releases from GitHub's API
 (`[updates]` in `zendiloosd.toml`): the package for this machine
@@ -1453,15 +1504,16 @@ Settings, the last check and what was said live in the database
 (`system_update_settings`, `system_update_state`). Verified in the second
 test VM (`scripts/vm-update-test.sh`): a check, zendiloOS updating itself to
 a release signed with a test key and coming back with the new version, a
-changed package and an older release refused; Docker installed from the
-store (`scripts/vm-docker-install-test.sh`).
+changed package and an older release refused; Docker installed as the
+App Center's plugin (`scripts/vm-docker-install-test.sh`).
 
 ### 4.11 Certificates and the web interface
 
 **The ACME client is a plugin** of the App Center, beside Docker: acme.sh
 from Debian, installed by the package runner (task `install-acme`, as
 Docker's) when an administrator asks. Its context, `zendiloos-certificates`,
-keeps three things in the database (migration 0032): **accounts** at an ACME
+keeps three things in the database (migration 0033, which also holds the
+web interface's settings in `web_server`): **accounts** at an ACME
 server (Let's Encrypt, or its staging server for trying out) with a contact
 address; **challenges**, how the server is shown a name is ours: DNS-01
 through a DNS provider's API (a curated list of acme.sh's `dnsapi` scripts
@@ -1470,8 +1522,8 @@ Gandi, Porkbun, Route 53, Hurricane Electric, Duck DNS, dynv6), or HTTP-01
 through a file nginx serves on port 80; and **certificates**: names (a
 wildcard only with DNS), key (ECDSA P-256 by default, RSA 2048 or 4096),
 account, challenge, whether it renews itself, and what came of the last try
-with acme.sh's lines. A provider's secret values are stored like a
-notification channel's passwords and never sent back: the interface shows
+with acme.sh's lines. A provider's secret values are stored like the mail
+server's password and never sent back: the interface shows
 that one is set, and an empty field keeps it.
 
 **acme.sh never runs as root, and never in the agent's sandbox.** It needs
@@ -1592,20 +1644,20 @@ the interface and the agent deal with a single tool chain (`zpool`, `zfs`).
 |---|---|
 | Disk | detected with `lsblk --json`, identified by serial number and `/dev/disk/by-id`, never by `sdX` |
 | Disk preparation | GPT with one partition of the type OpenZFS uses, from 1 MiB to 128 MiB before the end; the reserve lets a slightly smaller disk of the same nominal size replace a member |
-| Pool | one zpool with one vdev: single disk, mirror (2 or more disks), RAIDZ1 (3+), RAIDZ2 (4+), RAIDZ3 (5+); `ashift=12`; members referenced by `/dev/disk/by-partuuid` |
+| Pool | one zpool with one vdev: single disk, mirror (2 or more disks), RAIDZ1 (3+), RAIDZ2 (4+), RAIDZ3 (5+); `ashift=12`; members referenced by `/dev/disk/by-id/<disk>-part1` |
 | Volume | the pool's root dataset, mounted at **`/volume<N>`** (the lowest free number). One pool is one volume |
 | Mounting | `mountpoint=legacy` and a systemd mount unit per volume (`volume1.mount`, after `zfs-import.target`): mounts happen in the host's namespace rather than the hardened agent's, and the boot order is explicit |
-| Dataset defaults | `compression=lz4`, `atime=off`, `xattr=sa`, `acltype=posixacl` (for Samba ACLs), `dnodesize=auto`, `setuid=off`, `devices=off`; `normalization=formD`, `utf8only=on` (fixed at creation) **[Assumption]** |
+| Dataset defaults | `compression=lz4`, `atime=off`, `xattr=sa`, `acltype=posixacl` (for Samba ACLs), `dnodesize=auto`, `setuid=off`, `devices=off`; `normalization=formD`, `utf8only=on` (fixed at creation) |
 | Share | a child dataset of the volume, mounted at `/volume<N>/<share>` by its own unit (`volume1-photos.mount`); created with `setuid=off` and `devices=off` also on pools made before those were defaults. Per share, stored in the database and set at every change and at startup: a quota on its own data (`refquota`, snapshots not counted, at least 1 GiB, never below what it holds), compression (`lz4`, `zstd` or off) and record size (16 KiB, 128 KiB, 1 MiB); what it holds comes live from ZFS |
 | Snapshots | per share (child dataset), by hand or on schedules (hourly, daily, weekly, monthly, each keeping 1 to 100). Named after their UTC time, `zdl-YYYY-MM-DD_HH.MM.SS`, the form Samba's `vfs_shadow_copy2` reads, so Windows offers every snapshot as "Previous Versions" (`shadow:snapdir = .zfs/snapshot`); the schedules a snapshot was taken for and a note are ZFS user properties (`zendiloos:schedule`, `zendiloos:note`), the schedules themselves live in the database. `zendiloosd` looks every five minutes: a schedule that never took one, or missed its time while the machine was off, takes one at once; when several are due, one snapshot counts for all of them. Each schedule keeps its newest; a snapshot goes only when every schedule it was taken for lets it go, never one taken by hand or of a removed schedule. A failing schedule becomes one notification until it works again. The agent takes and destroys snapshots only of a share dataset on a pool zendiloos created, and the label's shape rules out ZFS's ranges and lists. The file manager looks into a snapshot as it was: the files agent opens `.zfs/snapshot/<label>` of the mounted share as a root of its own (the label's shape checked; opening it for reading makes ZFS mount it, which `RESOLVE_NO_XDEV` from the share would refuse), read only, and refuses every change in it; folders list, files download and preview, folders download as archives from it, and entries are copied back into the share, into the folder they were in and beside a name that is taken, so nothing is replaced (a job). A share can be rolled back to one of its snapshots (`zfs rollback -r`, the agent only on its own share datasets): what changed since is lost and so are the later snapshots, which the interface lists, so the share's name must be typed to confirm |
 | Monitoring | `zpool status` (health, resilver and scrub progress, errors per device) every minute, SMART of disks holding data every six hours; changes become notifications (degraded or recovered pool, finished resilver or scrub, volume 80 or 90 % full, a disk's SMART getting worse); scrub monthly (second Sunday) by the cron job of `zfsutils-linux`, and on demand; a running scrub can be stopped (`zpool scrub -s`), a resilver cannot; while a scan runs, its speed and the time left are estimated as `zpool status` does (bytes issued in the current pass over its time minus pauses); the package depends on a cron daemon, which Debian's cloud image lacks. The storage overview answers "is my storage all right?" in one place: every concern (pool unavailable or degraded, unrepairable files, device errors, volume 80 or 90 % full, a disk's SMART verdict, no redundancy, no check for 40 days), the worst first; SMART verdicts are the monitor's last, so asking reads no disk; a disk can test itself (short or long SMART self-test, `smartctl --test`), its report shows the progress and the drive's own estimate of how long each test takes, and a running test can be stopped; a disk that sleeps, reports no SMART or cannot test itself is refused rather than woken. Self-tests also run on a schedule: one plan per kind (the long test weekly or monthly), the disks by serial number or all that can, starting from a local hour (the host's time zone, read with `jiff`) within four hours, so a NAS switched on late still tests the same night; the long test goes first, a disk already testing is left alone, a sleeping one is woken because the plan asked for it, and a failed test reaches the owner through the monitor's SMART notifications |
-| Existing storage | mdadm arrays and Btrfs, ext4 or XFS filesystems found on the system are shown read-only (M2); zendiloos does not create or change them |
+| Existing storage | mdadm arrays found on the system are shown read-only on the Pools page; other filesystems (Btrfs, ext4, XFS) only through `GET /storage/volumes`. zendiloos does not create or change them |
 | Removable drives | USB sticks and disks, memory cards, for administrators only (`storage.manage`), never shared: a file system that passes the checks of 4.7 is named by its UUID and mounted at **`/run/zendiloos-removable/<id>`**, root's, outside the volumes (so no share, Samba or NFS export reaches it) and on a tmpfs (so nothing of it outlives a restart). `nosuid,nodev,noexec,noatime`; FAT (`utf8,shortname=mixed,flush`), exFAT and NTFS (the kernel's `ntfs3`, `windows_names`) have no owners of their own, so everything on them belongs to root and the group `zendiloos-users` (`uid=0,gid=…,fmask=0117,dmask=0007`): readable and writable by the accounts the files agent acts as, by nobody else, executable by nobody; ext4 keeps its owners and permissions, which the files agent overrides there with root's access to files, on threads of their own (4.4), so a drive formatted elsewhere is fully usable; what it writes there belongs to root. A drive that cannot be written (write-protected, NTFS that Windows left hibernated) is mounted read-only. Mounting happens in the host's namespace: the agent asks systemd for a transient mount unit (`systemd-mount --collect --fsck=no`), gone at the next boot and bound to its device, so systemd unmounts it when the drive is pulled out; `umount`, removing the place (`rmdir`) and powering off run in transient services (`systemd-run`), outside the agent's sandbox, which keeps `/run` read-only and only sees the mounts. `zendiloosd` mounts a drive when it sees it, as Windows does: whenever the drives are listed (the file explorer asks while it is open) and once a minute besides; the agent and `zendiloosd` speak `AF_UNIX` only, so no udev or netlink hook is needed. Ejecting unmounts (refused while files on it are open, `drive_in_use`), removes the place and, by default, takes the disk off the bus (this binary as `power-off-drive <disk>`: the SCSI device is deleted, which writes its cache out and stops it, then its USB device is removed, which powers the port off where the hub can), so it can be pulled out; without powering off, the drive stays plugged in and unmounted until it is pulled out or mounted by hand, e.g. to make a pool of it. A drive pulled out while mounted becomes a notification (`removable_pulled`), and what is left of it is let go of lazily (`umount --lazy` once its device is gone) and its place removed; so are empty places from before a restart. The API: `GET /storage/removable` (id, label, file system, device and disk, model, size, state `mounted`, `ejected`, `failed` with the agent's reason, or `unmounted`, `read_only`, `path`, space while mounted), `POST /storage/removable/{id}/mount` and `…/eject` (`power_off`, true by default). The simulation offers a USB stick (`1A2B-3C4D`, FAT) |
 | Kernel module | `zfs-dkms` and `zfsutils-linux` from Debian contrib, built for the installed kernel with its headers |
 
 | Option | Pros | Cons |
 |---|---|---|
-| **ZFS** (chosen) | self-healing with checksums and redundancy in one layer, snapshots, datasets, send/receive, mature | out-of-tree module (DKMS) that must be rebuilt for every kernel and may lag behind a new kernel; licensing questions for prebuilt modules in an ISO (see section 7) |
+| **ZFS** (chosen) | self-healing with checksums and redundancy in one layer, snapshots, datasets, send/receive, mature | out-of-tree module (DKMS) that must be rebuilt for every kernel and may lag behind a new kernel; licensing questions for prebuilt modules in an image (see section 7) |
 | mdadm + Btrfs | in-kernel, extremely well tested, all RAID levels | Btrfs detects bit rot on top of mdadm but cannot repair it; two layers to manage |
 | Btrfs native RAID | self-healing, in-kernel | RAID 5/6 has known problems (write hole) |
 
@@ -1627,11 +1679,11 @@ the interface and the agent deal with a single tool chain (`zpool`, `zfs`).
 | File services | SMB (Samba, with `wsdd2`) and NFS (`nfs-kernel-server`) are switched on and off in the control panel; off means stopped and disabled, so it stays off after a restart, while shares, exports and permissions stay. The workgroup and the oldest SMB version answered (2.0, 2.1 or 3; SMB1 never) are written as global settings at the top of `/etc/samba/zendiloos.conf`, which `smb.conf` includes at the end of `[global]`; both are applied with the shares in one agent request, and if the host refuses, the previous settings return | per-share protocols would multiply what can go wrong for little gain; FTP, rsync and WebDAV are not offered until there is a reason |
 | SSH | the SSH server as a service in the control panel (Terminal): on or off (off means stopped and disabled; open sessions stay, as `KillMode=process`), its port (22, or a free one from 1024; zendiloosd refuses a port another program listens on, read from `/proc/net/tcp`), and whether root and passwords may log in, each either set or left as the system has it. The settings go to `/etc/ssh/sshd_config.d/00-zendiloos.conf`, read before the other drop-ins, so they win; `sshd -t` checks them first and the previous file returns if it fails. On request a transient systemd timer turns SSH off again after up to a day; SSH is then enabled only until the next boot (`enable --runtime`), as the timer itself is gone after a restart, so a restart turns it off too. Who may log in is Debian's: the accounts of the interface have no shell | keys, users allowed to log in and a web terminal belong to Debian's configuration or later |
 | Time | time zone, network time on or off, up to four time servers (a drop-in of systemd-timesyncd; none: Debian's pool) or the clock set by hand, all through systemd-timedated (`timedatectl`); shown and set in the NAS's zone, not the browser's. Schedules follow a new zone within five minutes (`jiff` keeps the system zone that long), apps when they next start (they get `/etc/localtime`) | the agent may not set the clock itself (`ProtectClock`); timedated is what `timedatectl` and every desktop use |
-| Docker | Debian packages `docker.io` and `docker-compose`, installed from the App Store's own item (the package only suggests them) by apt in a unit of its own (4.10), apps as Compose projects **[Phase 4]** | security updates through Debian; Docker CE optional |
+| Docker | Debian packages `docker.io` and `docker-compose`, installed as the App Center's Docker plugin (the package only suggests them) by apt in a unit of its own (4.10); apps are administrators' Compose projects (4.9) | security updates through Debian; Docker CE optional |
 | Packaging | `debian/` with debhelper (compat 13 plus `dh-sequence-installsysusers`), built in a `debian:trixie` container with Rust from `rustup` and Node.js 24 pinned by checksum | native maintainer scripts, `sysusers.d`, `tmpfiles.d`, `dh_installsystemd`; works on any host with Docker |
-| Test VM | `scripts/vm.sh` (`just vm …`): Debian 13 cloud image verified by SHA512, cloud-init, 4 SATA disks with emulated SMART and 1 NVMe disk, ports on 127.0.0.1 only | the cloud kernel lacks some drivers; storage work (M3) may need `linux-image-amd64` in the VM **[Assumption]** |
-| Reproducibility | `rust-toolchain.toml`, `Cargo.lock`, `package-lock.json`, `SOURCE_DATE_EPOCH`, pinned build container; system images built with mmdebstrap against a fixed snapshot.debian.org state, failing on any error | |
-| Licensing | Zendiloos code under Apache-2.0; the ISO build produces a package manifest/SBOM and ships the copyright files | required when distributing a Debian-based image |
+| Test VM | `scripts/vm.sh` (`just vm …`): Debian 13 cloud image verified by SHA512, cloud-init, 4 SATA disks with emulated SMART and 1 NVMe disk, ports on 127.0.0.1 unless `ZENDILOOS_VM_LISTEN` or `ZENDILOOS_VM_BRIDGE` (the LAN) say otherwise; several VMs side by side (`ZENDILOOS_VM`) | the cloud kernel suffices for ZFS (DKMS with its headers); it has no USB, so removable drives come over SCSI with the removable bit |
+| Reproducibility | `rust-toolchain.toml`, `Cargo.lock`, `package-lock.json`, `SOURCE_DATE_EPOCH`, pinned build container; the installation ISO starts from Debian's netinst image, pinned by its SHA512 (`packaging/iso/netinst.env`); the appliance's images (phase 5) are to be built with mmdebstrap against a fixed snapshot.debian.org state, failing on any error | |
+| Licensing | Zendiloos code under Apache-2.0; the installation ISO adds only zendiloOS's package and the answers to Debian's netinst image, and Debian's packages come from its mirror with their copyright files. A package manifest/SBOM comes with the appliance's image (phase 5) | required when distributing a Debian-based image |
 | Quality | rustfmt, Clippy (`-D warnings` in CI), `unsafe_code = "forbid"` outside clearly bounded exceptions, `cargo deny`, ESLint, `vue-tsc --strict`, Vitest; coverage held by CI: backend 92 % of lines, every crate 90 % (the binaries' `main.rs` and zendiloosd's glue aside), contexts 93 %, domains 97 %; frontend 93 % of lines, its `.ts` logic 96 % (`scripts/coverage-check.sh`, `frontend/vite.config.ts`) | |
 | Installation (phases 1–4) | an installation ISO per stable release: Debian 13's netinst image with an entry "Install zendiloOS", answers by preseeding (only language, keyboard, name, root's password and the system's disk are asked) and the release's package installed at the end; ZFS built by DKMS on the machine (`docs/releases.md`) | Debian's own installer, nothing to maintain but the answers; the appliance's image (phase 5) can follow |
 | Updates (phases 1–4) | Debian's packages through apt and zendiloOS's `.deb` from GitHub Releases, by channel (stable, test, development), checked daily, installed on request (4.10, `docs/releases.md`) | the appliance's image updates below build on the same releases and channels |
@@ -1644,8 +1696,9 @@ the interface and the agent deal with a single tool chain (`zpool`, `zfs`).
 Decided on 2026-11-05: name `zendiloos`, unified accounts, target hardware
 x86-64 NAS appliances and generic x86-64.
 HTTPS by default: plain HTTP only redirects, the session cookie is
-HTTPS-only, a self-signed certificate is created on the device; installing
-an own certificate and ACME follow later. CI: GitHub Actions
+HTTPS-only, a self-signed certificate is created on the device;
+certificates from Let's Encrypt come from the ACME plugin (4.11), and
+installing a certificate of one's own follows later. CI: GitHub Actions
 (`.github/workflows/ci.yml`) runs `just check` and `just deb` with the same
 toolchain and tool versions as development, with actions pinned to commit
 SHAs.
@@ -1654,8 +1707,12 @@ Decided on 2026-11-05 for storage (section 5): ZFS as the default, one
 pool is one volume, mounted at `/volume<N>`, disks prepared with GPT and one
 partition with a reserve.
 
-1. ISO and ZFS (M7): ship the DKMS sources and build on the device, as
-   Debian does, or ship prebuilt modules, which needs a licensing review
+Decided on 2026-11-06 for the installation ISO: it ships no ZFS module;
+DKMS builds it on the machine, as on an existing Debian
+(`docs/releases.md`).
+
+1. ZFS in the appliance's image (phase 5): build it on the device, as the
+   ISO does, or ship prebuilt modules, which needs a licensing review
    (CDDL and GPL).
 2. Whether mdadm with Btrfs or ext4 comes back as an alternative to ZFS,
    e.g. for systems with little memory.
