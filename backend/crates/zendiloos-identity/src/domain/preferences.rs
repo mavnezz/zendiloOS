@@ -118,6 +118,11 @@ impl StarAnswer {
             _ => return None,
         })
     }
+
+    /// Whether it ends the reminder: it is not shown again.
+    pub fn is_final(self) -> bool {
+        matches!(self, StarAnswer::Starred | StarAnswer::Declined)
+    }
 }
 
 /// The reminder to star zendiloOS on GitHub, once it was shown: how often
@@ -151,12 +156,18 @@ impl StarPrompt {
         self.answer
     }
 
-    /// Of what is kept and what a browser sends, the one further along:
-    /// shown more often, later, or answered. A browser that loaded the
-    /// preferences before the reminder appeared in another one thus does
-    /// not bring it back by saving a theme.
+    /// Of what is kept and what a browser sends, the one further along. A
+    /// final answer (starred, declined) comes first: neither "later" nor a
+    /// showing in another tab that missed the answer takes it back, in
+    /// whichever order they reach the server. Then the one shown more
+    /// often, later, or answered. A browser that loaded the preferences
+    /// before the reminder appeared in another one thus does not bring it
+    /// back.
     pub fn further(kept: Option<Self>, sent: Option<Self>) -> Option<Self> {
-        let progress = |prompt: &Self| (prompt.times_shown, prompt.last_shown, prompt.answer.is_some());
+        let progress = |prompt: &Self| {
+            let ended = prompt.answer.is_some_and(StarAnswer::is_final);
+            (ended, prompt.times_shown, prompt.last_shown, prompt.answer.is_some())
+        };
         match (kept, sent) {
             (Some(kept), Some(sent)) if progress(&kept) > progress(&sent) => Some(kept),
             (kept, None) => kept,
@@ -314,6 +325,30 @@ mod tests {
         assert_eq!(StarPrompt::further(shown, later), later);
         assert_eq!(StarPrompt::further(later, declined), declined, "answered in the same showing");
         assert_eq!(StarPrompt::further(None, None), None);
+    }
+
+    #[test]
+    fn a_final_answer_to_the_star_prompt_is_never_taken_back() {
+        let at = |seconds| Timestamp::from_unix_seconds(seconds);
+        let declined = StarPrompt::new(1, at(100), Some(StarAnswer::Declined));
+        let starred = StarPrompt::new(1, at(100), Some(StarAnswer::Starred));
+        // Other tabs that missed the answer: shown there a little later, or
+        // shown again, and "later" chosen there.
+        let shown_later = StarPrompt::new(1, at(105), None);
+        let again = StarPrompt::new(2, at(200), None);
+        let again_later = StarPrompt::new(2, at(200), Some(StarAnswer::Later));
+        let later = StarPrompt::new(1, at(100), Some(StarAnswer::Later));
+
+        for kept in [declined, starred] {
+            for sent in [shown_later, again, again_later, later] {
+                assert_eq!(StarPrompt::further(kept, sent), kept, "{kept:?} against {sent:?}");
+            }
+        }
+        // The answer reaches the server after the other tab's showing.
+        assert_eq!(StarPrompt::further(shown_later, declined), declined);
+        assert_eq!(StarPrompt::further(again_later, starred), starred);
+        assert!(StarAnswer::Declined.is_final() && StarAnswer::Starred.is_final());
+        assert!(!StarAnswer::Later.is_final());
     }
 
     #[test]

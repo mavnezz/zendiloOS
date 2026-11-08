@@ -1090,6 +1090,41 @@ async fn a_browser_that_missed_the_star_prompt_does_not_bring_it_back() {
 }
 
 #[tokio::test]
+async fn no_thanks_in_one_tab_stays_when_another_shows_the_star_prompt_later() {
+    use crate::domain::{Preferences, StarAnswer, StarPrompt};
+    use zendiloos_kernel::Timestamp;
+
+    let t = TestIdentity::new();
+    let alice = signed_in(&t, "alice", Role::Admin).await;
+    let prompt = |at: i64, answer| StarPrompt::new(1, Timestamp::from_unix_seconds(at), answer);
+    let save = |star_prompt| Preferences { star_prompt, ..Preferences::default() };
+    let kept = || async { t.use_cases.preferences.execute(&alice).await.unwrap().star_prompt.unwrap() };
+
+    // Tab A shows it and "No thanks" is chosen there; tab B, loaded before,
+    // shows it a few seconds later.
+    t.use_cases.save_preferences.execute(&alice, save(prompt(1_800_000_000, None))).await.unwrap();
+    let declined = save(prompt(1_800_000_000, Some(StarAnswer::Declined)));
+    t.use_cases.save_preferences.execute(&alice, declined).await.unwrap();
+    t.use_cases.save_preferences.execute(&alice, save(prompt(1_800_000_005, None))).await.unwrap();
+    t.use_cases
+        .save_preferences
+        .execute(&alice, save(prompt(1_800_000_005, Some(StarAnswer::Later))))
+        .await
+        .unwrap();
+    assert_eq!(kept().await.answer(), Some(StarAnswer::Declined));
+
+    // The other order: B's showing reaches the server before A's answer.
+    let t = TestIdentity::new();
+    let alice = signed_in(&t, "alice", Role::Admin).await;
+    let kept = || async { t.use_cases.preferences.execute(&alice).await.unwrap().star_prompt.unwrap() };
+    t.use_cases.save_preferences.execute(&alice, save(prompt(1_800_000_010, None))).await.unwrap();
+    t.use_cases.save_preferences.execute(&alice, save(prompt(1_800_000_015, None))).await.unwrap();
+    let declined = save(prompt(1_800_000_010, Some(StarAnswer::Declined)));
+    t.use_cases.save_preferences.execute(&alice, declined).await.unwrap();
+    assert_eq!(kept().await.answer(), Some(StarAnswer::Declined));
+}
+
+#[tokio::test]
 async fn a_save_changes_only_the_choices_it_makes() {
     use crate::domain::{Layout, Preferences, Theme, Wallpaper, WallpaperColor};
 

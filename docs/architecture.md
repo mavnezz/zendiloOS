@@ -327,7 +327,10 @@ frontend/src/
   It waits for a calm moment: no job running, no dialog open, no unread
   warning or error and the storage overview fine. The decision is one pure
   function (`shared/lib/star-prompt.ts`); the server only keeps how often
-  it was shown, when, and the answer, and never lets that go back. It is
+  it was shown, when, and the answer, and never lets that go back: an
+  answer that ends it (the link, "No thanks") stays, whatever "Later" or
+  showing another tab sends, and in whichever order; otherwise the one
+  shown more often, later, or answered wins. It is
   only a link: nothing is asked of GitHub, counted or sent.
 - Pages adapt to the window size with **container queries**, not to the
   screen size.
