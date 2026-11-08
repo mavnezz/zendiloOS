@@ -1967,6 +1967,7 @@ const en = {
     enable: 'Enable',
     disable: 'Disable',
     toggleFailed: 'The account could not be changed',
+    sharesFollow: 'The files in {shares} get their permissions in the background.',
     description: 'Description',
     email: 'E-mail',
     groups: 'Groups',
@@ -2597,7 +2598,8 @@ const en = {
       rollbackLater:
         'The later snapshot is deleted too. | The {count} later snapshots are deleted too.',
       rollbackConfirm: 'Type {share} to confirm',
-      rolledBack: 'The share is back as it was on {time}.',
+      rolledBack:
+        'The share is back as it was on {time}. Its files get the permissions of now again in the background.',
       open: 'Snapshots',
       title: 'Snapshots of {name}',
       description:

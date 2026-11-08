@@ -3,10 +3,12 @@
 
 use std::cmp::Reverse;
 
+use zendiloos_jobs::Job;
 use zendiloos_kernel::{Actor, Outcome, RequestContext};
 use zendiloos_notify::{Level, NewNotification};
 
 use super::ports::HostError;
+use super::shares::acl;
 use super::{SharingError, SharingUseCases};
 use crate::domain::{self, Share, ShareId, Snapshot, SnapshotSchedule};
 
@@ -82,7 +84,14 @@ impl SharingUseCases {
 
     /// Returns the share to snapshot `label`: everything changed since is
     /// gone, and so are the snapshots taken after it. `confirm` must be the
-    /// share's name. Returns the labels of the snapshots that went.
+    /// share's name. Refused while a walk goes through the share's files.
+    ///
+    /// The snapshot brings back the ACLs and owners its files had then, and
+    /// the recycle bins as they were: the rules recorded now hold again
+    /// before anybody else gets in. Under the same lock the share's folder
+    /// gets them and its bins are made again, and a walk gives them to the
+    /// files, taking away what the rules no longer grant. Returns the
+    /// labels of the snapshots that went, and the walk.
     pub async fn rollback_snapshot(
         &self,
         id: ShareId,
@@ -90,7 +99,7 @@ impl SharingUseCases {
         confirm: &str,
         actor: &Actor,
         request: &RequestContext,
-    ) -> Result<Vec<String>, SharingError> {
+    ) -> Result<(Vec<String>, Option<Job>), SharingError> {
         let _changes = self.changes.lock().await;
         let share = self.ports.shares.find(id).await?.ok_or(SharingError::ShareNotFound)?;
         if confirm != share.name.as_str() {
@@ -100,15 +109,33 @@ impl SharingUseCases {
         let Some(target) = snapshots.iter().find(|s| domain::is_label(label) && s.label == label) else {
             return Err(SharingError::SnapshotNotFound);
         };
+        self.not_walking(&share)?;
         let later: Vec<String> =
             snapshots.iter().filter(|s| s.taken_at > target.taken_at).map(|s| s.label.clone()).collect();
+        // Owed before the files change: should this stop halfway, the
+        // rules are given again later.
+        self.ports.shares.owe_access(&[share.id]).await?;
         let host = &self.ports.host;
         let rolled = host.rollback_snapshot(&share.pool, share.volume, &share.name, label, request).await;
         let outcome = if rolled.is_ok() { Outcome::Success } else { Outcome::Failure };
         self.audit("sharing.rollback_snapshot", outcome, &format!("{}@{label}", share.name), actor, request)
             .await;
         rolled?;
-        Ok(later)
+
+        let names = self.ports.directory.names().await?;
+        let apps = self.ports.shares.app_access().await?;
+        let now = acl(&share.access, &names, share.id, &apps);
+        if let Err(error) = host.set_access(share.volume, &share.name, &now, &[], false, request).await {
+            tracing::warn!(%error, share = share.name.as_str(), "after a rollback the share's folder gets its rules in the walk");
+        }
+        let walk = match self.access_job(&share, Vec::new(), Some(actor), request).await {
+            Ok(job) => Some(job),
+            Err(error) => {
+                tracing::warn!(%error, share = share.name.as_str(), "cannot walk the share after a rollback now; it is walked later");
+                None
+            }
+        };
+        Ok((later, walk))
     }
 
     /// Replaces how often the share is snapshotted and how many to keep.

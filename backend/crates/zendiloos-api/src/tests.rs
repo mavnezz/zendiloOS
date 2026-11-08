@@ -364,6 +364,7 @@ impl zendiloos_sharing::application::ports::Directory for IdentityDirectory {
                 .into_iter()
                 .map(|g| (g.id.get(), g.members.iter().map(|m| m.get()).collect()))
                 .collect(),
+            disabled: self.0.all().into_iter().filter(|a| a.disabled).map(|a| a.id.get()).collect(),
         })
     }
 
@@ -2051,10 +2052,12 @@ async fn admins_update_reset_and_delete_other_accounts_only() {
         })
     };
 
+    *h.identity.account_observer.following.lock().unwrap() = vec!["photos".to_owned()];
     let updated =
         send(Method::PATCH, format!("/api/v1/accounts/{bob}"), Some(json!({ "disabled": true }))).await;
     assert_eq!(updated.status, StatusCode::OK, "{:?}", updated.body);
     assert_eq!(updated.body["disabled"], true);
+    assert_eq!(updated.body["pending_shares"], json!(["photos"]), "its files follow in the background");
 
     let own = send(Method::PATCH, format!("/api/v1/accounts/{alice}"), Some(json!({ "role": "user" }))).await;
     assert_problem(&own, StatusCode::CONFLICT, "own_account");
@@ -2082,10 +2085,12 @@ async fn admins_manage_groups() {
     let id = created.body["id"].as_i64().unwrap();
 
     let uri = format!("/api/v1/groups/{id}");
+    *h.identity.group_observer.following.lock().unwrap() = vec!["photos".to_owned()];
     let changes = json!({ "members": [], "description": "" });
     let updated = h.send(json(with_csrf(changing(Method::PATCH, &uri), &admin), changes)).await;
     assert_eq!(updated.body["members"], json!([]));
     assert_eq!(updated.body["description"], Value::Null);
+    assert_eq!(updated.body["pending_shares"], json!(["photos"]), "the shares that follow in the background");
 
     let listed = h.send(empty(with_cookie(get("/api/v1/groups"), &admin))).await;
     assert_eq!(listed.body.as_array().unwrap().len(), 1);
@@ -3320,6 +3325,17 @@ async fn administrators_take_schedule_and_delete_snapshots_of_a_share() {
         (json!("before the move"), 2)
     );
     assert_problem(&h.send(empty(with_cookie(get(&base), &bob))).await, StatusCode::FORBIDDEN, "forbidden");
+
+    // Rolled back, the files get the permissions of now again, in a job.
+    let rolled = h
+        .send(json(
+            with_csrf(post(&format!("{base}/{label}/rollback")), &admin),
+            json!({ "confirm": "photos" }),
+        ))
+        .await;
+    assert_eq!(rolled.status, StatusCode::OK, "{:?}", rolled.body);
+    assert_eq!(rolled.body["destroyed"], json!([]));
+    assert_eq!(rolled.body["job"]["kind"], "sharing.apply_access");
 
     let missing =
         h.send(empty(with_csrf(post(&format!("{base}/zdl-2020-01-01_00.00.00/delete")), &admin))).await;

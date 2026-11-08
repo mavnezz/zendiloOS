@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE shares SET access_owed = access_owed + 1 WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "b68e8f9f280d52b8201ce8c293a164e14243a4172b73b4ddaa5c302f3f4ddc07"
+}

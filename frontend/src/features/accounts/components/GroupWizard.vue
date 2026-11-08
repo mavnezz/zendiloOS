@@ -116,16 +116,23 @@ async function finish(): Promise<void> {
   pending.value = true
   error.value = null
   try {
-    const group = props.group
-      ? await actions.updateGroup(props.group.id, {
-          description: form.description,
-          members: form.members,
-        })
-      : await actions.createGroup({
-          name: form.name.trim(),
-          description: form.description || null,
-          members: form.members,
-        })
+    // Shares whose files follow changed members in the background.
+    let following: string[] = []
+    let group: Group
+    if (props.group) {
+      const updated = await actions.updateGroup(props.group.id, {
+        description: form.description,
+        members: form.members,
+      })
+      following = updated.pending_shares
+      group = updated
+    } else {
+      group = await actions.createGroup({
+        name: form.name.trim(),
+        description: form.description || null,
+        members: form.members,
+      })
+    }
     const rules = (shares.value ?? [])
       .filter(
         (share) =>
@@ -148,6 +155,7 @@ async function finish(): Promise<void> {
       props.group
         ? t('groups.saved', { name: group.name })
         : t('groups.created', { name: group.name }),
+      following.length ? t('people.sharesFollow', { shares: following.join(', ') }) : undefined,
     )
     open.value = false
   } catch (failure) {

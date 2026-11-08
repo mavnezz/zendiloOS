@@ -35,7 +35,8 @@ use zendiloos_infra::enclosure::BuiltInCatalog;
 use zendiloos_infra::firewall::ServicesForFirewall;
 use zendiloos_infra::host::{HostSystemInfo, IpNetworkReader, JournalctlReader, MetricsHub, ProcListening};
 use zendiloos_infra::identity::{
-    Argon2PasswordHasher, FileSetupCodes, RandomSessionTokens, SharingFollowsGroups, TotpCodes,
+    Argon2PasswordHasher, FileSetupCodes, RandomSessionTokens, SharingFollowsAccounts, SharingFollowsGroups,
+    TotpCodes,
 };
 use zendiloos_infra::notify::NetworkChannels;
 use zendiloos_infra::sharing::DrivesForFiles;
@@ -338,6 +339,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     let firewall_upkeep = spawn_firewall_upkeep(firewall.clone(), jobs.clone());
 
     let snapshots = spawn_snapshot_schedules(sharing.clone());
+    let owed_access = spawn_owed_access(sharing.clone());
     let self_tests = spawn_self_test_schedule(storage.self_test_schedule.clone());
     let use_cases = UseCases {
         system,
@@ -398,6 +400,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     firewall_upkeep.abort();
     monitor.abort();
     snapshots.abort();
+    owed_access.abort();
     self_tests.abort();
     channel_delivery.abort();
     catalog_refresh.abort();
@@ -476,7 +479,8 @@ fn identity(
     let ports = IdentityPorts {
         accounts: Arc::new(SqliteAccounts::new(database.clone())),
         groups: Arc::new(SqliteGroups::new(database.clone())),
-        group_observer: Arc::new(SharingFollowsGroups::new(sharing)),
+        group_observer: Arc::new(SharingFollowsGroups::new(sharing.clone())),
+        account_observer: Arc::new(SharingFollowsAccounts::new(sharing)),
         sessions: Arc::new(SqliteSessions::new(database.clone())),
         security: Arc::new(SqliteSecurity::new(database.clone())),
         preferences: Arc::new(SqlitePreferences::new(database.clone())),
@@ -558,6 +562,22 @@ fn spawn_snapshot_schedules(sharing: SharingUseCases) -> JoinHandle<()> {
         loop {
             every_five_minutes.tick().await;
             sharing.take_due_snapshots().await;
+        }
+    })
+}
+
+/// Walks the shares whose files still owe them their rules (a walk failed,
+/// stopped with zendiloosd or never started): at the start and every five
+/// minutes; a share whose walks keep failing waits longer each time.
+fn spawn_owed_access(sharing: SharingUseCases) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut every_five_minutes = tokio::time::interval(Duration::from_secs(5 * 60));
+        every_five_minutes.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            every_five_minutes.tick().await;
+            if let Err(error) = sharing.reconcile_access(&RequestContext::default()).await {
+                tracing::warn!(%error, "cannot look for shares whose files owe them their rules");
+            }
         }
     })
 }

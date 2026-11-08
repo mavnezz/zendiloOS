@@ -17,8 +17,9 @@ use crate::domain::{AccountId, AccountName, Permission, Role, SessionId, Session
 use context::Context;
 pub use error::IdentityError;
 use ports::{
-    AccountRepository, GroupObserver, GroupRepository, OneTimeCodes, PasswordHasher, PreferenceRepository,
-    SecurityRepository, SessionRepository, SessionTokens, SetupCodes, SystemAccounts, TwoFactorRepository,
+    AccountObserver, AccountRepository, GroupObserver, GroupRepository, OneTimeCodes, PasswordHasher,
+    PreferenceRepository, SecurityRepository, SessionRepository, SessionTokens, SetupCodes, SystemAccounts,
+    TwoFactorRepository,
 };
 
 /// Adapters for every port of this context, plugged in by the composition
@@ -29,6 +30,9 @@ pub struct IdentityPorts {
     pub groups: Arc<dyn GroupRepository>,
     /// Others following groups' members, e.g. shares that deny a group.
     pub group_observer: Arc<dyn GroupObserver>,
+    /// Others following accounts disabled, enabled again or deleted, e.g.
+    /// the shares' files.
+    pub account_observer: Arc<dyn AccountObserver>,
     pub sessions: Arc<dyn SessionRepository>,
     pub security: Arc<dyn SecurityRepository>,
     pub preferences: Arc<dyn PreferenceRepository>,

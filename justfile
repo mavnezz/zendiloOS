@@ -184,6 +184,10 @@ vm-sharing-test:
 vm-accounts-test:
     scripts/vm-accounts-test.sh
 
+# Share files following group members, disabled accounts, rollbacks and cut-off walks, read with getfacl in the VM
+vm-permissions-test:
+    scripts/vm-permissions-test.sh
+
 # File services in the VM: SMB options, Time Machine, discovery, encryption
 vm-services-test:
     scripts/vm-services-test.sh

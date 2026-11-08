@@ -3,14 +3,15 @@
 //! servers' configuration, which is always written as a whole from the
 //! database.
 
-use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, PoisonError};
+use std::collections::HashSet;
+use std::sync::Arc;
 
 use zendiloos_jobs::{Job, JobError};
 use zendiloos_kernel::{Actor, AuditEntry, Outcome, PortError, RequestContext};
 
 use super::SharingPorts;
 use super::ports::{HostError, Names};
+use super::walks::Walks;
 use crate::domain::{
     Access, AccessRule, AppAccess, FileServices, HomesSpec, InvalidFileServices, InvalidNfsHost,
     InvalidShareName, NewShare, NfsClient, NfsSpec, Permission, Principal, Share, ShareId, ShareName,
@@ -154,14 +155,19 @@ fn principals(rules: &[AccessRule], names: &Names) -> Vec<(Principal, Permission
         .collect()
 }
 
-/// The accounts the rules deny, themselves or through a group, sorted.
+/// The accounts the rules deny, themselves or through a group, and the
+/// disabled accounts the rules name, themselves or through a group:
+/// sorted.
 fn denied(rules: &[AccessRule], names: &Names) -> Vec<i64> {
     let mut denied: Vec<i64> = rules
         .iter()
-        .filter(|rule| rule.permission == Permission::Deny)
-        .flat_map(|rule| match rule.subject {
-            Subject::Account(id) => vec![id],
-            Subject::Group(id) => names.members.get(&id).cloned().unwrap_or_default(),
+        .flat_map(|rule| {
+            let accounts = match rule.subject {
+                Subject::Account(id) => vec![id],
+                Subject::Group(id) => names.members.get(&id).cloned().unwrap_or_default(),
+            };
+            let deny = rule.permission == Permission::Deny;
+            accounts.into_iter().filter(move |id| deny || names.disabled.contains(id))
         })
         .filter(|id| names.accounts.contains_key(id))
         .collect();
@@ -173,8 +179,8 @@ fn denied(rules: &[AccessRule], names: &Names) -> Vec<i64> {
 /// What the share's directory should say, as POSIX ACL entries: the
 /// grants of accounts not denied and of groups, an entry without
 /// permissions for every account denied, itself or as a member of a
-/// group (a named user entry comes before the group entries), then the
-/// apps'. Samba never learns of the apps.
+/// group, or disabled (a named user entry comes before the group entries),
+/// then the apps'. Samba never learns of the apps.
 pub(super) fn acl(
     rules: &[AccessRule],
     names: &Names,
@@ -253,43 +259,6 @@ pub struct SharingUseCases {
     pub(super) walks: Arc<Walks>,
 }
 
-/// Changes of everything in a share (walks), which may take hours: one
-/// at a time for each share, and the shares with one under way.
-#[derive(Default)]
-pub(super) struct Walks {
-    queues: std::sync::Mutex<HashMap<ShareId, Arc<tokio::sync::Mutex<()>>>>,
-    /// Shares whose walk has read the rules it gives and not ended.
-    under_way: std::sync::Mutex<HashSet<ShareId>>,
-}
-
-impl Walks {
-    pub(super) fn queue(&self, share: ShareId) -> Arc<tokio::sync::Mutex<()>> {
-        let mut queues = self.queues.lock().unwrap_or_else(PoisonError::into_inner);
-        Arc::clone(queues.entry(share).or_default())
-    }
-
-    fn is_under_way(&self, share: ShareId) -> bool {
-        self.under_way.lock().unwrap_or_else(PoisonError::into_inner).contains(&share)
-    }
-
-    /// Marks a walk of `share` under way until the guard goes.
-    fn start(&self, share: ShareId) -> UnderWay<'_> {
-        self.under_way.lock().unwrap_or_else(PoisonError::into_inner).insert(share);
-        UnderWay { walks: self, share }
-    }
-}
-
-struct UnderWay<'a> {
-    walks: &'a Walks,
-    share: ShareId,
-}
-
-impl Drop for UnderWay<'_> {
-    fn drop(&mut self) {
-        self.walks.under_way.lock().unwrap_or_else(PoisonError::into_inner).remove(&self.share);
-    }
-}
-
 impl SharingUseCases {
     pub fn new(ports: SharingPorts) -> Self {
         Self {
@@ -298,49 +267,6 @@ impl SharingUseCases {
             snapshot_failures: Arc::default(),
             walks: Arc::default(),
         }
-    }
-
-    /// Refused while a walk gives the share's files rules it read before:
-    /// it would undo the change on them, and on the share's folder too.
-    /// Called with `changes` held, before anything changes.
-    pub(super) fn not_walking(&self, share: &Share) -> Result<(), SharingError> {
-        if self.walks.is_under_way(share.id) {
-            return Err(SharingError::Refused(format!(
-                "the permissions of share {} are being applied to its files; try again once that has ended",
-                share.name.as_str()
-            )));
-        }
-        Ok(())
-    }
-
-    /// Gives the share's folder and everything in it the rules the
-    /// database has for the share when this gets to run, never rules read
-    /// earlier: walks of a share run one after another, each reads the
-    /// rules once it is its turn, and while one runs no change of the
-    /// share's rules is taken (`not_walking`). So the last walk gives the
-    /// last rules, whatever order the jobs ran in. `removed` lose their
-    /// entries, unless the rules name them again by now. A share gone or
-    /// being deleted is left alone.
-    pub(super) async fn walk(
-        &self,
-        share: ShareId,
-        removed: &[Principal],
-        request: &RequestContext,
-    ) -> Result<(), SharingError> {
-        let queue = self.walks.queue(share);
-        let _turn = queue.lock().await;
-        let (found, now, _under_way) = {
-            let _changes = self.changes.lock().await;
-            let Some(found) = self.ports.shares.find(share).await? else { return Ok(()) };
-            let names = self.ports.directory.names().await?;
-            let apps = self.ports.shares.app_access().await?;
-            let now = acl(&found.access, &names, found.id, &apps);
-            (found, now, self.walks.start(share))
-        };
-        let removed: Vec<Principal> =
-            removed.iter().filter(|gone| !now.iter().any(|(p, _)| p == *gone)).cloned().collect();
-        self.ports.host.set_access(found.volume, &found.name, &now, &removed, true, request).await?;
-        Ok(())
     }
 
     pub async fn list(&self) -> Result<Vec<Share>, SharingError> {
@@ -502,7 +428,11 @@ impl SharingUseCases {
         let mut recorded = None;
         let stored = async {
             self.ports.host.set_properties(&input.pool, volume, &name, &input.settings, request).await?;
-            let access = principals(&input.access, &names);
+            // The rules as the kernel needs them, as for every other change:
+            // a group entry without permissions denies nobody, so a denied
+            // group's members get entries of their own. No app has access
+            // to a share not made yet.
+            let access = acl(&input.access, &names, ShareId::new(0), &[]);
             self.ports.host.set_access(volume, &name, &access, &[], false, request).await?;
             let new = NewShare {
                 name: name.clone(),
@@ -602,6 +532,11 @@ impl SharingUseCases {
             settings.check_against(used)?;
             settings_change = Some(settings);
         }
+        // The files owe the new rules before anything changes: whatever
+        // stops this halfway, a walk gives them what is recorded.
+        if access_change.is_some() {
+            self.ports.shares.owe_access(&[share.id]).await?;
+        }
         // Then the host: the dataset's properties, undone if the folder's
         // rules cannot be set; then the records.
         if let Some(settings) = &settings_change {
@@ -649,40 +584,10 @@ impl SharingUseCases {
         self.audit("sharing.share_update", Outcome::Success, share.name.as_str(), actor, request).await;
 
         let job = match follow_up {
-            Some((_, removed)) => Some(self.access_job(&share, removed, actor, request).await?),
+            Some((_, removed)) => Some(self.access_job(&share, removed, Some(actor), request).await?),
             None => None,
         };
         Ok((share, job))
-    }
-
-    /// A job that gives everything in the share the permissions its
-    /// directory got already, as they are recorded when it runs (see
-    /// [`Self::walk`]).
-    pub(super) async fn access_job(
-        &self,
-        share: &Share,
-        removed: Vec<Principal>,
-        actor: &Actor,
-        request: &RequestContext,
-    ) -> Result<Job, SharingError> {
-        let this = self.clone();
-        let request = request.clone();
-        let id = share.id;
-        Ok(self
-            .ports
-            .jobs
-            .start(
-                "sharing.apply_access",
-                Some(share.name.to_string()),
-                Some(actor),
-                move |progress| async move {
-                    progress.step("existing_files", None).await;
-                    this.walk(id, &removed, &request)
-                        .await
-                        .map_err(|error| JobError::new("agent_failed", Some(error.to_string())))
-                },
-            )
-            .await?)
     }
 
     /// Gives an app's `account` exactly `grants` (share by name), on the
@@ -714,6 +619,8 @@ impl SharingUseCases {
             for share in shares.iter().filter(|share| touched.contains(&share.id)) {
                 self.not_walking(share)?;
             }
+            let owing: Vec<ShareId> = touched.iter().copied().collect();
+            self.ports.shares.owe_access(&owing).await?;
             self.ports.shares.set_app_access(account, &wanted).await?;
             let after = self.ports.shares.app_access().await?;
             let names = self.ports.directory.names().await?;
@@ -729,6 +636,7 @@ impl SharingUseCases {
             }
         }
         for (share, removed) in follow_up {
+            let _pending = self.walks.pending(share);
             self.walk(share, &removed, request).await?;
         }
         Ok(())

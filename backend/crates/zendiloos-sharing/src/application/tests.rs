@@ -8,10 +8,10 @@ use zendiloos_kernel::{Actor, AuditEntry, AuditLog, PortError, RequestContext};
 use zendiloos_notify::Notifier;
 use zendiloos_notify::testing::MemoryNotifications;
 
-use super::ports::{Directory, Names};
+use super::ports::{Directory, Names, ShareRepository};
 use super::{
-    FilesError, FilesUseCases, NewShareInput, ShareChanges, SharingError, SharingPorts, SharingUseCases,
-    Transfer,
+    AccountChange, FilesError, FilesUseCases, NewShareInput, ShareChanges, SharingError, SharingPorts,
+    SharingUseCases, Transfer,
 };
 use crate::domain::{
     Access, AccessRule, Favourite, FilePath, FileServices, NfsClient, Permission, Principal, ShareId,
@@ -67,9 +67,46 @@ impl zendiloos_kernel::Clock for Moving {
     }
 }
 
+/// Accounts and groups that change: alice (1) and bob (2), family (10)
+/// with alice in it, as [`Static`] has them to begin with.
+struct People(std::sync::Mutex<Names>);
+
+impl People {
+    fn new() -> Self {
+        let mut names = Names::default();
+        names.accounts.insert(1, "alice".into());
+        names.accounts.insert(2, "bob".into());
+        names.groups.insert(10, "family".into());
+        names.members.insert(10, vec![1]);
+        Self(std::sync::Mutex::new(names))
+    }
+
+    fn change(&self, change: impl FnOnce(&mut Names)) {
+        change(&mut self.0.lock().unwrap());
+    }
+}
+
+#[async_trait]
+impl Directory for People {
+    async fn names(&self) -> Result<Names, PortError> {
+        Ok(self.0.lock().unwrap().clone())
+    }
+
+    async fn memberships(&self, account: i64) -> Result<Vec<i64>, PortError> {
+        let names = self.0.lock().unwrap();
+        Ok(names
+            .members
+            .iter()
+            .filter(|(_, members)| members.contains(&account))
+            .map(|(id, _)| *id)
+            .collect())
+    }
+}
+
 struct Setup {
     sharing: SharingUseCases,
     files: FilesUseCases,
+    shares: Arc<Shares>,
     host: Arc<Host>,
     file_host: Arc<Files>,
     projects: Arc<Projects>,
@@ -80,6 +117,11 @@ struct Setup {
 }
 
 fn setup() -> Setup {
+    setup_with(Arc::new(Static))
+}
+
+fn setup_with(directory: Arc<dyn Directory>) -> Setup {
+    let shares = Arc::new(Shares::default());
     let host = Arc::new(Host::default());
     let file_host = Arc::new(Files::default());
     let jobs = Jobs::new(Arc::new(MemoryJobs::default()), Arc::new(FixedClock));
@@ -88,8 +130,8 @@ fn setup() -> Setup {
     let projects = Arc::new(Projects::default());
     let removable = Arc::new(crate::testing::Removable::default());
     let ports = SharingPorts {
-        shares: Arc::new(Shares::default()),
-        directory: Arc::new(Static),
+        shares: shares.clone(),
+        directory,
         volumes: Arc::new(Volumes),
         projects: projects.clone(),
         host: host.clone(),
@@ -103,6 +145,7 @@ fn setup() -> Setup {
     Setup {
         sharing: SharingUseCases::new(ports.clone()),
         files: FilesUseCases::new(ports),
+        shares,
         host,
         file_host,
         projects,
@@ -147,6 +190,21 @@ async fn finished(jobs: &Jobs, job: Job) -> Job {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     panic!("job did not finish");
+}
+
+/// Waits until no job runs any more, walks started by others among them.
+async fn all_finished(jobs: &Jobs) {
+    for _ in 0..200 {
+        if jobs.running().is_empty() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("jobs did not finish: {:?}", jobs.running());
+}
+
+fn name(share: &str) -> crate::domain::ShareName {
+    crate::domain::ShareName::parse(share).unwrap()
 }
 
 #[tokio::test]
@@ -824,11 +882,86 @@ async fn rolling_back_needs_the_name_and_lets_go_of_later_snapshots() {
         s.sharing.rollback_snapshot(id, "zdl-2020-01-01_00.00.00", "photos", &alice(), &request).await;
     assert!(matches!(missing, Err(SharingError::SnapshotNotFound)), "{missing:?}");
 
-    let gone = s.sharing.rollback_snapshot(id, &first.label, "photos", &alice(), &request).await.unwrap();
+    let (gone, walk) =
+        s.sharing.rollback_snapshot(id, &first.label, "photos", &alice(), &request).await.unwrap();
     assert_eq!(gone, std::slice::from_ref(&second.label));
     let (left, _) = s.sharing.snapshots(id, &request).await.unwrap();
     assert_eq!(left.iter().map(|s| s.label.as_str()).collect::<Vec<_>>(), [first.label.as_str()]);
     assert!(s.host.calls().contains(&format!("rollback tank/photos@{}", first.label)));
+    assert_eq!(finished(&s.jobs, walk.unwrap()).await.state, JobState::Succeeded);
+}
+
+// `zfs rollback` also gives the share's folder and every file the ACLs
+// (and owners) they had in the snapshot, and its recycle bins as they were.
+// Rules changed since (an account removed, one added) hold again at once.
+#[tokio::test]
+async fn a_rollback_gives_the_files_the_rules_of_now_again() {
+    let s = setup();
+    let request = RequestContext::default();
+    let id = photos(&s).await;
+    let first = s.sharing.take_snapshot(id, "", &alice(), &request).await.unwrap();
+    let bob_reads = ShareChanges {
+        access: Some(vec![
+            rule(Subject::Account(1), Access::ReadWrite),
+            rule(Subject::Account(2), Access::Read),
+        ]),
+        ..ShareChanges::default()
+    };
+    let (_, walk) = s.sharing.update(id, bob_reads, &alice(), &request).await.unwrap();
+    finished(&s.jobs, walk.unwrap()).await;
+
+    let (_, walk) =
+        s.sharing.rollback_snapshot(id, &first.label, "photos", &alice(), &request).await.unwrap();
+
+    let calls = s.host.calls();
+    let rolled = calls.iter().position(|call| call.starts_with("rollback ")).unwrap();
+    assert_eq!(
+        calls[rolled + 1],
+        "access 1 photos [alice:rw,bob:r] -[]",
+        "the folder and its bins at once, under the same lock: {:?}",
+        &calls[rolled..]
+    );
+    assert!(s.shares.owes(id), "until the walk has given the files the rules");
+    assert_eq!(finished(&s.jobs, walk.unwrap()).await.state, JobState::Succeeded);
+    assert_eq!(s.host.calls().last().unwrap(), "access 1 photos [alice:rw,bob:r] -[] recursive");
+    assert!(!s.shares.owes(id));
+}
+
+#[tokio::test]
+async fn a_rollback_waits_for_a_walk_under_way_and_one_that_fails_is_made_up() {
+    let s = setup();
+    let request = RequestContext::default();
+    let id = photos(&s).await;
+    let first = s.sharing.take_snapshot(id, "", &alice(), &request).await.unwrap();
+    s.host.hold_walks.store(true, std::sync::atomic::Ordering::Relaxed);
+    let (_, walking) = s.sharing.update(id, bob_gets(Permission::Read), &alice(), &request).await.unwrap();
+    while s.host.walks_held.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+        tokio::task::yield_now().await;
+    }
+
+    // The walk would go on through files the rollback replaces under it.
+    let refused = s.sharing.rollback_snapshot(id, &first.label, "photos", &alice(), &request).await;
+    assert!(
+        matches!(refused, Err(SharingError::Refused(ref why)) if why.contains("try again")),
+        "{refused:?}"
+    );
+    assert!(!s.host.calls().iter().any(|call| call.starts_with("rollback ")));
+    s.host.hold_walks.store(false, std::sync::atomic::Ordering::Relaxed);
+    s.host.let_walks_on.notify_one();
+    finished(&s.jobs, walking.unwrap()).await;
+
+    // The walk after the rollback fails: the files keep the snapshot's
+    // rules until a later walk gives them those of now.
+    s.host.fail_walks.store(true, std::sync::atomic::Ordering::Relaxed);
+    let (_, walk) =
+        s.sharing.rollback_snapshot(id, &first.label, "photos", &alice(), &request).await.unwrap();
+    assert_eq!(finished(&s.jobs, walk.unwrap()).await.state, JobState::Failed);
+    assert!(s.shares.owes(id));
+    s.host.fail_walks.store(false, std::sync::atomic::Ordering::Relaxed);
+    s.clock.advance(5 * 60);
+    let again = s.sharing.reconcile_access(&request).await.unwrap();
+    assert_eq!(finished(&s.jobs, again[0].clone()).await.state, JobState::Succeeded);
+    assert!(!s.shares.owes(id));
 }
 
 #[tokio::test]
@@ -1071,38 +1204,205 @@ async fn members_who_leave_a_denied_group_lose_their_entry() {
         .unwrap();
 
     // bob (2) was in family and has left; alice (1) still is.
-    let jobs = s.sharing.group_members_changed(10, &[1, 2], &alice(), &request).await.unwrap();
+    let following = s.sharing.group_members_changed(10, &[1, 2], &[], &alice(), &request).await.unwrap();
 
-    assert_eq!(jobs.len(), 1);
-    finished(&s.jobs, jobs[0].clone()).await;
+    assert_eq!(following, [name("photos")]);
+    all_finished(&s.jobs).await;
     let calls = s.host.calls();
+    assert!(calls.contains(&"access 1 photos [alice:-] -[bob]".to_owned()), "the folder at once: {calls:?}");
     assert!(calls.contains(&"access 1 photos [alice:-] -[bob] recursive".to_owned()), "{calls:?}");
+    assert!(!s.shares.owes(photos));
     assert!(
-        s.sharing.group_members_changed(77, &[1], &alice(), &request).await.unwrap().is_empty(),
+        s.sharing.group_members_changed(77, &[1], &[], &alice(), &request).await.unwrap().is_empty(),
         "denied nowhere"
     );
 }
 
 #[tokio::test]
 async fn new_members_of_a_group_that_writes_get_their_recycle_bins() {
-    let s = setup();
+    let people = Arc::new(People::new());
+    let s = setup_with(people.clone());
     let request = RequestContext::default();
     let photos = alices_photos(&s).await;
     s.sharing
         .set_subject_access(Subject::Group(10), &[(photos, Some(Permission::ReadWrite))], &alice(), &request)
         .await
         .unwrap();
+    all_finished(&s.jobs).await;
     let before = s.host.calls().len();
 
-    let jobs = s.sharing.group_members_changed(10, &[1], &alice(), &request).await.unwrap();
+    // bob (2) joins family.
+    assert!(s.sharing.group_members_changing(10, &[1, 2]).await.unwrap().is_empty(), "nothing owed");
+    people.change(|names| {
+        names.members.insert(10, vec![1, 2]);
+    });
+    let following = s.sharing.group_members_changed(10, &[1], &[], &alice(), &request).await.unwrap();
 
-    assert!(jobs.is_empty(), "the group entry covers the files already");
+    assert!(following.is_empty(), "the group entry covers the files already");
     let calls = s.host.calls();
     assert_eq!(
         calls[before..],
         ["access 1 photos [alice:rw,@family:rw] -[]".to_owned()],
         "the folder set again"
     );
+    assert!(!s.shares.owes(photos));
+}
+
+#[tokio::test]
+async fn leaving_a_group_that_writes_hands_over_what_one_owns() {
+    let people = Arc::new(People::new());
+    people.change(|names| {
+        names.members.insert(10, vec![1, 2]);
+    });
+    let s = setup_with(people.clone());
+    let request = RequestContext::default();
+    let mut docs = input("docs", "tank");
+    docs.access = vec![rule(Subject::Group(10), Access::ReadWrite)];
+    let docs = s.sharing.create(docs, &alice(), &request).await.unwrap().id;
+    let before = s.host.calls().len();
+
+    // bob (2) leaves family, which may write. The ACL stays the same, but
+    // what he owns, his recycle bin among it, may no longer be his.
+    let owing = s.sharing.group_members_changing(10, &[1]).await.unwrap();
+    assert_eq!(owing, [name("docs")]);
+    assert!(s.shares.owes(docs), "marked before the members change");
+    people.change(|names| {
+        names.members.insert(10, vec![1]);
+    });
+    let following = s.sharing.group_members_changed(10, &[1, 2], &owing, &alice(), &request).await.unwrap();
+
+    assert_eq!(following, [name("docs")]);
+    all_finished(&s.jobs).await;
+    assert_eq!(
+        recursive(&s.host.calls()[before..]),
+        ["access 1 docs [@family:rw] -[] recursive"],
+        "the agent hands over what someone who may no longer write owns"
+    );
+    assert!(!s.shares.owes(docs));
+}
+
+#[tokio::test]
+async fn a_new_share_denies_the_members_of_a_denied_group() {
+    let people = Arc::new(People::new());
+    people.change(|names| {
+        names.members.insert(10, vec![1, 2]);
+    });
+    let s = setup_with(people);
+    let mut photos = input("photos", "tank");
+    photos.access = vec![rule(Subject::Account(2), Access::ReadWrite), deny(Subject::Group(10))];
+    photos.nfs = vec![];
+
+    s.sharing.create(photos, &alice(), &RequestContext::default()).await.unwrap();
+
+    // A group entry without permissions would deny nobody: each member
+    // gets one of their own, and bob's own write rule gives way.
+    assert!(
+        s.host.calls().contains(&"access 1 photos [alice:-,bob:-] -[]".to_owned()),
+        "{:?}",
+        s.host.calls()
+    );
+    let seen = s.sharing.subject_access(Subject::Account(2)).await.unwrap();
+    assert_eq!((seen[0].rule, seen[0].effective), (Some(Permission::ReadWrite), None));
+}
+
+#[tokio::test]
+async fn a_disabled_account_is_kept_out_of_the_files_until_enabled_again() {
+    let people = Arc::new(People::new());
+    let s = setup_with(people.clone());
+    let request = RequestContext::default();
+    let mut photos = input("photos", "tank");
+    photos.access =
+        vec![rule(Subject::Account(2), Access::ReadWrite), rule(Subject::Group(10), Access::Read)];
+    photos.nfs = vec![];
+    let photos = s.sharing.create(photos, &alice(), &request).await.unwrap().id;
+    let mut media = input("media", "tank");
+    media.access = vec![rule(Subject::Account(1), Access::ReadWrite)];
+    s.sharing.create(media, &alice(), &request).await.unwrap();
+    let before = s.host.calls().len();
+
+    // bob (2) is disabled: over NFS his ID would still reach the files.
+    let owing = s.sharing.account_changing(2, AccountChange::Disabled).await.unwrap();
+    assert_eq!(owing, [name("photos")], "media never named him");
+    people.change(|names| {
+        names.disabled.insert(2);
+    });
+    let following =
+        s.sharing.account_changed(2, AccountChange::Disabled, &owing, &alice(), &request).await.unwrap();
+    assert_eq!(following, [name("photos")]);
+    all_finished(&s.jobs).await;
+    assert_eq!(
+        s.host.calls()[before..],
+        ["access 1 photos [@family:r,bob:-] -[]", "access 1 photos [@family:r,bob:-] -[] recursive"],
+        "denied, and what he owns passes to root as for a denial"
+    );
+    let config = s.host.configs.lock().unwrap().last().unwrap().clone();
+    assert_eq!(
+        config.smb[0].access[0],
+        (Principal::User("bob".into()), Permission::ReadWrite),
+        "Samba has him disabled itself"
+    );
+
+    // A disabled member of family is kept out where family reads, too.
+    people.change(|names| {
+        names.members.insert(10, vec![1, 2]);
+        names.disabled.insert(1);
+    });
+    let mut media =
+        s.sharing.list().await.unwrap().into_iter().find(|share| share.name == name("media")).unwrap();
+    media.access.push(rule(Subject::Group(10), Access::Read));
+    let changes = ShareChanges { access: Some(media.access.clone()), ..ShareChanges::default() };
+    s.sharing.update(media.id, changes, &alice(), &request).await.unwrap();
+    assert!(
+        s.host.calls().contains(&"access 1 media [@family:r,alice:-,bob:-] -[]".to_owned()),
+        "{:?}",
+        s.host.calls()
+    );
+    people.change(|names| {
+        names.members.insert(10, vec![1]);
+        names.disabled.remove(&1);
+    });
+    all_finished(&s.jobs).await;
+
+    // Enabled again: his own rule holds again, on the folder and the files.
+    let before = s.host.calls().len();
+    let owing = s.sharing.account_changing(2, AccountChange::Enabled).await.unwrap();
+    people.change(|names| {
+        names.disabled.remove(&2);
+    });
+    s.sharing.account_changed(2, AccountChange::Enabled, &owing, &alice(), &request).await.unwrap();
+    all_finished(&s.jobs).await;
+    assert_eq!(
+        s.host.calls()[before..],
+        ["access 1 photos [bob:rw,@family:r] -[]", "access 1 photos [bob:rw,@family:r] -[] recursive"]
+    );
+    assert!(!s.shares.owes(photos));
+}
+
+#[tokio::test]
+async fn a_deleted_accounts_id_loses_its_entries_and_its_files() {
+    let people = Arc::new(People::new());
+    let s = setup_with(people.clone());
+    let request = RequestContext::default();
+    let photos = s.sharing.create(input("photos", "tank"), &alice(), &request).await.unwrap().id;
+    let before = s.host.calls().len();
+
+    let owing = s.sharing.account_changing(2, AccountChange::Deleted).await.unwrap();
+    assert_eq!(owing, [name("photos")]);
+    people.change(|names| {
+        names.accounts.remove(&2);
+    });
+    // What it could do is gone with it: the shares named before follow.
+    let following =
+        s.sharing.account_changed(2, AccountChange::Deleted, &owing, &alice(), &request).await.unwrap();
+
+    assert_eq!(following, [name("photos")]);
+    all_finished(&s.jobs).await;
+    assert_eq!(
+        s.host.calls()[before..],
+        ["access 1 photos [@family:rw] -[]", "access 1 photos [@family:rw] -[] recursive"],
+        "the folder without the ID's entry; the walk takes it off the files and hands them over"
+    );
+    assert!(!s.shares.owes(photos));
 }
 
 #[tokio::test]
@@ -1325,8 +1625,12 @@ async fn a_walk_of_a_share_gone_meanwhile_does_nothing() {
 }
 
 #[tokio::test]
-async fn members_of_a_denied_group_change_only_once_its_shares_walk_has_ended() {
-    let s = setup();
+async fn members_of_a_denied_group_change_in_the_walk_after_the_one_under_way() {
+    let people = Arc::new(People::new());
+    people.change(|names| {
+        names.members.insert(10, vec![1, 2]);
+    });
+    let s = setup_with(people.clone());
     let request = RequestContext::default();
     let photos = alices_photos(&s).await;
     let jobs = s
@@ -1344,14 +1648,130 @@ async fn members_of_a_denied_group_change_only_once_its_shares_walk_has_ended() 
     while s.host.walks_held.load(std::sync::atomic::Ordering::Relaxed) == 0 {
         tokio::task::yield_now().await;
     }
+    let before = s.host.calls().len();
 
-    let refused = s.sharing.group_members_changed(10, &[1, 2], &alice(), &request).await;
-    assert!(matches!(refused, Err(SharingError::Refused(_))), "{refused:?}");
+    // bob (2) leaves family while the walk gives the files rules it read
+    // with him in it. Not refused: the change of members stands already.
+    let owing = s.sharing.group_members_changing(10, &[1]).await.unwrap();
+    assert_eq!(owing, [name("photos")]);
+    people.change(|names| {
+        names.members.insert(10, vec![1]);
+    });
+    let following = s.sharing.group_members_changed(10, &[1, 2], &owing, &alice(), &request).await.unwrap();
+    assert_eq!(following, [name("photos")], "follows in the background");
+    assert!(
+        s.host.calls()[before..].is_empty(),
+        "the folder is not changed under the walk: it would undo it"
+    );
 
     s.host.hold_walks.store(false, std::sync::atomic::Ordering::Relaxed);
     s.host.let_walks_on.notify_one();
     finished(&s.jobs, jobs[0].clone()).await;
-    assert_eq!(s.sharing.group_members_changed(10, &[1, 2], &alice(), &request).await.unwrap().len(), 1);
+    all_finished(&s.jobs).await;
+    let calls = s.host.calls();
+    assert_eq!(
+        recursive(&calls[before..]),
+        ["access 1 photos [alice:-,bob:-] -[] recursive", "access 1 photos [bob:r,alice:-] -[] recursive"],
+        "the walk under way gives what it read, the next one the members of now: {calls:?}"
+    );
+    assert!(!s.shares.owes(photos));
+}
+
+#[tokio::test]
+async fn one_share_that_cannot_follow_now_does_not_cost_another_its_change() {
+    let people = Arc::new(People::new());
+    let s = setup_with(people.clone());
+    let request = RequestContext::default();
+    let mut docs = input("docs", "tank");
+    docs.access = vec![rule(Subject::Account(2), Access::ReadWrite), deny(Subject::Group(10))];
+    let docs = s.sharing.create(docs, &alice(), &request).await.unwrap().id;
+    let mut photos = input("photos", "tank");
+    photos.access = vec![rule(Subject::Account(2), Access::ReadWrite), deny(Subject::Group(10))];
+    let photos = s.sharing.create(photos, &alice(), &request).await.unwrap().id;
+
+    // bob (2) joins family, denied on both; the host refuses every change
+    // now (the share is not mounted, the agent waited 15 s for a walk, …).
+    let owing = s.sharing.group_members_changing(10, &[1, 2]).await.unwrap();
+    assert_eq!(owing, [name("docs"), name("photos")]);
+    people.change(|names| {
+        names.members.insert(10, vec![1, 2]);
+    });
+    s.host.refuse_access.store(true, std::sync::atomic::Ordering::Relaxed);
+    let following = s.sharing.group_members_changed(10, &[1], &owing, &alice(), &request).await.unwrap();
+    assert_eq!(following, [name("docs"), name("photos")], "every share is tried");
+    all_finished(&s.jobs).await;
+    assert!(s.shares.owes(docs) && s.shares.owes(photos), "the walks failed: still owed");
+    s.host.refuse_access.store(false, std::sync::atomic::Ordering::Relaxed);
+
+    // zendiloosd looks again: not at once after a failure, then it walks.
+    assert!(s.sharing.reconcile_access(&request).await.unwrap().is_empty(), "not right away");
+    s.clock.advance(5 * 60);
+    let walks = s.sharing.reconcile_access(&request).await.unwrap();
+    assert_eq!(walks.len(), 2);
+    all_finished(&s.jobs).await;
+    let calls = s.host.calls();
+    for share in ["docs", "photos"] {
+        let wanted = format!("access 1 {share} [alice:-,bob:-] -[] recursive");
+        assert!(calls.contains(&wanted), "{wanted}: {calls:?}");
+    }
+    assert!(!s.shares.owes(docs) && !s.shares.owes(photos));
+}
+
+#[tokio::test]
+async fn shares_that_owe_their_files_their_rules_are_walked_when_zendiloos_starts() {
+    let s = setup();
+    let request = RequestContext::default();
+    let photos = alices_photos(&s).await;
+    let going = s.sharing.create(input("going", "tank"), &alice(), &request).await.unwrap().id;
+    let cold = crate::domain::NewShare {
+        name: name("archive"),
+        description: None,
+        pool: "cold".into(),
+        volume: 2,
+        shared: true,
+        recycle_bin: true,
+        settings: crate::domain::ShareSettings::default(),
+        access: vec![rule(Subject::Account(1), Access::Read)],
+        nfs: vec![],
+        created_at: zendiloos_kernel::Timestamp::from_unix_seconds(0),
+    };
+    let archive = s.shares.create(cold).await.unwrap().unwrap().id;
+    // As left by walks zendiloosd stopped in the middle of, or that never
+    // started: photos's; one of a share on a volume not mounted now, walked
+    // once it is; one of a share being deleted, never walked.
+    s.shares.owe_access(&[photos, archive, going]).await.unwrap();
+    s.shares.set_deleting(going, true).await.unwrap();
+
+    let walks = s.sharing.reconcile_access(&request).await.unwrap();
+    assert_eq!(walks.len(), 1);
+    assert_eq!(walks[0].target.as_deref(), Some("photos"));
+    assert!(s.sharing.reconcile_access(&request).await.unwrap().is_empty(), "one is queued already");
+    assert_eq!(finished(&s.jobs, walks[0].clone()).await.state, JobState::Succeeded);
+    assert!(!s.shares.owes(photos));
+    assert!(s.shares.owes(archive), "until its volume is there");
+    assert!(s.sharing.reconcile_access(&request).await.unwrap().is_empty(), "nothing else to walk");
+}
+
+#[tokio::test]
+async fn a_walk_settles_only_what_was_owed_when_it_read_the_rules() {
+    let s = setup();
+    let request = RequestContext::default();
+    let photos = alices_photos(&s).await;
+    s.host.hold_walks.store(true, std::sync::atomic::Ordering::Relaxed);
+    let (_, walking) =
+        s.sharing.update(photos, bob_gets(Permission::Read), &alice(), &request).await.unwrap();
+    while s.host.walks_held.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+        tokio::task::yield_now().await;
+    }
+    // Something the files have to follow, after the walk read the rules.
+    s.shares.owe_access(&[photos]).await.unwrap();
+    s.host.hold_walks.store(false, std::sync::atomic::Ordering::Relaxed);
+    s.host.let_walks_on.notify_one();
+
+    assert_eq!(finished(&s.jobs, walking.unwrap()).await.state, JobState::Succeeded);
+    all_finished(&s.jobs).await;
+    assert_eq!(recursive(&s.host.calls()).len(), 2, "walked again after it: {:?}", s.host.calls());
+    assert!(!s.shares.owes(photos));
 }
 
 // Folders on a volume: on the network or on the NAS only
