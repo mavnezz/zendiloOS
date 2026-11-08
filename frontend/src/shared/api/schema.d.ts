@@ -428,6 +428,186 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/certificates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The certificates. Needs `system.manage`. */
+        get: operations["list_certificates"];
+        put?: never;
+        /**
+         * Adds a certificate; it is issued with `POST /certificates/{id}/issue`.
+         *     Needs `system.manage`.
+         */
+        post: operations["create_certificate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/certificates/accounts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The accounts at ACME servers. Needs `system.manage`. */
+        get: operations["acme_accounts"];
+        put?: never;
+        /**
+         * Adds an account; it is registered with the server at its first
+         *     certificate. Needs `system.manage`.
+         */
+        post: operations["create_acme_account"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/certificates/accounts/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Changes an account. Needs `system.manage`. */
+        put: operations["update_acme_account"];
+        post?: never;
+        /** Removes an account no certificate uses. Needs `system.manage`. */
+        delete: operations["delete_acme_account"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/certificates/challenges": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The challenges certificates can use. Needs `system.manage`. */
+        get: operations["acme_challenges"];
+        put?: never;
+        /** Adds a challenge. Needs `system.manage`. */
+        post: operations["create_acme_challenge"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/certificates/challenges/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Changes a challenge; secrets left empty stay as they were. Needs
+         *     `system.manage`.
+         */
+        put: operations["update_acme_challenge"];
+        post?: never;
+        /** Removes a challenge no certificate uses. Needs `system.manage`. */
+        delete: operations["delete_acme_challenge"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/certificates/plugin": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Whether acme.sh is installed, and the DNS providers to choose from.
+         *     Needs `system.view`.
+         */
+        get: operations["acme_plugin"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/certificates/plugin/install": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Installs acme.sh from Debian, as a job. Needs `system.manage`. */
+        post: operations["install_acme_plugin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/certificates/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Changes a certificate; it takes effect at its next issuance. Needs
+         *     `system.manage`.
+         */
+        put: operations["update_certificate"];
+        post?: never;
+        /**
+         * Removes a certificate the web interface does not show. Needs
+         *     `system.manage`.
+         */
+        delete: operations["delete_certificate"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/certificates/{id}/issue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Issues the certificate now (or again), as a job whose output is what
+         *     acme.sh writes. Needs `system.manage`.
+         */
+        post: operations["issue_certificate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/docker/compose/check": {
         parameters: {
             query?: never;
@@ -2838,6 +3018,49 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/system/web-server": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The web interface's ports and certificate, and a change waiting to be
+         *     confirmed. Needs `system.view`.
+         */
+        get: operations["web_server"];
+        /**
+         * Applies new ports or another certificate at once; nginx is checked and
+         *     reloaded. Unless they are confirmed within `confirm_within` seconds
+         *     (`POST /system/web-server/confirm`, from the new address), the old ones
+         *     return by themselves. Needs `system.manage`.
+         */
+        put: operations["apply_web_server"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/system/web-server/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Keeps the change that waits for confirmation. Needs `system.manage`. */
+        post: operations["confirm_web_server"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -2878,6 +3101,32 @@ export interface components {
         };
         /** @enum {string} */
         AccountRole: "admin" | "user" | "readonly";
+        AcmeAccount: {
+            /** Format: int64 */
+            created_at: number;
+            /** @description Let's Encrypt writes here about the account and its certificates. */
+            email: string;
+            /** Format: int64 */
+            id: number;
+            name: string;
+            server: components["schemas"]["AcmeServerName"];
+        };
+        AcmeAccountInput: {
+            email: string;
+            name: string;
+            server: components["schemas"]["AcmeServerName"];
+        };
+        /** @description The ACME client plugin, and the DNS providers it offers. */
+        AcmePlugin: {
+            /** @description acme.sh is installed from Debian. */
+            installed: boolean;
+            providers: components["schemas"]["DnsProvider"][];
+        };
+        /**
+         * @description Which ACME server an account is at.
+         * @enum {string}
+         */
+        AcmeServerName: "letsencrypt" | "letsencrypt_staging";
         /** @description A session of some account that has not ended. */
         ActiveSession: {
             account: string;
@@ -3163,6 +3412,80 @@ export interface components {
             web?: components["schemas"]["AppWeb"] | null;
             website: string;
         };
+        Certificate: {
+            /** Format: int64 */
+            account_id: number;
+            /** @description Renewed by itself a month before it ends. */
+            auto_renew: boolean;
+            /** Format: int64 */
+            challenge_id: number;
+            /** Format: int64 */
+            created_at: number;
+            /** @description The first is its common name; `*.` leads a wildcard. */
+            domains: string[];
+            /** Format: int64 */
+            id: number;
+            /**
+             * Format: int64
+             * @description The last issuance that succeeded, and until when it holds.
+             */
+            issued_at?: number | null;
+            key: components["schemas"]["CertificateKey"];
+            /**
+             * Format: int64
+             * @description The last try, and what went wrong if it did.
+             */
+            last_attempt_at?: number | null;
+            last_error?: string | null;
+            /** @description What acme.sh wrote at the last try. Text, never markup. */
+            last_output: string[];
+            /** Format: int64 */
+            not_after?: number | null;
+        };
+        CertificateInput: {
+            /** Format: int64 */
+            account_id: number;
+            auto_renew?: boolean;
+            /** Format: int64 */
+            challenge_id: number;
+            /**
+             * @description 1 to 50 host names; a wildcard (`*.example.org`) needs a DNS
+             *     challenge.
+             */
+            domains: string[];
+            key?: components["schemas"]["CertificateKey"];
+        };
+        /** @enum {string} */
+        CertificateKey: "ec256" | "rsa2048" | "rsa4096";
+        Challenge: {
+            /** Format: int64 */
+            created_at: number;
+            /** Format: int64 */
+            id: number;
+            method: components["schemas"]["ChallengeKind"];
+            name: string;
+            /** @description acme.sh's DNS API script, for DNS. */
+            provider?: string | null;
+            values: components["schemas"]["DnsValue"][];
+        };
+        ChallengeInput: {
+            method: components["schemas"]["ChallengeKind"];
+            name: string;
+            /** @description For DNS: one of the plugin's providers. */
+            provider?: string | null;
+            /**
+             * @description For DNS: the provider's variables. A secret left empty keeps the
+             *     value saved before.
+             */
+            values?: {
+                [key: string]: string;
+            };
+        };
+        /**
+         * @description How the ACME server is shown the names are ours.
+         * @enum {string}
+         */
+        ChallengeKind: "dns" | "http";
         ChangePasswordRequest: {
             /** Format: password */
             current_password: string;
@@ -3492,6 +3815,31 @@ export interface components {
          * @enum {string}
          */
         DiskUsage: "system" | "array_member" | "pool_member" | "volume" | "removable" | "foreign" | "unused";
+        /** @description A DNS provider acme.sh can make the challenge's records with. */
+        DnsProvider: {
+            /** @description acme.sh's script, e.g. `dns_ionos`. */
+            api: string;
+            label: string;
+            variables: components["schemas"]["DnsVariable"][];
+        };
+        /**
+         * @description A value of a DNS provider's variable, as shown: secret ones only say
+         *     that they are set.
+         */
+        DnsValue: {
+            name: string;
+            secret: boolean;
+            /** @description The value, unless it is secret. */
+            value?: string | null;
+        };
+        /** @description A variable a DNS provider's API script reads. */
+        DnsVariable: {
+            /** @description As acme.sh names it, e.g. `IONOS_PREFIX`. */
+            name: string;
+            required: boolean;
+            /** @description Never sent back once saved. */
+            secret: boolean;
+        };
         DockerContainer: {
             /**
              * Format: int64
@@ -4452,6 +4800,14 @@ export interface components {
              * @description When the old settings return unless confirmed, in Unix seconds.
              */
             revert_at: number;
+        };
+        PendingWebServer: {
+            /**
+             * Format: int64
+             * @description When the old settings return unless confirmed, in Unix seconds.
+             */
+            revert_at: number;
+            settings: components["schemas"]["WebServer"];
         };
         PlanWarning: {
             code: components["schemas"]["PlanWarningCode"];
@@ -5545,6 +5901,31 @@ export interface components {
             /** @description Offered on the network (SMB, NFS); otherwise used on the NAS only. */
             shared: boolean;
         };
+        /** @description Where nginx serves the web interface, and with which certificate. */
+        WebServer: {
+            /**
+             * Format: int64
+             * @description An issued certificate; none: the machine's own, self-signed one.
+             */
+            certificate_id?: number | null;
+            /**
+             * Format: int32
+             * @description Plain HTTP, which points to HTTPS and answers HTTP challenges;
+             *     none: not served.
+             */
+            http_port?: number | null;
+            /** Format: int32 */
+            https_port: number;
+        };
+        WebServerSetup: {
+            /**
+             * Format: int32
+             * @description How long a change waits for confirmation, in seconds.
+             */
+            confirm_within: number;
+            current: components["schemas"]["WebServer"];
+            pending?: components["schemas"]["PendingWebServer"] | null;
+        };
         WebTls: {
             /** @description TLS 1.2 serves older clients too; 1.3 alone refuses them. */
             minimum: components["schemas"]["TlsVersion"];
@@ -6522,6 +6903,488 @@ export interface operations {
             };
             /** @description `unauthenticated` */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    list_certificates: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Certificate"][];
+                };
+            };
+        };
+    };
+    create_certificate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CertificateInput"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Certificate"];
+                };
+            };
+            /** @description `invalid_input` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    acme_accounts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AcmeAccount"][];
+                };
+            };
+        };
+    };
+    create_acme_account: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AcmeAccountInput"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AcmeAccount"];
+                };
+            };
+            /** @description `invalid_input` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    update_acme_account: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AcmeAccountInput"];
+            };
+        };
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_acme_account: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `in_use` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    acme_challenges: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Challenge"][];
+                };
+            };
+        };
+    };
+    create_acme_challenge: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChallengeInput"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Challenge"];
+                };
+            };
+            /** @description `invalid_input` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    update_acme_challenge: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChallengeInput"];
+            };
+        };
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `in_use`: a wildcard certificate needs DNS */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_acme_challenge: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `in_use` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    acme_plugin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AcmePlugin"];
+                };
+            };
+        };
+    };
+    install_acme_plugin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description `acme_installed` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    update_certificate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CertificateInput"];
+            };
+        };
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_certificate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `in_use`: the web interface shows it */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    issue_certificate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `acme_not_installed`, or `refused`: an HTTP challenge without plain HTTP on port 80 */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -12246,6 +13109,103 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["UpdateSettings"];
+                };
+            };
+        };
+    };
+    web_server: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebServerSetup"];
+                };
+            };
+        };
+    };
+    apply_web_server: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WebServer"];
+            };
+        };
+        responses: {
+            /** @description Applied; waits for confirmation. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebServerSetup"];
+                };
+            };
+            /** @description `change_pending`, `port_in_use`, or `refused` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input`: a reserved port, the same port twice, a certificate that does not hold */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `host_failed`: nginx refused the settings; nothing changed */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    confirm_web_server: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Kept. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `refused`: nothing waits */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
                 };
             };
         };

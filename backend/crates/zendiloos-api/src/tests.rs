@@ -276,6 +276,10 @@ pub(crate) struct Harness {
     pub(crate) containers: zendiloos_containers::application::Containers,
     /// The jobs of the Docker app, kept apart from the others here.
     pub(crate) docker_jobs: Arc<zendiloos_jobs::testing::MemoryJobs>,
+    /// acme.sh and nginx, pretended: not installed at first.
+    pub(crate) acme: Arc<zendiloos_certificates::testing::FakeAcmeHost>,
+    /// Ports something listens on, for the web interface's settings.
+    pub(crate) listening: Arc<zendiloos_certificates::testing::FakePorts>,
 }
 
 /// The App Center's projects, from the Docker fakes, as zendiloosd's
@@ -489,7 +493,22 @@ impl Harness {
         *update_releases.releases.lock().unwrap() =
             vec![zendiloos_updates::testing::release("v0.2.0", "0.2.0", false)];
         let containers = docker_test.containers.clone();
+        let acme = Arc::new(zendiloos_certificates::testing::FakeAcmeHost::default());
+        acme.set_now(zendiloos_kernel::Clock::now(identity.clock.as_ref()));
+        let listening = Arc::new(zendiloos_certificates::testing::FakePorts::listening(&[22, 80, 443, 8080]));
+        let certificates = zendiloos_certificates::application::Certificates::new(
+            zendiloos_certificates::application::CertificatesPorts {
+                repository: Arc::new(zendiloos_certificates::testing::MemoryCertificates::default()),
+                host: acme.clone(),
+                listening: listening.clone(),
+                jobs: jobs.clone(),
+                notifier: notifier.clone(),
+                audit: identity.audit.clone(),
+                clock: identity.clock.clone(),
+            },
+        );
         let use_cases = UseCases {
+            certificates,
             containers: docker_test.containers,
             system,
             identity: identity.use_cases.clone(),
@@ -555,6 +574,8 @@ impl Harness {
             installed,
             containers,
             docker_jobs,
+            acme,
+            listening,
         }
     }
 
@@ -1623,6 +1644,15 @@ fn openapi_documents_every_route() {
             "/api/v1/auth/logout",
             "/api/v1/auth/password",
             "/api/v1/auth/session",
+            "/api/v1/certificates",
+            "/api/v1/certificates/accounts",
+            "/api/v1/certificates/accounts/{id}",
+            "/api/v1/certificates/challenges",
+            "/api/v1/certificates/challenges/{id}",
+            "/api/v1/certificates/plugin",
+            "/api/v1/certificates/plugin/install",
+            "/api/v1/certificates/{id}",
+            "/api/v1/certificates/{id}/issue",
             "/api/v1/docker/compose/check",
             "/api/v1/docker/containers",
             "/api/v1/docker/containers/{id}",
@@ -1743,6 +1773,8 @@ fn openapi_documents_every_route() {
             "/api/v1/system/updates/apply",
             "/api/v1/system/updates/check",
             "/api/v1/system/updates/settings",
+            "/api/v1/system/web-server",
+            "/api/v1/system/web-server/confirm",
         ]
     );
 }

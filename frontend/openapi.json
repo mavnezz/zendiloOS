@@ -1354,6 +1354,657 @@
         ]
       }
     },
+    "/api/v1/certificates": {
+      "get": {
+        "tags": [
+          "certificates"
+        ],
+        "summary": "The certificates. Needs `system.manage`.",
+        "operationId": "list_certificates",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Certificate"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "certificates"
+        ],
+        "summary": "Adds a certificate; it is issued with `POST /certificates/{id}/issue`.\nNeeds `system.manage`.",
+        "operationId": "create_certificate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CertificateInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Certificate"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/certificates/accounts": {
+      "get": {
+        "tags": [
+          "certificates"
+        ],
+        "summary": "The accounts at ACME servers. Needs `system.manage`.",
+        "operationId": "acme_accounts",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AcmeAccount"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "certificates"
+        ],
+        "summary": "Adds an account; it is registered with the server at its first\ncertificate. Needs `system.manage`.",
+        "operationId": "create_acme_account",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcmeAccountInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcmeAccount"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/certificates/accounts/{id}": {
+      "put": {
+        "tags": [
+          "certificates"
+        ],
+        "summary": "Changes an account. Needs `system.manage`.",
+        "operationId": "update_acme_account",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcmeAccountInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {},
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "certificates"
+        ],
+        "summary": "Removes an account no certificate uses. Needs `system.manage`.",
+        "operationId": "delete_acme_account",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`in_use`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/certificates/challenges": {
+      "get": {
+        "tags": [
+          "certificates"
+        ],
+        "summary": "The challenges certificates can use. Needs `system.manage`.",
+        "operationId": "acme_challenges",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Challenge"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "certificates"
+        ],
+        "summary": "Adds a challenge. Needs `system.manage`.",
+        "operationId": "create_acme_challenge",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChallengeInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Challenge"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/certificates/challenges/{id}": {
+      "put": {
+        "tags": [
+          "certificates"
+        ],
+        "summary": "Changes a challenge; secrets left empty stay as they were. Needs\n`system.manage`.",
+        "operationId": "update_acme_challenge",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChallengeInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {},
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`in_use`: a wildcard certificate needs DNS",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "certificates"
+        ],
+        "summary": "Removes a challenge no certificate uses. Needs `system.manage`.",
+        "operationId": "delete_acme_challenge",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`in_use`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/certificates/plugin": {
+      "get": {
+        "tags": [
+          "certificates"
+        ],
+        "summary": "Whether acme.sh is installed, and the DNS providers to choose from.\nNeeds `system.view`.",
+        "operationId": "acme_plugin",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcmePlugin"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/certificates/plugin/install": {
+      "post": {
+        "tags": [
+          "certificates"
+        ],
+        "summary": "Installs acme.sh from Debian, as a job. Needs `system.manage`.",
+        "operationId": "install_acme_plugin",
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`acme_installed`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/certificates/{id}": {
+      "put": {
+        "tags": [
+          "certificates"
+        ],
+        "summary": "Changes a certificate; it takes effect at its next issuance. Needs\n`system.manage`.",
+        "operationId": "update_certificate",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CertificateInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {},
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "certificates"
+        ],
+        "summary": "Removes a certificate the web interface does not show. Needs\n`system.manage`.",
+        "operationId": "delete_certificate",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`in_use`: the web interface shows it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/certificates/{id}/issue": {
+      "post": {
+        "tags": [
+          "certificates"
+        ],
+        "summary": "Issues the certificate now (or again), as a job whose output is what\nacme.sh writes. Needs `system.manage`.",
+        "operationId": "issue_certificate",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`acme_not_installed`, or `refused`: an HTTP challenge without plain HTTP on port 80",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/docker/compose/check": {
       "post": {
         "tags": [
@@ -9456,6 +10107,124 @@
           }
         ]
       }
+    },
+    "/api/v1/system/web-server": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "The web interface's ports and certificate, and a change waiting to be\nconfirmed. Needs `system.view`.",
+        "operationId": "web_server",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebServerSetup"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Applies new ports or another certificate at once; nginx is checked and\nreloaded. Unless they are confirmed within `confirm_within` seconds\n(`POST /system/web-server/confirm`, from the new address), the old ones\nreturn by themselves. Needs `system.manage`.",
+        "operationId": "apply_web_server",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WebServer"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Applied; waits for confirmation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebServerSetup"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`change_pending`, `port_in_use`, or `refused`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`: a reserved port, the same port twice, a certificate that does not hold",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`host_failed`: nginx refused the settings; nothing changed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/system/web-server/confirm": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Keeps the change that waits for confirmation. Needs `system.manage`.",
+        "operationId": "confirm_web_server",
+        "responses": {
+          "204": {
+            "description": "Kept."
+          },
+          "409": {
+            "description": "`refused`: nothing waits",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -9557,6 +10326,84 @@
           "admin",
           "user",
           "readonly"
+        ]
+      },
+      "AcmeAccount": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "server",
+          "email",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "email": {
+            "type": "string",
+            "description": "Let's Encrypt writes here about the account and its certificates."
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "name": {
+            "type": "string"
+          },
+          "server": {
+            "$ref": "#/components/schemas/AcmeServerName"
+          }
+        }
+      },
+      "AcmeAccountInput": {
+        "type": "object",
+        "required": [
+          "name",
+          "server",
+          "email"
+        ],
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "server": {
+            "$ref": "#/components/schemas/AcmeServerName"
+          }
+        },
+        "additionalProperties": false
+      },
+      "AcmePlugin": {
+        "type": "object",
+        "description": "The ACME client plugin, and the DNS providers it offers.",
+        "required": [
+          "installed",
+          "providers"
+        ],
+        "properties": {
+          "installed": {
+            "type": "boolean",
+            "description": "acme.sh is installed from Debian."
+          },
+          "providers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DnsProvider"
+            }
+          }
+        }
+      },
+      "AcmeServerName": {
+        "type": "string",
+        "description": "Which ACME server an account is at.",
+        "enum": [
+          "letsencrypt",
+          "letsencrypt_staging"
         ]
       },
       "ActiveSession": {
@@ -10396,6 +11243,207 @@
           }
         ],
         "description": "Everything about an app before installing it."
+      },
+      "Certificate": {
+        "type": "object",
+        "required": [
+          "id",
+          "domains",
+          "key",
+          "account_id",
+          "challenge_id",
+          "auto_renew",
+          "created_at",
+          "last_output"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "auto_renew": {
+            "type": "boolean",
+            "description": "Renewed by itself a month before it ends."
+          },
+          "challenge_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "domains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The first is its common name; `*.` leads a wildcard."
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "issued_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The last issuance that succeeded, and until when it holds."
+          },
+          "key": {
+            "$ref": "#/components/schemas/CertificateKey"
+          },
+          "last_attempt_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The last try, and what went wrong if it did."
+          },
+          "last_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_output": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What acme.sh wrote at the last try. Text, never markup."
+          },
+          "not_after": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          }
+        }
+      },
+      "CertificateInput": {
+        "type": "object",
+        "required": [
+          "domains",
+          "account_id",
+          "challenge_id"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "auto_renew": {
+            "type": "boolean"
+          },
+          "challenge_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "domains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "1 to 50 host names; a wildcard (`*.example.org`) needs a DNS\nchallenge."
+          },
+          "key": {
+            "$ref": "#/components/schemas/CertificateKey"
+          }
+        },
+        "additionalProperties": false
+      },
+      "CertificateKey": {
+        "type": "string",
+        "enum": [
+          "ec256",
+          "rsa2048",
+          "rsa4096"
+        ]
+      },
+      "Challenge": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "method",
+          "values",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "method": {
+            "$ref": "#/components/schemas/ChallengeKind"
+          },
+          "name": {
+            "type": "string"
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "acme.sh's DNS API script, for DNS."
+          },
+          "values": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DnsValue"
+            }
+          }
+        }
+      },
+      "ChallengeInput": {
+        "type": "object",
+        "required": [
+          "name",
+          "method"
+        ],
+        "properties": {
+          "method": {
+            "$ref": "#/components/schemas/ChallengeKind"
+          },
+          "name": {
+            "type": "string"
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For DNS: one of the plugin's providers."
+          },
+          "values": {
+            "type": "object",
+            "description": "For DNS: the provider's variables. A secret left empty keeps the\nvalue saved before.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ChallengeKind": {
+        "type": "string",
+        "description": "How the ACME server is shown the names are ours.",
+        "enum": [
+          "dns",
+          "http"
+        ]
       },
       "ChangePasswordRequest": {
         "type": "object",
@@ -11375,6 +12423,75 @@
           "foreign",
           "unused"
         ]
+      },
+      "DnsProvider": {
+        "type": "object",
+        "description": "A DNS provider acme.sh can make the challenge's records with.",
+        "required": [
+          "api",
+          "label",
+          "variables"
+        ],
+        "properties": {
+          "api": {
+            "type": "string",
+            "description": "acme.sh's script, e.g. `dns_ionos`."
+          },
+          "label": {
+            "type": "string"
+          },
+          "variables": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DnsVariable"
+            }
+          }
+        }
+      },
+      "DnsValue": {
+        "type": "object",
+        "description": "A value of a DNS provider's variable, as shown: secret ones only say\nthat they are set.",
+        "required": [
+          "name",
+          "secret"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "secret": {
+            "type": "boolean"
+          },
+          "value": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The value, unless it is secret."
+          }
+        }
+      },
+      "DnsVariable": {
+        "type": "object",
+        "description": "A variable a DNS provider's API script reads.",
+        "required": [
+          "name",
+          "secret",
+          "required"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "As acme.sh names it, e.g. `IONOS_PREFIX`."
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "secret": {
+            "type": "boolean",
+            "description": "Never sent back once saved."
+          }
+        }
       },
       "DockerContainer": {
         "type": "object",
@@ -14209,6 +15326,23 @@
             "type": "integer",
             "format": "int64",
             "description": "When the old settings return unless confirmed, in Unix seconds."
+          }
+        }
+      },
+      "PendingWebServer": {
+        "type": "object",
+        "required": [
+          "settings",
+          "revert_at"
+        ],
+        "properties": {
+          "revert_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When the old settings return unless confirmed, in Unix seconds."
+          },
+          "settings": {
+            "$ref": "#/components/schemas/WebServer"
           }
         }
       },
@@ -17399,6 +18533,66 @@
           }
         }
       },
+      "WebServer": {
+        "type": "object",
+        "description": "Where nginx serves the web interface, and with which certificate.",
+        "required": [
+          "https_port"
+        ],
+        "properties": {
+          "certificate_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "An issued certificate; none: the machine's own, self-signed one."
+          },
+          "http_port": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Plain HTTP, which points to HTTPS and answers HTTP challenges;\nnone: not served.",
+            "minimum": 0
+          },
+          "https_port": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "WebServerSetup": {
+        "type": "object",
+        "required": [
+          "current",
+          "confirm_within"
+        ],
+        "properties": {
+          "confirm_within": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How long a change waits for confirmation, in seconds.",
+            "minimum": 0
+          },
+          "current": {
+            "$ref": "#/components/schemas/WebServer"
+          },
+          "pending": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PendingWebServer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
       "WebTls": {
         "type": "object",
         "required": [
@@ -17454,6 +18648,10 @@
     {
       "name": "files",
       "description": "The file manager: share contents as the signed-in user"
+    },
+    {
+      "name": "certificates",
+      "description": "The ACME client plugin: accounts, challenges and certificates"
     }
   ]
 }
