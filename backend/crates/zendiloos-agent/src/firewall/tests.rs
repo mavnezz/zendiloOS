@@ -31,12 +31,18 @@ fn rule(
 }
 
 fn config(rules: Vec<FirewallRule>, fallback: FirewallVerdict) -> FirewallConfig {
-    FirewallConfig { rules: FirewallRules::new(rules).unwrap(), fallback }
+    FirewallConfig { rules: FirewallRules::new(rules).unwrap(), fallback, bridges: vec![] }
+}
+
+fn chain<'a>(text: &'a str, name: &str) -> &'a str {
+    let start = text.find(&format!("chain {name} {{")).expect("chain");
+    let rest = &text[start..];
+    &rest[..rest.find("\n\t}").expect("end of chain")]
 }
 
 #[test]
 fn the_file_says_exactly_the_rules() {
-    let off = ruleset(None);
+    let off = ruleset(None, Phase::Kept);
     assert!(off.ends_with("table inet zendiloos_firewall\ndelete table inet zendiloos_firewall\n"), "{off}");
     assert!(!off.contains("chain"));
 
@@ -68,14 +74,16 @@ fn the_file_says_exactly_the_rules() {
             FirewallVerdict::Drop,
         ),
     ];
-    let text = ruleset(Some(&config(rules, FirewallVerdict::Drop)));
+    let mut with_bridges = config(rules, FirewallVerdict::Drop);
+    with_bridges.bridges = vec![DockerBridge::parse("br-0123456789ab").unwrap()];
+    let text = ruleset(Some(&with_bridges), Phase::Kept);
     assert!(text.starts_with(HEADER));
     let (input, forward) = text.split_once("chain forward").unwrap();
     for line in [
         "\t\ttype filter hook input priority filter - 5; policy accept;\n",
         "\t\tct state established,related accept\n",
         "\t\tiif \"lo\" accept\n",
-        "\t\tiifname \"br-*\" accept\n",
+        "\t\tiifname { \"br-0123456789ab\", \"docker0\" } accept\n",
         "\t\tudp sport 67 udp dport 68 accept\n",
         "\t\tiifname \"enp1s0\" ip saddr 192.168.1.0/24 tcp dport { 139, 445 } accept\n",
         "\t\tip saddr 10.0.0.7 drop\n",
@@ -89,10 +97,15 @@ fn the_file_says_exactly_the_rules() {
     ] {
         assert!(input.contains(line), "{line:?} in {input}");
     }
+    assert!(!text.contains("br-*"), "no bridge passes for Docker's by its name's start: {text}");
     for line in [
         "\t\ttype filter hook forward priority filter - 5; policy accept;\n",
+        "\t\tiifname { \"br-0123456789ab\", \"docker0\" } accept\n",
         "\t\tiifname \"veth*\" accept\n",
-        "\t\tct status dnat jump published\n",
+        "\t\tct status dnat jump published\n\
+         \t\t# Nothing else from outside reaches a container, not even sent to\n\
+         \t\t# its address through the NAS.\n\
+         \t\toifname { \"br-0123456789ab\", \"docker0\" } drop\n",
         "\t\tip saddr 10.0.0.7 drop\n",
         "\t\tmeta l4proto tcp ct original proto-dst { 8080-8081 } accept\n",
         "\t\tip6 saddr fd00::1-fd00::9 meta l4proto udp ct original proto-dst { 3478 } accept\n",
@@ -105,8 +118,68 @@ fn the_file_says_exactly_the_rules() {
         !published.contains("139") && !published.contains("icmp"),
         "only rules that forward: {published}"
     );
-    let accepting = ruleset(Some(&config(vec![], FirewallVerdict::Accept)));
+    let accepting = ruleset(Some(&config(vec![], FirewallVerdict::Accept)), Phase::Kept);
     assert!(accepting.ends_with("\t\taccept\n\t}\n}\n"), "{accepting}");
+    assert!(accepting.contains("\t\tiifname { \"docker0\" } accept\n"), "{accepting}");
+}
+
+/// A NAS whose own LAN interface is a bridge named `br-lan` (the network
+/// context shows it as one of the machine's): a rule denying everything on
+/// it, with a denying fallback, keeps its clients out, both from the NAS
+/// and from the ports Docker publishes.
+#[test]
+fn a_lan_bridge_named_br_dash_is_filtered() {
+    let deny_lan = FirewallRule {
+        interface: Some(InterfaceName::parse("br-lan").unwrap()),
+        source: FirewallSource::Any,
+        traffic: FirewallTraffic::All {},
+        forward: true,
+        verdict: FirewallVerdict::Drop,
+    };
+    let text = ruleset(Some(&config(vec![deny_lan], FirewallVerdict::Drop)), Phase::Kept);
+    let input = chain(&text, "input");
+    let rule = input.find("iifname \"br-lan\" drop").expect("the rule");
+    for (at, line) in input.match_indices(" accept").map(|(at, _)| (at, &input[..at])) {
+        let line = line.rsplit('\n').next().unwrap_or_default();
+        assert!(at > rule || !line.contains("br-"), "accepted before the rule: {line:?} in\n{input}");
+    }
+    let forward = chain(&text, "forward");
+    assert!(!forward.contains("br-lan") && !forward.contains("br-*"), "{forward}");
+    assert!(chain(&text, "published").contains("iifname \"br-lan\" drop"));
+}
+
+/// With Docker the NAS forwards IPv4. A host of the LAN that routes a
+/// container network through the NAS reaches a container's port directly,
+/// without Docker's address translation: that new connection meets a drop.
+#[test]
+fn new_forwarded_connections_without_dnat_meet_the_rules_or_a_drop() {
+    let text = ruleset(Some(&config(vec![], FirewallVerdict::Accept)), Phase::Kept);
+    let forward = chain(&text, "forward");
+    let after_jump = &forward[forward.find("ct status dnat jump published").expect("the jump")..];
+    assert!(
+        after_jump.lines().skip(1).any(|line| line.trim() == "oifname { \"docker0\" } drop"),
+        "a new connection to a container that was not translated falls through to `policy accept`:\n{forward}"
+    );
+}
+
+/// While a change waits, what others send on connections opened before it
+/// meets the rules (a browser's open HTTP/2 connection carries its
+/// confirmation); answers to the NAS's own connections still pass at once.
+#[test]
+fn while_a_change_waits_connections_opened_before_meet_the_rules() {
+    let rules = vec![rule(FirewallSource::Any, tcp(&[(443, 443)]), false, FirewallVerdict::Accept)];
+    let waiting = ruleset(Some(&config(rules.clone(), FirewallVerdict::Drop)), Phase::Waiting);
+    let input = chain(&waiting, "input");
+    assert!(!input.contains("ct state established,related accept"), "{input}");
+    let reply = input.find("\t\tct state established ct direction reply accept\n").expect("answers");
+    assert!(input.find("\t\tct state related accept\n").is_some());
+    let rule = input.find("tcp dport { 443 } accept").expect("the rule");
+    assert!(reply < rule);
+    // The forward chain is the same either way.
+    let kept = ruleset(Some(&config(rules, FirewallVerdict::Drop)), Phase::Kept);
+    assert_eq!(chain(&waiting, "forward"), chain(&kept, "forward"));
+    assert!(chain(&kept, "input").contains("\t\tct state established,related accept\n"));
+    assert_eq!(ruleset(None, Phase::Waiting), ruleset(None, Phase::Kept));
 }
 
 /// The rules in `dir`; `nft -c` fails while `fail` is there, and
@@ -149,41 +222,108 @@ fn in_force(dir: &Path) -> String {
     fs::read_to_string(dir.join("firewall/zendiloos.nft")).unwrap()
 }
 
+fn previous(dir: &Path) -> Option<String> {
+    fs::read_to_string(dir.join("firewall/zendiloos.nft.previous")).ok()
+}
+
+const NOTHING_WAITS: Response = Response::FirewallState { pending: None };
+
+fn waits(answer: &Response) -> bool {
+    matches!(answer, Response::FirewallState { pending: Some(p) } if p.revert_at > now())
+}
+
 #[tokio::test]
 async fn rules_stay_once_confirmed() {
     let dir = tempfile::tempdir().unwrap();
     let firewall = firewall(dir.path());
     // Never on: staying off writes nothing.
-    assert_eq!(firewall.apply(None, None).await.unwrap(), Response::Done);
+    assert_eq!(firewall.apply(None, None, None).await.unwrap(), NOTHING_WAITS);
     assert!(!dir.path().join("firewall").exists() && calls(dir.path()).is_empty());
 
     let within = ConfirmWithin::seconds(30).unwrap();
     let closed = config(vec![], FirewallVerdict::Drop);
-    assert_eq!(firewall.apply(Some(&closed), Some(within)).await.unwrap(), Response::Done);
-    assert!(in_force(dir.path()).contains("\t\tdrop\n"));
-    let Response::FirewallState { pending: Some(pending) } = firewall.state().await else { panic!() };
-    assert!(pending.revert_at > now());
-    assert!(matches!(firewall.apply(Some(&closed), Some(within)).await, Err(OperationError::Conflict)));
-    // Brought up to date while waiting: what returns stays what was before.
+    assert!(waits(&firewall.apply(Some(&closed), Some(within), None).await.unwrap()));
+    assert_eq!(in_force(dir.path()), ruleset(Some(&closed), Phase::Waiting));
+    assert!(waits(&firewall.state().await));
+    assert!(matches!(firewall.apply(Some(&closed), Some(within), None).await, Err(OperationError::Conflict)));
+    let both = WaitingFirewall { config: None };
+    assert!(matches!(firewall.apply(None, Some(within), Some(&both)).await, Err(OperationError::Refused(_))));
+    // Brought up to date while waiting: the change's rules stay in force,
+    // what returns is the rules kept as they are now.
     let open = config(vec![], FirewallVerdict::Accept);
-    firewall.apply(Some(&open), None).await.unwrap();
-    assert!(in_force(dir.path()).ends_with("\t\taccept\n\t}\n}\n"));
-    assert_eq!(
-        fs::read_to_string(dir.path().join("firewall/zendiloos.nft.previous")).unwrap(),
-        ruleset(None)
-    );
+    let mut closed_now = closed.clone();
+    closed_now.bridges = vec![DockerBridge::parse("br-0123456789ab").unwrap()];
+    let waiting = WaitingFirewall { config: Some(closed_now.clone()) };
+    assert!(waits(&firewall.apply(Some(&open), None, Some(&waiting)).await.unwrap()));
+    assert_eq!(in_force(dir.path()), ruleset(Some(&closed_now), Phase::Waiting));
+    assert_eq!(previous(dir.path()).unwrap(), ruleset(Some(&open), Phase::Kept));
+    // Confirmed: the change's rules, without checking connections opened
+    // before them.
     assert_eq!(firewall.confirm().await.unwrap(), Response::Done);
-    assert_eq!(firewall.state().await, Response::FirewallState { pending: None });
-    assert!(!dir.path().join("firewall/zendiloos.nft.previous").exists());
+    assert_eq!(firewall.state().await, NOTHING_WAITS);
+    assert_eq!(in_force(dir.path()), ruleset(Some(&closed_now), Phase::Kept));
+    assert_eq!(previous(dir.path()), None);
     assert!(!dir.path().join("firewall/zendiloos.nft.check").exists());
     assert!(firewall.confirm().await.is_err(), "nothing waits");
-    assert_eq!(
-        calls(dir.path()),
-        ["reload-or-restart zendiloos-firewall.service", "reload-or-restart zendiloos-firewall.service"]
-    );
+    assert_eq!(calls(dir.path()), ["reload-or-restart zendiloos-firewall.service"; 3]);
+    // Rules for a change that no longer waits: the rules kept go in force.
+    assert_eq!(firewall.apply(Some(&open), None, Some(&waiting)).await.unwrap(), NOTHING_WAITS);
+    assert_eq!(in_force(dir.path()), ruleset(Some(&open), Phase::Kept));
     // Off again: the table goes.
-    firewall.apply(None, None).await.unwrap();
-    assert_eq!(in_force(dir.path()), ruleset(None));
+    firewall.apply(None, None, None).await.unwrap();
+    assert_eq!(in_force(dir.path()), ruleset(None, Phase::Kept));
+}
+
+/// zendiloosd keeps a change waiting in memory only. Once it restarted, it
+/// cannot confirm the change any more and names none waiting: the change
+/// ends there, with the rules kept in force, and its timer puts nothing
+/// older back later.
+#[tokio::test]
+async fn a_change_nobody_can_confirm_any_more_ends_with_the_rules_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let firewall = firewall(dir.path());
+    let open = config(vec![], FirewallVerdict::Accept);
+    firewall.apply(Some(&open), None, None).await.unwrap();
+    let closed = config(vec![], FirewallVerdict::Drop);
+    let begun = firewall.apply(Some(&closed), ConfirmWithin::seconds(30).ok(), None).await.unwrap();
+    assert!(waits(&begun));
+
+    let mut open_now = open.clone();
+    open_now.bridges = vec![DockerBridge::parse("br-0123456789ab").unwrap()];
+    assert_eq!(firewall.apply(Some(&open_now), None, None).await.unwrap(), NOTHING_WAITS);
+    assert_eq!(in_force(dir.path()), ruleset(Some(&open_now), Phase::Kept));
+    assert_eq!(previous(dir.path()), None);
+    assert_eq!(firewall.state().await, NOTHING_WAITS);
+    // Nothing older is left to put back.
+    firewall.restore().await;
+    assert_eq!(in_force(dir.path()), ruleset(Some(&open_now), Phase::Kept));
+    assert_eq!(calls(dir.path()).len(), 3);
+}
+
+/// The timer goes back while holding the lock: a refresh for the change
+/// that reaches the agent just then finds it gone and puts the rules kept
+/// in force, never the change's rules with nothing left to undo them.
+#[tokio::test]
+async fn rules_for_a_change_that_just_went_back_are_not_put_in_force() {
+    let dir = tempfile::tempdir().unwrap();
+    let firewall = firewall(dir.path());
+    let open = config(vec![], FirewallVerdict::Accept);
+    firewall.apply(Some(&open), None, None).await.unwrap();
+    let closed = config(vec![], FirewallVerdict::Drop);
+    let begun = firewall.apply(Some(&closed), ConfirmWithin::seconds(30).ok(), None).await.unwrap();
+    assert!(waits(&begun));
+    // What the timer does when the time is up, under the lock.
+    {
+        let mut pending = firewall.pending.lock().await;
+        pending.take().unwrap().timer.abort();
+        firewall.restore().await;
+    }
+    assert_eq!(firewall.state().await, NOTHING_WAITS);
+    assert_eq!(in_force(dir.path()), ruleset(Some(&open), Phase::Kept));
+
+    let waiting = WaitingFirewall { config: Some(closed) };
+    assert_eq!(firewall.apply(Some(&open), None, Some(&waiting)).await.unwrap(), NOTHING_WAITS);
+    assert_eq!(in_force(dir.path()), ruleset(Some(&open), Phase::Kept));
 }
 
 #[tokio::test]
@@ -191,15 +331,16 @@ async fn rules_nft_refuses_change_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let firewall = firewall(dir.path());
     fs::write(dir.path().join("fail"), "").unwrap();
-    let failed =
-        firewall.apply(Some(&config(vec![], FirewallVerdict::Drop)), ConfirmWithin::seconds(30).ok()).await;
+    let failed = firewall
+        .apply(Some(&config(vec![], FirewallVerdict::Drop)), ConfirmWithin::seconds(30).ok(), None)
+        .await;
     assert_eq!(
         failed.unwrap_err().to_string(),
         "/etc/zendiloos/firewall/zendiloos.nft.check:9:3-9: Error: syntax error"
     );
     assert!(!dir.path().join("firewall/zendiloos.nft").exists());
     assert!(!dir.path().join("firewall/zendiloos.nft.previous").exists());
-    assert_eq!(firewall.state().await, Response::FirewallState { pending: None });
+    assert_eq!(firewall.state().await, NOTHING_WAITS);
     assert!(calls(dir.path()).is_empty());
 }
 
@@ -208,10 +349,10 @@ async fn rules_not_confirmed_go_back_by_themselves_and_after_a_restart() {
     let dir = tempfile::tempdir().unwrap();
     let firewall = firewall(dir.path());
     let open = config(vec![], FirewallVerdict::Accept);
-    firewall.apply(Some(&open), None).await.unwrap();
+    firewall.apply(Some(&open), None, None).await.unwrap();
     let before = in_force(dir.path());
     firewall
-        .apply(Some(&config(vec![], FirewallVerdict::Drop)), ConfirmWithin::seconds(30).ok())
+        .apply(Some(&config(vec![], FirewallVerdict::Drop)), ConfirmWithin::seconds(30).ok(), None)
         .await
         .unwrap();
     // What the timer does when the time is up.
@@ -237,14 +378,15 @@ async fn rules_not_confirmed_go_back_by_themselves_and_after_a_restart() {
 async fn rules_that_cannot_be_loaded_go_back_at_once() {
     let dir = tempfile::tempdir().unwrap();
     let firewall = firewall(dir.path());
-    firewall.apply(Some(&config(vec![], FirewallVerdict::Accept)), None).await.unwrap();
+    firewall.apply(Some(&config(vec![], FirewallVerdict::Accept)), None, None).await.unwrap();
     let before = in_force(dir.path());
     // systemctl fails from now on.
     let systemctl = dir.path().join("systemctl");
     fs::write(&systemctl, "#!/bin/sh\necho 'Job failed' >&2\nexit 1\n").unwrap();
-    let failed =
-        firewall.apply(Some(&config(vec![], FirewallVerdict::Drop)), ConfirmWithin::seconds(30).ok()).await;
+    let failed = firewall
+        .apply(Some(&config(vec![], FirewallVerdict::Drop)), ConfirmWithin::seconds(30).ok(), None)
+        .await;
     assert!(failed.is_err());
     assert_eq!(in_force(dir.path()), before);
-    assert_eq!(firewall.state().await, Response::FirewallState { pending: None });
+    assert_eq!(firewall.state().await, NOTHING_WAITS);
 }

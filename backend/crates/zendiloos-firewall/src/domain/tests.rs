@@ -174,6 +174,10 @@ fn services_stand_for_the_ports_in_use() {
     let nfs = reach(Service::Known(KnownService::Nfs));
     assert_eq!(nfs.tcp, nfs.udp);
     assert!(nfs.tcp.iter().any(|r| r.contains(2049)) && nfs.tcp.iter().any(|r| r.contains(20048)));
+    // lockd's port is not one Linux hands out for outgoing connections
+    // (`ip_local_port_range`, 32768 to 60999 by default).
+    assert!(nfs.tcp.iter().any(|r| r.contains(32767)));
+    assert!(NFS_PORTS.iter().all(|port| !(32768..=60999).contains(port)), "{NFS_PORTS:?}");
     let discovery = reach(Service::Known(KnownService::Discovery));
     assert!(discovery.has(Transport::Udp, 5353) && discovery.has(Transport::Tcp, 5357));
     assert!(!discovery.has(Transport::Tcp, 5353));
@@ -223,6 +227,10 @@ fn rules_compile_to_what_the_host_matches() {
             compiled(None, Source::Any, Traffic::Ping, false, Action::Allow),
         ]
     );
+    assert!(ruleset.bridges.is_empty());
+    // Docker's bridges go along, in order, once each.
+    let bridges = Facts { bridges: vec!["br-b".into(), "br-a".into(), "br-b".into()], ..facts() };
+    assert_eq!(compile(&settings, &bridges).unwrap().bridges, ["br-a", "br-b"]);
 }
 
 #[test]

@@ -806,6 +806,7 @@ impl AgentTransport for SimulatedAgent {
                 self.acme.lock().unwrap_or_else(PoisonError::into_inner).issued.remove(certificate);
                 Response::Done
             }
+            Request::RemoveAcmeAccount { .. } => Response::Done,
             Request::WebServerState {} => {
                 let now = i64::try_from((self.clock)()).unwrap_or(i64::MAX);
                 let mut acme = self.acme.lock().unwrap_or_else(PoisonError::into_inner);
@@ -843,23 +844,41 @@ impl AgentTransport for SimulatedAgent {
                 }
                 Response::FirewallState { pending: firewall.pending.as_ref().map(|(p, _)| *p) }
             }
-            Request::ApplyFirewall { config, confirm_within } => {
+            Request::ApplyFirewall { config, confirm_within, waiting } => {
                 let now = i64::try_from((self.clock)()).unwrap_or(i64::MAX);
                 let mut firewall = self.firewall.lock().unwrap_or_else(PoisonError::into_inner);
-                let waiting = firewall.pending.as_ref().is_some_and(|(p, _)| p.revert_at > now);
-                match confirm_within {
-                    Some(_) if waiting => error(ErrorCode::Conflict, "a change waits for confirmation"),
-                    Some(within) => {
+                if firewall.pending.as_ref().is_some_and(|(p, _)| p.revert_at <= now) {
+                    let (_, before) = firewall.pending.take().unwrap_or_else(|| unreachable!());
+                    firewall.rules = before;
+                }
+                match (confirm_within, waiting) {
+                    (Some(_), Some(_)) => {
+                        error(ErrorCode::Forbidden, "a change that begins has no other rules")
+                    }
+                    (Some(_), None) if firewall.pending.is_some() => {
+                        error(ErrorCode::Conflict, "a change waits for confirmation")
+                    }
+                    (Some(within), None) => {
                         let revert_at = now + i64::from(within.get());
                         let before = firewall.rules.take();
                         firewall.pending =
                             Some((zendiloos_agent_proto::PendingFirewall { revert_at }, before));
                         firewall.rules = config.clone();
-                        Response::Done
+                        Response::FirewallState { pending: firewall.pending.as_ref().map(|(p, _)| *p) }
                     }
-                    None => {
-                        firewall.rules = config.clone();
-                        Response::Done
+                    (None, waiting) => {
+                        match (firewall.pending.as_mut(), waiting) {
+                            (Some((_, before)), Some(waiting)) => {
+                                before.clone_from(config);
+                                firewall.rules.clone_from(&waiting.config);
+                            }
+                            // Nobody can confirm it any more, or nothing waits.
+                            _ => {
+                                firewall.pending = None;
+                                firewall.rules.clone_from(config);
+                            }
+                        }
+                        Response::FirewallState { pending: firewall.pending.as_ref().map(|(p, _)| *p) }
                     }
                 }
             }
@@ -1704,34 +1723,51 @@ mod tests {
 
     #[tokio::test]
     async fn the_firewall_waits_for_confirmation_and_goes_back_without() {
-        use zendiloos_agent_proto::{ConfirmWithin, FirewallConfig, FirewallRules, FirewallVerdict};
+        use zendiloos_agent_proto::{
+            ConfirmWithin, FirewallConfig, FirewallRules, FirewallVerdict, PendingFirewall, WaitingFirewall,
+        };
         let now = Arc::new(std::sync::atomic::AtomicU64::new(1_000));
         let clock = now.clone();
         let agent =
             SimulatedAgent::with_clock(Arc::new(move || clock.load(std::sync::atomic::Ordering::Relaxed)));
-        let closed =
-            FirewallConfig { rules: FirewallRules::new(vec![]).unwrap(), fallback: FirewallVerdict::Drop };
+        let closed = FirewallConfig {
+            rules: FirewallRules::new(vec![]).unwrap(),
+            fallback: FirewallVerdict::Drop,
+            bridges: vec![],
+        };
         let within = ConfirmWithin::seconds(90).ok();
-        let apply = |config: Option<FirewallConfig>, confirm_within| Request::ApplyFirewall {
+        let apply = |config: Option<FirewallConfig>, confirm_within, waiting| Request::ApplyFirewall {
             config,
             confirm_within,
+            waiting,
         };
+        let nothing = Response::FirewallState { pending: None };
+        let until = Response::FirewallState { pending: Some(PendingFirewall { revert_at: 1_090 }) };
         let state = || agent.call(Request::FirewallState {}, None);
-        assert_eq!(state().await.unwrap(), Response::FirewallState { pending: None });
-        assert_eq!(agent.call(apply(Some(closed.clone()), within), None).await.unwrap(), Response::Done);
-        refused(&agent.call(apply(None, within), None).await.unwrap(), ErrorCode::Conflict);
-        // Brought up to date while it waits.
-        assert_eq!(agent.call(apply(Some(closed.clone()), None), None).await.unwrap(), Response::Done);
-        let waiting = state().await.unwrap();
-        assert!(matches!(waiting, Response::FirewallState { pending: Some(p) } if p.revert_at == 1_090));
+        assert_eq!(state().await.unwrap(), nothing);
+        assert_eq!(agent.call(apply(Some(closed.clone()), within, None), None).await.unwrap(), until);
+        refused(&agent.call(apply(None, within, None), None).await.unwrap(), ErrorCode::Conflict);
+        let both = Some(WaitingFirewall { config: None });
+        refused(&agent.call(apply(None, within, both), None).await.unwrap(), ErrorCode::Forbidden);
+        // Brought up to date while it waits: what returns is the rules kept.
+        let waiting = Some(WaitingFirewall { config: Some(closed.clone()) });
+        assert_eq!(agent.call(apply(None, None, waiting.clone()), None).await.unwrap(), until);
+        assert_eq!(state().await.unwrap(), until);
         assert_eq!(agent.call(Request::ConfirmFirewall {}, None).await.unwrap(), Response::Done);
         refused(&agent.call(Request::ConfirmFirewall {}, None).await.unwrap(), ErrorCode::Forbidden);
         assert_eq!(agent.firewall.lock().unwrap().rules, Some(closed.clone()));
 
         // Not confirmed in time: the rules from before are back.
-        assert_eq!(agent.call(apply(None, within), None).await.unwrap(), Response::Done);
+        agent.call(apply(None, within, None), None).await.unwrap();
         now.store(1_091, std::sync::atomic::Ordering::Relaxed);
-        assert_eq!(state().await.unwrap(), Response::FirewallState { pending: None });
-        assert_eq!(agent.firewall.lock().unwrap().rules, Some(closed));
+        assert_eq!(state().await.unwrap(), nothing);
+        assert_eq!(agent.firewall.lock().unwrap().rules, Some(closed.clone()));
+        // A change nobody names any more ends with the rules kept.
+        agent.call(apply(None, ConfirmWithin::seconds(90).ok(), None), None).await.unwrap();
+        assert_eq!(agent.call(apply(Some(closed.clone()), None, None), None).await.unwrap(), nothing);
+        assert_eq!(agent.firewall.lock().unwrap().rules, Some(closed.clone()));
+        // Rules for a change that went back: the rules kept.
+        assert_eq!(agent.call(apply(None, None, waiting), None).await.unwrap(), nothing);
+        assert_eq!(agent.firewall.lock().unwrap().rules, None);
     }
 }

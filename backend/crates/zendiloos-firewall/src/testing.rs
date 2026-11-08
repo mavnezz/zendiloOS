@@ -7,13 +7,14 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use zendiloos_kernel::{PortError, RequestContext, Timestamp};
 
-use crate::application::{FirewallHost, FirewallRepository, HostError, HostState, ServiceFacts};
-use crate::domain::{Facts, FirewallSettings, LocalInterface, Ruleset};
+use crate::application::{FirewallHost, FirewallRepository, HostError, HostRules, HostState, ServiceFacts};
+use crate::domain::{Facts, FirewallSettings, LocalInterface, ProjectPorts, Ruleset};
 
 #[derive(Default)]
 pub struct MemoryFirewall {
     settings: Mutex<Option<FirewallSettings>>,
     told: Mutex<BTreeSet<String>>,
+    projects: Mutex<Vec<ProjectPorts>>,
 }
 
 #[async_trait]
@@ -33,6 +34,15 @@ impl FirewallRepository for MemoryFirewall {
 
     async fn save_told_blocked(&self, keys: &BTreeSet<String>) -> Result<(), PortError> {
         keys.clone_into(&mut self.told.lock().unwrap());
+        Ok(())
+    }
+
+    async fn known_projects(&self) -> Result<Vec<ProjectPorts>, PortError> {
+        Ok(self.projects.lock().unwrap().clone())
+    }
+
+    async fn save_known_projects(&self, projects: &[ProjectPorts]) -> Result<(), PortError> {
+        projects.clone_into(&mut self.projects.lock().unwrap());
         Ok(())
     }
 }
@@ -120,33 +130,57 @@ impl FakeFirewallHost {
     }
 }
 
+fn count(ruleset: Option<&Ruleset>) -> usize {
+    ruleset.map_or(0, |r| r.rules.len())
+}
+
 #[async_trait]
 impl FirewallHost for FakeFirewallHost {
     async fn state(&self, _context: &RequestContext) -> Result<HostState, PortError> {
         Ok(HostState { pending_until: self.inside.lock().unwrap().before.as_ref().map(|(_, until)| *until) })
     }
 
-    async fn apply(
+    async fn begin(
         &self,
         ruleset: Option<&Ruleset>,
-        confirm_within: Option<u16>,
+        confirm_within: u16,
         _context: &RequestContext,
-    ) -> Result<(), HostError> {
+    ) -> Result<HostState, HostError> {
         let mut inside = self.inside.lock().unwrap();
         if let Some(reason) = inside.fail.clone() {
             return Err(HostError::Failed(reason));
         }
-        if confirm_within.is_some() && inside.before.is_some() {
+        if inside.before.is_some() {
             return Err(HostError::Conflict);
         }
-        let rules = ruleset.map_or(0, |r| r.rules.len());
-        inside.calls.push(format!("apply {rules} rules, confirm {confirm_within:?}"));
-        if let Some(seconds) = confirm_within {
-            let until = Timestamp::from_unix_seconds(inside.now + i64::from(seconds));
-            inside.before = Some((inside.rules.clone(), until));
-        }
+        inside.calls.push(format!("apply {} rules, confirm within {confirm_within}", count(ruleset)));
+        let until = Timestamp::from_unix_seconds(inside.now + i64::from(confirm_within));
+        inside.before = Some((inside.rules.clone(), until));
         inside.rules = ruleset.cloned();
-        Ok(())
+        Ok(HostState { pending_until: Some(until) })
+    }
+
+    async fn keep(&self, rules: &HostRules, _context: &RequestContext) -> Result<HostState, HostError> {
+        let mut inside = self.inside.lock().unwrap();
+        if let Some(reason) = inside.fail.clone() {
+            return Err(HostError::Failed(reason));
+        }
+        let waiting = rules.waiting.as_ref().map(|w| format!(", {} waiting", count(w.as_ref())));
+        inside.calls.push(format!(
+            "keep {} rules{}",
+            count(rules.kept.as_ref()),
+            waiting.unwrap_or_default()
+        ));
+        let before = inside.before.take();
+        match (before, &rules.waiting) {
+            (Some((_, until)), Some(waiting)) => {
+                inside.before = Some((rules.kept.clone(), until));
+                inside.rules.clone_from(waiting);
+            }
+            // Nothing waits, or nobody can confirm what does.
+            _ => inside.rules.clone_from(&rules.kept),
+        }
+        Ok(HostState { pending_until: inside.before.as_ref().map(|(_, until)| *until) })
     }
 
     async fn confirm(&self, _context: &RequestContext) -> Result<(), HostError> {

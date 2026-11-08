@@ -14,11 +14,16 @@
 //! renewal (a cron job) is never set up: zendiloosd renews.
 //!
 //! Once issued, the agent copies the certificate and its key to
-//! `/etc/zendiloos/web/certificates/<n>`, where nginx reads them: opened
-//! without following links, so the account cannot point the agent at
-//! another file.
+//! `/etc/zendiloos/web/certificates/<n>`, where nginx reads them. What
+//! acme.sh wrote is opened folder by folder without following a link (its
+//! account owns them all and could point one elsewhere) and without
+//! waiting (a pipe in place of a file is refused). The pair goes to a
+//! folder beside (`<n>.zendiloos-new`), is checked there (openssl reads the
+//! chain, and the key belongs to the certificate), and then takes the
+//! place of the pair served in one step (`RENAME_EXCHANGE`): nginx never
+//! finds half a pair, nor a pair that does not work, whatever fails.
 
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -168,14 +173,29 @@ pub(crate) fn issue_arguments(paths: &AcmePaths, order: &AcmeOrder, environment:
     args
 }
 
-/// Reads a file acme.sh wrote, not following a link, at most [`MAX_PEM`]
-/// bytes, and only if it holds `marker`.
-fn read_pem(path: &Path, marker: &str) -> Result<Vec<u8>, OperationError> {
+/// Opens what acme.sh wrote at `relative` below `state`: each folder on
+/// the way without following a link, and the file without following one
+/// nor waiting for a writer.
+fn open_made(state: &Path, relative: &[&str]) -> io::Result<File> {
+    use rustix::fs::{Mode, OFlags, open, openat};
+    let folder = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let Some((file, folders)) = relative.split_last() else {
+        return Err(io::Error::other("no file named"));
+    };
+    let mut at = open(state, folder, Mode::empty())?;
+    for name in folders {
+        at = openat(&at, *name, folder, Mode::empty())?;
+    }
+    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::NOCTTY | OFlags::CLOEXEC;
+    Ok(File::from(openat(&at, *file, flags, Mode::empty())?))
+}
+
+/// Reads a file acme.sh wrote ([`open_made`]), a regular one, at most
+/// [`MAX_PEM`] bytes, and only if it holds `marker`.
+fn read_pem(state: &Path, relative: &[&str], marker: &str) -> Result<Vec<u8>, OperationError> {
+    let path = relative.iter().fold(state.to_owned(), |path, name| path.join(name));
     let read = || -> io::Result<Vec<u8>> {
-        let file = OpenOptions::new()
-            .read(true)
-            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
-            .open(path)?;
+        let file = open_made(state, relative)?;
         if !file.metadata()?.is_file() {
             return Err(io::Error::other("not a regular file"));
         }
@@ -186,11 +206,16 @@ fn read_pem(path: &Path, marker: &str) -> Result<Vec<u8>, OperationError> {
         }
         Ok(content)
     };
-    let content = read().map_err(|e| OperationError::Read(path.to_owned(), e))?;
+    let content = read().map_err(|e| OperationError::Read(path.clone(), e))?;
     if !String::from_utf8_lossy(&content).contains(marker) {
         return Err(OperationError::Failed(format!("{} is not what acme.sh writes", path.display())));
     }
     Ok(content)
+}
+
+/// Puts `folder`'s entries, and what happened to them, on disk.
+fn sync_folder(folder: &Path) -> Result<(), OperationError> {
+    File::open(folder).and_then(|f| f.sync_all()).map_err(|e| OperationError::Write(folder.to_owned(), e))
 }
 
 /// Writes `content` to `path` with `mode`, replacing it whole.
@@ -300,45 +325,115 @@ impl Acme {
             return Err(OperationError::Failed(complaint(&written)));
         }
         crate::progress::step("installing", Some(90));
-        let not_after = self.install(order)?;
-        let not_after = self.expiry(&not_after).await?;
+        let staged = self.stage(order)?;
+        let checked = self.check(&staged).await;
+        let not_after = match checked {
+            Ok(not_after) => not_after,
+            Err(error) => {
+                // The pair served stays as it was.
+                let _ = fs::remove_dir_all(&staged);
+                return Err(error);
+            }
+        };
+        self.put_in_place(order.certificate, &staged)?;
         Ok(Response::CertificateIssued { not_after })
     }
 
-    /// Copies what acme.sh made to where nginx reads it; the chain's path.
-    fn install(&self, order: &AcmeOrder) -> Result<PathBuf, OperationError> {
-        let main = order.domains.main().as_str();
-        let folder = if order.key.is_ecc() { format!("{main}_ecc") } else { main.to_owned() };
-        let made = self.paths.state.join("certificates").join(order.certificate.to_string()).join(folder);
-        let chain = read_pem(&made.join("fullchain.cer"), "BEGIN CERTIFICATE")?;
-        let key = read_pem(&made.join(format!("{main}.key")), "PRIVATE KEY")?;
-        let served = self.paths.served(order.certificate);
-        fs::create_dir_all(&served).map_err(|e| OperationError::Write(served.clone(), e))?;
-        let _ = fs::set_permissions(&served, fs::Permissions::from_mode(0o700));
-        write_file(&served.join("key.pem"), &key, 0o600)?;
-        write_file(&served.join("fullchain.pem"), &chain, 0o644)?;
-        Ok(served.join("fullchain.pem"))
+    /// Where a new pair of certificate `n` waits to be checked.
+    fn staged(&self, certificate: u32) -> PathBuf {
+        self.paths.certificates.join(format!("{certificate}.zendiloos-new"))
     }
 
-    async fn expiry(&self, chain: &Path) -> Result<i64, OperationError> {
-        let path = chain.display().to_string();
-        let output =
-            zendiloos_exec::run(&self.openssl, ["x509", "-noout", "-enddate", "-in", path.as_str()], QUICK)
-                .await?
-                .success(&self.openssl)?;
-        let text = String::from_utf8(output.stdout).map_err(|_| OperationError::NotUtf8)?;
-        not_after(&text)
-            .ok_or_else(|| OperationError::Failed(format!("openssl: cannot read {}", text.trim())))
+    /// Copies what acme.sh made into [`Acme::staged`], on disk; that
+    /// folder.
+    fn stage(&self, order: &AcmeOrder) -> Result<PathBuf, OperationError> {
+        let main = order.domains.main().as_str();
+        let folder = if order.key.is_ecc() { format!("{main}_ecc") } else { main.to_owned() };
+        let certificate = order.certificate.to_string();
+        let made = ["certificates", certificate.as_str(), folder.as_str()];
+        let key_name = format!("{main}.key");
+        let chain =
+            read_pem(&self.paths.state, &[&made[..], &["fullchain.cer"]].concat(), "BEGIN CERTIFICATE")?;
+        let key = read_pem(&self.paths.state, &[&made[..], &[key_name.as_str()]].concat(), "PRIVATE KEY")?;
+        let certificates = &self.paths.certificates;
+        fs::create_dir_all(certificates).map_err(|e| OperationError::Write(certificates.clone(), e))?;
+        let staged = self.staged(order.certificate);
+        match fs::remove_dir_all(&staged) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => {
+                return Err(OperationError::Write(staged, error));
+            }
+            _ => {}
+        }
+        fs::create_dir(&staged).map_err(|e| OperationError::Write(staged.clone(), e))?;
+        fs::set_permissions(&staged, fs::Permissions::from_mode(0o700))
+            .map_err(|e| OperationError::Write(staged.clone(), e))?;
+        write_file(&staged.join("key.pem"), &key, 0o600)?;
+        write_file(&staged.join("fullchain.pem"), &chain, 0o644)?;
+        sync_folder(&staged)?;
+        Ok(staged)
+    }
+
+    /// The pair in `folder` works: openssl reads the chain (its end is
+    /// answered), and the key is the certificate's.
+    async fn check(&self, folder: &Path) -> Result<i64, OperationError> {
+        let (chain, key) = (folder.join("fullchain.pem"), folder.join("key.pem"));
+        let (chain, key) = (chain.display().to_string(), key.display().to_string());
+        let end = self.openssl(&["x509", "-noout", "-enddate", "-in", &chain]).await?;
+        let until = not_after(&end)
+            .ok_or_else(|| OperationError::Failed(format!("openssl: cannot read {}", end.trim())))?;
+        let certificates = self.openssl(&["x509", "-noout", "-pubkey", "-in", &chain]).await?;
+        let keys = self.openssl(&["pkey", "-pubout", "-in", &key]).await?;
+        if certificates.trim().is_empty() || certificates != keys {
+            return Err(OperationError::Failed("the certificate and its key do not belong together".into()));
+        }
+        Ok(until)
+    }
+
+    async fn openssl(&self, args: &[&str]) -> Result<String, OperationError> {
+        let output = zendiloos_exec::run(&self.openssl, args, QUICK).await?.success(&self.openssl)?;
+        String::from_utf8(output.stdout).map_err(|_| OperationError::NotUtf8)
+    }
+
+    /// Puts the pair checked in `staged` where nginx reads it, in one step;
+    /// the one before goes.
+    fn put_in_place(&self, certificate: u32, staged: &Path) -> Result<(), OperationError> {
+        use rustix::fs::{CWD, RenameFlags, renameat_with};
+        use rustix::io::Errno;
+        let served = self.paths.served(certificate);
+        let write = |error: io::Error| OperationError::Write(served.clone(), error);
+        match renameat_with(CWD, staged, CWD, &served, RenameFlags::EXCHANGE) {
+            // The pair before is in `staged` now.
+            Ok(()) => fs::remove_dir_all(staged).map_err(write)?,
+            Err(Errno::NOENT) => fs::rename(staged, &served).map_err(write)?,
+            Err(error) => return Err(write(error.into())),
+        }
+        sync_folder(&self.paths.certificates)
     }
 
     /// Removes what acme.sh and nginx kept of a certificate.
-    ///
-    /// acme.sh's folder belongs to its account, and the agent may read
-    /// anything but write only into what is root's: that account removes
-    /// the folder, in a unit of its own.
     pub(crate) async fn remove(&self, certificate: u32) -> Result<Response, OperationError> {
-        let kept = self.paths.state.join("certificates").join(certificate.to_string());
-        if kept.exists() {
+        self.remove_kept(&self.paths.state.join("certificates").join(certificate.to_string())).await?;
+        for served in [self.paths.served(certificate), self.staged(certificate)] {
+            match fs::remove_dir_all(&served) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(OperationError::Write(served, error)),
+            }
+        }
+        Ok(Response::Done)
+    }
+
+    /// Removes what acme.sh kept of an account: its key and settings.
+    pub(crate) async fn remove_account(&self, account: u32) -> Result<Response, OperationError> {
+        self.remove_kept(&self.paths.state.join("accounts").join(account.to_string())).await?;
+        Ok(Response::Done)
+    }
+
+    /// Removes a folder of acme.sh's. It belongs to its account, and the
+    /// agent may read anything but write only into what is root's: that
+    /// account removes the folder, in a unit of its own.
+    async fn remove_kept(&self, kept: &Path) -> Result<(), OperationError> {
+        if fs::symlink_metadata(kept).is_ok() {
             let (state, kept) = (self.paths.state.display().to_string(), kept.display().to_string());
             let (rm, uid, gid) =
                 (self.rm.display().to_string(), format!("--uid={ACME_USER}"), format!("--gid={ACME_USER}"));
@@ -364,13 +459,7 @@ impl Acme {
             ];
             zendiloos_exec::run(&self.systemd_run, args, QUICK).await?.success(&self.systemd_run)?;
         }
-        let served = self.paths.served(certificate);
-        match fs::remove_dir_all(&served) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(OperationError::Write(served, error)),
-        }
-        Ok(Response::Done)
+        Ok(())
     }
 }
 
@@ -538,6 +627,12 @@ mod tests {
 
         assert_eq!(acme.remove(3).await.unwrap(), Response::Done);
         assert!(!served.exists() && !dir.path().join("state/certificates/3").exists());
+        // An account's key and settings go with it.
+        fs::create_dir_all(dir.path().join("state/accounts/1")).unwrap();
+        fs::write(dir.path().join("state/accounts/1/account.key"), "key").unwrap();
+        assert_eq!(acme.remove_account(1).await.unwrap(), Response::Done);
+        assert!(!dir.path().join("state/accounts/1").exists());
+        assert_eq!(acme.remove_account(1).await.unwrap(), Response::Done, "nothing left is fine");
         assert_eq!(acme.remove(3).await.unwrap(), Response::Done, "nothing left is fine");
         fs::remove_file(dir.path().join("share/acme.sh")).unwrap();
         assert_eq!(acme.state(), Response::AcmeState { installed: false });
@@ -553,9 +648,87 @@ mod tests {
         fs::write(dir.path().join("secret"), "-----BEGIN PRIVATE KEY-----").unwrap();
         std::os::unix::fs::symlink(dir.path().join("secret"), made.join("fullchain.cer")).unwrap();
         fs::write(made.join("nas.example.org.key"), "-----BEGIN PRIVATE KEY-----").unwrap();
-        assert!(acme.install(&order(AcmeChallenge::Http, AcmeKey::Ec256)).is_err());
+        assert!(acme.stage(&order(AcmeChallenge::Http, AcmeKey::Ec256)).is_err());
         fs::remove_file(made.join("fullchain.cer")).unwrap();
         fs::write(made.join("fullchain.cer"), "not a certificate").unwrap();
-        assert!(acme.install(&order(AcmeChallenge::Http, AcmeKey::Ec256)).is_err());
+        assert!(acme.stage(&order(AcmeChallenge::Http, AcmeKey::Ec256)).is_err());
+    }
+
+    /// acme.sh's account owns its folders: one made a link to elsewhere is
+    /// not followed, and a pipe in place of the chain is refused at once,
+    /// not waited on.
+    #[tokio::test]
+    async fn folders_acme_sh_points_elsewhere_and_pipes_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let acme = acme(dir.path());
+        let elsewhere = dir.path().join("elsewhere");
+        fs::create_dir_all(&elsewhere).unwrap();
+        fs::write(elsewhere.join("fullchain.cer"), "-----BEGIN CERTIFICATE-----").unwrap();
+        fs::write(elsewhere.join("nas.example.org.key"), "-----BEGIN PRIVATE KEY----- not acme's").unwrap();
+        let mine = dir.path().join("state/certificates/3");
+        fs::create_dir_all(&mine).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, mine.join("nas.example.org_ecc")).unwrap();
+        assert!(acme.stage(&order(AcmeChallenge::Http, AcmeKey::Ec256)).is_err());
+        fs::remove_file(mine.join("nas.example.org_ecc")).unwrap();
+
+        let made = mine.join("nas.example.org_ecc");
+        fs::create_dir_all(&made).unwrap();
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            made.join("fullchain.cer"),
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::from_raw_mode(0o644),
+            0,
+        )
+        .unwrap();
+        fs::write(made.join("nas.example.org.key"), "-----BEGIN PRIVATE KEY-----").unwrap();
+        let refused = tokio::time::timeout(Duration::from_secs(5), async {
+            acme.stage(&order(AcmeChallenge::Http, AcmeKey::Ec256))
+        })
+        .await
+        .expect("not waiting for a writer");
+        assert!(
+            matches!(&refused, Err(OperationError::Read(_, e)) if e.to_string() == "not a regular file"),
+            "{refused:?}"
+        );
+    }
+
+    /// A pair that does not work (openssl cannot read the chain, or the
+    /// key is another's) never takes the place of the one served.
+    #[tokio::test]
+    async fn a_pair_that_does_not_work_leaves_the_one_served() {
+        let dir = tempfile::tempdir().unwrap();
+        let acme = acme(dir.path());
+        let dns = order(ionos("s3cr3t"), AcmeKey::Ec256);
+        acme.issue(&dns).await.unwrap();
+        let served = dir.path().join("web/certificates/3");
+        fs::write(served.join("fullchain.pem"), "-----BEGIN CERTIFICATE----- working").unwrap();
+        fs::write(served.join("key.pem"), "-----BEGIN PRIVATE KEY----- working").unwrap();
+        let openssl = |script: &str| {
+            fs::write(dir.path().join("openssl"), script).unwrap();
+            fs::set_permissions(dir.path().join("openssl"), fs::Permissions::from_mode(0o755)).unwrap();
+        };
+
+        openssl("#!/bin/sh\necho 'unable to load certificate' >&2\nexit 1\n");
+        assert!(acme.issue(&dns).await.is_err());
+        // The key is another's: its public key differs from the certificate's.
+        openssl(
+            "#!/bin/sh\ncase \"$*\" in *-enddate*) echo 'notAfter=Feb  6 12:30:15 2027 GMT';; \
+             *-pubkey*) echo certificate;; *) echo other;; esac\n",
+        );
+        let mismatched = acme.issue(&dns).await.unwrap_err();
+        assert_eq!(mismatched.to_string(), "the certificate and its key do not belong together");
+        assert!(fs::read_to_string(served.join("fullchain.pem")).unwrap().contains("working"));
+        assert!(fs::read_to_string(served.join("key.pem")).unwrap().contains("working"));
+        assert!(!dir.path().join("web/certificates/3.zendiloos-new").exists());
+
+        // A pair that works replaces it whole.
+        openssl(
+            "#!/bin/sh\ncase \"$*\" in *-enddate*) echo 'notAfter=Feb  6 12:30:15 2027 GMT';; *) echo same;; esac\n",
+        );
+        acme.issue(&dns).await.unwrap();
+        assert!(!fs::read_to_string(served.join("fullchain.pem")).unwrap().contains("working"));
+        assert!(!fs::read_to_string(served.join("key.pem")).unwrap().contains("working"));
+        assert!(!dir.path().join("web/certificates/3.zendiloos-new").exists());
     }
 }

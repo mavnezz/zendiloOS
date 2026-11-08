@@ -107,8 +107,9 @@ pub struct TwoFactorSetupRequest {
 }
 
 /// Begins setting up the signed-in account's authenticator app, with its
-/// password: a new secret, which waits for its first code. One begun
-/// before is replaced. A wrong password counts as a failed login.
+/// password: a new secret, which waits ten minutes for its first code from
+/// this session. One begun before is replaced. A wrong password counts as a
+/// failed login. Not for an account whose password an administrator sets.
 #[utoipa::path(
     post,
     path = "/auth/two-factor/setup",
@@ -117,6 +118,7 @@ pub struct TwoFactorSetupRequest {
     request_body = TwoFactorSetupRequest,
     responses(
         (status = OK, body = TwoFactorSetup),
+        (status = FORBIDDEN, body = Problem, description = "`password_locked`"),
         (status = CONFLICT, body = Problem, description = "`two_factor_on`"),
         (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`wrong_password`"),
         (status = TOO_MANY_REQUESTS, body = Problem, description = "`too_many_attempts`"),
@@ -147,8 +149,9 @@ pub struct RecoveryCodes {
     pub recovery_codes: Vec<String>,
 }
 
-/// Turns the second factor on with the first code from the app. Ends the
-/// account's other sessions.
+/// Turns the second factor on with the first code from the app, from the
+/// session that began the setup. Three wrong codes end the setup (the third
+/// answers `no_two_factor_setup`). Ends the account's other sessions.
 #[utoipa::path(
     post,
     path = "/auth/two-factor/confirm",
@@ -157,7 +160,14 @@ pub struct RecoveryCodes {
     request_body = TwoFactorCodeRequest,
     responses(
         (status = OK, body = RecoveryCodes),
-        (status = CONFLICT, body = Problem, description = "`no_two_factor_setup`, `two_factor_on`"),
+        (status = FORBIDDEN, body = Problem, description = "`password_locked`"),
+        (
+            status = CONFLICT,
+            body = Problem,
+            description = "`no_two_factor_setup`: none waits for this session (none begun, begun elsewhere, \
+                           over ten minutes ago or before a restart, ended by three wrong codes or a new \
+                           password); `two_factor_on`"
+        ),
         (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_code`"),
     )
 )]

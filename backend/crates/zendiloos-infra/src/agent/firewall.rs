@@ -2,10 +2,11 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use zendiloos_agent_proto::{
-    AgentTransport, ConfirmWithin, ErrorCode, FirewallConfig, FirewallPortRange, FirewallPorts, FirewallRule,
-    FirewallRules, FirewallSource, FirewallTraffic, FirewallVerdict, InterfaceName, Request, Response,
+    AgentTransport, ConfirmWithin, DockerBridge, ErrorCode, FirewallConfig, FirewallPortRange, FirewallPorts,
+    FirewallRule, FirewallRules, FirewallSource, FirewallTraffic, FirewallVerdict, InterfaceName,
+    PendingFirewall, Request, Response, WaitingFirewall,
 };
-use zendiloos_firewall::application::{FirewallHost, HostError, HostState};
+use zendiloos_firewall::application::{FirewallHost, HostError, HostRules, HostState};
 use zendiloos_firewall::domain::{Action, PortRange, Ruleset, Source, Traffic};
 use zendiloos_kernel::{PortError, RequestContext, Timestamp};
 
@@ -75,10 +76,23 @@ fn config(ruleset: &Ruleset) -> Result<FirewallConfig, HostError> {
             })
         })
         .collect::<Result<Vec<_>, HostError>>()?;
+    let bridges = ruleset
+        .bridges
+        .iter()
+        .map(|name| DockerBridge::parse(name).map_err(|_| invalid("Docker bridge")))
+        .collect::<Result<Vec<_>, _>>()?;
+    if bridges.len() > FirewallConfig::MAX_BRIDGES {
+        return Err(invalid("number of Docker bridges"));
+    }
     Ok(FirewallConfig {
         rules: FirewallRules::new(rules).map_err(|_| invalid("number of rules"))?,
         fallback: verdict(ruleset.fallback),
+        bridges,
     })
+}
+
+fn host_state(pending: Option<PendingFirewall>) -> HostState {
+    HostState { pending_until: pending.map(|p| Timestamp::from_unix_seconds(p.revert_at)) }
 }
 
 /// The agent's refusal or failure, in its words.
@@ -96,25 +110,42 @@ fn host_error(response: Response) -> HostError {
 impl FirewallHost for AgentFirewall {
     async fn state(&self, context: &RequestContext) -> Result<HostState, PortError> {
         match call(self.transport.as_ref(), Request::FirewallState {}, context).await? {
-            Response::FirewallState { pending } => {
-                Ok(HostState { pending_until: pending.map(|p| Timestamp::from_unix_seconds(p.revert_at)) })
-            }
+            Response::FirewallState { pending } => Ok(host_state(pending)),
             other => Err(unexpected(other)),
         }
     }
 
-    async fn apply(
+    async fn begin(
         &self,
         ruleset: Option<&Ruleset>,
-        confirm_within: Option<u16>,
+        confirm_within: u16,
         context: &RequestContext,
-    ) -> Result<(), HostError> {
-        let confirm_within = confirm_within
-            .map(|seconds| ConfirmWithin::seconds(seconds).map_err(|_| invalid("time to confirm")))
-            .transpose()?;
-        let request = Request::ApplyFirewall { config: ruleset.map(config).transpose()?, confirm_within };
+    ) -> Result<HostState, HostError> {
+        let confirm_within =
+            ConfirmWithin::seconds(confirm_within).map_err(|_| invalid("time to confirm"))?;
+        let request = Request::ApplyFirewall {
+            config: ruleset.map(config).transpose()?,
+            confirm_within: Some(confirm_within),
+            waiting: None,
+        };
         match call_raw(self.transport.as_ref(), request, context).await? {
-            Response::Done => Ok(()),
+            Response::FirewallState { pending } => Ok(host_state(pending)),
+            other => Err(host_error(other)),
+        }
+    }
+
+    async fn keep(&self, rules: &HostRules, context: &RequestContext) -> Result<HostState, HostError> {
+        let waiting = match &rules.waiting {
+            Some(waiting) => Some(WaitingFirewall { config: waiting.as_ref().map(config).transpose()? }),
+            None => None,
+        };
+        let request = Request::ApplyFirewall {
+            config: rules.kept.as_ref().map(config).transpose()?,
+            confirm_within: None,
+            waiting,
+        };
+        match call_raw(self.transport.as_ref(), request, context).await? {
+            Response::FirewallState { pending } => Ok(host_state(pending)),
             other => Err(host_error(other)),
         }
     }
@@ -158,9 +189,13 @@ mod tests {
                 compiled(None, Source::Any, Traffic::All),
             ],
             fallback: Action::Deny,
+            bridges: vec!["br-0123456789ab".into()],
         };
         let made = config(&ruleset).unwrap();
         assert_eq!(made.fallback, FirewallVerdict::Drop);
+        assert_eq!(made.bridges, [DockerBridge::parse("br-0123456789ab").unwrap()]);
+        let lan_bridge = Ruleset { bridges: vec!["br-lan".into()], ..ruleset.clone() };
+        assert!(config(&lan_bridge).is_err(), "a bridge of the machine's own is not passed for Docker's");
         let rules: Vec<&FirewallRule> = made.rules.iter().collect();
         assert_eq!(rules[0].interface.as_ref().map(InterfaceName::as_str), Some("enp1s0"));
         assert_eq!(rules[1].source, FirewallSource::network("10.0.0.1".parse().unwrap(), 32).unwrap());
@@ -170,8 +205,11 @@ mod tests {
             (FirewallTraffic::All {}, FirewallVerdict::Accept)
         );
 
-        let odd =
-            Ruleset { rules: vec![compiled(Some("lo"), Source::Any, Traffic::All)], fallback: Action::Allow };
+        let odd = Ruleset {
+            rules: vec![compiled(Some("lo"), Source::Any, Traffic::All)],
+            fallback: Action::Allow,
+            bridges: vec![],
+        };
         assert!(config(&odd).is_err());
         let backwards = Source::Range { from: "10.0.0.9".parse().unwrap(), to: "10.0.0.1".parse().unwrap() };
         assert!(source(backwards).is_err());
@@ -182,15 +220,20 @@ mod tests {
     async fn rules_are_applied_and_confirmed_through_the_agent() {
         let firewall = AgentFirewall::new(Arc::new(SimulatedAgent::new()));
         let context = RequestContext::default();
-        let ruleset = Ruleset { rules: vec![], fallback: Action::Deny };
+        let ruleset = Ruleset { rules: vec![], fallback: Action::Deny, bridges: vec![] };
         assert_eq!(firewall.state(&context).await.unwrap().pending_until, None);
-        firewall.apply(Some(&ruleset), Some(90), &context).await.unwrap();
+        assert!(firewall.begin(Some(&ruleset), 90, &context).await.unwrap().pending_until.is_some());
         assert!(firewall.state(&context).await.unwrap().pending_until.is_some());
-        assert!(matches!(firewall.apply(None, Some(90), &context).await, Err(HostError::Conflict)));
-        firewall.apply(None, None, &context).await.unwrap();
+        assert!(matches!(firewall.begin(None, 90, &context).await, Err(HostError::Conflict)));
+        let waiting = HostRules { kept: None, waiting: Some(Some(ruleset.clone())) };
+        assert!(firewall.keep(&waiting, &context).await.unwrap().pending_until.is_some());
         firewall.confirm(&context).await.unwrap();
         assert!(matches!(firewall.confirm(&context).await, Err(HostError::Refused(_))));
-        assert!(matches!(firewall.apply(None, Some(5), &context).await, Err(HostError::Port(_))));
+        assert!(matches!(firewall.begin(None, 5, &context).await, Err(HostError::Port(_))));
+        // A change nobody names any more ends.
+        firewall.begin(None, 90, &context).await.unwrap();
+        let kept = HostRules { kept: Some(ruleset), waiting: None };
+        assert_eq!(firewall.keep(&kept, &context).await.unwrap().pending_until, None);
         let failed = host_error(Response::Error { code: ErrorCode::Failed, message: "nft: no".into() });
         assert!(matches!(failed, HostError::Failed(reason) if reason == "nft: no"));
         assert!(matches!(host_error(Response::Done), HostError::Port(_)));

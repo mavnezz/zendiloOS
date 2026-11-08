@@ -522,6 +522,7 @@ mod tests {
                 "updates_installed",
                 "updates_failed",
                 "certificate_renewal_failed",
+                "certificate_not_taken",
                 "docker_backup_failed"
             ]
         );

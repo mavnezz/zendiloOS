@@ -3,12 +3,15 @@ Description=zendiloOS firewall
 Documentation=https://github.com/mavnezz/zendiloOS
 # The rules are in force before the network comes up: early, without the
 # usual dependencies, after Debian's own nftables.service (whose
-# /etc/nftables.conf flushes everything) and again whenever that restarts.
+# /etc/nftables.conf flushes everything) and again whenever that restarts or
+# reloads (`systemctl reload nftables`): ordered after it, so ours comes
+# once the flush is done.
 DefaultDependencies=no
 Wants=network-pre.target
 Before=network-pre.target shutdown.target
 After=local-fs.target nftables.service
 PartOf=nftables.service
+ReloadPropagatedFrom=nftables.service
 Conflicts=shutdown.target
 # Written by zendiloos-agent once the firewall was turned on.
 ConditionPathExists=/etc/zendiloos/firewall/zendiloos.nft

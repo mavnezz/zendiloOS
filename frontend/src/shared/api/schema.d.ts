@@ -501,8 +501,9 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Turns the second factor on with the first code from the app. Ends the
-         *     account's other sessions.
+         * Turns the second factor on with the first code from the app, from the
+         *     session that began the setup. Three wrong codes end the setup (the third
+         *     answers `no_two_factor_setup`). Ends the account's other sessions.
          */
         post: operations["confirm"];
         delete?: never;
@@ -559,8 +560,9 @@ export interface paths {
         put?: never;
         /**
          * Begins setting up the signed-in account's authenticator app, with its
-         *     password: a new secret, which waits for its first code. One begun
-         *     before is replaced. A wrong password counts as a failed login.
+         *     password: a new secret, which waits ten minutes for its first code from
+         *     this session. One begun before is replaced. A wrong password counts as a
+         *     failed login. Not for an account whose password an administrator sets.
          */
         post: operations["begin"];
         delete?: never;
@@ -8142,7 +8144,16 @@ export interface operations {
                     "application/json": components["schemas"]["RecoveryCodes"];
                 };
             };
-            /** @description `no_two_factor_setup`, `two_factor_on` */
+            /** @description `password_locked` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `no_two_factor_setup`: none waits for this session (none begun, begun elsewhere, over ten minutes ago or before a restart, ended by three wrong codes or a new password); `two_factor_on` */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -8280,6 +8291,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TwoFactorSetup"];
+                };
+            };
+            /** @description `password_locked` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
                 };
             };
             /** @description `two_factor_on` */

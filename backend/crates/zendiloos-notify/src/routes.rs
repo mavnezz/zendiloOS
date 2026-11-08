@@ -64,7 +64,7 @@ const fn kind(key: &'static str, group: Group, level: Level) -> Kind {
 }
 
 /// Every kind zendiloOS raises, in the order the table shows them.
-pub const KINDS: [Kind; 16] = [
+pub const KINDS: [Kind; 17] = [
     // Degraded a warning; faulted, removed or unavailable an error.
     kind("pool_trouble", Group::Storage, Level::Error),
     kind("pool_recovered", Group::Storage, Level::Success),
@@ -84,6 +84,7 @@ pub const KINDS: [Kind; 16] = [
     kind("updates_failed", Group::System, Level::Error),
     kind("certificate_renewed", Group::Certificates, Level::Success),
     kind("certificate_renewal_failed", Group::Certificates, Level::Error),
+    kind("certificate_not_taken", Group::Certificates, Level::Error),
     kind("firewall_blocked", Group::Security, Level::Warning),
     kind("docker_backup_failed", Group::Docker, Level::Error),
 ];

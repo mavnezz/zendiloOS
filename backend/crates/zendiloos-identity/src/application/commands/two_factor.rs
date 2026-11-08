@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use zendiloos_kernel::{AuditEntry, Outcome, RequestContext, Secret};
 
-use crate::application::context::{CodeUsed, Context, spend};
+use crate::application::context::{CodeUsed, Context, PendingSetup, SETUP_LIFETIME, spend};
 use crate::application::{AuthContext, IdentityError, SignedIn};
 use crate::domain::{
     Account, AccountId, AuditAction, Permission, ThrottleKey, TwoFactor, TypedCode, otpauth_uri,
@@ -74,10 +74,14 @@ impl CompleteSignIn {
         let keys = Context::throttle_keys(request, Some(&checked.name));
         let attempt = c.begin_attempt(keys, request, now).await?;
 
-        // With changes to accounts held: the password and the second factor
-        // are still those the password was checked with, or the sign-in is
-        // over.
+        // With changes to accounts held: the sign-in still waits (another
+        // request with it did not end it meanwhile), and the password and
+        // the second factor are still those the password was checked with,
+        // or the sign-in is over.
         let _changes = c.changes.lock().await;
+        if c.waiting_sign_in(&key, now).is_none() {
+            return Err(IdentityError::SignInExpired);
+        }
         let account = c.ports.accounts.find_by_id(waiting.account_id).await?;
         let two_factor = c.ports.two_factor.find(waiting.account_id).await?;
         let (Some(mut account), Some(mut two_factor)) = (
@@ -92,12 +96,16 @@ impl CompleteSignIn {
             c.audit(audit(Outcome::Denied).by(&account.actor()).reason("disabled")).await?;
             return Err(IdentityError::AccountDisabled);
         }
+        let code_attempt = c.begin_code_attempt(&account.name, now)?;
         let Some(used) = c.check_code(&two_factor, code.expose(), now) else {
-            c.wrong_code(&key);
+            let ended = c.wrong_code(&key);
+            code_attempt.failed();
             attempt.failed(request).await?;
             c.audit(audit(Outcome::Failure).by(&account.actor()).reason("wrong_code")).await?;
-            return Err(IdentityError::InvalidCode);
+            // The last wrong code a sign-in takes says it is over.
+            return Err(if ended { IdentityError::SignInExpired } else { IdentityError::InvalidCode });
         };
+        drop(code_attempt);
 
         spend(&mut two_factor, used);
         c.ports.two_factor.save(&two_factor).await?;
@@ -126,7 +134,10 @@ pub struct TwoFactorSetup {
 /// Command: the signed-in account begins setting up its second factor,
 /// with its password: a session alone (left open, taken over) cannot lock
 /// its owner out with a phone of someone else's. A new secret waits for
-/// its first code; one begun before is replaced.
+/// its first code, from this session, for [`SETUP_LIFETIME`]; one begun
+/// before is replaced. Not for an account whose password an administrator
+/// sets: it may be shared, and one of those sharing it would lock the
+/// others out.
 #[derive(Clone)]
 pub struct BeginTwoFactor {
     context: Arc<Context>,
@@ -148,6 +159,9 @@ impl BeginTwoFactor {
         if c.ports.two_factor.find(auth.account.id).await?.is_some_and(|t| t.is_on()) {
             return Err(IdentityError::TwoFactorOn);
         }
+        if auth.account.password_locked {
+            return Err(IdentityError::PasswordLocked);
+        }
         let keys = Context::throttle_keys(request, Some(&auth.account.name));
         let attempt = c.begin_attempt(keys, request, now).await?;
         let Some(account) = password_checked(c, auth, password).await? else {
@@ -161,6 +175,9 @@ impl BeginTwoFactor {
 
         let _changes = c.changes.lock().await;
         unchanged(c, &account).await?;
+        if c.ports.accounts.find_by_id(account.id).await?.is_some_and(|now| now.password_locked) {
+            return Err(IdentityError::PasswordLocked);
+        }
         let mut two_factor = c.ports.two_factor.find(account.id).await?.unwrap_or(TwoFactor::new(account.id));
         if two_factor.is_on() {
             return Err(IdentityError::TwoFactorOn);
@@ -168,6 +185,13 @@ impl BeginTwoFactor {
         let secret = c.ports.codes.new_secret();
         two_factor.pending = Some(secret.clone());
         c.ports.two_factor.save(&two_factor).await?;
+        let setup = PendingSetup {
+            session_id: auth.session_id,
+            password_hash: account.password_hash.clone(),
+            expires_at: now.saturating_add(SETUP_LIFETIME),
+            failures: 0,
+        };
+        c.hold_setup(account.id, setup, now);
         Ok(TwoFactorSetup {
             secret: Secret::new(secret.to_base32()),
             uri: Secret::new(otpauth_uri(&account.name, &secret)),
@@ -178,6 +202,11 @@ impl BeginTwoFactor {
 /// Command: the first code from the app confirms the secret begun with
 /// [`BeginTwoFactor`]: sign-ins ask for a code from now on. Gives the
 /// recovery codes, shown this once. Ends the account's other sessions.
+/// Only the session that began the setup confirms it, while it waits, with
+/// the password it was begun with; after [`MAX_CODE_FAILURES`] wrong codes
+/// it is over, and is begun again with the password.
+///
+/// [`MAX_CODE_FAILURES`]: crate::application::context::MAX_CODE_FAILURES
 #[derive(Clone)]
 pub struct ConfirmTwoFactor {
     context: Arc<Context>,
@@ -203,13 +232,33 @@ impl ConfirmTwoFactor {
             return Err(IdentityError::TwoFactorOn);
         }
         let pending = two_factor.pending.clone().ok_or(IdentityError::NoTwoFactorSetup)?;
+        let account = c.ports.accounts.find_by_id(id).await?.ok_or(IdentityError::Unauthenticated)?;
+        let begun_here = c.waiting_setup(id, now).is_some_and(|setup| {
+            setup.session_id == auth.session_id && setup.password_hash == account.password_hash
+        });
+        if !begun_here || account.disabled {
+            return Err(IdentityError::NoTwoFactorSetup);
+        }
+        if account.password_locked {
+            return Err(IdentityError::PasswordLocked);
+        }
         // Not counted against the throttles: the secret was just shown to
-        // this account; a code typed wrong here guesses nothing.
+        // this session, and a few wrong codes end the setup.
         let step = match TypedCode::parse(code.expose()) {
             Some(TypedCode::OneTime(digits)) => c.one_time_step(&pending, &digits, None, now),
             _ => None,
-        }
-        .ok_or(IdentityError::InvalidCode)?;
+        };
+        let Some(step) = step else {
+            let ended = c.wrong_setup_code(id);
+            if ended {
+                two_factor.pending = None;
+                c.ports.two_factor.save(&two_factor).await?;
+            }
+            let entry =
+                AuditEntry::new(now, AuditAction::TwoFactorEnable.as_str(), Outcome::Failure, request);
+            c.audit(entry.by(&auth.actor()).reason("wrong_code")).await?;
+            return Err(if ended { IdentityError::NoTwoFactorSetup } else { IdentityError::InvalidCode });
+        };
 
         let codes = c.ports.codes.recovery_codes();
         two_factor.secret = Some(pending);
@@ -270,11 +319,14 @@ impl DisableTwoFactor {
             .await?
             .filter(|t| t.is_on())
             .ok_or(IdentityError::TwoFactorOff)?;
+        let code_attempt = c.begin_code_attempt(&account.name, now)?;
         if c.check_code(&two_factor, code.expose(), now).is_none() {
+            code_attempt.failed();
             attempt.failed(request).await?;
             c.audit(audit(Outcome::Failure).reason("wrong_code")).await?;
             return Err(IdentityError::InvalidCode);
         }
+        drop(code_attempt);
         drop(attempt);
         c.ports.two_factor.delete(account.id).await?;
         c.ports.sessions.delete_others(account.id, auth.session_id).await?;
@@ -330,6 +382,7 @@ impl RenewRecoveryCodes {
             .filter(|t| t.is_on())
             .ok_or(IdentityError::TwoFactorOff)?;
         // The app's code only: it shows the phone is still at hand.
+        let code_attempt = c.begin_code_attempt(&account.name, now)?;
         let step = match (TypedCode::parse(code.expose()), two_factor.secret.as_ref()) {
             (Some(TypedCode::OneTime(digits)), Some(secret)) => {
                 c.one_time_step(secret, &digits, two_factor.last_step, now)
@@ -337,10 +390,12 @@ impl RenewRecoveryCodes {
             _ => None,
         };
         let Some(step) = step else {
+            code_attempt.failed();
             attempt.failed(request).await?;
             c.audit(audit(Outcome::Failure).reason("wrong_code")).await?;
             return Err(IdentityError::InvalidCode);
         };
+        drop(code_attempt);
         drop(attempt);
         let codes = c.ports.codes.recovery_codes();
         two_factor.last_step = Some(step);

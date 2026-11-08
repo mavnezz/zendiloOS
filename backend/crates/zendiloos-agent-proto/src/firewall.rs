@@ -240,12 +240,75 @@ impl From<FirewallRules> for Vec<FirewallRule> {
     }
 }
 
+/// One of Docker's bridges: `docker0`, or `br-` and the 12 hex digits of
+/// the network's id. Containers on them reach the NAS; a bridge of the
+/// machine's own (`br-lan`) never passes for one.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct DockerBridge(String);
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("not one of Docker's bridges")]
+pub struct NotADockerBridge;
+
+impl DockerBridge {
+    pub fn parse(name: &str) -> Result<Self, NotADockerBridge> {
+        let docker = name == "docker0"
+            || name
+                .strip_prefix("br-")
+                .is_some_and(|id| id.len() == 12 && id.bytes().all(|b| b.is_ascii_hexdigit()));
+        if docker { Ok(Self(name.to_owned())) } else { Err(NotADockerBridge) }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for DockerBridge {
+    type Error = NotADockerBridge;
+
+    fn try_from(name: String) -> Result<Self, Self::Error> {
+        Self::parse(&name)
+    }
+}
+
+impl From<DockerBridge> for String {
+    fn from(bridge: DockerBridge) -> Self {
+        bridge.0
+    }
+}
+
 /// The firewall's rules in order, and what happens when none matches.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FirewallConfig {
     pub rules: FirewallRules,
     pub fallback: FirewallVerdict,
+    /// Docker's bridges besides `docker0`, which always is one; at most
+    /// [`FirewallConfig::MAX_BRIDGES`].
+    #[serde(default, deserialize_with = "bridges")]
+    pub bridges: Vec<DockerBridge>,
+}
+
+impl FirewallConfig {
+    pub const MAX_BRIDGES: usize = 1024;
+}
+
+fn bridges<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<DockerBridge>, D::Error> {
+    let bridges = Vec::<DockerBridge>::deserialize(deserializer)?;
+    if bridges.len() > FirewallConfig::MAX_BRIDGES {
+        return Err(serde::de::Error::custom("too many bridges"));
+    }
+    Ok(bridges)
+}
+
+/// The rules of the change waiting for confirmation, as they stand now
+/// (none: no rules at all).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WaitingFirewall {
+    pub config: Option<FirewallConfig>,
 }
 
 /// A change of the firewall that waits to be confirmed.
@@ -306,6 +369,7 @@ mod tests {
         let config = FirewallConfig {
             rules: FirewallRules::new(vec![rule.clone()]).unwrap(),
             fallback: FirewallVerdict::Drop,
+            bridges: vec![DockerBridge::parse("br-0123456789ab").unwrap()],
         };
         let text = serde_json::to_string(&config).unwrap();
         assert_eq!(serde_json::from_str::<FirewallConfig>(&text).unwrap(), config);
@@ -317,5 +381,24 @@ mod tests {
         assert!(serde_json::from_str::<FirewallConfig>(&sneaky).is_err());
         assert!(FirewallRules::new(vec![rule; FirewallRules::MAX + 1]).is_err());
         assert_eq!(config.rules.iter().count(), 1);
+    }
+
+    #[test]
+    fn only_dockers_bridges_pass_for_dockers() {
+        assert_eq!(DockerBridge::parse("docker0").unwrap().as_str(), "docker0");
+        assert!(DockerBridge::parse("br-0123456789ab").is_ok());
+        for odd in ["br-lan", "br-0123456789a", "br-0123456789abc", "br-0123456789ag", "eth0", "docker1", ""]
+        {
+            assert!(DockerBridge::parse(odd).is_err(), "{odd}");
+        }
+        let text = r#"{"rules":[],"fallback":"drop","bridges":["br-0123456789ab"]}"#;
+        let config: FirewallConfig = serde_json::from_str(text).unwrap();
+        assert_eq!(serde_json::to_string(&config).unwrap(), text);
+        assert!(serde_json::from_str::<FirewallConfig>(&text.replace("br-0123456789ab", "br-lan")).is_err());
+        let without: FirewallConfig = serde_json::from_str(r#"{"rules":[],"fallback":"drop"}"#).unwrap();
+        assert!(without.bridges.is_empty());
+        let many = vec![r#""docker0""#; FirewallConfig::MAX_BRIDGES + 1].join(",");
+        let many = format!(r#"{{"rules":[],"fallback":"drop","bridges":[{many}]}}"#);
+        assert!(serde_json::from_str::<FirewallConfig>(&many).is_err());
     }
 }

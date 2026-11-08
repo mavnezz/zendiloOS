@@ -13,14 +13,20 @@
 //! (`zendiloos.nft.previous`); unless it is confirmed in time, that file
 //! returns: by a timer in the agent and, should the agent or the machine
 //! restart first, when the agent starts. So rules that shut the browser out
-//! undo themselves.
+//! undo themselves. While it waits, what others send on connections opened
+//! before it meets the rules as well, not only new connections: the
+//! confirmation, which a browser sends on the connection it has open, gets
+//! through only if the rules let that browser in. Once confirmed, the rules
+//! are written again without that.
 //!
 //! The table has two chains. `input` filters new connections to the NAS:
-//! answers, the loopback, Docker's bridges, what IPv6 and DHCP need, then
-//! the rules, then the fallback. `forward` filters new connections Docker
-//! forwards to its containers' published ports (`ct status dnat`), matched
-//! by the port they were sent to; the rest passes on to Docker's own
-//! chains. An accepting rule here never overrides another table's drop.
+//! answers, the loopback, Docker's bridges (by their exact names), what
+//! IPv6 and DHCP need, then the rules, then the fallback. `forward` filters
+//! new connections Docker forwards to its containers' published ports (`ct
+//! status dnat`), matched by the port they were sent to, and drops the
+//! other new connections from outside to Docker's bridges (sent straight to
+//! a container's address through the NAS); the rest passes on to Docker's
+//! own chains. An accepting rule here never overrides another table's drop.
 
 use std::fmt::Write as _;
 use std::fs;
@@ -32,8 +38,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use zendiloos_agent_proto::{
-    ConfirmWithin, FirewallConfig, FirewallPorts, FirewallRule, FirewallSource, FirewallTraffic,
-    FirewallVerdict, PendingFirewall, Response,
+    ConfirmWithin, DockerBridge, FirewallConfig, FirewallPorts, FirewallRule, FirewallSource,
+    FirewallTraffic, FirewallVerdict, PendingFirewall, Response, WaitingFirewall,
 };
 use zendiloos_exec::{Limits, Program, Surroundings};
 
@@ -123,24 +129,55 @@ fn lines(rule: &FirewallRule, forwarded: bool) -> Vec<String> {
     matches.into_iter().map(|m| format!("\t\t{interface}{from}{m}{}\n", verdict(rule.verdict))).collect()
 }
 
+/// Whether a change waits for confirmation, which decides what the rules
+/// see.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Phase {
+    /// The rules kept: connections opened before pass at once.
+    Kept,
+    /// A change waits: what others send on connections opened before it
+    /// meets the rules too, so its confirmation proves the browser gets in.
+    Waiting,
+}
+
+/// `{ "docker0", "br-…" }`: Docker's bridges, each named exactly.
+fn bridges(config: &FirewallConfig) -> String {
+    let mut names: Vec<&str> =
+        std::iter::once("docker0").chain(config.bridges.iter().map(DockerBridge::as_str)).collect();
+    names.sort_unstable();
+    names.dedup();
+    let quoted: Vec<String> = names.iter().map(|name| format!("\"{name}\"")).collect();
+    format!("{{ {} }}", quoted.join(", "))
+}
+
 /// The rules file: the table replaced by the rules, or removed.
-pub(crate) fn ruleset(config: Option<&FirewallConfig>) -> String {
+pub(crate) fn ruleset(config: Option<&FirewallConfig>, phase: Phase) -> String {
     let mut text = format!("{HEADER}{REPLACE}");
     let Some(config) = config else { return text };
     let fallback = verdict(config.fallback);
-    text.push_str(
-        "table inet zendiloos_firewall {\n\
-         \tchain input {\n\
+    let bridges = bridges(config);
+    let answers = match phase {
+        Phase::Kept => "\t\tct state established,related accept\n",
+        Phase::Waiting => {
+            "\t\t# A change waits for confirmation: what others send on connections\n\
+             \t\t# opened before it meets the rules too.\n\
+             \t\tct state related accept\n\
+             \t\tct state established ct direction reply accept\n"
+        }
+    };
+    let _ = write!(
+        text,
+        "table inet zendiloos_firewall {{\n\
+         \tchain input {{\n\
          \t\ttype filter hook input priority filter - 5; policy accept;\n\
-         \t\tct state established,related accept\n\
+         {answers}\
          \t\tiif \"lo\" accept\n\
          \t\t# Containers reach the NAS.\n\
-         \t\tiifname \"docker0\" accept\n\
-         \t\tiifname \"br-*\" accept\n\
+         \t\tiifname {bridges} accept\n\
          \t\t# What IPv6 needs to work, and answers to DHCP.\n\
-         \t\tmeta l4proto ipv6-icmp icmpv6 type { destination-unreachable, packet-too-big, time-exceeded, \
-         parameter-problem, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert, mld-listener-query } accept\n\
-         \t\tmeta l4proto icmp icmp type { destination-unreachable, time-exceeded, parameter-problem } accept\n\
+         \t\tmeta l4proto ipv6-icmp icmpv6 type {{ destination-unreachable, packet-too-big, time-exceeded, \
+         parameter-problem, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert, mld-listener-query }} accept\n\
+         \t\tmeta l4proto icmp icmp type {{ destination-unreachable, time-exceeded, parameter-problem }} accept\n\
          \t\tudp sport 67 udp dport 68 accept\n\
          \t\tip6 saddr fe80::/10 udp sport 547 udp dport 546 accept\n",
     );
@@ -155,11 +192,13 @@ pub(crate) fn ruleset(config: Option<&FirewallConfig>) -> String {
          \t\ttype filter hook forward priority filter - 5; policy accept;\n\
          \t\tct state established,related accept\n\
          \t\t# Containers reach each other and the world.\n\
-         \t\tiifname \"docker0\" accept\n\
-         \t\tiifname \"br-*\" accept\n\
+         \t\tiifname {bridges} accept\n\
          \t\tiifname \"veth*\" accept\n\
          \t\t# What Docker forwards to a published port, from outside.\n\
          \t\tct status dnat jump published\n\
+         \t\t# Nothing else from outside reaches a container, not even sent to\n\
+         \t\t# its address through the NAS.\n\
+         \t\toifname {bridges} drop\n\
          \t}}\n\
          \tchain published {{\n"
     );
@@ -178,6 +217,8 @@ fn now() -> i64 {
 struct Pending {
     revert_at: i64,
     timer: JoinHandle<()>,
+    /// Its rules, written without the extra checks once confirmed.
+    config: Option<FirewallConfig>,
 }
 
 #[derive(Debug)]
@@ -266,68 +307,149 @@ impl Firewall {
         }
     }
 
+    /// Writes `text` as the rules in force and loads it.
+    async fn put(&self, text: &str) -> Result<(), OperationError> {
+        crate::durable::replace(&self.file(), text.as_bytes())?;
+        self.load().await
+    }
+
+    fn forget_previous(&self) -> Result<(), OperationError> {
+        let previous = self.previous();
+        match fs::remove_file(&previous) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => {
+                Err(OperationError::Write(previous, error))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// See [`zendiloos_agent_proto::Request::ApplyFirewall`]. One at a
+    /// time with confirming and going back, so none of them sees the
+    /// rules half changed by another.
     pub(crate) async fn apply(
         self: &Arc<Self>,
         config: Option<&FirewallConfig>,
         confirm_within: Option<ConfirmWithin>,
+        waiting: Option<&WaitingFirewall>,
     ) -> Result<Response, OperationError> {
         let mut pending = self.pending.lock().await;
-        if confirm_within.is_some() && pending.is_some() {
-            return Err(OperationError::Conflict);
+        match confirm_within {
+            Some(_) if waiting.is_some() => {
+                return Err(OperationError::Refused(
+                    "a change that begins has no other rules waiting".into(),
+                ));
+            }
+            Some(_) if pending.is_some() => return Err(OperationError::Conflict),
+            Some(within) => self.begin(&mut pending, config, within).await?,
+            None => self.keep(&mut pending, config, waiting).await?,
         }
+        Ok(Response::FirewallState {
+            pending: pending.as_ref().map(|p| PendingFirewall { revert_at: p.revert_at }),
+        })
+    }
+
+    /// Puts `config` in force until confirmed within `within`; the rules
+    /// from before return otherwise.
+    async fn begin(
+        self: &Arc<Self>,
+        pending: &mut Option<Pending>,
+        config: Option<&FirewallConfig>,
+        within: ConfirmWithin,
+    ) -> Result<(), OperationError> {
         let before = self.read()?;
-        // Never on, nothing waiting, and to stay off: nothing to do.
-        if config.is_none() && before.is_none() && confirm_within.is_none() {
-            return Ok(Response::Done);
-        }
         let directory = &self.paths.directory;
         fs::create_dir_all(directory).map_err(|e| OperationError::Write(directory.clone(), e))?;
-        let text = ruleset(config);
+        let text = ruleset(config, Phase::Waiting);
         self.check(&text).await?;
-        if confirm_within.is_some() {
-            let kept = before.unwrap_or_else(|| ruleset(None));
-            crate::durable::replace(&self.previous(), kept.as_bytes())?;
-        }
-        let applied = match crate::durable::replace(&self.file(), text.as_bytes()) {
-            Ok(()) => self.load().await,
-            Err(error) => Err(error),
-        };
-        if let Err(error) = applied {
-            if confirm_within.is_some() {
-                // Not even in force: back at once.
-                self.restore().await;
-            }
+        let kept = before.unwrap_or_else(|| ruleset(None, Phase::Kept));
+        crate::durable::replace(&self.previous(), kept.as_bytes())?;
+        if let Err(error) = self.put(&text).await {
+            // Not even in force: back at once.
+            self.restore().await;
             return Err(error);
         }
-        let Some(within) = confirm_within else {
-            tracing::info!(on = config.is_some(), "firewall: rules in force");
-            return Ok(Response::Done);
-        };
         let seconds = within.get();
         let agent = Arc::clone(self);
         let timer = tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(u64::from(seconds))).await;
+            // Held while the rules go back: nothing puts others in force
+            // meanwhile, nor takes these for a change still waiting.
             let mut pending = agent.pending.lock().await;
             if pending.take().is_some() {
-                drop(pending);
                 tracing::warn!("firewall: not confirmed in time, the rules from before return");
                 agent.restore().await;
             }
         });
-        *pending = Some(Pending { revert_at: now() + i64::from(seconds), timer });
+        *pending = Some(Pending { revert_at: now() + i64::from(seconds), timer, config: config.cloned() });
         tracing::info!(on = config.is_some(), seconds, "firewall: rules in force, waiting for confirmation");
-        Ok(Response::Done)
+        Ok(())
     }
 
+    /// Puts the rules kept in force, or brings a change waiting up to date.
+    async fn keep(
+        &self,
+        pending: &mut Option<Pending>,
+        config: Option<&FirewallConfig>,
+        waiting: Option<&WaitingFirewall>,
+    ) -> Result<(), OperationError> {
+        let kept = ruleset(config, Phase::Kept);
+        match (pending.as_mut(), waiting) {
+            (Some(change), Some(waiting)) => {
+                // Its rules stay in force, brought up to date; what returns
+                // unless it is confirmed are the rules kept, as they are now.
+                let text = ruleset(waiting.config.as_ref(), Phase::Waiting);
+                self.check(&text).await?;
+                self.check(&kept).await?;
+                crate::durable::replace(&self.previous(), kept.as_bytes())?;
+                self.put(&text).await?;
+                change.config.clone_from(&waiting.config);
+                tracing::info!(on = waiting.config.is_some(), "firewall: rules waiting brought up to date");
+            }
+            (Some(_), None) => {
+                // Begun by a zendiloosd that is gone: nobody can confirm it.
+                self.check(&kept).await?;
+                self.put(&kept).await?;
+                if let Some(change) = pending.take() {
+                    change.timer.abort();
+                }
+                self.forget_previous()?;
+                tracing::warn!(
+                    "firewall: a change nobody can confirm any more ended; the rules kept are in force"
+                );
+            }
+            (None, _) => {
+                // Never on, and to stay off: nothing to do.
+                if config.is_none() && self.read()?.is_none() {
+                    return Ok(());
+                }
+                let directory = &self.paths.directory;
+                fs::create_dir_all(directory).map_err(|e| OperationError::Write(directory.clone(), e))?;
+                self.check(&kept).await?;
+                self.put(&kept).await?;
+                tracing::info!(on = config.is_some(), "firewall: rules in force");
+            }
+        }
+        Ok(())
+    }
+
+    /// Keeps the change waiting, and lets connections opened before pass
+    /// at once again.
     pub(crate) async fn confirm(&self) -> Result<Response, OperationError> {
         let mut pending = self.pending.lock().await;
-        let Some(change) = pending.take() else {
+        let Some(change) = pending.as_ref() else {
             return Err(OperationError::Refused("no change waits for confirmation".into()));
         };
-        change.timer.abort();
-        let previous = self.previous();
-        fs::remove_file(&previous).map_err(|e| OperationError::Write(previous, e))?;
+        crate::durable::replace(&self.file(), ruleset(change.config.as_ref(), Phase::Kept).as_bytes())?;
+        self.forget_previous()?;
+        if let Some(change) = pending.take() {
+            change.timer.abort();
+        }
         tracing::info!("firewall: confirmed");
+        if let Err(error) = self.load().await {
+            // In force are the rules confirmed, still checking connections
+            // opened before; the file is loaded at the next change or start.
+            tracing::warn!(%error, "firewall: cannot load the rules confirmed");
+        }
         Ok(Response::Done)
     }
 
@@ -352,6 +474,7 @@ impl Firewall {
     /// At startup: a change nobody confirmed before the agent stopped goes
     /// back.
     pub(crate) async fn restore_unconfirmed(&self) {
+        let _pending = self.pending.lock().await;
         if self.previous().exists() {
             tracing::warn!("firewall: a change was not confirmed, the rules from before return");
             self.restore().await;

@@ -84,9 +84,11 @@ pub(crate) fn http_file(config: &WebServerConfig, paths: &WebServerPaths) -> Str
     format!(
         "{HEADER}server {{\n    listen {port} default_server;\n    listen [::]:{port} default_server;\n    \
          server_tokens off;\n\n    \
-         # Let's Encrypt's HTTP challenges, answered with what acme.sh wrote.\n    \
+         # Let's Encrypt's HTTP challenges, answered with what acme.sh wrote: as\n    \
+         # text whatever the name, and never through a link its account made.\n    \
          location ^~ /.well-known/acme-challenge/ {{\n        root {webroot};\n        \
-         default_type text/plain;\n        try_files $uri =404;\n    }}\n\n    \
+         types {{ }}\n        default_type text/plain;\n        disable_symlinks on;\n        \
+         try_files $uri =404;\n    }}\n\n    \
          # Everything else to HTTPS: the session cookie is HTTPS-only.\n    \
          location / {{\n        return 301 https://$host{to}$request_uri;\n    }}\n}}\n",
         port = port.get(),
@@ -232,9 +234,10 @@ impl WebServer {
         let agent = Arc::clone(self);
         let timer = tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(u64::from(seconds))).await;
+            // Held while the old settings return: no change begins meanwhile
+            // and has its files put back half way.
             let mut pending = agent.pending.lock().await;
             if pending.take().is_some() {
-                drop(pending);
                 tracing::warn!("web server: not confirmed in time, the old settings return");
                 agent.restore().await;
             }
@@ -264,15 +267,18 @@ impl WebServer {
         Ok(Response::Done)
     }
 
-    /// nginx reads its certificate again: it was renewed.
+    /// nginx reads its certificate again: it was renewed. Not while a
+    /// change is applied or goes back.
     pub(crate) async fn reload_certificate(&self) -> Result<Response, OperationError> {
+        let _pending = self.pending.lock().await;
         self.check().await?;
         self.reload().await?;
         Ok(Response::Done)
     }
 
     /// Puts the previous files back (or removes ours where there were none)
-    /// and reloads nginx. Failures are logged: there is nobody to tell.
+    /// and reloads nginx, with `pending` held. Failures are logged: there is
+    /// nobody to tell.
     async fn restore(&self) {
         let mut restored = true;
         for name in FILES {
@@ -303,6 +309,7 @@ impl WebServer {
     /// At startup: a change nobody confirmed before the agent stopped goes
     /// back.
     pub(crate) async fn restore_unconfirmed(&self) {
+        let _pending = self.pending.lock().await;
         if FILES.iter().any(|name| self.previous(name).exists()) {
             tracing::warn!("web server: a change was not confirmed, the old settings return");
             self.restore().await;
@@ -333,6 +340,11 @@ mod tests {
         let http = http_file(&config(Some(80), 443, None), &paths);
         assert!(http.contains("listen 80 default_server;\n    listen [::]:80 default_server;"), "{http}");
         assert!(http.contains("root /var/lib/zendiloos-acme/webroot;"));
+        // What acme.sh's account leaves there is text, and no link is followed.
+        assert!(
+            http.contains("types { }\n        default_type text/plain;\n        disable_symlinks on;\n"),
+            "{http}"
+        );
         assert!(http.contains("return 301 https://$host$request_uri;"), "{http}");
         let http = http_file(&config(Some(8080), 8443, None), &paths);
         assert!(

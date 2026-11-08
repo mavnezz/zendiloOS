@@ -45,6 +45,19 @@ async fn code_step(
     t.use_cases.complete_sign_in.execute(&challenge.token, &Secret::new(code), request).await
 }
 
+/// Another session of `name`'s account.
+async fn signed_in_again(t: &TestIdentity, name: &str) -> AuthContext {
+    password_login(&t.use_cases.login, login_input(name, PASSWORD), &from(9)).await.unwrap().session
+}
+
+async fn confirm_setup(
+    t: &TestIdentity,
+    auth: &AuthContext,
+    code: Secret,
+) -> Result<Vec<String>, IdentityError> {
+    t.use_cases.confirm_two_factor.execute(auth, &code, &from(9)).await
+}
+
 fn last_audit(t: &TestIdentity) -> (&'static str, Outcome, Option<&'static str>) {
     let entry = t.audit.entries().pop().unwrap();
     (entry.action, entry.outcome, entry.reason)
@@ -165,6 +178,72 @@ async fn confirming_needs_a_setup_begun() {
     assert!(matches!(refused, Err(IdentityError::NoTwoFactorSetup)), "{refused:?}");
 }
 
+/// A setup waits for its first code from the session that began it, for
+/// ten minutes, and takes three wrong codes: a session taken over cannot
+/// guess the code of a setup its owner left, nor make one last.
+#[tokio::test]
+async fn a_setup_is_confirmed_by_the_session_that_began_it_while_it_waits() {
+    let t = TestIdentity::new();
+    let alice = signed_in(&t, "alice", Role::User).await;
+    let other = signed_in_again(&t, "alice").await;
+    t.use_cases.begin_two_factor.execute(&alice, &Secret::new(PASSWORD), &from(9)).await.unwrap();
+    let code = || Secret::new(t.code_now(alice.account.id, 0));
+
+    let elsewhere = confirm_setup(&t, &other, code()).await;
+    assert!(matches!(elsewhere, Err(IdentityError::NoTwoFactorSetup)), "{elsewhere:?}");
+    t.clock.advance(Duration::from_secs(10 * 60));
+    let late = confirm_setup(&t, &alice, code()).await;
+    assert!(matches!(late, Err(IdentityError::NoTwoFactorSetup)), "{late:?}");
+
+    // Begun again: three wrong codes end it, the last one says so.
+    t.use_cases.begin_two_factor.execute(&alice, &Secret::new(PASSWORD), &from(9)).await.unwrap();
+    for _ in 0..2 {
+        let wrong = confirm_setup(&t, &alice, Secret::new("000000")).await;
+        assert!(matches!(wrong, Err(IdentityError::InvalidCode)), "{wrong:?}");
+    }
+    assert_eq!(last_audit(&t), (AuditAction::TwoFactorEnable.as_str(), Outcome::Failure, Some("wrong_code")));
+    let third = confirm_setup(&t, &alice, Secret::new("000000")).await;
+    assert!(matches!(third, Err(IdentityError::NoTwoFactorSetup)), "{third:?}");
+    assert_eq!(t.two_factor.get(alice.account.id).unwrap().pending, None, "its secret is gone");
+    let after = confirm_setup(&t, &alice, Secret::new("123456")).await;
+    assert!(matches!(after, Err(IdentityError::NoTwoFactorSetup)), "{after:?}");
+
+    // Begun once more, it is confirmed as before.
+    t.use_cases.begin_two_factor.execute(&alice, &Secret::new(PASSWORD), &from(9)).await.unwrap();
+    assert_eq!(confirm_setup(&t, &alice, code()).await.unwrap().len(), 10);
+}
+
+/// A new password ends a setup begun with the old one.
+#[tokio::test]
+async fn a_setup_ends_when_the_password_changes() {
+    let t = TestIdentity::new();
+    let alice = signed_in(&t, "alice", Role::User).await;
+    t.use_cases.begin_two_factor.execute(&alice, &Secret::new(PASSWORD), &from(9)).await.unwrap();
+    let input = ChangePasswordInput {
+        current_password: Secret::new(PASSWORD),
+        new_password: Secret::new("a different horse battery"),
+    };
+    t.use_cases.change_password.execute(&alice, input, &from(9)).await.unwrap();
+
+    let code = Secret::new(t.code_now(alice.account.id, 0));
+    let refused = t.use_cases.confirm_two_factor.execute(&alice, &code, &from(9)).await;
+    assert!(matches!(refused, Err(IdentityError::NoTwoFactorSetup)), "{refused:?}");
+}
+
+/// An account whose password an administrator sets may be shared: one of
+/// those sharing it cannot lock the others out with a second factor.
+#[tokio::test]
+async fn an_account_whose_password_an_administrator_sets_takes_no_second_factor() {
+    let t = TestIdentity::new();
+    let account = t.add_account("kiosk", PASSWORD, Role::User);
+    t.accounts.update(account.id, |a| a.password_locked = true);
+    let kiosk = signed_in_again(&t, "kiosk").await;
+
+    let refused = t.use_cases.begin_two_factor.execute(&kiosk, &Secret::new(PASSWORD), &from(9)).await;
+    assert!(matches!(refused, Err(IdentityError::PasswordLocked)), "{refused:?}");
+    assert!(t.two_factor.get(kiosk.account.id).is_none());
+}
+
 #[tokio::test]
 async fn codes_typed_wrong_while_setting_up_do_not_lock_the_account() {
     let t = TestIdentity::new();
@@ -263,10 +342,13 @@ async fn three_wrong_codes_end_a_sign_in() {
     let (alice, _) = alice_with_two_factor(&t).await;
     let challenge = password_step(&t, &from(2)).await;
 
-    for _ in 0..3 {
+    for _ in 0..2 {
         let wrong = code_step(&t, &challenge, "000000", &from(2)).await;
         assert!(matches!(wrong, Err(IdentityError::InvalidCode)), "{wrong:?}");
     }
+    // The third says it is over.
+    let third = code_step(&t, &challenge, "000000", &from(2)).await;
+    assert!(matches!(third, Err(IdentityError::SignInExpired)), "{third:?}");
     assert_eq!(last_audit(&t), (AuditAction::Login.as_str(), Outcome::Failure, Some("wrong_code")));
 
     let ended = code_step(&t, &challenge, &t.code_now(alice.account.id, 0), &from(2)).await;
@@ -496,4 +578,84 @@ async fn an_administrator_resets_another_accounts_second_factor() {
     );
     assert!(password_login(&t.use_cases.login, login_input("alice", PASSWORD), &from(2)).await.is_ok());
     assert!(t.use_cases.two_factor_accounts.execute(&admin).await.unwrap().is_empty());
+}
+
+/// With the account lock off, wrong second codes from many networks are
+/// still bounded per account, and the owner signing in meanwhile does not
+/// give them new tries.
+#[tokio::test]
+async fn wrong_codes_are_bounded_per_account_from_anywhere_whatever_the_lock() {
+    use crate::domain::SecuritySettings;
+    let t = TestIdentity::new();
+    let admin = signed_in(&t, "admin", Role::Admin).await;
+    let (alice, _) = alice_with_two_factor(&t).await;
+    let off = SecuritySettings { account_lock: None, ..SecuritySettings::default() };
+    t.use_cases.set_security.execute(&admin, off, &from(9)).await.unwrap();
+    // One address of a /64 each.
+    let net = |n: u16| RequestContext {
+        client_ip: Some(std::net::IpAddr::from([0x2001, 0xdb8, n, 0, 0, 0, 0, 1])),
+        ..from(9)
+    };
+
+    let mut wrong = 0;
+    for n in 1..=4u16 {
+        let challenge = password_step(&t, &net(n)).await;
+        for _ in 0..3 {
+            if code_step(&t, &challenge, "000000", &net(n)).await.is_ok() {
+                panic!("a wrong code");
+            }
+            wrong += 1;
+            if wrong == 10 {
+                break;
+            }
+        }
+        if wrong == 10 {
+            break;
+        }
+    }
+    // The owner signs in in between.
+    let challenge = password_step(&t, &from(2)).await;
+    let right = Secret::new(t.code_now(alice.account.id, 0));
+    let refused = t.use_cases.complete_sign_in.execute(&challenge.token, &right, &from(2)).await;
+    assert!(matches!(refused, Err(IdentityError::TooManyAttempts { .. })), "{refused:?}");
+    let challenge = password_step(&t, &net(99)).await;
+    let guess = code_step(&t, &challenge, "000000", &net(99)).await;
+    assert!(matches!(guess, Err(IdentityError::TooManyAttempts { .. })), "{guess:?}");
+
+    // An hour on, codes are taken again.
+    t.clock.advance(Duration::from_secs(60 * 60));
+    let challenge = password_step(&t, &from(2)).await;
+    assert!(code_step(&t, &challenge, &t.code_now(alice.account.id, 0), &from(2)).await.is_ok());
+}
+
+/// Sign-ins of another account, or from elsewhere, never end a sign-in
+/// waiting for its code: each account and each network makes room among
+/// its own.
+#[tokio::test]
+async fn others_sign_ins_do_not_end_a_waiting_one() {
+    let t = TestIdentity::new();
+    let (alice, _) = alice_with_two_factor(&t).await;
+    let mallory = signed_in(&t, "mallory", Role::ReadOnly).await;
+    turn_on(&t, &mallory).await;
+
+    let waiting = password_step(&t, &from(2)).await;
+    t.clock.advance(Duration::from_secs(1));
+    for _ in 0..50 {
+        let _ = t.use_cases.login.execute(login_input("mallory", PASSWORD), &from(66)).await.unwrap();
+    }
+    assert!(code_step(&t, &waiting, &t.code_now(alice.account.id, 0), &from(2)).await.is_ok());
+}
+
+/// The same right code sent twice at once starts one session: the second
+/// finds the sign-in over once it gets the lock.
+#[tokio::test]
+async fn a_sign_in_starts_one_session_however_often_it_is_sent() {
+    let t = TestIdentity::new();
+    let (alice, codes) = alice_with_two_factor(&t).await;
+    let challenge = password_step(&t, &from(2)).await;
+    let (request, now) = (from(2), t.code_now(alice.account.id, 0));
+    let first = code_step(&t, &challenge, &codes[0], &request);
+    let second = code_step(&t, &challenge, &now, &request);
+    let (first, second) = tokio::join!(first, second);
+    assert_eq!(usize::from(first.is_ok()) + usize::from(second.is_ok()), 1, "{first:?} {second:?}");
 }

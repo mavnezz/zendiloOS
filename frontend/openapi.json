@@ -1525,7 +1525,7 @@
         "tags": [
           "identity"
         ],
-        "summary": "Turns the second factor on with the first code from the app. Ends the\naccount's other sessions.",
+        "summary": "Turns the second factor on with the first code from the app, from the\nsession that began the setup. Three wrong codes end the setup (the third\nanswers `no_two_factor_setup`). Ends the account's other sessions.",
         "operationId": "confirm",
         "requestBody": {
           "content": {
@@ -1547,8 +1547,18 @@
               }
             }
           },
+          "403": {
+            "description": "`password_locked`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "409": {
-            "description": "`no_two_factor_setup`, `two_factor_on`",
+            "description": "`no_two_factor_setup`: none waits for this session (none begun, begun elsewhere, over ten minutes ago or before a restart, ended by three wrong codes or a new password); `two_factor_on`",
             "content": {
               "application/json": {
                 "schema": {
@@ -1704,7 +1714,7 @@
         "tags": [
           "identity"
         ],
-        "summary": "Begins setting up the signed-in account's authenticator app, with its\npassword: a new secret, which waits for its first code. One begun\nbefore is replaced. A wrong password counts as a failed login.",
+        "summary": "Begins setting up the signed-in account's authenticator app, with its\npassword: a new secret, which waits ten minutes for its first code from\nthis session. One begun before is replaced. A wrong password counts as a\nfailed login. Not for an account whose password an administrator sets.",
         "operationId": "begin",
         "requestBody": {
           "content": {
@@ -1722,6 +1732,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/TwoFactorSetup"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`password_locked`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }

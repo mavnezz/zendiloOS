@@ -11,17 +11,30 @@ use super::ports::Creation;
 use super::{AccountSummary, AuthContext, IdentityConfig, IdentityError, IdentityPorts, SignedIn};
 use crate::domain::{
     Account, AccountId, AccountName, AddressRange, AuditAction, BlockedAddress, FailureLimit, LoginThrottle,
-    NewSession, PasswordHash, Permission, Role, SecuritySettings, SessionPolicy, ThrottleKey, ThrottlePolicy,
-    TokenHash, TotpSecret, TwoFactor, TypedCode, is_blocked, matching_step, time_step,
+    NewSession, PasswordHash, Permission, Role, SecuritySettings, SessionId, SessionPolicy, ThrottleKey,
+    ThrottlePolicy, TokenHash, TotpSecret, TwoFactor, TypedCode, is_blocked, matching_step, time_step,
 };
 
 /// How long a sign-in waits for its second factor.
 pub(crate) const PENDING_LIFETIME: Duration = Duration::from_secs(5 * 60);
 /// Sign-ins waiting at most at a time; the oldest go first.
 const MAX_PENDING: usize = 1_000;
+/// Sign-ins waiting at most for one account, and from one network (an
+/// IPv4 address, an IPv6 /64): another one makes room by ending the oldest
+/// of the same, so nobody ends others' waiting sign-ins by starting many.
+pub(crate) const MAX_PENDING_PER_ACCOUNT: usize = 5;
+pub(crate) const MAX_PENDING_PER_NETWORK: usize = 20;
 /// Wrong codes a waiting sign-in takes before it ends: then the password
 /// again (and the throttles count each).
 pub(crate) const MAX_CODE_FAILURES: u8 = 3;
+/// How long a second factor being set up waits for its first code.
+pub(crate) const SETUP_LIFETIME: Duration = Duration::from_secs(10 * 60);
+/// Wrong second codes an account takes at most within each window, from
+/// wherever they come and whatever the account lock is set to. A sign-in
+/// that succeeds does not reset them: the owner signing in meanwhile gives
+/// someone who knows the password and guesses codes no new tries.
+pub(crate) const CODE_LIMITS: [(Duration, usize); 2] =
+    [(Duration::from_secs(60 * 60), 10), (Duration::from_secs(24 * 60 * 60), 30)];
 
 /// A sign-in whose password checked out, waiting for its second factor.
 #[derive(Debug, Clone)]
@@ -33,6 +46,18 @@ pub(crate) struct PendingSignIn {
     pub(crate) enabled_at: Option<Timestamp>,
     /// The address the password came from; the code must come from it too.
     pub(crate) client_ip: Option<IpAddr>,
+    pub(crate) expires_at: Timestamp,
+    pub(crate) failures: u8,
+}
+
+/// A second factor being set up, waiting for its first code; its secret is
+/// kept with the account's second factor (`pending`).
+#[derive(Debug, Clone)]
+pub(crate) struct PendingSetup {
+    /// The session that began it: no other confirms it.
+    pub(crate) session_id: SessionId,
+    /// The password it was begun with: changed or reset, the setup ends.
+    pub(crate) password_hash: PasswordHash,
     pub(crate) expires_at: Timestamp,
     pub(crate) failures: u8,
 }
@@ -163,6 +188,31 @@ impl Drop for Attempt<'_> {
     }
 }
 
+/// A second code checked for an account, which [`Context::begin_code_attempt`]
+/// let through; like [`Attempt`], it counts as failed until it ends.
+pub(crate) struct CodeAttempt<'a> {
+    context: &'a Context,
+    key: ThrottleKey,
+    now: Timestamp,
+    ended: bool,
+}
+
+impl CodeAttempt<'_> {
+    /// The code was wrong: counted against the account's limits.
+    pub(crate) fn failed(mut self) {
+        self.ended = true;
+        self.context.end_code_attempt(&self.key, true, self.now);
+    }
+}
+
+impl Drop for CodeAttempt<'_> {
+    fn drop(&mut self) {
+        if !self.ended {
+            self.context.end_code_attempt(&self.key, false, self.now);
+        }
+    }
+}
+
 pub(crate) struct Context {
     pub(crate) ports: IdentityPorts,
     pub(crate) config: IdentityConfig,
@@ -173,6 +223,13 @@ pub(crate) struct Context {
     pub(crate) changes: tokio::sync::Mutex<()>,
     /// Sign-ins waiting for their second factor, by their token's digest.
     pending: Mutex<HashMap<TokenHash, PendingSignIn>>,
+    /// Second factors being set up, by account. In memory only: after a
+    /// restart a setup begun before is begun again.
+    setups: Mutex<HashMap<AccountId, PendingSetup>>,
+    /// Wrong second codes per account, against [`CODE_LIMITS`].
+    codes: Mutex<Vec<LoginThrottle>>,
+    /// Held while preferences are read, merged and saved.
+    pub(crate) preferences: tokio::sync::Mutex<()>,
 }
 
 impl Context {
@@ -184,6 +241,21 @@ impl Context {
             defences: Mutex::new(None),
             changes: tokio::sync::Mutex::new(()),
             pending: Mutex::new(HashMap::new()),
+            setups: Mutex::new(HashMap::new()),
+            codes: Mutex::new(
+                CODE_LIMITS
+                    .iter()
+                    .map(|&(window, failures)| {
+                        LoginThrottle::new(ThrottlePolicy {
+                            window,
+                            max_failures_per_account: failures,
+                            max_failures_per_address: usize::MAX,
+                            max_tracked_addresses: config.throttle.max_tracked_addresses,
+                        })
+                    })
+                    .collect(),
+            ),
+            preferences: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -192,16 +264,19 @@ impl Context {
         self.pending.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Keeps `sign_in` waiting under `token`, making room if need be.
+    /// Keeps `sign_in` waiting under `token`, making room if need be: the
+    /// account's oldest, then the oldest from its network, then the oldest
+    /// of all.
     pub(crate) fn hold_sign_in(&self, token: TokenHash, sign_in: PendingSignIn, now: Timestamp) {
+        let network = |ip: Option<IpAddr>| ip.map(|ip| AddressRange::client(ip).network());
         let mut pending = self.pending();
         pending.retain(|_, waiting| waiting.expires_at > now);
-        if pending.len() >= MAX_PENDING
-            && let Some(oldest) =
-                pending.iter().min_by_key(|(_, waiting)| waiting.expires_at).map(|(k, _)| *k)
-        {
-            pending.remove(&oldest);
+        let from = network(sign_in.client_ip);
+        make_room(&mut pending, MAX_PENDING_PER_ACCOUNT, |waiting| waiting.account_id == sign_in.account_id);
+        if from.is_some() {
+            make_room(&mut pending, MAX_PENDING_PER_NETWORK, |waiting| network(waiting.client_ip) == from);
         }
+        make_room(&mut pending, MAX_PENDING, |_| true);
         pending.insert(token, sign_in);
     }
 
@@ -219,14 +294,88 @@ impl Context {
     }
 
     /// One more wrong code for the sign-in under `token`; it ends after
-    /// [`MAX_CODE_FAILURES`].
-    pub(crate) fn wrong_code(&self, token: &TokenHash) {
+    /// [`MAX_CODE_FAILURES`]. Whether it ended.
+    pub(crate) fn wrong_code(&self, token: &TokenHash) -> bool {
         let mut pending = self.pending();
-        if let Some(waiting) = pending.get_mut(token) {
-            waiting.failures += 1;
-            if waiting.failures >= MAX_CODE_FAILURES {
-                pending.remove(token);
+        let Some(waiting) = pending.get_mut(token) else { return true };
+        waiting.failures += 1;
+        let ended = waiting.failures >= MAX_CODE_FAILURES;
+        if ended {
+            pending.remove(token);
+        }
+        ended
+    }
+
+    fn setups(&self) -> MutexGuard<'_, HashMap<AccountId, PendingSetup>> {
+        // Plain values, as for the sign-ins waiting.
+        self.setups.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Keeps the setup `account` began waiting, in place of one before.
+    pub(crate) fn hold_setup(&self, account: AccountId, setup: PendingSetup, now: Timestamp) {
+        let mut setups = self.setups();
+        setups.retain(|_, waiting| waiting.expires_at > now);
+        setups.insert(account, setup);
+    }
+
+    /// The setup of `account` waiting, if it has not expired.
+    pub(crate) fn waiting_setup(&self, account: AccountId, now: Timestamp) -> Option<PendingSetup> {
+        let mut setups = self.setups();
+        match setups.get(&account) {
+            Some(waiting) if waiting.expires_at > now => Some(waiting.clone()),
+            Some(_) => {
+                setups.remove(&account);
+                None
             }
+            None => None,
+        }
+    }
+
+    /// One more wrong first code for the setup of `account`; it ends after
+    /// [`MAX_CODE_FAILURES`]. Whether it ended.
+    pub(crate) fn wrong_setup_code(&self, account: AccountId) -> bool {
+        let mut setups = self.setups();
+        let Some(waiting) = setups.get_mut(&account) else { return true };
+        waiting.failures += 1;
+        let ended = waiting.failures >= MAX_CODE_FAILURES;
+        if ended {
+            setups.remove(&account);
+        }
+        ended
+    }
+
+    pub(crate) fn end_setup_of(&self, account: AccountId) {
+        self.setups().remove(&account);
+    }
+
+    fn codes(&self) -> MutexGuard<'_, Vec<LoginThrottle>> {
+        // The counts hold no invariant a panic could break halfway.
+        self.codes.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Starts checking a second code of `account`: refused once it took
+    /// too many wrong ones ([`CODE_LIMITS`]).
+    pub(crate) fn begin_code_attempt(
+        &self,
+        account: &AccountName,
+        now: Timestamp,
+    ) -> Result<CodeAttempt<'_>, IdentityError> {
+        let key = ThrottleKey::Account(account.clone());
+        let mut codes = self.codes();
+        for throttle in codes.iter() {
+            throttle
+                .check(&key, now)
+                .map_err(|retry_after| IdentityError::TooManyAttempts { retry_after })?;
+        }
+        for throttle in codes.iter_mut() {
+            throttle.start(&key);
+        }
+        Ok(CodeAttempt { context: self, key, now, ended: false })
+    }
+
+    fn end_code_attempt(&self, key: &ThrottleKey, failed: bool, now: Timestamp) {
+        for throttle in self.codes().iter_mut() {
+            throttle.end(key, failed, now);
         }
     }
 
@@ -234,10 +383,11 @@ impl Context {
         self.pending().remove(token);
     }
 
-    /// Ends every sign-in of `account` waiting for its second factor: its
-    /// password or second factor changed.
+    /// Ends every sign-in of `account` waiting for its second factor, and a
+    /// setup of one waiting: its password or second factor changed.
     pub(crate) fn end_sign_ins_of(&self, account: AccountId) {
         self.pending().retain(|_, waiting| waiting.account_id != account);
+        self.end_setup_of(account);
     }
 
     /// Which code of `two_factor` (on) `code` is, if any: a one-time code of
@@ -472,6 +622,26 @@ impl Context {
             token: issued.token,
             session: AuthContext { session_id, csrf_token, expires_at, account: summary(account) },
         })
+    }
+}
+
+/// Ends the oldest of the sign-ins waiting that `belongs` holds for, until
+/// fewer than `most` of them wait.
+fn make_room(
+    pending: &mut HashMap<TokenHash, PendingSignIn>,
+    most: usize,
+    belongs: impl Fn(&PendingSignIn) -> bool,
+) {
+    while pending.values().filter(|waiting| belongs(waiting)).count() >= most {
+        let oldest = pending
+            .iter()
+            .filter(|(_, waiting)| belongs(waiting))
+            .min_by_key(|(_, waiting)| waiting.expires_at)
+            .map(|(token, _)| *token);
+        match oldest {
+            Some(oldest) => pending.remove(&oldest),
+            None => return,
+        };
     }
 }
 

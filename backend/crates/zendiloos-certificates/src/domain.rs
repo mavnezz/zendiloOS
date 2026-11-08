@@ -70,22 +70,40 @@ fn check_name(name: &str) -> Result<String, Invalid> {
     Ok(name.to_owned())
 }
 
-/// An address the authority accepts: one `@`, a dot in the domain, no
-/// spaces, at most 254 characters.
+/// An address the authority accepts, as the system agent hands it to
+/// acme.sh: a local part of letters, digits and `._%+-` (not starting with
+/// `-`), one `@`, a domain of lowercase letters, digits and `-` in labels
+/// with a dot between, at most 254 characters.
 pub fn is_email(email: &str) -> bool {
     let Some((local, domain)) = email.split_once('@') else { return false };
+    let label = |label: &str| {
+        (1..=63).contains(&label.len())
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    };
     email.len() <= 254
         && !local.is_empty()
+        && !local.starts_with('-')
+        && local.bytes().all(|b| b.is_ascii_alphanumeric() || b"._%+-".contains(&b))
         && domain.contains('.')
-        && !domain.starts_with('.')
-        && !domain.ends_with('.')
-        && !email.chars().any(|c| c.is_whitespace() || c.is_control() || matches!(c, '"' | '\'' | '<' | '>'))
-        && !domain.contains('@')
+        && domain.split('.').all(label)
+        && !domain.rsplit('.').next().is_some_and(|tld| tld.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// `email` without spaces around it and with its domain in lowercase, as
+/// domains are whatever their case: what is stored and given to acme.sh.
+pub fn normalize_email(email: &str) -> String {
+    let email = email.trim();
+    match email.rsplit_once('@') {
+        Some((local, domain)) => format!("{local}@{}", domain.to_ascii_lowercase()),
+        None => email.to_owned(),
+    }
 }
 
 impl NewAccount {
     pub fn check(self) -> Result<Self, Invalid> {
-        let email = self.email.trim().to_owned();
+        let email = normalize_email(&self.email);
         if !is_email(&email) {
             return Err(invalid("not an e-mail address the authority would take"));
         }
@@ -398,9 +416,13 @@ pub struct Attempt {
     pub output: Vec<String>,
 }
 
-/// Host ports zendiloOS or the NAS's file services use; the web interface
-/// takes none of them (80 and 443 are its own).
-pub const RESERVED_PORTS: [u16; 9] = [22, 111, 137, 138, 139, 445, 2049, 3702, 5353];
+/// Host ports zendiloOS or the NAS's file services use, also while they
+/// are stopped (nginx would not start once they run); the web interface
+/// takes none of them (80 and 443 are its own): SSH, rpcbind, SMB, NFS,
+/// NFS's helpers on the ports the package fixes (mountd, statd, lockd),
+/// WS-Discovery, LLMNR and mDNS.
+pub const RESERVED_PORTS: [u16; 15] =
+    [22, 111, 137, 138, 139, 445, 2049, 3702, 5353, 5355, 5357, 20048, 32765, 32766, 32767];
 
 /// How the web interface is reached: plain HTTP on `http_port` only leads to
 /// HTTPS (the session's cookie is HTTPS-only) and answers the authority's
@@ -476,9 +498,21 @@ mod tests {
         };
         let checked = account.clone().check().unwrap();
         assert_eq!((checked.name.as_str(), checked.email.as_str()), ("Mine", "me@example.com"));
-        for email in
-            ["me", "me@localhost", "@example.com", "me@.example.com", "a b@example.com", "me@exa@mple.com"]
-        {
+        // The domain whatever its case, as acme.sh is given it.
+        let upper = NewAccount { email: "Me.Myself@Example.COM".into(), ..account.clone() }.check().unwrap();
+        assert_eq!(upper.email, "Me.Myself@example.com");
+        for email in [
+            "me",
+            "me@localhost",
+            "@example.com",
+            "me@.example.com",
+            "a b@example.com",
+            "me@exa@mple.com",
+            "-me@example.com",
+            "me!@example.com",
+            "me@exa_mple.com",
+            "me@example.123",
+        ] {
             let wrong = NewAccount { email: email.into(), ..account.clone() };
             assert!(wrong.check().is_err(), "{email}");
         }
@@ -628,5 +662,11 @@ mod tests {
         let expired = WebServer { certificate_id: Some(1), ..WebServer::default() };
         assert!(expired.check(&[certificate(Some(50))], now).is_err());
         assert!(expired.check(&[certificate(None)], now).is_err());
+        // Ports of services that may not run yet: NFS's helpers, discovery.
+        for port in [20048, 32765, 32766, 32767, 5355, 5357] {
+            let https = WebServer { https_port: port, ..WebServer::default() };
+            let http = WebServer { http_port: Some(port), ..WebServer::default() };
+            assert!(https.check(&[], now).is_err() && http.check(&[], now).is_err(), "{port}");
+        }
     }
 }

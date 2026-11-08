@@ -102,6 +102,9 @@ pub struct Network {
     /// The preferred one first.
     pub default_routes: Vec<DefaultRoute>,
     pub name_servers: Vec<IpAddr>,
+    /// Docker's bridges, by name (not shown): the firewall lets containers
+    /// on them reach the NAS.
+    pub docker_bridges: Vec<String>,
 }
 
 impl Network {
@@ -110,6 +113,12 @@ impl Network {
         mut default_routes: Vec<DefaultRoute>,
         name_servers: Vec<IpAddr>,
     ) -> Self {
+        let mut docker_bridges: Vec<String> = interfaces
+            .iter()
+            .filter(|i| i.kind == InterfaceKind::Bridge && is_docker_bridge(&i.name))
+            .map(|i| i.name.clone())
+            .collect();
+        docker_bridges.sort_unstable();
         let mut interfaces: Vec<Interface> = interfaces.into_iter().filter(Interface::matters).collect();
         interfaces.sort_by(|a, b| a.name.cmp(&b.name));
         for interface in &mut interfaces {
@@ -117,7 +126,7 @@ impl Network {
             interface.addresses.sort_by_key(|a| (a.scope != AddressScope::Global, a.ip.is_ipv6()));
         }
         default_routes.sort_by_key(|route| (route.metric, route.gateway.is_ipv6()));
-        Self { interfaces, default_routes, name_servers }
+        Self { interfaces, default_routes, name_servers, docker_bridges }
     }
 }
 
@@ -164,6 +173,24 @@ mod tests {
         assert!(!shown("br-9b4ffb8b3e6d", InterfaceKind::Bridge));
         assert!(shown("br-lan", InterfaceKind::Bridge));
         assert!(!shown("veth1234", InterfaceKind::Other("veth".into())));
+    }
+
+    #[test]
+    fn dockers_bridges_are_known_by_name_and_only_they() {
+        let network = Network::new(
+            vec![
+                interface("br-lan", InterfaceKind::Bridge),
+                interface("docker0", InterfaceKind::Bridge),
+                interface("br-9b4ffb8b3e6d", InterfaceKind::Bridge),
+                interface("br-0123456789ab", InterfaceKind::Other("veth".into())),
+                interface("enp1s0", InterfaceKind::Ethernet),
+            ],
+            vec![],
+            vec![],
+        );
+        assert_eq!(network.docker_bridges, ["br-9b4ffb8b3e6d", "docker0"]);
+        let shown: Vec<&str> = network.interfaces.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(shown, ["br-lan", "enp1s0"]);
     }
 
     #[test]

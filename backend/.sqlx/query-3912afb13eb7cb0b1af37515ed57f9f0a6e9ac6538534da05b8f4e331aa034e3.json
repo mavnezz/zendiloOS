@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT project, transport, port FROM firewall_project_ports ORDER BY project, transport, port",
+  "describe": {
+    "columns": [
+      {
+        "name": "project",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "firewall_project_ports",
+            "name": "project"
+          }
+        }
+      },
+      {
+        "name": "transport",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "firewall_project_ports",
+            "name": "transport"
+          }
+        }
+      },
+      {
+        "name": "port",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "firewall_project_ports",
+            "name": "port"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "3912afb13eb7cb0b1af37515ed57f9f0a6e9ac6538534da05b8f4e331aa034e3"
+}

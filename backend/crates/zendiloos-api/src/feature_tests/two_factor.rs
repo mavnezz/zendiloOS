@@ -213,10 +213,13 @@ async fn three_wrong_codes_end_a_sign_in() {
     let h = Harness::new();
     let (_, app, _) = alice_with_two_factor(&h).await;
     let token = password_step(&h).await;
-    for _ in 0..3 {
+    for _ in 0..2 {
         let wrong = second_factor(&h, &token, "000000").await;
         assert_problem(&wrong, StatusCode::UNPROCESSABLE_ENTITY, "invalid_code");
     }
+    // The third says the sign-in is over.
+    let third = second_factor(&h, &token, "000000").await;
+    assert_problem(&third, StatusCode::UNAUTHORIZED, "sign_in_expired");
 
     let ended = second_factor(&h, &token, &app.code(&h, 0)).await;
 
