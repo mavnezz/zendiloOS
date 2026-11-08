@@ -16,6 +16,7 @@ use crate::acme::{Acme, AcmePaths};
 use crate::apps::Apps;
 use crate::config::Tools;
 use crate::docker::Docker;
+use crate::enclosure::Enclosure;
 use crate::files::Files;
 use crate::firewall::{Firewall, FirewallPaths};
 use crate::network::{Network, NetworkPaths};
@@ -45,6 +46,10 @@ pub struct Paths {
 }
 
 const MDSTAT: &str = "/proc/mdstat";
+/// The block devices that are disks, from udev's database (systemd 256 and
+/// newer filter it).
+const UDEVADM_DISKS: [&str; 4] =
+    ["info", "--export-db", "--subsystem-match=block", "--property-match=DEVTYPE=disk"];
 /// Far more than any real number of arrays needs.
 const MAX_MDSTAT: u64 = 1024 * 1024;
 
@@ -55,6 +60,7 @@ const MAX_MDSTAT: u64 = 1024 * 1024;
 pub struct Operations {
     systemctl: Program,
     lsblk: Program,
+    udevadm: Program,
     smartctl: Program,
     zpool: Program,
     zfs: Program,
@@ -74,6 +80,7 @@ pub struct Operations {
     docker: Docker,
     projects: Projects,
     removable: Removable,
+    enclosure: Enclosure,
     console_issue: std::path::PathBuf,
     role: Role,
 }
@@ -93,6 +100,7 @@ impl Operations {
         Ok(Self {
             systemctl: Program::new(&tools.systemctl)?,
             lsblk: Program::new(&tools.lsblk)?,
+            udevadm: Program::new(&tools.udevadm)?,
             smartctl: Program::new(&tools.smartctl)?,
             zpool: Program::new(&tools.zpool)?,
             zfs: Program::new(&tools.zfs)?,
@@ -115,6 +123,7 @@ impl Operations {
                 paths.host.clone(),
             ),
             removable: Removable::new(tools, paths.host.clone(), &paths.accounts)?,
+            enclosure: Enclosure::new(&paths.host),
             console_issue: paths.host.console_issue.clone(),
             sharing: Sharing::new(tools, paths.host.clone(), paths.accounts.clone())?,
             apps: Apps::new(
@@ -168,6 +177,8 @@ impl Operations {
             Request::Reboot {} => self.systemctl("reboot").await,
             Request::PowerOff {} => self.systemctl("poweroff").await,
             Request::ListBlockDevices {} => self.list_block_devices().await,
+            Request::Machine {} => Ok(self.enclosure.machine()),
+            Request::ReadBurst { device, millis } => self.enclosure.burst(device, *millis).await,
             Request::SmartData { device } => self.smart_data(device).await,
             Request::ArrayStatus {} => array_status().await,
             Request::StartSelfTest { device, kind } => {
@@ -352,7 +363,25 @@ impl Operations {
         )
         .await?
         .success(&self.lsblk)?;
-        Ok(Response::BlockDevices { lsblk_json: utf8(output)? })
+        Ok(Response::BlockDevices { lsblk_json: utf8(output)?, udev_db: self.udev_disks().await })
+    }
+
+    /// udev's database of the whole disks, for where each is plugged in
+    /// (`ID_PATH`); empty if udev cannot be asked, which leaves the disks
+    /// listed, just not placed by port.
+    async fn udev_disks(&self) -> String {
+        let limits = Limits { timeout: Duration::from_secs(10), max_stdout: 4 * 1024 * 1024 };
+        let asked = zendiloos_exec::run(&self.udevadm, UDEVADM_DISKS, limits).await;
+        match asked
+            .map_err(OperationError::from)
+            .and_then(|output| output.success(&self.udevadm).map_err(Into::into))
+        {
+            Ok(output) => utf8(output).unwrap_or_default(),
+            Err(error) => {
+                tracing::warn!(%error, "cannot read udev's database: disks are not placed by port");
+                String::new()
+            }
+        }
     }
 
     /// Only whole disks the kernel has; smartctl returns at once while the

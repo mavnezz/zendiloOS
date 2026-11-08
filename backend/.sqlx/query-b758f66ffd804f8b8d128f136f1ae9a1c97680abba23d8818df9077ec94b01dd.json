@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO enclosure_groups (position, id, name, row_count, column_count, orientation, form, numbering) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 8
+    },
+    "nullable": []
+  },
+  "hash": "b758f66ffd804f8b8d128f136f1ae9a1c97680abba23d8818df9077ec94b01dd"
+}

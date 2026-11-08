@@ -1,0 +1,98 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, name, row_count, column_count, orientation, form, numbering FROM enclosure_groups ORDER BY position",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "enclosure_groups",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "name",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "enclosure_groups",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "row_count",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "enclosure_groups",
+            "name": "row_count"
+          }
+        }
+      },
+      {
+        "name": "column_count",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "enclosure_groups",
+            "name": "column_count"
+          }
+        }
+      },
+      {
+        "name": "orientation",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "enclosure_groups",
+            "name": "orientation"
+          }
+        }
+      },
+      {
+        "name": "form",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "enclosure_groups",
+            "name": "form"
+          }
+        }
+      },
+      {
+        "name": "numbering",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "enclosure_groups",
+            "name": "numbering"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "a9d068b2dd46c109ed249fcd7c97ef14be0961473b715eb72a70c591bda78f33"
+}

@@ -86,7 +86,13 @@ impl Agent {
             setsid: "/usr/bin/setsid".into(),
             dockerd: script("dockerd", ""),
             wipefs: script("wipefs", ""),
-            udevadm: script("udevadm", ""),
+            udevadm: script(
+                "udevadm",
+                &format!(
+                    "[ -f {} ] && exit 1\necho P: /devices/pci0000:00/0000:00:17.0/ata1/host0/target0:0:0/0:0:0:0/block/sda",
+                    dir.path().join("no-udev").display()
+                ),
+            ),
             testparm: script("testparm", ""),
             exportfs: script("exportfs", ""),
             setfacl: script("setfacl", ""),
@@ -207,11 +213,34 @@ async fn neither_reboots_nor_powers_off_while_an_update_installs() {
 }
 
 #[tokio::test]
-async fn lists_block_devices_with_fixed_columns() {
+async fn lists_block_devices_with_fixed_columns_and_where_each_disk_is() {
     let agent = Agent::start(None, 0).await;
     let response = agent.client().call(Request::ListBlockDevices {}, None).await.unwrap();
-    assert_eq!(response, Response::BlockDevices { lsblk_json: "{\"blockdevices\": []}\n".into() });
-    assert_eq!(agent.calls(), format!("lsblk --json --bytes --tree --output {LSBLK_COLUMNS}\n"));
+    assert_eq!(
+        response,
+        Response::BlockDevices {
+            lsblk_json: "{\"blockdevices\": []}\n".into(),
+            udev_db: "P: /devices/pci0000:00/0000:00:17.0/ata1/host0/target0:0:0/0:0:0:0/block/sda\n".into(),
+        }
+    );
+    assert_eq!(
+        agent.calls(),
+        format!(
+            "lsblk --json --bytes --tree --output {LSBLK_COLUMNS}\n\
+             udevadm info --export-db --subsystem-match=block --property-match=DEVTYPE=disk\n"
+        )
+    );
+}
+
+#[tokio::test]
+async fn disks_are_listed_when_udev_cannot_be_asked() {
+    let agent = Agent::start(None, 0).await;
+    fs::write(agent.dir.path().join("no-udev"), "").unwrap();
+    let response = agent.client().call(Request::ListBlockDevices {}, None).await.unwrap();
+    assert_eq!(
+        response,
+        Response::BlockDevices { lsblk_json: "{\"blockdevices\": []}\n".into(), udev_db: String::new() }
+    );
 }
 
 #[tokio::test]

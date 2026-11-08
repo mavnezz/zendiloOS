@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO enclosure (id, model) VALUES (1, NULL)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "f562f355e3560eb3cc16d771726a4a8473affcd753811a6edcbf7bb3acb922f4"
+}

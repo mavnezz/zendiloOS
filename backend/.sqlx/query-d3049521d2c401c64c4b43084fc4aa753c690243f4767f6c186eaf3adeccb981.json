@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO enclosure_bindings (slot, kind, value) VALUES (?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "d3049521d2c401c64c4b43084fc4aa753c690243f4767f6c186eaf3adeccb981"
+}

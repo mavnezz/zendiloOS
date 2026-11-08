@@ -1,7 +1,7 @@
 use zendiloos_kernel::PortError;
 
 use crate::application::ports::AdminError;
-use crate::domain::{InvalidSelfTestPlan, Occupant, PlanError};
+use crate::domain::{InvalidEnclosure, InvalidInventory, InvalidSelfTestPlan, Occupant, PlanError};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {
@@ -42,6 +42,19 @@ pub enum StorageError {
     /// Shares, apps, the personal folders or Docker's data live on the pool.
     #[error("the pool holds data of shares, apps or Docker")]
     PoolInUse(Vec<Occupant>),
+    #[error(transparent)]
+    InvalidEnclosure(#[from] InvalidEnclosure),
+    #[error(transparent)]
+    InvalidInventory(#[from] InvalidInventory),
+    #[error("a disk blinks for 1 to {} seconds", super::enclosure::LOCATE_MAX_SECONDS)]
+    LocateTime,
+    #[error("the disk is not blinking")]
+    NotLocating,
+    #[error("no disk with this serial number was seen")]
+    InventoryNotFound,
+    /// Only disks no longer present can be removed from the inventory.
+    #[error("the disk is present")]
+    DiskPresent,
     #[error(transparent)]
     Port(#[from] PortError),
 }

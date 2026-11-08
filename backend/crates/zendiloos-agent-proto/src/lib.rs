@@ -129,8 +129,22 @@ pub enum Request {
     Hello {},
     Reboot {},
     PowerOff {},
-    /// `lsblk` output for all block devices, columns [`LSBLK_COLUMNS`].
+    /// `lsblk` output for all block devices, columns [`LSBLK_COLUMNS`],
+    /// and udev's database of the whole disks, for where each is plugged
+    /// in (`ID_PATH`).
     ListBlockDevices {},
+    /// What the firmware calls the machine: DMI's `sys_vendor` and
+    /// `product_name`. Answers [`Response::Machine`].
+    Machine {},
+    /// Reads from the whole disk `device` for `millis` milliseconds, which
+    /// keeps its activity light on: 1 MiB at a time from places spread
+    /// over the disk, opened read-only and with `O_DIRECT`, so the reads
+    /// reach the disk rather than the cache. Never writes. Only a disk the
+    /// agent itself finds to be whole, as for SMART.
+    ReadBurst {
+        device: DiskName,
+        millis: BurstMillis,
+    },
     /// `smartctl` output for one whole disk. Sleeping disks are not woken.
     SmartData {
         device: DiskName,
@@ -707,6 +721,8 @@ impl Request {
             Request::Reboot {} => "reboot",
             Request::PowerOff {} => "power_off",
             Request::ListBlockDevices {} => "list_block_devices",
+            Request::Machine {} => "machine",
+            Request::ReadBurst { .. } => "read_burst",
             Request::SmartData { .. } => "smart_data",
             Request::StartSelfTest { .. } => "start_self_test",
             Request::AbortSelfTest { .. } => "abort_self_test",
@@ -833,6 +849,16 @@ pub enum Response {
     },
     BlockDevices {
         lsblk_json: String,
+        /// `udevadm info --export-db` of the block devices that are disks;
+        /// empty if udev could not be asked.
+        #[serde(default)]
+        udev_db: String,
+    },
+    /// DMI's names of the machine, as the firmware has them (a trailing
+    /// newline and all); empty where there are none.
+    Machine {
+        sys_vendor: String,
+        product_name: String,
     },
     Smart {
         /// smartctl's exit status: a bit mask, not a plain success flag.
@@ -1062,6 +1088,41 @@ impl From<DiskName> for String {
     }
 }
 
+/// How long one [`Request::ReadBurst`] reads: 1 to 2000 milliseconds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "u16", into = "u16")]
+pub struct BurstMillis(u16);
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("a burst reads for 1 to {} milliseconds", BurstMillis::MAX)]
+pub struct InvalidBurstMillis;
+
+impl BurstMillis {
+    pub const MAX: u16 = 2000;
+
+    pub fn new(millis: u16) -> Result<Self, InvalidBurstMillis> {
+        if (1..=Self::MAX).contains(&millis) { Ok(Self(millis)) } else { Err(InvalidBurstMillis) }
+    }
+
+    pub fn get(self) -> u16 {
+        self.0
+    }
+}
+
+impl TryFrom<u16> for BurstMillis {
+    type Error = InvalidBurstMillis;
+
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl From<BurstMillis> for u16 {
+    fn from(millis: BurstMillis) -> Self {
+        millis.0
+    }
+}
+
 /// How a new pool spreads data over its disks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1209,6 +1270,12 @@ impl Request {
     /// places of its own, so users' copies never hold it up for hours.
     pub fn is_walk(&self) -> bool {
         matches!(self, Request::SetShareAccess { recursive: true, .. })
+    }
+
+    /// Reading from a disk to make it blink: places of their own, so disks
+    /// blinking for minutes never keep the quick requests waiting.
+    pub fn is_burst(&self) -> bool {
+        matches!(self, Request::ReadBurst { .. })
     }
 
     pub fn role(&self) -> Role {
@@ -2064,6 +2131,58 @@ mod tests {
         assert!(parse(json!({ "version": 1, "request": { "op": "reboot", "force": true } })).is_err());
         assert!(parse(json!({ "version": 1, "request": { "op": "hello" }, "extra": 1 })).is_err());
         assert!(parse(json!({ "version": 1, "request_id": "a\nb", "request": { "op": "hello" } })).is_err());
+    }
+
+    #[test]
+    fn a_read_burst_names_a_whole_disk_and_lasts_two_seconds_at_most() {
+        let burst: Request =
+            serde_json::from_value(json!({ "op": "read_burst", "device": "sdc", "millis": 700 })).unwrap();
+        assert_eq!(
+            burst,
+            Request::ReadBurst {
+                device: DiskName::parse("sdc").unwrap(),
+                millis: BurstMillis::new(700).unwrap()
+            }
+        );
+        assert_eq!((burst.name(), burst.role()), ("read_burst", Role::System));
+        assert!(burst.is_burst() && !burst.is_long() && !burst.is_walk());
+        assert!(!Request::Machine {}.is_burst());
+        assert_eq!(
+            serde_json::to_value(&burst).unwrap(),
+            json!({ "op": "read_burst", "device": "sdc", "millis": 700 })
+        );
+        for bad in [
+            json!({ "op": "read_burst", "device": "sdc", "millis": 0 }),
+            json!({ "op": "read_burst", "device": "sdc", "millis": 2001 }),
+            json!({ "op": "read_burst", "device": "sdc", "millis": -1 }),
+            json!({ "op": "read_burst", "device": "sdc1", "millis": 700 }),
+            json!({ "op": "read_burst", "device": "/dev/sdc", "millis": 700 }),
+            json!({ "op": "read_burst", "device": "sdc" }),
+            json!({ "op": "read_burst", "device": "sdc", "millis": 700, "write": true }),
+        ] {
+            assert!(serde_json::from_value::<Request>(bad.clone()).is_err(), "{bad}");
+        }
+        assert_eq!(BurstMillis::new(BurstMillis::MAX).map(BurstMillis::get), Ok(2000));
+        assert_eq!(u16::from(BurstMillis::new(1).unwrap()), 1);
+    }
+
+    #[test]
+    fn the_machine_s_names_and_udev_s_database_travel_as_written() {
+        let machine: Request = serde_json::from_value(json!({ "op": "machine" })).unwrap();
+        assert_eq!((machine.name(), machine.role()), ("machine", Role::System));
+        assert!(serde_json::from_value::<Request>(json!({ "op": "machine", "path": "/etc" })).is_err());
+        let answer: Response = serde_json::from_value(
+            json!({ "status": "machine", "sys_vendor": "UGREEN\n", "product_name": "DXP4800 Plus\n" }),
+        )
+        .unwrap();
+        assert_eq!(
+            answer,
+            Response::Machine { sys_vendor: "UGREEN\n".into(), product_name: "DXP4800 Plus\n".into() }
+        );
+        // Without udev's part, as a test answers.
+        let devices: Response =
+            serde_json::from_value(json!({ "status": "block_devices", "lsblk_json": "{}" })).unwrap();
+        assert_eq!(devices, Response::BlockDevices { lsblk_json: "{}".into(), udev_db: String::new() });
     }
 
     #[test]

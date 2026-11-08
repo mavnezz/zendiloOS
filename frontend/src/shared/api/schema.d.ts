@@ -2676,6 +2676,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/storage/disks/{name}/locate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Has a disk blink so it can be found in its slot: it is read from (never
+         *     written) in bursts of 0.7 seconds with pauses between, which flashes
+         *     its activity light; a disk asleep wakes. Asked again, it starts over.
+         *     NVMe slots mostly have no light. Needs `storage.manage`.
+         */
+        post: operations["locate"];
+        /** Stops a disk blinking. Needs `storage.manage`. */
+        delete: operations["stop_locate"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/storage/disks/{name}/self-test": {
         parameters: {
             query?: never;
@@ -2725,6 +2748,110 @@ export interface paths {
          *     status `standby`. Needs `storage.view`.
          */
         get: operations["smart"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/storage/enclosure": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The machine's enclosure: the model or own layout chosen, which disk is
+         *     in which slot, the disks in none; while nothing is chosen, the model
+         *     the machine was recognised as. Needs `storage.view`.
+         */
+        get: operations["enclosure"];
+        /**
+         * Chooses the enclosure: a model of the catalog (with other bindings for
+         *     some slots), or a layout of one's own. Needs `storage.manage`.
+         */
+        put: operations["set_enclosure"];
+        post?: never;
+        /**
+         * Sets no enclosure up: the disks are listed without slots. Needs
+         *     `storage.manage`.
+         */
+        delete: operations["reset_enclosure"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/storage/enclosure/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The NAS models zendiloOS knows. Needs `storage.view`. */
+        get: operations["models"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/storage/inventory": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Every disk seen: those present first, then the others, most recently
+         *     seen first. Needs `storage.view`.
+         */
+        get: operations["inventory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/storage/inventory/{serial}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Notes when and where a disk was bought and until when its warranty
+         *     holds. Needs `storage.manage`.
+         */
+        put: operations["update_inventory"];
+        post?: never;
+        /** Forgets a disk that is no longer present. Needs `storage.manage`. */
+        delete: operations["remove_inventory"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/storage/locate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The disks blinking now. Needs `storage.view`. */
+        get: operations["locating"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3546,6 +3673,8 @@ export interface components {
             tag: string;
             version: string;
         };
+        /** @enum {string} */
+        BindingKind: "port" | "serial";
         /** @description An address or network the web interface refuses. */
         BlockedAddress: {
             /** @description `192.0.2.7` or `198.51.100.0/24`. */
@@ -3710,6 +3839,13 @@ export interface components {
             kind: "webhook";
             url: string;
         };
+        /** @description How the schematic draws the case around the slots. */
+        Chassis: {
+            panel?: components["schemas"]["FrontPanel"] | null;
+            style: components["schemas"]["ChassisStyle"];
+        };
+        /** @enum {string} */
+        ChassisStyle: "tower" | "rack" | "plain";
         ComposeChange: {
             accept_risks?: boolean;
             compose: string;
@@ -3982,6 +4118,12 @@ export interface components {
              *     be used for pools.
              */
             id_link?: string | null;
+            /**
+             * @description Where it is plugged in: udev's `ID_PATH`, its `/dev/disk/by-path`
+             *     name, e.g. `pci-0000:05:00.0-ata-1.0`; what a slot of the enclosure
+             *     is bound to.
+             */
+            id_path?: string | null;
             media: components["schemas"]["Media"];
             model?: string | null;
             /** @description Kernel name, e.g. `sda`; identifies the disk in this API. */
@@ -4196,6 +4338,42 @@ export interface components {
             /** @description A pool zendiloOS created. */
             pool: string;
         };
+        /** @description The machine's enclosure and which disk is in which slot. */
+        Enclosure: {
+            /** @description The model's, or plain for a layout of one's own. */
+            chassis: components["schemas"]["Chassis"];
+            detected?: components["schemas"]["EnclosureModel"] | null;
+            /**
+             * @description The groups disks are placed in, the model's overrides applied;
+             *     empty while not set up.
+             */
+            groups: components["schemas"]["PlacedGroup"][];
+            /**
+             * @description What the firmware calls the machine (DMI); empty where it says
+             *     nothing.
+             */
+            machine: components["schemas"]["Machine"];
+            model?: components["schemas"]["EnclosureModel"] | null;
+            source?: components["schemas"]["EnclosureSource"] | null;
+            /** @description Present disks in no slot, by kernel name. */
+            unplaced: string[];
+        };
+        /** @description A NAS of the built-in catalog. */
+        EnclosureModel: {
+            chassis: components["schemas"]["Chassis"];
+            dmi_product: string;
+            /** @description DMI's `sys_vendor` and `product_name` of the machine. */
+            dmi_vendor: string;
+            groups: components["schemas"]["ModelGroup"][];
+            id: string;
+            name: string;
+            notes: string;
+            vendor: string;
+            /** @description Someone checked the slots and ports on the real machine. */
+            verified: boolean;
+        };
+        /** @enum {string} */
+        EnclosureSource: "model" | "custom";
         /**
          * @description What a file or folder is; for a folder, what is in it, counted as the
          *     person may see it.
@@ -4509,6 +4687,13 @@ export interface components {
             /** @description Where it is, relative to the root searched in, its name included. */
             path: string;
         };
+        /** @description A strip beside the bays with the power button and status lights. */
+        FrontPanel: {
+            /** @description What each light shows, from the top: `power`, `network`, `disk1`, … */
+            leds: string[];
+            power_button: boolean;
+            side: components["schemas"]["PanelSide"];
+        };
         Group: {
             /** Format: int64 */
             created_at: number;
@@ -4663,6 +4848,44 @@ export interface components {
          * @enum {string}
          */
         InterfaceTheme: "light" | "dark" | "system";
+        /** @description A disk the NAS has seen, by serial number. */
+        InventoryDisk: {
+            /** @description Its kernel name while present; `null`: stored, no longer present. */
+            disk?: string | null;
+            /**
+             * Format: int64
+             * @description Unix seconds.
+             */
+            first_seen: number;
+            /**
+             * Format: int64
+             * @description Unix seconds; while present, up to an hour behind.
+             */
+            last_seen: number;
+            /** @description As last seen. */
+            model?: string | null;
+            note?: string | null;
+            /** @description `YYYY-MM-DD`. */
+            purchased?: string | null;
+            serial: string;
+            /** Format: int64 */
+            size_bytes: number;
+            /** @description Where it was bought. */
+            vendor?: string | null;
+            /** @description `YYYY-MM-DD`. */
+            warranty_until?: string | null;
+        };
+        /** @description What the owner notes about a disk; blank or absent is none. */
+        InventoryUpdate: {
+            /** @description At most 500 characters. */
+            note?: string | null;
+            /** @description `YYYY-MM-DD`. */
+            purchased?: string | null;
+            /** @description At most 64 characters. */
+            vendor?: string | null;
+            /** @description `YYYY-MM-DD`, not before `purchased`. */
+            warranty_until?: string | null;
+        };
         Ipv4Input: {
             /** @enum {string} */
             mode: "dhcp";
@@ -4772,6 +4995,22 @@ export interface components {
         };
         /** @enum {string} */
         LiveTopic: "metrics" | "jobs" | "notifications";
+        LocateRequest: {
+            /**
+             * Format: int32
+             * @description How long it blinks: 1 to 300 seconds, 60 if not given.
+             */
+            seconds?: number | null;
+        };
+        /** @description A disk blinking: read from in bursts, so its activity light flashes. */
+        Locating: {
+            disk: string;
+            /**
+             * Format: int64
+             * @description When it stops, Unix seconds.
+             */
+            until: number;
+        };
         /**
          * @description syslog severity, from most to least severe.
          * @enum {string}
@@ -4790,6 +5029,10 @@ export interface components {
             name: string;
             /** Format: password */
             password: string;
+        };
+        Machine: {
+            product: string;
+            vendor: string;
         };
         /** @enum {string} */
         MailSecurity: "tls" | "starttls" | "none";
@@ -4865,6 +5108,34 @@ export interface components {
             sent_bytes_per_second: number[];
             written_bytes_per_second: number[];
         };
+        ModelGroup: {
+            /** Format: int32 */
+            columns: number;
+            form: components["schemas"]["SlotForm"];
+            id: string;
+            name: string;
+            numbering: components["schemas"]["Numbering"];
+            orientation: components["schemas"]["Orientation"];
+            /** Format: int32 */
+            rows: number;
+            /** @description In their numbering's order. */
+            slots: components["schemas"]["ModelSlot"][];
+        };
+        ModelSlot: {
+            binding?: components["schemas"]["SlotBinding"] | null;
+            /**
+             * Format: int32
+             * @description From 0 at the left of the group.
+             */
+            column: number;
+            id: string;
+            label: string;
+            /**
+             * Format: int32
+             * @description From 0 at the top of the group.
+             */
+            row: number;
+        };
         /**
          * @description How the machine is connected: its interfaces (without the loopback and
          *     the plumbing of containers), default routes and name servers.
@@ -4913,6 +5184,23 @@ export interface components {
             start?: boolean;
             template?: components["schemas"]["ProjectTemplate"] | null;
         };
+        NewGroup: {
+            /** Format: int32 */
+            columns: number;
+            form: components["schemas"]["SlotForm"];
+            id: string;
+            /** @description 1 to 64 characters. */
+            name: string;
+            numbering: components["schemas"]["Numbering"];
+            orientation: components["schemas"]["Orientation"];
+            /**
+             * Format: int32
+             * @description Rows × columns: 1 to 60.
+             */
+            rows: number;
+            /** @description One for each place of the grid, in the numbering's order. */
+            slots: components["schemas"]["NewSlot"][];
+        };
         NewNetwork: {
             /** @description Only with a subnet. */
             gateway?: string | null;
@@ -4922,6 +5210,13 @@ export interface components {
         };
         /** @enum {string} */
         NewPoolLayout: "single" | "mirror" | "raidz1" | "raidz2" | "raidz3";
+        NewSlot: {
+            binding?: components["schemas"]["SlotBinding"] | null;
+            /** @description 1 to 32 lowercase letters, digits or `-`, unique in the enclosure. */
+            id: string;
+            /** @description 1 to 32 characters. */
+            label: string;
+        };
         /** @description A host or network that may mount the share over NFS, and how. */
         NfsRule: {
             /** @description Writes answered before they are on disk; off if not given. */
@@ -5014,6 +5309,12 @@ export interface components {
              */
             level: components["schemas"]["KindLevel"];
         };
+        /**
+         * @description In which order a group's slots fill its grid: along the rows from the
+         *     top row, or down the columns from the left one.
+         * @enum {string}
+         */
+        Numbering: "left_to_right" | "right_to_left" | "top_to_bottom" | "bottom_to_top";
         NvmeHealth: {
             /** Format: int32 */
             available_spare_percent: number;
@@ -5032,6 +5333,8 @@ export interface components {
             /** Format: int64 */
             unsafe_shutdowns: number;
         };
+        /** @enum {string} */
+        Orientation: "vertical" | "horizontal";
         /** @description A Debian package an update brings. */
         PackageUpdate: {
             /** @description None for one that comes in new. */
@@ -5040,6 +5343,8 @@ export interface components {
             security: boolean;
             to: string;
         };
+        /** @enum {string} */
+        PanelSide: "left" | "right";
         Partition: {
             filesystem?: string | null;
             label?: string | null;
@@ -5089,6 +5394,33 @@ export interface components {
              */
             revert_at: number;
             settings: components["schemas"]["WebServer"];
+        };
+        PlacedGroup: {
+            /** Format: int32 */
+            columns: number;
+            form: components["schemas"]["SlotForm"];
+            id: string;
+            name: string;
+            numbering: components["schemas"]["Numbering"];
+            orientation: components["schemas"]["Orientation"];
+            /** Format: int32 */
+            rows: number;
+            slots: components["schemas"]["PlacedSlot"][];
+        };
+        PlacedSlot: {
+            binding?: components["schemas"]["SlotBinding"] | null;
+            /** Format: int32 */
+            column: number;
+            /** @description The disk in it, by kernel name. */
+            disk?: string | null;
+            health?: components["schemas"]["DiskHealth"] | null;
+            id: string;
+            label: string;
+            /** @description Bound otherwise than the model binds it. */
+            overridden: boolean;
+            /** Format: int32 */
+            row: number;
+            state: components["schemas"]["SlotState"];
         };
         PlanWarning: {
             code: components["schemas"]["PlanWarningCode"];
@@ -5573,6 +5905,20 @@ export interface components {
              */
             quota_bytes?: number | null;
         };
+        /**
+         * @description A model of the catalog with other bindings for some of its slots, or a
+         *     layout of one's own (1 to 16 groups).
+         */
+        SetEnclosure: {
+            model: string;
+            overrides?: components["schemas"]["SlotOverride"][];
+            /** @enum {string} */
+            source: "model";
+        } | {
+            groups: components["schemas"]["NewGroup"][];
+            /** @enum {string} */
+            source: "custom";
+        };
         SetFavouritesRequest: {
             /** @description In the order to show them; at most 50. */
             favourites: components["schemas"]["FavouriteFolder"][];
@@ -5736,6 +6082,20 @@ export interface components {
             job?: components["schemas"]["Job"] | null;
             share: components["schemas"]["Share"];
         };
+        /** @description What a slot holds. */
+        SlotBinding: {
+            kind: components["schemas"]["BindingKind"];
+            value: string;
+        };
+        /** @enum {string} */
+        SlotForm: "inch_3_5" | "inch_2_5" | "m2";
+        /** @description Another binding for one of the model's slots; `null` binds nothing. */
+        SlotOverride: {
+            binding?: components["schemas"]["SlotBinding"] | null;
+            slot: string;
+        };
+        /** @enum {string} */
+        SlotState: "occupied" | "empty" | "missing";
         SmartAttribute: {
             /** @description `now`, `past` or absent. */
             failed?: string | null;
@@ -12844,6 +13204,78 @@ export interface operations {
             };
         };
     };
+    locate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LocateRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Locating"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    stop_locate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Stopped. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `not_locating` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     start_self_test: {
         parameters: {
             query?: never;
@@ -12946,6 +13378,268 @@ export interface operations {
             };
             /** @description `not_found`: no such disk */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    enclosure: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Enclosure"];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    set_enclosure: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetEnclosure"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Enclosure"];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    reset_enclosure: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Enclosure"];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    models: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnclosureModel"][];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    inventory: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InventoryDisk"][];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    update_inventory: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                serial: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InventoryUpdate"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InventoryDisk"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    remove_inventory: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                serial: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Forgotten. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `disk_present` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    locating: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Locating"][];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

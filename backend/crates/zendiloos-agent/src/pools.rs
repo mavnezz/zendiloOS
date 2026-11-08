@@ -94,6 +94,8 @@ pub struct HostPaths {
     pub dev: PathBuf,
     pub by_id: PathBuf,
     pub sys_block: PathBuf,
+    /// What the firmware says about the machine, `/sys/class/dmi/id`.
+    pub dmi: PathBuf,
     pub mountinfo: PathBuf,
     pub swaps: PathBuf,
     pub units: PathBuf,
@@ -139,6 +141,7 @@ impl Default for HostPaths {
             dev: PathBuf::from("/dev"),
             by_id: PathBuf::from("/dev/disk/by-id"),
             sys_block: PathBuf::from("/sys/class/block"),
+            dmi: PathBuf::from("/sys/class/dmi/id"),
             mountinfo: PathBuf::from("/proc/self/mountinfo"),
             swaps: PathBuf::from("/proc/swaps"),
             units: PathBuf::from("/etc/systemd/system"),

@@ -7,8 +7,9 @@ use async_trait::async_trait;
 use zendiloos_kernel::{PortError, RequestContext, Timestamp};
 
 use crate::domain::{
-    Array, BlockDevice, Occupant, Pool, PoolLayout, PoolName, RemovableDrive, ScheduledSelfTest,
-    SelfTestKind, SelfTestPlan, SmartReport, VolumeNumber,
+    Array, BlockDevice, EnclosureChoice, EnclosureModel, InventoryDetails, InventoryRecord, Machine,
+    Occupant, Pool, PoolLayout, PoolName, RemovableDrive, ScheduledSelfTest, SelfTestKind, SelfTestPlan,
+    SmartReport, VolumeNumber,
 };
 
 /// The host's block device tree.
@@ -161,4 +162,66 @@ pub trait SelfTestPlanStore: Send + Sync {
     async fn save(&self, plans: &[SelfTestPlan]) -> Result<(), PortError>;
 
     async fn ran(&self, kind: SelfTestKind, at: Timestamp) -> Result<(), PortError>;
+}
+
+/// The NAS models zendiloOS knows, checked; built in.
+pub trait EnclosureCatalog: Send + Sync {
+    fn models(&self) -> Vec<EnclosureModel>;
+}
+
+/// What the firmware calls the machine (DMI). Through the agent, like all
+/// of the storage's state, so the simulation can be a model of the
+/// catalog.
+#[async_trait]
+pub trait MachineSource: Send + Sync {
+    async fn machine(&self, context: &RequestContext) -> Result<Machine, PortError>;
+}
+
+/// The enclosure the administrator chose, in the database.
+#[async_trait]
+pub trait EnclosureStore: Send + Sync {
+    async fn chosen(&self) -> Result<Option<EnclosureChoice>, PortError>;
+
+    /// Replaces the choice; `None`: not set up.
+    async fn save(&self, choice: Option<&EnclosureChoice>) -> Result<(), PortError>;
+}
+
+/// Reading from a disk for a moment, which keeps its activity light on;
+/// needs the privileged agent, which reads only from whole disks it knows
+/// and never writes.
+#[async_trait]
+pub trait DiskLocator: Send + Sync {
+    /// Reads from `disk` for about `duration`, two seconds at most.
+    async fn read_burst(
+        &self,
+        disk: &str,
+        duration: std::time::Duration,
+        context: &RequestContext,
+    ) -> Result<(), PortError>;
+}
+
+/// A disk present now, as the inventory notes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeenDisk {
+    pub serial: String,
+    pub model: Option<String>,
+    pub size_bytes: u64,
+}
+
+/// The disks the NAS has seen, by serial number, in the database.
+#[async_trait]
+pub trait DiskInventoryStore: Send + Sync {
+    async fn records(&self) -> Result<Vec<InventoryRecord>, PortError>;
+
+    /// Notes that `disks` are present at `at`: new ones are added, the
+    /// others get their model, size and when they were last seen. The last
+    /// time seen may lag by up to an hour, so a look every minute does not
+    /// write every minute.
+    async fn seen(&self, disks: &[SeenDisk], at: Timestamp) -> Result<(), PortError>;
+
+    /// Whether there was a record of this serial number.
+    async fn set_details(&self, serial: &str, details: &InventoryDetails) -> Result<bool, PortError>;
+
+    /// Whether there was a record of this serial number.
+    async fn remove(&self, serial: &str) -> Result<bool, PortError>;
 }

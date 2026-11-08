@@ -12,6 +12,7 @@ pub mod apps;
 mod blocking;
 mod clock;
 pub mod containers;
+pub mod enclosure;
 pub mod firewall;
 pub mod host;
 mod https;

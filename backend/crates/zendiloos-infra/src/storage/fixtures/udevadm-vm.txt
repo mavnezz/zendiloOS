@@ -1,0 +1,225 @@
+P: /devices/pci0000:00/0000:00:02.0/virtio1/block/vda
+M: vda
+J: b254:0
+U: block
+T: disk
+D: b 254:0
+N: vda
+L: 0
+S: disk/by-path/virtio-pci-0000:00:02.0
+S: disk/by-diskseq/1
+S: disk/by-path/pci-0000:00:02.0
+Q: 1
+E: DEVPATH=/devices/pci0000:00/0000:00:02.0/virtio1/block/vda
+E: DEVNAME=/dev/vda
+E: DEVTYPE=disk
+E: DISKSEQ=1
+E: MAJOR=254
+E: MINOR=0
+E: SUBSYSTEM=block
+E: USEC_INITIALIZED=1834101
+E: ID_PATH=pci-0000:00:02.0
+E: ID_PATH_TAG=pci-0000_00_02_0
+E: ID_PART_TABLE_UUID=0b7f4e4a-2d33-4a43-9a1f-3f5e0c2d9b11
+E: ID_PART_TABLE_TYPE=gpt
+E: DEVLINKS=/dev/disk/by-path/virtio-pci-0000:00:02.0 /dev/disk/by-diskseq/1 /dev/disk/by-path/pci-0000:00:02.0
+E: TAGS=:systemd:
+E: CURRENT_TAGS=:systemd:
+
+P: /devices/pci0000:00/0000:00:03.0/virtio2/block/vdb
+M: vdb
+J: b254:16
+U: block
+T: disk
+D: b 254:16
+N: vdb
+L: 0
+S: disk/by-path/pci-0000:00:03.0
+S: disk/by-label/cidata
+S: disk/by-diskseq/2
+Q: 2
+E: DEVPATH=/devices/pci0000:00/0000:00:03.0/virtio2/block/vdb
+E: DEVNAME=/dev/vdb
+E: DEVTYPE=disk
+E: DISKSEQ=2
+E: MAJOR=254
+E: MINOR=16
+E: SUBSYSTEM=block
+E: USEC_INITIALIZED=1834562
+E: ID_PATH=pci-0000:00:03.0
+E: ID_PATH_TAG=pci-0000_00_03_0
+E: ID_FS_LABEL=cidata
+E: ID_FS_TYPE=iso9660
+E: ID_FS_USAGE=filesystem
+E: DEVLINKS=/dev/disk/by-path/pci-0000:00:03.0 /dev/disk/by-label/cidata /dev/disk/by-diskseq/2
+E: TAGS=:systemd:
+E: CURRENT_TAGS=:systemd:
+
+P: /devices/pci0000:00/0000:00:04.0/nvme/nvme0/nvme0n1
+M: nvme0n1
+R: 1
+J: b259:0
+U: block
+T: disk
+D: b 259:0
+N: nvme0n1
+L: 0
+S: disk/by-id/nvme-QEMU_NVMe_Ctrl_ZDL-NVME-1
+S: disk/by-path/pci-0000:00:04.0-nvme-1
+S: disk/by-id/nvme-nvme.1b36-5a444c2d4e564d452d31-51454d55204e564d65204374726c-00000001
+S: disk/by-diskseq/7
+Q: 7
+E: DEVPATH=/devices/pci0000:00/0000:00:04.0/nvme/nvme0/nvme0n1
+E: DEVNAME=/dev/nvme0n1
+E: DEVTYPE=disk
+E: DISKSEQ=7
+E: MAJOR=259
+E: MINOR=0
+E: SUBSYSTEM=block
+E: USEC_INITIALIZED=1840222
+E: ID_SERIAL_SHORT=ZDL-NVME-1
+E: ID_WWN=nvme.1b36-5a444c2d4e564d452d31-51454d55204e564d65204374726c-00000001
+E: ID_MODEL=QEMU NVMe Ctrl
+E: ID_REVISION=10.0.6
+E: ID_NSID=1
+E: ID_SERIAL=QEMU_NVMe_Ctrl_ZDL-NVME-1
+E: ID_PATH=pci-0000:00:04.0-nvme-1
+E: ID_PATH_TAG=pci-0000_00_04_0-nvme-1
+E: DEVLINKS=/dev/disk/by-id/nvme-QEMU_NVMe_Ctrl_ZDL-NVME-1 /dev/disk/by-path/pci-0000:00:04.0-nvme-1 /dev/disk/by-id/nvme-nvme.1b36-5a444c2d4e564d452d31-51454d55204e564d65204374726c-00000001 /dev/disk/by-diskseq/7
+E: TAGS=:systemd:
+E: CURRENT_TAGS=:systemd:
+
+P: /devices/pci0000:00/0000:00:1f.2/ata1/host0/target0:0:0/0:0:0:0/block/sda
+M: sda
+R: 0
+J: b8:0
+U: block
+T: disk
+D: b 8:0
+N: sda
+L: 0
+S: disk/by-diskseq/3
+S: disk/by-path/pci-0000:00:1f.2-ata-1.0
+S: disk/by-id/ata-QEMU_HARDDISK_ZDL-SATA-1
+S: disk/by-path/pci-0000:00:1f.2-ata-1
+Q: 3
+E: DEVPATH=/devices/pci0000:00/0000:00:1f.2/ata1/host0/target0:0:0/0:0:0:0/block/sda
+E: DEVNAME=/dev/sda
+E: DEVTYPE=disk
+E: DISKSEQ=3
+E: MAJOR=8
+E: MINOR=0
+E: SUBSYSTEM=block
+E: USEC_INITIALIZED=1839125
+E: ID_ATA=1
+E: ID_TYPE=disk
+E: ID_BUS=ata
+E: ID_MODEL=QEMU_HARDDISK
+E: ID_SERIAL=QEMU_HARDDISK_ZDL-SATA-1
+E: ID_SERIAL_SHORT=ZDL-SATA-1
+E: ID_PATH=pci-0000:00:1f.2-ata-1.0
+E: ID_PATH_TAG=pci-0000_00_1f_2-ata-1_0
+E: ID_PATH_ATA_COMPAT=pci-0000:00:1f.2-ata-1
+E: DEVLINKS=/dev/disk/by-diskseq/3 /dev/disk/by-path/pci-0000:00:1f.2-ata-1.0 /dev/disk/by-id/ata-QEMU_HARDDISK_ZDL-SATA-1 /dev/disk/by-path/pci-0000:00:1f.2-ata-1
+E: TAGS=:systemd:
+E: CURRENT_TAGS=:systemd:
+
+P: /devices/pci0000:00/0000:00:1f.2/ata2/host1/target1:0:0/1:0:0:0/block/sdb
+M: sdb
+R: 0
+J: b8:16
+U: block
+T: disk
+D: b 8:16
+N: sdb
+L: 0
+S: disk/by-path/pci-0000:00:1f.2-ata-2.0
+S: disk/by-id/ata-QEMU_HARDDISK_ZDL-SATA-2
+S: disk/by-path/pci-0000:00:1f.2-ata-2
+S: disk/by-diskseq/4
+Q: 4
+E: DEVPATH=/devices/pci0000:00/0000:00:1f.2/ata2/host1/target1:0:0/1:0:0:0/block/sdb
+E: DEVNAME=/dev/sdb
+E: DEVTYPE=disk
+E: DISKSEQ=4
+E: MAJOR=8
+E: MINOR=16
+E: SUBSYSTEM=block
+E: USEC_INITIALIZED=1839298
+E: ID_ATA=1
+E: ID_TYPE=disk
+E: ID_BUS=ata
+E: ID_SERIAL_SHORT=ZDL-SATA-2
+E: ID_PATH=pci-0000:00:1f.2-ata-2.0
+E: ID_PATH_TAG=pci-0000_00_1f_2-ata-2_0
+E: ID_PATH_ATA_COMPAT=pci-0000:00:1f.2-ata-2
+E: DEVLINKS=/dev/disk/by-path/pci-0000:00:1f.2-ata-2.0 /dev/disk/by-id/ata-QEMU_HARDDISK_ZDL-SATA-2 /dev/disk/by-path/pci-0000:00:1f.2-ata-2 /dev/disk/by-diskseq/4
+E: TAGS=:systemd:
+E: CURRENT_TAGS=:systemd:
+
+P: /devices/pci0000:00/0000:00:1f.2/ata3/host2/target2:0:0/2:0:0:0/block/sdc
+M: sdc
+R: 0
+J: b8:32
+U: block
+T: disk
+D: b 8:32
+N: sdc
+L: 0
+S: disk/by-path/pci-0000:00:1f.2-ata-3
+S: disk/by-path/pci-0000:00:1f.2-ata-3.0
+S: disk/by-id/ata-QEMU_HARDDISK_ZDL-SATA-3
+S: disk/by-diskseq/5
+Q: 5
+E: DEVPATH=/devices/pci0000:00/0000:00:1f.2/ata3/host2/target2:0:0/2:0:0:0/block/sdc
+E: DEVNAME=/dev/sdc
+E: DEVTYPE=disk
+E: DISKSEQ=5
+E: MAJOR=8
+E: MINOR=32
+E: SUBSYSTEM=block
+E: USEC_INITIALIZED=1839402
+E: ID_ATA=1
+E: ID_TYPE=disk
+E: ID_BUS=ata
+E: ID_SERIAL_SHORT=ZDL-SATA-3
+E: ID_PATH=pci-0000:00:1f.2-ata-3.0
+E: ID_PATH_TAG=pci-0000_00_1f_2-ata-3_0
+E: ID_PATH_ATA_COMPAT=pci-0000:00:1f.2-ata-3
+E: DEVLINKS=/dev/disk/by-path/pci-0000:00:1f.2-ata-3 /dev/disk/by-path/pci-0000:00:1f.2-ata-3.0 /dev/disk/by-id/ata-QEMU_HARDDISK_ZDL-SATA-3 /dev/disk/by-diskseq/5
+E: TAGS=:systemd:
+E: CURRENT_TAGS=:systemd:
+
+P: /devices/pci0000:00/0000:00:1f.2/ata4/host3/target3:0:0/3:0:0:0/block/sdd
+M: sdd
+R: 0
+J: b8:48
+U: block
+T: disk
+D: b 8:48
+N: sdd
+L: 0
+S: disk/by-id/ata-QEMU_HARDDISK_ZDL-SATA-4
+S: disk/by-path/pci-0000:00:1f.2-ata-4.0
+S: disk/by-path/pci-0000:00:1f.2-ata-4
+S: disk/by-diskseq/6
+Q: 6
+E: DEVPATH=/devices/pci0000:00/0000:00:1f.2/ata4/host3/target3:0:0/3:0:0:0/block/sdd
+E: DEVNAME=/dev/sdd
+E: DEVTYPE=disk
+E: DISKSEQ=6
+E: MAJOR=8
+E: MINOR=48
+E: SUBSYSTEM=block
+E: USEC_INITIALIZED=1839511
+E: ID_ATA=1
+E: ID_TYPE=disk
+E: ID_BUS=ata
+E: ID_SERIAL_SHORT=ZDL-SATA-4
+E: ID_PATH=pci-0000:00:1f.2-ata-4.0
+E: ID_PATH_TAG=pci-0000_00_1f_2-ata-4_0
+E: ID_PATH_ATA_COMPAT=pci-0000:00:1f.2-ata-4
+E: DEVLINKS=/dev/disk/by-id/ata-QEMU_HARDDISK_ZDL-SATA-4 /dev/disk/by-path/pci-0000:00:1f.2-ata-4.0 /dev/disk/by-path/pci-0000:00:1f.2-ata-4 /dev/disk/by-diskseq/6
+E: TAGS=:systemd:
+E: CURRENT_TAGS=:systemd:
+

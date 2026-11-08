@@ -181,6 +181,7 @@ fn host(erasable: Erasable) -> Host {
             dev: root.join("dev"),
             by_id,
             sys_block: root.join("sys"),
+            dmi: root.join("dmi"),
             mountinfo: root.join("mountinfo"),
             swaps: root.join("swaps"),
             units: root.join("units"),

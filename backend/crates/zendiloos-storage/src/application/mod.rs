@@ -1,7 +1,9 @@
 //! Use cases of the Storage context and the ports they need.
 
 pub mod commands;
+pub mod enclosure;
 mod error;
+pub mod inventory;
 pub mod monitor;
 pub mod ports;
 pub mod queries;
@@ -12,8 +14,9 @@ use std::sync::Arc;
 
 pub use error::StorageError;
 use ports::{
-    ArraySource, BlockDeviceSource, PlanTokens, PoolAdmin, RemovableHost, SelfTestPlanStore, SmartSource,
-    VolumeOccupants, ZfsSource,
+    ArraySource, BlockDeviceSource, DiskInventoryStore, DiskLocator, EnclosureCatalog, EnclosureStore,
+    MachineSource, PlanTokens, PoolAdmin, RemovableHost, SelfTestPlanStore, SmartSource, VolumeOccupants,
+    ZfsSource,
 };
 use zendiloos_jobs::Jobs;
 use zendiloos_kernel::{AuditLog, Clock};
@@ -36,6 +39,11 @@ pub struct StoragePorts {
     pub self_test_plans: Arc<dyn SelfTestPlanStore>,
     pub occupants: Arc<dyn VolumeOccupants>,
     pub removable: Arc<dyn RemovableHost>,
+    pub machine: Arc<dyn MachineSource>,
+    pub catalog: Arc<dyn EnclosureCatalog>,
+    pub enclosure: Arc<dyn EnclosureStore>,
+    pub locator: Arc<dyn DiskLocator>,
+    pub inventory: Arc<dyn DiskInventoryStore>,
 }
 
 /// All use cases of this context.
@@ -58,6 +66,9 @@ pub struct StorageUseCases {
     pub self_test_schedule: self_tests::SelfTestSchedule,
     pub monitor: Arc<monitor::StorageMonitor>,
     pub removable: Arc<removable::RemovableDrives>,
+    pub enclosure: enclosure::Enclosures,
+    pub locate: enclosure::Locator,
+    pub inventory: inventory::DiskInventory,
 }
 
 impl StorageUseCases {
@@ -89,6 +100,28 @@ impl StorageUseCases {
             ports.audit.clone(),
             ports.clock.clone(),
         );
+        let enclosure = enclosure::Enclosures::new(
+            ports.devices.clone(),
+            ports.zfs.clone(),
+            ports.machine,
+            ports.catalog,
+            ports.enclosure,
+            Arc::clone(&monitor),
+            ports.audit.clone(),
+            ports.clock.clone(),
+        );
+        let locate = enclosure::Locator::new(
+            ports.devices.clone(),
+            ports.locator,
+            ports.audit.clone(),
+            ports.clock.clone(),
+        );
+        let inventory = inventory::DiskInventory::new(
+            ports.devices.clone(),
+            ports.inventory,
+            ports.audit.clone(),
+            ports.clock.clone(),
+        );
         let context = Arc::new(commands::Context::new(
             ports.devices.clone(),
             ports.zfs.clone(),
@@ -112,6 +145,9 @@ impl StorageUseCases {
             self_test_schedule,
             monitor,
             removable,
+            enclosure,
+            locate,
+            inventory,
             overview,
             list_disks: queries::ListDisks::new(ports.devices.clone(), ports.zfs.clone()),
             get_smart_report: queries::GetSmartReport::new(ports.devices.clone(), ports.smart),

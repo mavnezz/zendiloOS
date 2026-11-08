@@ -1,6 +1,8 @@
 //! A fake host for tests: one system disk, a RAID 1 on two disks with a
 //! Btrfs volume, a ZFS pool on a third disk, mounted as volume 1, and two
 //! unused disks (`sdd`, `sde`). Changes to pools are recorded, not made.
+//! The disks sit at the ports of [`TEST_MODEL`]'s bays (`sde` at none of
+//! them), and the machine is a QEMU one until a test says otherwise.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -9,15 +11,18 @@ use async_trait::async_trait;
 use zendiloos_jobs::Jobs;
 use zendiloos_kernel::{AuditLog, Clock, PortError, RequestContext};
 
-use crate::application::StoragePorts;
 use crate::application::ports::{
-    AdminError, ArraySource, BlockDeviceSource, NewPool, PlanTokens, PoolAdmin, RemovableHost,
+    AdminError, ArraySource, BlockDeviceSource, DiskInventoryStore, DiskLocator, EnclosureCatalog,
+    EnclosureStore, MachineSource, NewPool, PlanTokens, PoolAdmin, RemovableHost, SeenDisk,
     SelfTestPlanStore, SmartSource, Steps, VolumeOccupants, ZfsSource,
 };
+use crate::application::{StoragePorts, StorageUseCases};
 use crate::domain::{
-    Array, ArrayMember, BlockDevice, DeviceKind, Filesystem, MemberState, Occupant, Pool, PoolDevice,
-    PoolLayout, PoolSpace, Scan, ScanKind, ScanState, SelfTestKind, Slots, SmartData, SmartProtocol,
-    SmartReport, SpaceUsage, VdevState, VolumeNumber,
+    Array, ArrayMember, Binding, BlockDevice, Chassis, ChassisStyle, DeviceKind, DmiMatch, EnclosureChoice,
+    EnclosureModel, Filesystem, FrontPanel, InventoryDetails, InventoryRecord, Layout, Machine, MemberState,
+    Numbering, Occupant, Orientation, PanelSide, Pool, PoolDevice, PoolLayout, PoolSpace, Scan, ScanKind,
+    ScanState, SelfTestKind, Slot, SlotForm, SlotGroup, Slots, SmartData, SmartProtocol, SmartReport,
+    SpaceUsage, VdevState, VolumeNumber,
 };
 
 #[derive(Default)]
@@ -37,7 +42,125 @@ pub struct FakeStorage {
     pub stick: Mutex<Option<bool>>,
     /// Ejecting the stick fails as for open files while set.
     pub stick_busy: Mutex<bool>,
+    /// What the firmware calls the machine.
+    pub machine: Mutex<Machine>,
+    /// Reading the machine's names fails while set.
+    pub machine_fails: Mutex<bool>,
+    /// The disks read from to make them blink, one entry per burst.
+    pub bursts: Mutex<Vec<String>>,
+    /// Reading from a disk to make it blink fails while set.
+    pub burst_fails: Mutex<bool>,
+    /// The enclosure chosen.
+    pub chosen: Mutex<Option<EnclosureChoice>>,
+    /// The disks seen.
+    pub inventory: Mutex<Vec<InventoryRecord>>,
     tokens: AtomicU64,
+}
+
+/// The model of [`test_catalog`]: four bays and two M.2 slots, the
+/// machine `TEST` `NAS 4`.
+pub const TEST_MODEL: &str = "test-nas4";
+
+/// The port each fake disk is plugged into.
+fn port_of(name: &str) -> Option<String> {
+    let port = match name {
+        "sda" => "pci-0000:05:00.0-ata-1.0",
+        "sdb" => "pci-0000:05:00.0-ata-2.0",
+        "sdc" => "pci-0000:05:00.0-ata-3.0",
+        "sdd" => "pci-0000:05:00.0-ata-4.0",
+        "sde" => "pci-0000:00:17.0-ata-1.0",
+        "sdf" => "pci-0000:00:14.0-usb-0:1:1.0-scsi-0:0:0:0",
+        "nvme0n1" => "pci-0000:01:00.0-nvme-1",
+        _ => return None,
+    };
+    Some(port.to_owned())
+}
+
+/// One model, as the catalog would have it.
+pub fn test_catalog() -> Vec<EnclosureModel> {
+    let slot = |id: &str, label: &str, port: &str| Slot {
+        id: id.to_owned(),
+        label: label.to_owned(),
+        binding: Some(Binding::Port(port.to_owned())),
+    };
+    let bays = SlotGroup {
+        id: "bays".to_owned(),
+        name: "Front bays".to_owned(),
+        rows: 1,
+        columns: 4,
+        orientation: Orientation::Vertical,
+        form: SlotForm::Inch35,
+        numbering: Numbering::LeftToRight,
+        slots: (1..=4)
+            .map(|n| slot(&format!("bay{n}"), &format!("Bay {n}"), &format!("pci-0000:05:00.0-ata-{n}")))
+            .collect(),
+    };
+    let m2 = SlotGroup {
+        id: "m2".to_owned(),
+        name: "M.2 slots".to_owned(),
+        rows: 2,
+        columns: 1,
+        orientation: Orientation::Horizontal,
+        form: SlotForm::M2,
+        numbering: Numbering::TopToBottom,
+        slots: vec![
+            slot("m2-1", "M.2 1", "pci-0000:01:00.0-nvme-1"),
+            slot("m2-2", "M.2 2", "pci-0000:02:00.0-nvme-1"),
+        ],
+    };
+    vec![EnclosureModel {
+        id: TEST_MODEL.to_owned(),
+        vendor: "TEST".to_owned(),
+        name: "NAS 4".to_owned(),
+        dmi: DmiMatch { vendor: "TEST".to_owned(), product: "NAS 4".to_owned() },
+        chassis: Chassis {
+            style: ChassisStyle::Tower,
+            panel: Some(FrontPanel {
+                side: PanelSide::Left,
+                power_button: true,
+                leds: vec!["power".to_owned(), "network".to_owned()],
+            }),
+        },
+        layout: Layout::new(vec![bays, m2]).expect("a valid layout"),
+        verified: false,
+        notes: "Made up for tests.".to_owned(),
+    }]
+}
+
+/// [`test_catalog`] as the catalog port.
+pub struct TestCatalog;
+
+impl EnclosureCatalog for TestCatalog {
+    fn models(&self) -> Vec<EnclosureModel> {
+        test_catalog()
+    }
+}
+
+/// Audit entries kept in memory.
+#[derive(Default)]
+pub struct RecordingAudit(Mutex<Vec<zendiloos_kernel::AuditEntry>>);
+
+impl RecordingAudit {
+    pub fn entries(&self) -> Vec<zendiloos_kernel::AuditEntry> {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl AuditLog for RecordingAudit {
+    async fn record(&self, entry: zendiloos_kernel::AuditEntry) -> Result<(), PortError> {
+        self.0.lock().unwrap().push(entry);
+        Ok(())
+    }
+}
+
+/// The use cases on the fake host, at a fixed time.
+pub fn use_cases() -> (StorageUseCases, Arc<FakeStorage>, Arc<RecordingAudit>) {
+    let clock = Arc::new(zendiloos_jobs::testing::FixedClock);
+    let jobs = Jobs::new(Arc::new(zendiloos_jobs::testing::MemoryJobs::default()), clock.clone());
+    let audit = Arc::new(RecordingAudit::default());
+    let (ports, fake) = FakeStorage::ports(jobs, audit.clone(), clock);
+    (StorageUseCases::new(ports), fake, audit)
 }
 
 /// The id of the stick [`FakeStorage::plug_stick`] plugs in.
@@ -53,8 +176,14 @@ impl FakeStorage {
             Arc::new(zendiloos_notify::testing::MemoryNotifications::default()),
             clock.clone(),
         );
-        let fake =
-            Arc::new(FakeStorage { sdd_serial: Mutex::new("T4".to_owned()), ..FakeStorage::default() });
+        let fake = Arc::new(FakeStorage {
+            sdd_serial: Mutex::new("T4".to_owned()),
+            machine: Mutex::new(Machine {
+                vendor: "QEMU".to_owned(),
+                product: "Standard PC (Q35 + ICH9, 2009)".to_owned(),
+            }),
+            ..FakeStorage::default()
+        });
         let ports = StoragePorts {
             devices: fake.clone(),
             smart: fake.clone(),
@@ -69,6 +198,11 @@ impl FakeStorage {
             self_test_plans: Arc::new(MemorySelfTestPlans::default()),
             occupants: fake.clone(),
             removable: fake.clone(),
+            machine: fake.clone(),
+            catalog: Arc::new(TestCatalog),
+            enclosure: fake.clone(),
+            locator: fake.clone(),
+            inventory: fake.clone(),
         };
         (ports, fake)
     }
@@ -76,6 +210,33 @@ impl FakeStorage {
     /// Plugs the USB stick in, not mounted.
     pub fn plug_stick(&self) {
         *self.stick.lock().unwrap() = Some(false);
+    }
+
+    /// The machine is now `vendor` `product`.
+    pub fn set_machine(&self, vendor: &str, product: &str) {
+        *self.machine.lock().unwrap() = Machine { vendor: vendor.to_owned(), product: product.to_owned() };
+    }
+
+    /// Stores a choice without the use case's checks, as an older release
+    /// might have.
+    pub fn choose_directly(&self, choice: EnclosureChoice) {
+        *self.chosen.lock().unwrap() = Some(choice);
+    }
+
+    pub fn bursts(&self) -> Vec<String> {
+        self.bursts.lock().unwrap().clone()
+    }
+
+    /// A disk seen once, last at `last_seen`.
+    pub fn remember(&self, serial: &str, last_seen: i64) {
+        self.inventory.lock().unwrap().push(InventoryRecord {
+            serial: serial.to_owned(),
+            model: Some("OLD HDD".to_owned()),
+            size_bytes: 1 << 40,
+            details: InventoryDetails::default(),
+            first_seen: zendiloos_kernel::Timestamp::from_unix_seconds(last_seen - 86_400),
+            last_seen: zendiloos_kernel::Timestamp::from_unix_seconds(last_seen),
+        });
     }
 
     pub fn calls(&self) -> Vec<String> {
@@ -93,6 +254,7 @@ fn unused(name: &str, serial: &str) -> BlockDevice {
         serial: Some(serial.to_owned()),
         transport: Some("sata".to_owned()),
         id_link: Some(format!("ata-TEST_HDD_{serial}")),
+        id_path: port_of(name),
         ..device(name, DeviceKind::Disk)
     }
 }
@@ -182,6 +344,7 @@ fn stick(mounted: bool) -> BlockDevice {
         model: Some("TEST Stick".to_owned()),
         serial: Some("U1".to_owned()),
         transport: Some("usb".to_owned()),
+        id_path: port_of("sdf"),
         removable: true,
         rotational: false,
         size_bytes: 32_017_047_552,
@@ -251,6 +414,7 @@ fn device(name: &str, kind: DeviceKind) -> BlockDevice {
         serial: None,
         wwn: None,
         id_link: None,
+        id_path: None,
         transport: None,
         rotational: true,
         removable: false,
@@ -284,6 +448,7 @@ fn member(name: &str, serial: &str) -> BlockDevice {
         model: Some("TEST HDD".to_owned()),
         serial: Some(serial.to_owned()),
         transport: Some("sata".to_owned()),
+        id_path: port_of(name),
         filesystem: filesystem("linux_raid_member", None, None),
         children: vec![array],
         ..device(name, DeviceKind::Disk)
@@ -300,6 +465,7 @@ impl BlockDeviceSource for FakeStorage {
         };
         let system = BlockDevice {
             transport: Some("nvme".to_owned()),
+            id_path: port_of("nvme0n1"),
             rotational: false,
             children: vec![root],
             ..device("nvme0n1", DeviceKind::Disk)
@@ -314,6 +480,7 @@ impl BlockDeviceSource for FakeStorage {
             serial: Some("T3".to_owned()),
             transport: Some("sata".to_owned()),
             id_link: Some("ata-TEST_HDD_T3".to_owned()),
+            id_path: port_of("sdc"),
             children: vec![zfs_partition],
             ..device("sdc", DeviceKind::Disk)
         };
@@ -463,5 +630,87 @@ impl SelfTestPlanStore for MemorySelfTestPlans {
             scheduled.last_run = Some(at);
         }
         Ok(())
+    }
+}
+
+#[async_trait]
+impl MachineSource for FakeStorage {
+    async fn machine(&self, _: &RequestContext) -> Result<Machine, PortError> {
+        if *self.machine_fails.lock().unwrap() {
+            return Err(PortError::new("machine", std::io::Error::other("no DMI")));
+        }
+        Ok(self.machine.lock().unwrap().clone())
+    }
+}
+
+/// Each burst takes as long as asked, as reading would.
+#[async_trait]
+impl DiskLocator for FakeStorage {
+    async fn read_burst(
+        &self,
+        disk: &str,
+        duration: std::time::Duration,
+        _: &RequestContext,
+    ) -> Result<(), PortError> {
+        if *self.burst_fails.lock().unwrap() {
+            return Err(PortError::new("read burst", std::io::Error::other("I/O error")));
+        }
+        self.bursts.lock().unwrap().push(disk.to_owned());
+        tokio::time::sleep(duration).await;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl EnclosureStore for FakeStorage {
+    async fn chosen(&self) -> Result<Option<EnclosureChoice>, PortError> {
+        Ok(self.chosen.lock().unwrap().clone())
+    }
+
+    async fn save(&self, choice: Option<&EnclosureChoice>) -> Result<(), PortError> {
+        *self.chosen.lock().unwrap() = choice.cloned();
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl DiskInventoryStore for FakeStorage {
+    async fn records(&self) -> Result<Vec<InventoryRecord>, PortError> {
+        Ok(self.inventory.lock().unwrap().clone())
+    }
+
+    async fn seen(&self, disks: &[SeenDisk], at: zendiloos_kernel::Timestamp) -> Result<(), PortError> {
+        let mut records = self.inventory.lock().unwrap();
+        for disk in disks {
+            match records.iter_mut().find(|record| record.serial == disk.serial) {
+                Some(record) => {
+                    record.model.clone_from(&disk.model);
+                    record.size_bytes = disk.size_bytes;
+                    record.last_seen = at;
+                }
+                None => records.push(InventoryRecord {
+                    serial: disk.serial.clone(),
+                    model: disk.model.clone(),
+                    size_bytes: disk.size_bytes,
+                    details: InventoryDetails::default(),
+                    first_seen: at,
+                    last_seen: at,
+                }),
+            }
+        }
+        Ok(())
+    }
+
+    async fn set_details(&self, serial: &str, details: &InventoryDetails) -> Result<bool, PortError> {
+        let mut records = self.inventory.lock().unwrap();
+        let record = records.iter_mut().find(|record| record.serial == serial);
+        Ok(record.map(|record| record.details = details.clone()).is_some())
+    }
+
+    async fn remove(&self, serial: &str) -> Result<bool, PortError> {
+        let mut records = self.inventory.lock().unwrap();
+        let before = records.len();
+        records.retain(|record| record.serial != serial);
+        Ok(records.len() < before)
     }
 }

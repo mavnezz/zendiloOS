@@ -14,6 +14,7 @@ pub mod config;
 mod console;
 mod docker;
 mod durable;
+mod enclosure;
 mod files;
 mod firewall;
 mod network;

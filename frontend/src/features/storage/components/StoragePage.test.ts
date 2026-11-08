@@ -99,6 +99,16 @@ async function open(page: Page, canManage = true): Promise<VueWrapper> {
 
 beforeEach(() => {
   reset()
+  on('GET', '/api/v1/storage/enclosure', {
+    machine: { vendor: 'QEMU', product: 'Standard PC' },
+    source: null,
+    chassis: { style: 'plain', panel: null },
+    groups: [],
+    unplaced: [],
+  })
+  on('GET', '/api/v1/storage/enclosure/models', [])
+  on('GET', '/api/v1/storage/locate', [])
+  on('GET', '/api/v1/storage/inventory', [])
   on('GET', '/api/v1/storage/disks', [
     disk('sda', { usage: 'pool_member', pool: 'tank' }),
     disk('sdb', { usage: 'pool_member', pool: 'tank', media: 'solid_state', transport: 'nvme' }),

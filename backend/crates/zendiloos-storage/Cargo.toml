@@ -16,10 +16,10 @@ zendiloos-notify.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["sync", "time", "rt"] }
 
 [dev-dependencies]
-tokio.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 zendiloos-jobs = { workspace = true, features = ["testing"] }
 zendiloos-notify = { workspace = true, features = ["testing"] }
 

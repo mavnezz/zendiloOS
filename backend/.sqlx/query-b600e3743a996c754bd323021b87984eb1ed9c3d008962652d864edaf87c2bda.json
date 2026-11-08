@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT slot, kind, value FROM enclosure_bindings ORDER BY slot",
+  "describe": {
+    "columns": [
+      {
+        "name": "slot",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "enclosure_bindings",
+            "name": "slot"
+          }
+        }
+      },
+      {
+        "name": "kind",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "enclosure_bindings",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "name": "value",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "enclosure_bindings",
+            "name": "value"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "b600e3743a996c754bd323021b87984eb1ed9c3d008962652d864edaf87c2bda"
+}

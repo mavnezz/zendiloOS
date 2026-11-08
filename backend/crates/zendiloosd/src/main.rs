@@ -31,6 +31,7 @@ use zendiloos_infra::apps::{
     ContainersForApps, FilesForApps, HttpsCatalogs, RandomSecrets, SharingForApps, YamlFiller,
 };
 use zendiloos_infra::containers::{HttpsRegistries, SharesForProjects};
+use zendiloos_infra::enclosure::BuiltInCatalog;
 use zendiloos_infra::firewall::ServicesForFirewall;
 use zendiloos_infra::host::{HostSystemInfo, IpNetworkReader, JournalctlReader, MetricsHub, ProcListening};
 use zendiloos_infra::identity::{
@@ -40,10 +41,10 @@ use zendiloos_infra::notify::NetworkChannels;
 use zendiloos_infra::sharing::DrivesForFiles;
 use zendiloos_infra::sqlite::{
     Database, Occupants, SqliteAccountAddresses, SqliteAccounts, SqliteAppSources, SqliteAuditLog,
-    SqliteCertificates, SqliteChannels, SqliteFirewall, SqliteGroups, SqliteInstalledApps, SqliteJobs,
-    SqliteNotifications, SqlitePreferences, SqliteProjects, SqliteSecurity, SqliteSelfTestPlans,
-    SqliteSessions, SqliteShareProjects, SqliteShares, SqliteSystemUpdates, SqliteTwoFactor,
-    SqliteUpdateSettings,
+    SqliteCertificates, SqliteChannels, SqliteDiskInventory, SqliteEnclosure, SqliteFirewall, SqliteGroups,
+    SqliteInstalledApps, SqliteJobs, SqliteNotifications, SqlitePreferences, SqliteProjects, SqliteSecurity,
+    SqliteSelfTestPlans, SqliteSessions, SqliteShareProjects, SqliteShares, SqliteSystemUpdates,
+    SqliteTwoFactor, SqliteUpdateSettings,
 };
 use zendiloos_infra::updates::GitHubReleases;
 use zendiloos_jobs::Jobs;
@@ -53,6 +54,7 @@ use zendiloos_notify::Notifier;
 use zendiloos_notify::channels::{ChannelPorts, Channels};
 use zendiloos_sharing::application::{FilesUseCases, SharingPorts, SharingUseCases};
 use zendiloos_sim::SimulatedAgent;
+use zendiloos_storage::application::inventory::DiskInventory;
 use zendiloos_storage::application::monitor::StorageMonitor;
 use zendiloos_storage::application::removable::RemovableDrives;
 use zendiloos_storage::application::self_tests::SelfTestSchedule;
@@ -189,6 +191,11 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         zfs: agent_storage.clone(),
         occupants: Arc::new(Occupants::new(database.clone(), agent_storage.clone())),
         removable: agent_storage.clone(),
+        machine: agent_storage.clone(),
+        locator: agent_storage.clone(),
+        catalog: Arc::new(BuiltInCatalog::load()?),
+        enclosure: Arc::new(SqliteEnclosure::new(database.clone())),
+        inventory: Arc::new(SqliteDiskInventory::new(database.clone())),
         admin: agent_storage,
         jobs: jobs.clone(),
         audit: audit.clone(),
@@ -197,7 +204,11 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         notifier: notifier.clone(),
         self_test_plans: Arc::new(SqliteSelfTestPlans::new(database.clone())),
     });
-    let monitor = spawn_storage_monitor(Arc::clone(&storage.monitor), Arc::clone(&storage.removable));
+    let monitor = spawn_storage_monitor(
+        Arc::clone(&storage.monitor),
+        Arc::clone(&storage.removable),
+        storage.inventory.clone(),
+    );
     let sharing_store = Arc::new(SqliteShares::new(database.clone()));
     let sharing_ports = SharingPorts {
         shares: sharing_store.clone(),
@@ -519,13 +530,21 @@ async fn announce_setup(config: &Config, identity: &IdentityUseCases) -> anyhow:
 /// mounts removable drives plugged in meanwhile and lets go of those
 /// pulled out (the file explorer has them looked at more often while it
 /// is open, by listing them).
-fn spawn_storage_monitor(monitor: Arc<StorageMonitor>, removable: Arc<RemovableDrives>) -> JoinHandle<()> {
+fn spawn_storage_monitor(
+    monitor: Arc<StorageMonitor>,
+    removable: Arc<RemovableDrives>,
+    inventory: DiskInventory,
+) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut every_minute = tokio::time::interval(Duration::from_secs(60));
         loop {
             every_minute.tick().await;
             monitor.check().await;
             removable.watch().await;
+            // Every disk seen is remembered, also one never looked at.
+            if let Err(error) = inventory.observe(&RequestContext::default()).await {
+                tracing::warn!(%error, "cannot note the disks present");
+            }
         }
     })
 }

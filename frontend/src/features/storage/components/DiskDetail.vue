@@ -11,8 +11,18 @@ import { Alert } from '@/shared/ui/alert'
 import { Button } from '@/shared/ui/button'
 import { Meter } from '@/shared/ui/meter'
 
-import { abortSelfTest, startSelfTest, useDisks, useRefreshStorage, useSmartReport } from '../api'
+import {
+  abortSelfTest,
+  startSelfTest,
+  useDisks,
+  useEnclosure,
+  useRefreshStorage,
+  useSmartReport,
+} from '../api'
 import { formatCount, usageLabel } from '../format'
+import { slotOf } from '../lib/enclosure'
+import InventoryForm from './InventoryForm.vue'
+import LocateControl from './LocateControl.vue'
 import SmartBadge from './SmartBadge.vue'
 
 /** Whether the signed-in account may run self-tests (`storage.manage`). */
@@ -24,6 +34,8 @@ const { data: disks } = useDisks()
 const { data: report, error, isPending } = useSmartReport(() => props.name)
 
 const disk = computed(() => disks.value?.find((d) => d.name === props.name))
+const { data: enclosure } = useEnclosure()
+const slot = computed(() => slotOf(enclosure.value, props.name))
 
 const refresh = useRefreshStorage()
 const testError = ref<string | null>(null)
@@ -81,6 +93,10 @@ function finding(item: SmartFinding): string {
     </div>
 
     <dl v-if="disk" class="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1.5 text-sm">
+      <template v-if="slot">
+        <dt class="text-muted-foreground">{{ t('storage.columns.slot') }}</dt>
+        <dd>{{ t('storage.enclosure.slot', { slot: slot.label, group: slot.group }) }}</dd>
+      </template>
       <dt class="text-muted-foreground">{{ t('storage.serial') }}</dt>
       <dd class="font-mono text-xs leading-5">{{ disk.serial ?? '–' }}</dd>
       <template v-if="disk.wwn">
@@ -100,6 +116,13 @@ function finding(item: SmartFinding): string {
         <dd>{{ report.firmware }}</dd>
       </template>
     </dl>
+
+    <LocateControl
+      v-if="disk"
+      :disk="name"
+      :nvme="disk.transport === 'nvme'"
+      :can-manage="canManage"
+    />
 
     <Alert v-if="error" variant="destructive">{{ problemMessage(error) }}</Alert>
 
@@ -271,6 +294,8 @@ function finding(item: SmartFinding): string {
         </section>
       </template>
     </template>
+
+    <InventoryForm v-if="disk" :serial="disk.serial" :can-manage="canManage" />
 
     <section v-if="disk?.partitions.length" class="grid gap-2">
       <h4 class="font-medium">{{ t('storage.partitions') }}</h4>

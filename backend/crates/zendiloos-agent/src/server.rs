@@ -26,6 +26,9 @@ const MAX_CONCURRENT_LONG: usize = 2;
 /// Changes of whole shares' permissions running at once, beside the long
 /// ones.
 const MAX_CONCURRENT_WALKS: usize = 2;
+/// Disks read from at once to make them blink, beside everything else;
+/// more wait for their turn.
+const MAX_CONCURRENT_BURSTS: usize = 2;
 
 /// Accepts connections from one account and answers one request each.
 #[derive(Debug, Clone)]
@@ -35,6 +38,7 @@ pub struct Server {
     permits: Arc<Semaphore>,
     long_permits: Arc<Semaphore>,
     walk_permits: Arc<Semaphore>,
+    burst_permits: Arc<Semaphore>,
     /// One long place per user at a time.
     users: Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<Semaphore>>>>,
     /// Set once the agent is asked to stop: what has not started yet does
@@ -50,6 +54,7 @@ impl Server {
             permits: Arc::new(Semaphore::new(MAX_CONCURRENT)),
             long_permits: Arc::new(Semaphore::new(MAX_CONCURRENT_LONG)),
             walk_permits: Arc::new(Semaphore::new(MAX_CONCURRENT_WALKS)),
+            burst_permits: Arc::new(Semaphore::new(MAX_CONCURRENT_BURSTS)),
             users: Arc::default(),
             stopping: Arc::new(watch::channel(false).0),
         }
@@ -119,6 +124,8 @@ impl Server {
 
         let permits = if envelope.request.is_walk() {
             &self.walk_permits
+        } else if envelope.request.is_burst() {
+            &self.burst_permits
         } else if envelope.request.is_long() {
             &self.long_permits
         } else {

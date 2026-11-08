@@ -2,19 +2,21 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use zendiloos_agent_proto::{
-    self as proto, AgentTransport, DiskId, DiskName, ErrorCode, RemovableId, Request, RequestId, Response,
+    self as proto, AgentTransport, BurstMillis, DiskId, DiskName, ErrorCode, RemovableId, Request, RequestId,
+    Response,
 };
 use zendiloos_kernel::{PortError, RequestContext};
 use zendiloos_storage::application::ports::{
-    AdminError, ArraySource, BlockDeviceSource, NewPool, PlanTokens, PoolAdmin, RemovableHost, SmartSource,
-    Steps, ZfsSource,
+    AdminError, ArraySource, BlockDeviceSource, DiskLocator, MachineSource, NewPool, PlanTokens, PoolAdmin,
+    RemovableHost, SmartSource, Steps, ZfsSource,
 };
 use zendiloos_storage::domain::{
-    Array, BlockDevice, Pool, PoolLayout, PoolName, RemovableDrive, SelfTestKind, SmartReport, VolumeNumber,
+    Array, BlockDevice, DeviceKind, Machine, Pool, PoolLayout, PoolName, RemovableDrive, SelfTestKind,
+    SmartReport, VolumeNumber,
 };
 
 use super::{WHAT, call, unexpected};
-use crate::storage::{lsblk, mdstat, smartctl, zfs};
+use crate::storage::{lsblk, mdstat, smartctl, udev, zfs};
 
 /// The Storage context's sources, through the agent: it runs the tools,
 /// this side parses their output.
@@ -36,9 +38,45 @@ impl AgentStorage {
 impl BlockDeviceSource for AgentStorage {
     async fn block_devices(&self, context: &RequestContext) -> Result<Vec<BlockDevice>, PortError> {
         match call(self.transport.as_ref(), Request::ListBlockDevices {}, context).await? {
-            Response::BlockDevices { lsblk_json } => {
-                lsblk::parse(&lsblk_json).map_err(|e| PortError::new("block device list", e))
+            Response::BlockDevices { lsblk_json, udev_db } => {
+                let mut devices =
+                    lsblk::parse(&lsblk_json).map_err(|e| PortError::new("block device list", e))?;
+                let ports = udev::port_paths(&udev_db);
+                for disk in devices.iter_mut().filter(|device| device.kind == DeviceKind::Disk) {
+                    disk.id_path = ports.get(&disk.name).cloned();
+                }
+                Ok(devices)
             }
+            other => Err(unexpected(other)),
+        }
+    }
+}
+
+#[async_trait]
+impl MachineSource for AgentStorage {
+    async fn machine(&self, context: &RequestContext) -> Result<Machine, PortError> {
+        match call(self.transport.as_ref(), Request::Machine {}, context).await? {
+            Response::Machine { sys_vendor, product_name } => {
+                Ok(Machine { vendor: sys_vendor.trim().to_owned(), product: product_name.trim().to_owned() })
+            }
+            other => Err(unexpected(other)),
+        }
+    }
+}
+
+#[async_trait]
+impl DiskLocator for AgentStorage {
+    async fn read_burst(
+        &self,
+        disk: &str,
+        duration: std::time::Duration,
+        context: &RequestContext,
+    ) -> Result<(), PortError> {
+        let device = DiskName::parse(disk).map_err(|e| PortError::new("read burst", e))?;
+        let millis = u16::try_from(duration.as_millis()).unwrap_or(u16::MAX).clamp(1, BurstMillis::MAX);
+        let millis = BurstMillis::new(millis).map_err(|e| PortError::new("read burst", e))?;
+        match call(self.transport.as_ref(), Request::ReadBurst { device, millis }, context).await? {
+            Response::Done => Ok(()),
             other => Err(unexpected(other)),
         }
     }
@@ -512,7 +550,7 @@ mod tests {
         assert!(storage.pools(&context).await.is_err());
         assert!(storage.start_self_test("sda", SelfTestKind::Short, &context).await.is_err());
         assert!(storage.abort_self_test("sda", &context).await.is_err());
-        agent.answer(Response::BlockDevices { lsblk_json: "not json".into() });
+        agent.answer(Response::BlockDevices { lsblk_json: "not json".into(), udev_db: String::new() });
         assert!(storage.block_devices(&context).await.is_err());
     }
 
@@ -529,6 +567,72 @@ mod tests {
         let agent = Arc::new(SimulatedAgent::new());
         let storage = AgentStorage::new(agent.clone());
         assert!(storage.smart_report("sda1", &RequestContext::default()).await.is_err());
+        assert!(
+            storage.read_burst("sda1", Duration::from_millis(700), &RequestContext::default()).await.is_err()
+        );
         assert_eq!(agent.received(), []);
+    }
+
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn the_simulated_nas_is_a_dxp4800_plus_with_its_disks_in_their_bays() {
+        use zendiloos_storage::application::ports::EnclosureCatalog;
+        use zendiloos_storage::domain::{Layout, SlotState, detect, place};
+
+        let storage = AgentStorage::new(Arc::new(SimulatedAgent::new()));
+        let context = RequestContext::default();
+        let machine = storage.machine(&context).await.unwrap();
+        assert_eq!(machine, Machine { vendor: "UGREEN".into(), product: "DXP4800 Plus".into() }, "trimmed");
+        let models = crate::enclosure::BuiltInCatalog::load().unwrap().models();
+        let model = detect(&models, &machine).unwrap();
+
+        let devices = storage.block_devices(&context).await.unwrap();
+        let ports: Vec<_> = devices.iter().map(|d| (d.name.as_str(), d.id_path.as_deref())).collect();
+        assert_eq!(ports[0], ("sda", Some("pci-0000:05:00.0-ata-1.0")));
+        assert_eq!(ports[7], ("sdf", Some("pci-0000:00:0d.0-usb-0:1:1.0-scsi-0:0:0:0")));
+        assert!(devices[0].children.iter().all(|partition| partition.id_path.is_none()), "disks only");
+        let layout: &Layout = &model.layout;
+        let placement = place(layout, &disks(&devices, &[]));
+        let placed: Vec<_> = placement.slots.iter().map(|p| (p.slot.as_str(), p.disk.as_deref())).collect();
+        assert_eq!(
+            placed,
+            [
+                ("bay1", Some("sda")),
+                ("bay2", Some("sdb")),
+                ("bay3", Some("sdc")),
+                ("bay4", Some("sdd")),
+                ("m2-1", Some("nvme1n1")),
+                ("m2-2", None),
+                ("system", Some("nvme0n1")),
+            ]
+        );
+        assert_eq!(placement.slots[5].state, SlotState::Empty);
+        assert_eq!(placement.unplaced, ["sde", "sdf"], "the spare port and the stick have no slot");
+
+        storage.read_burst("sdc", Duration::from_millis(700), &context).await.unwrap();
+        assert!(storage.read_burst("sdz", Duration::from_millis(700), &context).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn bursts_ask_for_two_seconds_at_most_and_odd_answers_fail() {
+        let agent = Arc::new(Scripted::default());
+        let storage = AgentStorage::new(agent.clone());
+        let context = RequestContext::default();
+        storage.read_burst("sda", Duration::from_secs(9), &context).await.unwrap();
+        assert_eq!(
+            agent.only(),
+            Request::ReadBurst {
+                device: DiskName::parse("sda").unwrap(),
+                millis: BurstMillis::new(BurstMillis::MAX).unwrap()
+            }
+        );
+        let odd = Arc::new(Scripted::answering([
+            Response::ShareUsage { zfs_list: String::new() },
+            Response::ShareUsage { zfs_list: String::new() },
+        ]));
+        let storage = AgentStorage::new(odd);
+        assert!(storage.read_burst("sda", Duration::from_millis(700), &context).await.is_err());
+        assert!(storage.machine(&context).await.is_err());
     }
 }

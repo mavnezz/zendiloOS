@@ -35,6 +35,7 @@ hardened service that checks every request.
 ## Features
 
 - **Storage on ZFS**: pools from mirrors to RAIDZ3 with guard rails, SMART and self-tests, scrubs, snapshots
+- **Where each disk sits**: your NAS drawn with each disk in its bay and its health, from a catalog of models or a layout of your own; a disk blinks to be found; purchase and warranty noted for every disk
 - **Files and shared folders**: one explorer for personal folders, the folders on each volume and removable drives; folders shared over SMB and NFS, with permissions per person and group; previous versions from snapshots, which Windows shows too; one recycle bin; a search through all subfolders
 - **App Center**: apps from the [community catalog](https://github.com/mavnezz/zendiloOS.community.applications) and others you add, installed as Docker projects of your own that you can edit; plugins for Docker and for certificates from Let's Encrypt
 - **Docker**: containers, images, networks and your own Compose projects, a page per container with its log and a terminal, image updates, with consent for whatever reaches beyond the container
