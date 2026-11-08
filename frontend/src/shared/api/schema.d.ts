@@ -1782,7 +1782,10 @@ export interface paths {
          */
         get: operations["list_channels"];
         put?: never;
-        /** Adds a channel: email over SMTP, or a webhook. Needs `system.manage`. */
+        /**
+         * Adds a channel: email to recipients, or a webhook. It starts with the
+         *     warnings and errors; the routes change that. Needs `system.manage`.
+         */
         post: operations["create_channel"];
         delete?: never;
         options?: never;
@@ -1799,12 +1802,15 @@ export interface paths {
         };
         get?: never;
         /**
-         * Changes a channel; without `password`, a stored mail password stays.
-         *     Needs `system.manage`.
+         * Changes a channel's name, recipients or address, and language. Needs
+         *     `system.manage`.
          */
         put: operations["update_channel"];
         post?: never;
-        /** Removes a channel. Needs `system.manage`. */
+        /**
+         * Removes a channel, and where notifications went on it. Needs
+         *     `system.manage`.
+         */
         delete: operations["delete_channel"];
         options?: never;
         head?: never;
@@ -1821,10 +1827,59 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Sends a test message now and waits for the outcome. Needs
-         *     `system.manage`.
+         * Sends a test message on this channel alone now and waits for the
+         *     outcome. Needs `system.manage`.
          */
         post: operations["test_channel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/notification-mail-server": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The mail server email channels send through; `null` until one is set
+         *     up. Needs `system.manage`.
+         */
+        get: operations["get_mail_server"];
+        /**
+         * Sets up the mail server. Without `password` the stored one stays, for
+         *     the same server, port, encryption and user name only. Needs
+         *     `system.manage`.
+         */
+        put: operations["set_mail_server"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/notification-routes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Where each kind of notification goes: kept in zendiloOS, and on which
+         *     channels. Needs `system.manage`.
+         */
+        get: operations["get_routes"];
+        /**
+         * Changes where the kinds given go; the others keep theirs. Needs
+         *     `system.manage`.
+         */
+        put: operations["set_routes"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -3116,33 +3171,28 @@ export interface components {
         };
         ChannelInput: {
             language: components["schemas"]["ChannelLanguage"];
-            min_level: components["schemas"]["ChannelLevel"];
             name: string;
-            /**
-             * @description The mail password. Left out when changing a channel: the stored one
-             *     stays; empty: none.
-             */
-            password?: string | null;
             target: components["schemas"]["ChannelTarget"];
         };
         /** @enum {string} */
         ChannelLanguage: "en" | "de";
-        /**
-         * @description The least serious notifications a channel carries.
-         * @enum {string}
-         */
-        ChannelLevel: "info" | "warning" | "error";
+        /** @description One recipient of an email channel, and where mail to it goes now. */
+        ChannelRecipient: {
+            /**
+             * Format: int64
+             * @description The account, for one of zendiloOS's accounts.
+             */
+            account_id?: number | null;
+            /** @description The address mail goes to now; none if it reaches nobody. */
+            address?: string | null;
+            problem?: components["schemas"]["RecipientProblem"] | null;
+        };
         /** @description Where a channel delivers. */
         ChannelTarget: {
-            from: string;
+            accounts?: number[];
             /** @enum {string} */
             kind: "email";
-            /** Format: int32 */
-            port: number;
-            security: components["schemas"]["MailSecurity"];
-            server: string;
-            to: string[];
-            username?: string | null;
+            to?: string[];
         } | {
             format: components["schemas"]["HookFormat"];
             /** @enum {string} */
@@ -4067,6 +4117,10 @@ export interface components {
             /** @description Pass as `before` for the next, older page; absent at the end. */
             older?: string | null;
         };
+        /** @enum {string} */
+        KindGroup: "storage" | "folders" | "system";
+        /** @enum {string} */
+        KindLevel: "info" | "success" | "warning" | "error";
         /** @description What the server sends. */
         LiveMessage: {
             data: components["schemas"]["Metrics"];
@@ -4118,6 +4172,31 @@ export interface components {
         };
         /** @enum {string} */
         MailSecurity: "tls" | "starttls" | "none";
+        MailServerInput: {
+            from: string;
+            /**
+             * @description Left out: the stored one stays (for the same server, port,
+             *     encryption and user name only); empty: none.
+             */
+            password?: string | null;
+            /** Format: int32 */
+            port: number;
+            security: components["schemas"]["MailSecurity"];
+            server: string;
+            username?: string | null;
+        };
+        /** @description The mail server every email channel sends through. */
+        MailServerSettings: {
+            /** @description The sender's address. */
+            from: string;
+            /** @description A password is stored; it is never shown. */
+            password_set: boolean;
+            /** Format: int32 */
+            port: number;
+            security: components["schemas"]["MailSecurity"];
+            server: string;
+            username?: string | null;
+        };
         /** @enum {string} */
         Media: "rotational" | "solid_state";
         /** @enum {string} */
@@ -4272,10 +4351,9 @@ export interface components {
             last_delivery_at?: number | null;
             /** @description What went wrong then; none if it went out. */
             last_error?: string | null;
-            min_level: components["schemas"]["ChannelLevel"];
             name: string;
-            /** @description A mail password is stored; it is never shown. */
-            password_set: boolean;
+            /** @description For an email channel: each recipient, as mail reaches it now. */
+            recipients: components["schemas"]["ChannelRecipient"][];
             target: components["schemas"]["ChannelTarget"];
         };
         /** @enum {string} */
@@ -4296,6 +4374,21 @@ export interface components {
              * @description ID of the newest notification the mark covers.
              */
             up_to: number;
+        };
+        /** @description Where one kind of notification goes. */
+        NotificationRoute: {
+            /** @description The channels it goes out on. */
+            channels: number[];
+            group: components["schemas"]["KindGroup"];
+            /** @description Kept in zendiloOS's notification center. */
+            in_app: boolean;
+            /**
+             * @description The kind: a notification's code, or `scrub_errors` for a data check
+             *     that found errors.
+             */
+            kind: string;
+            /** @description How serious it usually is. */
+            level: components["schemas"]["KindLevel"];
         };
         NvmeHealth: {
             /** Format: int32 */
@@ -4580,6 +4673,11 @@ export interface components {
             size_bytes?: number | null;
             sync?: components["schemas"]["SyncProgress"] | null;
         };
+        /**
+         * @description Why mail does not reach an account.
+         * @enum {string}
+         */
+        RecipientProblem: "no_address" | "disabled" | "gone";
         Redeploy: {
             /** @description Fetches the newest images under the project's tags first. */
             pull?: boolean;
@@ -4682,6 +4780,15 @@ export interface components {
          * @enum {string}
          */
         RootLoginMode: "no" | "key_only" | "yes";
+        RouteChoice: {
+            channels: number[];
+            in_app: boolean;
+            kind: string;
+        };
+        RoutesInput: {
+            /** @description The kinds to change; the others keep where they go. */
+            kinds: components["schemas"]["RouteChoice"][];
+        };
         /**
          * @description What Docker makes of an installed app.
          * @enum {string}
@@ -9931,6 +10038,117 @@ export interface operations {
             };
             /** @description `delivery_failed`, the reason in `detail` */
             502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    get_mail_server: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MailServerSettings"] | null;
+                };
+            };
+        };
+    };
+    set_mail_server: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MailServerInput"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MailServerSettings"];
+                };
+            };
+            /** @description `invalid_input` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    get_routes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationRoute"][];
+                };
+            };
+        };
+    };
+    set_routes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RoutesInput"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationRoute"][];
+                };
+            };
+            /** @description `not_found`: no such channel */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input`: no such kind */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

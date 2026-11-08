@@ -6243,7 +6243,7 @@
         "tags": [
           "notifications"
         ],
-        "summary": "Adds a channel: email over SMTP, or a webhook. Needs `system.manage`.",
+        "summary": "Adds a channel: email to recipients, or a webhook. It starts with the\nwarnings and errors; the routes change that. Needs `system.manage`.",
         "operationId": "create_channel",
         "requestBody": {
           "content": {
@@ -6298,7 +6298,7 @@
         "tags": [
           "notifications"
         ],
-        "summary": "Changes a channel; without `password`, a stored mail password stays.\nNeeds `system.manage`.",
+        "summary": "Changes a channel's name, recipients or address, and language. Needs\n`system.manage`.",
         "operationId": "update_channel",
         "parameters": [
           {
@@ -6372,7 +6372,7 @@
         "tags": [
           "notifications"
         ],
-        "summary": "Removes a channel. Needs `system.manage`.",
+        "summary": "Removes a channel, and where notifications went on it. Needs\n`system.manage`.",
         "operationId": "delete_channel",
         "parameters": [
           {
@@ -6412,7 +6412,7 @@
         "tags": [
           "notifications"
         ],
-        "summary": "Sends a test message now and waits for the outcome. Needs\n`system.manage`.",
+        "summary": "Sends a test message on this channel alone now and waits for the\noutcome. Needs `system.manage`.",
         "operationId": "test_channel",
         "parameters": [
           {
@@ -6441,6 +6441,165 @@
           },
           "502": {
             "description": "`delivery_failed`, the reason in `detail`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/notification-mail-server": {
+      "get": {
+        "tags": [
+          "notifications"
+        ],
+        "summary": "The mail server email channels send through; `null` until one is set\nup. Needs `system.manage`.",
+        "operationId": "get_mail_server",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/MailServerSettings"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "notifications"
+        ],
+        "summary": "Sets up the mail server. Without `password` the stored one stays, for\nthe same server, port, encryption and user name only. Needs\n`system.manage`.",
+        "operationId": "set_mail_server",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MailServerInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MailServerSettings"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/notification-routes": {
+      "get": {
+        "tags": [
+          "notifications"
+        ],
+        "summary": "Where each kind of notification goes: kept in zendiloOS, and on which\nchannels. Needs `system.manage`.",
+        "operationId": "get_routes",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/NotificationRoute"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "notifications"
+        ],
+        "summary": "Changes where the kinds given go; the others keep theirs. Needs\n`system.manage`.",
+        "operationId": "set_routes",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RoutesInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/NotificationRoute"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no such channel",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`: no such kind",
             "content": {
               "application/json": {
                 "schema": {
@@ -10261,25 +10420,14 @@
         "required": [
           "name",
           "target",
-          "min_level",
           "language"
         ],
         "properties": {
           "language": {
             "$ref": "#/components/schemas/ChannelLanguage"
           },
-          "min_level": {
-            "$ref": "#/components/schemas/ChannelLevel"
-          },
           "name": {
             "type": "string"
-          },
-          "password": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "The mail password. Left out when changing a channel: the stored one\nstays; empty: none."
           },
           "target": {
             "$ref": "#/components/schemas/ChannelTarget"
@@ -10294,30 +10442,52 @@
           "de"
         ]
       },
-      "ChannelLevel": {
-        "type": "string",
-        "description": "The least serious notifications a channel carries.",
-        "enum": [
-          "info",
-          "warning",
-          "error"
-        ]
+      "ChannelRecipient": {
+        "type": "object",
+        "description": "One recipient of an email channel, and where mail to it goes now.",
+        "properties": {
+          "account_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The account, for one of zendiloOS's accounts."
+          },
+          "address": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The address mail goes to now; none if it reaches nobody."
+          },
+          "problem": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RecipientProblem"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
       },
       "ChannelTarget": {
         "oneOf": [
           {
             "type": "object",
+            "description": "Through the mail server, to zendiloOS accounts (at the address each\nhas when a mail goes out) and other addresses: 1 to 10 in all.",
             "required": [
-              "server",
-              "port",
-              "security",
-              "from",
-              "to",
               "kind"
             ],
             "properties": {
-              "from": {
-                "type": "string"
+              "accounts": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int64"
+                }
               },
               "kind": {
                 "type": "string",
@@ -10325,28 +10495,11 @@
                   "email"
                 ]
               },
-              "port": {
-                "type": "integer",
-                "format": "int32",
-                "minimum": 0
-              },
-              "security": {
-                "$ref": "#/components/schemas/MailSecurity"
-              },
-              "server": {
-                "type": "string"
-              },
               "to": {
                 "type": "array",
                 "items": {
                   "type": "string"
                 }
-              },
-              "username": {
-                "type": [
-                  "string",
-                  "null"
-                ]
               }
             }
           },
@@ -13046,6 +13199,23 @@
           }
         }
       },
+      "KindGroup": {
+        "type": "string",
+        "enum": [
+          "storage",
+          "folders",
+          "system"
+        ]
+      },
+      "KindLevel": {
+        "type": "string",
+        "enum": [
+          "info",
+          "success",
+          "warning",
+          "error"
+        ]
+      },
       "LiveMessage": {
         "oneOf": [
           {
@@ -13234,6 +13404,83 @@
           "starttls",
           "none"
         ]
+      },
+      "MailServerInput": {
+        "type": "object",
+        "required": [
+          "server",
+          "port",
+          "security",
+          "from"
+        ],
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "password": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Left out: the stored one stays (for the same server, port,\nencryption and user name only); empty: none."
+          },
+          "port": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "security": {
+            "$ref": "#/components/schemas/MailSecurity"
+          },
+          "server": {
+            "type": "string"
+          },
+          "username": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "MailServerSettings": {
+        "type": "object",
+        "description": "The mail server every email channel sends through.",
+        "required": [
+          "server",
+          "port",
+          "security",
+          "from",
+          "password_set"
+        ],
+        "properties": {
+          "from": {
+            "type": "string",
+            "description": "The sender's address."
+          },
+          "password_set": {
+            "type": "boolean",
+            "description": "A password is stored; it is never shown."
+          },
+          "port": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "security": {
+            "$ref": "#/components/schemas/MailSecurity"
+          },
+          "server": {
+            "type": "string"
+          },
+          "username": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
       },
       "Media": {
         "type": "string",
@@ -13669,8 +13916,7 @@
           "id",
           "name",
           "target",
-          "password_set",
-          "min_level",
+          "recipients",
           "language"
         ],
         "properties": {
@@ -13696,15 +13942,15 @@
             ],
             "description": "What went wrong then; none if it went out."
           },
-          "min_level": {
-            "$ref": "#/components/schemas/ChannelLevel"
-          },
           "name": {
             "type": "string"
           },
-          "password_set": {
-            "type": "boolean",
-            "description": "A mail password is stored; it is never shown."
+          "recipients": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChannelRecipient"
+            },
+            "description": "For an email channel: each recipient, as mail reaches it now."
           },
           "target": {
             "$ref": "#/components/schemas/ChannelTarget"
@@ -13755,6 +14001,42 @@
           }
         },
         "additionalProperties": false
+      },
+      "NotificationRoute": {
+        "type": "object",
+        "description": "Where one kind of notification goes.",
+        "required": [
+          "kind",
+          "group",
+          "level",
+          "in_app",
+          "channels"
+        ],
+        "properties": {
+          "channels": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "description": "The channels it goes out on."
+          },
+          "group": {
+            "$ref": "#/components/schemas/KindGroup"
+          },
+          "in_app": {
+            "type": "boolean",
+            "description": "Kept in zendiloOS's notification center."
+          },
+          "kind": {
+            "type": "string",
+            "description": "The kind: a notification's code, or `scrub_errors` for a data check\nthat found errors."
+          },
+          "level": {
+            "$ref": "#/components/schemas/KindLevel",
+            "description": "How serious it usually is."
+          }
+        }
       },
       "NvmeHealth": {
         "type": "object",
@@ -14585,6 +14867,15 @@
           }
         }
       },
+      "RecipientProblem": {
+        "type": "string",
+        "description": "Why mail does not reach an account.",
+        "enum": [
+          "no_address",
+          "disabled",
+          "gone"
+        ]
+      },
       "Redeploy": {
         "type": "object",
         "properties": {
@@ -14890,6 +15181,46 @@
           "key_only",
           "yes"
         ]
+      },
+      "RouteChoice": {
+        "type": "object",
+        "required": [
+          "kind",
+          "in_app",
+          "channels"
+        ],
+        "properties": {
+          "channels": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          "in_app": {
+            "type": "boolean"
+          },
+          "kind": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "RoutesInput": {
+        "type": "object",
+        "required": [
+          "kinds"
+        ],
+        "properties": {
+          "kinds": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RouteChoice"
+            },
+            "description": "The kinds to change; the others keep where they go."
+          }
+        },
+        "additionalProperties": false
       },
       "RunState": {
         "type": "string",

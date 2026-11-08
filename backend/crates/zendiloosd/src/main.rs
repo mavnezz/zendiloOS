@@ -36,17 +36,17 @@ use zendiloos_infra::identity::{
 use zendiloos_infra::notify::NetworkChannels;
 use zendiloos_infra::sharing::DrivesForFiles;
 use zendiloos_infra::sqlite::{
-    Database, Occupants, SqliteAccounts, SqliteAppSources, SqliteAuditLog, SqliteChannels, SqliteGroups,
-    SqliteInstalledApps, SqliteJobs, SqliteNotifications, SqlitePreferences, SqliteProjects, SqliteSecurity,
-    SqliteSelfTestPlans, SqliteSessions, SqliteShareProjects, SqliteShares, SqliteSystemUpdates,
-    SqliteUpdateSettings,
+    Database, Occupants, SqliteAccountAddresses, SqliteAccounts, SqliteAppSources, SqliteAuditLog,
+    SqliteChannels, SqliteGroups, SqliteInstalledApps, SqliteJobs, SqliteNotifications, SqlitePreferences,
+    SqliteProjects, SqliteSecurity, SqliteSelfTestPlans, SqliteSessions, SqliteShareProjects, SqliteShares,
+    SqliteSystemUpdates, SqliteUpdateSettings,
 };
 use zendiloos_infra::updates::GitHubReleases;
 use zendiloos_jobs::Jobs;
 use zendiloos_kernel::{AllWork, AuditLog, RequestContext};
 use zendiloos_network::application::NetworkUseCases;
 use zendiloos_notify::Notifier;
-use zendiloos_notify::channels::Channels;
+use zendiloos_notify::channels::{ChannelPorts, Channels};
 use zendiloos_sharing::application::{FilesUseCases, SharingPorts, SharingUseCases};
 use zendiloos_sim::SimulatedAgent;
 use zendiloos_storage::application::monitor::StorageMonitor;
@@ -114,7 +114,10 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     if interrupted > 0 {
         tracing::warn!(interrupted, "jobs of the previous run were interrupted");
     }
-    let notifier = Notifier::new(Arc::new(SqliteNotifications::new(database.clone())), Arc::new(SystemClock));
+    // Each kind of notification is kept in zendiloOS or not as routed.
+    let channel_store = SqliteChannels::new(database.clone());
+    let notifier = Notifier::new(Arc::new(SqliteNotifications::new(database.clone())), Arc::new(SystemClock))
+        .routed(Arc::new(channel_store.clone()));
     let updates = Updates::new(
         UpdatesPorts {
             releases: Arc::new(GitHubReleases::new(
@@ -151,10 +154,14 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         .map(|name| name.trim().to_owned())
         .unwrap_or_else(|_| "zendiloOS".to_owned());
     let channels = Channels::new(
-        Arc::new(SqliteChannels::new(database.clone())),
-        Arc::new(NetworkChannels::new()),
-        audit.clone(),
-        Arc::new(SystemClock),
+        ChannelPorts {
+            repository: Arc::new(channel_store.clone()),
+            routes: Arc::new(channel_store),
+            addresses: Arc::new(SqliteAccountAddresses::new(database.clone())),
+            sender: Arc::new(NetworkChannels::new()),
+            audit: audit.clone(),
+            clock: Arc::new(SystemClock),
+        },
         host_name,
     );
     let channel_delivery = channels.clone().spawn(&notifier);

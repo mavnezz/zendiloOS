@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT kind, channel_id, enabled AS \"enabled: bool\" FROM notification_routes",
+  "describe": {
+    "columns": [
+      {
+        "name": "kind",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "notification_routes",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "name": "channel_id",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "notification_routes",
+            "name": "channel_id"
+          }
+        }
+      },
+      {
+        "name": "enabled: bool",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "notification_routes",
+            "name": "enabled"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "aeb3b58c9be0f94b1dc10f8f390882373b75be2f8c958147c9ce9b090fbf12a7"
+}

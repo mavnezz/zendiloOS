@@ -264,6 +264,8 @@ pub(crate) struct Harness {
     pub(crate) jobs: Jobs,
     pub(crate) storage: Arc<FakeStorage>,
     pub(crate) notifier: Notifier,
+    /// The accounts' addresses, as the channels see them.
+    pub(crate) channel_addresses: Arc<zendiloos_notify::testing::MemoryAddresses>,
     pub(crate) share_host: Arc<zendiloos_sharing::testing::Host>,
     pub(crate) file_host: Arc<zendiloos_sharing::testing::Files>,
     pub(crate) catalogs: Arc<zendiloos_apps::testing::FakeReader>,
@@ -419,7 +421,10 @@ impl Harness {
         let (ports, storage_fake) =
             FakeStorage::ports(jobs.clone(), identity.audit.clone(), identity.clock.clone());
         let storage = StorageUseCases::new(ports);
-        let notifier = Notifier::new(Arc::new(MemoryNotifications::default()), identity.clock.clone());
+        let channel_routes = Arc::new(zendiloos_notify::testing::MemoryRoutes::default());
+        let notifier = Notifier::new(Arc::new(MemoryNotifications::default()), identity.clock.clone())
+            .routed(channel_routes.clone());
+        let channel_addresses = Arc::new(zendiloos_notify::testing::MemoryAddresses::default());
         let share_host = Arc::new(zendiloos_sharing::testing::Host::default());
         let file_host = Arc::new(zendiloos_sharing::testing::Files::default());
         let sharing_ports = SharingPorts {
@@ -509,10 +514,14 @@ impl Harness {
             installs,
             templates,
             channels: zendiloos_notify::channels::Channels::new(
-                Arc::new(zendiloos_notify::testing::MemoryChannels::default()),
-                Arc::new(zendiloos_notify::testing::RecordingSender::default()),
-                identity.audit.clone(),
-                identity.clock.clone(),
+                zendiloos_notify::channels::ChannelPorts {
+                    repository: Arc::new(zendiloos_notify::testing::MemoryChannels::default()),
+                    routes: channel_routes,
+                    addresses: channel_addresses.clone(),
+                    sender: Arc::new(zendiloos_notify::testing::RecordingSender::default()),
+                    audit: identity.audit.clone(),
+                    clock: identity.clock.clone(),
+                },
                 "nas".into(),
             ),
             updates: zendiloos_updates::application::Updates::new(
@@ -537,6 +546,7 @@ impl Harness {
             jobs,
             storage: storage_fake,
             notifier,
+            channel_addresses,
             share_host,
             file_host,
             catalogs,
@@ -1684,6 +1694,8 @@ fn openapi_documents_every_route() {
             "/api/v1/notification-channels",
             "/api/v1/notification-channels/{id}",
             "/api/v1/notification-channels/{id}/test",
+            "/api/v1/notification-mail-server",
+            "/api/v1/notification-routes",
             "/api/v1/notifications",
             "/api/v1/notifications/clear",
             "/api/v1/notifications/read",
@@ -3404,18 +3416,10 @@ async fn downloads_resume_and_harmless_kinds_show_in_the_browser() {
 }
 
 #[tokio::test]
-async fn administrators_set_up_channels_and_never_see_a_password_again() {
+async fn administrators_set_up_the_mail_server_and_never_see_its_password_again() {
     let h = Harness::new();
     let admin = h.sign_in("alice", Role::Admin).await;
     let viewer = h.sign_in("bob", Role::ReadOnly).await;
-    let mail = json!({
-        "name": "Admins",
-        "target": { "kind": "email", "server": "mail.example.org", "port": 587, "security": "starttls",
-                    "username": "nas", "from": "nas@example.org", "to": ["me@example.org"] },
-        "password": "secret",
-        "min_level": "warning",
-        "language": "de",
-    });
     let send = |method: Method, uri: &str, session: &Session, body: Option<Value>| {
         let request = with_csrf(changing(method, uri), session);
         h.send(match body {
@@ -3423,30 +3427,107 @@ async fn administrators_set_up_channels_and_never_see_a_password_again() {
             None => empty(request),
         })
     };
+    let none = h.send(empty(with_cookie(get("/api/v1/notification-mail-server"), &admin))).await;
+    assert_eq!((none.status, none.body.clone()), (StatusCode::OK, Value::Null));
 
+    let server = json!({ "server": "mail.example.org", "port": 587, "security": "starttls",
+                         "username": "nas", "from": "nas@example.org", "password": "secret" });
+    let saved = send(Method::PUT, "/api/v1/notification-mail-server", &admin, Some(server.clone())).await;
+    assert_eq!(saved.status, StatusCode::OK, "{:?}", saved.body);
+    assert_eq!(saved.body["password_set"], true);
+    assert!(saved.body.get("password").is_none());
+
+    let mut new_sender = server.clone();
+    new_sender["from"] = json!("alerts@example.org");
+    new_sender.as_object_mut().unwrap().remove("password");
+    let kept = send(Method::PUT, "/api/v1/notification-mail-server", &admin, Some(new_sender)).await;
+    assert_eq!(
+        (kept.body["from"].clone(), kept.body["password_set"].clone()),
+        (json!("alerts@example.org"), json!(true))
+    );
+    let read = h.send(empty(with_cookie(get("/api/v1/notification-mail-server"), &admin))).await;
+    assert_eq!(read.body, kept.body);
+
+    // The stored password goes to the server it was typed for only.
+    let mut elsewhere = server.clone();
+    elsewhere["server"] = json!("smtp.elsewhere.example");
+    elsewhere.as_object_mut().unwrap().remove("password");
+    let refused = send(Method::PUT, "/api/v1/notification-mail-server", &admin, Some(elsewhere)).await;
+    assert_problem(&refused, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
+    let plain = json!({ "server": "relay", "port": 25, "security": "none", "from": "nas@example.org",
+                        "password": "secret" });
+    let refused = send(Method::PUT, "/api/v1/notification-mail-server", &admin, Some(plain)).await;
+    assert_problem(&refused, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
+    let removed = json!({ "server": "relay", "port": 25, "security": "none", "from": "nas@example.org",
+                          "password": "" });
+    let relay = send(Method::PUT, "/api/v1/notification-mail-server", &admin, Some(removed)).await;
+    assert_eq!((relay.status, relay.body["password_set"].clone()), (StatusCode::OK, json!(false)));
+
+    let forbidden = h.send(empty(with_cookie(get("/api/v1/notification-mail-server"), &viewer))).await;
+    assert_problem(&forbidden, StatusCode::FORBIDDEN, "forbidden");
+}
+
+#[tokio::test]
+async fn administrators_send_to_accounts_and_addresses_and_webhooks() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let viewer = h.sign_in("bob", Role::ReadOnly).await;
+    h.channel_addresses.0.lock().unwrap().extend([
+        (2, Some("anna@example.org".to_owned())),
+        (3, None),
+        (5, Some("-".to_owned())),
+    ]);
+    let send = |method: Method, uri: &str, session: &Session, body: Option<Value>| {
+        let request = with_csrf(changing(method, uri), session);
+        h.send(match body {
+            Some(body) => json(request, body),
+            None => empty(request),
+        })
+    };
+    let mail = json!({
+        "name": "Family",
+        "target": { "kind": "email", "accounts": [2, 3, 4, 5], "to": ["me@example.org"] },
+        "language": "de",
+    });
     let created = send(Method::POST, "/api/v1/notification-channels", &admin, Some(mail.clone())).await;
     assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
-    assert_eq!(created.body["password_set"], true);
-    assert!(created.body.get("password").is_none() && created.body["target"].get("password").is_none());
+    assert_eq!(
+        created.body["target"],
+        json!({ "kind": "email", "accounts": [2, 3, 4, 5], "to": ["me@example.org"] })
+    );
+    assert_eq!(
+        created.body["recipients"],
+        json!([
+            { "account_id": 2, "address": "anna@example.org", "problem": null },
+            { "account_id": 3, "address": null, "problem": "no_address" },
+            { "account_id": 4, "address": null, "problem": "gone" },
+            { "account_id": 5, "address": null, "problem": "disabled" },
+            { "account_id": null, "address": "me@example.org", "problem": null },
+        ])
+    );
     let id = created.body["id"].as_i64().unwrap();
     let channel = format!("/api/v1/notification-channels/{id}");
 
-    let mut renamed = mail.clone();
-    renamed["name"] = json!("Family");
-    renamed.as_object_mut().unwrap().remove("password");
-    let updated = send(Method::PUT, &channel, &admin, Some(renamed)).await;
-    assert_eq!(
-        (updated.body["name"].clone(), updated.body["password_set"].clone()),
-        (json!("Family"), json!(true))
-    );
-
+    let failed = send(Method::POST, &format!("{channel}/test"), &admin, None).await;
+    assert_problem(&failed, StatusCode::BAD_GATEWAY, "delivery_failed");
+    assert_eq!(failed.body["detail"], "no mail server is set up");
+    let server =
+        json!({ "server": "mail.example.org", "port": 465, "security": "tls", "from": "nas@example.org" });
+    send(Method::PUT, "/api/v1/notification-mail-server", &admin, Some(server)).await;
     let tested = send(Method::POST, &format!("{channel}/test"), &admin, None).await;
-    assert_eq!(tested.status, StatusCode::NO_CONTENT);
+    assert_eq!(tested.status, StatusCode::NO_CONTENT, "{:?}", tested.body);
+
+    let mut renamed = mail.clone();
+    renamed["name"] = json!("Household");
+    let updated = send(Method::PUT, &channel, &admin, Some(renamed)).await;
+    assert_eq!(updated.body["name"], "Household");
+
     let broken = json!({
         "name": "Chat", "target": { "kind": "webhook", "url": "https://broken.example/hook", "format": "json" },
-        "min_level": "error", "language": "en",
+        "language": "en",
     });
     let chat = send(Method::POST, "/api/v1/notification-channels", &admin, Some(broken)).await;
+    assert_eq!(chat.body["recipients"], json!([]));
     let failed =
         send(Method::POST, &format!("/api/v1/notification-channels/{}/test", chat.body["id"]), &admin, None)
             .await;
@@ -3456,21 +3537,99 @@ async fn administrators_set_up_channels_and_never_see_a_password_again() {
     let listed = h.send(empty(with_cookie(get("/api/v1/notification-channels"), &admin))).await;
     let names: Vec<&str> =
         listed.body.as_array().unwrap().iter().map(|c| c["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["Chat", "Family"]);
+    assert_eq!(names, ["Chat", "Household"]);
     assert_eq!(listed.body[0]["last_error"], "connection refused");
 
-    let plain = json!({
-        "name": "Relay",
-        "target": { "kind": "email", "server": "relay", "port": 25, "security": "none",
-                    "from": "nas@example.org", "to": ["me@example.org"] },
-        "password": "secret", "min_level": "info", "language": "en",
-    });
-    let refused = send(Method::POST, "/api/v1/notification-channels", &admin, Some(plain)).await;
+    let nobody = json!({ "name": "Nobody", "target": { "kind": "email" }, "language": "en" });
+    let refused = send(Method::POST, "/api/v1/notification-channels", &admin, Some(nobody)).await;
     assert_problem(&refused, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
+    let with_server = json!({
+        "name": "Old", "language": "en",
+        "target": { "kind": "email", "server": "mail.example.org", "to": ["me@example.org"] },
+    });
+    let refused = send(Method::POST, "/api/v1/notification-channels", &admin, Some(with_server)).await;
+    assert!(refused.status.is_client_error(), "a channel names its recipients only");
     let forbidden = h.send(empty(with_cookie(get("/api/v1/notification-channels"), &viewer))).await;
     assert_problem(&forbidden, StatusCode::FORBIDDEN, "forbidden");
     assert_eq!(send(Method::DELETE, &channel, &admin, None).await.status, StatusCode::NO_CONTENT);
     assert_problem(&send(Method::DELETE, &channel, &admin, None).await, StatusCode::NOT_FOUND, "not_found");
+}
+
+#[tokio::test]
+async fn administrators_choose_where_each_kind_of_notification_goes() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let viewer = h.sign_in("bob", Role::ReadOnly).await;
+    let send = |method: Method, uri: &str, session: &Session, body: Option<Value>| {
+        let request = with_csrf(changing(method, uri), session);
+        h.send(match body {
+            Some(body) => json(request, body),
+            None => empty(request),
+        })
+    };
+    let hook = json!({
+        "name": "Chat", "target": { "kind": "webhook", "url": "https://chat.example/hook", "format": "json" },
+        "language": "en",
+    });
+    let chat = send(Method::POST, "/api/v1/notification-channels", &admin, Some(hook)).await;
+    let chat_id = chat.body["id"].as_i64().unwrap();
+    let kind = |routes: &Value, kind: &str| {
+        routes.as_array().unwrap().iter().find(|r| r["kind"] == kind).cloned().unwrap()
+    };
+
+    let routes = h.send(empty(with_cookie(get("/api/v1/notification-routes"), &admin))).await;
+    assert_eq!(routes.status, StatusCode::OK);
+    assert_eq!(routes.body.as_array().unwrap().len(), zendiloos_notify::routes::KINDS.len());
+    assert_eq!(
+        kind(&routes.body, "pool_trouble"),
+        json!({ "kind": "pool_trouble", "group": "storage", "level": "warning", "in_app": true,
+                "channels": [chat_id] })
+    );
+    assert_eq!(
+        kind(&routes.body, "scrub_finished")["channels"],
+        json!([]),
+        "a new channel starts at warnings"
+    );
+    assert_eq!(kind(&routes.body, "updates_failed")["group"], "system");
+
+    let choice = json!({ "kinds": [
+        { "kind": "scrub_finished", "in_app": false, "channels": [chat_id] },
+        { "kind": "pool_trouble", "in_app": true, "channels": [] },
+    ] });
+    let changed = send(Method::PUT, "/api/v1/notification-routes", &admin, Some(choice)).await;
+    assert_eq!(changed.status, StatusCode::OK, "{:?}", changed.body);
+    let scrub = kind(&changed.body, "scrub_finished");
+    assert_eq!((scrub["in_app"].clone(), scrub["channels"].clone()), (json!(false), json!([chat_id])));
+    assert_eq!(kind(&changed.body, "pool_trouble")["channels"], json!([]));
+    assert_eq!(kind(&changed.body, "disk_health")["channels"], json!([chat_id]), "the others keep theirs");
+    let read = h.send(empty(with_cookie(get("/api/v1/notification-routes"), &admin))).await;
+    assert_eq!(read.body, changed.body);
+
+    // A kind not kept in zendiloOS stays out of the notification center.
+    h.notifier.notify(NewNotification::new(Level::Info, "scrub_finished").with("pool", "tank")).await;
+    h.notifier.notify(NewNotification::new(Level::Warning, "pool_trouble").with("pool", "tank")).await;
+    let listed = h.send(empty(with_cookie(get("/api/v1/notifications"), &admin))).await;
+    let codes: Vec<&str> = listed.body["notifications"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["code"].as_str().unwrap())
+        .collect();
+    assert_eq!(codes, ["pool_trouble"]);
+
+    let unknown = json!({ "kinds": [{ "kind": "weather", "in_app": true, "channels": [] }] });
+    let refused = send(Method::PUT, "/api/v1/notification-routes", &admin, Some(unknown)).await;
+    assert_problem(&refused, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
+    let nowhere = json!({ "kinds": [{ "kind": "pool_trouble", "in_app": true, "channels": [99] }] });
+    let refused = send(Method::PUT, "/api/v1/notification-routes", &admin, Some(nowhere)).await;
+    assert_problem(&refused, StatusCode::NOT_FOUND, "not_found");
+    let forbidden = h.send(empty(with_cookie(get("/api/v1/notification-routes"), &viewer))).await;
+    assert_problem(&forbidden, StatusCode::FORBIDDEN, "forbidden");
+
+    // A channel deleted takes its routes along.
+    send(Method::DELETE, &format!("/api/v1/notification-channels/{chat_id}"), &admin, None).await;
+    let read = h.send(empty(with_cookie(get("/api/v1/notification-routes"), &admin))).await;
+    assert_eq!(kind(&read.body, "scrub_finished")["channels"], json!([]));
 }
 
 #[tokio::test]

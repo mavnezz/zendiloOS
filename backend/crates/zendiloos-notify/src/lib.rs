@@ -5,6 +5,11 @@
 //!
 //! A notification carries a stable code and parameters, not text: the
 //! interface words it in the user's language.
+//!
+//! Where a notification goes is routed by its kind ([`routes`]): kept in
+//! the notification center (stored and published to the browsers) or not,
+//! and on which channels ([`channels`]), which get every notification
+//! raised, kept or not.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -15,6 +20,7 @@ use zendiloos_kernel::{Clock, PortError, Timestamp};
 
 pub mod channels;
 pub mod message;
+pub mod routes;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Level {
@@ -110,23 +116,57 @@ pub trait NotificationRepository: Send + Sync {
 pub struct Notifier {
     repository: Arc<dyn NotificationRepository>,
     clock: Arc<dyn Clock>,
+    /// Which kinds are kept; without, every one is.
+    routes: Option<Arc<dyn routes::RouteRepository>>,
+    /// Those kept, for the browsers.
     events: broadcast::Sender<Notification>,
+    /// Every one raised, kept or not, for the channels.
+    outgoing: broadcast::Sender<Notification>,
 }
 
 impl Notifier {
     pub fn new(repository: Arc<dyn NotificationRepository>, clock: Arc<dyn Clock>) -> Self {
         let (events, _) = broadcast::channel(64);
-        Self { repository, clock, events }
+        let (outgoing, _) = broadcast::channel(64);
+        Self { repository, clock, routes: None, events, outgoing }
     }
 
-    /// Stores and publishes, and keeps only the [`KEPT`] most recent ones. A
-    /// storage failure is logged, since whoever notifies cannot do anything
-    /// about it.
+    /// Keeps only the kinds `routes` keep in zendiloOS.
+    #[must_use]
+    pub fn routed(mut self, routes: Arc<dyn routes::RouteRepository>) -> Self {
+        self.routes = Some(routes);
+        self
+    }
+
+    /// Whether a notification is kept in the notification center; when the
+    /// routes cannot be read, it is.
+    async fn kept(&self, notification: &NewNotification) -> bool {
+        let Some(routes) = &self.routes else { return true };
+        let kind = routes::kind_of(&notification.code, notification.level);
+        match routes.routes().await {
+            Ok(routes) => routes.in_app(kind),
+            Err(error) => {
+                tracing::warn!(%error, "cannot read where notifications go; kept");
+                true
+            }
+        }
+    }
+
+    /// Stores and publishes it if its kind is kept in zendiloOS (keeping
+    /// only the [`KEPT`] most recent ones), and hands it to the channels
+    /// either way. A storage failure is logged, since whoever notifies
+    /// cannot do anything about it.
     pub async fn notify(&self, notification: NewNotification) {
         tracing::info!(code = notification.code, params = ?notification.params, "notification");
+        if !self.kept(&notification).await {
+            let NewNotification { level, code, params } = notification;
+            let _ = self.outgoing.send(Notification { id: 0, at: self.clock.now(), level, code, params });
+            return;
+        }
         match self.repository.create(self.clock.now(), notification).await {
             Ok(stored) => {
-                let _ = self.events.send(stored);
+                let _ = self.events.send(stored.clone());
+                let _ = self.outgoing.send(stored);
             }
             Err(error) => {
                 tracing::error!(%error, "cannot store a notification");
@@ -138,8 +178,15 @@ impl Notifier {
         }
     }
 
+    /// The notifications kept, as they come: for the browsers.
     pub fn subscribe(&self) -> broadcast::Receiver<Notification> {
         self.events.subscribe()
+    }
+
+    /// Every notification raised, kept or not, as it comes: for the
+    /// channels.
+    pub fn outgoing(&self) -> broadcast::Receiver<Notification> {
+        self.outgoing.subscribe()
     }
 
     /// The most recent notifications the account has not cleared away,
@@ -234,6 +281,42 @@ pub mod testing {
     #[derive(Default)]
     pub struct MemoryChannels {
         channels: Mutex<Vec<crate::channels::Channel>>,
+        server: Mutex<Option<crate::channels::MailServer>>,
+    }
+
+    /// [`RouteRepository`](crate::routes::RouteRepository) in memory.
+    #[derive(Default)]
+    pub struct MemoryRoutes(pub Mutex<crate::routes::Routes>);
+
+    #[async_trait]
+    impl crate::routes::RouteRepository for MemoryRoutes {
+        async fn routes(&self) -> Result<crate::routes::Routes, PortError> {
+            Ok(self.0.lock().unwrap().clone())
+        }
+
+        async fn replace(&self, routes: &crate::routes::Routes) -> Result<(), PortError> {
+            *self.0.lock().unwrap() = routes.clone();
+            Ok(())
+        }
+    }
+
+    /// [`AccountAddresses`](crate::channels::AccountAddresses) in memory:
+    /// account ID → address, `None` for an account without one, `"-"` for
+    /// a disabled one; accounts not listed are gone.
+    #[derive(Default)]
+    pub struct MemoryAddresses(pub Mutex<HashMap<i64, Option<String>>>);
+
+    #[async_trait]
+    impl crate::channels::AccountAddresses for MemoryAddresses {
+        async fn address(&self, account_id: i64) -> Result<crate::channels::AccountAddress, PortError> {
+            use crate::channels::AccountAddress;
+            Ok(match self.0.lock().unwrap().get(&account_id) {
+                Some(Some(address)) if address == "-" => AccountAddress::Disabled,
+                Some(Some(address)) => AccountAddress::Address(address.clone()),
+                Some(None) => AccountAddress::Missing,
+                None => AccountAddress::Gone,
+            })
+        }
     }
 
     #[async_trait]
@@ -287,6 +370,19 @@ pub mod testing {
             if let Some(channel) = self.channels.lock().unwrap().iter_mut().find(|c| c.id == id) {
                 channel.last = Some(delivery.clone());
             }
+            Ok(())
+        }
+
+        async fn mail_server(&self) -> Result<Option<crate::channels::MailServer>, PortError> {
+            Ok(self.server.lock().unwrap().clone())
+        }
+
+        async fn set_mail_server(
+            &self,
+            server: &crate::channels::MailServer,
+            _: Timestamp,
+        ) -> Result<(), PortError> {
+            *self.server.lock().unwrap() = Some(server.clone());
             Ok(())
         }
     }

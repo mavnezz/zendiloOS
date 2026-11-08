@@ -129,6 +129,46 @@ pub fn message(notification: &Notification, host: &str, language: Language) -> M
             format!("{} was pulled out without being ejected", param("drive")),
             "Eject drives before pulling them out; what was being written may be missing.".to_owned(),
         ),
+        "updates_available" => {
+            let (packages, security, version) = (param("packages"), param("security"), param("version"));
+            let body = match (german, version) {
+                (true, "") => format!("{packages} Debian-Pakete, davon {security} Sicherheitsupdates."),
+                (true, version) => {
+                    format!(
+                        "zendiloOS {version} und {packages} Debian-Pakete, davon {security} Sicherheitsupdates."
+                    )
+                }
+                (false, "") => format!("{packages} Debian packages, {security} of them security updates."),
+                (false, version) => {
+                    format!(
+                        "zendiloOS {version} and {packages} Debian packages, {security} of them security updates."
+                    )
+                }
+            };
+            let title = if german { "Updates verfügbar" } else { "Updates available" };
+            (title.to_owned(), body)
+        }
+        "updates_installed" => {
+            let body = match (german, param("zfs_ready") == "false", param("restart") == "true") {
+                (true, true, _) => {
+                    "Das ZFS-Modul fehlt für den neuen Kernel. Starten Sie das NAS nicht neu, bevor es gebaut ist."
+                }
+                (false, true, _) => {
+                    "The ZFS module is missing for the new kernel. Do not restart the NAS before it is built."
+                }
+                (true, false, true) => "Ein neuer Kernel wartet auf einen Neustart des NAS.",
+                (false, false, true) => "A new kernel waits for the NAS to restart.",
+                (true, false, false) => "zendiloOS und die Debian-Pakete sind aktuell.",
+                (false, false, false) => "zendiloOS and the Debian packages are current.",
+            };
+            let title = if german { "Updates installiert" } else { "Updates installed" };
+            (title.to_owned(), body.to_owned())
+        }
+        "updates_failed" if german => (
+            "Update fehlgeschlagen".to_owned(),
+            "Unter Einstellungen → Aktualisieren & Wiederherstellen steht, woran es lag.".to_owned(),
+        ),
+        "updates_failed" => ("Update failed".to_owned(), "Settings → Update & restore says why.".to_owned()),
         "channel_test" if german => (
             "Testnachricht".to_owned(),
             "Dieser Kanal erreicht Sie. So kommen Meldungen des NAS an.".to_owned(),
@@ -272,6 +312,48 @@ mod tests {
             "sda: SMART health is worrying. Plan to replace it."
         );
         assert!(message(&worrying, "nas", Language::German).body.contains("auffällig"));
+    }
+
+    #[test]
+    fn updates_are_worded_with_what_they_bring() {
+        let body = |code, params: &[(&str, &str)], language| {
+            message(&notification(code, params), "nas", language).body
+        };
+        let debian = [("packages", "12"), ("security", "3")];
+        assert_eq!(
+            body("updates_available", &debian, Language::English),
+            "12 Debian packages, 3 of them security updates."
+        );
+        let both = [("packages", "12"), ("security", "3"), ("version", "0.2.0")];
+        assert_eq!(
+            body("updates_available", &both, Language::German),
+            "zendiloOS 0.2.0 und 12 Debian-Pakete, davon 3 Sicherheitsupdates."
+        );
+        assert!(body("updates_available", &both, Language::English).starts_with("zendiloOS 0.2.0 and"));
+        assert!(body("updates_available", &debian, Language::German).starts_with("12 Debian-Pakete"));
+        let current = [("restart", "false"), ("zfs_ready", "true")];
+        assert_eq!(
+            body("updates_installed", &current, Language::English),
+            "zendiloOS and the Debian packages are current."
+        );
+        assert!(body("updates_installed", &current, Language::German).contains("aktuell"));
+        let kernel = [("restart", "true"), ("zfs_ready", "true")];
+        assert!(body("updates_installed", &kernel, Language::English).contains("restart"));
+        assert!(body("updates_installed", &kernel, Language::German).contains("Neustart"));
+        let no_zfs = [("restart", "true"), ("zfs_ready", "false")];
+        assert!(body("updates_installed", &no_zfs, Language::English).contains("ZFS module is missing"));
+        assert!(body("updates_installed", &no_zfs, Language::German).contains("ZFS-Modul fehlt"));
+        let failed = notification("updates_failed", &[("error", "apt")]);
+        assert_eq!(message(&failed, "nas", Language::English).title, "[nas] Update failed");
+        assert_eq!(message(&failed, "nas", Language::German).title, "[nas] Update fehlgeschlagen");
+        assert_eq!(
+            message(&notification("updates_installed", &current), "nas", Language::German).title,
+            "[nas] Updates installiert"
+        );
+        assert_eq!(
+            message(&notification("updates_available", &debian), "nas", Language::English).title,
+            "[nas] Updates available"
+        );
     }
 
     #[test]
