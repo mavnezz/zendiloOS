@@ -316,6 +316,7 @@ mod tests {
             serial: Some(format!("S-{name}")),
             wwn: None,
             id_link: Some(format!("ata-HDD_S-{name}")),
+            id_path: None,
             size_bytes: TB,
             transport: Transport::Sata,
             media: Media::Rotational,

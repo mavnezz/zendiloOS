@@ -88,6 +88,7 @@ impl Host {
             dev: at("dev"),
             by_id: at("by-id"),
             sys_block: at("sys-block"),
+            dmi: at("dmi"),
             mountinfo: at("mountinfo"),
             swaps: at("swaps"),
             units: at("units"),
@@ -140,6 +141,8 @@ fn requests() -> Vec<Value> {
     let tank = json!("tank");
     vec![
         json!({ "op": "list_block_devices" }),
+        json!({ "op": "machine" }),
+        json!({ "op": "read_burst", "device": "sdz", "millis": 700 }),
         json!({ "op": "smart_data", "device": "sdz" }),
         json!({ "op": "start_self_test", "device": "sdz", "kind": "short" }),
         json!({ "op": "start_self_test", "device": "sdz", "kind": "long" }),

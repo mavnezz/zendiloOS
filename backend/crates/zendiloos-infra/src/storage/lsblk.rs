@@ -112,6 +112,8 @@ fn convert(node: Node) -> BlockDevice {
         serial: non_empty(node.serial),
         wwn: non_empty(node.wwn),
         id_link: non_empty(node.id_link),
+        // From udev's database, which lsblk does not show.
+        id_path: None,
         transport: non_empty(node.tran),
         rotational: Flag::get(node.rota.as_ref()),
         removable: Flag::get(node.rm.as_ref()),

@@ -46,6 +46,7 @@ sha2.workspace = true
 sqlx.workspace = true
 sysinfo.workspace = true
 thiserror.workspace = true
+toml.workspace = true
 tracing.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "time", "fs", "net"] }
 rustix = { workspace = true, features = ["termios"] }

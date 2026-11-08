@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT group_id, id, label FROM enclosure_slots ORDER BY group_id, position",
+  "describe": {
+    "columns": [
+      {
+        "name": "group_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "enclosure_slots",
+            "name": "group_id"
+          }
+        }
+      },
+      {
+        "name": "id",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "enclosure_slots",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "label",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "enclosure_slots",
+            "name": "label"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "a78b6f465b38308056a80a389150109cb2200f6e2eb2d4952e560f49cb943f17"
+}

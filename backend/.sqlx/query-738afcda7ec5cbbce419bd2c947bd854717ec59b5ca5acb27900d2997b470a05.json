@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO enclosure_slots (group_id, position, id, label) VALUES (?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "738afcda7ec5cbbce419bd2c947bd854717ec59b5ca5acb27900d2997b470a05"
+}

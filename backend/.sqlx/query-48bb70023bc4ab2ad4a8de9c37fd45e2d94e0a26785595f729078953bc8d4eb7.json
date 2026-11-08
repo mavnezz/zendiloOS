@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM disk_inventory WHERE serial = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "48bb70023bc4ab2ad4a8de9c37fd45e2d94e0a26785595f729078953bc8d4eb7"
+}

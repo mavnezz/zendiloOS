@@ -341,6 +341,7 @@ mod tests {
             serial: None,
             wwn: None,
             id_link: None,
+            id_path: None,
             transport: None,
             rotational: false,
             removable: false,

@@ -18,6 +18,9 @@ ExecStart=/usr/libexec/zendiloos/zendiloos-agent
 # - reboot and power off go through systemd and need nothing;
 # - SMART reads disks through SG_IO (CAP_SYS_RAWIO) and NVMe admin
 #   commands (CAP_SYS_ADMIN);
+# - where each disk sits: udev's database (udevadm info, /run/udev) and
+#   DMI's names in /sys are read; a disk made to blink is read from with
+#   O_DIRECT, never written, which the device rules below allow already;
 # - pools: partitioning and ZFS write to disks and /dev/zfs, re-read
 #   partition tables and use ZFS ioctls (CAP_SYS_ADMIN); mount units go to
 #   /etc/systemd/system and are mounted by systemd, outside this sandbox;

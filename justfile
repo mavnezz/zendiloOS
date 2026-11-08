@@ -212,6 +212,10 @@ vm-app-center-test:
 vm-removable-test:
     scripts/vm-removable-test.sh
 
+# Where each disk sits, in the second VM: a layout by port and serial, a disk blinking, the inventory
+vm-enclosure-test:
+    scripts/vm-enclosure-test.sh
+
 # Administrators' projects in the VM: what runs is what was confirmed, binds pinned
 vm-project-pins-test:
     scripts/vm-project-pins-test.sh

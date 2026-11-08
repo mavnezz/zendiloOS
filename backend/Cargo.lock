@@ -3191,6 +3191,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-rustls",
+ "toml",
  "tracing",
  "zendiloos-agent-proto",
  "zendiloos-apps",

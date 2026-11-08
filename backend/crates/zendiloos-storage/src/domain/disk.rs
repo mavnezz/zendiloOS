@@ -12,6 +12,9 @@ pub struct Disk {
     /// Name of its `/dev/disk/by-id` link; disks without one cannot be
     /// used for pools, since they could not be recognized again.
     pub id_link: Option<String>,
+    /// Where it is plugged in (udev's `ID_PATH`): what a slot of the
+    /// enclosure is bound to.
+    pub id_path: Option<String>,
     pub size_bytes: u64,
     pub transport: Transport,
     pub media: Media,
@@ -105,6 +108,7 @@ pub fn disks(devices: &[BlockDevice], pools: &[Pool]) -> Vec<Disk> {
             serial: device.serial.clone(),
             wwn: device.wwn.clone(),
             id_link: device.id_link.clone(),
+            id_path: device.id_path.clone(),
             size_bytes: device.size_bytes,
             transport: Transport::from_kernel(device.transport.as_deref()),
             media: if device.rotational { Media::Rotational } else { Media::SolidState },

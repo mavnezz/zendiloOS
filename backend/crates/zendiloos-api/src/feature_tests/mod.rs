@@ -3,6 +3,7 @@
 
 mod certificates;
 mod docker;
+mod enclosure;
 mod errors;
 mod firewall;
 mod two_factor;

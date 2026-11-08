@@ -9258,6 +9258,108 @@
         ]
       }
     },
+    "/api/v1/storage/disks/{name}/locate": {
+      "post": {
+        "tags": [
+          "storage"
+        ],
+        "summary": "Has a disk blink so it can be found in its slot: it is read from (never\nwritten) in bursts of 0.7 seconds with pauses between, which flashes\nits activity light; a disk asleep wakes. Asked again, it starts over.\nNVMe slots mostly have no light. Needs `storage.manage`.",
+        "operationId": "locate",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LocateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Locating"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "storage"
+        ],
+        "summary": "Stops a disk blinking. Needs `storage.manage`.",
+        "operationId": "stop_locate",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Stopped."
+          },
+          "409": {
+            "description": "`not_locating`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/storage/disks/{name}/self-test": {
       "post": {
         "tags": [
@@ -9396,6 +9498,353 @@
           },
           "404": {
             "description": "`not_found`: no such disk",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/storage/enclosure": {
+      "get": {
+        "tags": [
+          "storage"
+        ],
+        "summary": "The machine's enclosure: the model or own layout chosen, which disk is\nin which slot, the disks in none; while nothing is chosen, the model\nthe machine was recognised as. Needs `storage.view`.",
+        "operationId": "enclosure",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Enclosure"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "storage"
+        ],
+        "summary": "Chooses the enclosure: a model of the catalog (with other bindings for\nsome slots), or a layout of one's own. Needs `storage.manage`.",
+        "operationId": "set_enclosure",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetEnclosure"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Enclosure"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "storage"
+        ],
+        "summary": "Sets no enclosure up: the disks are listed without slots. Needs\n`storage.manage`.",
+        "operationId": "reset_enclosure",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Enclosure"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/storage/enclosure/models": {
+      "get": {
+        "tags": [
+          "storage"
+        ],
+        "summary": "The NAS models zendiloOS knows. Needs `storage.view`.",
+        "operationId": "models",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/EnclosureModel"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/storage/inventory": {
+      "get": {
+        "tags": [
+          "storage"
+        ],
+        "summary": "Every disk seen: those present first, then the others, most recently\nseen first. Needs `storage.view`.",
+        "operationId": "inventory",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/InventoryDisk"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/storage/inventory/{serial}": {
+      "put": {
+        "tags": [
+          "storage"
+        ],
+        "summary": "Notes when and where a disk was bought and until when its warranty\nholds. Needs `storage.manage`.",
+        "operationId": "update_inventory",
+        "parameters": [
+          {
+            "name": "serial",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InventoryUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InventoryDisk"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "storage"
+        ],
+        "summary": "Forgets a disk that is no longer present. Needs `storage.manage`.",
+        "operationId": "remove_inventory",
+        "parameters": [
+          {
+            "name": "serial",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Forgotten."
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`disk_present`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/storage/locate": {
+      "get": {
+        "tags": [
+          "storage"
+        ],
+        "summary": "The disks blinking now. Needs `storage.view`.",
+        "operationId": "locating",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Locating"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
             "content": {
               "application/json": {
                 "schema": {
@@ -11606,6 +12055,13 @@
           }
         }
       },
+      "BindingKind": {
+        "type": "string",
+        "enum": [
+          "port",
+          "serial"
+        ]
+      },
       "BlockedAddress": {
         "type": "object",
         "description": "An address or network the web interface refuses.",
@@ -12118,6 +12574,36 @@
           }
         ],
         "description": "Where a channel delivers."
+      },
+      "Chassis": {
+        "type": "object",
+        "description": "How the schematic draws the case around the slots.",
+        "required": [
+          "style"
+        ],
+        "properties": {
+          "panel": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FrontPanel"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "style": {
+            "$ref": "#/components/schemas/ChassisStyle"
+          }
+        }
+      },
+      "ChassisStyle": {
+        "type": "string",
+        "enum": [
+          "tower",
+          "rack",
+          "plain"
+        ]
       },
       "ComposeChange": {
         "type": "object",
@@ -12885,6 +13371,13 @@
             ],
             "description": "Name of the disk's `/dev/disk/by-id` link; disks without one cannot\nbe used for pools."
           },
+          "id_path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where it is plugged in: udev's `ID_PATH`, its `/dev/disk/by-path`\nname, e.g. `pci-0000:05:00.0-ata-1.0`; what a slot of the enclosure\nis bound to."
+          },
           "media": {
             "$ref": "#/components/schemas/Media"
           },
@@ -13630,6 +14123,129 @@
           }
         },
         "additionalProperties": false
+      },
+      "Enclosure": {
+        "type": "object",
+        "description": "The machine's enclosure and which disk is in which slot.",
+        "required": [
+          "machine",
+          "chassis",
+          "groups",
+          "unplaced"
+        ],
+        "properties": {
+          "chassis": {
+            "$ref": "#/components/schemas/Chassis",
+            "description": "The model's, or plain for a layout of one's own."
+          },
+          "detected": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/EnclosureModel",
+                "description": "The catalog's model for this machine, offered while nothing is\nchosen."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlacedGroup"
+            },
+            "description": "The groups disks are placed in, the model's overrides applied;\nempty while not set up."
+          },
+          "machine": {
+            "$ref": "#/components/schemas/Machine",
+            "description": "What the firmware calls the machine (DMI); empty where it says\nnothing."
+          },
+          "model": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/EnclosureModel",
+                "description": "The model chosen, with its own bindings, for `model`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/EnclosureSource",
+                "description": "What was chosen; `null`: not set up yet."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "unplaced": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Present disks in no slot, by kernel name."
+          }
+        }
+      },
+      "EnclosureModel": {
+        "type": "object",
+        "description": "A NAS of the built-in catalog.",
+        "required": [
+          "id",
+          "vendor",
+          "name",
+          "dmi_vendor",
+          "dmi_product",
+          "verified",
+          "notes",
+          "chassis",
+          "groups"
+        ],
+        "properties": {
+          "chassis": {
+            "$ref": "#/components/schemas/Chassis"
+          },
+          "dmi_product": {
+            "type": "string"
+          },
+          "dmi_vendor": {
+            "type": "string",
+            "description": "DMI's `sys_vendor` and `product_name` of the machine."
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ModelGroup"
+            }
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "vendor": {
+            "type": "string"
+          },
+          "verified": {
+            "type": "boolean",
+            "description": "Someone checked the slots and ports on the real machine."
+          }
+        }
+      },
+      "EnclosureSource": {
+        "type": "string",
+        "enum": [
+          "model",
+          "custom"
+        ]
       },
       "EntryFacts": {
         "type": "object",
@@ -14412,6 +15028,30 @@
         ],
         "description": "An entry a search found."
       },
+      "FrontPanel": {
+        "type": "object",
+        "description": "A strip beside the bays with the power button and status lights.",
+        "required": [
+          "side",
+          "power_button",
+          "leds"
+        ],
+        "properties": {
+          "leds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What each light shows, from the top: `power`, `network`, `disk1`, …"
+          },
+          "power_button": {
+            "type": "boolean"
+          },
+          "side": {
+            "$ref": "#/components/schemas/PanelSide"
+          }
+        }
+      },
       "Group": {
         "type": "object",
         "required": [
@@ -14892,6 +15532,112 @@
           "system"
         ]
       },
+      "InventoryDisk": {
+        "type": "object",
+        "description": "A disk the NAS has seen, by serial number.",
+        "required": [
+          "serial",
+          "size_bytes",
+          "first_seen",
+          "last_seen"
+        ],
+        "properties": {
+          "disk": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Its kernel name while present; `null`: stored, no longer present."
+          },
+          "first_seen": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix seconds."
+          },
+          "last_seen": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix seconds; while present, up to an hour behind."
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "As last seen."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "purchased": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`YYYY-MM-DD`."
+          },
+          "serial": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "vendor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where it was bought."
+          },
+          "warranty_until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`YYYY-MM-DD`."
+          }
+        }
+      },
+      "InventoryUpdate": {
+        "type": "object",
+        "description": "What the owner notes about a disk; blank or absent is none.",
+        "properties": {
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "At most 500 characters."
+          },
+          "purchased": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`YYYY-MM-DD`."
+          },
+          "vendor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "At most 64 characters."
+          },
+          "warranty_until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`YYYY-MM-DD`, not before `purchased`."
+          }
+        },
+        "additionalProperties": false
+      },
       "Ipv4Input": {
         "oneOf": [
           {
@@ -15259,6 +16005,39 @@
           "notifications"
         ]
       },
+      "LocateRequest": {
+        "type": "object",
+        "properties": {
+          "seconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "How long it blinks: 1 to 300 seconds, 60 if not given.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "Locating": {
+        "type": "object",
+        "description": "A disk blinking: read from in bursts, so its activity light flashes.",
+        "required": [
+          "disk",
+          "until"
+        ],
+        "properties": {
+          "disk": {
+            "type": "string"
+          },
+          "until": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When it stops, Unix seconds."
+          }
+        }
+      },
       "LogPriority": {
         "type": "string",
         "description": "syslog severity, from most to least severe.",
@@ -15312,6 +16091,21 @@
           }
         },
         "additionalProperties": false
+      },
+      "Machine": {
+        "type": "object",
+        "required": [
+          "vendor",
+          "product"
+        ],
+        "properties": {
+          "product": {
+            "type": "string"
+          },
+          "vendor": {
+            "type": "string"
+          }
+        }
       },
       "MailSecurity": {
         "type": "string",
@@ -15569,6 +16363,92 @@
           }
         }
       },
+      "ModelGroup": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "rows",
+          "columns",
+          "orientation",
+          "form",
+          "numbering",
+          "slots"
+        ],
+        "properties": {
+          "columns": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "form": {
+            "$ref": "#/components/schemas/SlotForm"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "numbering": {
+            "$ref": "#/components/schemas/Numbering"
+          },
+          "orientation": {
+            "$ref": "#/components/schemas/Orientation"
+          },
+          "rows": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "slots": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ModelSlot"
+            },
+            "description": "In their numbering's order."
+          }
+        }
+      },
+      "ModelSlot": {
+        "type": "object",
+        "required": [
+          "id",
+          "label",
+          "row",
+          "column"
+        ],
+        "properties": {
+          "binding": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SlotBinding"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "column": {
+            "type": "integer",
+            "format": "int32",
+            "description": "From 0 at the left of the group.",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "row": {
+            "type": "integer",
+            "format": "int32",
+            "description": "From 0 at the top of the group.",
+            "minimum": 0
+          }
+        }
+      },
       "NetworkInfo": {
         "type": "object",
         "description": "How the machine is connected: its interfaces (without the loopback and\nthe plumbing of containers), default routes and name servers.",
@@ -15714,6 +16594,56 @@
         },
         "additionalProperties": false
       },
+      "NewGroup": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "rows",
+          "columns",
+          "orientation",
+          "form",
+          "numbering",
+          "slots"
+        ],
+        "properties": {
+          "columns": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "form": {
+            "$ref": "#/components/schemas/SlotForm"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "description": "1 to 64 characters."
+          },
+          "numbering": {
+            "$ref": "#/components/schemas/Numbering"
+          },
+          "orientation": {
+            "$ref": "#/components/schemas/Orientation"
+          },
+          "rows": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Rows × columns: 1 to 60.",
+            "minimum": 0
+          },
+          "slots": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NewSlot"
+            },
+            "description": "One for each place of the grid, in the numbering's order."
+          }
+        },
+        "additionalProperties": false
+      },
       "NewNetwork": {
         "type": "object",
         "required": [
@@ -15749,6 +16679,34 @@
           "raidz2",
           "raidz3"
         ]
+      },
+      "NewSlot": {
+        "type": "object",
+        "required": [
+          "id",
+          "label"
+        ],
+        "properties": {
+          "binding": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SlotBinding"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": "string",
+            "description": "1 to 32 lowercase letters, digits or `-`, unique in the enclosure."
+          },
+          "label": {
+            "type": "string",
+            "description": "1 to 32 characters."
+          }
+        },
+        "additionalProperties": false
       },
       "NfsRule": {
         "type": "object",
@@ -15954,6 +16912,16 @@
           }
         }
       },
+      "Numbering": {
+        "type": "string",
+        "description": "In which order a group's slots fill its grid: along the rows from the\ntop row, or down the columns from the left one.",
+        "enum": [
+          "left_to_right",
+          "right_to_left",
+          "top_to_bottom",
+          "bottom_to_top"
+        ]
+      },
       "NvmeHealth": {
         "type": "object",
         "required": [
@@ -16009,6 +16977,13 @@
           }
         }
       },
+      "Orientation": {
+        "type": "string",
+        "enum": [
+          "vertical",
+          "horizontal"
+        ]
+      },
       "PackageUpdate": {
         "type": "object",
         "description": "A Debian package an update brings.",
@@ -16035,6 +17010,13 @@
             "type": "string"
           }
         }
+      },
+      "PanelSide": {
+        "type": "string",
+        "enum": [
+          "left",
+          "right"
+        ]
       },
       "Partition": {
         "type": "object",
@@ -16159,6 +17141,116 @@
           },
           "settings": {
             "$ref": "#/components/schemas/WebServer"
+          }
+        }
+      },
+      "PlacedGroup": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "rows",
+          "columns",
+          "orientation",
+          "form",
+          "numbering",
+          "slots"
+        ],
+        "properties": {
+          "columns": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "form": {
+            "$ref": "#/components/schemas/SlotForm"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "numbering": {
+            "$ref": "#/components/schemas/Numbering"
+          },
+          "orientation": {
+            "$ref": "#/components/schemas/Orientation"
+          },
+          "rows": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "slots": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlacedSlot"
+            }
+          }
+        }
+      },
+      "PlacedSlot": {
+        "type": "object",
+        "required": [
+          "id",
+          "label",
+          "row",
+          "column",
+          "overridden",
+          "state"
+        ],
+        "properties": {
+          "binding": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SlotBinding"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "column": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "disk": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The disk in it, by kernel name."
+          },
+          "health": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DiskHealth",
+                "description": "The disk's SMART verdict as the monitor last read it (every six\nhours, disks holding data only); reading this reads no disk."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "overridden": {
+            "type": "boolean",
+            "description": "Bound otherwise than the model binds it."
+          },
+          "row": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "state": {
+            "$ref": "#/components/schemas/SlotState"
           }
         }
       },
@@ -17522,6 +18614,56 @@
         },
         "additionalProperties": false
       },
+      "SetEnclosure": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "model",
+              "source"
+            ],
+            "properties": {
+              "model": {
+                "type": "string"
+              },
+              "overrides": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/SlotOverride"
+                }
+              },
+              "source": {
+                "type": "string",
+                "enum": [
+                  "model"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "groups",
+              "source"
+            ],
+            "properties": {
+              "groups": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/NewGroup"
+                }
+              },
+              "source": {
+                "type": "string",
+                "enum": [
+                  "custom"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "A model of the catalog with other bindings for some of its slots, or a\nlayout of one's own (1 to 16 groups)."
+      },
       "SetFavouritesRequest": {
         "type": "object",
         "required": [
@@ -17914,6 +19056,62 @@
             "$ref": "#/components/schemas/Share"
           }
         }
+      },
+      "SlotBinding": {
+        "type": "object",
+        "description": "What a slot holds.",
+        "required": [
+          "kind",
+          "value"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/BindingKind"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SlotForm": {
+        "type": "string",
+        "enum": [
+          "inch_3_5",
+          "inch_2_5",
+          "m2"
+        ]
+      },
+      "SlotOverride": {
+        "type": "object",
+        "description": "Another binding for one of the model's slots; `null` binds nothing.",
+        "required": [
+          "slot"
+        ],
+        "properties": {
+          "binding": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SlotBinding"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "slot": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SlotState": {
+        "type": "string",
+        "enum": [
+          "occupied",
+          "empty",
+          "missing"
+        ]
       },
       "SmartAttribute": {
         "type": "object",

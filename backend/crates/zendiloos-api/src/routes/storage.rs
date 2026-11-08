@@ -102,6 +102,12 @@ impl From<StorageError> for ApiError {
             StorageError::InvalidSelfTestPlan(e) => ApiError::InvalidInput(e.to_string()),
             StorageError::RemovableNotFound => ApiError::NotFound,
             StorageError::DriveBusy => rejected(StatusCode::CONFLICT, "drive_in_use", None),
+            StorageError::InvalidEnclosure(e) => ApiError::InvalidInput(e.to_string()),
+            StorageError::InvalidInventory(e) => ApiError::InvalidInput(e.to_string()),
+            e @ StorageError::LocateTime => ApiError::InvalidInput(e.to_string()),
+            StorageError::NotLocating => rejected(StatusCode::CONFLICT, "not_locating", None),
+            StorageError::InventoryNotFound => ApiError::NotFound,
+            StorageError::DiskPresent => rejected(StatusCode::CONFLICT, "disk_present", None),
             StorageError::Port(e) => ApiError::internal(e),
         }
     }
@@ -164,6 +170,10 @@ pub struct Disk {
     /// Name of the disk's `/dev/disk/by-id` link; disks without one cannot
     /// be used for pools.
     pub id_link: Option<String>,
+    /// Where it is plugged in: udev's `ID_PATH`, its `/dev/disk/by-path`
+    /// name, e.g. `pci-0000:05:00.0-ata-1.0`; what a slot of the enclosure
+    /// is bound to.
+    pub id_path: Option<String>,
     pub partitions: Vec<Partition>,
 }
 
@@ -211,6 +221,7 @@ impl From<storage::Disk> for Disk {
             array,
             pool,
             id_link: disk.id_link,
+            id_path: disk.id_path,
             partitions: disk
                 .partitions
                 .into_iter()

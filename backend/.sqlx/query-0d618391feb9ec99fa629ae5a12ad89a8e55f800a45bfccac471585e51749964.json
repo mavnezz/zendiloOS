@@ -1,0 +1,122 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT serial, model, size_bytes, purchased, warranty_until, vendor, note, first_seen, last_seen FROM disk_inventory ORDER BY serial",
+  "describe": {
+    "columns": [
+      {
+        "name": "serial",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "disk_inventory",
+            "name": "serial"
+          }
+        }
+      },
+      {
+        "name": "model",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "disk_inventory",
+            "name": "model"
+          }
+        }
+      },
+      {
+        "name": "size_bytes",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "disk_inventory",
+            "name": "size_bytes"
+          }
+        }
+      },
+      {
+        "name": "purchased",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "disk_inventory",
+            "name": "purchased"
+          }
+        }
+      },
+      {
+        "name": "warranty_until",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "disk_inventory",
+            "name": "warranty_until"
+          }
+        }
+      },
+      {
+        "name": "vendor",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "disk_inventory",
+            "name": "vendor"
+          }
+        }
+      },
+      {
+        "name": "note",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "disk_inventory",
+            "name": "note"
+          }
+        }
+      },
+      {
+        "name": "first_seen",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "disk_inventory",
+            "name": "first_seen"
+          }
+        }
+      },
+      {
+        "name": "last_seen",
+        "ordinal": 8,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "disk_inventory",
+            "name": "last_seen"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "0d618391feb9ec99fa629ae5a12ad89a8e55f800a45bfccac471585e51749964"
+}

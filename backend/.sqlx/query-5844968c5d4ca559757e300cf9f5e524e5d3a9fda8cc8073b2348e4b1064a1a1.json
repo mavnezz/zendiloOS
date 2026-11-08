@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE disk_inventory SET purchased = ?, warranty_until = ?, vendor = ?, note = ? WHERE serial = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "5844968c5d4ca559757e300cf9f5e524e5d3a9fda8cc8073b2348e4b1064a1a1"
+}

@@ -572,7 +572,22 @@ impl AgentTransport for SimulatedAgent {
                 tracing::warn!(op = request.name(), request_id, "simulated agent: not executing");
                 Response::Done
             }
-            Request::ListBlockDevices {} => Response::BlockDevices { lsblk_json: self.host().lsblk() },
+            Request::ListBlockDevices {} => {
+                let host = self.host();
+                Response::BlockDevices { lsblk_json: host.lsblk(), udev_db: host.udev_db() }
+            }
+            // The simulated NAS is the catalog's first model.
+            Request::Machine {} => {
+                Response::Machine { sys_vendor: "UGREEN\n".into(), product_name: "DXP4800 Plus\n".into() }
+            }
+            // Reads nothing: answers at once, as if the time were over.
+            Request::ReadBurst { device, .. } => {
+                if self.host().has_disk(device.as_str()) {
+                    Response::Done
+                } else {
+                    error(ErrorCode::Forbidden, &format!("refused: there is no disk {}", device.as_str()))
+                }
+            }
             Request::SmartData { device } => smart(device),
             // Docker runs once installed and its data is on a pool.
             Request::DockerState {} => {
@@ -1553,7 +1568,7 @@ mod tests {
         let id = || RemovableId::parse(host::STICK_ID).unwrap();
         let lsblk = || async {
             match agent.call(Request::ListBlockDevices {}, None).await.unwrap() {
-                Response::BlockDevices { lsblk_json } => lsblk_json,
+                Response::BlockDevices { lsblk_json, .. } => lsblk_json,
                 other => panic!("{other:?}"),
             }
         };

@@ -232,6 +232,7 @@ mod tests {
             serial: serial.map(str::to_owned),
             wwn: None,
             id_link: None,
+            id_path: None,
             size_bytes: 1,
             transport: Transport::Sata,
             media: Media::Rotational,

@@ -1,6 +1,9 @@
 //! The simulated NAS: disks with partitions and ZFS pools, rendered as the
-//! real tools print them (`lsblk --json`, `zpool status -j`, `zfs list -j`),
-//! so zendiloosd's parsers run against it unchanged.
+//! real tools print them (`lsblk --json`, `udevadm info --export-db`,
+//! `zpool status -j`, `zfs list -j`), so zendiloosd's parsers run against
+//! it unchanged. It is a UGREEN DXP4800 Plus, as DMI tells: four disks in
+//! its bays, a fifth on the controller's spare port, the system SSD inside,
+//! an NVMe in the first M.2 slot underneath and a USB stick at the front.
 
 use serde_json::{Value, json};
 use zendiloos_agent_proto::REMOVABLE_PLACE;
@@ -18,6 +21,8 @@ pub(crate) struct Disk {
     pub serial: String,
     pub size: u64,
     pub transport: &'static str,
+    /// Where it is plugged in: udev's `ID_PATH`.
+    pub port: &'static str,
     pub rotational: bool,
     /// A USB stick, say, as the kernel flags it.
     pub removable: bool,
@@ -39,6 +44,20 @@ impl Disk {
     pub fn id_link(&self) -> String {
         let prefix = if self.transport == "nvme" { "nvme" } else { "ata" };
         format!("{prefix}-{}_{}", self.model.replace(' ', "_"), self.serial)
+    }
+
+    /// Its entry in udev's database, as `udevadm info --export-db` prints it.
+    fn udev(&self) -> String {
+        let name = &self.name;
+        format!(
+            "P: /devices/{port}/block/{name}\nM: {name}\nU: block\nT: disk\nN: {name}\n\
+             S: disk/by-path/{port}\nS: disk/by-id/{id}\n\
+             E: DEVNAME=/dev/{name}\nE: DEVTYPE=disk\nE: SUBSYSTEM=block\n\
+             E: ID_SERIAL_SHORT={serial}\nE: ID_PATH={port}\n",
+            port = self.port,
+            id = self.id_link(),
+            serial = self.serial,
+        )
     }
 
     fn partition_name(&self, number: usize) -> String {
@@ -341,12 +360,13 @@ impl Host {
     /// A system NVMe; a healthy mirror and a degraded mirror (one disk
     /// failing); a sleeping disk and an unused NVMe.
     pub fn nas() -> Self {
-        let hdd = |name: &str, serial: &str| Disk {
+        let hdd = |name: &str, serial: &str, port: &'static str| Disk {
             name: name.to_owned(),
             model: "SIM HDD 4TB".to_owned(),
             serial: serial.to_owned(),
             size: TB4,
             transport: "sata",
+            port,
             rotational: true,
             removable: false,
             partitions: Vec::new(),
@@ -357,6 +377,7 @@ impl Host {
             serial: "SIMNV0001".to_owned(),
             size: 512_110_190_592,
             transport: "nvme",
+            port: "pci-0000:04:00.0-nvme-1",
             rotational: false,
             removable: false,
             partitions: vec![
@@ -392,6 +413,7 @@ impl Host {
             serial: "SIMNV0002".to_owned(),
             size: 1_000_204_886_016,
             transport: "nvme",
+            port: "pci-0000:01:00.0-nvme-1",
             rotational: false,
             removable: false,
             partitions: Vec::new(),
@@ -403,6 +425,7 @@ impl Host {
             serial: "SIMUSB0001".to_owned(),
             size: 32_017_047_552,
             transport: "usb",
+            port: "pci-0000:00:0d.0-usb-0:1:1.0-scsi-0:0:0:0",
             rotational: false,
             removable: true,
             partitions: vec![Partition {
@@ -416,11 +439,12 @@ impl Host {
         };
         let mut host = Self {
             disks: vec![
-                hdd("sda", "SIM4T0001"),
-                hdd("sdb", "SIM4T0002"),
-                hdd("sdc", "SIM4T0003"),
-                hdd("sdd", "SIM4T0004"),
-                hdd("sde", "SIM4T0005"),
+                // udev of systemd 257 names ATA ports with their link.
+                hdd("sda", "SIM4T0001", "pci-0000:05:00.0-ata-1.0"),
+                hdd("sdb", "SIM4T0002", "pci-0000:05:00.0-ata-2.0"),
+                hdd("sdc", "SIM4T0003", "pci-0000:05:00.0-ata-3.0"),
+                hdd("sdd", "SIM4T0004", "pci-0000:05:00.0-ata-4.0"),
+                hdd("sde", "SIM4T0005", "pci-0000:05:00.0-ata-5.0"),
                 system,
                 spare,
                 stick,
@@ -479,6 +503,16 @@ impl Host {
     pub fn lsblk(&self) -> String {
         let devices: Vec<Value> = self.disks.iter().map(Disk::lsblk).collect();
         json!({ "blockdevices": devices }).to_string()
+    }
+
+    /// udev's database of the disks, a paragraph each.
+    pub fn udev_db(&self) -> String {
+        self.disks.iter().map(|disk| disk.udev() + "\n").collect()
+    }
+
+    /// Whether a whole disk of this name is plugged in.
+    pub fn has_disk(&self, name: &str) -> bool {
+        self.disks.iter().any(|disk| disk.name == name)
     }
 
     pub fn zpool_status(&mut self, now: u64) -> String {

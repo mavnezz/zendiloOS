@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT model FROM enclosure WHERE id = 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "model",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "enclosure",
+            "name": "model"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "b85da3b2a96c591a281ce8a0ba2fc1219968be1fe569844d67105eb3437e4943"
+}
