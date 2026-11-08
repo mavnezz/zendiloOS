@@ -113,7 +113,9 @@ cleanup() {
     status POST /security/firewall/confirm >/dev/null 2>&1 || true
     vm "sudo ip netns del fwtest; sudo ip link del fwtest0" >/dev/null 2>&1 || true
     if [[ ${docker:-no} == yes ]]; then
-        vm "cd /tmp/fwtest && sudo docker compose -p fwtest down" >/dev/null 2>&1 || true
+        # By the project's label: the reboot empties /tmp and its compose.yaml.
+        vm "sudo docker ps -aq --filter label=com.docker.compose.project=fwtest | xargs -r sudo docker rm -f;
+            sudo docker network rm fwtest_default; sudo rm -rf /tmp/fwtest" >/dev/null 2>&1 || true
     fi
     rm -rf "$work"
 }

@@ -138,7 +138,7 @@ function pointerUp(item: Item, event: PointerEvent): void {
             @change="emit('toggle', item)"
           />
         </td>
-        <td class="max-w-0 p-2">
+        <td class="w-full max-w-0 p-2">
           <span
             v-if="item.unreadable"
             class="flex min-w-0 items-center gap-2 text-muted-foreground"
