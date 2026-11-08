@@ -459,8 +459,16 @@ impl SimulatedAgent {
                     (Response::Done, None)
                 }
                 Request::MoveEntry { from, to, replace, .. } => {
-                    share(from)?.move_entry(&from.path, &share(to)?, &to.path, *replace)?;
-                    (Response::Done, None)
+                    match share(from)?.move_entry(&from.path, &share(to)?, &to.path, *replace) {
+                        Err(FileError::PartlyMoved(kept)) => {
+                            let (kept, example, too_many) = (kept.count, kept.example, kept.too_many);
+                            (Response::PartlyMoved { kept, example, too_many }, None)
+                        }
+                        other => {
+                            other?;
+                            (Response::Done, None)
+                        }
+                    }
                 }
                 Request::CopyEntry { from, to, .. } => {
                     let path = share(from)?.copy_entry(&from.path, &share(to)?, &to.path)?;
@@ -506,8 +514,8 @@ impl SimulatedAgent {
                 FileError::NotFound => ErrorCode::NotFound,
                 FileError::Denied => ErrorCode::Denied,
                 FileError::Exists => ErrorCode::Conflict,
-                FileError::Invalid(_) => ErrorCode::InvalidRequest,
-                FileError::Io(_) => ErrorCode::Failed,
+                FileError::Invalid(_) | FileError::CaseClash(..) => ErrorCode::InvalidRequest,
+                FileError::PartlyMoved(_) | FileError::NotDurable(_) | FileError::Io(_) => ErrorCode::Failed,
             };
             (error(code, &failure.to_string()), None)
         })

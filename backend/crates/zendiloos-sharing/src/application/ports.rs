@@ -289,6 +289,14 @@ pub enum FileHostError {
     /// Not possible, e.g. moving a folder into itself.
     #[error("{0}")]
     Invalid(String),
+    /// A move across file systems removed only part of its source: `kept`
+    /// entries stayed where they were, such as `example`, because they
+    /// changed or came since they were copied, were never copied, or could
+    /// not be removed; what of them was copied is in the target too. With
+    /// `too_many`, the copy is complete and the source stayed whole: more
+    /// entries than a move checks one by one.
+    #[error("moved in part: {kept} entries stayed where they were")]
+    PartlyMoved { kept: u64, example: Option<FilePath>, too_many: bool },
     #[error(transparent)]
     Port(#[from] PortError),
 }
@@ -349,7 +357,8 @@ pub trait FileHost: Send + Sync {
     ) -> Result<(), FileHostError>;
 
     /// Renames or moves, also into another share. With `replace`, a file
-    /// replaces a file.
+    /// replaces a file. Into another place it may remove only part of its
+    /// source ([`FileHostError::PartlyMoved`]).
     async fn move_entry(
         &self,
         user: &str,

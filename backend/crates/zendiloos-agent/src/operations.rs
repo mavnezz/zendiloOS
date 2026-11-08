@@ -499,8 +499,9 @@ impl OperationError {
                 FileError::NotFound => ErrorCode::NotFound,
                 FileError::Denied => ErrorCode::Denied,
                 FileError::Exists => ErrorCode::Conflict,
-                FileError::Invalid(_) => ErrorCode::InvalidRequest,
-                FileError::Io(_) => ErrorCode::Failed,
+                FileError::Invalid(_) | FileError::CaseClash(..) => ErrorCode::InvalidRequest,
+                // A move answers what it left (`Response::PartlyMoved`).
+                FileError::PartlyMoved(_) | FileError::NotDurable(_) | FileError::Io(_) => ErrorCode::Failed,
             },
             _ => ErrorCode::Failed,
         }
@@ -523,6 +524,8 @@ mod tests {
             (OperationError::File(FileError::Denied), ErrorCode::Denied),
             (OperationError::File(FileError::Exists), ErrorCode::Conflict),
             (OperationError::File(FileError::Invalid("odd")), ErrorCode::InvalidRequest),
+            (OperationError::File(FileError::CaseClash("a".into(), "A".into())), ErrorCode::InvalidRequest),
+            (OperationError::File(FileError::NotDurable(io())), ErrorCode::Failed),
             (OperationError::File(FileError::Io(io())), ErrorCode::Failed),
             (OperationError::Credentials(io()), ErrorCode::Failed),
             (OperationError::NotNow("later".into()), ErrorCode::Failed),

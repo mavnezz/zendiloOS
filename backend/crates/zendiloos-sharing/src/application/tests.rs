@@ -615,6 +615,48 @@ async fn copies_moves_and_deletes_run_as_jobs() {
 }
 
 #[tokio::test]
+async fn a_move_that_left_part_of_its_source_is_no_plain_success() {
+    let s = setup();
+    let id = with_photos(&s).await;
+    let (request, alice) = (RequestContext::default(), alice());
+    let paths = vec![file("changing"), file("b.jpg"), file("album/changing")];
+
+    let job =
+        s.files.transfer(&alice, Transfer::Move, id, paths, id, file("backup"), &request).await.unwrap();
+
+    let failed = finished(&s.jobs, job).await;
+    assert_eq!(failed.state, JobState::Failed);
+    let error = failed.error.unwrap();
+    assert_eq!(error.code, "partly_moved");
+    assert_eq!(error.detail.as_deref(), Some("4 photos/changing/new.txt"), "all that stayed, and the first");
+    assert_eq!(
+        s.file_host.calls(),
+        [
+            "move alice photos:changing -> photos:backup/changing",
+            "move alice photos:b.jpg -> photos:backup/b.jpg",
+            "move alice photos:album/changing -> photos:backup/changing",
+        ],
+        "the others are moved still"
+    );
+
+    let job =
+        s.files.transfer(&alice, Transfer::Move, id, vec![file("huge")], id, file("backup"), &request).await;
+    let error = finished(&s.jobs, job.unwrap()).await.error.unwrap();
+    assert_eq!(
+        (error.code.as_str(), error.detail.as_deref()),
+        ("copied_not_moved", Some("1000001 photos/huge")),
+        "the copy is complete, the source whole"
+    );
+    // A rename within one place never leaves anything behind; if it did, it
+    // would say so.
+    let renamed = s.files.rename(&alice, id, file("changing"), "other", &request).await;
+    assert!(
+        matches!(&renamed, Err(FilesError::Invalid(why)) if why.contains("moved in part")),
+        "{renamed:?}"
+    );
+}
+
+#[tokio::test]
 async fn favourites_are_per_account_and_only_in_usable_shares() {
     let s = setup();
     let id = with_photos(&s).await;
