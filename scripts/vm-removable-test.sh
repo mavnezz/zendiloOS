@@ -6,9 +6,11 @@
 #      under /run/zendiloos-removable, nosuid, nodev, noexec; FAT for the
 #      users' group, nothing runs from it
 #   2. a write-protected drive is mounted read only; the explorer works on
-#      the drives: uploads, a file of a foreign UID on ext4, copies into a
-#      share that belong to the administrator with the share's ACL, a move
-#      out of a share, deletion; a user who is no administrator is refused
+#      the drives: uploads (one larger than 1 MiB, through nginx, back whole
+#      as a download and in an archive), a file of a foreign UID on ext4,
+#      copies into a share that belong to the administrator with the share's
+#      ACL, a move out of a share, deletion; a user who is no administrator
+#      is refused
 #   3. a drive with a file open is not ejected; then it is, and is gone
 #   4. a drive pulled out unannounced is cleaned up and reported
 #   5. a disk that was part of a pool is never offered
@@ -170,6 +172,15 @@ echo 'up on the stick' >"$work/up.txt"
 call GET "/files/removable/$fat_id/folder" | jq -e '.entries | map(.name) | index("up.txt")' >/dev/null \
     || fail "the listing: $(call GET "/files/removable/$fat_id/folder")"
 [[ $(call GET "/files/removable/$fat_id/download?path=up.txt") == 'up on the stick' ]] || fail "download from FAT"
+# More than nginx's default limit for a request's body (1 MiB): passed on as
+# it arrives, as into a share, and back whole, also in an archive.
+head -c $((3 * 1024 * 1024)) /dev/urandom >"$work/big.bin"
+[[ $(upload "/files/removable/$fat_id" big.bin "$work/big.bin") =~ ^20 ]] || fail "a large upload to the stick: $(cat "$work/last")"
+call GET "/files/removable/$fat_id/download?path=big.bin" >"$work/big.back"
+cmp -s "$work/big.bin" "$work/big.back" || fail "the large file did not come back whole ($(stat -c %s "$work/big.back") bytes)"
+call GET "/files/removable/$fat_id/archive?path=" >"$work/stick.tar"
+tar -tf "$work/stick.tar" >"$work/stick.list" || fail "the stick's archive cannot be read"
+grep -q '/big\.bin$' "$work/stick.list" || fail "the large file is not in the archive: $(cat "$work/stick.list")"
 # Formatted elsewhere: owned by someone this NAS does not know, for them alone.
 vm "echo secret | sudo tee '$ext4/foreign.txt' >/dev/null && sudo chown 4321:4321 '$ext4/foreign.txt' && sudo chmod 600 '$ext4/foreign.txt'"
 [[ $(call GET "/files/removable/$ext4_id/download?path=foreign.txt") == secret ]] || fail "ext4's foreign file"
@@ -194,8 +205,8 @@ job_succeeded "$(call POST "/files/shares/$share_id/transfer" \
 [[ $(vm "sudo cat '$fat/back.txt'") == 'from the share' ]] || fail "the move did not reach the stick"
 vm "sudo test ! -e '$shared/back.txt'" || fail "the move left the source"
 # Deleting on a drive is for good: no bin there.
-job_succeeded "$(call POST "/files/removable/$fat_id/delete" '{"paths":["up.txt","back.txt"]}' | jq -r .id)"
-vm "sudo test ! -e '$fat/up.txt' && sudo test ! -e '$fat/back.txt' && sudo test ! -e '$fat/.recycle'" || fail "deleting on the stick"
+job_succeeded "$(call POST "/files/removable/$fat_id/delete" '{"paths":["up.txt","back.txt","big.bin"]}' | jq -r .id)"
+vm "sudo test ! -e '$fat/up.txt' && sudo test ! -e '$fat/back.txt' && sudo test ! -e '$fat/big.bin' && sudo test ! -e '$fat/.recycle'" || fail "deleting on the stick"
 # Someone who is no administrator sees no drives.
 call POST /accounts '{"name":"rmuser","role":"user","password":"third secret phrase"}' | jq -er .id >/dev/null || fail "rmuser"
 curl -sk -c "$work/rmuser.jar" -H "Origin: $base" -H 'Content-Type: application/json' \
