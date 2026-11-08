@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Box, Boxes, Disc3, LayoutDashboard, Network, ScrollText, Settings2 } from 'lucide-vue-next'
-import { computed, inject, nextTick, provide, ref, watch } from 'vue'
+import { computed, inject, provide, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import { useWindowSection, WINDOW_SECTION } from '@/shared/lib/window-section'
@@ -59,29 +59,54 @@ type View =
 const view = ref<View>({ kind: 'list' })
 /** Within Containers: the one opened, by name, and the page it was opened from. */
 const container = ref<{ name: string; from: string | null } | null>(null)
-watch(section, () => {
-  view.value = { kind: 'list' }
-  container.value = null
+/**
+ * A container to show once Containers is the page: the window may take a
+ * render or two to get there, passing other pages on the way.
+ */
+let wanted: { name: string; from: string | null } | null = null
+/** Likewise, a project to show once Projects is the page. */
+let wantedProject: string | null = null
+watch(section, (now) => {
+  view.value =
+    now === 'projects' && wantedProject ? { kind: 'detail', name: wantedProject } : { kind: 'list' }
+  container.value = now === 'containers' ? wanted : null
+  if (now === 'projects') wantedProject = null
+  if (now === 'containers') wanted = null
 })
+
+/** Opens a project's page, from wherever the window is. */
+function openProject(name: string): void {
+  if (section.value === 'projects') {
+    view.value = { kind: 'detail', name }
+    return
+  }
+  wantedProject = name
+  section.value = 'projects'
+}
 
 /**
  * Opens a container's page, remembering the project whose page it was
  * opened from (if it was), where Back leads.
  */
 function openContainer(name: string): void {
-  if (container.value?.name === name) return
-  const from = view.value.kind === 'detail' ? view.value.name : null
+  const from =
+    container.value?.name === name
+      ? container.value.from
+      : view.value.kind === 'detail'
+        ? view.value.name
+        : null
+  if (section.value === 'containers') {
+    container.value = { name, from }
+    return
+  }
+  wanted = { name, from }
   section.value = 'containers'
-  // After the change of page, which shows the list.
-  void nextTick(() => (container.value = { name, from }))
 }
 
 function leaveContainer(): void {
   const from = container.value?.from
   container.value = null
-  if (!from) return
-  section.value = 'projects'
-  void nextTick(() => (view.value = { kind: 'detail', name: from }))
+  if (from) openProject(from)
 }
 
 // A container's name opens its page, from Containers or a project.
@@ -93,10 +118,7 @@ watch(
   () => frame?.section.value,
   (asked) => {
     if (!asked?.startsWith(PROJECT)) return
-    const name = asked.slice(PROJECT.length)
-    section.value = 'projects'
-    // After the change of page, which shows the list.
-    void nextTick(() => (view.value = { kind: 'detail', name }))
+    openProject(asked.slice(PROJECT.length))
   },
   { immediate: true },
 )

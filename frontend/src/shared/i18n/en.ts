@@ -475,7 +475,7 @@ const en = {
       stopped: 'Not running',
       empty: 'Not deployed',
     },
-    kinds: { own: 'Own project', app: 'App', foreign: 'External' },
+    kinds: { app: 'App, installed the earlier way', foreign: 'Made elsewhere' },
     updatable: 'Update available',
     actions: {
       start: 'Start',

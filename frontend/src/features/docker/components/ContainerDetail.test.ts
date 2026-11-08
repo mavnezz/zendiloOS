@@ -415,7 +415,7 @@ describe('a container asked for by the window', () => {
     expect(wrapper.findComponent({ name: 'ProjectDetail' }).props('name')).toBe('tesla')
   })
 
-  it('opens from a project’s list of containers by the name', async () => {
+  it('opens from a project’s list of containers by its row', async () => {
     const project = {
       name: 'tesla',
       kind: 'own',
@@ -435,7 +435,12 @@ describe('a container asked for by the window', () => {
     await settle()
     ;(document.querySelector('li') as HTMLElement).click()
     await settle()
-    await click('tesla-web')
+    document
+      .querySelector<HTMLElement>(
+        `[role=button][aria-label="${t('docker.projects.openContainer', { name: 'tesla-web' })}"]`,
+      )!
+      .click()
+    await settle()
     expect(wrapper.findComponent({ name: 'ContainerDetail' }).props('name')).toBe('tesla-web')
     labelled(t('docker.back')).click()
     await settle()

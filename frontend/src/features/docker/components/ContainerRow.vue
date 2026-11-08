@@ -19,6 +19,11 @@ const props = defineProps<{
   /** What its network sends and receives now, per second, instead of the totals. */
   rates?: { sent: number; received: number }
   updating?: boolean
+  /**
+   * The name is no link of its own: inside something that opens the
+   * container already (a project's row), so one click takes one way.
+   */
+  unlinked?: boolean
 }>()
 const emit = defineEmits<{ update: [] }>()
 const { t } = useI18n()
@@ -45,7 +50,7 @@ const state = computed(() => (isUp(props.container) ? 'running' : 'stopped'))
       <div class="grid min-w-0 flex-1 gap-0.5">
         <span class="flex flex-wrap items-center gap-2">
           <button
-            v-if="open"
+            v-if="open && !unlinked"
             type="button"
             class="truncate rounded font-medium outline-none hover:text-primary hover:underline focus-visible:ring-2 focus-visible:ring-ring"
             @click="open(container.name)"

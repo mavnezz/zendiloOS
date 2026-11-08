@@ -485,7 +485,7 @@ const de: Messages = {
       stopped: 'Nicht in Betrieb',
       empty: 'Nicht bereitgestellt',
     },
-    kinds: { own: 'Eigenes Projekt', app: 'App', foreign: 'Extern' },
+    kinds: { app: 'App (frühere Installation)', foreign: 'Außerhalb angelegt' },
     updatable: 'Aktualisierbar',
     actions: {
       start: 'Starten',

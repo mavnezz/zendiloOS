@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import {
   ArrowLeft,
-  Boxes,
   FileCode2,
   Pencil,
   Play,
@@ -33,6 +32,7 @@ import { DeployLogDialog } from '@/shared/ui/deploy-log'
 import ProjectLog from './ProjectLog.vue'
 import ProjectUsage from './ProjectUsage.vue'
 import RedeployDialog from './RedeployDialog.vue'
+import ProjectIcon from './ProjectIcon.vue'
 
 const props = defineProps<{ name: string }>()
 const emit = defineEmits<{ back: []; edit: [compose: string]; container: [name: string] }>()
@@ -127,16 +127,16 @@ function open(container: string): void {
       <Button variant="ghost" size="icon" :aria-label="t('docker.back')" @click="emit('back')">
         <ArrowLeft />
       </Button>
-      <span class="grid size-12 place-items-center rounded-xl bg-primary/10 text-primary">
-        <Boxes class="size-6" />
-      </span>
+      <ProjectIcon :project="project" />
       <div class="grid min-w-0 flex-1 gap-0.5">
         <span class="flex flex-wrap items-center gap-2">
           <span class="text-lg font-semibold">{{ name }}</span>
           <Badge v-if="project" :variant="statusVariant(projectStatus(project))">{{
             t(`docker.status.${projectStatus(project)}`)
           }}</Badge>
-          <Badge v-if="project" variant="outline">{{ t(`docker.kinds.${project.kind}`) }}</Badge>
+          <Badge v-if="project && project.kind !== 'own'" variant="outline">{{
+            t(`docker.kinds.${project.kind}`)
+          }}</Badge>
         </span>
         <span class="flex flex-wrap gap-x-3 text-xs text-muted-foreground">
           <span v-if="project?.created_at">{{
@@ -196,7 +196,7 @@ function open(container: string): void {
           @keydown.enter.prevent="open(container.name)"
           @keydown.space.prevent="open(container.name)"
         >
-          <ContainerRow :container="container" :rates="rates.get(container.name)" />
+          <ContainerRow :container="container" :rates="rates.get(container.name)" unlinked />
         </div>
       </li>
       <li

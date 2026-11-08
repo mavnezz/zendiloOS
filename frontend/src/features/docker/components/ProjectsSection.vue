@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { Boxes, Play, Plus, RefreshCw, RotateCw, Search, Square, Trash2 } from 'lucide-vue-next'
-import { computed, ref } from 'vue'
+import { Play, Plus, RefreshCw, RotateCw, Search, Square, Trash2 } from 'lucide-vue-next'
+import { computed, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import type { DockerProject, Job } from '@/shared/api/types'
@@ -16,6 +16,7 @@ import { Input } from '@/shared/ui/input'
 import { useProjectAction, useProjects, useRedeploy, useUpdatable } from '../api'
 import { projectStatus, statusVariant } from '../lib/status'
 import { DeployLogDialog } from '@/shared/ui/deploy-log'
+import ProjectIcon from './ProjectIcon.vue'
 import RedeployDialog from './RedeployDialog.vue'
 
 const emit = defineEmits<{ open: [name: string]; create: [] }>()
@@ -39,7 +40,7 @@ function actions(project: DockerProject): Action[] {
       id: 'restart',
       label: t('docker.actions.restart'),
       icon: RotateCw,
-      disabled: !project.containers.length,
+      disabled: !project.containers.length || busy.has(project.name),
     },
     { id: 'redeploy', label: t('docker.actions.redeploy'), icon: RefreshCw, disabled: app },
     {
@@ -61,7 +62,20 @@ function run(project: DockerProject, action: string): void {
     asking.value = project.name
     return
   }
-  act.mutate({ name: project.name, action: action as 'start' | 'stop' | 'restart' })
+  void control(project.name, action as 'start' | 'stop' | 'restart')
+}
+
+/** Projects being started, stopped or restarted now: only their buttons wait. */
+const busy = reactive(new Set<string>())
+async function control(name: string, action: 'start' | 'stop' | 'restart'): Promise<void> {
+  busy.add(name)
+  try {
+    await act.mutateAsync({ name, action })
+  } catch {
+    // Shown through the action's error.
+  } finally {
+    busy.delete(name)
+  }
 }
 
 /** Redeploying asks first, then shows what Compose writes as it does. */
@@ -123,18 +137,16 @@ function confirmDelete(): void {
         class="flex cursor-pointer flex-wrap items-center gap-4 rounded-xl border bg-card p-4 transition-colors hover:bg-accent/40"
         @click="emit('open', project.name)"
       >
-        <span
-          class="grid size-12 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary"
-        >
-          <Boxes class="size-6" />
-        </span>
+        <ProjectIcon :project="project" />
         <div class="grid min-w-40 flex-1 gap-1">
           <span class="truncate font-medium">{{ project.name }}</span>
           <span class="flex flex-wrap gap-1.5">
             <Badge :variant="statusVariant(projectStatus(project))">{{
               t(`docker.status.${projectStatus(project)}`)
             }}</Badge>
-            <Badge variant="outline">{{ t(`docker.kinds.${project.kind}`) }}</Badge>
+            <Badge v-if="project.kind !== 'own'" variant="outline">{{
+              t(`docker.kinds.${project.kind}`)
+            }}</Badge>
             <Badge
               v-if="project.kind !== 'app' && project.containers.some((c) => updatable.has(c.name))"
               variant="info"
@@ -156,7 +168,7 @@ function confirmDelete(): void {
             :disabled="
               !project.containers.length ||
               project.running === project.containers.length ||
-              act.isPending.value
+              busy.has(project.name)
             "
             @click="run(project, 'start')"
           >
@@ -166,7 +178,7 @@ function confirmDelete(): void {
           <Button
             variant="ghost"
             size="sm"
-            :disabled="project.running === 0 || act.isPending.value"
+            :disabled="project.running === 0 || busy.has(project.name)"
             @click="run(project, 'stop')"
           >
             <Square />

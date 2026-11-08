@@ -1,6 +1,6 @@
 import type { VueWrapper } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { ref } from 'vue'
+import { nextTick, ref } from 'vue'
 
 import {
   button,
@@ -212,7 +212,8 @@ describe('the Docker app', () => {
     on('GET', '/api/v1/docker/projects/tesla/logs', { text: 'web-1  | ready\n' })
     ;(document.querySelector('li') as HTMLElement).click()
     await settle()
-    expect(page()).toContain(t('docker.kinds.own'))
+    // A project of one's own needs no word; only the exceptions get one.
+    expect(page()).not.toContain(t('docker.kinds.foreign'))
     expect(page()).toContain('tesla-web')
 
     const tabs = wrapper.findComponent({ name: 'PageTabs' })
@@ -226,6 +227,74 @@ describe('the Docker app', () => {
     expect(wrapper.findComponent({ name: 'CodeEditor' }).props('modelValue')).toBe('services: {}\n')
     await click(new RegExp(t('docker.projects.change')))
     expect(wrapper.findComponent({ name: 'ProjectEditor' }).exists()).toBe(true)
+  })
+
+  it('waits only with the project being changed, and names only the exceptions', async () => {
+    let release = () => {}
+    on('GET', '/api/v1/docker/projects', [
+      project('tesla'),
+      project('photos', { template: { source_id: 1, app: 'immich' } }),
+      project('kuma', { kind: 'app', app: 'kuma' }),
+      project('stack', { kind: 'foreign' }),
+    ])
+    on(
+      'POST',
+      '/api/v1/docker/projects/tesla/stop',
+      () => new Promise((done) => (release = () => done(null))),
+    )
+    await open('projects')
+    const rows = () => [...document.querySelectorAll('li')]
+    const stopOf = (index: number) =>
+      rows()[index]!.querySelectorAll('button')[1] as HTMLButtonElement
+
+    expect(rows()[0]!.textContent).not.toContain(t('docker.kinds.app'))
+    expect(rows()[0]!.textContent).not.toContain(t('docker.kinds.foreign'))
+    expect(rows()[2]!.textContent).toContain(t('docker.kinds.app'))
+    expect(rows()[3]!.textContent).toContain(t('docker.kinds.foreign'))
+    // Made by the App Center: the app's icon.
+    expect(rows()[1]!.querySelector('img')?.getAttribute('src')).toBe(
+      '/api/v1/apps/catalog/1/immich/icon',
+    )
+
+    stopOf(0).click()
+    await settle()
+    expect(stopOf(0).disabled).toBe(true)
+    expect(stopOf(1).disabled).toBe(false)
+    release()
+    await settle()
+    expect(stopOf(0).disabled).toBe(false)
+  })
+
+  it('opens a container from its project’s page by its row, the name being no link there', async () => {
+    on('GET', '/api/v1/docker/projects', [project('tesla')])
+    on('GET', '/api/v1/docker/projects/tesla', project('tesla'))
+    on('GET', '/api/v1/docker/containers/tesla-web', null)
+    // As in a desktop window, the page asked for arrives with the next render.
+    section.value = 'projects'
+    const shown = ref('projects')
+    const { wrapper } = await mountApp(DockerApp, {
+      global: {
+        provide: {
+          [WINDOW_SECTION as symbol]: {
+            section: shown,
+            navigate: (next: string) => {
+              section.value = next
+              void nextTick(() => (shown.value = section.value))
+            },
+          },
+        },
+      },
+    })
+    await settle()
+    ;(document.querySelector('li') as HTMLElement).click()
+    await settle()
+    expect(
+      [...document.querySelectorAll('button')].some((b) => b.textContent?.trim() === 'tesla-web'),
+    ).toBe(false)
+    document.querySelector<HTMLElement>('[role=button][aria-label*="tesla-web"]')!.click()
+    await settle()
+    expect(shown.value).toBe('containers')
+    expect(wrapper.findComponent({ name: 'ContainerDetail' }).exists()).toBe(true)
   })
 
   it('acts on a project from its own page', async () => {
