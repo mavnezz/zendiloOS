@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE docker_backups SET state = 'failed', finished_at = ?,\n                 error = 'zendiloosd stopped while it ran' WHERE state = 'running'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "b968dee97157550f907796ff9403987f5ba52e854c2fc4bde5a11906ef743251"
+}

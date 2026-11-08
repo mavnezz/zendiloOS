@@ -68,6 +68,12 @@ ExecStart=/usr/libexec/zendiloos/zendiloos-agent
 #   with `nft -c` in a transient unit and loaded by
 #   zendiloos-firewall.service, both in the host's network namespace,
 #   outside this sandbox (which has a network of its own);
+# - Docker's volumes: listed, made and removed with `docker`; their data
+#   counted in Docker's data root (CAP_DAC_READ_SEARCH); backed up into a
+#   share and restored by transient units (systemd-run, this binary as
+#   backup-volume, restore-volume or remove-volume-backup), outside this
+#   sandbox, each in a sandbox of its own that may write only the share or
+#   the volume's folder;
 # The contents of volumes are the files agent's (zendiloos-files.service).
 NoNewPrivileges=yes
 CapabilityBoundingSet=CAP_SYS_RAWIO CAP_SYS_ADMIN CAP_CHOWN CAP_DAC_READ_SEARCH

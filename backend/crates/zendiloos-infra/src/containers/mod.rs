@@ -7,9 +7,11 @@ pub use registry::HttpsRegistries;
 
 use async_trait::async_trait;
 use tokio::io::AsyncWriteExt;
-use zendiloos_containers::application::ports::{ProjectPlace, ProjectStorage, StorageError};
+use zendiloos_containers::application::ports::{
+    BackupShares, ProjectPlace, ProjectStorage, SharePlace, StorageError,
+};
 use zendiloos_kernel::{Actor, PortError, RequestContext};
-use zendiloos_sharing::application::{FilesError, FilesUseCases};
+use zendiloos_sharing::application::{FilesError, FilesUseCases, SharingUseCases};
 use zendiloos_sharing::domain::{Access, FilePath, ShareId};
 
 /// Projects' folders and files in shares, through the file manager's use
@@ -143,6 +145,30 @@ impl ProjectStorage for SharesForProjects {
     }
 }
 
+/// Where the shares backups of volumes go to are, through the Sharing
+/// context: backups run on a schedule, with nobody signed in.
+#[derive(Clone)]
+pub struct SharesForBackups {
+    sharing: SharingUseCases,
+}
+
+impl SharesForBackups {
+    pub fn new(sharing: SharingUseCases) -> Self {
+        Self { sharing }
+    }
+}
+
+#[async_trait]
+impl BackupShares for SharesForBackups {
+    async fn locate(&self, share_id: i64) -> Result<Option<SharePlace>, PortError> {
+        let shares = self.sharing.list().await.map_err(|e| PortError::new("shares", e.to_string()))?;
+        Ok(shares
+            .into_iter()
+            .find(|share| share.id.get() == share_id)
+            .map(|share| SharePlace { volume: share.volume, share: share.name.to_string() }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -189,6 +215,19 @@ mod tests {
 
     /// The shares `docker` (alice writes) and `media` (alice reads).
     async fn shares() -> (SharesForProjects, Arc<Files>, i64, i64) {
+        let (projects, _, files, docker, media) = both().await;
+        (projects, files, docker, media)
+    }
+
+    #[tokio::test]
+    async fn backups_find_their_shares_by_id() {
+        let (_, backups, _, docker, _) = both().await;
+        let place = backups.locate(docker).await.unwrap().unwrap();
+        assert_eq!((place.volume, place.share.as_str()), (1, "docker"));
+        assert_eq!(backups.locate(99).await.unwrap(), None);
+    }
+
+    async fn both() -> (SharesForProjects, SharesForBackups, Arc<Files>, i64, i64) {
         let store = Arc::new(Shares::default());
         let mut ids = Vec::new();
         for (name, permission) in [("docker", Permission::ReadWrite), ("media", Permission::Read)] {
@@ -220,7 +259,8 @@ mod tests {
             clock: Arc::new(FixedClock),
             notifier: Notifier::new(Arc::new(MemoryNotifications::default()), Arc::new(FixedClock)),
         };
-        (SharesForProjects::new(FilesUseCases::new(ports)), files, ids[0], ids[1])
+        let backups = SharesForBackups::new(SharingUseCases::new(ports.clone()));
+        (SharesForProjects::new(FilesUseCases::new(ports)), backups, files, ids[0], ids[1])
     }
 
     #[tokio::test]

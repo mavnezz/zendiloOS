@@ -7,3 +7,4 @@ mod enclosure;
 mod errors;
 mod firewall;
 mod two_factor;
+mod volumes;

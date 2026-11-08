@@ -1,10 +1,17 @@
+mod backups;
 mod compose;
 mod details;
 mod engine;
 mod history;
 mod project;
 mod updates;
+mod volumes;
 
+pub use backups::{
+    Backup, BackupFile, BackupFrequency, BackupOutcome, BackupPlan, BackupSchedule, BackupTarget,
+    DEFAULT_KEEP, FAILURES_KEPT, InvalidBackupPlan, MAX_KEEP, WrittenBackup, backup_stem, beyond,
+    is_share_folder, stale_failures,
+};
 pub use compose::{ComposeModel, ComposeService, Risk, ServiceMount, file_reads, risks};
 pub use details::{
     AttachedNetwork, ContainerDetails, ContainerProcess, DeviceMapping, Healthcheck, PROJECT_PINS,
@@ -23,3 +30,4 @@ pub use updates::{
     ImageCheck, InvalidUpdateSettings, RegistryImage, UpdateReport, UpdateSchedule, UpdateSettings,
     UpdateState, is_newer,
 };
+pub use volumes::{PROJECT_LABEL, Volume, VolumeSize, VolumeUser, is_volume_name, users};

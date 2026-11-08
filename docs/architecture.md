@@ -149,7 +149,7 @@ tests in `zendiloos-architecture` catch, as part of `cargo test`.
 | `zendiloos-storage` | disks, SMART and its self-tests, ZFS pools and volumes, removable drives, plans for erasing disks, monitoring; where each disk sits (the enclosure, a disk made to blink) and every disk seen; mdadm arrays read-only | kernel, jobs, notify |
 | `zendiloos-sharing` | SMB and NFS shares, share permissions, and the file manager (share contents as the signed-in user) | kernel, jobs, notify |
 | `zendiloos-apps` | app catalogs and their sources, their apps filled in as templates of administrators' projects, apps installed the earlier way (4.9) | kernel, jobs |
-| `zendiloos-containers` | the Docker engine as administrators see it: containers, images, networks, Compose projects (administrators' own with their file in a share), use over time, newer images on a schedule, moving Docker's data (4.9) | kernel, jobs |
+| `zendiloos-containers` | the Docker engine as administrators see it: containers, images, networks, volumes, Compose projects (administrators' own with their file in a share), use over time, newer images on a schedule, volumes backed up on a schedule and restored, moving Docker's data (4.9) | kernel, jobs, notify |
 | `zendiloos-updates` | updates of the NAS: Debian's packages and zendiloOS's releases from GitHub by channel, checked daily, installed on request (4.10) | kernel, notify |
 | `zendiloos-network` | interfaces, addresses, default routes, name servers; an interface's IP settings and name servers through systemd-networkd, changed with confirmation (6); later the hostname | kernel |
 | `zendiloos-certificates` | the ACME client plugin (acme.sh): accounts, challenges and certificates from Let's Encrypt, renewed daily; the web interface's ports and certificate, changed with confirmation (4.11) | kernel, jobs, notify |
@@ -1473,6 +1473,104 @@ its image fetched; an app installed the earlier way refused). The
 interface asks first, saying how it goes for that container and that it
 stops meanwhile and loses what is not in a mounted folder or volume,
 unless the browser was told not to ask again.
+
+**Volumes** are listed as `docker volume inspect` tells them
+(`DockerVolumes`): name, driver, the Compose project that made them (its
+label), when they were made, and the containers that mount them, running
+or stopped, from the containers' mounts (each opens the container's page).
+What their data takes up is asked apart (`DockerVolumeSizes`), so the list
+does not wait for it: the agent counts each local volume whose data lies
+in Docker's data root (`<DockerRootDir>/volumes/<name>/_data`, as `docker
+info` and the volume's mount point agree) by descriptor, never following a
+link or entering another file system, a file with several names once, at
+most a million entries a volume and twenty seconds in all; a count cut
+short says "at least". `docker system df -v` would walk every volume
+without bounds, and cannot print JSON. A volume no container uses is
+removed (`docker volume rm`, without `--force`; its backup plan goes with
+it, its backups stay), and all unused ones at once (`docker volume prune
+--all --force`, named ones too), each after a confirmation.
+
+**Backups of volumes:** one plan per volume (`docker_backup_plans`): a
+folder of a share the administrator may write, chosen with the App
+Center's folder picker; daily, weekly on a weekday or monthly on a day (the
+month's last where it has fewer) from a local hour of the host, as the
+SMART self-tests are planned; how many backups are kept (seven unless
+told otherwise); and whether the containers that use the volume are
+stopped meanwhile (yes unless told otherwise: a database's files are then
+consistent). A run is due once the latest time of its schedule lies after
+the plan was made, changed or last ran: a NAS that was off at that hour
+backs up once as soon as it is on again (zendiloosd looks every minute).
+Only local volumes without mount options (an NFS or bind volume's data is
+not in Docker's folder) are backed up. A run is a job, by hand ("Back up
+now") or on the schedule, one at a time per volume: the running
+containers that use the volume are noted with the run (`docker_backups`)
+and stopped, the agent writes the archive, the containers are started
+again whatever came of it (also after a restart of zendiloosd, from what
+was noted), the run is recorded with what it wrote, and a run that failed
+or could not start a container again is told (`docker_backup_failed`, in
+the routing group *Docker*). The audit log has `containers.backup_plan`,
+`containers.backup_plan_delete`, `containers.volume_backup`,
+`containers.volume_backup_remove` and `containers.volume_restore`.
+
+The agent checks a backup itself (`BackUpVolume`): a local volume whose
+data lies in Docker's data root, as it inspects it, and a share that is
+mounted. The work runs in a transient unit (`systemd-run`, this binary as
+`backup-volume`, the job as hex digits on its command line), outside the
+agent's sandbox, which can write neither shares nor Docker's data, in a
+sandbox of its own: no network, no devices, the whole system read only but
+the share, `CAP_DAC_READ_SEARCH` and `CAP_DAC_OVERRIDE` only. It reads the
+volume's data as root, by descriptor, never following a link or leaving
+its file system, and writes one archive per run,
+`<folder>/<volume>/<volume>-YYYYMMDD-HHMMSS.tar.zst` (the host's local
+time): tar with GNU headers (long names, numeric owners and groups, modes
+with set-ID bits, times, symbolic links as links, hard links as links,
+extended attributes `user.*`, `security.capability` and the POSIX ACLs as
+`SCHILY.xattr` records), compressed with zstd, readable by Debian's tar
+and zstd too; sockets, pipes and devices are left out. Beside it goes
+`<volume>-YYYYMMDD-HHMMSS.json`, its manifest: the volume's name, driver,
+labels, size and when it was made, the version of zendiloOS and the
+archive's SHA-256. The folders on the way are walked to beneath the share
+(`RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_XDEV`) and made as far
+as they are missing; both files are written under hidden names
+(`O_CREAT | O_EXCL | O_NOFOLLOW`) and renamed when complete
+(`RENAME_NOREPLACE`), and made with mode 0666 (folders 0777), so the
+share's inherited default ACL decides who may read and remove them, as
+for any new file; nothing is left that only root can use. zendiloosd
+records each file with its size and identity (device and inode), the
+archive's SHA-256 and the manifest. Retention removes the archives of the
+runs beyond the plan's number, newest kept, and only those recorded: the
+agent removes a file only while the name still is that file
+(`RemoveVolumeBackup`), never by a pattern; a file gone or replaced is left
+alone and forgotten. Failed runs are remembered ten at a time.
+
+**Restoring a backup** (`RestoreVolume`), from the volume or the list of
+its backups, goes into the volume of its own name (made again if it is
+gone: local, with the driver and labels of its manifest as the database
+keeps it, never as the copy in the share says, which others may change)
+or into another volume that exists, after a confirmation that names it;
+running containers that use it are stopped meanwhile and started again
+after only when asked to, otherwise it is refused (`volume_in_use`). The
+archive lies in a share that users may write, and restoring runs as root;
+so only an archive zendiloosd recorded is restored, by its recorded
+SHA-256. The agent refuses while a running container uses the volume, and
+runs the work in a transient unit (`restore-volume`; the system read only
+but the volume's folder in Docker's data root; `CAP_CHOWN`,
+`CAP_DAC_OVERRIDE`, `CAP_DAC_READ_SEARCH`, `CAP_FOWNER`, `CAP_FSETID`,
+`CAP_SETFCAP`). It opens the archive beneath the share without following
+a link (it must be a regular file), checks its SHA-256 before anything is
+extracted, then extracts it into a fresh folder beside the data
+(`_data.zendiloos-restore-<random>`, 0700) while the same bytes are hashed
+again: every entry's path is names beneath that folder (an absolute path,
+`..` or an odd name refuses the archive), every folder on the way is
+opened with `openat2(RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS |
+RESOLVE_NO_MAGICLINKS | RESOLVE_NO_XDEV)`, files are made with `O_EXCL |
+O_NOFOLLOW`, hard links name entries beneath without following a link,
+devices and other kinds refuse the archive; owners, modes, times and the
+extended attributes above are set on each through its descriptor, folders
+once their contents are in. Only if the second hash matches too and the
+file was read to its end does the fresh folder take the data's place, in
+one rename (`RENAME_EXCHANGE`), and the old contents are removed; any
+failure removes the fresh folder and leaves the old contents as they were.
 
 **Moving Docker's data** to another pool zendiloOS made: Docker stops, the
 dataset is copied with `zfs send -R | zfs receive -u` (up to six hours,

@@ -220,6 +220,10 @@ vm-two-factor-test:
 vm-docker-test:
     scripts/vm-docker-test.sh
 
+# Docker's volumes in the second VM: listed, backed up into a share, restored, kept by number
+vm-docker-volumes-test:
+    scripts/vm-docker-volumes-test.sh
+
 # The App Center in the second VM: an app of the catalog as a project of one's own
 vm-app-center-test:
     scripts/vm-app-center-test.sh

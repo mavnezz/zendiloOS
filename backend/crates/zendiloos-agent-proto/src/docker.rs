@@ -3,6 +3,7 @@
 //! any Compose file (docs/architecture.md, 4.9); what reaches a command line
 //! is still checked here, as everything else.
 
+use std::collections::BTreeMap;
 use std::net::IpAddr;
 
 use serde::{Deserialize, Serialize};
@@ -102,6 +103,103 @@ checked_text!(
             && bytes.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
     }
 );
+
+checked_text!(
+    /// A volume's name as Docker allows it (a letter or digit, then
+    /// letters, digits, `_`, `.` and `-`), at most 200 characters, so that
+    /// `<name>-YYYYMMDD-HHMMSS.tar.zst` stays a file name. Docker's
+    /// anonymous volumes have 64 hex digits.
+    VolumeName,
+    "volume name",
+    |text| docker_name(text, 200)
+);
+
+checked_text!(
+    /// The name a backup's files get, without `.tar.zst` and `.json`:
+    /// letters, digits, `_`, `.` and `-`, not starting with `.` or `-`, at
+    /// most 230 characters (`teslamate_db-20261108-030000`).
+    BackupStem,
+    "backup name",
+    |text| docker_name(text, 230)
+);
+
+checked_text!(
+    /// An archive's SHA-256: 64 lowercase hex digits.
+    ArchiveDigest,
+    "SHA-256",
+    |text| text.len() == 64 && text.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+);
+
+/// The labels a volume is made with: at most 64, each key 1 to 255 bytes
+/// without `=`, each value at most 4096 bytes, no control characters in
+/// either. They reach `docker volume create` as `--label=<key>=<value>`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "BTreeMap<String, String>", into = "BTreeMap<String, String>")]
+pub struct VolumeLabels(BTreeMap<String, String>);
+
+impl VolumeLabels {
+    pub const MAX_LABELS: usize = 64;
+
+    pub fn parse(labels: BTreeMap<String, String>) -> Result<Self, InvalidDockerName> {
+        let printable = |text: &str| !text.chars().any(char::is_control);
+        let valid = labels.len() <= Self::MAX_LABELS
+            && labels.iter().all(|(key, value)| {
+                (1..=255).contains(&key.len())
+                    && !key.contains('=')
+                    && printable(key)
+                    && value.len() <= 4096
+                    && printable(value)
+            });
+        if valid { Ok(Self(labels)) } else { Err(InvalidDockerName("set of volume labels")) }
+    }
+
+    pub fn as_map(&self) -> &BTreeMap<String, String> {
+        &self.0
+    }
+}
+
+impl TryFrom<BTreeMap<String, String>> for VolumeLabels {
+    type Error = InvalidDockerName;
+
+    fn try_from(value: BTreeMap<String, String>) -> Result<Self, Self::Error> {
+        Self::parse(value)
+    }
+}
+
+impl From<VolumeLabels> for BTreeMap<String, String> {
+    fn from(value: VolumeLabels) -> Self {
+        value.0
+    }
+}
+
+/// A share by the volume it is on and its name: `/volume<N>/<share>`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShareLocation {
+    pub volume: crate::VolumeNumber,
+    pub share: crate::ShareName,
+}
+
+/// A file a backup wrote into a share: where, how large, and which file it
+/// is (device and inode), so that only that file is ever removed again.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WrittenFile {
+    pub path: crate::SharePath,
+    pub bytes: u64,
+    pub device: u64,
+    pub inode: u64,
+}
+
+/// What one volume's data takes up, as counted in Docker's data root;
+/// `complete` is false where counting stopped at its limits.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VolumeSize {
+    pub name: String,
+    pub bytes: u64,
+    pub complete: bool,
+}
 
 /// Whether `text` is an absolute path below a volume, `/volume<N>/…`, with
 /// no `.` or `..` and nothing that is not printable.
@@ -348,6 +446,34 @@ mod tests {
         assert!(ImageReference::parse("postgres latest").is_err());
         assert!(NetworkName::parse("proxy_net").is_ok() && NetworkName::parse("-net").is_err());
         assert!(ProjectName::parse("teslamate").is_ok() && ProjectName::parse("Tesla").is_err());
+    }
+
+    #[test]
+    fn volumes_their_labels_and_backups_are_checked() {
+        for good in ["teslamate_db", "a1", &"f".repeat(64), "media.cache-2"] {
+            assert!(VolumeName::parse(good).is_ok(), "{good}");
+        }
+        for bad in ["", "-v", ".hidden", "a/b", "../x", "a b", &"x".repeat(201)] {
+            assert!(VolumeName::parse(bad).is_err(), "{bad}");
+        }
+        assert!(BackupStem::parse("teslamate_db-20261108-030000").is_ok());
+        assert!(BackupStem::parse("x/../y").is_err() && BackupStem::parse(".x").is_err());
+        assert!(ArchiveDigest::parse(&"ab".repeat(32)).is_ok());
+        assert!(ArchiveDigest::parse(&"AB".repeat(32)).is_err() && ArchiveDigest::parse("abc").is_err());
+
+        let labels = |pairs: &[(&str, &str)]| {
+            VolumeLabels::parse(pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect())
+        };
+        let good = labels(&[("com.docker.compose.project", "tesla"), ("note", "a = b")]).unwrap();
+        assert_eq!(good.as_map().len(), 2);
+        for bad in [&[("", "x")][..], &[("a=b", "x")], &[("a", "x\ny")], &[("a\u{7}", "x")]] {
+            assert!(labels(bad).is_err(), "{bad:?}");
+        }
+        let many: BTreeMap<String, String> = (0..65).map(|n| (format!("k{n}"), String::new())).collect();
+        assert!(VolumeLabels::parse(many).is_err());
+        let json = serde_json::to_string(&good).unwrap();
+        assert_eq!(serde_json::from_str::<VolumeLabels>(&json).unwrap(), good);
+        assert!(serde_json::from_str::<VolumeLabels>(r#"{"a=b":"c"}"#).is_err());
     }
 
     #[test]

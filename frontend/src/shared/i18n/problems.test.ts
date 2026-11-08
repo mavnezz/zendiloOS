@@ -27,6 +27,8 @@ const CODES = [
   'no_two_factor_setup',
   'would_lock_out',
   'firewall_failed',
+  'volume_in_use',
+  'volume_busy',
 ]
 
 describe('problem messages', () => {

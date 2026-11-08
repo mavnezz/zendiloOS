@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM docker_backup_plans WHERE volume = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "ea6dee1fac4a62bf6bff7227c73db729908d71eae89b5969aae4723fef6404ee"
+}

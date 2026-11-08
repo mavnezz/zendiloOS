@@ -749,6 +749,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/docker/backups/{id}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Replaces a volume's contents with a backup, in a job: the archive is
+         *     checked against its record first. Needs `containers.manage`.
+         */
+        post: operations["restore_backup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/docker/compose/check": {
         parameters: {
             query?: never;
@@ -1286,6 +1306,135 @@ export interface paths {
         get: operations["docker_usage"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/docker/volumes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Every volume, by name, with who uses it and how it is backed up. Needs
+         *     `containers.manage`.
+         */
+        get: operations["list_volumes"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/docker/volumes/prune": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Removes every volume no container uses, named ones too, with their
+         *     data; says what was freed. Needs `containers.manage`.
+         */
+        post: operations["prune_volumes"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/docker/volumes/sizes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What each local volume's data takes up, counted on the NAS; takes a
+         *     while, so it is asked apart from the list. Needs `containers.manage`.
+         */
+        get: operations["volume_sizes"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/docker/volumes/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Removes a volume no container uses, with its data and its backup plan;
+         *     its backups stay. Needs `containers.manage`.
+         */
+        delete: operations["remove_volume"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/docker/volumes/{name}/backup-plan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The volume's backup plan. Needs `containers.manage`. */
+        get: operations["backup_plan"];
+        /**
+         * Makes or replaces the volume's backup plan: into a folder of a share
+         *     the administrator may write. Needs `containers.manage`.
+         */
+        put: operations["set_backup_plan"];
+        post?: never;
+        /**
+         * Ends the volume's backup plan; its backups stay. Needs
+         *     `containers.manage`.
+         */
+        delete: operations["delete_backup_plan"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/docker/volumes/{name}/backups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The volume's backups, the newest first: those kept, and the runs that
+         *     failed lately. Needs `containers.manage`.
+         */
+        get: operations["list_backups"];
+        put?: never;
+        /**
+         * Backs the volume up now as its plan says, in a job. Needs
+         *     `containers.manage`.
+         */
+        post: operations["back_up_now"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3683,6 +3832,82 @@ export interface components {
             tag: string;
             version: string;
         };
+        /** @description A volume's backup plan as set. */
+        BackupPlanRequest: {
+            /**
+             * Format: int32
+             * @description For monthly plans: 1 to 31.
+             */
+            day?: number | null;
+            /** @description The folder in it, `""` for its root. */
+            folder?: string;
+            frequency: components["schemas"]["PlanFrequency"];
+            /**
+             * Format: int32
+             * @description The host's local hour, 0 to 23.
+             */
+            hour: number;
+            /**
+             * Format: int32
+             * @description 1 to 365; 7 if absent.
+             */
+            keep?: number | null;
+            /**
+             * Format: int64
+             * @description A share the administrator may write.
+             */
+            share_id: number;
+            /** @description Stop the containers that use it meanwhile; yes if absent. */
+            stop_containers?: boolean | null;
+            /**
+             * Format: int32
+             * @description For weekly plans: 0 is Monday.
+             */
+            weekday?: number | null;
+        };
+        /** @description How a volume is backed up. */
+        BackupPlanView: {
+            /**
+             * Format: int32
+             * @description For monthly plans: 1 to 31, the month's last day where it has fewer.
+             */
+            day?: number | null;
+            /**
+             * @description The folder in it, `""` for its root; the archives land in
+             *     `<folder>/<volume>/`.
+             */
+            folder: string;
+            frequency: components["schemas"]["PlanFrequency"];
+            /**
+             * Format: int32
+             * @description The host's local hour, 0 to 23.
+             */
+            hour: number;
+            /**
+             * Format: int32
+             * @description Archives kept, the newest.
+             */
+            keep: number;
+            /**
+             * Format: int64
+             * @description When it runs next, Unix seconds.
+             */
+            next_at: number;
+            /**
+             * Format: int64
+             * @description The share the archives go to.
+             */
+            share_id: number;
+            /** @description The containers that use the volume are stopped while it is backed up. */
+            stop_containers: boolean;
+            /**
+             * Format: int32
+             * @description For weekly plans: 0 is Monday.
+             */
+            weekday?: number | null;
+        };
+        /** @enum {string} */
+        BackupState: "running" | "succeeded" | "failed";
         /** @enum {string} */
         BindingKind: "port" | "serial";
         /** @description An address or network the web interface refuses. */
@@ -4340,6 +4565,36 @@ export interface components {
             volume?: components["schemas"]["AppVolume"] | null;
             /** @description Pools it could go to. */
             volumes: components["schemas"]["AppVolume"][];
+        };
+        DockerVolume: {
+            /**
+             * @description A local volume whose data lies in Docker's folder: zendiloOS backs
+             *     it up and restores it.
+             */
+            backed_up_here: boolean;
+            /** Format: int64 */
+            created_at?: number | null;
+            driver: string;
+            labels: {
+                [key: string]: string;
+            };
+            last_backup?: components["schemas"]["VolumeBackup"] | null;
+            name: string;
+            plan?: components["schemas"]["BackupPlanView"] | null;
+            /** @description The Compose project that made it. */
+            project?: string | null;
+            /** @description The containers that mount it, running or not. */
+            used_by: components["schemas"]["VolumeUserView"][];
+        };
+        DockerVolumeSize: {
+            /** Format: int64 */
+            bytes: number;
+            /**
+             * @description `false`: counting stopped at its limits; the data takes up at least
+             *     `bytes`.
+             */
+            complete: boolean;
+            name: string;
         };
         EjectRemovable: {
             /**
@@ -5002,7 +5257,7 @@ export interface components {
             older?: string | null;
         };
         /** @enum {string} */
-        KindGroup: "storage" | "folders" | "system" | "certificates" | "security";
+        KindGroup: "storage" | "folders" | "system" | "certificates" | "security" | "docker";
         /** @enum {string} */
         KindLevel: "info" | "success" | "warning" | "error";
         /** @description What the server sends. */
@@ -5462,6 +5717,8 @@ export interface components {
             row: number;
             state: components["schemas"]["SlotState"];
         };
+        /** @enum {string} */
+        PlanFrequency: "daily" | "weekly" | "monthly";
         PlanWarning: {
             code: components["schemas"]["PlanWarningCode"];
             /**
@@ -5787,6 +6044,18 @@ export interface components {
         RestoreFromSnapshotRequest: {
             /** @description Entries of the snapshot, relative to the share's root. */
             paths: string[];
+        };
+        /** @enum {string} */
+        RestoreInto: "own_name" | "existing";
+        RestoreRequest: {
+            /**
+             * @description Stop the running containers that use the volume meanwhile, and start
+             *     them again after; without, such a volume is not restored.
+             */
+            stop_containers?: boolean;
+            target: components["schemas"]["RestoreInto"];
+            /** @description The volume, for `existing`. */
+            volume?: string | null;
         };
         RestoredEntries: {
             /** @description Where each went, in the order asked. */
@@ -6655,6 +6924,35 @@ export interface components {
             /** Format: int64 */
             used_bytes?: number | null;
         };
+        /** @description One run of a volume's backup. */
+        VolumeBackup: {
+            /** @description The archive in the share, from its root. */
+            archive?: string | null;
+            /** Format: int64 */
+            archive_bytes?: number | null;
+            /**
+             * Format: int64
+             * @description What the volume's files held.
+             */
+            data_bytes?: number | null;
+            /** @description Why it failed. */
+            error?: string | null;
+            /** Format: int64 */
+            finished_at?: number | null;
+            /** Format: int64 */
+            id: number;
+            /** @description The manifest beside it. */
+            manifest?: string | null;
+            sha256?: string | null;
+            /** Format: int64 */
+            share_id: number;
+            /** Format: int64 */
+            started_at: number;
+            /** @description Who started it; `null` for the schedule. */
+            started_by?: string | null;
+            state: components["schemas"]["BackupState"];
+            volume: string;
+        };
         /**
          * @description A folder directly on a volume: a share, whether shared on the network
          *     or not.
@@ -6672,6 +6970,10 @@ export interface components {
             recycle_bin: boolean;
             /** @description Offered on the network (SMB, NFS); otherwise used on the NAS only. */
             shared: boolean;
+        };
+        VolumeUserView: {
+            name: string;
+            running: boolean;
         };
         /** @description Where nginx serves the web interface, and with which certificate. */
         WebServer: {
@@ -8491,6 +8793,67 @@ export interface operations {
             };
         };
     };
+    restore_backup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RestoreRequest"];
+            };
+        };
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description `forbidden`, `csrf_rejected` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found`: no such backup or volume */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `volume_in_use`: running containers use it (named); `volume_busy`; `refused`: a backup that failed, or a volume not backed up here */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     check_compose: {
         parameters: {
             query?: never;
@@ -9895,6 +10258,362 @@ export interface operations {
             };
             /** @description `forbidden` */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    list_volumes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DockerVolume"][];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `host_failed`: Docker does not answer */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    prune_volumes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LogText"];
+                };
+            };
+            /** @description `forbidden`, `csrf_rejected` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    volume_sizes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DockerVolumeSize"][];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    remove_volume: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `forbidden`, `csrf_rejected` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `refused`: a container uses it; `volume_busy`: being backed up or restored */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    backup_plan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupPlanView"];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found`: it has none */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    set_backup_plan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BackupPlanRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupPlanView"];
+                };
+            };
+            /** @description `forbidden`, `csrf_rejected`; `share_denied`: a share the administrator may not write */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found`: no such volume */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `refused`: not a local volume with its data in Docker's folder */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_backup_plan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Ended. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `forbidden`, `csrf_rejected` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found`: it has none */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    list_backups: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VolumeBackup"][];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    back_up_now: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description `forbidden`, `csrf_rejected` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found`: it has no plan */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `volume_busy`: a backup or restore of it is under way */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

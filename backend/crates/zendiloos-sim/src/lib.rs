@@ -18,6 +18,7 @@
 
 mod docker;
 mod host;
+mod volumes;
 
 use std::collections::HashSet;
 use std::os::fd::OwnedFd;
@@ -564,7 +565,12 @@ impl AgentTransport for SimulatedAgent {
         let now = (self.clock)();
         let docker = {
             let mut apps = self.apps();
-            self.engine.lock().unwrap_or_else(PoisonError::into_inner).handle(&request, &mut apps, now)
+            self.engine.lock().unwrap_or_else(PoisonError::into_inner).handle(
+                &request,
+                &mut apps,
+                now,
+                self.files.as_deref(),
+            )
         };
         if let Some(response) = docker {
             tracing::debug!(request_id, request = request.name(), "simulated Docker");
@@ -719,7 +725,17 @@ impl AgentTransport for SimulatedAgent {
             | Request::ControlProject { .. }
             | Request::DeployProject { .. }
             | Request::ProjectLogs { .. }
-            | Request::ProjectFiles { .. } => error(ErrorCode::Failed, "simulated Docker did not answer"),
+            | Request::ProjectFiles { .. }
+            | Request::DockerVolumes {}
+            | Request::DockerVolumeSizes {}
+            | Request::RemoveVolume { .. }
+            | Request::PruneVolumes {}
+            | Request::CreateVolume { .. }
+            | Request::BackUpVolume { .. }
+            | Request::RestoreVolume { .. }
+            | Request::RemoveVolumeBackup { .. } => {
+                error(ErrorCode::Failed, "simulated Docker did not answer")
+            }
             // Its terminal comes with [`AgentTransport::call_with_file`].
             Request::OpenTerminal { .. } => {
                 error(ErrorCode::InvalidRequest, "a terminal is opened with its descriptor")

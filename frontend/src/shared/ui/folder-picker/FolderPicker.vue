@@ -9,7 +9,7 @@ import { Button } from '@/shared/ui/button'
 import { ModalDialog } from '@/shared/ui/dialog'
 import { Input } from '@/shared/ui/input'
 
-import { listFolders, makeFolder, useShareList } from '../api'
+import { listFolders, makeFolder, useShareList } from './folders'
 
 /** `value`: the folder picked before, `share/folder/…`; `writable`: only shares the app may write to. */
 const props = defineProps<{ value: string; writable?: boolean }>()
@@ -135,10 +135,10 @@ async function startFolder(): Promise<void> {
   if (!expanded.has(parent)) await toggle(parent)
   if (known.get(parent)?.error) return
   if (!known.get(parent)?.writable) {
-    failure.value = t('appStore.folderReadOnly')
+    failure.value = t('folderPicker.folderReadOnly')
     return
   }
-  creating.value = { parent, name: t('appStore.newFolder') }
+  creating.value = { parent, name: t('folderPicker.newFolder') }
   await nextTick()
   const element = document.getElementById('new-folder-name')
   if (element instanceof HTMLInputElement) {
@@ -185,7 +185,7 @@ const indent = (depth: number) => ({ paddingLeft: `${depth * 1.25 + 0.25}rem` })
 <template>
   <ModalDialog
     v-model:open="open"
-    :title="t('appStore.pickFolder')"
+    :title="t('folderPicker.pickFolder')"
     :close-label="t('desktop.close')"
   >
     <div class="flex gap-2">
@@ -196,16 +196,16 @@ const indent = (depth: number) => ({ paddingLeft: `${depth * 1.25 + 0.25}rem` })
         class="border-primary text-primary"
         :disabled="!canCreate"
         @click="startFolder"
-        >{{ t('appStore.newFolder') }}</Button
+        >{{ t('folderPicker.newFolder') }}</Button
       >
       <Button type="button" variant="outline" size="sm" :disabled="busy" @click="refresh">{{
-        t('appStore.refresh')
+        t('folderPicker.refresh')
       }}</Button>
     </div>
 
     <div
       role="tree"
-      :aria-label="t('appStore.sharedFolders')"
+      :aria-label="t('folderPicker.sharedFolders')"
       class="grid max-h-80 min-h-48 content-start overflow-y-auto text-sm"
     >
       <button
@@ -215,7 +215,7 @@ const indent = (depth: number) => ({ paddingLeft: `${depth * 1.25 + 0.25}rem` })
         @click="rootOpen = !rootOpen"
       >
         <ChevronRight class="size-4 transition-transform" :class="rootOpen && 'rotate-90'" />
-        {{ t('appStore.sharedFolders') }}
+        {{ t('folderPicker.sharedFolders') }}
       </button>
       <template v-for="row in rows" :key="row.path">
         <div
@@ -230,7 +230,7 @@ const indent = (depth: number) => ({ paddingLeft: `${depth * 1.25 + 0.25}rem` })
             type="button"
             class="grid size-5 shrink-0 place-items-center rounded text-muted-foreground"
             :class="!row.more && 'invisible'"
-            :aria-label="row.open ? t('appStore.collapse') : t('appStore.expand')"
+            :aria-label="row.open ? t('folderPicker.collapse') : t('folderPicker.expand')"
             :tabindex="row.more ? 0 : -1"
             @click="toggle(row.path)"
           >
@@ -257,7 +257,7 @@ const indent = (depth: number) => ({ paddingLeft: `${depth * 1.25 + 0.25}rem` })
           class="py-1 text-xs text-muted-foreground"
           :style="indent(row.depth + 1)"
         >
-          {{ t('appStore.noFolderAccess') }}
+          {{ t('folderPicker.noFolderAccess') }}
         </p>
         <form
           v-if="creating && creating.parent === row.path"
@@ -270,11 +270,11 @@ const indent = (depth: number) => ({ paddingLeft: `${depth * 1.25 + 0.25}rem` })
             id="new-folder-name"
             v-model="creating.name"
             class="h-7"
-            :aria-label="t('appStore.folderName')"
+            :aria-label="t('folderPicker.folderName')"
             :disabled="busy"
             @keydown.esc.stop.prevent="creating = null"
           />
-          <Button type="submit" size="sm" :disabled="busy">{{ t('appStore.create') }}</Button>
+          <Button type="submit" size="sm" :disabled="busy">{{ t('folderPicker.create') }}</Button>
         </form>
       </template>
     </div>
@@ -286,7 +286,7 @@ const indent = (depth: number) => ({ paddingLeft: `${depth * 1.25 + 0.25}rem` })
         t('desktop.cancel')
       }}</Button>
       <Button type="button" :disabled="!selected" @click="confirm">{{
-        t('appStore.confirm')
+        t('folderPicker.confirm')
       }}</Button>
     </template>
   </ModalDialog>

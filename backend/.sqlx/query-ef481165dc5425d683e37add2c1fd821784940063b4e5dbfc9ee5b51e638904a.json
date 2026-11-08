@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE docker_backups SET finished_at = ?, state = 'failed', error = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "ef481165dc5425d683e37add2c1fd821784940063b4e5dbfc9ee5b51e638904a"
+}

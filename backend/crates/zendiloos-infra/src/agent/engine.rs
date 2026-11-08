@@ -14,7 +14,7 @@ use zendiloos_containers::domain::{
     AttachedNetwork, ComposeListing, ComposeModel, ComposeService, Container, ContainerAction,
     ContainerDetails, ContainerProcess, ContainerState, ContainerUsage, DeviceMapping, DiskUsage,
     Healthcheck, Image, Mount, Network, Privileges, ProjectName, PublishedPort, ResourceLimits, ServiceMount,
-    UsageSample,
+    UsageSample, Volume, VolumeSize,
 };
 use zendiloos_kernel::{PortError, RequestContext, Timestamp};
 
@@ -489,6 +489,33 @@ fn networks(text: &str) -> Result<Vec<Network>, EngineError> {
         .collect())
 }
 
+/// `docker volume inspect` of every volume.
+fn volumes(text: &str) -> Result<Vec<Volume>, EngineError> {
+    let values: Vec<Value> = serde_json::from_str(text).map_err(|e| unreadable("volumes", e))?;
+    Ok(values
+        .iter()
+        .map(|value| Volume {
+            name: string(value, "Name"),
+            driver: string(value, "Driver"),
+            labels: value["Labels"]
+                .as_object()
+                .map(|labels| {
+                    labels
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_owned()))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            mounts_elsewhere: value["Options"].as_object().is_some_and(|options| !options.is_empty()),
+            created_at: timestamp(&string(value, "CreatedAt")),
+        })
+        .collect())
+}
+
+fn volume_name(name: &str) -> Result<proto::VolumeName, EngineError> {
+    proto::VolumeName::parse(name).map_err(invalid)
+}
+
 fn disk_usage(text: &str) -> Result<DiskUsage, EngineError> {
     let mut usage = DiskUsage::default();
     for line in json_lines(text, "disk usage")? {
@@ -791,6 +818,38 @@ impl DockerEngine for AgentDockerEngine {
         self.done(Request::RemoveNetwork { name }, context).await
     }
 
+    async fn volumes(&self, context: &RequestContext) -> Result<Vec<Volume>, EngineError> {
+        volumes(&self.printed(Request::DockerVolumes {}, context).await?)
+    }
+
+    async fn volume_sizes(&self, context: &RequestContext) -> Result<Vec<VolumeSize>, EngineError> {
+        match self.ask(Request::DockerVolumeSizes {}, context).await? {
+            Response::VolumeSizes { sizes } => Ok(sizes
+                .into_iter()
+                .map(|size| VolumeSize { name: size.name, bytes: size.bytes, complete: size.complete })
+                .collect()),
+            other => Err(unexpected(other).into()),
+        }
+    }
+
+    async fn remove_volume(&self, name: &str, context: &RequestContext) -> Result<(), EngineError> {
+        self.done(Request::RemoveVolume { name: volume_name(name)? }, context).await
+    }
+
+    async fn prune_volumes(&self, context: &RequestContext) -> Result<String, EngineError> {
+        Ok(plain(&self.printed(Request::PruneVolumes {}, context).await?))
+    }
+
+    async fn create_volume(
+        &self,
+        name: &str,
+        labels: &BTreeMap<String, String>,
+        context: &RequestContext,
+    ) -> Result<(), EngineError> {
+        let labels = proto::VolumeLabels::parse(labels.clone()).map_err(invalid)?;
+        self.done(Request::CreateVolume { name: volume_name(name)?, labels }, context).await
+    }
+
     async fn check_compose(
         &self,
         project: &ProjectName,
@@ -970,6 +1029,54 @@ mod tests {
                 .iter()
                 .any(|r| matches!(r, Request::ControlProject { action: proto::ProjectAction::Down, .. }))
         );
+    }
+
+    #[tokio::test]
+    async fn volumes_are_read_made_and_removed_through_the_agent() {
+        let (engine, agent) = simulated();
+        let context = RequestContext::default();
+        let volumes = engine.volumes(&context).await.unwrap();
+        let cache = volumes.iter().find(|v| v.name == "stack_cache").unwrap();
+        assert_eq!((cache.driver.as_str(), cache.project()), ("local", Some("stack")));
+        assert!(cache.backed_up_here() && cache.created_at.is_some());
+        assert_eq!(engine.volume_sizes(&context).await.unwrap().len(), volumes.len());
+        let labels = BTreeMap::from([("com.docker.compose.project".to_owned(), "tesla".to_owned())]);
+        engine.create_volume("tesla_db", &labels, &context).await.unwrap();
+        let made = engine.volumes(&context).await.unwrap();
+        assert_eq!(made.iter().find(|v| v.name == "tesla_db").and_then(|v| v.project()), Some("tesla"));
+        engine.remove_volume("tesla_db", &context).await.unwrap();
+        let used = engine.remove_volume("stack_cache", &context).await;
+        assert!(matches!(used, Err(EngineError::Failed(_))), "{used:?}");
+        assert!(engine.prune_volumes(&context).await.unwrap().contains("reclaimed"));
+        assert!(agent.received().iter().any(|r| matches!(r, Request::PruneVolumes {})));
+
+        let refused = |result: Result<(), EngineError>| {
+            assert!(matches!(result, Err(EngineError::Refused(_))), "{result:?}")
+        };
+        refused(engine.remove_volume("../x", &context).await);
+        refused(engine.create_volume("-x", &BTreeMap::new(), &context).await);
+        let odd = BTreeMap::from([("a=b".to_owned(), String::new())]);
+        refused(engine.create_volume("good", &odd, &context).await);
+        let odd = AgentDockerEngine::new(Arc::new(Scripted::answering([Response::Done])));
+        assert!(matches!(odd.volume_sizes(&context).await, Err(EngineError::Port(_))));
+        let odd = AgentDockerEngine::new(Arc::new(Scripted::answering([Response::DockerOutput {
+            text: "{".into(),
+        }])));
+        assert!(odd.volumes(&context).await.is_err());
+    }
+
+    #[test]
+    fn volumes_read_as_docker_inspects_them() {
+        let read = volumes(
+            r#"[{"Name": "nfs", "Driver": "local", "Options": {"type": "nfs", "device": ":/export"},
+                 "Labels": null, "CreatedAt": "2026-11-01T10:00:00+01:00"},
+                {"Name": "plugin", "Driver": "rclone", "Options": {}, "Labels": {"a": "b"}}]"#,
+        )
+        .unwrap();
+        assert!(read[0].mounts_elsewhere && !read[0].backed_up_here());
+        assert_eq!(read[0].created_at, Some(zendiloos_kernel::Timestamp::from_unix_seconds(1_793_523_600)));
+        assert!(!read[1].mounts_elsewhere && !read[1].backed_up_here());
+        assert_eq!((read[1].labels["a"].as_str(), read[1].created_at), ("b", None));
     }
 
     #[tokio::test]

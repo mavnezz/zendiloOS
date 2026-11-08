@@ -133,6 +133,8 @@ const KNOWN_PROBLEMS = [
   'web_server_failed',
   'would_lock_out',
   'firewall_failed',
+  'volume_in_use',
+  'volume_busy',
   'network',
 ] as const
 
@@ -173,6 +175,8 @@ export function problemMessage(error: unknown): string {
     'port_in_use',
     'web_server_failed',
     'firewall_failed',
+    // The running containers that use the volume.
+    'volume_in_use',
   ]
   if (isKnown(error.code)) {
     const message = t(`errors.${error.code}`)

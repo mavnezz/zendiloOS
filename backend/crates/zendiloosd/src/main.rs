@@ -25,12 +25,12 @@ use zendiloos_infra::SystemClock;
 use zendiloos_infra::agent::{
     AgentAcme, AgentApps, AgentDockerData, AgentDockerEngine, AgentFiles, AgentFirewall, AgentNetwork,
     AgentPowerControl, AgentSharing, AgentSsh, AgentStorage, AgentSystemAccounts, AgentTime, AgentUpdates,
-    AgentWebTls, RandomPlanTokens, agent_version,
+    AgentVolumeArchiver, AgentWebTls, RandomPlanTokens, agent_version,
 };
 use zendiloos_infra::apps::{
     ContainersForApps, FilesForApps, HttpsCatalogs, RandomSecrets, SharingForApps, YamlFiller,
 };
-use zendiloos_infra::containers::{HttpsRegistries, SharesForProjects};
+use zendiloos_infra::containers::{HttpsRegistries, SharesForBackups, SharesForProjects};
 use zendiloos_infra::enclosure::BuiltInCatalog;
 use zendiloos_infra::firewall::ServicesForFirewall;
 use zendiloos_infra::host::{HostSystemInfo, IpNetworkReader, JournalctlReader, MetricsHub, ProcListening};
@@ -45,7 +45,7 @@ use zendiloos_infra::sqlite::{
     SqliteCertificates, SqliteChannels, SqliteDiskInventory, SqliteEnclosure, SqliteFirewall, SqliteGroups,
     SqliteInstalledApps, SqliteJobs, SqliteNotifications, SqlitePreferences, SqliteProjects, SqliteSecurity,
     SqliteSelfTestPlans, SqliteSessions, SqliteShareProjects, SqliteShares, SqliteSystemUpdates,
-    SqliteTwoFactor, SqliteUpdateSettings,
+    SqliteTwoFactor, SqliteUpdateSettings, SqliteVolumeBackups,
 };
 use zendiloos_infra::updates::GitHubReleases;
 use zendiloos_jobs::Jobs;
@@ -292,10 +292,24 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         storage: Arc::new(SharesForProjects::new(files.clone())),
         registries: Arc::new(HttpsRegistries::default()),
         updates: Arc::new(SqliteUpdateSettings::new(database.clone())),
-        data: Arc::new(AgentDockerData::new(AgentStorage::new(agent.clone()), moving_agent)),
+        data: Arc::new(AgentDockerData::new(AgentStorage::new(agent.clone()), moving_agent.clone())),
+        // Backups and restores of volumes may take hours, as moving does.
+        archiver: Arc::new(AgentVolumeArchiver::new(moving_agent)),
+        backups: Arc::new(SqliteVolumeBackups::new(database.clone())),
+        backup_shares: Arc::new(SharesForBackups::new(sharing.clone())),
         jobs: jobs.clone(),
+        notifier: notifier.clone(),
         audit: audit.clone(),
         clock: Arc::new(SystemClock),
+    });
+    // Backups cut off when zendiloosd stopped: failed, and what they had
+    // stopped runs again.
+    let cut_off = containers.clone();
+    tokio::spawn(async move {
+        let interrupted = cut_off.recover_backups().await;
+        if interrupted > 0 {
+            tracing::warn!(interrupted, "backups of volumes were cut off when zendiloosd stopped");
+        }
     });
     let templates = Templates::new(TemplatePorts {
         catalogs: apps.clone(),
@@ -680,6 +694,11 @@ fn spawn_image_updates(containers: Containers) -> JoinHandle<()> {
         let mut minutes: u32 = 0;
         loop {
             every_minute.tick().await;
+            // Backups of volumes whose time came; a missed one (the machine
+            // was off) on the first look.
+            for job in containers.run_due_backups().await {
+                tracing::info!(job = job.id.get(), "containers: backing up a volume on schedule");
+            }
             match containers.run_schedule().await {
                 Ok(Some(job)) => {
                     tracing::info!(job = job.id.get(), "containers: updating images on schedule")

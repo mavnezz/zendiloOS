@@ -82,12 +82,18 @@ impl From<ContainersError> for ApiError {
             ),
             ContainersError::Denied => rejected(StatusCode::FORBIDDEN, "share_denied", None),
             ContainersError::Unconfirmed => rejected(StatusCode::CONFLICT, "project_unconfirmed", None),
+            ContainersError::VolumeInUse(names) => {
+                rejected(StatusCode::CONFLICT, "volume_in_use", Some(names.join(", ")))
+            }
+            ContainersError::VolumeBusy(volume) => {
+                rejected(StatusCode::CONFLICT, "volume_busy", Some(volume))
+            }
             ContainersError::Port(e) => ApiError::internal(e),
         }
     }
 }
 
-fn manage(auth: &Auth) -> Result<(), ApiError> {
+pub(super) fn manage(auth: &Auth) -> Result<(), ApiError> {
     auth.require(Permission::ContainersManage)
 }
 

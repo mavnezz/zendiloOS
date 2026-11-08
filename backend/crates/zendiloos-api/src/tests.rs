@@ -276,6 +276,8 @@ pub(crate) struct Harness {
     pub(crate) containers: zendiloos_containers::application::Containers,
     /// The jobs of the Docker app, kept apart from the others here.
     pub(crate) docker_jobs: Arc<zendiloos_jobs::testing::MemoryJobs>,
+    /// Volumes backed up and restored, pretended.
+    pub(crate) archiver: Arc<zendiloos_containers::testing::FakeArchiver>,
     /// acme.sh and nginx, pretended: not installed at first.
     pub(crate) acme: Arc<zendiloos_certificates::testing::FakeAcmeHost>,
     /// Ports something listens on, for the web interface's settings.
@@ -494,6 +496,7 @@ impl Harness {
             });
         let engine = docker_test.engine.clone();
         let docker_jobs = docker_test.jobs.clone();
+        let archiver = docker_test.archiver.clone();
         let update_releases = Arc::new(zendiloos_updates::testing::FakeReleases::default());
         *update_releases.releases.lock().unwrap() =
             vec![zendiloos_updates::testing::release("v0.2.0", "0.2.0", false)];
@@ -592,6 +595,7 @@ impl Harness {
             installed,
             containers,
             docker_jobs,
+            archiver,
             acme,
             listening,
             firewall_host,
@@ -1682,6 +1686,7 @@ fn openapi_documents_every_route() {
             "/api/v1/certificates/plugin/install",
             "/api/v1/certificates/{id}",
             "/api/v1/certificates/{id}/issue",
+            "/api/v1/docker/backups/{id}/restore",
             "/api/v1/docker/compose/check",
             "/api/v1/docker/containers",
             "/api/v1/docker/containers/{id}",
@@ -1710,6 +1715,12 @@ fn openapi_documents_every_route() {
             "/api/v1/docker/updates/check",
             "/api/v1/docker/updates/settings",
             "/api/v1/docker/usage",
+            "/api/v1/docker/volumes",
+            "/api/v1/docker/volumes/prune",
+            "/api/v1/docker/volumes/sizes",
+            "/api/v1/docker/volumes/{name}",
+            "/api/v1/docker/volumes/{name}/backup-plan",
+            "/api/v1/docker/volumes/{name}/backups",
             "/api/v1/file-services",
             "/api/v1/files/favourites",
             "/api/v1/files/removable/{drive}/archive",

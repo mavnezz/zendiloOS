@@ -2415,6 +2415,92 @@
         ]
       }
     },
+    "/api/v1/docker/backups/{id}/restore": {
+      "post": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "Replaces a volume's contents with a backup, in a job: the archive is\nchecked against its record first. Needs `containers.manage`.",
+        "operationId": "restore_backup",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RestoreRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no such backup or volume",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`volume_in_use`: running containers use it (named); `volume_busy`; `refused`: a backup that failed, or a volume not backed up here",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/docker/compose/check": {
       "post": {
         "tags": [
@@ -4310,6 +4396,482 @@
           },
           "403": {
             "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/docker/volumes": {
+      "get": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "Every volume, by name, with who uses it and how it is backed up. Needs\n`containers.manage`.",
+        "operationId": "list_volumes",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DockerVolume"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`host_failed`: Docker does not answer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/docker/volumes/prune": {
+      "post": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "Removes every volume no container uses, named ones too, with their\ndata; says what was freed. Needs `containers.manage`.",
+        "operationId": "prune_volumes",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogText"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/docker/volumes/sizes": {
+      "get": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "What each local volume's data takes up, counted on the NAS; takes a\nwhile, so it is asked apart from the list. Needs `containers.manage`.",
+        "operationId": "volume_sizes",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DockerVolumeSize"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/docker/volumes/{name}": {
+      "delete": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "Removes a volume no container uses, with its data and its backup plan;\nits backups stay. Needs `containers.manage`.",
+        "operationId": "remove_volume",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed."
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`refused`: a container uses it; `volume_busy`: being backed up or restored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/docker/volumes/{name}/backup-plan": {
+      "get": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "The volume's backup plan. Needs `containers.manage`.",
+        "operationId": "backup_plan",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackupPlanView"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: it has none",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "Makes or replaces the volume's backup plan: into a folder of a share\nthe administrator may write. Needs `containers.manage`.",
+        "operationId": "set_backup_plan",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BackupPlanRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackupPlanView"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`; `share_denied`: a share the administrator may not write",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no such volume",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`refused`: not a local volume with its data in Docker's folder",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "Ends the volume's backup plan; its backups stay. Needs\n`containers.manage`.",
+        "operationId": "delete_backup_plan",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Ended."
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: it has none",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/docker/volumes/{name}/backups": {
+      "get": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "The volume's backups, the newest first: those kept, and the runs that\nfailed lately. Needs `containers.manage`.",
+        "operationId": "list_backups",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/VolumeBackup"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "Backs the volume up now as its plan says, in a job. Needs\n`containers.manage`.",
+        "operationId": "back_up_now",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: it has no plan",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`volume_busy`: a backup or restore of it is under way",
             "content": {
               "application/json": {
                 "schema": {
@@ -12065,6 +12627,144 @@
           }
         }
       },
+      "BackupPlanRequest": {
+        "type": "object",
+        "description": "A volume's backup plan as set.",
+        "required": [
+          "share_id",
+          "frequency",
+          "hour"
+        ],
+        "properties": {
+          "day": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "For monthly plans: 1 to 31.",
+            "minimum": 0
+          },
+          "folder": {
+            "type": "string",
+            "description": "The folder in it, `\"\"` for its root."
+          },
+          "frequency": {
+            "$ref": "#/components/schemas/PlanFrequency"
+          },
+          "hour": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The host's local hour, 0 to 23.",
+            "minimum": 0
+          },
+          "keep": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "1 to 365; 7 if absent.",
+            "minimum": 0
+          },
+          "share_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "A share the administrator may write."
+          },
+          "stop_containers": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Stop the containers that use it meanwhile; yes if absent."
+          },
+          "weekday": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "For weekly plans: 0 is Monday.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "BackupPlanView": {
+        "type": "object",
+        "description": "How a volume is backed up.",
+        "required": [
+          "share_id",
+          "folder",
+          "frequency",
+          "hour",
+          "keep",
+          "stop_containers",
+          "next_at"
+        ],
+        "properties": {
+          "day": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "For monthly plans: 1 to 31, the month's last day where it has fewer.",
+            "minimum": 0
+          },
+          "folder": {
+            "type": "string",
+            "description": "The folder in it, `\"\"` for its root; the archives land in\n`<folder>/<volume>/`."
+          },
+          "frequency": {
+            "$ref": "#/components/schemas/PlanFrequency"
+          },
+          "hour": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The host's local hour, 0 to 23.",
+            "minimum": 0
+          },
+          "keep": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Archives kept, the newest.",
+            "minimum": 0
+          },
+          "next_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When it runs next, Unix seconds."
+          },
+          "share_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The share the archives go to."
+          },
+          "stop_containers": {
+            "type": "boolean",
+            "description": "The containers that use the volume are stopped while it is backed up."
+          },
+          "weekday": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "For weekly plans: 0 is Monday.",
+            "minimum": 0
+          }
+        }
+      },
+      "BackupState": {
+        "type": "string",
+        "enum": [
+          "running",
+          "succeeded",
+          "failed"
+        ]
+      },
       "BindingKind": {
         "type": "string",
         "enum": [
@@ -14117,6 +14817,101 @@
           }
         }
       },
+      "DockerVolume": {
+        "type": "object",
+        "required": [
+          "name",
+          "driver",
+          "labels",
+          "backed_up_here",
+          "used_by"
+        ],
+        "properties": {
+          "backed_up_here": {
+            "type": "boolean",
+            "description": "A local volume whose data lies in Docker's folder: zendiloOS backs\nit up and restores it."
+          },
+          "created_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "driver": {
+            "type": "string"
+          },
+          "labels": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "last_backup": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/VolumeBackup",
+                "description": "Its newest backup, whatever came of it."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "plan": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/BackupPlanView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "project": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The Compose project that made it."
+          },
+          "used_by": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VolumeUserView"
+            },
+            "description": "The containers that mount it, running or not."
+          }
+        }
+      },
+      "DockerVolumeSize": {
+        "type": "object",
+        "required": [
+          "name",
+          "bytes",
+          "complete"
+        ],
+        "properties": {
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "complete": {
+            "type": "boolean",
+            "description": "`false`: counting stopped at its limits; the data takes up at least\n`bytes`."
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
       "EjectRemovable": {
         "type": "object",
         "properties": {
@@ -15934,7 +16729,8 @@
           "folders",
           "system",
           "certificates",
-          "security"
+          "security",
+          "docker"
         ]
       },
       "KindLevel": {
@@ -17322,6 +18118,14 @@
           }
         }
       },
+      "PlanFrequency": {
+        "type": "string",
+        "enum": [
+          "daily",
+          "weekly",
+          "monthly"
+        ]
+      },
       "PlanWarning": {
         "type": "object",
         "required": [
@@ -18270,6 +19074,36 @@
               "type": "string"
             },
             "description": "Entries of the snapshot, relative to the share's root."
+          }
+        },
+        "additionalProperties": false
+      },
+      "RestoreInto": {
+        "type": "string",
+        "enum": [
+          "own_name",
+          "existing"
+        ]
+      },
+      "RestoreRequest": {
+        "type": "object",
+        "required": [
+          "target"
+        ],
+        "properties": {
+          "stop_containers": {
+            "type": "boolean",
+            "description": "Stop the running containers that use the volume meanwhile, and start\nthem again after; without, such a volume is not restored."
+          },
+          "target": {
+            "$ref": "#/components/schemas/RestoreInto"
+          },
+          "volume": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The volume, for `existing`."
           }
         },
         "additionalProperties": false
@@ -20772,6 +21606,95 @@
           }
         }
       },
+      "VolumeBackup": {
+        "type": "object",
+        "description": "One run of a volume's backup.",
+        "required": [
+          "id",
+          "volume",
+          "share_id",
+          "started_at",
+          "state"
+        ],
+        "properties": {
+          "archive": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The archive in the share, from its root."
+          },
+          "archive_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "data_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "What the volume's files held.",
+            "minimum": 0
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why it failed."
+          },
+          "finished_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "manifest": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The manifest beside it."
+          },
+          "sha256": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "share_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "started_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "started_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who started it; `null` for the schedule."
+          },
+          "state": {
+            "$ref": "#/components/schemas/BackupState"
+          },
+          "volume": {
+            "type": "string"
+          }
+        }
+      },
       "VolumeFolderDto": {
         "type": "object",
         "description": "A folder directly on a volume: a share, whether shared on the network\nor not.",
@@ -20814,6 +21737,21 @@
           "shared": {
             "type": "boolean",
             "description": "Offered on the network (SMB, NFS); otherwise used on the NAS only."
+          }
+        }
+      },
+      "VolumeUserView": {
+        "type": "object",
+        "required": [
+          "name",
+          "running"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "running": {
+            "type": "boolean"
           }
         }
       },

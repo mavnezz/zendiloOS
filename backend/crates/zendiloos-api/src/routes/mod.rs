@@ -3,6 +3,7 @@ mod apps;
 mod certificates;
 mod channels;
 mod docker;
+mod docker_volumes;
 mod enclosure;
 mod files;
 mod firewall;
@@ -43,6 +44,7 @@ pub(crate) fn v1() -> OpenApiRouter<ApiState> {
         .merge(apps::routes())
         .merge(security::routes())
         .merge(docker::routes())
+        .merge(docker_volumes::routes())
         .merge(updates::routes())
         .merge(certificates::routes())
         .merge(firewall::routes())

@@ -1,5 +1,14 @@
 <script setup lang="ts">
-import { Box, Boxes, Disc3, LayoutDashboard, Network, ScrollText, Settings2 } from 'lucide-vue-next'
+import {
+  Box,
+  Boxes,
+  Database,
+  Disc3,
+  LayoutDashboard,
+  Network,
+  ScrollText,
+  Settings2,
+} from 'lucide-vue-next'
 import { computed, inject, provide, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
@@ -17,6 +26,7 @@ import OverviewSection from './OverviewSection.vue'
 import ProjectDetail from './ProjectDetail.vue'
 import ProjectEditor from './ProjectEditor.vue'
 import ProjectsSection from './ProjectsSection.vue'
+import VolumesSection from './VolumesSection.vue'
 
 const SECTIONS = [
   'overview',
@@ -24,6 +34,7 @@ const SECTIONS = [
   'containers',
   'images',
   'networks',
+  'volumes',
   'activity',
   'management',
 ] as const
@@ -39,6 +50,7 @@ const icons = {
   containers: Box,
   images: Disc3,
   networks: Network,
+  volumes: Database,
   activity: ScrollText,
   management: Settings2,
 }
@@ -176,6 +188,7 @@ watch(
     </template>
     <ImagesSection v-else-if="section === 'images'" />
     <NetworksSection v-else-if="section === 'networks'" />
+    <VolumesSection v-else-if="section === 'volumes'" />
     <ActivitySection v-else-if="section === 'activity'" />
     <ManagementSection v-else-if="section === 'management'" />
   </AppFrame>

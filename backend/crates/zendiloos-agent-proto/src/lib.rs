@@ -41,8 +41,9 @@ pub use apps::{
 pub use client::{AgentTransport, Report, TransportError, UnixTransport};
 pub use descriptor::{MessageReader, read_message_with_file, write_message_with_file};
 pub use docker::{
-    ComposeText, ContainerAction, ContainerId, ExecCommand, ImageId, ImageReference, InvalidDockerName,
-    NetworkName, ProjectAction, ProjectConfig, ProjectDirectory, ProjectName, Subnet, TerminalSize,
+    ArchiveDigest, BackupStem, ComposeText, ContainerAction, ContainerId, ExecCommand, ImageId,
+    ImageReference, InvalidDockerName, NetworkName, ProjectAction, ProjectConfig, ProjectDirectory,
+    ProjectName, ShareLocation, Subnet, TerminalSize, VolumeLabels, VolumeName, VolumeSize, WrittenFile,
 };
 pub use files::{
     CountStop, DirectoryEntry, EntryFacts, EntryKind, FileLocation, FileRoot, FoundEntry, HOMES_DIRECTORY,
@@ -367,6 +368,57 @@ pub enum Request {
     },
     RemoveNetwork {
         name: NetworkName,
+    },
+    /// `docker volume inspect` of every volume: a JSON array.
+    DockerVolumes {},
+    /// What each local volume's data takes up, counted in Docker's data
+    /// root with a bounded walk (no links followed, no other file system
+    /// entered). Answers [`Response::VolumeSizes`].
+    DockerVolumeSizes {},
+    /// Removes a volume no container uses: Docker refuses one that a
+    /// container, also a stopped one, uses.
+    RemoveVolume {
+        name: VolumeName,
+    },
+    /// Removes every volume no container uses, named ones too; prints what
+    /// was freed.
+    PruneVolumes {},
+    /// A local volume with `labels`.
+    CreateVolume {
+        name: VolumeName,
+        labels: VolumeLabels,
+    },
+    /// Backs up a local volume (no mount options: its data lies in Docker's
+    /// data root) into the share: `<folder>/<volume>/<name>.tar.zst`, with
+    /// `<name>.json` beside it, its manifest. The agent inspects the volume
+    /// itself and reads its data as root in a transient unit, which may
+    /// write only the share; what it writes takes the folder's inherited
+    /// ACL. Answers [`Response::VolumeBackedUp`].
+    BackUpVolume {
+        volume: VolumeName,
+        share: ShareLocation,
+        folder: SharePath,
+        name: BackupStem,
+    },
+    /// Replaces the contents of a local volume no running container uses
+    /// with the archive `archive` of the share, if its SHA-256 is `sha256`:
+    /// checked before anything is extracted, and again of what was
+    /// extracted. Extracted into a fresh folder beside the data, each entry
+    /// beneath it (no absolute paths, no `..`, no link followed, no
+    /// devices), then swapped in; a failure leaves the old contents.
+    RestoreVolume {
+        volume: VolumeName,
+        share: ShareLocation,
+        archive: SharePath,
+        sha256: ArchiveDigest,
+    },
+    /// Deletes a file a backup wrote, if `path` still is that file (device
+    /// and inode); never anything else. Answers [`Response::BackupRemoved`].
+    RemoveVolumeBackup {
+        share: ShareLocation,
+        path: SharePath,
+        device: u64,
+        inode: u64,
     },
     /// `docker compose config` of `compose` as if it were in `directory`:
     /// the file as Compose understands it, as JSON, or refused with why
@@ -767,6 +819,14 @@ impl Request {
             Request::PruneImages {} => "prune_images",
             Request::CreateNetwork { .. } => "create_network",
             Request::RemoveNetwork { .. } => "remove_network",
+            Request::DockerVolumes {} => "docker_volumes",
+            Request::DockerVolumeSizes {} => "docker_volume_sizes",
+            Request::RemoveVolume { .. } => "remove_volume",
+            Request::PruneVolumes {} => "prune_volumes",
+            Request::CreateVolume { .. } => "create_volume",
+            Request::BackUpVolume { .. } => "back_up_volume",
+            Request::RestoreVolume { .. } => "restore_volume",
+            Request::RemoveVolumeBackup { .. } => "remove_volume_backup",
             Request::CheckCompose { .. } => "check_compose",
             Request::ControlProject { .. } => "control_project",
             Request::DeployProject { .. } => "deploy_project",
@@ -1013,6 +1073,23 @@ pub enum Response {
     Archive {
         size: u64,
     },
+    VolumeSizes {
+        sizes: Vec<VolumeSize>,
+    },
+    /// A volume was backed up: its archive and manifest, the archive's
+    /// SHA-256, what its data took up and the manifest as written.
+    VolumeBackedUp {
+        archive: WrittenFile,
+        manifest: WrittenFile,
+        sha256: ArchiveDigest,
+        data_bytes: u64,
+        manifest_json: String,
+    },
+    /// Whether the backup's file was removed: `false` if it was gone or is
+    /// another file now, which stays.
+    BackupRemoved {
+        removed: bool,
+    },
     Snapshots {
         /// `zfs list -H -p -t snapshot -o name,creation,used,referenced,`
         /// `zendiloos:schedule,zendiloos:note`.
@@ -1258,6 +1335,11 @@ impl Request {
             // Images fetched, projects brought up or down: up to half an hour.
             | Request::PullImage { .. }
             | Request::PruneImages {}
+            // Volumes walked, backed up and restored: up to hours.
+            | Request::DockerVolumeSizes {}
+            | Request::PruneVolumes {}
+            | Request::BackUpVolume { .. }
+            | Request::RestoreVolume { .. }
             | Request::ControlProject { .. }
             // The ACME server checks the names: up to minutes with DNS.
             | Request::IssueCertificate { .. } => true,
@@ -2168,6 +2250,51 @@ mod tests {
             json!({ "status": "partly_moved", "kept": 2, "example": "album/new.txt", "too_many": false });
         assert_eq!(serde_json::to_value(&partly).unwrap(), wire);
         assert_eq!(serde_json::from_value::<Response>(wire).unwrap(), partly);
+    }
+
+    #[test]
+    fn volume_backups_go_to_the_system_agent_and_take_long() {
+        let backup: Request = serde_json::from_value(json!({
+            "op": "back_up_volume", "volume": "teslamate_db",
+            "share": { "volume": 1, "share": "backups" }, "folder": "docker", "name": "teslamate_db-20261108-030000",
+        }))
+        .unwrap();
+        assert_eq!((backup.name(), backup.role(), backup.is_long()), ("back_up_volume", Role::System, true));
+        let restore: Request = serde_json::from_value(json!({
+            "op": "restore_volume", "volume": "teslamate_db",
+            "share": { "volume": 1, "share": "backups" },
+            "archive": "docker/teslamate_db/teslamate_db-20261108-030000.tar.zst", "sha256": "ab".repeat(32),
+        }))
+        .unwrap();
+        assert_eq!((restore.name(), restore.is_long()), ("restore_volume", true));
+        for bad in [
+            json!({ "op": "restore_volume", "volume": "-x", "share": { "volume": 1, "share": "b" }, "archive": "a", "sha256": "ab".repeat(32) }),
+            json!({ "op": "restore_volume", "volume": "x", "share": { "volume": 1, "share": "b" }, "archive": "../a", "sha256": "ab".repeat(32) }),
+            json!({ "op": "restore_volume", "volume": "x", "share": { "volume": 1, "share": "b" }, "archive": "a", "sha256": "short" }),
+            json!({ "op": "back_up_volume", "volume": "x", "share": { "volume": 1, "share": "b" }, "folder": "", "name": "a/b" }),
+            json!({ "op": "create_volume", "name": "x", "labels": { "a=b": "c" } }),
+        ] {
+            assert!(serde_json::from_value::<Request>(bad.clone()).is_err(), "{bad}");
+        }
+        let remove = Request::RemoveVolumeBackup {
+            share: ShareLocation {
+                volume: VolumeNumber::new(1).unwrap(),
+                share: ShareName::parse("backups").unwrap(),
+            },
+            path: SharePath::parse("docker/x/x-20261108-030000.tar.zst").unwrap(),
+            device: 41,
+            inode: 7,
+        };
+        assert_eq!((remove.name(), remove.is_long()), ("remove_volume_backup", false));
+        assert!(Request::DockerVolumeSizes {}.is_long() && !Request::DockerVolumes {}.is_long());
+        let names = [
+            Request::DockerVolumes {}.name(),
+            Request::PruneVolumes {}.name(),
+            Request::RemoveVolume { name: VolumeName::parse("x1").unwrap() }.name(),
+            Request::CreateVolume { name: VolumeName::parse("x1").unwrap(), labels: VolumeLabels::default() }
+                .name(),
+        ];
+        assert_eq!(names, ["docker_volumes", "prune_volumes", "remove_volume", "create_volume"]);
     }
 
     #[test]

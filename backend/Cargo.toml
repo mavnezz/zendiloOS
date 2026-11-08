@@ -79,6 +79,10 @@ minisign-verify = "0.2"
 # SQLite is bundled, so every build runs against the same, known version.
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite-bundled", "migrate", "macros"] }
 sysinfo = { version = "0.40", default-features = false, features = ["system", "network", "component"] }
+# Backups of Docker's volumes: tar archives compressed with zstd, which
+# Debian's tar and zstd read as well.
+tar = { version = "0.4", default-features = false }
+zstd = { version = "0.13", default-features = false }
 tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net", "time", "io-util", "process"] }

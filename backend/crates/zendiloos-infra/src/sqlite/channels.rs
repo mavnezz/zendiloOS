@@ -521,7 +521,8 @@ mod tests {
                 "volume_filling",
                 "updates_installed",
                 "updates_failed",
-                "certificate_renewal_failed"
+                "certificate_renewal_failed",
+                "docker_backup_failed"
             ]
         );
         db.close().await;
