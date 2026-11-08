@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { BrickWall, FileBadge, ShieldBan, UserRoundSearch } from 'lucide-vue-next'
+import { BrickWall, ShieldBan, UserRoundSearch } from 'lucide-vue-next'
 import { computed, ref, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
@@ -74,7 +74,6 @@ const tabs = computed(() => [
   { id: 'general', label: t('security.tabs.general') },
   { id: 'accounts', label: t('security.tabs.accounts') },
   { id: 'firewall', label: t('security.tabs.firewall') },
-  { id: 'certificate', label: t('security.tabs.certificate') },
 ])
 
 const number = 'w-20 font-mono text-[13px]'
@@ -84,7 +83,8 @@ const line = 'flex flex-wrap items-center gap-2 text-sm'
 <!--
   How the web interface defends itself, as on the appliances people know:
   idle sessions, blocked addresses and TLS on the first tab, sessions and
-  locked accounts on the second. Firewall and certificate come later.
+  locked accounts on the second. The firewall comes later; the certificate
+  is chosen under Web interface.
 -->
 <template>
   <div class="flex min-h-full flex-col">
@@ -215,12 +215,6 @@ const line = 'flex flex-wrap items-center gap-2 text-sm'
       :icon="BrickWall"
       :title="t('security.tabs.firewall')"
       :description="t('security.soon.firewall')"
-    />
-    <ComingLater
-      v-else-if="tab === 'certificate'"
-      :icon="FileBadge"
-      :title="t('security.tabs.certificate')"
-      :description="t('security.soon.certificate')"
     />
 
     <div class="grow" aria-hidden="true" />

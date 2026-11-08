@@ -469,12 +469,9 @@ const en = {
       general: 'Security',
       accounts: 'Account security',
       firewall: 'Firewall',
-      certificate: 'Certificate',
     },
     soon: {
       firewall: 'Choose which addresses reach which services of this NAS.',
-      certificate:
-        'Upload a certificate of your own for the web interface instead of the self-made one.',
     },
     idle: 'Sign-out',
     idleBefore: 'Sign out after',
