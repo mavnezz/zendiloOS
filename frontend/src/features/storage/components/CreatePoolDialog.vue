@@ -130,7 +130,7 @@ async function create(): Promise<void> {
         <label
           v-for="disk in candidates"
           :key="disk.name"
-          class="flex items-center gap-2 rounded-lg border px-3 py-2 text-sm hover:bg-accent/60"
+          class="flex min-w-0 items-center gap-2 rounded-lg border px-3 py-2 text-sm hover:bg-accent/60"
         >
           <input
             v-model="chosen"

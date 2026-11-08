@@ -83,14 +83,16 @@ const choices = computed(() => {
     .filter((disk) => disk.serial)
     .map((disk) => ({
       serial: disk.serial ?? '',
-      label: `${disk.name} · ${disk.model ?? t('storage.unknownModel')} · ${disk.serial ?? ''}`,
+      label: `${disk.name} · ${disk.model ?? t('storage.unknownModel')}`,
+      detail: disk.serial ?? '',
     }))
   const known = new Set(present.map((choice) => choice.serial))
   const gone = KINDS.flatMap((kind) => drafts.value[kind].disks)
     .filter((serial, index, all) => !known.has(serial) && all.indexOf(serial) === index)
     .map((serial) => ({
       serial,
-      label: `${serial} (${t('storage.selfTestPlans.notConnected')})`,
+      label: serial,
+      detail: t('storage.selfTestPlans.notConnected'),
     }))
   return [...present, ...gone]
 })
@@ -200,15 +202,20 @@ async function save(): Promise<void> {
             <label
               v-for="choice in choices"
               :key="choice.serial"
-              class="flex items-center gap-2 text-sm"
+              class="flex items-start gap-2 text-sm"
             >
               <input
                 v-model="drafts[kind].disks"
                 type="checkbox"
                 :value="choice.serial"
-                class="size-4 accent-primary"
+                class="mt-0.5 size-4 shrink-0 accent-primary"
               />
-              <span class="truncate">{{ choice.label }}</span>
+              <span class="grid min-w-0">
+                <span class="break-words">{{ choice.label }}</span>
+                <span class="font-mono text-xs break-all text-muted-foreground">{{
+                  choice.detail
+                }}</span>
+              </span>
             </label>
           </div>
           <p class="text-xs text-muted-foreground">{{ lastRun(kind) }}</p>
