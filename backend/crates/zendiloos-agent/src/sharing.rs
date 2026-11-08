@@ -18,8 +18,8 @@ use std::time::Duration;
 use rustix::fs::{CWD, Mode, OFlags, openat};
 use rustix::io::Errno;
 use zendiloos_agent_proto::{
-    FileServices, HOMES_DIRECTORY, HomesShare, NfsExport, Principal, Response, SNAPSHOT_LABEL_FORMAT,
-    ShareAccess, ShareName, SharePermission, SmbShare, UserName, VolumeNumber,
+    FileServices, HOMES_DIRECTORY, HomesShare, NfsClient, NfsExport, NfsSquash, Principal, Response,
+    SNAPSHOT_LABEL_FORMAT, ShareAccess, ShareName, SharePermission, SmbShare, UserName, VolumeNumber,
 };
 use zendiloos_exec::{Limits, Program};
 
@@ -214,18 +214,33 @@ fn announced(config: &str) -> (bool, Vec<&str>) {
     (register, machines)
 }
 
-/// `/etc/exports` lines for `exports`; root is squashed everywhere.
+/// `/etc/exports` lines for `exports`: each client with what it may do
+/// (`rw`/`ro`), when writes are answered (`sync`/`async`), whose identity
+/// its requests keep (`no_root_squash`/`root_squash`/`all_squash`), from
+/// which ports (`insecure` added only when wanted; `secure` is the
+/// default) and how it proves who it is (`sec=sys`, the only way so far).
 pub fn nfs_exports(exports: &[NfsExport]) -> String {
     let mut text = HEADER.to_owned();
     for export in exports.iter().filter(|export| !export.clients.is_empty()) {
         let _ = write!(text, "/volume{}/{}", export.volume.get(), export.name.as_str());
         for client in &export.clients {
-            let mode = if client.write { "rw" } else { "ro" };
-            let _ = write!(text, " {}({mode},sync,no_subtree_check,root_squash,sec=sys)", client.network);
+            let _ = write!(text, " {}({})", client.network, export_options(client));
         }
         text.push('\n');
     }
     text
+}
+
+fn export_options(client: &NfsClient) -> String {
+    let mode = if client.write { "rw" } else { "ro" };
+    let sync = if client.asynchronous { "async" } else { "sync" };
+    let squash = match client.squash {
+        NfsSquash::None => "no_root_squash",
+        NfsSquash::Root => "root_squash",
+        NfsSquash::All => "all_squash",
+    };
+    let insecure = if client.insecure { "insecure," } else { "" };
+    format!("{mode},{sync},no_subtree_check,{squash},{insecure}sec=sys")
 }
 
 fn write_atomically(path: &Path, content: &str) -> Result<(), OperationError> {
@@ -978,7 +993,7 @@ fn read_acl(path: &str, name: &str) -> Result<Option<Acl>, Errno> {
 #[cfg(test)]
 mod tests {
     use zendiloos_agent_proto::{
-        GroupName, Network, NfsClient, ShareComment, SmbProtocol, UserName, Workgroup,
+        GroupName, NfsClient, NfsHost, NfsSquash, ShareComment, SmbProtocol, UserName, Workgroup,
     };
 
     use super::*;
@@ -1199,7 +1214,13 @@ mod tests {
         let export = NfsExport {
             name: ShareName::parse("media").unwrap(),
             volume: VolumeNumber::new(1).unwrap(),
-            clients: vec![NfsClient { network: Network::parse("192.168.1.0/24").unwrap(), write: false }],
+            clients: vec![NfsClient {
+                network: NfsHost::parse("192.168.1.0/24").unwrap(),
+                write: false,
+                squash: NfsSquash::Root,
+                asynchronous: false,
+                insecure: false,
+            }],
         };
         let mut services = base_services();
         services.nfs = true;
@@ -1654,15 +1675,39 @@ mod tests {
         let exports = [NfsExport {
             name: ShareName::parse("media").unwrap(),
             volume: VolumeNumber::new(1).unwrap(),
-            clients: vec![
-                NfsClient { network: Network::parse("192.168.1.0/24").unwrap(), write: true },
-                NfsClient { network: Network::parse("10.0.0.5").unwrap(), write: false },
-            ],
+            clients: vec![client("192.168.1.0/24", true), client("10.0.0.5", false)],
         }];
         assert_eq!(
             nfs_exports(&exports).lines().nth(1).unwrap(),
             "/volume1/media 192.168.1.0/24(rw,sync,no_subtree_check,root_squash,sec=sys) \
              10.0.0.5(ro,sync,no_subtree_check,root_squash,sec=sys)"
         );
+    }
+
+    #[test]
+    fn writes_each_clients_own_options() {
+        let exports = [NfsExport {
+            name: ShareName::parse("media").unwrap(),
+            volume: VolumeNumber::new(2).unwrap(),
+            clients: vec![
+                NfsClient { squash: NfsSquash::None, asynchronous: true, ..client("nas.lan", true) },
+                NfsClient { squash: NfsSquash::All, insecure: true, ..client("*.example.com", false) },
+            ],
+        }];
+        assert_eq!(
+            nfs_exports(&exports).lines().nth(1).unwrap(),
+            "/volume2/media nas.lan(rw,async,no_subtree_check,no_root_squash,sec=sys) \
+             *.example.com(ro,sync,no_subtree_check,all_squash,insecure,sec=sys)"
+        );
+    }
+
+    fn client(host: &str, write: bool) -> NfsClient {
+        NfsClient {
+            network: NfsHost::parse(host).unwrap(),
+            write,
+            squash: NfsSquash::Root,
+            asynchronous: false,
+            insecure: false,
+        }
     }
 }

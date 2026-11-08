@@ -316,6 +316,7 @@ impl SimulatedAgent {
         let user = match request {
             Request::ListDirectory { user, .. }
             | Request::SearchFiles { user, .. }
+            | Request::EntryFacts { user, .. }
             | Request::OpenFile { user, .. }
             | Request::CreateUpload { user, .. }
             | Request::MakeDirectory { user, .. }
@@ -365,6 +366,27 @@ impl SimulatedAgent {
                     let bounds = zendiloos_fileops::SearchBounds { until, stop: &stop };
                     let found = share(location)?.search(&location.path, text, *hidden, bounds)?;
                     (Response::Found { entries: found.entries, stopped: found.stopped }, None)
+                }
+                Request::EntryFacts { location, user } => {
+                    let stop = std::sync::atomic::AtomicBool::new(false);
+                    let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+                    let bounds = zendiloos_fileops::SearchBounds { until, stop: &stop };
+                    let facts = share(location)?.facts(&location.path, bounds)?;
+                    // Everything in the simulated volumes is the developer's;
+                    // shown as the person asking.
+                    let facts = zendiloos_agent_proto::EntryFacts {
+                        folder: facts.folder,
+                        bytes: facts.bytes,
+                        files: facts.files,
+                        folders: facts.folders,
+                        hidden: facts.hidden,
+                        stopped: facts.stopped,
+                        created: facts.created,
+                        modified: facts.modified,
+                        owner_uid: facts.uid,
+                        owner: Some(user.as_str().to_owned()),
+                    };
+                    (Response::Facts { facts }, None)
                 }
                 Request::OpenFile { location, .. } => {
                     let (file, size) = share(location)?.open_file(&location.path)?;
@@ -828,6 +850,7 @@ impl AgentTransport for SimulatedAgent {
             // A descriptor that comes along is closed here.
             Request::ListDirectory { .. }
             | Request::SearchFiles { .. }
+            | Request::EntryFacts { .. }
             | Request::OpenFile { .. }
             | Request::CreateUpload { .. }
             | Request::MakeDirectory { .. }

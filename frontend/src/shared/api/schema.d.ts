@@ -1073,6 +1073,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/files/removable/{drive}/facts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What a file or folder on a removable drive is, and for a folder what is
+         *     in it, counted as in a share. Needs `files.read` and `storage.manage`.
+         */
+        get: operations["drive_facts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/files/removable/{drive}/folder": {
         parameters: {
             query?: never;
@@ -1273,6 +1293,29 @@ export interface paths {
          *     Needs `files.read`.
          */
         get: operations["download"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/files/shares/{id}/facts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What a file or folder is: when it was made and changed, whose it is;
+         *     for a folder, its files, folders and hidden entries counted below it
+         *     as the user may see them, and what the files hold. Walks as a search
+         *     does; at most ten million entries within half a minute, counted so far
+         *     when that is up or the request is dropped. Needs `files.read`.
+         */
+        get: operations["entry_facts"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3253,6 +3296,11 @@ export interface components {
             /** Format: int64 */
             sent_bytes: number;
         };
+        /**
+         * @description Why counting a folder ended before it had looked everywhere.
+         * @enum {string}
+         */
+        CountStop: "entries" | "time";
         CreateAccountRequest: {
             description?: string | null;
             email?: string | null;
@@ -3552,6 +3600,42 @@ export interface components {
         EnableDockerRequest: {
             /** @description A pool zendiloOS created. */
             pool: string;
+        };
+        /**
+         * @description What a file or folder is; for a folder, what is in it, counted as the
+         *     person may see it.
+         */
+        EntryFacts: {
+            /**
+             * Format: int64
+             * @description A file's size; for a folder, what the files counted in it hold.
+             */
+            bytes: number;
+            /**
+             * Format: int64
+             * @description Unix seconds, where the file system keeps when it was made.
+             */
+            created?: number | null;
+            /** Format: int64 */
+            files: number;
+            folder: boolean;
+            /**
+             * Format: int64
+             * @description Folders below it, itself not counted.
+             */
+            folders: number;
+            /**
+             * Format: int64
+             * @description Entries whose name starts with `.`: counted, not looked into.
+             */
+            hidden: number;
+            /** Format: int64 */
+            modified?: number | null;
+            /** @description Its owner's account, where the NAS knows it. */
+            owner?: string | null;
+            /** @description Relative to the root, as asked for. */
+            path: string;
+            stopped?: components["schemas"]["CountStop"] | null;
         };
         EnvironmentVariable: {
             name: string;
@@ -4138,12 +4222,27 @@ export interface components {
         };
         /** @enum {string} */
         NewPoolLayout: "single" | "mirror" | "raidz1" | "raidz2" | "raidz3";
-        /** @description A host or network that may mount the share over NFS. */
+        /** @description A host or network that may mount the share over NFS, and how. */
         NfsRule: {
-            /** @description An IP address or CIDR network, e.g. `192.168.1.0/24`. */
+            /** @description Writes answered before they are on disk; off if not given. */
+            async?: boolean;
+            /** @description Also from ports above 1024; off if not given. */
+            insecure?: boolean;
+            /**
+             * @description An IP address or CIDR network (`192.168.1.0/24`), a host name
+             *     (`nas.local`) or a pattern with `*` and `?` (`*.example.com`).
+             */
             network: string;
+            /** @description Whose identity the client's requests keep; `root` if not given. */
+            squash?: components["schemas"]["NfsSquashKind"];
             write: boolean;
         };
+        /**
+         * @description Whose identity an NFS client's requests keep: `none` (root stays root),
+         *     `root` (root becomes the anonymous user), `all` (everyone does).
+         * @enum {string}
+         */
+        NfsSquashKind: "none" | "root" | "all";
         /**
          * @description Something an administrator should know, as a code with parameters for
          *     the interface to word, e.g. `pool_trouble` with `pool` and `state`.
@@ -8052,6 +8151,51 @@ export interface operations {
             };
         };
     };
+    drive_facts: {
+        parameters: {
+            query?: {
+                /** @description Relative to the share's root, e.g. `photos/2024`; empty for the root. */
+                path?: string;
+                /** @description In this snapshot of the share, read only (its label). */
+                snapshot?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The drive's ID, as `/storage/removable` lists it */
+                drive: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntryFacts"];
+                };
+            };
+            /** @description `forbidden`: not someone who manages storage */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found`: no such drive mounted, or nothing at that path */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     drive_folder: {
         parameters: {
             query?: {
@@ -8559,6 +8703,50 @@ export interface operations {
             };
             /** @description `invalid_operation`: not a file */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    entry_facts: {
+        parameters: {
+            query?: {
+                /** @description Relative to the share's root, e.g. `photos/2024`; empty for the root. */
+                path?: string;
+                /** @description In this snapshot of the share, read only (its label). */
+                snapshot?: string;
+            };
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntryFacts"];
+                };
+            };
+            /** @description `permission_denied` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found`: no such share, or not shared with the user, or nothing at that path */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

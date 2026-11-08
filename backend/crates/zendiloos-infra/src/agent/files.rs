@@ -8,7 +8,8 @@ use zendiloos_agent_proto::{
 use zendiloos_kernel::{PortError, RequestContext, Timestamp};
 use zendiloos_sharing::application::ports::{FileHost, FileHostError};
 use zendiloos_sharing::domain::{
-    Entry, EntryKind, FileLocation, FilePath, FileRoot, Found, FoundEntry, Listing, SearchStop,
+    CountStop, Entry, EntryFacts, EntryKind, FileLocation, FilePath, FileRoot, Found, FoundEntry, Listing,
+    SearchStop,
 };
 
 use super::{WHAT, agent_error, unexpected};
@@ -142,6 +143,32 @@ impl FileHost for AgentFiles {
                     proto::SearchStop::Results => SearchStop::Results,
                     proto::SearchStop::Time => SearchStop::Time,
                 }),
+            }),
+            (other, _) => Err(unexpected(other).into()),
+        }
+    }
+
+    async fn facts(
+        &self,
+        user_name: &str,
+        at: &FileLocation,
+        context: &RequestContext,
+    ) -> Result<EntryFacts, FileHostError> {
+        let request = Request::EntryFacts { user: user(user_name)?, location: location(at)? };
+        match self.call(request, context).await? {
+            (Response::Facts { facts }, _) => Ok(EntryFacts {
+                folder: facts.folder,
+                bytes: facts.bytes,
+                files: facts.files,
+                folders: facts.folders,
+                hidden: facts.hidden,
+                stopped: facts.stopped.map(|stop| match stop {
+                    proto::CountStop::Entries => CountStop::Entries,
+                    proto::CountStop::Time => CountStop::Time,
+                }),
+                created: facts.created.map(Timestamp::from_unix_seconds),
+                modified: facts.modified.map(Timestamp::from_unix_seconds),
+                owner: facts.owner,
             }),
             (other, _) => Err(unexpected(other).into()),
         }
@@ -322,6 +349,18 @@ mod tests {
         assert_eq!(reports.entry.kind, EntryKind::Directory);
         let below = files.search("anna", &at("2024"), "q1", false, &context).await.unwrap();
         assert_eq!(below.entries[0].path.as_str(), "2024/Reports/q1.pdf");
+        let counted = files.facts("anna", &at(""), &context).await.unwrap();
+        assert!(counted.folder);
+        assert_eq!(
+            (counted.files, counted.folders, counted.hidden, counted.bytes, counted.stopped),
+            (3, 2, 0, 6 + 6 + 2, None),
+            "report.txt, its copy and q1.pdf; 2024 and Reports"
+        );
+        assert_eq!(counted.owner.as_deref(), Some("anna"));
+        assert!(counted.modified.is_some());
+        let q1 = files.facts("anna", &at("2024/Reports/q1.pdf"), &context).await.unwrap();
+        assert_eq!((q1.folder, q1.bytes), (false, 2));
+        assert!(matches!(files.facts("anna", &at("nope"), &context).await, Err(FileHostError::NotFound)));
         assert!(matches!(
             files.search("anna", &at(""), "", false, &context).await,
             Err(FileHostError::Port(_))

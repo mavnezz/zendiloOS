@@ -15,9 +15,9 @@ use utoipa_axum::routes;
 use zendiloos_identity::domain::Permission;
 
 use super::{
-    CreateFolderRequest, DeleteEntriesRequest, FileQuery, Folder, FolderQuery, RenameRequest, SearchQuery,
-    SearchResults, TransferRequest, UploadQuery, UploadedFile, archive_of, deleted, download_from, drive,
-    folder_in, folder_made, renamed, search_in, transferred, upload_into,
+    CreateFolderRequest, DeleteEntriesRequest, EntryFacts, FileQuery, Folder, FolderQuery, RenameRequest,
+    SearchQuery, SearchResults, TransferRequest, UploadQuery, UploadedFile, archive_of, deleted,
+    download_from, drive, facts_in, folder_in, folder_made, renamed, search_in, transferred, upload_into,
 };
 use crate::auth::Auth;
 use crate::error::{ApiError, Problem};
@@ -30,6 +30,7 @@ pub(super) fn routes() -> OpenApiRouter<ApiState> {
     OpenApiRouter::new()
         .routes(routes!(drive_folder))
         .routes(routes!(drive_search))
+        .routes(routes!(drive_facts))
         .routes(routes!(drive_download))
         .routes(routes!(drive_archive))
         .routes(routes!(drive_upload))
@@ -62,6 +63,31 @@ async fn drive_folder(
 ) -> Result<Json<Folder>, ApiError> {
     let place = drive(&auth, id, Permission::FilesRead)?;
     folder_in(&state, &auth, &client, place, query).await
+}
+
+/// What a file or folder on a removable drive is, and for a folder what is
+/// in it, counted as in a share. Needs `files.read` and `storage.manage`.
+#[utoipa::path(
+    get,
+    path = "/files/removable/{drive}/facts",
+    tag = "files",
+    security(("session" = [])),
+    params(("drive" = String, Path, description = "The drive's ID, as `/storage/removable` lists it"), FolderQuery),
+    responses(
+        (status = OK, body = EntryFacts),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`: no such drive mounted, or nothing at that path"),
+        (status = FORBIDDEN, body = Problem, description = "`forbidden`: not someone who manages storage"),
+    )
+)]
+async fn drive_facts(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(id): Path<String>,
+    ApiQuery(query): ApiQuery<FolderQuery>,
+) -> Result<Json<EntryFacts>, ApiError> {
+    let place = drive(&auth, id, Permission::FilesRead)?;
+    facts_in(&state, &auth, &client, place, query).await
 }
 
 /// Looks for names in a folder of a removable drive and everything below

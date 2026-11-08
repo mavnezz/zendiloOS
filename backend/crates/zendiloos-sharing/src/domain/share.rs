@@ -166,12 +166,89 @@ pub fn network(value: &str) -> Result<String, InvalidNetwork> {
     }
 }
 
-/// A host or network that may mount a share over NFS.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{0:?} is no IP address, network, host name or pattern such as *.example.com")]
+pub struct InvalidNfsHost(pub String);
+
+/// Longest host name or pattern an NFS client may be given by.
+pub const MAX_NFS_HOST: usize = 253;
+
+/// Validates and normalizes who an NFS rule is for: an IP address or CIDR
+/// network ([`network`]), or a host name, possibly with the wildcards `*`
+/// and `?` as `exportfs` takes them (`nas.local`, `*.example.com`),
+/// lowercase. Nothing else reaches the exports, whose syntax would read
+/// spaces, parentheses or commas as more.
+pub fn nfs_host(value: &str) -> Result<String, InvalidNfsHost> {
+    let trimmed = value.trim();
+    if let Ok(network) = network(trimmed) {
+        return Ok(network);
+    }
+    let host = trimmed.to_ascii_lowercase();
+    let label = |label: &str| {
+        !label.is_empty()
+            && label.len() <= 63
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"-*?".contains(&b))
+    };
+    // A name, not an address in disguise: some letter or wildcard.
+    let named = host.bytes().any(|b| b.is_ascii_lowercase() || b == b'*' || b == b'?');
+    if host.len() <= MAX_NFS_HOST && named && host.split('.').all(label) {
+        Ok(host)
+    } else {
+        Err(InvalidNfsHost(value.to_owned()))
+    }
+}
+
+/// Whose identity an NFS client's requests keep.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum NfsSquash {
+    /// Every user as the client says, root too: the client's root is root
+    /// on the folder.
+    None,
+    /// Root becomes the anonymous user; the others stay who they are.
+    #[default]
+    Root,
+    /// Everyone becomes the anonymous user.
+    All,
+}
+
+impl NfsSquash {
+    pub const ALL: [NfsSquash; 3] = [Self::None, Self::Root, Self::All];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Root => "root",
+            Self::All => "all",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|s| s.as_str() == value)
+    }
+}
+
+/// A host or network that may mount a share over NFS, and how.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NfsClient {
-    /// Normalized by [`network`].
+    /// Normalized by [`nfs_host`].
     pub network: String,
     pub write: bool,
+    pub squash: NfsSquash,
+    /// Answers writes before they are on disk: faster, but what a crash
+    /// catches is lost although the client was told it was written.
+    pub asynchronous: bool,
+    /// Also from ports above 1024, which any user of the client may open.
+    pub insecure: bool,
+}
+
+impl NfsClient {
+    /// A client as zendiloOS has always exported to: root squashed,
+    /// writes on disk before they are answered, privileged ports only.
+    pub fn new(network: impl Into<String>, write: bool) -> Self {
+        Self { network: network.into(), write, squash: NfsSquash::Root, asynchronous: false, insecure: false }
+    }
 }
 
 /// How a share's dataset compresses what is written to it.
@@ -440,6 +517,38 @@ mod tests {
         }
         assert!(matches!(ShareName::parse("homes"), Err(InvalidShareName::Reserved(_))));
         assert!(matches!(ShareName::parse("home"), Err(InvalidShareName::Reserved(_))));
+    }
+
+    #[test]
+    fn nfs_clients_are_addresses_networks_or_host_names() {
+        assert_eq!(nfs_host(" 192.168.1.0/24 ").unwrap(), "192.168.1.0/24");
+        assert_eq!(nfs_host("10.0.0.5/32").unwrap(), "10.0.0.5");
+        assert_eq!(nfs_host("NAS.local").unwrap(), "nas.local");
+        assert_eq!(nfs_host("*.example.com").unwrap(), "*.example.com");
+        assert_eq!(nfs_host("host?.lan").unwrap(), "host?.lan");
+        assert_eq!(nfs_host("*").unwrap(), "*");
+        let long = format!("{}.lan", "a".repeat(250));
+        for bad in [
+            "",
+            "nas local",
+            "nas(rw)",
+            "a,b",
+            "-nas.lan",
+            "nas-.lan",
+            "nas..lan",
+            ".lan",
+            "10.0.0.0/33",
+            "@group",
+            "/volume1",
+            "1.2.3.4.5",
+            long.as_str(),
+        ] {
+            assert!(nfs_host(bad).is_err(), "{bad:?}");
+        }
+        assert_eq!(NfsSquash::parse("all"), Some(NfsSquash::All));
+        assert_eq!(NfsSquash::parse("everyone"), None);
+        let client = NfsClient::new("10.0.0.5", true);
+        assert_eq!((client.squash, client.asynchronous, client.insecure), (NfsSquash::Root, false, false));
     }
 
     #[test]

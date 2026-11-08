@@ -197,6 +197,34 @@ pub struct Found {
     pub stopped: Option<SearchStop>,
 }
 
+/// Why counting a folder ended before it had looked everywhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CountStop {
+    /// It counted as many entries as it counts at most.
+    Entries,
+    /// Its time was up.
+    Time,
+}
+
+/// What a file or folder is; for a folder, what is in it, counted as the
+/// person may see it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryFacts {
+    pub folder: bool,
+    /// A file's size; for a folder, what the files counted in it hold.
+    pub bytes: u64,
+    pub files: u64,
+    pub folders: u64,
+    /// Entries whose name starts with `.`: counted, not looked into.
+    pub hidden: u64,
+    pub stopped: Option<CountStop>,
+    /// When it was made, where the file system keeps that.
+    pub created: Option<Timestamp>,
+    pub modified: Option<Timestamp>,
+    /// Its owner's account, where the system knows it.
+    pub owner: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

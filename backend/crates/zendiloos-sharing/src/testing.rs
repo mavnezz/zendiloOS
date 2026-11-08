@@ -10,9 +10,9 @@ use crate::application::ports::{
     self, FileHost, FileHostError, HostError, ShareHost, ShareRepository, Volume,
 };
 use crate::domain::{
-    Access, Entry, EntryKind, FileLocation, FilePath, Found, FoundEntry, Frequency, Listing, NewShare,
-    Permission, Principal, SearchStop, Share, ShareId, ShareName, ShareSettings, ShareUsage, SharingConfig,
-    Snapshot, SnapshotSchedule,
+    Access, CountStop, Entry, EntryFacts, EntryKind, FileLocation, FilePath, Found, FoundEntry, Frequency,
+    Listing, NewShare, Permission, Principal, SearchStop, Share, ShareId, ShareName, ShareSettings,
+    ShareUsage, SharingConfig, Snapshot, SnapshotSchedule,
 };
 use zendiloos_kernel::Timestamp;
 
@@ -547,6 +547,29 @@ impl FileHost for Files {
         let path = at.path.join("album").and_then(|album| album.join("beach.jpg")).expect("a short path");
         let stopped = (text == "many").then_some(SearchStop::Results);
         Ok(Found { entries: vec![FoundEntry { path, entry }], stopped })
+    }
+
+    /// A folder at the share's top or anywhere named `big` (counted only so
+    /// far), a file elsewhere.
+    async fn facts(
+        &self,
+        user: &str,
+        at: &FileLocation,
+        _: &RequestContext,
+    ) -> Result<EntryFacts, FileHostError> {
+        self.record(format!("facts {user} {}", place(at)), at)?;
+        let folder = at.path.as_str().is_empty() || at.path.as_str().ends_with("big");
+        Ok(EntryFacts {
+            folder,
+            bytes: if folder { 1_000 } else { 4 },
+            files: if folder { 12 } else { 0 },
+            folders: if folder { 3 } else { 0 },
+            hidden: if folder { 1 } else { 0 },
+            stopped: at.path.as_str().ends_with("big").then_some(CountStop::Time),
+            created: Some(Timestamp::from_unix_seconds(1_700_000_000)),
+            modified: Some(Timestamp::from_unix_seconds(1_700_000_100)),
+            owner: Some(user.to_owned()),
+        })
     }
 
     async fn open(

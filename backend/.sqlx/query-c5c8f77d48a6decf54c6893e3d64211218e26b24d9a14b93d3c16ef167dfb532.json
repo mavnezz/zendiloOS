@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO share_nfs_clients (share_id, network, write, squash, async, insecure, position)\n             VALUES (?, ?, ?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": []
+  },
+  "hash": "c5c8f77d48a6decf54c6893e3d64211218e26b24d9a14b93d3c16ef167dfb532"
+}

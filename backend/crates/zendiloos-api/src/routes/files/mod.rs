@@ -36,6 +36,7 @@ pub(super) fn routes() -> OpenApiRouter<ApiState> {
         .routes(routes!(favourites, set_favourites))
         .routes(routes!(list_folder))
         .routes(routes!(search_folder))
+        .routes(routes!(entry_facts))
         .routes(routes!(download))
         .routes(routes!(download_folder))
         .routes(routes!(upload))
@@ -387,6 +388,94 @@ async fn search_in(
             sharing::SearchStop::Results => SearchStop::Results,
             sharing::SearchStop::Time => SearchStop::Time,
         }),
+    }))
+}
+
+/// Why counting a folder ended before it had looked everywhere.
+#[derive(Debug, Clone, Copy, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CountStop {
+    /// It counted as many entries as it counts at most (ten million).
+    Entries,
+    /// Its time was up (half a minute), or nobody waited any more.
+    Time,
+}
+
+/// What a file or folder is; for a folder, what is in it, counted as the
+/// person may see it.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct EntryFacts {
+    /// Relative to the root, as asked for.
+    pub path: String,
+    pub folder: bool,
+    /// A file's size; for a folder, what the files counted in it hold.
+    pub bytes: u64,
+    pub files: u64,
+    /// Folders below it, itself not counted.
+    pub folders: u64,
+    /// Entries whose name starts with `.`: counted, not looked into.
+    pub hidden: u64,
+    /// Set when the count is short: what was counted by then.
+    pub stopped: Option<CountStop>,
+    /// Unix seconds, where the file system keeps when it was made.
+    pub created: Option<i64>,
+    pub modified: Option<i64>,
+    /// Its owner's account, where the NAS knows it.
+    pub owner: Option<String>,
+}
+
+/// What a file or folder is: when it was made and changed, whose it is;
+/// for a folder, its files, folders and hidden entries counted below it
+/// as the user may see them, and what the files hold. Walks as a search
+/// does; at most ten million entries within half a minute, counted so far
+/// when that is up or the request is dropped. Needs `files.read`.
+#[utoipa::path(
+    get,
+    path = "/files/shares/{id}/facts",
+    tag = "files",
+    security(("session" = [])),
+    params(("id" = i64, Path), FolderQuery),
+    responses(
+        (status = OK, body = EntryFacts),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`: no such share, or not shared with the user, or nothing at that path"),
+        (status = FORBIDDEN, body = Problem, description = "`permission_denied`"),
+    )
+)]
+async fn entry_facts(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(id): Path<i64>,
+    ApiQuery(query): ApiQuery<FolderQuery>,
+) -> Result<Json<EntryFacts>, ApiError> {
+    auth.require(Permission::FilesRead)?;
+    facts_in(&state, &auth, &client, ShareId::new(id).into(), query).await
+}
+
+pub(super) async fn facts_in(
+    state: &ApiState,
+    auth: &Auth,
+    client: &RequestContext,
+    place: PlaceId,
+    query: FolderQuery,
+) -> Result<Json<EntryFacts>, ApiError> {
+    let at = path(&query.path)?;
+    let facts =
+        state.files.facts(&auth.0.actor(), place, at.clone(), query.snapshot.as_deref(), client).await?;
+    Ok(Json(EntryFacts {
+        path: at.as_str().to_owned(),
+        folder: facts.folder,
+        bytes: facts.bytes,
+        files: facts.files,
+        folders: facts.folders,
+        hidden: facts.hidden,
+        stopped: facts.stopped.map(|stop| match stop {
+            sharing::CountStop::Entries => CountStop::Entries,
+            sharing::CountStop::Time => CountStop::Time,
+        }),
+        created: facts.created.map(|at| at.unix_seconds()),
+        modified: facts.modified.map(|at| at.unix_seconds()),
+        owner: facts.owner,
     }))
 }
 

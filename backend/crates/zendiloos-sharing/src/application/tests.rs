@@ -14,8 +14,8 @@ use super::{
     Transfer,
 };
 use crate::domain::{
-    Access, AccessRule, Favourite, FilePath, FileServices, Permission, Principal, ShareId, SmbProtocol,
-    Subject,
+    Access, AccessRule, Favourite, FilePath, FileServices, NfsClient, Permission, Principal, ShareId,
+    SmbProtocol, Subject,
 };
 use crate::testing::{Files, Host, Projects, Shares, Volumes};
 
@@ -133,7 +133,7 @@ fn input(name: &str, pool: &str) -> NewShareInput {
         shared: true,
         recycle_bin: true,
         access: vec![rule(Subject::Group(10), Access::ReadWrite), rule(Subject::Account(2), Access::Read)],
-        nfs: vec![("192.168.1.0/24".into(), false)],
+        nfs: vec![NfsClient::new("192.168.1.0/24", false)],
         settings: crate::domain::ShareSettings::default(),
     }
 }
@@ -197,7 +197,7 @@ async fn bad_requests_change_nothing() {
     twice.access.push(rule(Subject::Group(10), Access::Read));
     assert!(matches!(create(twice).await, Err(SharingError::Duplicate)));
     let mut network = input("photos", "tank");
-    network.nfs = vec![("*".into(), true)];
+    network.nfs = vec![NfsClient::new("nas local", true)];
     assert!(matches!(create(network).await, Err(SharingError::InvalidNetwork(_))));
     assert_eq!(s.host.calls(), Vec::<String>::new());
 }
@@ -634,6 +634,32 @@ async fn restoring_takes_entries_out_of_the_bin_one_by_one() {
             "restore alice photos:.recycle/alice/album/a.jpg",
             "restore alice photos:.recycle/alice/b.jpg",
             "restore alice photos:.recycle/alice/missing",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn what_is_in_a_folder_is_counted_where_the_user_may_look() {
+    let s = setup();
+    let id = with_photos(&s).await;
+    let request = RequestContext::default();
+
+    let top = s.files.facts(&bob(), id, FilePath::root(), None, &request).await.unwrap();
+    assert!(top.folder);
+    assert_eq!((top.files, top.folders, top.hidden, top.stopped), (12, 3, 1, None));
+    assert_eq!(top.owner.as_deref(), Some("bob"));
+    let big = s.files.facts(&bob(), id, file("2024/big"), None, &request).await.unwrap();
+    assert_eq!(big.stopped, Some(crate::domain::CountStop::Time), "counted so far");
+    let one = s.files.facts(&bob(), id, file("2024/a.jpg"), Some("zdl-2026-11-05_19.40.01"), &request).await;
+    assert_eq!(one.unwrap().bytes, 4);
+    let refused = s.files.facts(&carol(), id, FilePath::root(), None, &request).await;
+    assert!(matches!(refused, Err(FilesError::ShareNotFound)), "{refused:?}");
+    assert_eq!(
+        s.file_host.calls(),
+        [
+            "facts bob photos:",
+            "facts bob photos:2024/big",
+            "facts bob photos@zdl-2026-11-05_19.40.01:2024/a.jpg"
         ]
     );
 }

@@ -10,7 +10,7 @@ use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 use zendiloos_identity::domain::Permission;
 use zendiloos_sharing::application::{NewShareInput, ShareChanges, SharingError};
-use zendiloos_sharing::domain::{self as sharing, ShareId};
+use zendiloos_sharing::domain::{self as sharing, NfsClient, NfsSquash, ShareId};
 
 use crate::auth::Auth;
 use crate::error::{ApiError, Problem};
@@ -134,13 +134,78 @@ pub struct ShareRule {
     pub access: ShareRuleLevel,
 }
 
-/// A host or network that may mount the share over NFS.
+/// A host or network that may mount the share over NFS, and how.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NfsRule {
-    /// An IP address or CIDR network, e.g. `192.168.1.0/24`.
+    /// An IP address or CIDR network (`192.168.1.0/24`), a host name
+    /// (`nas.local`) or a pattern with `*` and `?` (`*.example.com`).
     pub network: String,
     pub write: bool,
+    /// Whose identity the client's requests keep; `root` if not given.
+    #[serde(default)]
+    pub squash: NfsSquashKind,
+    /// Writes answered before they are on disk; off if not given.
+    #[serde(default, rename = "async")]
+    pub asynchronous: bool,
+    /// Also from ports above 1024; off if not given.
+    #[serde(default)]
+    pub insecure: bool,
+}
+
+/// Whose identity an NFS client's requests keep: `none` (root stays root),
+/// `root` (root becomes the anonymous user), `all` (everyone does).
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum NfsSquashKind {
+    None,
+    #[default]
+    Root,
+    All,
+}
+
+impl From<NfsSquash> for NfsSquashKind {
+    fn from(squash: NfsSquash) -> Self {
+        match squash {
+            NfsSquash::None => Self::None,
+            NfsSquash::Root => Self::Root,
+            NfsSquash::All => Self::All,
+        }
+    }
+}
+
+impl From<NfsSquashKind> for NfsSquash {
+    fn from(squash: NfsSquashKind) -> Self {
+        match squash {
+            NfsSquashKind::None => Self::None,
+            NfsSquashKind::Root => Self::Root,
+            NfsSquashKind::All => Self::All,
+        }
+    }
+}
+
+impl From<NfsClient> for NfsRule {
+    fn from(client: NfsClient) -> Self {
+        Self {
+            network: client.network,
+            write: client.write,
+            squash: client.squash.into(),
+            asynchronous: client.asynchronous,
+            insecure: client.insecure,
+        }
+    }
+}
+
+impl From<NfsRule> for NfsClient {
+    fn from(rule: NfsRule) -> Self {
+        Self {
+            network: rule.network,
+            write: rule.write,
+            squash: rule.squash.into(),
+            asynchronous: rule.asynchronous,
+            insecure: rule.insecure,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -247,7 +312,7 @@ impl From<sharing::Share> for Share {
             used_bytes: None,
             available_bytes: None,
             access: share.access.into_iter().map(ShareRule::from).collect(),
-            nfs: share.nfs.into_iter().map(|c| NfsRule { network: c.network, write: c.write }).collect(),
+            nfs: share.nfs.into_iter().map(NfsRule::from).collect(),
             created_at: share.created_at.unix_seconds(),
             updated_at: share.updated_at.unix_seconds(),
         }
@@ -363,7 +428,7 @@ async fn create_share(
         shared: request.shared,
         recycle_bin: request.recycle_bin,
         access: request.access.into_iter().map(Into::into).collect(),
-        nfs: request.nfs.into_iter().map(|c| (c.network, c.write)).collect(),
+        nfs: request.nfs.into_iter().map(NfsClient::from).collect(),
         settings: request.settings.map(TryInto::try_into).transpose()?.unwrap_or_default(),
     };
     let share = state.sharing.create(input, &auth.0.actor(), &client).await?;
@@ -425,7 +490,7 @@ async fn update_share(
         shared: request.shared,
         recycle_bin: request.recycle_bin,
         access: request.access.map(|rules| rules.into_iter().map(Into::into).collect()),
-        nfs: request.nfs.map(|clients| clients.into_iter().map(|c| (c.network, c.write)).collect()),
+        nfs: request.nfs.map(|clients| clients.into_iter().map(NfsClient::from).collect()),
         settings: request.settings.map(TryInto::try_into).transpose()?,
     };
     let (share, job) = state.sharing.update(ShareId::new(id), changes, &auth.0.actor(), &client).await?;

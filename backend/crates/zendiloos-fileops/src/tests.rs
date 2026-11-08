@@ -348,6 +348,47 @@ fn a_search_never_takes_a_name_that_is_not_utf8_for_another() {
 }
 
 #[test]
+fn a_folder_is_counted_as_far_as_it_may_be_seen() {
+    let v = Volumes::new();
+    v.write("photos", "Beach.jpg", "sand");
+    v.write("photos", "album/2024/party.png", "music!");
+    v.write("photos", "album/2023/mountain.jpg", "rock");
+    v.write("photos", ".hidden/secret.jpg", "secret");
+    v.write("photos", "album/.thumbs", "dot");
+    v.write("photos", ".zendiloos-upload-0123456789abcdef", "under way");
+    fs::create_dir_all(v.share_path("photos").join("album/empty")).unwrap();
+    symlink(v.share_path("music"), v.share_path("photos").join("music-link")).unwrap();
+    v.write("music", "song.mp3", "never counted through a link");
+    let photos = v.share("photos");
+
+    let all = photos.facts(&SharePath::root(), far_away()).unwrap();
+    assert!(all.folder);
+    assert_eq!(
+        (all.files, all.folders, all.hidden, all.stopped),
+        (4, 4, 2, None),
+        "Beach.jpg, party.png, mountain.jpg and the link; album, 2024, 2023, empty; .hidden and .thumbs"
+    );
+    assert_eq!(all.bytes, 4 + 6 + 4, "only regular files hold bytes");
+    assert!(all.modified.is_some());
+    assert_eq!(all.uid, rustix::process::getuid().as_raw());
+
+    let album = photos.facts(&path("album"), far_away()).unwrap();
+    assert_eq!((album.files, album.folders, album.hidden), (2, 3, 1));
+
+    let file = photos.facts(&path("album/2024/party.png"), far_away()).unwrap();
+    assert!(!file.folder);
+    assert_eq!((file.bytes, file.files, file.folders), (6, 0, 0));
+    assert!(photos.facts(&path("music-link/song.mp3"), far_away()).is_err(), "never through a link");
+
+    let past = SearchBounds { until: Instant::now(), stop: far_away().stop };
+    for n in 0..(SEARCH_CHECK_EVERY * 2) {
+        v.write("photos", &format!("many/file-{n}.txt"), "x");
+    }
+    let late = photos.facts(&SharePath::root(), past).unwrap();
+    assert_eq!(late.stopped, Some(CountStop::Time), "counted so far");
+}
+
+#[test]
 fn a_search_stops_at_its_limits() {
     let v = Volumes::new();
     for n in 0..(MAX_SEARCH_RESULTS + 20) {

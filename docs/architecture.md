@@ -679,6 +679,30 @@ rustls with ring and the system's certificate authorities
   could not be told from one that looks alike). It answers with at most
   500 entries within eight seconds, saying so when it stopped early, and
   stops as soon as `zendiloosd` hangs up (the person typed on, or left).
+- **Properties.** What a file or folder is comes from the NAS
+  (`GET /files/shares/{id}/facts`, `/files/removable/{drive}/facts`, with
+  `path` and in a snapshot `snapshot`): a file or a folder, when it was
+  made (statx's birth time, where the file system keeps it; for a folder
+  on a volume the time it was created in zendiloOS otherwise) and last
+  changed, its owner's account, a file's size; for a folder its files,
+  folders and hidden entries below it and what the files hold, counted by
+  the files agent as the person may see them, walking as the search does.
+  Hidden entries (a leading `.`) are counted, not entered, so the recycle
+  bins are not counted through; uploads under way are not counted. At
+  most ten million entries within half a minute, saying so when it
+  stopped early with what was counted by then; the explorer asks while a
+  properties dialog is open and calls it off when the dialog closes, which
+  stops the walk on the NAS too. A folder directly on a volume has four
+  tabs: general (name, location and how computers reach it, `\\<host>\<name>`
+  over SMB and `<host>:/volume<N>/<name>` over NFS, with copy buttons; the
+  space it uses, its quota, what it holds as counted, times, owner,
+  description, recycle bin, compression and record size), permissions (a
+  table of every account and group, each with deny, read and write, or
+  read only, one at most, and a column with what holds for each account
+  with its groups taken into account, as the NAS decides it: a denial
+  wins, then the account's own rule, then the broadest rule of its groups;
+  groups open to their members), sharing (on the network or not) and NFS
+  (its rules, each added and changed in a dialog of its own).
 - **Folders as archives.** A folder downloads as a tar archive (POSIX
   pax: long names whole, links as links), which Windows, macOS and Linux
   open without extra software. The files agent first plans it as the
@@ -711,7 +735,7 @@ rustls with ring and the system's certificate authorities
   recycle bin, copy back from a snapshot, favourites, and for a folder
   directly on a volume share on the network or stop, previous versions
   (snapshots looked into, and for those who manage shares taken, deleted
-  and rolled back) and properties (general, permissions, sharing). Keys
+  and rolled back) and properties (general, permissions, sharing, NFS). Keys
   do the same (Del, F2, Ctrl+C/X/V/A, Enter, Backspace and Alt+arrows);
   entries dragged onto a folder move (Ctrl copies), files dragged from the
   computer upload. The volumes come from `GET /files/volumes`: someone who
@@ -745,9 +769,22 @@ rustls with ring and the system's certificate authorities
 - Alternative: the file manager runs with broad rights and checks ACLs
   itself. Simpler, but every gap in the checks becomes a data leak, and new
   files belong to the service account.
-- NFS (v4 with `sec=sys`, `root_squash`) trusts the client's UID. Exports
-  are therefore restricted to addresses or networks, and the interface
-  states the risk. **[Later]** Kerberos.
+- NFS (v4 with `sec=sys`) trusts the client's UID. Exports are therefore
+  restricted to the computers each rule names, and the interface states
+  the risk. A rule names an IP address or network, a host name or a
+  pattern with `*` and `?` as `exportfs` reads them (`*.example.com`;
+  lowercase letters, digits, `-` and `.` only, checked by `zendiloosd` and
+  again by the agent, so nothing reaches the exports file that it would
+  read as a separator or an option), and says how: `rw` or `ro`; whose
+  identity the requests keep, `root_squash` (root becomes the anonymous
+  user; the default, and what every rule had before there was a choice),
+  `all_squash` (everyone does) or `no_root_squash` (root stays root: the
+  interface warns that the client's root is then root in the folder);
+  `sync` or `async` (writes answered before they are on disk); `secure`
+  or `insecure` (ports above 1024, which any user of the client may open,
+  for clients such as macOS's Finder). The line the agent writes per
+  client is `<host>(rw|ro,sync|async,no_subtree_check,<squash>,[insecure,]sec=sys)`.
+  **[Later]** Kerberos.
 - **Creating and deleting a share keep its record and its dataset in
   step.** A share that cannot be applied after it was stored goes again,
   record and dataset. Deleting hides the share first (it is offered no

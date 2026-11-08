@@ -1646,6 +1646,7 @@ fn openapi_documents_every_route() {
             "/api/v1/files/removable/{drive}/archive",
             "/api/v1/files/removable/{drive}/delete",
             "/api/v1/files/removable/{drive}/download",
+            "/api/v1/files/removable/{drive}/facts",
             "/api/v1/files/removable/{drive}/folder",
             "/api/v1/files/removable/{drive}/folders",
             "/api/v1/files/removable/{drive}/rename",
@@ -1656,6 +1657,7 @@ fn openapi_documents_every_route() {
             "/api/v1/files/shares/{id}/archive",
             "/api/v1/files/shares/{id}/delete",
             "/api/v1/files/shares/{id}/download",
+            "/api/v1/files/shares/{id}/facts",
             "/api/v1/files/shares/{id}/folder",
             "/api/v1/files/shares/{id}/folders",
             "/api/v1/files/shares/{id}/rename",
@@ -2700,6 +2702,39 @@ async fn admins_create_change_and_delete_shares() {
 }
 
 #[tokio::test]
+async fn nfs_rules_keep_their_host_names_and_options() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let body = json!({
+        "name": "media",
+        "pool": "tank",
+        "nfs": [
+            { "network": "192.168.1.0/24", "write": false },
+            { "network": "*.Example.com", "write": true, "squash": "all", "async": true, "insecure": true },
+        ],
+    });
+    let created = h.send(json(with_csrf(post("/api/v1/shares"), &admin), body)).await;
+    assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
+    let nfs = &created.body["nfs"];
+    assert_eq!(
+        nfs[0],
+        json!({ "network": "192.168.1.0/24", "write": false, "squash": "root", "async": false, "insecure": false }),
+        "what was not given stays as it always was"
+    );
+    assert_eq!(
+        nfs[1],
+        json!({ "network": "*.example.com", "write": true, "squash": "all", "async": true, "insecure": true })
+    );
+    let unknown = h
+        .send(json(
+            with_csrf(post("/api/v1/shares"), &admin),
+            json!({ "name": "x", "pool": "tank", "nfs": [{ "network": "nas.lan", "write": true, "squash": "some" }] }),
+        ))
+        .await;
+    assert_eq!(unknown.status, StatusCode::UNPROCESSABLE_ENTITY, "{:?}", unknown.body);
+}
+
+#[tokio::test]
 async fn shares_validate_their_rules() {
     let h = Harness::new();
     let admin = h.sign_in("alice", Role::Admin).await;
@@ -2712,7 +2747,8 @@ async fn shares_validate_their_rules() {
     let volume = create(json!({ "name": "x", "pool": "cold" })).await;
     assert_problem(&volume, StatusCode::UNPROCESSABLE_ENTITY, "volume_not_found");
     let network =
-        create(json!({ "name": "x", "pool": "tank", "nfs": [{ "network": "*", "write": true }] })).await;
+        create(json!({ "name": "x", "pool": "tank", "nfs": [{ "network": "nas (rw)", "write": true }] }))
+            .await;
     assert_problem(&network, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
 
     let user = h.sign_in("bob", Role::User).await;
@@ -2736,6 +2772,47 @@ fn operation_ids_are_unique() {
         }
     }
     assert!(seen.len() > 30, "found only {} operations", seen.len());
+}
+
+#[tokio::test]
+async fn what_is_in_a_folder_is_counted_for_who_may_see_it() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let carol = h.sign_in("carol", Role::User).await;
+    let carol_id =
+        h.identity.accounts.all().into_iter().find(|a| a.name.as_str() == "carol").unwrap().id.get();
+    let created = h
+        .send(json(
+            with_csrf(post("/api/v1/shares"), &admin),
+            json!({ "name": "photos", "pool": "tank",
+                    "access": [{ "kind": "account", "id": carol_id, "access": "read" }] }),
+        ))
+        .await;
+    let files = format!("/api/v1/files/shares/{}", created.body["id"]);
+    let facts = |session: &Session, query: &str| {
+        h.send(empty(with_cookie(get(&format!("{files}/facts?{query}")), session)))
+    };
+
+    let top = facts(&carol, "path=").await;
+    assert_eq!(top.status, StatusCode::OK, "{:?}", top.body);
+    assert_eq!(
+        top.body,
+        json!({ "path": "", "folder": true, "bytes": 1000, "files": 12, "folders": 3, "hidden": 1,
+                "stopped": null, "created": 1_700_000_000, "modified": 1_700_000_100, "owner": "carol" })
+    );
+    assert_eq!(facts(&carol, "path=2024/big").await.body["stopped"], "time");
+    let one = facts(&carol, "path=2024/a.jpg").await;
+    assert_eq!((one.body["folder"].clone(), one.body["bytes"].clone()), (json!(false), json!(4)));
+    assert_problem(&facts(&carol, "path=../x").await, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
+    assert_problem(&facts(&admin, "path=").await, StatusCode::NOT_FOUND, "not_found");
+
+    // A drive, for someone who manages storage, while it is mounted.
+    let stick = "/api/v1/files/removable/1A2B-3C4D/facts?path=";
+    let on_stick = |session: &Session| h.send(empty(with_cookie(get(stick), session)));
+    assert_problem(&on_stick(&carol).await, StatusCode::FORBIDDEN, "forbidden");
+    h.storage.plug_stick();
+    h.send(empty(with_cookie(get("/api/v1/storage/removable"), &admin))).await;
+    assert_eq!(on_stick(&admin).await.status, StatusCode::OK);
 }
 
 #[tokio::test]

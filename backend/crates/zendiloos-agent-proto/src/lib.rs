@@ -37,9 +37,9 @@ pub use docker::{
     NetworkName, ProjectAction, ProjectConfig, ProjectDirectory, ProjectName, Subnet, TerminalSize,
 };
 pub use files::{
-    DirectoryEntry, EntryKind, FileLocation, FileRoot, FoundEntry, HOMES_DIRECTORY, InvalidSearchText,
-    InvalidSharePath, MAX_DIRECTORY_ENTRIES, MAX_SEARCH_RESULTS, SearchStop, SearchText, SharePath,
-    is_file_name,
+    CountStop, DirectoryEntry, EntryFacts, EntryKind, FileLocation, FileRoot, FoundEntry, HOMES_DIRECTORY,
+    InvalidSearchText, InvalidSharePath, MAX_COUNTED, MAX_DIRECTORY_ENTRIES, MAX_SEARCH_RESULTS, SearchStop,
+    SearchText, SharePath, is_file_name,
 };
 pub use framing::{FrameError, read_message, write_message};
 pub use network::{
@@ -568,6 +568,14 @@ pub enum Request {
         #[serde(default)]
         hidden: bool,
     },
+    /// What `location` is: kind, times and owner, and for a folder its
+    /// files, folders and hidden entries counted as the user may see them.
+    /// Answers [`Response::Facts`]: at most [`MAX_COUNTED`] entries within
+    /// half a minute, ending early once its client hangs up.
+    EntryFacts {
+        user: UserName,
+        location: FileLocation,
+    },
     /// Opens a regular file for reading; [`Response::File`] carries it.
     OpenFile {
         user: UserName,
@@ -721,6 +729,7 @@ impl Request {
             Request::SetGroupMembers { .. } => "set_group_members",
             Request::ListDirectory { .. } => "list_directory",
             Request::SearchFiles { .. } => "search_files",
+            Request::EntryFacts { .. } => "entry_facts",
             Request::OpenFile { .. } => "open_file",
             Request::CreateUpload { .. } => "create_upload",
             Request::MakeDirectory { .. } => "make_directory",
@@ -785,6 +794,10 @@ pub enum Response {
         entries: Vec<FoundEntry>,
         /// Why it did not look everywhere, if it did not.
         stopped: Option<SearchStop>,
+    },
+    /// What [`Request::EntryFacts`] found out.
+    Facts {
+        facts: EntryFacts,
     },
     /// A regular file, opened for reading; its descriptor comes along.
     File {
@@ -1123,6 +1136,7 @@ impl Request {
             | Request::MakeHome { .. }
             | Request::ListDirectory { .. }
             | Request::SearchFiles { .. }
+            | Request::EntryFacts { .. }
             | Request::OpenFile { .. }
             | Request::CreateUpload { .. }
             | Request::MakeDirectory { .. }
@@ -1506,8 +1520,85 @@ pub struct NfsExport {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NfsClient {
-    pub network: Network,
+    pub network: NfsHost,
     pub write: bool,
+    /// Root squashed unless said otherwise, as before there was a choice.
+    #[serde(default)]
+    pub squash: NfsSquash,
+    /// `async`: writes answered before they are on disk.
+    #[serde(default, rename = "async")]
+    pub asynchronous: bool,
+    /// `insecure`: also from ports above 1024.
+    #[serde(default)]
+    pub insecure: bool,
+}
+
+/// Whose identity an NFS client's requests keep.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NfsSquash {
+    /// `no_root_squash`.
+    None,
+    /// `root_squash`.
+    #[default]
+    Root,
+    /// `all_squash`.
+    All,
+}
+
+/// Who an NFS rule is for: an IP address or network, or a host name with
+/// the wildcards `*` and `?` as `exportfs` reads them. Only lowercase
+/// letters, digits, `-`, `.` and the wildcards: nothing the exports file
+/// would read as a separator or an option.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub enum NfsHost {
+    Network(Network),
+    Name(String),
+}
+
+impl NfsHost {
+    pub fn parse(value: &str) -> Result<Self, InvalidNetwork> {
+        if let Ok(network) = Network::parse(value) {
+            return Ok(Self::Network(network));
+        }
+        let label = |label: &str| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"-*?".contains(&b))
+        };
+        let named = value.bytes().any(|b| b.is_ascii_lowercase() || b == b'*' || b == b'?');
+        if value.len() <= 253 && named && value.split('.').all(label) {
+            Ok(Self::Name(value.to_owned()))
+        } else {
+            Err(InvalidNetwork)
+        }
+    }
+}
+
+impl fmt::Display for NfsHost {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Network(network) => network.fmt(f),
+            Self::Name(name) => f.write_str(name),
+        }
+    }
+}
+
+impl TryFrom<String> for NfsHost {
+    type Error = InvalidNetwork;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(&value)
+    }
+}
+
+impl From<NfsHost> for String {
+    fn from(host: NfsHost) -> Self {
+        host.to_string()
+    }
 }
 
 /// An IP address or network in CIDR notation, e.g. `192.168.1.0/24`.
@@ -2043,6 +2134,29 @@ mod tests {
         assert!(
             serde_json::from_value::<Envelope>(without).is_err(),
             "the services are part of every change"
+        );
+    }
+
+    #[test]
+    fn nfs_hosts_are_networks_or_plain_names() {
+        assert_eq!(NfsHost::parse("10.0.0.0/8"), Ok(NfsHost::Network(Network::parse("10.0.0.0/8").unwrap())));
+        assert_eq!(NfsHost::parse("*.example.com").unwrap().to_string(), "*.example.com");
+        for bad in ["", "nas lan", "nas(rw)", "a,b", "NAS.lan", "-a.lan", "a..lan", "@netgroup", "/x"] {
+            assert_eq!(NfsHost::parse(bad), Err(InvalidNetwork), "{bad:?}");
+        }
+        let old: NfsClient = serde_json::from_str(r#"{"network":"10.0.0.5","write":true}"#).unwrap();
+        assert_eq!((old.squash, old.asynchronous, old.insecure), (NfsSquash::Root, false, false));
+        let json = serde_json::to_string(&NfsClient {
+            network: NfsHost::parse("nas.lan").unwrap(),
+            write: false,
+            squash: NfsSquash::All,
+            asynchronous: true,
+            insecure: true,
+        })
+        .unwrap();
+        assert_eq!(
+            json,
+            r#"{"network":"nas.lan","write":false,"squash":"all","async":true,"insecure":true}"#
         );
     }
 

@@ -178,6 +178,18 @@ acl=$(vm "sudo getfacl -p $path")
 grep -q '^user:ben:r-x' <<<"$acl" || fail "the rules went with the sharing: $acl"
 smb_ok anna 'first secret phrase' 'ls'
 
+say "3c. NFS rules with their options"
+rules='[{"network":"127.0.0.1","write":false},{"network":"*.example.com","write":true,"squash":"all","async":true,"insecure":true},{"network":"10.9.8.0/24","write":true,"squash":"none"}]'
+call PATCH "/shares/$share_id" "{\"nfs\":$rules}" | jq -e '.share.nfs | length == 3' >/dev/null || fail "cannot set NFS rules"
+exports=$(vm "sudo exportfs -v")
+grep -A1 -F '*.example.com' <<<"$exports" | tr -d '\n' | grep -q 'async' && grep -A1 -F '*.example.com' <<<"$exports" | tr -d '\n' | grep -q 'insecure' \
+    && grep -A1 -F '*.example.com' <<<"$exports" | tr -d '\n' | grep -q 'all_squash' || fail "the options did not reach the export: $exports"
+grep -A1 '10.9.8.0/24' <<<"$exports" | tr -d '\n' | grep -q 'no_root_squash' || fail "no_root_squash missing: $exports"
+grep -A1 '127.0.0.1' <<<"$exports" | tr -d '\n' | grep -q 'root_squash' || fail "the default rule changed: $exports"
+[[ $(status_as admin PATCH "/shares/$share_id" -H 'Content-Type: application/json' -d '{"nfs":[{"network":"bad host!","write":false}]}') == 422 ]] \
+    || fail "a client that is no host was taken"
+call PATCH "/shares/$share_id" '{"nfs":[{"network":"127.0.0.1","write":false}]}' >/dev/null
+
 say "4. The file manager sees what SMB sees"
 # New accounts choose their own password first; it is their SMB password too.
 anna_pw='fresh secret phrase one' ben_pw='fresh secret phrase two'
@@ -264,6 +276,13 @@ vm "sudo test -f $path/copy/from-web.txt && sudo test ! -e $path/.recycle/anna/c
 [[ $(vm "sudo stat -c '%U' $path/copy/from-web.txt") == anna ]] || fail "the restored file changed owner"
 job_succeeded "$(call_as anna POST "$files/delete" '{"paths":["copy"]}' | jq -r .id)"
 smb_ok anna "$anna_pw" 'ls album/from-web.txt'
+
+# What a folder holds, counted as the person may see it.
+facts=$(call_as anna GET "$files/facts?path=")
+want_files=$(vm "sudo find $path -mindepth 1 -not -type d -not -path '*/.*' | wc -l")
+want_folders=$(vm "sudo find $path -mindepth 1 -type d -not -path '*/.*' | wc -l")
+jq -e --argjson f "$want_files" --argjson d "$want_folders" '.files == $f and .folders == $d and .stopped == null and .created != null' \
+    <<<"$facts" >/dev/null || fail "the counts: $facts (find: $want_files files, $want_folders folders)"
 
 say "5. ben loses access"
 # A link at the share's top that leads out of it: changing access must not

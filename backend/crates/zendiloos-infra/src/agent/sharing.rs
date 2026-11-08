@@ -9,8 +9,8 @@ use zendiloos_agent_proto::{
 use zendiloos_kernel::{PortError, RequestContext, Timestamp};
 use zendiloos_sharing::application::ports::{HostError, ShareHost, Volume, Volumes};
 use zendiloos_sharing::domain::{
-    Compression, Frequency, Permission, Principal, RecordSize, ShareName, ShareSettings, ShareUsage,
-    SharingConfig, SmbEncryption, SmbProtocol, SmbSigning, Snapshot, is_label,
+    Compression, Frequency, NfsSquash, Permission, Principal, RecordSize, ShareName, ShareSettings,
+    ShareUsage, SharingConfig, SmbEncryption, SmbProtocol, SmbSigning, Snapshot, is_label,
 };
 use zendiloos_storage::application::ports::ZfsSource;
 
@@ -298,8 +298,19 @@ impl ShareHost for AgentSharing {
                     .clients
                     .iter()
                     .map(|c| {
-                        let network = proto::Network::parse(&c.network).map_err(|_| invalid("network"))?;
-                        Ok(NfsClient { network, write: c.write })
+                        let network = proto::NfsHost::parse(&c.network).map_err(|_| invalid("network"))?;
+                        let squash = match c.squash {
+                            NfsSquash::None => proto::NfsSquash::None,
+                            NfsSquash::Root => proto::NfsSquash::Root,
+                            NfsSquash::All => proto::NfsSquash::All,
+                        };
+                        Ok(NfsClient {
+                            network,
+                            write: c.write,
+                            squash,
+                            asynchronous: c.asynchronous,
+                            insecure: c.insecure,
+                        })
                     })
                     .collect::<Result<_, HostError>>()?;
                 Ok(NfsExport { name: share(&spec.name)?, volume: volume(spec.volume)?, clients })
@@ -544,7 +555,7 @@ mod tests {
             nfs: vec![NfsSpec {
                 name: photos(),
                 volume: 1,
-                clients: vec![Client { network: "192.168.1.0/24".into(), write: true }],
+                clients: vec![Client::new("192.168.1.0/24", true)],
             }],
             services,
             homes: Some(HomesSpec { volume: 1, users: vec!["anna".into()] }),
@@ -571,11 +582,7 @@ mod tests {
         assert_eq!(homes.as_ref().unwrap().users.len(), 1);
 
         let odd_network = SharingConfig {
-            nfs: vec![NfsSpec {
-                name: photos(),
-                volume: 1,
-                clients: vec![Client { network: "x".into(), write: false }],
-            }],
+            nfs: vec![NfsSpec { name: photos(), volume: 1, clients: vec![Client::new("x y", false)] }],
             ..SharingConfig::default()
         };
         assert!(matches!(sharing.apply(&odd_network, &context).await, Err(HostError::Port(_))));

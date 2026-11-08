@@ -1,8 +1,15 @@
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/vue-query'
-import { computed, type Ref, ref } from 'vue'
+import { computed, onScopeDispose, type Ref, ref, watch } from 'vue'
 
 import { ApiProblem, api, csrfToken, unwrap } from '@/shared/api/client'
-import type { Favourite, Folder, Job, SearchResults, TransferRequest } from '@/shared/api/types'
+import type {
+  EntryFacts,
+  Favourite,
+  Folder,
+  Job,
+  SearchResults,
+  TransferRequest,
+} from '@/shared/api/types'
 
 import { isDrive, type Place } from './lib/location'
 
@@ -67,6 +74,74 @@ export function searchFolder(
           signal,
         }),
       )
+}
+
+/** Where an entry is, to ask the NAS about it. */
+export interface FactsTarget {
+  place: Place
+  path: string
+  snapshot: string | null
+}
+
+/**
+ * What an entry is; for a folder, its files, folders and hidden entries
+ * counted on the NAS as the person may see them (at most ten million, in
+ * half a minute); `signal` calls it off.
+ */
+export function entryFacts(target: FactsTarget, signal?: AbortSignal): Promise<EntryFacts> {
+  const query = { path: target.path, ...(target.snapshot ? { snapshot: target.snapshot } : {}) }
+  return isDrive(target.place)
+    ? unwrap(
+        api.GET('/api/v1/files/removable/{drive}/facts', {
+          params: { path: { drive: target.place }, query },
+          signal,
+        }),
+      )
+    : unwrap(
+        api.GET('/api/v1/files/shares/{id}/facts', {
+          params: { path: { id: target.place }, query },
+          signal,
+        }),
+      )
+}
+
+/**
+ * The facts of the entry `target` names, asked for whenever it changes;
+ * a count overtaken, left (`null`) or no longer looked at is called off,
+ * which ends it on the NAS too.
+ */
+export function useEntryFacts(target: () => FactsTarget | null) {
+  const facts = ref<EntryFacts | null>(null)
+  const counting = ref(false)
+  const failure = ref<unknown>(null)
+  let controller: AbortController | null = null
+  watch(
+    target,
+    (now) => {
+      controller?.abort()
+      controller = null
+      facts.value = null
+      failure.value = null
+      counting.value = false
+      if (!now) return
+      const mine = new AbortController()
+      controller = mine
+      counting.value = true
+      entryFacts(now, mine.signal)
+        .then((found) => {
+          if (!mine.signal.aborted) facts.value = found
+        })
+        .catch((problem: unknown) => {
+          if (!mine.signal.aborted) failure.value = problem
+        })
+        .finally(() => {
+          if (controller === mine) counting.value = false
+        })
+    },
+    { immediate: true },
+  )
+  onScopeDispose(() => controller?.abort())
+  return { facts, counting, failure }
 }
 
 /**

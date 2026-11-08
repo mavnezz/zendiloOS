@@ -596,8 +596,20 @@ describe('choosing and acting', () => {
     expect(await disabled('Copy')).toBe(false)
   })
 
-  it('tells what an entry is', async () => {
+  it('tells what an entry is, asking the NAS for its times and owner', async () => {
     serve()
+    on('GET', '/api/v1/files/shares/1/facts', ({ query }) => ({
+      path: query.get('path'),
+      folder: false,
+      bytes: 7,
+      files: 0,
+      folders: 0,
+      hidden: 0,
+      stopped: null,
+      created: 1_690_000_000,
+      modified: 1_700_000_100,
+      owner: 'bob',
+    }))
     await show()
     await goTo('photos')
     await fire(row('b.txt'), 'click')
@@ -605,6 +617,10 @@ describe('choosing and acting', () => {
     const dialog = document.body.querySelector('[role="dialog"]')!.textContent
     expect(dialog).toContain('TXT file')
     expect(dialog).toContain('photos/b.txt')
+    expect(dialog).toContain('7 B')
+    expect(dialog).toContain('Created')
+    expect(dialog).toContain('bob')
+    expect(callsTo('GET', '/api/v1/files/shares/1/facts')[0]!.query.get('path')).toBe('b.txt')
   })
 })
 
