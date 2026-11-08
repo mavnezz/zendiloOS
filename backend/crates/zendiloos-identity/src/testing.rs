@@ -61,6 +61,8 @@ impl AccountRepository for InMemoryAccounts {
     }
 
     async fn find_by_id(&self, id: AccountId) -> Result<Option<Account>, PortError> {
+        // As a database does: requests made at once take turns here.
+        tokio::task::yield_now().await;
         Ok(self.accounts.lock().unwrap().iter().find(|a| a.id == id).cloned())
     }
 

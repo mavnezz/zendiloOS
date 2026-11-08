@@ -24,6 +24,9 @@ impl SavePreferences {
     ) -> Result<(), IdentityError> {
         Context::require(auth, Permission::AccountSelf)?;
         let repository = &self.context.ports.preferences;
+        // Read, merged and saved as one: two tabs saving at once cannot
+        // take the reminder back by saving over each other.
+        let _saving = self.context.preferences.lock().await;
         let kept = repository.load(auth.account.id).await?;
         preferences.star_prompt = StarPrompt::further(kept.star_prompt, preferences.star_prompt);
         Ok(repository.save(auth.account.id, preferences).await?)

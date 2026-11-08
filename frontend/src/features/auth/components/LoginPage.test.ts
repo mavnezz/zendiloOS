@@ -139,7 +139,7 @@ describe('LoginPage', () => {
 
     expect(wrapper.find('#login-password').exists()).toBe(true)
     expect(wrapper.find('[role="alert"]').text()).toBe(
-      'The sign-in took too long or was ended. Sign in again.',
+      'The sign-in took too long, the code was wrong too often, or it was ended. Sign in again.',
     )
   })
 

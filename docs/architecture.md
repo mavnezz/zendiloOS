@@ -1040,7 +1040,7 @@ TLS is rustls with ring and the system's certificate authorities
   attempt counts as failed from its start until it ends otherwise, so
   attempts sent at once get no more checks than attempts one after
   another. Plus `limit_req` in nginx for login, the second sign-in step, setup,
-  password changes and the two-factor changes that check the password.
+  password changes and the two-factor changes (also confirming a setup).
 - **Blocked addresses:** an address with too many failed logins (10 within
   5 minutes by default) is blocked from the whole API for a day, or until
   lifted; administrators block addresses and networks by hand too. Every
@@ -1088,9 +1088,15 @@ TLS is rustls with ring and the system's certificate authorities
   Setting it up takes the account's password, so a session alone (left
   open, taken over) cannot turn it on with someone else's phone and lock
   the owner out; a wrong password counts against the account lock and the
-  address block like a failed login (`wrong_password`). A secret being set
-  up waits for its first code, which turns it on; until then the password
-  alone signs in. The time step of the last code taken is
+  address block like a failed login (`wrong_password`). Not for an account
+  whose password an administrator sets (`password_locked`): it may be
+  shared, and one of those sharing it would lock the others out. A secret
+  being set up waits for its first code, which turns it on; until then the
+  password alone signs in. It waits ten minutes, for the session that began
+  it, with the password it was begun with (changed or reset, it ends), in
+  memory only (a restart ends it); three wrong codes end it, each audited
+  (`wrong_code`), and it is begun again with the password, so a session
+  taken over cannot guess the first code of a setup its owner left. The time step of the last code taken is
   stored, and a code of that step or an earlier one is refused, so no code
   signs in twice, not even two sign-ins at once (the check and the update
   run under the lock of account changes). Ten recovery codes (ten
@@ -1106,15 +1112,23 @@ TLS is rustls with ring and the system's certificate authorities
   `POST /auth/login` answers 202 with a random token (256 bits, as for
   sessions; only its hash is kept), and the sign-in waits in memory for at
   most five minutes, bound to the account and to the address the password
-  came from (1000 at most; the oldest go first). The code goes to
+  came from (5 at most per account and 20 per network, an IPv4 address or
+  an IPv6 /64, each making room among its own, so nobody ends others'
+  waiting sign-ins; 1000 in all; the oldest go first). The code goes to
   `POST /auth/login/second-factor` with the token. A wrong code counts
   against the account lock and the address block like a wrong password,
   and the password step does not clear the account's failures, so knowing
-  the password gives no more guesses; three wrong codes end the sign-in.
-  Under the lock of account changes the second step reads the account and
-  its second factor again: a password changed or reset, a second factor
-  reset or set up anew, or the account deleted meanwhile end the sign-in
-  (`sign_in_expired`), a disabled account is refused. Turning it off takes
+  the password gives no more guesses; three wrong codes end the sign-in,
+  the third answering `sign_in_expired`. Whatever the account lock is set
+  to, an account takes at most 10 wrong second codes an hour and 30 a day,
+  from wherever they come (also when turning it off or renewing recovery
+  codes), and a sign-in that succeeds does not reset that: someone with the
+  password and many addresses does not get to guess the six digits.
+  Under the lock of account changes the second step checks the sign-in
+  still waits (sent twice at once, it starts one session) and reads the
+  account and its second factor again: a password changed or reset, a
+  second factor reset or set up anew, or the account deleted meanwhile end
+  the sign-in (`sign_in_expired`), a disabled account is refused. Turning it off takes
   the password and a code (or a recovery code); administrators reset it for
   someone who lost their phone and their recovery codes (audited,
   `identity.two_factor_reset`), and the users page shows who has it on.

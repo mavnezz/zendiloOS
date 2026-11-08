@@ -376,6 +376,8 @@ const de: Messages = {
       'Keine Wiederherstellungscodes mehr | Noch ein Wiederherstellungscode | Noch {n} Wiederherstellungscodes',
     setUp: 'Einrichten',
     passwordHint: 'Geben Sie Ihr Passwort ein, um die Zwei-Faktor-Anmeldung einzurichten.',
+    passwordLocked:
+      'Das Passwort dieses Kontos legt ein Administrator fest, es wird also womöglich geteilt: Die Zwei-Faktor-Anmeldung ist dafür nicht vorgesehen.',
     continue: 'Weiter',
     scan: 'Scannen Sie diesen Code mit einer Authenticator-App, etwa Aegis, Google Authenticator oder 1Password.',
     qrLabel: 'QR-Code für die Authenticator-App',
@@ -2854,10 +2856,11 @@ const de: Messages = {
     wrong_password: 'Das aktuelle Passwort ist falsch.',
     invalid_code: 'Der Code ist falsch.',
     sign_in_expired:
-      'Die Anmeldung hat zu lange gedauert oder wurde beendet. Melden Sie sich erneut an.',
+      'Die Anmeldung hat zu lange gedauert, der Code war zu oft falsch, oder sie wurde beendet. Melden Sie sich erneut an.',
     two_factor_on: 'Die Zwei-Faktor-Anmeldung ist bereits eingeschaltet.',
     two_factor_off: 'Die Zwei-Faktor-Anmeldung ist ausgeschaltet.',
-    no_two_factor_setup: 'Richten Sie die Zwei-Faktor-Anmeldung zuerst ein.',
+    no_two_factor_setup:
+      'Beginnen Sie die Einrichtung der Zwei-Faktor-Anmeldung mit Ihrem Passwort: Eine Einrichtung wartet zehn Minuten und endet nach drei falschen Codes.',
     too_many_attempts: 'Zu viele Fehlversuche. Bitte in {minutes} Minuten erneut versuchen.',
     account_disabled: 'Dieses Konto ist deaktiviert.',
     invalid_setup_code: 'Der Einrichtungscode ist falsch.',

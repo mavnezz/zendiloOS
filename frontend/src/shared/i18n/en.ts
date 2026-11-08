@@ -365,6 +365,8 @@ const en = {
     codesLeft: 'No recovery codes left | One recovery code left | {n} recovery codes left',
     setUp: 'Set up',
     passwordHint: 'Enter your password to set up two-factor sign-in.',
+    passwordLocked:
+      'An administrator sets the password of this account, so it may be shared: two-factor sign-in is not for it.',
     continue: 'Continue',
     scan: 'Scan this code with an authenticator app, such as Aegis, Google Authenticator or 1Password.',
     qrLabel: 'QR code for the authenticator app',
@@ -2801,10 +2803,12 @@ const en = {
     invalid_credentials: 'Wrong name or password.',
     wrong_password: 'The current password is wrong.',
     invalid_code: 'The code is wrong.',
-    sign_in_expired: 'The sign-in took too long or was ended. Sign in again.',
+    sign_in_expired:
+      'The sign-in took too long, the code was wrong too often, or it was ended. Sign in again.',
     two_factor_on: 'Two-factor sign-in is on already.',
     two_factor_off: 'Two-factor sign-in is off.',
-    no_two_factor_setup: 'Set up two-factor sign-in first.',
+    no_two_factor_setup:
+      'Begin setting up two-factor sign-in with your password: a setup waits ten minutes and ends after three wrong codes.',
     too_many_attempts: 'Too many failed attempts. Try again in {minutes} minutes.',
     account_disabled: 'This account is disabled.',
     invalid_setup_code: 'The setup code is wrong.',

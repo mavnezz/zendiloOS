@@ -44,9 +44,13 @@ const recoveryCodes = ref<string[]>([])
 const code = ref('')
 const password = ref('')
 const error = ref<string | null>(null)
+/** The problem code of the last request that failed, if it had one. */
+const lastProblem = ref<string | null>(null)
 const pending = ref(false)
 
 const name = computed(() => session.info?.account.name ?? '')
+/** An administrator sets the password: it may be shared, so no second factor. */
+const passwordLocked = computed(() => session.info?.account.password_locked ?? false)
 /** The key in groups of four, as apps show it. */
 const key = computed(() => setup.value?.secret.match(/.{1,4}/g)?.join(' ') ?? '')
 
@@ -83,10 +87,12 @@ function go(next: Step): void {
 async function attempt(request: () => Promise<void>): Promise<void> {
   pending.value = true
   error.value = null
+  lastProblem.value = null
   try {
     await request()
   } catch (failure) {
     error.value = problemMessage(failure)
+    lastProblem.value = failure instanceof ApiProblem ? failure.code : null
     if (failure instanceof ApiProblem && failure.code === 'wrong_password') password.value = ''
     else code.value = ''
   } finally {
@@ -100,13 +106,22 @@ const begin = () =>
     go('setup')
   })
 
-const confirm = () =>
-  attempt(async () => {
+const confirm = async () => {
+  await attempt(async () => {
     recoveryCodes.value = await confirmTwoFactor(code.value)
     setup.value = null
     go('codes')
     notifications.notify('success', t('twoFactor.turnedOn'), t('twoFactor.turnedOnHint'))
   })
+  // The setup is over (too late, or a code wrong too often): begun again
+  // with the password, the message kept.
+  if (step.value === 'setup' && lastProblem.value === 'no_two_factor_setup') {
+    const message = error.value
+    setup.value = null
+    go('password')
+    error.value = message
+  }
+}
 
 const renew = () =>
   attempt(async () => {
@@ -189,6 +204,13 @@ function download(): void {
             {{ t('twoFactor.disable') }}
           </Button>
         </template>
+        <p
+          v-else-if="passwordLocked"
+          class="text-muted-foreground text-sm"
+          data-testid="password-locked"
+        >
+          {{ t('twoFactor.passwordLocked') }}
+        </p>
         <Button v-else @click="go('password')">{{ t('twoFactor.setUp') }}</Button>
       </div>
     </template>

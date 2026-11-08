@@ -22,7 +22,7 @@ import TwoFactorDialog from './TwoFactorDialog.vue'
 const SECRET = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ'
 const CODES = ['abcde-fghjk', 'mnpqr-stuvw']
 
-async function show() {
+async function show(passwordLocked = false) {
   const wrapper = mountApp(TwoFactorDialog, { props: { open: true } })
   useSessionStore().start({
     account: {
@@ -32,7 +32,7 @@ async function show() {
       role: 'user',
       permissions: [],
       password_change_required: false,
-      password_locked: false,
+      password_locked: passwordLocked,
       created_at: 1_700_000_000,
     },
     csrf_token: 'csrf-1',
@@ -49,6 +49,33 @@ beforeEach(() => {
 })
 
 describe('two-factor sign-in', () => {
+  it('goes back to the password once a setup is over, saying why', async () => {
+    answer('GET', '/api/v1/auth/two-factor', { enabled: false, recovery_codes_left: 0 })
+    answer('POST', '/api/v1/auth/two-factor/setup', { secret: SECRET, uri: 'otpauth://totp/x' })
+    on('POST', '/api/v1/auth/two-factor/confirm', () => problem(409, 'no_two_factor_setup'))
+    await show()
+    await click('Set up')
+    await type('#two-factor-password', 'correct horse battery')
+    await click('Continue')
+    await type('#two-factor-code', '000000')
+    await click('Turn on')
+
+    expect(page()).toContain('a setup waits ten minutes and ends after three wrong codes')
+    expect(document.querySelector('#two-factor-password')).not.toBeNull()
+    expect(document.querySelector('svg[role="img"]')).toBeNull()
+  })
+
+  it('is not offered to an account whose password an administrator sets', async () => {
+    answer('GET', '/api/v1/auth/two-factor', { enabled: false, recovery_codes_left: 0 })
+    await show(true)
+
+    expect(document.querySelector('[data-testid="password-locked"]')?.textContent).toContain(
+      'An administrator sets the password of this account',
+    )
+    const buttons = [...document.querySelectorAll('button')].map((b) => b.textContent?.trim())
+    expect(buttons).not.toContain('Set up')
+  })
+
   it('is set up with the password, a QR code and its first code, and shows the recovery codes once', async () => {
     answer('GET', '/api/v1/auth/two-factor', { enabled: false, recovery_codes_left: 0 })
     let setups = 0
