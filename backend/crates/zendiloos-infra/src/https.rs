@@ -127,7 +127,7 @@ async fn follow(
             .method(method.clone())
             .uri(path)
             .header(HOST, host_header)
-            .header(USER_AGENT, concat!("zendiloOS/", env!("CARGO_PKG_VERSION")));
+            .header(USER_AGENT, format!("zendiloOS/{}", zendiloos_kernel::VERSION));
         for (name, value) in headers {
             if *name == AUTHORIZATION && !same_host {
                 continue;

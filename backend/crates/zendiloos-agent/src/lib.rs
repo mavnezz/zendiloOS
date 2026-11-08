@@ -5,6 +5,15 @@
 //! "The agent executes, zendiloosd interprets": tool output goes back raw;
 //! parsing happens unprivileged, so parser bugs never run as root.
 
+/// The version of zendiloOS this agent belongs to: the package's, which its
+/// build takes from `debian/changelog` (`ZENDILOOS_VERSION`), or the crates'
+/// in a build without one; as `zendiloos_kernel::VERSION`, which the agent
+/// does not depend on.
+pub const VERSION: &str = match option_env!("ZENDILOOS_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 mod accounts;
 mod acl;
 mod acme;
