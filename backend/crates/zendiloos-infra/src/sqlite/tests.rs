@@ -114,6 +114,7 @@ async fn creates_a_private_database_and_applies_all_migrations() {
             "file_favourites",
             "file_services",
             "firewall_blocked",
+            "firewall_project_ports",
             "firewall_rules",
             "firewall_settings",
             "group_members",
