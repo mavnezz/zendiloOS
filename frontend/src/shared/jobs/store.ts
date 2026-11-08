@@ -14,6 +14,36 @@ export function jobTitle(job: Job): string {
   return job.target ? `${name}: ${job.target}` : name
 }
 
+/** Moves that left part of their sources: neither a success nor a plain failure. */
+const PARTIAL = ['partly_moved', 'copied_not_moved']
+
+/**
+ * The detail of a move that left part of its source: how many entries
+ * stayed, a space, and one of them (`photos/album/new.txt`).
+ */
+export function leftBehind(detail?: string | null): { count: number; example: string } {
+  const match = /^(\d+) (.*)$/s.exec(detail ?? '')
+  return match ? { count: Number(match[1]), example: match[2] ?? '' } : { count: 0, example: '' }
+}
+
+/** Why `job` failed, in words where the reason is known. */
+function reason(job: Job): string {
+  const { t } = i18n.global
+  const code = job.error_code
+  if (!code) return ''
+  if (PARTIAL.includes(code)) {
+    const { count, example } = leftBehind(job.error_detail)
+    return t(`jobs.errors.${code}`, { count, example }, count)
+  }
+  if (!i18n.global.te(`jobs.errors.${code}`)) return t('jobs.failedBecause', { code })
+  const message = t(`jobs.errors.${code}`)
+  // The files agent names what was not possible, such as two names that
+  // differ only in case where the target does not tell them apart.
+  return code === 'invalid_operation' && job.error_detail
+    ? `${message} (${job.error_detail})`
+    : message
+}
+
 /**
  * Long-running operations, kept current over the live socket. Every
  * browser hears about every job, so a second administrator sees what the
@@ -38,18 +68,13 @@ export const useJobsStore = defineStore('jobs', () => {
     const notifications = useNotifications()
     if (job.state === 'succeeded') {
       notifications.notify('success', jobTitle(job), t('jobs.succeeded'))
+    } else if (job.error_code && PARTIAL.includes(job.error_code)) {
+      notifications.notify('warning', jobTitle(job), reason(job))
     } else {
-      const code = job.error_code
-      const known = code && i18n.global.te(`jobs.errors.${code}`)
-      const reason = code
-        ? known
-          ? t(`jobs.errors.${code}`)
-          : t('jobs.failedBecause', { code })
-        : ''
       notifications.notify(
         'error',
         jobTitle(job),
-        `${t(`jobs.state.${job.state}`)} ${reason}`.trim(),
+        `${t(`jobs.state.${job.state}`)} ${reason(job)}`.trim(),
       )
     }
   }

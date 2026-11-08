@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest'
 
-import { actionsFor, extension, type Item, type Situation, shortcut, sortItems } from './actions'
+import {
+  actionsFor,
+  dropMode,
+  extension,
+  type Item,
+  type Situation,
+  shortcut,
+  sortItems,
+} from './actions'
 import {
   folderAt,
   inBin,
@@ -148,6 +156,18 @@ describe('the actions', () => {
     expect(press('c', { metaKey: true })).toBe('copy')
     expect(press('q', { ctrlKey: true })).toBeNull()
     expect(press('x')).toBeNull()
+  })
+
+  it('move when dropped within one place and copy into another, unless a key says otherwise', () => {
+    const keys = (init: MouseEventInit = {}) => new MouseEvent('drop', init)
+    expect(dropMode(1, 1, keys())).toBe('move')
+    expect(dropMode(1, 2, keys())).toBe('copy')
+    expect(dropMode(1, '1A2B-3C4D', keys())).toBe('copy')
+    expect(dropMode('1A2B-3C4D', '1A2B-3C4D', keys())).toBe('move')
+    expect(dropMode(0, 1, keys())).toBe('copy')
+    expect(dropMode(1, 1, keys({ ctrlKey: true }))).toBe('copy')
+    expect(dropMode(1, 1, keys({ altKey: true }))).toBe('copy')
+    expect(dropMode(1, 2, keys({ shiftKey: true }))).toBe('move')
   })
 })
 
