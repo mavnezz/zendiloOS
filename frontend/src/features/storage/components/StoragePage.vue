@@ -11,10 +11,9 @@ import DiskDetail from './DiskDetail.vue'
 import DisksSection from './DisksSection.vue'
 import OverviewSection from './OverviewSection.vue'
 import PoolsSection from './PoolsSection.vue'
-import VolumesSection from './VolumesSection.vue'
 
 const props = defineProps<{
-  page: 'overview' | 'volumes' | 'pools' | 'disks'
+  page: 'overview' | 'pools' | 'disks'
   /** Whether the signed-in account may change pools (`storage.manage`). */
   canManage: boolean
 }>()
@@ -43,7 +42,6 @@ watch(
       </Button>
     </PageHeader>
     <OverviewSection v-if="page === 'overview'" />
-    <VolumesSection v-else-if="page === 'volumes'" />
     <PoolsSection v-else-if="page === 'pools'" :can-manage="canManage" />
     <template v-else>
       <DiskDetail

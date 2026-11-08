@@ -1360,10 +1360,6 @@ const de: Messages = {
         title: 'Speicherübersicht',
         description: 'Wie es Pools, Volumes und Datenträgern geht, und was Aufmerksamkeit braucht.',
       },
-      volumes: {
-        title: 'Volumes',
-        description: 'Wo die Daten liegen: ein Volume je Pool, mit seinen Ordnern.',
-      },
       pools: {
         title: 'Pools',
         description:
@@ -1390,12 +1386,6 @@ const de: Messages = {
       writeErrors: 'Schreibf.',
       checksumErrors: 'Prüfsummenf.',
       state: 'Status',
-      volume: 'Volume',
-      mount: 'Eingehängt in',
-      filesystem: 'Dateisystem',
-      used: 'Belegt',
-      free: 'Frei',
-      disks: 'Platten',
     },
     poolCount: 'Kein Pool | Ein Pool | {count} Pools',
     concernCount: 'Eine Sache ansehen | {count} Dinge ansehen',
@@ -1559,7 +1549,6 @@ const de: Messages = {
     },
     arrays: 'RAID-Verbünde',
     refresh: 'Aktualisieren',
-    noVolumes: 'Noch keine Daten-Volumes.',
     noArrays: 'Keine RAID-Verbünde.',
     noDisks: 'Keine Laufwerke gefunden.',
     notMounted: 'nicht eingehängt',
