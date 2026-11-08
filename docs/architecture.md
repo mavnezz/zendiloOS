@@ -1810,7 +1810,7 @@ that went back.
 
 ### 4.12 Firewall
 
-**One list of rules**, kept by `zendiloos-firewall` (migration 0035): each
+**One list of rules**, kept by `zendiloos-firewall` (migrations 0035, 0039): each
 rule names a network connection (or any), what it is about (all ports, the
 web interface, SMB, NFS, SSH, network discovery, ping, a Docker project, or
 ports by number with TCP, UDP or both), a source (anyone, an address, a
@@ -1821,7 +1821,8 @@ The services stand for the ports in use: the web interface's HTTP and HTTPS
 ports (also those of a change waiting for confirmation), the SSH server's,
 SMB's (TCP 139, 445, UDP 137, 138), NFS's (2049, rpcbind on 111, and mountd,
 statd and lockd on the ports the package fixes in
-`/etc/nfs.conf.d/zendiloos.conf`: 20048, 32765, 32768), discovery's
+`/etc/nfs.conf.d/zendiloos.conf`: 20048, 32765, 32767, all below the range
+Linux hands out for outgoing connections), discovery's
 (WS-Discovery, mDNS, LLMNR), and a project's published host ports while its
 containers run.
 
@@ -1831,22 +1832,36 @@ with their host bits zero, port ranges) and writes as
 `/etc/zendiloos/firewall/zendiloos.nft`: the table `inet zendiloos_firewall`
 created, deleted and made anew in one transaction, so nothing else (Docker's
 tables, Debian's) is touched. Its `input` chain accepts answers, the
-loopback, Docker's bridges (containers reach the NAS), what IPv6 needs and
+loopback, Docker's bridges (containers reach the NAS; `docker0` and the
+`br-` bridges the network context finds, each by its exact name, so a bridge
+of the machine's own such as `br-lan` meets the rules), what IPv6 needs and
 DHCP's answers, then the rules, then the fallback. Its `forward` chain lets
 containers' own traffic pass and sends what Docker forwards to a published
 port (`ct status dnat`) through the rules that are about all ports, a project
 or ports, matched by the port it was sent to (`ct original proto-dst`), then
-the fallback. A drop there is final; an accept never overrides Docker's own
-drops. The agent has no network of its own (`PrivateNetwork`): `nft -c`
+the fallback; any other new connection from outside to Docker's bridges (a
+LAN host routing to a container's address through the NAS) is dropped. A drop
+there is final; an accept never overrides Docker's own drops. The agent has no network of its own (`PrivateNetwork`): `nft -c`
 checks the file in a transient unit, and `zendiloos-firewall.service`
 (`nft -f`, early at boot before `network-pre.target`, after Debian's
-`nftables.service`) loads it, reloaded after each change. Off, the file only
+`nftables.service`, and again when that restarts or reloads, as its
+`/etc/nftables.conf` flushes everything) loads it, reloaded after each
+change. Off, the file only
 removes the table; removing the package removes it too.
 
 **Changes go back unless confirmed**, as network and web server changes do:
 the file replaced is kept as `zendiloos.nft.previous` and returns after 90
-seconds, by a timer in the agent and after its restart. zendiloosd saves the
-settings only once confirmed. It also refuses settings that would keep out
+seconds, by a timer in the agent and after its restart. While a change
+waits, what others send on connections opened before it meets the rules too
+(only answers to the NAS's own connections pass at once), so the
+confirmation, which a browser sends on the connection it has open, gets
+through only if the new rules let that browser in; once confirmed, the rules
+are written again without that. zendiloosd saves the settings only once
+confirmed, and keeps a change waiting in memory only: after its restart
+nobody can confirm it, and the first refresh ends it with the rules kept in
+force. Every refresh names the change it began, if any, and the agent
+decides under the same lock as its timer, so rules for a change that just
+went back are never put in force again. It also refuses settings that would keep out
 the browser asking for them (its address from `X-Real-IP`, the interface
 from the address nginx was reached at, `X-Server-Addr`, and the port,
 `X-Server-Port`), unless the request says that is meant. Locked out anyway,
@@ -1858,7 +1873,8 @@ job ends (a project deployed, stopped, removed), when SSH, the file services
 or the web interface's ports change, and every 30 seconds, asking the agent
 only when the compiled rules differ from those it gave last. What cannot be
 read (Docker not answering) stays as last seen, so a hiccup never drops a
-project's ports. A service that is on but that the rules let nobody reach (an
+project's ports; the ports last seen are kept in the database too, so a rule
+about a project holds from zendiloosd's start, before Docker answers. A service that is on but that the rules let nobody reach (an
 "allow" for any of its ports first means someone gets in; a "deny" of all of
 them to anyone on every connection first, or a denying fallback, means
 nobody does) is listed on the Firewall tab with a way to allow it, and told

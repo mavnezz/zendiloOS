@@ -219,7 +219,9 @@ pub const SMB_TCP: [u16; 2] = [139, 445];
 pub const SMB_UDP: [u16; 2] = [137, 138];
 /// NFS (2049), rpcbind (111), and mountd, statd and lockd on the ports the
 /// package sets in `/etc/nfs.conf.d/zendiloos.conf`: TCP and UDP each.
-pub const NFS_PORTS: [u16; 5] = [111, 2049, 20048, 32765, 32768];
+/// All below Linux's range for outgoing connections (32768 to 60999), so
+/// no program's own connection takes one of them first.
+pub const NFS_PORTS: [u16; 5] = [111, 2049, 20048, 32765, 32767];
 /// LLMNR (5355) and WS-Discovery's HTTP (5357); WS-Discovery (3702), mDNS
 /// (5353) and LLMNR over UDP.
 pub const DISCOVERY_TCP: [u16; 2] = [5355, 5357];
@@ -560,6 +562,12 @@ pub struct Facts {
     /// WS-Discovery or Bonjour is on.
     pub discovery_on: bool,
     pub projects: Vec<ProjectPorts>,
+    /// Docker has not answered since zendiloosd started: `projects` says
+    /// nothing, the ports saved when it last answered stand for them.
+    pub projects_unknown: bool,
+    /// Docker's bridges besides `docker0` (`br-` and 12 hex digits), by
+    /// name: containers on them reach the NAS, and only these.
+    pub bridges: Vec<String>,
 }
 
 impl Default for Facts {
@@ -573,6 +581,8 @@ impl Default for Facts {
             nfs_on: false,
             discovery_on: false,
             projects: Vec::new(),
+            projects_unknown: false,
+            bridges: Vec::new(),
         }
     }
 }
@@ -603,6 +613,8 @@ pub struct Compiled {
 pub struct Ruleset {
     pub rules: Vec<Compiled>,
     pub fallback: Action,
+    /// Docker's bridges besides `docker0`, from [`Facts::bridges`].
+    pub bridges: Vec<String>,
 }
 
 /// The rules switched on, with their services resolved to the ports they
@@ -637,7 +649,10 @@ pub fn compile(settings: &FirewallSettings, facts: &Facts) -> Option<Ruleset> {
             action: rule.action,
         }));
     }
-    Some(Ruleset { rules, fallback: settings.fallback })
+    let mut bridges = facts.bridges.clone();
+    bridges.sort_unstable();
+    bridges.dedup();
+    Some(Ruleset { rules, fallback: settings.fallback, bridges })
 }
 
 /// How a request reached the web interface, as far as known.

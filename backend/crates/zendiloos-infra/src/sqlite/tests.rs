@@ -72,7 +72,7 @@ async fn creates_a_private_database_and_applies_all_migrations() {
             created: true,
             schema_before: None,
             schema_after: 40,
-            applied: (1..=38).chain([40]).collect(),
+            applied: (1..=40).collect(),
             backup: None
         }
     );

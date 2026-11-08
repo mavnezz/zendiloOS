@@ -1,6 +1,6 @@
 //! What the firewall's services stand for now, from the other contexts:
 //! the web interface's ports, the SSH server, the file services, the ports
-//! Docker projects publish, and the NAS's interfaces.
+//! Docker projects publish, Docker's bridges, and the NAS's interfaces.
 
 use std::sync::Mutex;
 
@@ -34,7 +34,9 @@ impl ServicesForFirewall {
         containers: Containers,
         network: NetworkUseCases,
     ) -> Self {
-        Self { certificates, system, sharing, containers, network, last: Mutex::new(Facts::default()) }
+        // Until Docker answers, the firewall takes the ports saved.
+        let last = Mutex::new(Facts { projects_unknown: true, ..Facts::default() });
+        Self { certificates, system, sharing, containers, network, last }
     }
 }
 
@@ -96,9 +98,18 @@ impl ServiceFacts for ServicesForFirewall {
             Err(error) => tracing::warn!(%error, "firewall: cannot read the file services"),
         }
         match self.containers.projects(context).await {
-            Ok(projects) => facts.projects = projects.iter().map(published).collect(),
+            Ok(projects) => {
+                facts.projects = projects.iter().map(published).collect();
+                facts.projects_unknown = false;
+            }
             // Docker not installed or not answering: the ports as last seen.
             Err(error) => tracing::debug!(%error, "firewall: cannot read the Docker projects"),
+        }
+        match self.network.get_network.execute().await {
+            Ok(network) => {
+                facts.bridges = network.docker_bridges.into_iter().filter(|name| name != "docker0").collect();
+            }
+            Err(error) => tracing::warn!(%error, "firewall: cannot read Docker's bridges"),
         }
         facts.clone_into(&mut self.last.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
         facts

@@ -1,17 +1,20 @@
-//! The firewall's settings and rules, and the services told blocked.
+//! The firewall's settings and rules, the services told blocked and the
+//! ports projects published when last seen.
 
 use std::collections::BTreeSet;
 
 use async_trait::async_trait;
 use zendiloos_firewall::application::FirewallRepository;
 use zendiloos_firewall::domain::{
-    Action, FirewallSettings, KnownService, Protocol, Rule, Service, Source, parse_ports, ports_text,
+    Action, FirewallSettings, KnownService, ProjectPorts, Protocol, Rule, Service, Source, Transport,
+    parse_ports, ports_text,
 };
 use zendiloos_kernel::PortError;
 
 use super::Database;
 
-/// `firewall_settings`, `firewall_rules` and `firewall_blocked`.
+/// `firewall_settings`, `firewall_rules`, `firewall_blocked` and
+/// `firewall_project_ports`.
 #[derive(Debug, Clone)]
 pub struct SqliteFirewall {
     db: Database,
@@ -157,6 +160,46 @@ impl FirewallRepository for SqliteFirewall {
         }
         tx.commit().await.map_err(db_error)
     }
+
+    async fn known_projects(&self) -> Result<Vec<ProjectPorts>, PortError> {
+        let rows = sqlx::query!(
+            "SELECT project, transport, port FROM firewall_project_ports ORDER BY project, transport, port"
+        )
+        .fetch_all(self.db.pool())
+        .await
+        .map_err(db_error)?;
+        let mut projects: Vec<ProjectPorts> = Vec::new();
+        for row in rows {
+            let transport = Transport::parse(&row.transport)
+                .ok_or_else(|| stored(format!("transport {}", row.transport)))?;
+            let port = u16::try_from(row.port).map_err(|_| stored(format!("port {}", row.port)))?;
+            match projects.last_mut() {
+                Some(last) if last.name == row.project => last.ports.push((transport, port)),
+                _ => projects.push(ProjectPorts { name: row.project, ports: vec![(transport, port)] }),
+            }
+        }
+        Ok(projects)
+    }
+
+    async fn save_known_projects(&self, projects: &[ProjectPorts]) -> Result<(), PortError> {
+        let mut tx = self.db.pool().begin().await.map_err(db_error)?;
+        sqlx::query!("DELETE FROM firewall_project_ports").execute(&mut *tx).await.map_err(db_error)?;
+        for project in projects {
+            for (transport, port) in &project.ports {
+                let (transport, port) = (transport.as_str(), i64::from(*port));
+                sqlx::query!(
+                    "INSERT OR IGNORE INTO firewall_project_ports (project, transport, port) VALUES (?, ?, ?)",
+                    project.name,
+                    transport,
+                    port
+                )
+                .execute(&mut *tx)
+                .await
+                .map_err(db_error)?;
+            }
+        }
+        tx.commit().await.map_err(db_error)
+    }
 }
 
 #[cfg(test)]
@@ -217,6 +260,30 @@ mod tests {
         assert_eq!(firewall.told_blocked().await.unwrap(), keys);
         firewall.save_told_blocked(&BTreeSet::new()).await.unwrap();
         assert!(firewall.told_blocked().await.unwrap().is_empty());
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn the_projects_ports_last_seen_are_kept() {
+        let (_dir, db) = temporary_database().await;
+        let firewall = SqliteFirewall::new(db.clone());
+        assert!(firewall.known_projects().await.unwrap().is_empty());
+        let projects = vec![
+            ProjectPorts {
+                name: "media".into(),
+                ports: vec![(Transport::Tcp, 8096), (Transport::Udp, 7359)],
+            },
+            ProjectPorts { name: "site".into(), ports: vec![(Transport::Tcp, 8080), (Transport::Tcp, 8080)] },
+        ];
+        firewall.save_known_projects(&projects).await.unwrap();
+        let back = firewall.known_projects().await.unwrap();
+        assert_eq!(back[0].name, "media");
+        assert_eq!(back[0].ports, [(Transport::Tcp, 8096), (Transport::Udp, 7359)]);
+        assert_eq!(back[1].ports, [(Transport::Tcp, 8080)], "once each");
+        firewall.save_known_projects(&projects[1..]).await.unwrap();
+        assert_eq!(firewall.known_projects().await.unwrap().len(), 1);
+        firewall.save_known_projects(&[]).await.unwrap();
+        assert!(firewall.known_projects().await.unwrap().is_empty());
         db.close().await;
     }
 

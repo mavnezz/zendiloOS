@@ -304,8 +304,8 @@ impl Operations {
             Request::ConfirmWebServer {} => self.web_server.confirm().await,
             Request::ReloadWebCertificate {} => self.web_server.reload_certificate().await,
             Request::FirewallState {} => Ok(self.firewall.state().await),
-            Request::ApplyFirewall { config, confirm_within } => {
-                self.firewall.apply(config.as_ref(), *confirm_within).await
+            Request::ApplyFirewall { config, confirm_within, waiting } => {
+                self.firewall.apply(config.as_ref(), *confirm_within, waiting.as_ref()).await
             }
             Request::ConfirmFirewall {} => self.firewall.confirm().await,
             Request::TimeState {} => self.time.state().await,

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM firewall_project_ports",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "e1dd4f099f480b4761dc2887cdf103ac618e1fee77d329b7a33a37adc902a329"
+}

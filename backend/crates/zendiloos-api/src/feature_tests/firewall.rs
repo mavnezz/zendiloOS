@@ -73,7 +73,7 @@ async fn rules_are_kept_once_confirmed() {
     assert_eq!(kept.body["current"]["fallback"], "deny");
     assert!(kept.body["pending"].is_null());
     assert_problem(&confirm(&h, &admin).await, StatusCode::CONFLICT, "refused");
-    assert_eq!(h.firewall_host.calls(), ["apply 2 rules, confirm Some(90)", "confirm"]);
+    assert_eq!(h.firewall_host.calls(), ["apply 2 rules, confirm within 90", "confirm"]);
     let (told, _) = h.notifier.for_account(1, 50).await.unwrap();
     assert!(told.iter().any(|n| n.code == "firewall_blocked"), "{told:?}");
 }
@@ -167,6 +167,9 @@ async fn projects_are_services_and_blocked_ones_are_listed() {
     );
     assert_eq!(applied.body["pending"]["settings"]["rules"][0]["project"], "media");
     assert_eq!(applied.body["pending"]["settings"]["rules"][1]["service"], "ping");
+    // What returns unless it is confirmed was not given yet: given once.
     h.firewall.refresh(&Default::default()).await.unwrap();
-    assert_eq!(h.firewall_host.calls().len(), 1, "nothing new while it waits");
+    assert_eq!(h.firewall_host.calls().last().unwrap(), "keep 0 rules, 2 waiting");
+    h.firewall.refresh(&Default::default()).await.unwrap();
+    assert_eq!(h.firewall_host.calls().len(), 2, "nothing new while it waits");
 }

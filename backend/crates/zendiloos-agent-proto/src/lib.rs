@@ -51,9 +51,9 @@ pub use files::{
     SearchText, SharePath, is_file_name,
 };
 pub use firewall::{
-    FirewallConfig, FirewallPortRange, FirewallPorts, FirewallRule, FirewallRules, FirewallSource,
-    FirewallTraffic, FirewallVerdict, InvalidFirewallPorts, InvalidFirewallSource, PendingFirewall,
-    TooManyFirewallRules,
+    DockerBridge, FirewallConfig, FirewallPortRange, FirewallPorts, FirewallRule, FirewallRules,
+    FirewallSource, FirewallTraffic, FirewallVerdict, InvalidFirewallPorts, InvalidFirewallSource,
+    NotADockerBridge, PendingFirewall, TooManyFirewallRules, WaitingFirewall,
 };
 pub use framing::{FrameError, read_message, write_message};
 pub use network::{
@@ -519,14 +519,23 @@ pub enum Request {
     /// [`Response::FirewallState`].
     FirewallState {},
     /// Writes the firewall's rules (none: no rules at all) for nftables,
-    /// checks them (`nft -c`) and puts them in force. With
-    /// `confirm_within`, unless [`Request::ConfirmFirewall`] comes in time
-    /// the rules from before return (also after a restart), one change at
-    /// a time; without, a change waiting stays waiting, and what returns is
-    /// still the rules from before it.
+    /// checks them (`nft -c`) and puts them in force. Answers
+    /// [`Response::FirewallState`], as it is afterwards.
+    ///
+    /// With `confirm_within`, a change begins: unless
+    /// [`Request::ConfirmFirewall`] comes in time the rules from before
+    /// return (also after a restart), one change at a time. Without, `config`
+    /// is the rules kept. While the change the caller began waits, `waiting`
+    /// has its rules, brought up to date: they stay in force, and `config`
+    /// is what returns unless it is confirmed; if it went back meanwhile,
+    /// `config` is put in force. A change waiting that the caller does not
+    /// name (it restarted since) can never be confirmed: it ends, and
+    /// `config` is in force.
     ApplyFirewall {
         config: Option<FirewallConfig>,
         confirm_within: Option<ConfirmWithin>,
+        #[serde(default)]
+        waiting: Option<WaitingFirewall>,
     },
     /// Keeps the change that waits to be confirmed.
     ConfirmFirewall {},
