@@ -604,7 +604,12 @@ impl Sharing {
                 ),
             }
         }
-        Ok(Rules { remove, grant, owners: owners(access, &passwd, &group) })
+        Ok(Rules {
+            remove,
+            grant,
+            owners: owners(access, &passwd, &group),
+            managed: Some(crate::accounts::ID_MIN..=crate::accounts::ID_MAX),
+        })
     }
 
     /// The managed users who may write, directly or through a group, with
@@ -762,7 +767,9 @@ enum Pass {
 /// Changes the permissions of everything below a share's root (not the
 /// root, which is set on its own): access taken away from the whole tree
 /// first, entries and what those who may not write own (see [`Owners`]),
-/// so it is gone even if giving fails. Each folder and file is
+/// so it is gone even if giving fails. The rules replace what is there
+/// (see [`Rules::managed`]): a walk that failed or stopped halfway is made
+/// good by the next, whatever it was told to remove. Each folder and file is
 /// reached by descriptor and its ACL changed through it, never by its path:
 /// whoever may write the share could swap a folder for a link while the
 /// change goes on, and a walk by path would follow it, onto other shares,
@@ -780,7 +787,7 @@ enum Pass {
 /// the others; the change fails at the end, naming one of them.
 fn change_tree(root: &Path, rules: &Rules) -> Result<(), OperationError> {
     let mut failures = Failures::default();
-    if !rules.remove.is_empty() || rules.owners.managed.is_some() {
+    if !rules.remove.is_empty() || rules.owners.managed.is_some() || rules.managed.is_some() {
         walk(root, rules, Pass::Remove, &mut failures)?;
     }
     if !rules.grant.is_empty() {
@@ -929,13 +936,15 @@ fn open_entry(folder: impl AsFd, name: &CStr, device: u64) -> Result<Option<Foun
 
 /// One pass's change of `found`, through `/proc/self/fd`: the attributes
 /// of what was opened, whatever its path is by now. Default entries for
-/// folders only; of a `private` one only its owner, in the taking pass.
+/// folders only; of a `private` one only its owner, in the taking pass,
+/// and what passes to root from there stays private (see [`keep_private`]).
 fn change_entry(found: &Found, private: bool, rules: &Rules, pass: Pass) -> Result<(), Errno> {
     if !private {
         change_acl(&found.entry, found.folder, found.mode, rules, pass)?;
     }
     if pass == Pass::Remove && rules.owners.hand_over(found.owner) {
-        // Its group stays: the share's folder gives that group nothing.
+        // Its group stays: the share's folder gives that group nothing,
+        // and neither does the entry by now.
         rustix::fs::chownat(
             &found.entry,
             c"",
@@ -943,6 +952,28 @@ fn change_entry(found: &Found, private: bool, rules: &Rules, pass: Pass) -> Resu
             None,
             rustix::fs::AtFlags::EMPTY_PATH,
         )?;
+        if private {
+            keep_private(&found.entry, found.folder, found.mode)?;
+        }
+    }
+    Ok(())
+}
+
+/// What passed to root from a bin or a private folder keeps only its
+/// owner's entry, root's now, in its ACL and a folder's default ACL: its
+/// former owner may have opened it to the owning group (everyone's
+/// `zendiloos-users`), to others or to named people, who would reach it
+/// through root's ownership otherwise.
+fn keep_private(entry: &OwnedFd, folder: bool, mode: u32) -> Result<(), Errno> {
+    let path = format!("/proc/self/fd/{}", entry.as_raw_fd());
+    if let Some(acl) = acl::owner_only(read_acl(&path, acl::ACCESS)?, mode) {
+        rustix::fs::setxattr(&path, acl::ACCESS, &acl.to_bytes(), rustix::fs::XattrFlags::empty())?;
+    }
+    if folder
+        && let Some(default) = read_acl(&path, acl::DEFAULT)?
+        && let Some(acl) = acl::owner_only(Some(default), mode)
+    {
+        rustix::fs::setxattr(&path, acl::DEFAULT, &acl.to_bytes(), rustix::fs::XattrFlags::empty())?;
     }
     Ok(())
 }
@@ -1102,6 +1133,7 @@ mod tests {
             [(Who::User(2001), SharePermission::ReadWrite), (Who::Group(2100), SharePermission::Read)]
         );
         assert_eq!(rules.remove, [Who::User(2002)], "anna keeps hers, a gone user has none");
+        assert_eq!(rules.managed, Some(crate::accounts::ID_MIN..=crate::accounts::ID_MAX), "they replace");
         let unknown = sharing.rules(&[access(user("nobody"), true)], &[]).unwrap_err();
         assert!(unknown.to_string().contains("nobody"), "{unknown}");
         fs::remove_file(dir.path().join("group")).unwrap();
@@ -1296,6 +1328,108 @@ mod tests {
         assert!(acl_of(&renamed.join("deleted.txt"), acl::ACCESS).is_none(), "nor what is in it");
     }
 
+    /// Sets `entries` on `path`'s access ACL (and default ACL, for a
+    /// folder), from `mode`.
+    fn set_named(path: &Path, mode: u32, entries: &[(Who, u16)]) {
+        let mut acl = Acl::from_mode(mode);
+        for (who, perm) in entries {
+            acl.set(*who, *perm);
+        }
+        acl.fix_mask();
+        rustix::fs::setxattr(path, acl::ACCESS, &acl.to_bytes(), rustix::fs::XattrFlags::empty()).unwrap();
+        if path.is_dir() {
+            rustix::fs::setxattr(path, acl::DEFAULT, &acl.to_bytes(), rustix::fs::XattrFlags::empty())
+                .unwrap();
+        }
+    }
+
+    /// The owning group's (`group::`) or others' entry; where there is a
+    /// mask, the mode's group bits are the mask's, not the group's.
+    fn base_perm(acl: &Acl, tag: &str) -> u16 {
+        let wanted = if tag == "group" { 0x04 } else { 0x20 };
+        acl.to_bytes()[4..]
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .find(|c| u16::from_le_bytes([c[0], c[1]]) == wanted)
+            .map(|c| u16::from_le_bytes([c[2], c[3]]))
+            .unwrap()
+    }
+
+    #[test]
+    fn a_walk_replaces_what_an_earlier_one_left_and_leaves_foreign_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let sharing = with_accounts(dir.path());
+        let root = dir.path().join("share");
+        fs::create_dir_all(root.join("album/2024")).unwrap();
+        fs::write(root.join("album/2024/a.jpg"), "x").unwrap();
+        fs::write(root.join("open.txt"), "x").unwrap();
+        let (anna, ben, family, debian) =
+            (Who::User(2001), Who::User(2002), Who::Group(2100), Who::User(1000));
+        // A walk that took ben's write away failed: he kept rwx deep down;
+        // family's rule went since; the owner's own user got an entry by
+        // hand; a writer opened a file to everyone.
+        for folder in ["album", "album/2024"] {
+            set_named(&root.join(folder), 0o770, &[(ben, 7), (family, 5), (debian, 7)]);
+        }
+        set_named(&root.join("album/2024/a.jpg"), 0o660, &[(ben, 6), (debian, 6)]);
+        set_named(&root.join("open.txt"), 0o666, &[]);
+
+        // Now only anna may write; nobody is named as removed.
+        let mut rules = sharing.rules(&[access(user("anna"), true)], &[]).unwrap();
+        assert!(rules.remove.is_empty());
+        // Owners are another test's: the files here are the test's own.
+        rules.owners = Owners::default();
+        change_tree(&root, &rules).unwrap();
+
+        for path in ["album", "album/2024", "album/2024/a.jpg"] {
+            let acl = acl_of(&root.join(path), acl::ACCESS).unwrap();
+            assert_eq!((acl.named(ben), acl.named(family)), (None, None), "{path}: managed and not granted");
+            assert_eq!(acl.named(debian).map(|p| p & 6), Some(6), "{path}: not an ID zendiloOS hands out");
+            assert!(acl.named(anna).is_some_and(|p| p & 6 == 6), "{path}: anna writes");
+            assert_eq!((base_perm(&acl, "group"), base_perm(&acl, "other")), (0, 0), "{path}");
+        }
+        for folder in ["album", "album/2024"] {
+            let default = acl_of(&root.join(folder), acl::DEFAULT).unwrap();
+            assert_eq!(
+                (default.named(ben), default.named(anna)),
+                (None, Some(7)),
+                "{folder}: what comes later"
+            );
+            assert_eq!((base_perm(&default, "group"), base_perm(&default, "other")), (0, 0), "{folder}");
+        }
+        let open = acl_of(&root.join("open.txt"), acl::ACCESS).unwrap();
+        assert_eq!(
+            (base_perm(&open, "group"), base_perm(&open, "other")),
+            (0, 0),
+            "opened to everyone no more"
+        );
+        assert_eq!(open.named(anna), Some(6));
+    }
+
+    #[test]
+    fn what_passes_to_root_from_a_private_place_keeps_only_its_owners_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("ben");
+        fs::create_dir(&bin).unwrap();
+        fs::write(bin.join("old.txt"), "x").unwrap();
+        // ben opened his bin to his group, to others and to anna.
+        set_named(&bin, 0o777, &[(Who::User(2001), 7)]);
+        set_named(&bin.join("old.txt"), 0o666, &[(Who::User(2001), 6)]);
+
+        let folder = openat(CWD, &bin, FOLDER, Mode::empty()).unwrap();
+        keep_private(&folder, true, 0o777).unwrap();
+        let file = openat(CWD, bin.join("old.txt"), OFlags::PATH | OFlags::CLOEXEC, Mode::empty()).unwrap();
+        keep_private(&file, false, 0o666).unwrap();
+
+        // An ACL of base entries alone is the mode; the kernel keeps no other.
+        assert!(acl_of(&bin, acl::ACCESS).is_none(), "no named entries left");
+        assert_eq!(fs::metadata(&bin).unwrap().mode() & 0o777, 0o700);
+        assert_eq!(acl_of(&bin, acl::DEFAULT), Some(Acl::from_mode(0o700)), "what comes later too");
+        assert_eq!(fs::metadata(bin.join("old.txt")).unwrap().mode() & 0o777, 0o600);
+        assert!(acl_of(&bin.join("old.txt"), acl::ACCESS).is_none(), "no named entries left");
+    }
+
     #[test]
     fn a_wide_tree_keeps_only_the_folders_on_the_way_down_open() {
         let dir = tempfile::tempdir().unwrap();
@@ -1338,6 +1472,8 @@ mod tests {
         fs::write(root.join("album/a.jpg"), "x").unwrap();
         fs::create_dir_all(root.join(RECYCLE_DIRECTORY).join("ben")).unwrap();
         fs::write(root.join(RECYCLE_DIRECTORY).join("ben/old.txt"), "x").unwrap();
+        // ben opened his bin to everyone and to anna.
+        set_named(&root.join(RECYCLE_DIRECTORY).join("ben"), 0o777, &[(Who::User(4243), 7)]);
         let private = root.join("private");
         fs::create_dir(&private).unwrap();
         fs::write(private.join("secret.txt"), "x").unwrap();
@@ -1362,12 +1498,16 @@ mod tests {
             for path in ["album", "album/a.jpg", ".recycle", ".recycle/ben/old.txt", "private/secret.txt"] {
                 assert_eq!(fs::metadata(root.join(path)).unwrap().uid(), 0, "{path}");
             }
+            let bin = root.join(RECYCLE_DIRECTORY).join("ben");
+            assert_eq!(fs::metadata(&bin).unwrap().mode() & 0o777, 0o700, "root's alone");
+            assert!(acl_of(&bin, acl::ACCESS).is_none(), "anna's entry went with it");
         } else {
             let error = changed.unwrap_err().to_string();
             assert!(error.contains("of 7 entries") && error.contains("Operation not permitted"), "{error}");
+            let bin = acl_of(&root.join(RECYCLE_DIRECTORY).join("ben"), acl::ACCESS).unwrap();
+            assert_eq!(bin.named(anna), Some(7), "a bin gets no entries: only its owner changes");
         }
         assert!(acl_of(&private, acl::ACCESS).is_none(), "a private folder gets no entries");
-        assert!(acl_of(&root.join(RECYCLE_DIRECTORY).join("ben"), acl::ACCESS).is_none(), "nor a bin");
         assert_eq!(acl_of(&root.join("album"), acl::ACCESS).unwrap().named(anna), Some(5));
     }
 
