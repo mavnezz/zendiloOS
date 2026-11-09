@@ -15,9 +15,10 @@
 #      share, and neither `..` nor a symbolic link leads out of it
 #   5. ben loses access: at once, without a job; SMB and the file manager
 #      refuse him
-#   6. deleting over SMB moves files to the share's recycle bin, a folder
-#      for each person who deleted, which everyone with access sees;
-#      turned to read only again, ben reads what he wrote but changes
+#   6. deleting over SMB is final, and Samba follows no link put in the
+#      recycle bin's place; the file manager deletes into the share's bin,
+#      a folder for each person who deleted, which everyone with access
+#      sees; turned to read only again, ben reads what he wrote but changes
 #      nothing
 #   7. the share and the pool are deleted again
 #   8. Windows (WS-Discovery) and macOS (Bonjour) can find the NAS
@@ -367,22 +368,30 @@ smb_refused ben "$ben_pw" 'ls'
 [[ $(status_as ben GET "$files/folder") == 404 ]] || fail "ben can still list the share"
 no_walk "$since"
 
-say "6. The share's recycle bin"
+say "6. Deleting over SMB is final; the file manager's bin is the share's"
 smb_ok anna "$anna_pw" 'del hello.txt'
-vm "sudo test -f $path/.recycle/anna/hello.txt" || fail "the file is not in the recycle bin, in anna's folder"
+vm "sudo test ! -e $path/hello.txt && sudo test ! -e $path/.recycle/anna/hello.txt" \
+    || fail "what anna deleted over SMB went somewhere: $(vm "sudo find $path/.recycle")"
 # A second writer.
 update=$(call PATCH "/shares/$share_id" "{\"access\":[{\"kind\":\"account\",\"id\":$anna,\"access\":\"read_write\"},{\"kind\":\"account\",\"id\":$ben,\"access\":\"read_write\"}]}")
 jq -e '.access | length == 2' <<<"$update" >/dev/null || fail "the change: $update"
-vm "echo 'from ben' > /tmp/ben.txt"
-smb_ok ben "$ben_pw" 'put ben.txt; del ben.txt'
-# Office lock files and temporary files do not fill the bins.
-vm "echo lock > '/tmp/~\$report.docx'"
-smb_ok ben "$ben_pw" 'put ~$report.docx; del ~$report.docx'
-vm "sudo test ! -e '$path/.recycle/ben/~\$report.docx'" || fail "a lock file went to the recycle bin"
-vm "sudo test -f $path/.recycle/ben/ben.txt" || fail "ben's file is not in the recycle bin, in his folder"
-# The bin is the share's: everyone with access sees what anybody deleted.
+# Whoever writes the share as its group (an NFS client, an app) puts a
+# link where ben's bin would be: Samba, working as root, must not follow it.
+escape=/var/tmp/sharetest-escape
+vm "sudo rm -rf $escape $path/.recycle/ben && sudo mkdir -m 0777 $escape && sudo -u zendiloos-files ln -s $escape $path/.recycle/ben"
+vm "mkdir -p /tmp/deep && echo 'from ben' > /tmp/deep/ben.txt"
+smb_ok ben "$ben_pw" 'mkdir deep; put deep/ben.txt; del deep/ben.txt'
+[[ -z $(vm "sudo find $escape -mindepth 1") ]] || fail "Samba made something through the link: $(vm "sudo find $escape")"
+vm "sudo test ! -e $path/deep/ben.txt" || fail "ben's file stayed"
+vm "sudo rm -f $path/.recycle/ben && sudo rm -rf $escape /tmp/deep"
+# The file manager's bin is the share's: everyone with access sees what
+# anybody deleted there.
+vm "echo 'for the bin' > /tmp/binned.txt"
+smb_ok anna "$anna_pw" 'put binned.txt'
+job_succeeded "$(call_as anna POST "$files/delete" '{"paths":["binned.txt"]}' | jq -r .id)"
+vm "sudo test -f $path/.recycle/anna/binned.txt" || fail "the file is not in the recycle bin, in anna's folder"
 out=$(smb ben "$ben_pw" 'ls .recycle/anna/*')
-grep -q hello.txt <<<"$out" || fail "ben does not see what anna deleted: $out"
+grep -q binned.txt <<<"$out" || fail "ben does not see what anna deleted: $out"
 
 say "6b. Read only again: ben reads what he wrote, but changes nothing"
 vm "echo 'ben wrote this' > /tmp/ben-own.txt"
@@ -398,11 +407,11 @@ smb_fails ben "$ben_pw" 'del ben-own.txt'
 [[ $(status_as ben POST "$files/delete" -H 'Content-Type: application/json' -d '{"paths":["ben-own.txt"]}') == 403 ]] \
     || fail "ben, a reader, could delete his file in the file manager"
 vm "sudo test -f $path/ben-own.txt" || fail "a reader's file went"
-# Writing again, he deletes it, into the bin.
+# Writing again, he deletes it.
 update=$(call PATCH "/shares/$share_id" "{\"access\":[{\"kind\":\"account\",\"id\":$anna,\"access\":\"read_write\"},{\"kind\":\"account\",\"id\":$ben,\"access\":\"read_write\"}]}")
 jq -e '(has("job") | not)' <<<"$update" >/dev/null || fail "the change: $update"
 smb_ok ben "$ben_pw" 'del ben-own.txt'
-vm "sudo test -f $path/.recycle/ben/ben-own.txt" || fail "ben's deletion is not in the recycle bin"
+vm "sudo test ! -e $path/ben-own.txt" || fail "ben could not delete his file again"
 no_walk "$since"
 
 say "Snapshots are Previous Versions"
@@ -452,4 +461,4 @@ vm "systemctl is-active --quiet avahi-daemon" || fail "avahi-daemon (Bonjour for
 # the match, and pipefail would count that as failure.
 wait_for "Samba's Bonjour announcement" "vm 'avahi-browse -tpr _smb._tcp' | grep -c '^=.*;445;'" 30
 
-say "Passed: SMB, NFS, file manager, the shares' folders and owners, permission changes, the recycle bin, discovery"
+say "Passed: SMB, NFS, file manager, the shares' folders and owners, permission changes, final SMB deletes and the file manager's bin, discovery"

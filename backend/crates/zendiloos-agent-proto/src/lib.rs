@@ -1601,8 +1601,6 @@ pub struct SmbShare {
     pub name: ShareName,
     pub volume: VolumeNumber,
     pub access: Vec<ShareAccess>,
-    /// Deleted files go to `.recycle/<user>` in the share.
-    pub recycle_bin: bool,
     /// Shown by clients beside the share's name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comment: Option<ShareComment>,
@@ -2610,8 +2608,7 @@ mod tests {
         assert_eq!(ShareComment::lossy("100%\\").unwrap().as_str(), "100");
         assert_eq!(ShareComment::lossy("%%"), None);
         assert_eq!(ShareComment::lossy(&"x".repeat(300)).unwrap().as_str().len(), ShareComment::MAX_CHARS);
-        let request =
-            json!({ "name": "photos", "volume": 1, "access": [], "recycle_bin": false, "comment": "a\nb" });
+        let request = json!({ "name": "photos", "volume": 1, "access": [], "comment": "a\nb" });
         assert!(serde_json::from_value::<SmbShare>(request).is_err());
     }
 
@@ -2630,7 +2627,7 @@ mod tests {
             assert_eq!(Network::parse(bad), Err(InvalidNetwork), "{bad:?}");
         }
         let request = json!({ "version": 1, "request": { "op": "apply_sharing",
-            "smb": [{ "name": "photos", "volume": 1, "recycle_bin": true,
+            "smb": [{ "name": "photos", "volume": 1,
                       "access": [{ "principal": { "group": "family" }, "permission": "read_write" },
                                  { "principal": { "user": "guest-bob" }, "permission": "deny" }] }],
             "nfs": [{ "name": "photos", "volume": 1, "clients": [{ "network": "192.168.1.0/24", "write": false }] }],

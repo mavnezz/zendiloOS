@@ -230,7 +230,6 @@ pub fn config(
                 name: share.name.clone(),
                 volume: share.volume,
                 access: smb_access(&share.access, names),
-                recycle_bin: share.recycle_bin,
                 comment: share.description.clone(),
                 time_machine: services
                     .time_machine

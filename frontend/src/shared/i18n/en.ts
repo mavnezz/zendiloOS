@@ -2832,7 +2832,7 @@ const en = {
     },
     recycleBin: 'Recycle bin',
     recycleBinHint:
-      'Files deleted over SMB go to .recycle/<user> in the share instead of disappearing.',
+      'Files deleted in the file manager go to its recycle bin in the share. Over SMB and NFS deleting is final; the snapshots keep earlier states.',
     nfs: 'NFS',
     nfsWarning:
       'NFS tells computers apart, not people: whoever uses a computer below may read, or read and write, as its rule says, whatever user they claim to be. Allow only computers you trust.',

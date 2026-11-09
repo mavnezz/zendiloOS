@@ -50,8 +50,7 @@ const AVAHI_SOCKET: &str = "avahi-daemon.socket";
 /// others nothing; what is made in it takes the group (setgid).
 const ROOT_MODE: u32 = 0o2770;
 /// The recycle bins' folder: as the share's, and sticky: nobody but root
-/// renames or removes the bins in it, which Samba and the file manager
-/// make as root.
+/// renames or removes the bins in it, which the file manager makes as root.
 const BINS_MODE: u32 = 0o3770;
 /// smbcontrol reads smb.conf and looks for the network interfaces, which
 /// the agent, without network and without sockets but AF_UNIX, cannot list:
@@ -177,24 +176,14 @@ pub fn samba_config(shares: &[SmbShare], services: &FileServices, homes: Option<
         let _ =
             writeln!(text, "   shadow:snapdir = .zfs/snapshot\n   shadow:format = {SNAPSHOT_LABEL_FORMAT}");
         text.push_str("   shadow:localtime = no\n   shadow:sort = desc\n");
-        if share.recycle_bin {
-            let _ = writeln!(text, "   vfs objects = shadow_copy2 {mac}streams_xattr recycle");
-            // One bin per share; the folder of each user says who deleted
-            // what, and everyone who may use the share sees all of it.
-            let _ = writeln!(text, "   recycle:repository = {RECYCLE_DIRECTORY}/%U");
-            text.push_str(
-                "   recycle:keeptree = yes\n   recycle:versions = yes\n   recycle:touch = yes\n   \
-                 recycle:directory_mode = 0770\n",
-            );
-            // Temporary files and the lock files of office programs come and
-            // go all the time; they would only fill the bins. Samba splits
-            // the list at commas and spaces; the `|` of older examples
-            // makes it one pattern that matches nothing.
-            text.push_str("   recycle:exclude = *.tmp, *.temp, ~$*, .~lock.*#, *.swp\n");
-        } else {
-            let _ = writeln!(text, "   vfs objects = shadow_copy2 {mac}streams_xattr");
-        }
-        // Hidden, not vetoed: users restore their files from it.
+        // No recycle module: Samba works as root here, and the module makes
+        // the bins' folders by path, following a link that whoever may write
+        // the share (an NFS client, an app) put in `.recycle`'s place, so
+        // root would make folders anywhere. What is deleted over SMB is gone;
+        // the snapshots keep it ("Previous Versions"). The file manager's bin
+        // stays, reached beneath the share's folder only; hidden, not
+        // vetoed, so its files can be moved back over SMB too.
+        let _ = writeln!(text, "   vfs objects = shadow_copy2 {mac}streams_xattr");
         let _ = writeln!(text, "   hide files = /{RECYCLE_DIRECTORY}/");
         if let Some(limit) = share.time_machine {
             text.push_str("   fruit:time machine = yes\n");
@@ -1007,7 +996,6 @@ mod tests {
                 name: ShareName::parse("photos").unwrap(),
                 volume: VolumeNumber::new(2).unwrap(),
                 access: vec![access(group("family"), true), access(user("guest-bob"), false)],
-                recycle_bin: true,
                 comment: Some(ShareComment::parse("Family photos").unwrap()),
                 time_machine: None,
             },
@@ -1015,7 +1003,6 @@ mod tests {
                 name: ShareName::parse("nobody").unwrap(),
                 volume: VolumeNumber::new(1).unwrap(),
                 access: vec![],
-                recycle_bin: false,
                 comment: None,
                 time_machine: None,
             },
@@ -1046,11 +1033,13 @@ mod tests {
             "Samba works on the files as root, its rules are the only ones: {text}"
         );
         assert!(!text.contains("inherit acls"), "{text}");
-        assert!(text.contains("recycle:repository = .recycle/%U"), "{text}");
-        assert!(text.contains("recycle:directory_mode = 0770\n"), "one bin everyone sees: {text}");
-        assert!(text.contains("vfs objects = shadow_copy2 catia fruit streams_xattr recycle\n"), "{text}");
+        assert!(text.contains("vfs objects = shadow_copy2 catia fruit streams_xattr\n"), "{text}");
+        assert!(
+            !text.contains("recycle:") && !text.contains("xattr recycle"),
+            "Samba, as root, keeps no bin: {text}"
+        );
+        assert!(text.contains("   hide files = /.recycle/\n"), "the file manager's bin: {text}");
         assert!(text.contains("shadow:format = zdl-%Y-%m-%d_%H.%M.%S\n"), "{text}");
-        assert!(text.contains("recycle:exclude = *.tmp, *.temp, ~$*, .~lock.*#, *.swp\n"), "{text}");
         assert!(!text.contains("[nobody]"), "a share without access is not offered: {text}");
     }
 
@@ -1066,7 +1055,6 @@ mod tests {
                     rule(user("guest-bob"), SharePermission::Deny),
                     rule(group("kids"), SharePermission::Deny),
                 ],
-                recycle_bin: false,
                 comment: None,
                 time_machine: None,
             },
@@ -1074,7 +1062,6 @@ mod tests {
                 name: ShareName::parse("closed").unwrap(),
                 volume: VolumeNumber::new(1).unwrap(),
                 access: vec![rule(group("kids"), SharePermission::Deny)],
-                recycle_bin: false,
                 comment: None,
                 time_machine: None,
             },
@@ -1104,7 +1091,6 @@ mod tests {
             name: ShareName::parse("backups").unwrap(),
             volume: VolumeNumber::new(1).unwrap(),
             access: vec![access(user("anna"), true)],
-            recycle_bin: false,
             comment: None,
             time_machine: Some(Some(500 << 30)),
         };
@@ -1234,7 +1220,6 @@ mod tests {
             volume: VolumeNumber::new(1).unwrap(),
             comment: None,
             access: vec![access(user("anna"), true)],
-            recycle_bin: false,
             time_machine: time_machine.then_some(None),
         }
     }
