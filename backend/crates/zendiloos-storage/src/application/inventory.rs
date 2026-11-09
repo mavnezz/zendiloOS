@@ -1,9 +1,10 @@
 //! The disks the NAS has seen, by serial number, and what the owner noted
 //! about each.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use zendiloos_kernel::{Actor, AuditEntry, AuditLog, Clock, Outcome, RequestContext};
+use zendiloos_kernel::{Actor, AuditEntry, AuditLog, Clock, Outcome, PortError, RequestContext};
 
 use super::StorageError;
 use super::ports::{BlockDeviceSource, DiskInventoryStore, SeenDisk};
@@ -36,33 +37,44 @@ impl DiskInventory {
 
     /// Notes the disks present now; call regularly. Disks without a serial
     /// number cannot be told apart and are not kept; disks reporting the
-    /// same one are kept apart by their port ([`domain::serial_key`]).
+    /// same one are kept apart by their port from the first time they are
+    /// seen together ([`domain::serial_key`]).
     pub async fn observe(&self, context: &RequestContext) -> Result<Vec<Disk>, StorageError> {
+        Ok(self.observed(context).await?.0)
+    }
+
+    /// [`DiskInventory::observe`], and the serial numbers known to be
+    /// shared.
+    async fn observed(
+        &self,
+        context: &RequestContext,
+    ) -> Result<(Vec<Disk>, BTreeSet<String>), StorageError> {
         let disks = domain::disks(&self.devices.block_devices(context).await?, &[]);
+        let shared = known_shared(self.store.as_ref(), &disks).await?;
         let seen: Vec<SeenDisk> = disks
             .iter()
             .filter_map(|disk| {
                 Some(SeenDisk {
-                    serial: domain::serial_key(disk, &disks)?,
+                    serial: domain::serial_key(disk, &shared)?,
                     model: disk.model.clone(),
                     size_bytes: disk.size_bytes,
                 })
             })
             .collect();
         self.store.seen(&seen, self.clock.now()).await?;
-        Ok(disks)
+        Ok((disks, shared))
     }
 
     /// Every disk seen: those present first, by kernel name, then the
     /// others, the most recently seen first.
     pub async fn list(&self, context: &RequestContext) -> Result<Vec<InventoryEntry>, StorageError> {
-        let disks = self.observe(context).await?;
+        let (disks, shared) = self.observed(context).await?;
         let mut entries: Vec<InventoryEntry> = self
             .store
             .records()
             .await?
             .into_iter()
-            .map(|record| InventoryEntry { disk: present_as(&record.serial, &disks), record })
+            .map(|record| InventoryEntry { disk: present_as(&record.serial, &disks, &shared), record })
             .collect();
         entries.sort_by(|a, b| match (&a.disk, &b.disk) {
             (Some(a), Some(b)) => a.cmp(b),
@@ -95,8 +107,13 @@ impl DiskInventory {
             .into_iter()
             .find(|record| record.serial == serial)
             .ok_or(StorageError::InventoryNotFound)?;
-        let disk = match self.devices.block_devices(context).await {
-            Ok(devices) => present_as(serial, &domain::disks(&devices, &[])),
+        let present = async {
+            let disks = domain::disks(&self.devices.block_devices(context).await?, &[]);
+            let shared = self.store.shared_serials().await?;
+            Ok::<_, PortError>(present_as(serial, &disks, &shared))
+        };
+        let disk = match present.await {
+            Ok(disk) => disk,
             Err(error) => {
                 tracing::warn!(%error, "noted, but cannot read the disks to say whether it is present");
                 None
@@ -118,7 +135,8 @@ impl DiskInventory {
     }
 
     async fn forget(&self, serial: &str, context: &RequestContext) -> Result<(), StorageError> {
-        if present_as(serial, &self.observe(context).await?).is_some() {
+        let (disks, shared) = self.observed(context).await?;
+        if present_as(serial, &disks, &shared).is_some() {
             return Err(StorageError::DiskPresent);
         }
         if self.store.remove(serial).await? { Ok(()) } else { Err(StorageError::InventoryNotFound) }
@@ -143,10 +161,26 @@ impl DiskInventory {
 }
 
 /// The kernel name of the disk among `disks` the inventory keeps as
-/// `serial`.
-fn present_as(serial: &str, disks: &[Disk]) -> Option<String> {
-    let disk = disks.iter().find(|disk| domain::serial_key(disk, disks).as_deref() == Some(serial))?;
+/// `serial`, with the serial numbers `shared`.
+fn present_as(serial: &str, disks: &[Disk], shared: &BTreeSet<String>) -> Option<String> {
+    let disk = disks.iter().find(|disk| domain::serial_key(disk, shared).as_deref() == Some(serial))?;
     Some(disk.name.clone())
+}
+
+/// The serial numbers known to be shared: those `store` noted, and those
+/// two of the disks `present` report now, which it notes from now on.
+pub(crate) async fn known_shared(
+    store: &dyn DiskInventoryStore,
+    present: &[Disk],
+) -> Result<BTreeSet<String>, PortError> {
+    let mut shared = store.shared_serials().await?;
+    let new: BTreeSet<String> = domain::shared_serials(present).difference(&shared).cloned().collect();
+    if !new.is_empty() {
+        tracing::info!(serials = ?new, "disks report the same serial number: kept apart by their port");
+        store.note_shared(&new).await?;
+        shared.extend(new);
+    }
+    Ok(shared)
 }
 
 #[cfg(test)]
@@ -246,6 +280,19 @@ mod tests {
             inventory.remove(&dock(0), &admin(), &request).await,
             Err(StorageError::DiskPresent)
         ));
+
+        // sdg pulled out: sdh keeps its record with what was noted, and
+        // no third one by the serial number alone is made.
+        *fake.dock_without_sdg.lock().unwrap() = true;
+        let entries = inventory.list(&request).await.unwrap();
+        let listed: Vec<_> =
+            entries[5..].iter().map(|e| (e.record.serial.clone(), e.disk.as_deref())).collect();
+        assert_eq!(listed, [(dock(1), Some("sdh")), (dock(0), None)]);
+        assert_eq!(entries[5].record.details.vendor.as_deref(), Some("Shop"));
+        inventory.remove(&dock(0), &admin(), &request).await.unwrap();
+        // Forgetting a disk does not forget that the serial number is shared.
+        let entries = inventory.list(&request).await.unwrap();
+        assert_eq!(entries[5..].iter().map(|e| e.record.serial.clone()).collect::<Vec<_>>(), [dock(1)]);
     }
 
     #[tokio::test]

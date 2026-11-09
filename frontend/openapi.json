@@ -16908,7 +16908,7 @@
           },
           "serial": {
             "type": "string",
-            "description": "Its serial number; while another disk present reports the same one\n(the disks of some USB docks), with its port: `SERIAL@ID_PATH`."
+            "description": "Its serial number; once two disks were seen reporting the same one\nat once (the disks of some USB docks), with its port, whether the\nother is there or not: `SERIAL@ID_PATH`."
           },
           "size_bytes": {
             "type": "integer",

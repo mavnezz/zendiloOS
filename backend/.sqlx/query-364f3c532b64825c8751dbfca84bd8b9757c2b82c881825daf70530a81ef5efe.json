@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO disk_shared_serials (serial) VALUES (?) ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "364f3c532b64825c8751dbfca84bd8b9757c2b82c881825daf70530a81ef5efe"
+}

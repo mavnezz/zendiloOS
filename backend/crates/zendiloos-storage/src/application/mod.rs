@@ -84,6 +84,7 @@ impl StorageUseCases {
             ports.devices.clone(),
             ports.zfs.clone(),
             ports.smart.clone(),
+            ports.inventory.clone(),
             ports.notifier,
             ports.clock.clone(),
         ));

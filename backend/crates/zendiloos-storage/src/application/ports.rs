@@ -3,6 +3,8 @@
 //! request context for correlation; the self-test plans are in the
 //! database.
 
+use std::collections::BTreeSet;
+
 use async_trait::async_trait;
 use zendiloos_kernel::{PortError, RequestContext, Timestamp};
 
@@ -224,4 +226,13 @@ pub trait DiskInventoryStore: Send + Sync {
 
     /// Whether there was a record of this serial number.
     async fn remove(&self, serial: &str) -> Result<bool, PortError>;
+
+    /// The serial numbers two disks were seen reporting at once, as the
+    /// disks of some USB docks report their bridge's: their disks are kept
+    /// by serial number and port ([`crate::domain::serial_key`]).
+    async fn shared_serials(&self) -> Result<BTreeSet<String>, PortError>;
+
+    /// Notes `serials` as shared, for good: forgetting a disk does not
+    /// forget that its serial number is not its own.
+    async fn note_shared(&self, serials: &BTreeSet<String>) -> Result<(), PortError>;
 }

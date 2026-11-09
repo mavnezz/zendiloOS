@@ -6,7 +6,7 @@
 //! `ID_PATH`), so a disk replaced in that slot shows up there by itself;
 //! or to a serial number, for ports that are not stable (USB, some HBAs).
 
-use super::disk::{Disk, serial_key};
+use super::disk::{Disk, serial_key, shared_serials};
 
 /// Most groups in one enclosure.
 pub const MAX_GROUPS: usize = 16;
@@ -122,9 +122,10 @@ pub enum Binding {
 
 impl Binding {
     /// Whether `disk`, known by `serial_key` among the disks present
-    /// ([`serial_key`]), is the one this binding names. A serial number
-    /// two disks present report names neither: which one is meant cannot
-    /// be told, and one must not take the other's slot.
+    /// ([`serial_key`] with the serial numbers they share now), is the one
+    /// this binding names. A serial number two disks present report names
+    /// neither: which one is meant cannot be told, and one must not take
+    /// the other's slot.
     fn holds(&self, disk: &Disk, serial_key: Option<&str>) -> bool {
         match self {
             Binding::Port(port) => disk.id_path.as_deref().is_some_and(|path| same_port(port, path)),
@@ -522,7 +523,8 @@ impl Placement {
 /// Places the present disks: by port first, then by serial number; a
 /// disk is in one slot at most.
 pub fn place(layout: &Layout, disks: &[Disk]) -> Placement {
-    let keys: Vec<Option<String>> = disks.iter().map(|disk| serial_key(disk, disks)).collect();
+    let shared = shared_serials(disks);
+    let keys: Vec<Option<String>> = disks.iter().map(|disk| serial_key(disk, &shared)).collect();
     let mut taken = vec![false; disks.len()];
     let mut found: Vec<Option<usize>> = vec![None; layout.slots().count()];
     for port_pass in [true, false] {

@@ -16,7 +16,9 @@ use super::ports::{
     BlockDeviceSource, DiskLocator, EnclosureCatalog, EnclosureStore, MachineSource, ZfsSource,
 };
 use super::queries::inventory;
-use crate::domain::{self, Disk, EnclosureChoice, EnclosureModel, Health, Layout, Machine, Placement};
+use crate::domain::{
+    self, Disk, DiskVerdicts, EnclosureChoice, EnclosureModel, Health, Layout, Machine, Placement,
+};
 
 /// What zendiloOS knows about the machine's enclosure.
 #[derive(Debug, Clone, PartialEq)]
@@ -150,7 +152,7 @@ impl Enclosures {
                 let (machine, detected) = self.machine(&models, context).await;
                 let chosen = choice.and_then(|choice| {
                     let layout = choice.layout(&models).ok()?;
-                    Some(chosen(choice, layout, &models, Vec::new(), &HashMap::new()))
+                    Some(chosen(choice, layout, &models, Vec::new(), &DiskVerdicts::default()))
                 });
                 Ok(EnclosureView { machine, detected, chosen })
             }
@@ -165,16 +167,13 @@ fn chosen(
     layout: Layout,
     models: &[EnclosureModel],
     disks: Vec<Disk>,
-    verdicts: &HashMap<String, Health>,
+    verdicts: &DiskVerdicts,
 ) -> ChosenEnclosure {
     let placement = domain::place(&layout, &disks);
     let health = disks
         .iter()
         .filter(|disk| placement.slot_of(&disk.name).is_some())
-        .filter_map(|disk| {
-            let health = verdicts.get(&domain::health_key(disk, &disks))?;
-            Some((disk.name.clone(), *health))
-        })
+        .filter_map(|disk| Some((disk.name.clone(), verdicts.of(disk)?)))
         .collect();
     let (model, overridden) = match choice {
         EnclosureChoice::Model { model, overrides } => {

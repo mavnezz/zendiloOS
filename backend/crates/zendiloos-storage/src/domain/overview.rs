@@ -1,12 +1,11 @@
 //! One answer to "is my storage all right?": every concern about the pools
 //! and disks, the worst first.
 
-use std::collections::HashMap;
 use std::time::Duration;
 
 use zendiloos_kernel::Timestamp;
 
-use super::disk::Disk;
+use super::disk::{Disk, DiskVerdicts};
 use super::events::{FILL_THRESHOLDS, percent_used};
 use super::pool::{Pool, PoolLayout, ScanState, VdevState};
 use super::smart::Health;
@@ -116,22 +115,16 @@ impl Overview {
 }
 
 /// What is wrong with `pools` and `disks`. `health` holds the SMART
-/// verdicts last read, by [`health_key`](super::health_key); disks not in
+/// verdicts last read ([`DiskVerdicts`]); disks not in
 /// it are not judged.
-pub fn overview(
-    pools: &[Pool],
-    disks: &[Disk],
-    health: &HashMap<String, Health>,
-    now: Timestamp,
-) -> Overview {
+pub fn overview(pools: &[Pool], disks: &[Disk], health: &DiskVerdicts, now: Timestamp) -> Overview {
     let mut concerns = Vec::new();
     for pool in pools {
         concerns.extend(pool_concerns(pool, now));
     }
     for disk in disks {
-        let key = super::health_key(disk, disks);
         let (disk_name, model) = (disk.name.clone(), disk.model.clone());
-        match health.get(&key) {
+        match health.of(disk) {
             Some(Health::Failing) => concerns.push(Concern::DiskFailing { disk: disk_name, model }),
             Some(Health::Warning) => concerns.push(Concern::DiskWorn { disk: disk_name, model }),
             Some(Health::Good) | None => {}
@@ -260,11 +253,17 @@ mod tests {
         Timestamp::from_unix_seconds(NOW)
     }
 
+    /// Verdicts by key, no serial number shared.
+    fn verdicts(by_key: &[(&str, Health)]) -> DiskVerdicts {
+        let by_key = by_key.iter().map(|(key, health)| ((*key).to_owned(), *health)).collect();
+        DiskVerdicts { by_key, shared: Default::default() }
+    }
+
     #[test]
     fn healthy_storage_has_no_concerns() {
         let mut tank = pool("tank", PoolLayout::Mirror, 2);
         tank.scan = checked(3);
-        let health = HashMap::from([("S1".to_owned(), Health::Good)]);
+        let health = verdicts(&[("S1", Health::Good)]);
 
         let overview = overview(&[tank], &[disk("sda", Some("S1"))], &health, now());
 
@@ -279,7 +278,7 @@ mod tests {
         tank.state = VdevState::Degraded;
         tank.devices[1].checksum_errors = 3;
         tank.space = Some(PoolSpace { used_bytes: 85, available_bytes: 15, mounted: true });
-        let health = HashMap::from([("S1".to_owned(), Health::Failing), ("sdb".to_owned(), Health::Warning)]);
+        let health = verdicts(&[("S1", Health::Failing), ("sdb", Health::Warning)]);
         let disks = [disk("sda", Some("S1")), disk("sdb", None), disk("sdc", Some("unread"))];
 
         let overview = overview(&[single, tank], &disks, &health, now());
@@ -306,7 +305,7 @@ mod tests {
         tank.data_errors = 2;
         tank.space = Some(PoolSpace { used_bytes: 95, available_bytes: 5, mounted: true });
 
-        let concerns = overview(&[tank], &[], &HashMap::new(), now()).concerns;
+        let concerns = overview(&[tank], &[], &DiskVerdicts::default(), now()).concerns;
 
         assert!(concerns.iter().all(|c| c.severity() == Severity::Critical), "{concerns:?}");
         assert_eq!(concerns.len(), 3);
@@ -314,7 +313,8 @@ mod tests {
 
     #[test]
     fn a_mirror_that_lost_its_partner_is_not_redundant() {
-        let concerns = overview(&[pool("tank", PoolLayout::Mirror, 1)], &[], &HashMap::new(), now()).concerns;
+        let none = DiskVerdicts::default();
+        let concerns = overview(&[pool("tank", PoolLayout::Mirror, 1)], &[], &none, now()).concerns;
         assert_eq!(concerns, [Concern::NoRedundancy { pool: "tank".into() }]);
     }
 
@@ -326,7 +326,7 @@ mod tests {
         recent.scan = checked(30);
         let new = pool("new", PoolLayout::Mirror, 2);
 
-        let concerns = overview(&[old, recent, new], &[], &HashMap::new(), now()).concerns;
+        let concerns = overview(&[old, recent, new], &[], &DiskVerdicts::default(), now()).concerns;
 
         assert_eq!(concerns, [Concern::ScrubOverdue { pool: "old".into(), days: 45 }]);
         assert_eq!(concerns[0].severity(), Severity::Notice);

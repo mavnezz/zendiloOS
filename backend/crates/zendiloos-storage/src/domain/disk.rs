@@ -1,5 +1,8 @@
+use std::collections::{BTreeSet, HashMap};
+
 use super::block_device::{BlockDevice, DeviceKind};
 use super::pool::Pool;
+use super::smart::Health;
 use super::volume::DATA_FILESYSTEMS;
 
 /// A physical (or virtual) disk with what it is used for.
@@ -131,25 +134,53 @@ pub fn disks(devices: &[BlockDevice], pools: &[Pool]) -> Vec<Disk> {
         .collect()
 }
 
-/// What tells `disk` apart from the other disks `present` where disks are
-/// known by serial number: a slot bound to one, the inventory, the
-/// monitor's verdicts. Its serial number; while another disk present
-/// reports the same one, as the disks in some USB docks report their
-/// bridge's, the serial number with the port, `SERIAL@ID_PATH`, so they
-/// stay apart. `None` without a serial number.
-pub fn serial_key(disk: &Disk, present: &[Disk]) -> Option<String> {
+/// Serial numbers more than one of the disks `present` reports, as the
+/// disks in some USB docks report their bridge's.
+pub fn shared_serials(present: &[Disk]) -> BTreeSet<String> {
+    let mut seen = BTreeSet::new();
+    let mut shared = BTreeSet::new();
+    for serial in present.iter().filter_map(|disk| disk.serial.as_deref()) {
+        if !seen.insert(serial) {
+            shared.insert(serial.to_owned());
+        }
+    }
+    shared
+}
+
+/// What tells `disk` apart where disks are known by serial number: the
+/// inventory, the monitor's verdicts. Its serial number; for one that two
+/// disks were seen reporting at once (`shared`, as the disks in some USB
+/// docks report their bridge's), the serial number with the port,
+/// `SERIAL@ID_PATH`, whether the other disk is there now or not: a disk's
+/// key never depends on which others are present. `None` without a serial
+/// number.
+pub fn serial_key(disk: &Disk, shared: &BTreeSet<String>) -> Option<String> {
     let serial = disk.serial.as_deref()?;
-    let shared = present.iter().filter(|other| other.serial.as_deref() == Some(serial)).count() > 1;
     Some(match &disk.id_path {
-        Some(port) if shared => format!("{serial}@{port}"),
+        Some(port) if shared.contains(serial) => format!("{serial}@{port}"),
         _ => serial.to_owned(),
     })
 }
 
 /// What the monitor keeps a disk's SMART verdict by: its [`serial_key`],
 /// or its kernel name without a serial number.
-pub fn health_key(disk: &Disk, present: &[Disk]) -> String {
-    serial_key(disk, present).unwrap_or_else(|| disk.name.clone())
+pub fn health_key(disk: &Disk, shared: &BTreeSet<String>) -> String {
+    serial_key(disk, shared).unwrap_or_else(|| disk.name.clone())
+}
+
+/// The SMART verdicts as the monitor last read them, by [`health_key`]
+/// with the serial numbers it knew to be shared then.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DiskVerdicts {
+    pub by_key: HashMap<String, Health>,
+    pub shared: BTreeSet<String>,
+}
+
+impl DiskVerdicts {
+    /// The verdict on `disk`, if one was read.
+    pub fn of(&self, disk: &Disk) -> Option<Health> {
+        self.by_key.get(&health_key(disk, &self.shared)).copied()
+    }
 }
 
 fn usage(disk: &BlockDevice, pools: &[Pool]) -> DiskUsage {
@@ -304,7 +335,9 @@ mod tests {
             ],
             &[],
         );
-        let keys: Vec<_> = present.iter().map(|disk| serial_key(disk, &present)).collect();
+        let shared = shared_serials(&present);
+        assert_eq!(shared, BTreeSet::from(["BRIDGE1".to_owned()]));
+        let keys: Vec<_> = present.iter().map(|disk| serial_key(disk, &shared)).collect();
         assert_eq!(
             keys,
             [
@@ -314,9 +347,39 @@ mod tests {
                 None
             ]
         );
-        assert_eq!(health_key(&present[3], &present), "sdh", "by name without a serial number");
-        // Alone, the dock's disk is known by its serial number again.
-        assert_eq!(serial_key(&present[1], &present[..2]).as_deref(), Some("BRIDGE1"));
+        assert_eq!(health_key(&present[3], &shared), "sdh", "by name without a serial number");
+    }
+
+    /// A dock disk keeps its key when the other one is pulled out, or not
+    /// spun up yet: the serial number is known to be shared from the first
+    /// time both were there, so the inventory keeps one record for each
+    /// disk, not a third that whichever is alone takes over.
+    #[test]
+    fn a_dock_disk_keeps_its_key_whichever_disks_are_present() {
+        let at = |name: &str, port: &str| BlockDevice {
+            serial: Some("BRIDGE1".into()),
+            id_path: Some(port.into()),
+            ..disk(name, vec![])
+        };
+        let dock = "pci-0000:00:14.0-usb-0:2:1.0-scsi-0:0:0";
+        let both = disks(&[at("sdf", &format!("{dock}:0")), at("sdg", &format!("{dock}:1"))], &[]);
+        let shared = shared_serials(&both);
+        let alone = disks(&[at("sdg", &format!("{dock}:1"))], &[]);
+        assert!(shared_serials(&alone).is_empty(), "alone, nothing tells it is shared");
+
+        let key = serial_key(&alone[0], &shared);
+
+        assert_eq!(key, serial_key(&both[1], &shared));
+        assert_eq!(key, Some(format!("BRIDGE1@{dock}:1")));
+        // The verdicts are looked up the way they were kept.
+        let verdicts = DiskVerdicts {
+            by_key: HashMap::from([(health_key(&both[1], &shared), Health::Warning)]),
+            shared: shared.clone(),
+        };
+        assert_eq!((verdicts.of(&alone[0]), verdicts.of(&both[0])), (Some(Health::Warning), None));
+        // A serial number never seen twice stays the key alone.
+        let other = disks(&[BlockDevice { serial: Some("WD-1".into()), ..disk("sda", vec![]) }], &[]);
+        assert_eq!(serial_key(&other[0], &shared).as_deref(), Some("WD-1"));
     }
 
     #[test]

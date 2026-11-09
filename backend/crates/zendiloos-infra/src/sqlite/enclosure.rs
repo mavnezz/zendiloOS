@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use async_trait::async_trait;
 use zendiloos_kernel::{PortError, Timestamp};
 use zendiloos_storage::application::ports::{DiskInventoryStore, EnclosureStore, SeenDisk};
@@ -291,6 +293,28 @@ impl DiskInventoryStore for SqliteDiskInventory {
             .map_err(inventory_error)?;
         Ok(removed.rows_affected() > 0)
     }
+
+    async fn shared_serials(&self) -> Result<BTreeSet<String>, PortError> {
+        let rows = sqlx::query_scalar!("SELECT serial FROM disk_shared_serials")
+            .fetch_all(self.db.pool())
+            .await
+            .map_err(inventory_error)?;
+        Ok(rows.into_iter().collect())
+    }
+
+    async fn note_shared(&self, serials: &BTreeSet<String>) -> Result<(), PortError> {
+        let mut transaction = self.db.pool().begin().await.map_err(inventory_error)?;
+        for serial in serials {
+            sqlx::query!(
+                "INSERT INTO disk_shared_serials (serial) VALUES (?) ON CONFLICT DO NOTHING",
+                serial
+            )
+            .execute(&mut *transaction)
+            .await
+            .map_err(inventory_error)?;
+        }
+        transaction.commit().await.map_err(inventory_error)
+    }
 }
 
 #[cfg(test)]
@@ -393,5 +417,77 @@ mod tests {
         store.seen(&[seen("A1", "HDD v2")], at(2_003_600)).await.unwrap();
         assert_eq!(store.records().await.unwrap()[0].last_seen, at(2_003_600));
         db.close().await;
+    }
+
+    #[tokio::test]
+    async fn serial_numbers_seen_shared_are_kept_for_good() {
+        let (_dir, db) = temporary_database().await;
+        let store = SqliteDiskInventory::new(db.clone());
+        assert!(store.shared_serials().await.unwrap().is_empty());
+
+        store.note_shared(&BTreeSet::from(["BRIDGE1".to_owned()])).await.unwrap();
+        store.note_shared(&BTreeSet::from(["BRIDGE1".to_owned(), "BRIDGE2".to_owned()])).await.unwrap();
+
+        let shared = store.shared_serials().await.unwrap();
+        assert_eq!(shared, BTreeSet::from(["BRIDGE1".to_owned(), "BRIDGE2".to_owned()]));
+        db.close().await;
+    }
+
+    /// Before, the inventory kept the disks of a USB dock by serial number
+    /// and port while both were there, and by the serial number alone
+    /// while one was. The update knows those serial numbers as shared, and
+    /// drops the record by the serial number alone unless the owner noted
+    /// something on it.
+    #[tokio::test]
+    async fn the_update_learns_shared_serials_from_the_inventory_kept_before() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("sqlite://{}", dir.path().join("before.db").display());
+        let options = <sqlx::sqlite::SqliteConnectOptions as std::str::FromStr>::from_str(&url)
+            .unwrap()
+            .create_if_missing(true);
+        let pool = sqlx::SqlitePool::connect_with(options).await.unwrap();
+        let migrator = sqlx::migrate!("./migrations");
+        for migration in migrator.iter().filter(|m| m.version < 47) {
+            sqlx::raw_sql(migration.sql.clone()).execute(&pool).await.unwrap();
+        }
+        sqlx::raw_sql(
+            "INSERT INTO disk_inventory (serial, size_bytes, note, first_seen, last_seen) VALUES
+                 ('BRIDGE1', 1, NULL, 0, 0),
+                 ('BRIDGE1@pci-usb-0:2:0', 1, NULL, 0, 0),
+                 ('BRIDGE1@pci-usb-0:2:1', 1, NULL, 0, 0),
+                 ('DOCK2', 1, 'the one in bay 2', 0, 0),
+                 ('DOCK2@pci-usb-0:3:0', 1, NULL, 0, 0),
+                 ('DOCK2@pci-usb-0:3:1', 1, NULL, 0, 0),
+                 ('WD-1', 1, NULL, 0, 0);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let update = migrator.iter().find(|m| m.version == 47).unwrap();
+        sqlx::raw_sql(update.sql.clone()).execute(&pool).await.unwrap();
+
+        let shared: Vec<String> =
+            sqlx::query_scalar("SELECT serial FROM disk_shared_serials ORDER BY serial")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(shared, ["BRIDGE1", "DOCK2"]);
+        let kept: Vec<String> = sqlx::query_scalar("SELECT serial FROM disk_inventory ORDER BY serial")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            kept,
+            [
+                "BRIDGE1@pci-usb-0:2:0",
+                "BRIDGE1@pci-usb-0:2:1",
+                "DOCK2",
+                "DOCK2@pci-usb-0:3:0",
+                "DOCK2@pci-usb-0:3:1",
+                "WD-1"
+            ],
+            "the record by the serial number alone goes, unless something was noted on it"
+        );
+        pool.close().await;
     }
 }

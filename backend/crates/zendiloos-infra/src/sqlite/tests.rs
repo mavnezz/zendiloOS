@@ -71,8 +71,8 @@ async fn creates_a_private_database_and_applies_all_migrations() {
         OpenReport {
             created: true,
             schema_before: None,
-            schema_after: 45,
-            applied: (1..=45).collect(),
+            schema_after: 47,
+            applied: (1..=45).chain([47]).collect(),
             backup: None
         }
     );
@@ -103,6 +103,7 @@ async fn creates_a_private_database_and_applies_all_migrations() {
             "blocked_addresses",
             "certificates",
             "disk_inventory",
+            "disk_shared_serials",
             "docker_backup_plans",
             "docker_backups",
             "docker_owed_starts",
@@ -159,8 +160,8 @@ async fn reopening_an_up_to_date_database_changes_nothing() {
         report,
         OpenReport {
             created: false,
-            schema_before: Some(45),
-            schema_after: 45,
+            schema_before: Some(47),
+            schema_after: 47,
             applied: vec![],
             backup: None
         }

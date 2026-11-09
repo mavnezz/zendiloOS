@@ -54,11 +54,15 @@ pub struct FakeStorage {
     pub chosen: Mutex<Option<EnclosureChoice>>,
     /// The disks seen.
     pub inventory: Mutex<Vec<InventoryRecord>>,
+    /// Serial numbers seen on two disks at once.
+    pub shared_serials: Mutex<std::collections::BTreeSet<String>>,
     /// Reading the block devices fails while set.
     pub devices_fail: Mutex<bool>,
     /// A USB dock with two disks (`sdg`, `sdh`) whose bridge reports its
     /// own serial number, [`DOCK_SERIAL`], for both, while set.
     pub dock: Mutex<bool>,
+    /// The dock's `sdg` is pulled out while set: `sdh` is there alone.
+    pub dock_without_sdg: Mutex<bool>,
     /// While set, each SMART read waits for a permit of it (and gives it
     /// back), as a slow disk would.
     pub smart_gate: Mutex<Option<Arc<tokio::sync::Semaphore>>>,
@@ -513,7 +517,8 @@ impl BlockDeviceSource for FakeStorage {
             devices.push(stick(mounted));
         }
         if *self.dock.lock().unwrap() {
-            for name in ["sdg", "sdh"] {
+            let without_sdg = *self.dock_without_sdg.lock().unwrap();
+            for name in ["sdg", "sdh"].into_iter().filter(|name| !(without_sdg && *name == "sdg")) {
                 devices.push(BlockDevice { transport: Some("usb".to_owned()), ..unused(name, DOCK_SERIAL) });
             }
         }
@@ -737,5 +742,14 @@ impl DiskInventoryStore for FakeStorage {
         let before = records.len();
         records.retain(|record| record.serial != serial);
         Ok(records.len() < before)
+    }
+
+    async fn shared_serials(&self) -> Result<std::collections::BTreeSet<String>, PortError> {
+        Ok(self.shared_serials.lock().unwrap().clone())
+    }
+
+    async fn note_shared(&self, serials: &std::collections::BTreeSet<String>) -> Result<(), PortError> {
+        self.shared_serials.lock().unwrap().extend(serials.iter().cloned());
+        Ok(())
     }
 }
