@@ -60,7 +60,7 @@ impl Agent {
             udevadm: plain("udevadm"),
             testparm: plain("testparm"),
             exportfs: plain("exportfs"),
-            setfacl: plain("setfacl"),
+            smbcontrol: plain("smbcontrol"),
             useradd: plain("useradd"),
             userdel: plain("userdel"),
             groupadd: plain("groupadd"),
