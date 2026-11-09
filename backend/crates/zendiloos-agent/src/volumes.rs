@@ -46,8 +46,8 @@ use crate::docker::{complaint, surroundings};
 use crate::operations::OperationError;
 use crate::pools::HostPaths;
 use crate::volume_archive::{
-    BackupDone, BackupJob, Extracted, RemoveJob, RestoreJob, SwapJob, Swapped, SweepJob, Swept, UnitLine,
-    VolumeJob, encode,
+    BackupDone, BackupJob, Extracted, RemoveJob, RestoreJob, ScanJob, Scanned, SwapJob, Swapped, SweepJob,
+    Swept, UnitLine, VolumeJob, encode,
 };
 
 const QUICK: Limits = Limits { timeout: Duration::from_secs(60), max_stdout: 16 * 1024 * 1024 };
@@ -105,6 +105,8 @@ const SANDBOX: [&str; 23] = [
 ];
 /// Removing what restores left, as the agent starts.
 const SWEEP_FOR: Duration = Duration::from_secs(40 * 60);
+/// A scan for backups reads the share, whoever owns what is there.
+const SCAN_CAPABILITIES: &str = "CAP_DAC_READ_SEARCH";
 /// A backup reads everything in the volume and writes the share, whoever
 /// owns what is there.
 const BACKUP_CAPABILITIES: &str = "CAP_DAC_READ_SEARCH CAP_DAC_OVERRIDE";
@@ -143,6 +145,7 @@ fn step_name(step: &str) -> &'static str {
         "backing_up" => "backing_up",
         "verifying" => "verifying",
         "restoring" => "restoring",
+        "scanning" => "scanning",
         _ => "working",
     }
 }
@@ -163,7 +166,8 @@ fn units_of(volume: &VolumeName) -> [String; 3] {
 struct Unit<'a> {
     work: VolumeJob,
     name: String,
-    writable: &'a Path,
+    /// None: it reads only.
+    writable: Option<&'a Path>,
     capabilities: &'a str,
     description: String,
     until: Instant,
@@ -224,7 +228,7 @@ impl Volumes {
         let unit = Unit {
             work: VolumeJob::Sweep,
             name: "zendiloos-volume-sweep.service".to_owned(),
-            writable: &volumes,
+            writable: Some(&volumes),
             capabilities: RESTORE_CAPABILITIES,
             description: "remove what restores of volumes left".to_owned(),
             until: Instant::now() + SWEEP_FOR,
@@ -515,14 +519,14 @@ impl Volumes {
         let agent = self.paths.agent.to_string_lossy().into_owned();
         let name = format!("--unit={}", unit.name);
         let description = format!("--description=zendiloOS: {}", unit.description);
-        let writable = format!("--property=ReadWritePaths={}", unit.writable.display());
+        let writable = unit.writable.map(|path| format!("--property=ReadWritePaths={}", path.display()));
         let capabilities = format!("--property=CapabilityBoundingSet={}", unit.capabilities);
         let runtime = format!("--property=RuntimeMaxSec={}", runs_for.as_secs());
         let hex = encode(job);
         let mut args = vec![name.as_str(), "--wait", "--pipe", "--collect", "--quiet", description.as_str()];
         args.extend(SANDBOX);
+        args.extend(writable.as_deref());
         args.extend([
-            writable.as_str(),
             capabilities.as_str(),
             runtime.as_str(),
             STOP_TIMEOUT,
@@ -531,11 +535,13 @@ impl Volumes {
             hex.as_str(),
         ]);
         let mut said: Option<UnitLine> = None;
+        let mut parts = String::new();
         let ran = {
             let mut heard = |line: &str| match serde_json::from_str::<UnitLine>(line) {
                 Ok(UnitLine::Progress { step, percent }) => {
                     crate::progress::step(step_name(&step), Some(percent))
                 }
+                Ok(UnitLine::Part(part)) => parts.push_str(&part),
                 Ok(other) => said = Some(other),
                 Err(_) => tracing::debug!(line, "a volume unit wrote"),
             };
@@ -563,9 +569,15 @@ impl Volumes {
                 )));
             }
         };
+        let unreadable =
+            |e: serde_json::Error| OperationError::Failed(format!("the unit's answer cannot be read: {e}"));
         match said {
-            Some(UnitLine::Done(value)) if output.status.success() => serde_json::from_value(value)
-                .map_err(|e| OperationError::Failed(format!("the unit's answer cannot be read: {e}"))),
+            Some(UnitLine::Done(_)) if output.status.success() && !parts.is_empty() => {
+                serde_json::from_str(&parts).map_err(unreadable)
+            }
+            Some(UnitLine::Done(value)) if output.status.success() => {
+                serde_json::from_value(value).map_err(unreadable)
+            }
             Some(UnitLine::Failed { message, refused: true }) => Err(OperationError::Refused(message)),
             Some(UnitLine::Failed { message, .. }) => Err(OperationError::Failed(message)),
             _ => {
@@ -600,7 +612,7 @@ impl Volumes {
         let unit = Unit {
             work: VolumeJob::BackUp,
             name: unit_name(VolumeJob::BackUp, volume),
-            writable: &share_root,
+            writable: Some(&share_root),
             capabilities: BACKUP_CAPABILITIES,
             description: format!("back up the volume {}", volume.as_str()),
             until: Instant::now() + WORK_FOR,
@@ -642,7 +654,7 @@ impl Volumes {
         let unit = |work: VolumeJob, description: String, until: Instant| Unit {
             work,
             name: unit_name(work, volume),
-            writable: &volume_dir,
+            writable: Some(&volume_dir),
             capabilities: RESTORE_CAPABILITIES,
             description,
             until,
@@ -690,6 +702,31 @@ impl Volumes {
         Ok(Response::VolumeRestored { left_over: swapped.left_over })
     }
 
+    /// Looks for backups in `folder` of the share to record them again, in
+    /// a unit that reads only.
+    pub(crate) async fn scan_backups(
+        &self,
+        share: &ShareLocation,
+        folder: &SharePath,
+        known: &[SharePath],
+    ) -> Result<Response, OperationError> {
+        let share_root = self.share_root(share)?;
+        let job = ScanJob { share: share_root, folder: folder.clone(), known: known.to_vec() };
+        let mut random = [0u8; 8];
+        rustix::rand::getrandom(&mut random, rustix::rand::GetRandomFlags::empty())
+            .map_err(|e| OperationError::Failed(format!("no random name: {e}")))?;
+        let unit = Unit {
+            work: VolumeJob::Scan,
+            name: format!("zendiloos-volume-scan-{:016x}.service", u64::from_le_bytes(random)),
+            writable: None,
+            capabilities: SCAN_CAPABILITIES,
+            description: format!("look for backups in {}", share.share.as_str()),
+            until: Instant::now() + WORK_FOR,
+        };
+        let scanned: Scanned = self.unit(unit, &job).await?;
+        Ok(Response::VolumeBackupsScanned { found: scanned.found, refused: scanned.refused })
+    }
+
     pub(crate) async fn remove_backup(
         &self,
         share: &ShareLocation,
@@ -704,7 +741,7 @@ impl Volumes {
         let unit = Unit {
             work: VolumeJob::RemoveBackup,
             name: format!("zendiloos-volume-remove-{:016x}.service", u64::from_le_bytes(random)),
-            writable: &share_root,
+            writable: Some(&share_root),
             capabilities: BACKUP_CAPABILITIES,
             description: format!("remove a backup in {}", share.share.as_str()),
             until: Instant::now() + REMOVE_FOR,

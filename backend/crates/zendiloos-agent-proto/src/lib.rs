@@ -41,9 +41,10 @@ pub use apps::{
 pub use client::{AgentTransport, Report, TransportError, UnixTransport};
 pub use descriptor::{MessageReader, read_message_with_file, write_message_with_file};
 pub use docker::{
-    ArchiveDigest, BackupStem, ComposeText, ContainerAction, ContainerId, ExecCommand, ImageId,
+    ArchiveDigest, BackupStem, ComposeText, ContainerAction, ContainerId, ExecCommand, FoundBackup, ImageId,
     ImageReference, InvalidDockerName, NetworkName, ProjectAction, ProjectConfig, ProjectDirectory,
-    ProjectName, ShareLocation, Subnet, TerminalSize, VolumeLabels, VolumeName, VolumeSize, WrittenFile,
+    ProjectName, RefusedBackupFile, ShareLocation, Subnet, TerminalSize, VolumeLabels, VolumeName,
+    VolumeSize, WrittenFile,
 };
 pub use files::{
     CountStop, DirectoryEntry, EntryFacts, EntryKind, FileLocation, FileRoot, FoundEntry, HOMES_DIRECTORY,
@@ -424,6 +425,17 @@ pub enum Request {
     /// any more. Answers [`Response::VolumeWorkEnded`].
     EndVolumeWork {
         volume: VolumeName,
+    },
+    /// Looks for backups in `folder` of the share and the folders in it, to
+    /// record them again: archive and manifest pairs
+    /// (`<volume>-YYYYMMDD-HHMMSS.tar.zst` and `.json`), both writable by
+    /// root only, the archive hashed and its SHA-256 the manifest's. Those
+    /// `known` are passed over. Read only, in a unit of its own. Answers
+    /// [`Response::VolumeBackupsScanned`].
+    ScanVolumeBackups {
+        share: ShareLocation,
+        folder: SharePath,
+        known: Vec<SharePath>,
     },
     /// Deletes a file a backup wrote, if `path` still is that file: its
     /// inode, size and time of writing (if recorded), on the share's file
@@ -879,6 +891,7 @@ impl Request {
             Request::RestoreVolume { .. } => "restore_volume",
             Request::RemoveVolumeBackup { .. } => "remove_volume_backup",
             Request::EndVolumeWork { .. } => "end_volume_work",
+            Request::ScanVolumeBackups { .. } => "scan_volume_backups",
             Request::CheckCompose { .. } => "check_compose",
             Request::ControlProject { .. } => "control_project",
             Request::DeployProject { .. } => "deploy_project",
@@ -1157,6 +1170,11 @@ pub enum Response {
     VolumeRestored {
         left_over: Option<String>,
     },
+    /// What a scan for backups found, and the files it refused with why.
+    VolumeBackupsScanned {
+        found: Vec<FoundBackup>,
+        refused: Vec<RefusedBackupFile>,
+    },
     Snapshots {
         /// `zfs list -H -p -t snapshot -o name,creation,used,referenced,`
         /// `zendiloos:schedule,zendiloos:note`.
@@ -1408,6 +1426,7 @@ impl Request {
             | Request::BackUpVolume { .. }
             | Request::RestoreVolume { .. }
             | Request::EndVolumeWork { .. }
+            | Request::ScanVolumeBackups { .. }
             | Request::ControlProject { .. }
             // The ACME server checks the names: up to minutes with DNS.
             | Request::IssueCertificate { .. }
@@ -1456,6 +1475,7 @@ impl Request {
                 | Request::RestoreVolume { .. }
                 | Request::RemoveVolumeBackup { .. }
                 | Request::EndVolumeWork { .. }
+                | Request::ScanVolumeBackups { .. }
         )
     }
 
@@ -2368,6 +2388,15 @@ mod tests {
             assert!(work.is_volume_work() && !work.is_count(), "{work:?}");
         }
         assert!(Request::DockerVolumeSizes {}.is_count() && !Request::DockerVolumeSizes {}.is_volume_work());
+        let scan: Request = serde_json::from_value(json!({
+            "op": "scan_volume_backups", "share": { "volume": 1, "share": "backups" },
+            "folder": "docker", "known": ["docker/db/db-20261108-030000.tar.zst"],
+        }))
+        .unwrap();
+        assert_eq!((scan.name(), scan.is_long(), scan.is_volume_work()), ("scan_volume_backups", true, true));
+        let outside = json!({ "op": "scan_volume_backups", "share": { "volume": 1, "share": "b" },
+                               "folder": "../up", "known": [] });
+        assert!(serde_json::from_value::<Request>(outside).is_err());
         assert!(!Request::PruneVolumes {}.is_volume_work() && !Request::DockerVolumes {}.is_count());
         let names = [
             Request::DockerVolumes {}.name(),

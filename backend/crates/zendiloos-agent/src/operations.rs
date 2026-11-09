@@ -284,6 +284,9 @@ impl Operations {
                 self.volumes.remove_backup(share, path, (*inode, *bytes, *modified)).await
             }
             Request::EndVolumeWork { volume } => self.volumes.end_work(volume).await,
+            Request::ScanVolumeBackups { share, folder, known } => {
+                self.volumes.scan_backups(share, folder, known).await
+            }
             Request::CheckCompose { project, directory, compose } => {
                 self.docker.check_compose(project, directory, compose).await
             }

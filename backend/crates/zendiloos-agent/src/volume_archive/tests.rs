@@ -915,6 +915,118 @@ fn counting_stays_on_the_file_system_and_within_its_bounds() {
     assert!(!late.complete);
 }
 
+/// The backups in a plan's folder are found again: archive and manifest
+/// pairs writable by root only, hashed as their manifests say; anything
+/// else is refused with why, and what is recorded already passed over.
+#[test]
+fn backups_in_a_folder_are_found_again_and_others_refused_with_why() {
+    let place = Place::new();
+    fs::write(place.path("source/a"), "a").unwrap();
+    let first = back_up(&place.job(), 1_793_847_600, &mut quiet).unwrap();
+    let second = back_up(
+        &BackupJob { name: BackupStem::parse("db-20261109-030000").unwrap(), ..place.job() },
+        0,
+        &mut quiet,
+    )
+    .unwrap();
+    let third = back_up(
+        &BackupJob { name: BackupStem::parse("db-20261110-030000").unwrap(), ..place.job() },
+        0,
+        &mut quiet,
+    )
+    .unwrap();
+    let folder = place.path("share/backups/docker/db");
+    // Made writable by a share's user; an archive whose manifest is gone;
+    // one whose manifest names other bytes; a name no backup has.
+    fs::set_permissions(folder.join("db-20261109-030000.tar.zst"), fs::Permissions::from_mode(0o664))
+        .unwrap();
+    fs::copy(folder.join("db-20261108-030000.tar.zst"), folder.join("db-20261111-030000.tar.zst")).unwrap();
+    fs::set_permissions(folder.join("db-20261111-030000.tar.zst"), fs::Permissions::from_mode(0o644))
+        .unwrap();
+    let manifest = folder.join("db-20261110-030000.json");
+    let other = fs::read_to_string(&manifest).unwrap().replace(third.sha256.as_str(), &"0".repeat(64));
+    fs::set_permissions(&manifest, fs::Permissions::from_mode(0o644)).unwrap();
+    fs::write(&manifest, other).unwrap();
+    fs::write(folder.join("notes.tar.zst"), "x").unwrap();
+    fs::set_permissions(folder.join("notes.tar.zst"), fs::Permissions::from_mode(0o644)).unwrap();
+    let job = ScanJob {
+        share: place.path("share"),
+        folder: SharePath::parse("backups/docker").unwrap(),
+        known: vec![],
+    };
+
+    let mut told = Vec::new();
+    let scanned = scan(&job, &mut |percent| told.push(percent)).unwrap();
+
+    assert_eq!(scanned.found.len(), 1, "{scanned:?}");
+    let found = &scanned.found[0];
+    assert_eq!(
+        (found.archive.path.as_str(), found.sha256.as_str()),
+        (first.archive.path.as_str(), first.sha256.as_str())
+    );
+    assert_eq!((found.archive.inode, found.archive.bytes), (first.archive.inode, first.archive.bytes));
+    assert_eq!(found.manifest.path, first.manifest.path);
+    assert_eq!((found.volume.as_str(), found.data_bytes, found.entries), ("db", 1, Some(first.entries)));
+    assert_eq!(
+        (found.backed_up_at, found.manifest_json.as_str()),
+        (1_793_847_600, first.manifest_json.as_str())
+    );
+    let mut refused: Vec<(String, String)> =
+        scanned.refused.iter().map(|r| (r.path.as_str().to_owned(), r.reason.clone())).collect();
+    refused.sort();
+    let reasons: Vec<(&str, &str)> = refused.iter().map(|(p, r)| (p.as_str(), r.as_str())).collect();
+    assert_eq!(
+        reasons,
+        [
+            ("backups/docker/db/db-20261109-030000.tar.zst", "the archive: writable by others"),
+            ("backups/docker/db/db-20261110-030000.tar.zst", "its SHA-256 is not the one its manifest names"),
+            ("backups/docker/db/db-20261111-030000.tar.zst", "no manifest beside it"),
+            ("backups/docker/db/notes.tar.zst", "not named as a backup is: <volume>-YYYYMMDD-HHMMSS.tar.zst"),
+        ]
+    );
+    assert_eq!(told.last(), Some(&100));
+    let _ = second;
+
+    // What is recorded already is passed over, not even hashed.
+    let known = ScanJob { known: vec![first.archive.path.clone()], ..job };
+    let again = scan(&known, &mut quiet).unwrap();
+    assert!(again.found.is_empty() && again.refused.len() == 4, "{again:?}");
+    let missing = ScanJob { folder: SharePath::parse("nowhere").unwrap(), ..known };
+    assert!(matches!(scan(&missing, &mut quiet), Err(ArchiveError::Refused(_))));
+}
+
+/// An answer too long for one line of a unit (lines are cut at 4096
+/// bytes) comes in pieces, each a line of its own.
+#[test]
+fn a_long_answer_comes_in_pieces_no_line_too_long() {
+    let place = Place::new();
+    fs::write(place.path("source/a"), "a").unwrap();
+    let labels: BTreeMap<String, String> =
+        (0..20).map(|n| (format!("org.example.label-{n}"), "é".repeat(400))).collect();
+    let job = BackupJob { labels, ..place.job() };
+    let mut out = Vec::new();
+    assert!(run_volume_job(VolumeJob::BackUp, &encode(&job), 0, &mut out));
+    let text = String::from_utf8(out).unwrap();
+    let lines: Vec<UnitLine> = text
+        .lines()
+        .inspect(|line| assert!(line.len() < 4096, "a line of {} bytes", line.len()))
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let parts: String = lines
+        .iter()
+        .filter_map(|line| match line {
+            UnitLine::Part(part) => Some(part.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(lines.iter().filter(|line| matches!(line, UnitLine::Part(_))).count() > 2);
+    assert_eq!(lines.last(), Some(&UnitLine::Done(serde_json::Value::Null)));
+    let done: BackupDone = serde_json::from_str(&parts).unwrap();
+    assert!(done.manifest_json.contains("org.example.label-19"));
+    assert!(archive_volume("my_db-20261108-030000.tar.zst") == Some("my_db"));
+    assert!(archive_volume("db-2026110-030000.tar.zst").is_none() && archive_volume("db.tar.zst").is_none());
+}
+
 #[test]
 fn units_take_their_jobs_as_hex_and_say_what_came_of_them() {
     let place = Place::new();

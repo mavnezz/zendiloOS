@@ -195,6 +195,32 @@ pub struct WrittenFile {
     pub modified: i64,
 }
 
+/// A backup found in a folder of a share, to be recorded: its archive and
+/// manifest, both writable by root only, the archive's SHA-256 as the
+/// manifest says and as it was hashed, and what the manifest says of it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FoundBackup {
+    pub volume: VolumeName,
+    pub archive: WrittenFile,
+    pub manifest: WrittenFile,
+    pub sha256: ArchiveDigest,
+    pub data_bytes: u64,
+    /// Unknown for archives written before entries were counted.
+    pub entries: Option<u64>,
+    /// Unix seconds, as the manifest says.
+    pub backed_up_at: i64,
+    pub manifest_json: String,
+}
+
+/// A file that looked like a backup's archive and is not recorded, and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RefusedBackupFile {
+    pub path: crate::SharePath,
+    pub reason: String,
+}
+
 /// What one volume's data takes up, as counted in Docker's data root;
 /// `complete` is false where counting stopped at its limits.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

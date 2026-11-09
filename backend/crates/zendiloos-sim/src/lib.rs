@@ -734,7 +734,10 @@ impl AgentTransport for SimulatedAgent {
             | Request::BackUpVolume { .. }
             | Request::RestoreVolume { .. }
             | Request::RemoveVolumeBackup { .. }
-            | Request::EndVolumeWork { .. } => error(ErrorCode::Failed, "simulated Docker did not answer"),
+            | Request::EndVolumeWork { .. }
+            | Request::ScanVolumeBackups { .. } => {
+                error(ErrorCode::Failed, "simulated Docker did not answer")
+            }
             // Its terminal comes with [`AgentTransport::call_with_file`].
             Request::OpenTerminal { .. } => {
                 error(ErrorCode::InvalidRequest, "a terminal is opened with its descriptor")

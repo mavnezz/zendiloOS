@@ -249,6 +249,8 @@ fn requests() -> Vec<Value> {
                 "archive": "backups/teslamate_db/teslamate_db-20261108-030000.tar.zst", "sha256": "ab".repeat(32),
                 "data_bytes": 4096, "entries": 12 }),
         json!({ "op": "end_volume_work", "volume": "teslamate_db" }),
+        json!({ "op": "scan_volume_backups", "share": { "volume": 1, "share": "media" }, "folder": "backups",
+                "known": [] }),
         json!({ "op": "remove_volume_backup", "share": { "volume": 1, "share": "media" },
                 "path": "backups/teslamate_db/teslamate_db-20261108-030000.json", "inode": 7, "bytes": 1234,
                 "modified": null }),
