@@ -10,7 +10,9 @@
 //! folder) stays and is counted, and only what still is what was copied
 //! goes. FAT keeps times in steps of two seconds, which is why the size is
 //! compared too. A folder that stays without being looked into is counted
-//! with everything of it the record holds.
+//! with everything of it the record holds; so is the moved entry itself
+//! when it is gone from its place by then: renamed or removed meanwhile,
+//! nothing of it was moved.
 //!
 //! Device and inode alone do not tell an entry: ext4 gives a new entry the
 //! number of one just removed, and ZFS reuses object numbers too. A file or
@@ -455,6 +457,9 @@ impl Removal<'_> {
         let recorded = (entry.device, entry.inode);
         let name = self.copied.name(index);
         let stat = match statat(directory, name, AtFlags::SYMLINK_NOFOLLOW) {
+            // The moved entry itself, renamed or removed meanwhile: it was
+            // not moved, wherever it is.
+            Err(Errno::NOENT) if index == 0 => return self.keep_all(index),
             Err(Errno::NOENT) => return, // gone meanwhile
             Err(_) => return self.keep_all(index),
             Ok(stat) => stat,
@@ -468,7 +473,7 @@ impl Removal<'_> {
                 // Only the folder looked at: whoever may write here could
                 // swap it for another meanwhile.
                 let inner = match open_beneath_flags(directory, name, OFlags::PATH | OFlags::DIRECTORY) {
-                    Err(FileError::NotFound) => return,
+                    Err(FileError::NotFound) if index > 0 => return,
                     Err(_) => return self.keep_all(index),
                     Ok(inner) => inner,
                 };
@@ -508,7 +513,7 @@ impl Removal<'_> {
                 // The link itself and what it points to, of the one link
                 // that has the name now.
                 let (opened, now_target) = match open_link(directory, name) {
-                    Err(FileError::NotFound) => return,
+                    Err(FileError::NotFound) if index > 0 => return,
                     Ok(Some(link)) => link,
                     Ok(None) | Err(_) => return self.keep(),
                 };

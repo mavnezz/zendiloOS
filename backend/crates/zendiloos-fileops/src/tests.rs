@@ -1542,3 +1542,29 @@ fn a_move_gone_on_into_its_copy_replaces_nothing() {
         copy_through(&photos, &path("album"), &music, &path("album"), Taken::Beside, false).unwrap();
     assert_eq!(beside, path("album (2)"));
 }
+
+/// Renamed (or removed) after it was copied, before the move removes it:
+/// nothing of it was moved, and the move says so instead of being done.
+#[test]
+fn a_move_whose_source_was_renamed_meanwhile_is_not_done() {
+    let v = Volumes::new();
+    v.write("photos", "album/a.jpg", "a");
+    let (photos, music) = (v.share("photos"), v.share("music"));
+    for across in [true, false] {
+        let to = if across { "across" } else { "copied" };
+        let copied = if across {
+            copy_through(&photos, &path("album"), &music, &path(to), Taken::Refuse, true).unwrap().1
+        } else {
+            copied_for_move(&photos, "album", &music, to)
+        };
+        fs::rename(v.share_path("photos").join("album"), v.share_path("photos").join("renamed")).unwrap();
+
+        let removed = photos.remove_copied(&path("album"), &copied);
+
+        let kept = Kept { count: 2, example: Some(path("album")), too_many: false };
+        assert!(matches!(&removed, Err(FileError::PartlyMoved(left)) if *left == kept), "{removed:?}");
+        assert_eq!(v.read("photos", "renamed/a.jpg"), "a");
+        assert_eq!(v.read("music", &format!("{to}/a.jpg")), "a");
+        fs::rename(v.share_path("photos").join("renamed"), v.share_path("photos").join("album")).unwrap();
+    }
+}
