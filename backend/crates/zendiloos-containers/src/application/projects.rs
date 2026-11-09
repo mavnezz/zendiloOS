@@ -216,6 +216,22 @@ impl Containers {
         Ok(ComposeRisks { risks, digest: checked.digest })
     }
 
+    /// What Compose makes of `compose` for a new project `name` in `place`
+    /// (share and folder), as `actor` would make it there: the whole
+    /// project normalized, as JSON. Nothing is written or run.
+    pub async fn normalize_compose(
+        &self,
+        name: &str,
+        place: (i64, &str),
+        compose: &str,
+        actor: &Actor,
+        context: &RequestContext,
+    ) -> Result<String, ContainersError> {
+        let name = ProjectName::parse(name.trim())?;
+        let directory = self.ports.storage.directory(actor, place.0, &folder(place.1)?).await?;
+        Ok(self.ports.engine.check_compose(&name, &directory, compose, context).await?.config)
+    }
+
     async fn record(
         &self,
         action: &'static str,

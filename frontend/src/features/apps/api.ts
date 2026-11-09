@@ -97,7 +97,11 @@ export function useAppProjects() {
   })
 }
 
-/** The app's Compose file filled in with `values`, for the signed-in administrator. */
+/**
+ * The app's Compose file filled in with `values`, for the signed-in
+ * administrator and the project named in them; refused if it breaks its
+ * catalog's policy as Compose reads it there.
+ */
 export async function fillTemplate(
   app: { source_id: number; id: string },
   values: FillTemplateRequest,

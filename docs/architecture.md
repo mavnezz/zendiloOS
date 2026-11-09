@@ -1392,7 +1392,10 @@ published ports from variables, no Docker volumes, no `privileged`, no
 host namespaces; devices of the kinds the format lists (graphics, VPN,
 serial, cameras, sound, Coral TPUs), extra capabilities (`NET_ADMIN`,
 `SYS_NICE`), the host network and the Docker socket only as permissions
-the app declares. An app made into a project is then the administrator's
+the app declares. Reading an index checks the manifest and the Compose
+file as written; the policy proper, on what Compose makes of the file, is
+checked when its template is filled in (see *Installing*). An app made
+into a project is then the administrator's
 file: what it lets its containers do beyond themselves (those
 permissions among it) is confirmed like any project's, see *What runs is
 what was confirmed*. Generated secrets take the length and alphabet the
@@ -1853,7 +1856,20 @@ in three steps of the install dialog:
    values of the YAML read with their places in the text, quoted so that
    it reads back as exactly that value and with `$` doubled; comments and
    the rest of the file stay as written, and the result is read again and
-   must hold the same document with the values in.
+   must hold the same document with the values in. The request names the
+   project too (name, share and folder, as in step 1), for the catalog's
+   policy: what the index's checks see is the file as written, and much
+   the policy forbids shows only once Compose has made one meaning of it
+   (a named volume that binds `/`, `${APP_DATA}/../..`, `privileged`). So
+   the template is filled in the same way with the catalog's stand-in
+   values (`Placement::stand_in`, as the catalog's validator fills it),
+   read by `docker compose config` in the project's folder
+   (`CheckCompose`), and checked with the catalog's `check_normalized` and
+   `check_variables`; an app that breaks the policy is refused
+   (`against_catalog_policy`, naming what), whatever its manifest says of
+   its permissions, which are all the App Center shows. The
+   administrator's values then take the stand-ins' places, so the file
+   they get differs from the one checked in those values alone.
 3. *The file*: shown in an editor, to read and change, then made a project
    with `POST /docker/projects` naming the app as its `template`: checked
    as Compose reads it, what reaches beyond the containers confirmed,

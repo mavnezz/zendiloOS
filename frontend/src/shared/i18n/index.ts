@@ -117,6 +117,8 @@ const KNOWN_PROBLEMS = [
   'docker_not_ready',
   'permissions_not_confirmed',
   'invalid_app_value',
+  'template_unfillable',
+  'against_catalog_policy',
   'app_busy',
   'up_to_date',
   'host_failed',
@@ -169,6 +171,8 @@ export function problemMessage(error: unknown): string {
     'catalog_unreachable',
     'invalid_app_value',
     'template_unfillable',
+    // What in the app's template its catalog's policy forbids.
+    'against_catalog_policy',
     'host_failed',
     'share_used_by_apps',
     'share_used_by_projects',

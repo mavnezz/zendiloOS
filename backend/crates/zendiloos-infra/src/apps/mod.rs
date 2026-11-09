@@ -1,10 +1,11 @@
 //! App catalogs over https, read with the catalog's own checks
 //! (`zendiloos-catalog`, pinned): an app that fails the format or the
 //! checks of its Compose file as written is left out, not repaired. The
-//! policy proper is checked on the normalized file, which needs Docker: by
-//! the agent, when installing.
+//! policy proper is checked on what Compose makes of the file, which needs
+//! Docker: when its template is filled in ([`CatalogPolicy`]).
 
 mod installs;
+mod policy;
 mod projects;
 mod templates;
 
@@ -20,6 +21,7 @@ use zendiloos_apps::domain::{
 use zendiloos_catalog as catalog;
 
 pub use installs::{FilesForApps, RandomSecrets, SharingForApps};
+pub use policy::CatalogPolicy;
 pub use projects::ContainersForApps;
 pub use templates::YamlFiller;
 

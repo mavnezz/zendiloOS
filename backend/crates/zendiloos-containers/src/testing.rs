@@ -127,6 +127,11 @@ pub struct FakeEngine {
     /// What a file with `include:` takes in from the share as Compose
     /// reads it, which whoever may write the share can change.
     pub included: Mutex<String>,
+    /// The files Compose was given to read, in order.
+    pub read: Mutex<Vec<String>>,
+    /// What Compose prints for the files it reads from now on, if set,
+    /// instead of the plain project it makes up.
+    pub normalized: Mutex<Option<String>>,
 }
 
 impl Default for FakeEngine {
@@ -179,6 +184,8 @@ impl Default for FakeEngine {
             ]),
             calls: Mutex::new(vec![]),
             included: Mutex::new(String::new()),
+            read: Mutex::new(vec![]),
+            normalized: Mutex::new(None),
         }
     }
 }
@@ -442,6 +449,7 @@ impl DockerEngine for FakeEngine {
         _: &RequestContext,
     ) -> Result<CheckedCompose, EngineError> {
         self.call(format!("check {project} {directory}"));
+        self.read.lock().unwrap().push(compose.to_owned());
         let given = compose;
         let mut compose = compose.to_owned();
         if compose.contains("include:") {
@@ -458,9 +466,9 @@ impl DockerEngine for FakeEngine {
             .filter_map(|l| l.trim().strip_prefix("- ./")?.split_once(':'))
             .map(|(source, _)| format!("{directory}/{source}"))
             .collect();
-        let config = format!(
-            r#"{{"name":"{project}","services":{{"app":{{"image":"{image}","privileged":{privileged}}}}}}}"#
-        );
+        let config = self.normalized.lock().unwrap().clone().unwrap_or_else(|| {
+            format!(r#"{{"name":"{project}","services":{{"app":{{"image":"{image}","privileged":{privileged}}}}}}}"#)
+        });
         let digest = {
             use std::hash::{Hash, Hasher};
             let mut hasher = std::hash::DefaultHasher::new();

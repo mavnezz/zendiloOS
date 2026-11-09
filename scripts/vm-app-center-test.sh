@@ -4,7 +4,8 @@
 # Docker project.
 #
 #   1. Lidarr's template is filled in: a folder of a share, a port;
-#      the values stand in the file itself
+#      the values stand in the file itself, and it kept to the catalog's
+#      policy as Debian's Compose reads it (with the catalog's stand-ins)
 #   2. the file is written into a folder of a share and deployed as a
 #      project of one's own: the file and the data folder are the
 #      administrator's, the container runs as the administrator in the
@@ -117,9 +118,10 @@ share_id=$(call POST /shares "$(jq -n --arg n "$share" --arg pool "$home" --argj
 call POST /shares "$(jq -n --arg n "$media" --arg pool "$home" --argjson me "$me" \
     "{name:\$n,pool:\$pool,access:$access}")" | jq -er .id >/dev/null || fail "media share"
 vm "sudo mkdir -p /volume$volume/$media/Music && echo tune | sudo tee /volume$volume/$media/Music/song.txt >/dev/null"
-filled=$(call POST "/apps/catalog/$source_id/lidarr/compose" \
-    "$(jq -n --arg m "$media/Music" --argjson p "$port" '{shares:{data:$m},ports:{web:$p}}')" | jq -er .compose) \
-    || fail "cannot fill the template: $(call POST "/apps/catalog/$source_id/lidarr/compose" '{}')"
+fill=$(jq -n --arg n "$project" --argjson s "$share_id" --arg m "$media/Music" --argjson p "$port" \
+    '{name:$n,share_id:$s,folder:"docker/lidarr",shares:{data:$m},ports:{web:$p}}')
+filled=$(call POST "/apps/catalog/$source_id/lidarr/compose" "$fill" | jq -er .compose) \
+    || fail "cannot fill the template: $(call POST "/apps/catalog/$source_id/lidarr/compose" "$fill")"
 # The app runs as the administrator, in the group of the shares' files.
 uid=$(vm "id -u $user") gid=$(vm "getent group zendiloos-files | cut -d: -f3")
 [[ $gid =~ ^[0-9]+$ ]] || fail "no group zendiloos-files: $gid"

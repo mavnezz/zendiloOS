@@ -28,7 +28,7 @@ use zendiloos_infra::agent::{
     AgentVolumeArchiver, AgentWebTls, RandomPlanTokens, agent_version,
 };
 use zendiloos_infra::apps::{
-    ContainersForApps, FilesForApps, HttpsCatalogs, RandomSecrets, SharingForApps, YamlFiller,
+    CatalogPolicy, ContainersForApps, FilesForApps, HttpsCatalogs, RandomSecrets, SharingForApps, YamlFiller,
 };
 use zendiloos_infra::containers::{HttpsRegistries, SharesForBackups, SharesForProjects};
 use zendiloos_infra::enclosure::BuiltInCatalog;
@@ -321,6 +321,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         secrets: Arc::new(RandomSecrets),
         host: agent_apps,
         filler: Arc::new(YamlFiller),
+        policy: Arc::new(CatalogPolicy::new(containers.clone())),
         projects: Arc::new(ContainersForApps::new(containers.clone())),
     });
     let container_sampler = spawn_container_sampler(containers.clone());

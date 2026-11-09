@@ -219,6 +219,46 @@ pub trait ComposeFiller: Send + Sync {
     ) -> Result<String, String>;
 }
 
+/// The project a template is filled in for: its name and its folder in a
+/// share, where Compose reads it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TemplatePlace {
+    pub project: String,
+    pub share_id: i64,
+    /// In the share: `docker/jellyfin`.
+    pub folder: String,
+}
+
+/// The catalog's policy, on what Compose makes of an app's template: the
+/// checks the catalog's own validator runs, by the catalog's own code.
+#[async_trait]
+pub trait TemplatePolicy: Send + Sync {
+    /// What in `app`'s template its catalog's policy forbids, one line
+    /// each; none if it keeps to it. The template is filled in with the
+    /// catalog's stand-in values, which show where each value ends up, and
+    /// read by Compose as a project at `place` of `actor`'s would be.
+    async fn problems(
+        &self,
+        app: &CatalogApp,
+        place: &TemplatePlace,
+        actor: &Actor,
+        context: &RequestContext,
+    ) -> Result<Vec<String>, PolicyError>;
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum PolicyError {
+    /// The place is no folder of a share the administrator may write, or
+    /// the project's name no name Compose allows.
+    #[error("{0}")]
+    Place(String),
+    /// Compose cannot read the template, in its words.
+    #[error("{0}")]
+    Unreadable(String),
+    #[error(transparent)]
+    Port(#[from] PortError),
+}
+
 /// An administrator's project made from an app of a catalog, as Docker
 /// has it now.
 #[derive(Debug, Clone, PartialEq, Eq)]

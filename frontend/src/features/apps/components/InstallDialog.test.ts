@@ -215,7 +215,11 @@ describe('the install dialog', () => {
     await type('port-web', '2300')
     await press('Next')
 
+    // Filled in for where the project goes, where Compose reads it.
     expect(fillTemplate).toHaveBeenCalledWith(immich, {
+      name: 'photos',
+      share_id: 4,
+      folder: 'photos',
       ports: { web: 2300 },
       shares: { photos: 'family/2024' },
       settings: { ADMIN_EMAIL: 'me@example.org' },

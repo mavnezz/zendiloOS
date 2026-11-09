@@ -160,6 +160,7 @@ async function fill(): Promise<void> {
   failure.value = null
   try {
     compose.value = await fillTemplate(props.app, {
+      ...place(),
       ports: Object.fromEntries(props.app.ports.map((port) => [port.id, Number(ports[port.id])])),
       shares: { ...shares },
       settings: Object.fromEntries(

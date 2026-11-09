@@ -2934,6 +2934,8 @@ const en = {
     refused: 'The system refused for safety reasons.',
     invalid_app_value: 'A value cannot be used',
     template_unfillable: "The app's Compose file cannot be filled in",
+    against_catalog_policy:
+      'The app breaks the rules of its catalog, whatever it says of its permissions; the App Center does not install it',
     app_busy: 'The app is busy or not in a state for this.',
     host_failed: 'Docker could not do it',
     share_used_by_apps: 'Apps use this share; remove them first',

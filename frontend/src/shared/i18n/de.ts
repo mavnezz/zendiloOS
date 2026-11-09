@@ -2992,6 +2992,8 @@ const de: Messages = {
     refused: 'Das System hat aus Sicherheitsgründen abgelehnt.',
     invalid_app_value: 'Ein Wert lässt sich nicht verwenden',
     template_unfillable: 'Die Compose-Datei der App lässt sich nicht ausfüllen',
+    against_catalog_policy:
+      'Die App verstößt gegen die Regeln ihres Katalogs, was immer sie über ihre Berechtigungen sagt; das App Center installiert sie nicht',
     app_busy: 'Die App ist beschäftigt oder nicht in dem Zustand dafür.',
     host_failed: 'Docker konnte es nicht ausführen',
     share_used_by_apps: 'Apps nutzen diese Freigabe; entfernen Sie sie zuerst',

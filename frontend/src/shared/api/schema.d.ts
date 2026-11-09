@@ -134,7 +134,9 @@ export interface paths {
         /**
          * Fills in an app's Compose file, its template, with the values given and
          *     the caller as the account its containers run as; the devices the machine
-         *     lacks are left out. Nothing is made yet. Needs `containers.manage`.
+         *     lacks are left out. Refused if the template, as Compose reads it with the
+         *     catalog's stand-in values in the project's folder, breaks its catalog's
+         *     policy. Nothing is made yet. Needs `containers.manage`.
          */
         post: operations["fill_template"];
         delete?: never;
@@ -4964,6 +4966,14 @@ export interface components {
             volume: number;
         };
         FillTemplateRequest: {
+            /** @description In the share: `docker/jellyfin`. */
+            folder: string;
+            /**
+             * @description The project it becomes (`POST /docker/projects` with the same
+             *     name, share and folder): Compose reads the template there for the
+             *     catalog's policy.
+             */
+            name: string;
             /** @description Port id → host port; missing ones get their default. */
             ports?: {
                 [key: string]: number;
@@ -4975,6 +4985,8 @@ export interface components {
             settings?: {
                 [key: string]: string;
             };
+            /** Format: int64 */
+            share_id: number;
             /**
              * @description Share id → the share picked for it: its name, or a folder in it
              *     (`media/Films`), which the app then mounts instead of the whole
@@ -7509,7 +7521,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description `invalid_app_value`: the field and why; `template_unfillable` */
+            /** @description `invalid_app_value`: the field and why; `template_unfillable`; `against_catalog_policy`: what it breaks; `invalid_input`: no place for the project */
             422: {
                 headers: {
                     [name: string]: unknown;

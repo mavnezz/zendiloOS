@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use zendiloos_kernel::{Actor, AuditEntry, AuditLog, Clock, Outcome, PortError, RequestContext};
 
-use super::ports::{CatalogError, CatalogReader, SourceRepository};
+use super::ports::{CatalogError, CatalogReader, PolicyError, SourceRepository};
 use crate::domain::{CatalogApp, InvalidSource, Refresh, Source, index_address};
 
 /// An app with the source that offers it.
@@ -43,6 +43,15 @@ pub enum AppsError {
     /// tried.
     #[error("the app's template cannot be filled in: {0}")]
     Template(String),
+    /// The app's template does what its catalog's policy forbids, one
+    /// problem a line: whatever its catalog says of its permissions, it
+    /// is not offered.
+    #[error("the app breaks its catalog's policy:\n{0}")]
+    AgainstPolicy(String),
+    /// Where the project would go is no folder of a share the
+    /// administrator may write, or its name none Compose allows.
+    #[error("{0}")]
+    InvalidPlace(String),
     /// A job is working on the app, or it is not in a state for this.
     #[error("the app is busy or not ready for this")]
     Busy,
@@ -63,6 +72,16 @@ impl From<CatalogError> for AppsError {
         match error {
             CatalogError::Unreachable(reason) => AppsError::Unreachable(reason),
             CatalogError::NotAnIndex(reason) => AppsError::NotACatalog(reason),
+        }
+    }
+}
+
+impl From<PolicyError> for AppsError {
+    fn from(error: PolicyError) -> Self {
+        match error {
+            PolicyError::Place(reason) => AppsError::InvalidPlace(reason),
+            PolicyError::Unreadable(reason) => AppsError::Template(reason),
+            PolicyError::Port(error) => AppsError::Port(error),
         }
     }
 }

@@ -452,7 +452,7 @@
         "tags": [
           "apps"
         ],
-        "summary": "Fills in an app's Compose file, its template, with the values given and\nthe caller as the account its containers run as; the devices the machine\nlacks are left out. Nothing is made yet. Needs `containers.manage`.",
+        "summary": "Fills in an app's Compose file, its template, with the values given and\nthe caller as the account its containers run as; the devices the machine\nlacks are left out. Refused if the template, as Compose reads it with the\ncatalog's stand-in values in the project's folder, breaks its catalog's\npolicy. Nothing is made yet. Needs `containers.manage`.",
         "operationId": "fill_template",
         "parameters": [
           {
@@ -504,7 +504,7 @@
             }
           },
           "422": {
-            "description": "`invalid_app_value`: the field and why; `template_unfillable`",
+            "description": "`invalid_app_value`: the field and why; `template_unfillable`; `against_catalog_policy`: what it breaks; `invalid_input`: no place for the project",
             "content": {
               "application/json": {
                 "schema": {
@@ -15820,7 +15820,20 @@
       },
       "FillTemplateRequest": {
         "type": "object",
+        "required": [
+          "name",
+          "share_id",
+          "folder"
+        ],
         "properties": {
+          "folder": {
+            "type": "string",
+            "description": "In the share: `docker/jellyfin`."
+          },
+          "name": {
+            "type": "string",
+            "description": "The project it becomes (`POST /docker/projects` with the same\nname, share and folder): Compose reads the template there for the\ncatalog's policy."
+          },
           "ports": {
             "type": "object",
             "description": "Port id → host port; missing ones get their default.",
@@ -15842,6 +15855,10 @@
             "propertyNames": {
               "type": "string"
             }
+          },
+          "share_id": {
+            "type": "integer",
+            "format": "int64"
           },
           "shares": {
             "type": "object",
