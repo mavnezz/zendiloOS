@@ -447,7 +447,7 @@ mod tests {
             .create_if_missing(true);
         let pool = sqlx::SqlitePool::connect_with(options).await.unwrap();
         let migrator = sqlx::migrate!("./migrations");
-        for migration in migrator.iter().filter(|m| m.version < 47) {
+        for migration in migrator.iter().filter(|m| m.version < 46) {
             sqlx::raw_sql(migration.sql.clone()).execute(&pool).await.unwrap();
         }
         sqlx::raw_sql(
@@ -463,7 +463,7 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
-        let update = migrator.iter().find(|m| m.version == 47).unwrap();
+        let update = migrator.iter().find(|m| m.version == 46).unwrap();
         sqlx::raw_sql(update.sql.clone()).execute(&pool).await.unwrap();
 
         let shared: Vec<String> =
