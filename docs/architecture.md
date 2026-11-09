@@ -1759,7 +1759,8 @@ network, no devices, no other processes seen (`ProtectProc=invisible`), its
 own IPC, `SystemCallFilter=@system-service` (not `RestrictSUIDSGID`:
 systemd enforces it by blocking `openat2()`, which keeps the units' paths
 beneath their folders), the whole system read only but the share,
-`CAP_DAC_READ_SEARCH` and `CAP_DAC_OVERRIDE` only, 65536 descriptors. Each
+`CAP_DAC_READ_SEARCH` and `CAP_DAC_OVERRIDE` only, 65536 descriptors and
+1 GiB of memory (`MemoryMax`). Each
 unit has a name of its own,
 `zendiloos-volume-<backup|restore|swap>-<volume>`, so systemd refuses a
 second one, and may run until ten minutes before the agent stops waiting
@@ -1780,7 +1781,14 @@ and groups, modes with set-ID bits, times, symbolic links as links, hard
 links as links to the first name the archive holds, extended attributes
 `user.*`, `security.capability` and the POSIX ACLs as `SCHILY.xattr`
 records), compressed with zstd, readable by Debian's tar and zstd too;
-sockets, pipes and devices are left out. Beside it goes
+sockets, pipes and devices are left out, and folders nested deeper than
+1024 fail the backup. However many entries a volume holds, the backup
+takes no more memory for them than the folders it is in and a bounded
+table of first names: those of a million files with several names at
+most, or 256 MiB of them (each reckoned at its path and 128 bytes beside);
+a later name of a file beyond is written whole, so its data is in the
+archive all the same. Its progress comes from a count first, bounded as
+the volumes' sizes are. Beside it goes
 `<volume>-YYYYMMDD-HHMMSS.json`, its manifest: the volume's name, driver,
 labels, size and when it was made, the release's version and the
 archive's SHA-256. The folders on the way are walked to beneath the share
@@ -1840,7 +1848,8 @@ RESOLVE_NO_XDEV)`, files are made with `O_EXCL | O_NOFOLLOW`, hard links
 name entries beneath without following a link, devices and other kinds
 refuse the archive; owners, modes, times and the extended attributes above
 are set on each through its descriptor, folders once the entries left
-them, so only the folders an entry is in are kept in memory. Only if the
+them, so only the folders an entry is in are kept in memory, however many
+entries the archive holds. Only if the
 second hash matches too and the file was read to its end does the agent
 look for running containers once more; if one uses the volume now, what was
 extracted goes and the old contents stay (`volume_in_use`). Otherwise the

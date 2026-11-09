@@ -71,8 +71,15 @@ const XATTR_RECORD: &str = "SCHILY.xattr.";
 /// Where a manifest says which format it has.
 const MANIFEST_FORMAT: u32 = 1;
 /// Files with several names whose first name a backup keeps, to write the
-/// others as links; beyond, they are written whole.
+/// others as links, and what keeping them may take up in memory; beyond
+/// either, they are written whole. A count remembers as many to count each
+/// once; beyond, it is incomplete.
 const MAX_LINKS: usize = 1 << 20;
+const MAX_LINK_BYTES: usize = 256 * 1024 * 1024;
+/// What keeping a first name takes up beside the name itself: its place in
+/// the table (identity and path, the table's slack) and the name's
+/// allocation.
+const LINK_COST: usize = 128;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ArchiveError {
@@ -721,6 +728,8 @@ struct Writer<'p, W: Write> {
     device: u64,
     /// Files with more than one name: the first path in the archive.
     links: HashMap<(u64, u64), PathBuf>,
+    /// What keeping more of them may take up yet.
+    link_room: usize,
     progress: Progress<'p>,
     bytes: u64,
     entries: u64,
@@ -853,8 +862,11 @@ impl<W: Write> Writer<'_, W> {
         self.builder.append_data(&mut header, &path, content).map_err(|e| failed(what(), e))?;
         self.bytes += size;
         self.entries += 1;
-        // Its other names link to this one, now that it is in the archive.
-        if opened.st_nlink > 1 && self.links.len() < MAX_LINKS {
+        // Its other names link to this one, now that it is in the archive:
+        // as far as there is room to keep it.
+        let cost = path.as_os_str().len() + LINK_COST;
+        if opened.st_nlink > 1 && self.links.len() < MAX_LINKS && cost <= self.link_room {
+            self.link_room -= cost;
             self.links.insert(id, path);
         }
         Ok(())
@@ -883,6 +895,7 @@ fn write_archive(
         builder: tar::Builder::new(encoder),
         device,
         links: HashMap::new(),
+        link_room: MAX_LINK_BYTES,
         progress: Progress::new(total, report),
         bytes: 0,
         entries: 0,
