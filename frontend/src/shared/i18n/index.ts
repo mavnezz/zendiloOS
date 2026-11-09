@@ -136,6 +136,7 @@ const KNOWN_PROBLEMS = [
   'volume_in_use',
   'volume_busy',
   'containers_held',
+  'plan_paused',
   'network',
 ] as const
 

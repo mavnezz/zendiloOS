@@ -1,5 +1,13 @@
 <script setup lang="ts">
-import { CalendarClock, Eraser, HardDriveDownload, History, Search, Trash2 } from 'lucide-vue-next'
+import {
+  CalendarClock,
+  Eraser,
+  HardDriveDownload,
+  History,
+  Play,
+  Search,
+  Trash2,
+} from 'lucide-vue-next'
 import { computed, inject, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
@@ -18,6 +26,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 
 import {
   backUpNow,
+  resumeBackupPlan,
   usePruneVolumes,
   useRefreshDocker,
   useRemoveVolume,
@@ -80,15 +89,18 @@ function backup(volume: DockerVolume): { text: string; detail?: string; failed?:
   }
   return {
     text: scheduleText(volume.plan, t),
-    detail: failed
-      ? t('docker.volumes.lastFailed')
-      : t('docker.volumes.next', { at: formatDateTime(volume.plan.next_at * 1000) }),
-    failed,
+    detail: volume.plan.paused
+      ? t('docker.volumes.paused')
+      : failed
+        ? t('docker.volumes.lastFailed')
+        : t('docker.volumes.next', { at: formatDateTime(volume.plan.next_at * 1000) }),
+    failed: failed || volume.plan.paused,
   }
 }
 
 function actions(volume: DockerVolume): Action[] {
   const busy = volumeJob(jobs.list, volume.name) !== undefined
+  const paused = volume.plan?.paused === true
   return [
     {
       id: 'plan',
@@ -96,11 +108,12 @@ function actions(volume: DockerVolume): Action[] {
       icon: CalendarClock,
       disabled: !volume.backed_up_here,
     },
+    ...(paused ? [{ id: 'resume', label: t('docker.volumes.resume'), icon: Play }] : []),
     {
       id: 'now',
       label: t('docker.volumes.backUpNow'),
       icon: HardDriveDownload,
-      disabled: !volume.plan || busy,
+      disabled: !volume.plan || paused || busy,
     },
     { id: 'backups', label: t('docker.volumes.backups'), icon: History },
     {
@@ -118,7 +131,15 @@ async function run(volume: DockerVolume, action: string): Promise<void> {
   if (action === 'plan') planning.value = volume
   else if (action === 'backups') listing.value = volume
   else if (action === 'remove') removing.value = volume
-  else if (action === 'now') {
+  else if (action === 'resume') {
+    try {
+      await resumeBackupPlan(volume.name)
+      notifications.notify('success', t('docker.volumes.resumed'))
+      await refresh()
+    } catch (problem) {
+      failure.value = problemMessage(problem)
+    }
+  } else if (action === 'now') {
     try {
       jobs.update(await backUpNow(volume.name))
       notifications.notify('info', t('docker.volumes.backUpNow'), t('docker.volumes.started'))
