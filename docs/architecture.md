@@ -1791,8 +1791,8 @@ takes no more memory for them than the folders it is in and a bounded
 table of first names: those of a million files with several names at
 most, or 256 MiB of them (each reckoned at its path and 128 bytes beside);
 a later name of a file beyond is written whole, so its data is in the
-archive all the same. Its progress comes from a count first, bounded as
-the volumes' sizes are. Beside it goes
+archive all the same. Its progress comes from counting the volume first,
+in memory bounded as above. Beside it goes
 `<volume>-YYYYMMDD-HHMMSS.json`, its manifest: the volume's name, driver,
 labels, size and when it was made, the release's version and the
 archive's SHA-256. The folders on the way are walked to beneath the share
@@ -1808,7 +1808,10 @@ the ACL mask's, so no entry of the ACL may write them; who may read and
 remove them is as the folder's ACL says), and only then renamed into place
 (`RENAME_NOREPLACE`), the archive first; should the manifest not follow,
 the archive is removed again by its identity, so no archive is left
-without its manifest. zendiloosd records each file with its size, identity
+without its manifest. Their paths in the share are formed before anything
+is written, and the manifest is complete before either is renamed: once
+both are in place, the unit does not fail any more and leave them behind
+unrecorded. zendiloosd records each file with its size, identity
 (inode, and the time it was written) and device, the archive's SHA-256,
 the data's size, its entries and the manifest. Retention removes the
 archives of the runs beyond the plan's number, the newest as recorded kept
