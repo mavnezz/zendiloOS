@@ -262,20 +262,27 @@ struct Side {
 
 /// Copies `from` to `to`, each side on a thread of its own with its own
 /// rights, then writes the copy out (`syncfs`) on the target's side when it
-/// is a move's or lands on a removable drive; says where the copy went and
-/// what was copied, for a move (`Taken::Refuse`) entry by entry.
+/// is a move's or lands on a removable drive, through the target's root
+/// opened before the copy (`ShareRoot::before_writing`); says where the
+/// copy went and what was copied, for a move (`Taken::Refuse`) entry by
+/// entry.
 async fn across(from: Side, to: Side, taken: Taken) -> Result<(SharePath, Copied), OperationError> {
     let (out, pieces) = std::sync::mpsc::sync_channel(PIECES_IN_FLIGHT);
     let (source, from_path) = (from.root, from.path);
     let (target, to_path) = (to.root, to.path);
     let moving = taken == Taken::Refuse;
+    let writing_out = if moving || to.acting == Acting::Drive {
+        let root = Arc::clone(&target);
+        Some(run(to.acting.clone(), move || root.before_writing()).await?)
+    } else {
+        None
+    };
     let reading = spawn_as(from.acting, move || source.send_entry(&from_path, &out, moving));
-    let filled = Arc::clone(&target);
-    let writing = spawn_as(to.acting.clone(), move || filled.receive_entry(&to_path, &pieces, taken));
+    let writing = spawn_as(to.acting.clone(), move || target.receive_entry(&to_path, &pieces, taken));
     let (read, written) = tokio::join!(reading, writing);
     let copy = settle(read?, written?).map_err(OperationError::File)?;
-    if moving || to.acting == Acting::Drive {
-        run(to.acting, move || target.sync()).await?;
+    if let Some(writing_out) = writing_out {
+        run(to.acting, move || writing_out.sync()).await?;
     }
     Ok(copy)
 }
@@ -478,9 +485,10 @@ impl Files {
                     // Onto a drive: written out before it counts as done.
                     let drive = writer == Acting::Drive;
                     run(reader, move || {
+                        let writing_out = if drive { Some(target.before_writing()?) } else { None };
                         let path = source.copy_entry(&from, &target, &to)?;
-                        if drive {
-                            target.sync()?;
+                        if let Some(writing_out) = writing_out {
+                            writing_out.sync()?;
                         }
                         Ok(path)
                     })

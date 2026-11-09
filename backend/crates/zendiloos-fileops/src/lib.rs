@@ -975,6 +975,7 @@ impl ShareRoot {
             // Another share is another file system.
             Err(Errno::XDEV) => {
                 let (from_name, to_name) = (c_name(from_name)?, c_name(to_name)?);
+                let writing_out = target.before_writing()?;
                 // Only what was copied goes after it, and only as it was
                 // copied: whoever may write the folder could change or add
                 // something meanwhile, or put something else in its place,
@@ -990,21 +991,39 @@ impl ShareRoot {
                     &mut copied,
                     target.new_entries,
                 )?;
-                target.sync()?;
+                writing_out.sync()?;
                 self.remove_copied(from, &copied)
             }
             other => Ok(other?),
         }
     }
 
-    /// Writes out what the root's file system holds in memory (`syncfs`),
-    /// and says whether that worked: a move removes its source only once
-    /// the copy is on the target for sure, which a drive pulled out right
-    /// after it would otherwise lose. Whoever may use the root may read it.
-    pub fn sync(&self) -> Result<(), FileError> {
-        let root = self.resolve(&SharePath::root(), OFlags::RDONLY | OFlags::DIRECTORY)?;
-        rustix::fs::syncfs(&root).map_err(|error| FileError::NotDurable(error.into()))
+    /// The root, opened to write out a copy into it once the copy is made
+    /// ([`WritingOut::sync`]); before the copy, so that no error writing it
+    /// back gets by: the kernel tells such an error once to each
+    /// descriptor opened before it, and never to one opened after another
+    /// was told of it already (a `syncfs` of somebody else's meanwhile).
+    /// Whoever may use the root may read it.
+    pub fn before_writing(&self) -> Result<WritingOut, FileError> {
+        Ok(WritingOut(self.resolve(&SharePath::root(), OFlags::RDONLY | OFlags::DIRECTORY)?))
     }
+}
+
+/// A root opened before a copy into it ([`ShareRoot::before_writing`]).
+#[derive(Debug)]
+pub struct WritingOut(OwnedFd);
+
+impl WritingOut {
+    /// Writes out what the root's file system holds in memory (`syncfs`),
+    /// and says whether that worked, since the root was opened: a move
+    /// removes its source only once the copy is on the target for sure,
+    /// which a drive pulled out right after it would otherwise lose.
+    pub fn sync(&self) -> Result<(), FileError> {
+        rustix::fs::syncfs(&self.0).map_err(|error| FileError::NotDurable(error.into()))
+    }
+}
+
+impl ShareRoot {
 
     /// Copies `from` to `to` in `target`; if `to` exists, to the first free
     /// `name (N).ext` next to it. Returns where the copy went.

@@ -1081,8 +1081,12 @@ fn what_took_the_name_and_number_of_a_copied_entry_stays() {
     }
 }
 
+/// The target's root is opened to be written out before anything is copied
+/// into it: an error writing the copy back is told only to descriptors
+/// opened before it. One that cannot be opened stops the move before it
+/// copies anything.
 #[test]
-fn a_move_whose_copy_cannot_be_written_out_keeps_its_source() {
+fn a_move_opens_its_target_to_be_written_out_before_it_copies() {
     if rustix::process::geteuid().is_root() {
         return; // root opens the folder anyway
     }
@@ -1090,8 +1094,8 @@ fn a_move_whose_copy_cannot_be_written_out_keeps_its_source() {
         return;
     };
     fs::write(photos_dir.join("a.jpg"), "a").unwrap();
-    music.sync().unwrap();
-    // The target takes the copy, but cannot be opened to be written out.
+    music.before_writing().unwrap().sync().unwrap();
+    // The target could take the copy, but cannot be opened to be written out.
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(&music_dir, fs::Permissions::from_mode(0o300)).unwrap();
 
@@ -1100,7 +1104,7 @@ fn a_move_whose_copy_cannot_be_written_out_keeps_its_source() {
     fs::set_permissions(&music_dir, fs::Permissions::from_mode(0o755)).unwrap();
     assert!(matches!(moved, Err(FileError::Denied)), "{moved:?}");
     assert_eq!(fs::read_to_string(photos_dir.join("a.jpg")).unwrap(), "a", "the source stayed");
-    assert_eq!(fs::read_to_string(music_dir.join("a.jpg")).unwrap(), "a");
+    assert!(!music_dir.join("a.jpg").exists(), "nothing was copied before it");
     let error = FileError::NotDurable(std::io::Error::from_raw_os_error(5));
     assert!(error.to_string().contains("nothing was removed"), "{error}");
 }
@@ -1291,7 +1295,7 @@ fn a_copy_across_that_fails_removes_only_what_it_made() {
 #[test]
 fn a_share_is_written_out() {
     let v = Volumes::new();
-    v.share("photos").sync().unwrap();
+    v.share("photos").before_writing().unwrap().sync().unwrap();
 }
 
 /// The test's own user and group, as a share's root would be given what is
