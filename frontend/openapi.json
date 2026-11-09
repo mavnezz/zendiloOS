@@ -15749,7 +15749,7 @@
           },
           "recycle_bin": {
             "type": "boolean",
-            "description": "Deleted entries go to `.recycle/<user>` in the share."
+            "description": "What the file manager deletes goes to `.recycle/<user>` in the share."
           }
         }
       },

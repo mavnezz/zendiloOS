@@ -85,7 +85,7 @@ pub struct FileShare {
     pub home: bool,
     pub description: Option<String>,
     pub access: ShareAccessLevel,
-    /// Deleted entries go to `.recycle/<user>` in the share.
+    /// What the file manager deletes goes to `.recycle/<user>` in the share.
     pub recycle_bin: bool,
 }
 

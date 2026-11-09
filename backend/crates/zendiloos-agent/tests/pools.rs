@@ -521,7 +521,6 @@ async fn writes_samba_and_nfs_configuration_after_checking_it() {
             principal: Principal::Group(GroupName::parse("family").unwrap()),
             permission: SharePermission::ReadWrite,
         }],
-        recycle_bin: false,
         comment: None,
         time_machine: None,
     }];

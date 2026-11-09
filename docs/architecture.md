@@ -692,8 +692,8 @@ TLS is rustls with ring and the system's certificate authorities
   folder is `root:zendiloos-files`, mode 2770, with one ACL set when it is
   made: `group:zendiloos-files:rwx` and `default:group:zendiloos-files:rwx`,
   mask `rwx`, which what is made in it inherits; its recycle bins' folder
-  `.recycle` alike, and sticky (3770), so only root, which Samba and the
-  file manager work as, renames or removes the bins in it. Whoever works on
+  `.recycle` alike, and sticky (3770), so only root, which the file
+  manager works as, renames or removes the bins in it. Whoever works on
   the files as that group (NFS clients, apps) reads and writes what Samba,
   the file manager or another app made. There are no entries per person or
   group, so nothing has to follow rules, group members or accounts.
@@ -749,16 +749,22 @@ TLS is rustls with ring and the system's certificate authorities
   again, which starts at once (the answer's `job`). A walk records the
   second after it ended, so a snapshot taken while it went counts as
   older.
-- **Recycle bin:** Samba's `vfs_recycle` moves files deleted over SMB to
-  `.recycle/<user>/<folders>/<name>` in the share (`Copy #N of <name>` if
-  taken), hidden but not vetoed, so they can be restored from it. One bin
-  per share: the folder of each user says who deleted what, and everyone
-  who may use the share sees all of it, as they could see the files before
-  (over SMB with hidden files shown, in the file manager by showing hidden
-  entries); whoever may write the share may move things out of it. The
-  agent makes `.recycle` with the share's folder (above), and moves
-  something not a folder in its place aside (`.recycle.not-a-folder-…`).
-  The file manager deletes into the same bins (the user's folder there
+- **Recycle bin:** the file manager moves what is deleted in a share to
+  `.recycle/<user>/<folders>/<name>` there (`Copy #N of <name>` if taken),
+  if the share's recycle bin is on; what is deleted over SMB or NFS is gone,
+  and the snapshots keep earlier states (Windows' "Previous Versions").
+  Samba keeps no bin in a share: it works there as root, and its
+  `vfs_recycle` makes the bins' folders by path, so a link that whoever
+  may write the share (an NFS client, an app) put in `.recycle`'s place,
+  or in a user's place in it, would have root make folders wherever it
+  leads. `.recycle` is hidden over SMB but not vetoed. One bin per share:
+  the folder of each user says who deleted what, and everyone who may use
+  the share sees all of it, as they could see the files before (over SMB
+  with hidden files shown, in the file manager by showing hidden entries);
+  whoever may write the share may move things out of it. The agent makes
+  `.recycle` with the share's folder (above), and moves something not a
+  folder in its place aside (`.recycle.not-a-folder-…`). The file manager
+  reaches the bins beneath the share's folder only (the user's folder there
   made 0770, the share's group's); inside a bin, deleting is for good, at
   any depth. Its recycle bin view gathers the person's own folder of each
   share's bin, and restores from it, any entry at any depth: back to where
@@ -767,12 +773,8 @@ TLS is rustls with ring and the system's certificate authorities
   is inside a folder deleted twice goes back into that folder), folders
   that are gone made again, and a taken name gets a free one beside it;
   emptying the bin deletes `.recycle/<user>` for good. In the personal
-  folders each user's bin stays their own (0700). **Open:** Samba's recycle
-  module makes the bins' folders by path, as root; the bins are root's in
-  a sticky folder, but whoever may write the share's top (an NFS client,
-  an app) could rename `.recycle` and put a link in its place, and Samba
-  would then make empty folders, root's, where the link leads. Leaving the
-  module out, or moving the bins out of the writers' reach, would close it.
+  folders each user's bin stays their own (0700), and Samba keeps it too:
+  there it works as the user, whom only the user's own links can lead.
 - **File manager: zendiloosd checks, the files agent stays beneath the
   root.** `zendiloosd` cannot read shares itself. Every operation goes to
   the files agent, which runs it on a new thread with the rights of its
@@ -1222,9 +1224,10 @@ TLS is rustls with ring and the system's certificate authorities
   throttle.
 - Recycle bins: a share's `.recycle` is made with the share's folder,
   root's and the group `zendiloos-files`', sticky (3770 with the share's
-  ACL); Samba and the file manager make each user's folder in it as root,
-  so whoever reaches the files as that group (an NFS client, an app) may
-  neither rename nor remove a bin. Something not a folder in
+  ACL); the file manager makes each user's folder in it as root, so
+  whoever reaches the files as that group (an NFS client, an app) may
+  neither rename nor remove a bin. Samba, which works on shares as root,
+  keeps no bin there (its module follows links by path). Something not a folder in
   `.recycle`'s place is moved aside. In a personal folder the file manager
   refuses a bin that is not the user's own and private, and empties a bin
   without removing it.

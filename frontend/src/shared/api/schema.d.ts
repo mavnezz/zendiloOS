@@ -4926,7 +4926,7 @@ export interface components {
             id: number;
             /** @description `home` for the personal folder. */
             name: string;
-            /** @description Deleted entries go to `.recycle/<user>` in the share. */
+            /** @description What the file manager deletes goes to `.recycle/<user>` in the share. */
             recycle_bin: boolean;
         };
         /** @description A snapshot of a share, as the file manager shows it. */

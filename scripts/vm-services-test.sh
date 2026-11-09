@@ -116,7 +116,8 @@ call PUT /file-services "{\"smb\":true,\"nfs\":true,\"workgroup\":\"WORKGROUP\",
 text=$(vm "testparm -sv --section-name=machines 2>/dev/null")
 has 'fruit:time machine = yes' "$text"
 has 'fruit:time machine max size = 512000M' "$text"
-has 'vfs objects = shadow_copy2 catia fruit streams_xattr recycle' "$text"
+has 'vfs objects = shadow_copy2 catia fruit streams_xattr' "$text"
+lacks 'recycle:' "$text"
 # smbd announces it as it starts; Avahi can take a while to pass it on.
 if ! (wait_for "Bonjour" "vm 'avahi-browse -tpr _adisk._tcp 2>/dev/null' | grep -q 'adVN=machines'" 180); then
     fail "the Time Machine share is not on Bonjour: $(vm 'avahi-browse -tpr _adisk._tcp 2>&1' | head -5)"

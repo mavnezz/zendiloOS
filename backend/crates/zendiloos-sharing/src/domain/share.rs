@@ -403,7 +403,6 @@ pub struct SmbSpec {
     pub volume: u16,
     /// Groups as groups: Samba follows their members itself.
     pub access: Vec<(Principal, Permission)>,
-    pub recycle_bin: bool,
     /// The share's description, shown by clients.
     pub comment: Option<String>,
     /// Macs back up to it; `Some(None)`: without a limit of its own.

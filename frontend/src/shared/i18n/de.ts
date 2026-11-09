@@ -2883,7 +2883,7 @@ const de: Messages = {
     },
     recycleBin: 'Papierkorb',
     recycleBinHint:
-      'Über SMB gelöschte Dateien landen in .recycle/<Benutzer> der Freigabe, statt zu verschwinden.',
+      'Im Datei-Explorer gelöschte Dateien landen in seinem Papierkorb in der Freigabe. Über SMB und NFS ist Löschen endgültig; die Snapshots bewahren frühere Stände.',
     nfs: 'NFS',
     nfsWarning:
       'NFS unterscheidet Rechner, nicht Personen: Wer einen der Rechner unten nutzt, darf lesen oder lesen und schreiben, wie seine Regel sagt, als welcher Benutzer er sich auch ausgibt. Erlauben Sie nur vertrauenswürdige Rechner.',
