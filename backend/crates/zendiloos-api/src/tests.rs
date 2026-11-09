@@ -1670,6 +1670,7 @@ fn openapi_documents_every_route() {
         [
             "/api/v1/accounts",
             "/api/v1/accounts/{id}",
+            "/api/v1/accounts/{id}/failed-sign-ins",
             "/api/v1/accounts/{id}/password",
             "/api/v1/accounts/{id}/two-factor",
             "/api/v1/apps/catalog",

@@ -95,6 +95,7 @@ pub struct IdentityUseCases {
     pub disable_two_factor: commands::DisableTwoFactor,
     pub renew_recovery_codes: commands::RenewRecoveryCodes,
     pub reset_two_factor: commands::ResetTwoFactor,
+    pub clear_failed_sign_ins: commands::ClearFailedSignIns,
 }
 
 impl IdentityUseCases {
@@ -137,6 +138,7 @@ impl IdentityUseCases {
             disable_two_factor: commands::DisableTwoFactor::new(Arc::clone(&context)),
             renew_recovery_codes: commands::RenewRecoveryCodes::new(Arc::clone(&context)),
             reset_two_factor: commands::ResetTwoFactor::new(Arc::clone(&context)),
+            clear_failed_sign_ins: commands::ClearFailedSignIns::new(Arc::clone(&context)),
             authenticate: queries::Authenticate::new(context),
         }
     }

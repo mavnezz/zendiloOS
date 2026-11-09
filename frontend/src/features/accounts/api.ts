@@ -59,6 +59,9 @@ export function useAccountActions() {
     resetTwoFactor: async (id: number): Promise<void> => {
       await refreshing(unwrap(api.DELETE('/api/v1/accounts/{id}/two-factor', path(id))))
     },
+    clearFailedSignIns: async (id: number): Promise<void> => {
+      await unwrap(api.DELETE('/api/v1/accounts/{id}/failed-sign-ins', path(id)))
+    },
     createGroup: (body: CreateGroupRequest): Promise<Group> =>
       refreshing(unwrap(api.POST('/api/v1/groups', { body }))),
     updateGroup: (id: number, body: UpdateGroupRequest): Promise<Group> =>

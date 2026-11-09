@@ -25,6 +25,6 @@ pub use purge_expired_sessions::PurgeExpiredSessions;
 pub use save_preferences::SavePreferences;
 pub use security::{BlockAddress, EndSession, SetSecurity, UnblockAddress};
 pub use two_factor::{
-    BeginTwoFactor, CompleteSignIn, ConfirmTwoFactor, DisableTwoFactor, RenewRecoveryCodes, ResetTwoFactor,
-    TwoFactorSetup,
+    BeginTwoFactor, ClearFailedSignIns, CompleteSignIn, ConfirmTwoFactor, DisableTwoFactor,
+    RenewRecoveryCodes, ResetTwoFactor, TwoFactorSetup,
 };

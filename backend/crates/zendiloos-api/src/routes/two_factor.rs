@@ -1,6 +1,7 @@
 //! Two-factor sign-in to the web interface: the second step of a sign-in,
 //! the signed-in account's authenticator app (set up, turned off, new
-//! recovery codes) and an administrator's reset of another account's.
+//! recovery codes), an administrator's reset of another account's, and an
+//! administrator clearing an account's failed sign-ins.
 
 use axum::Json;
 use axum::extract::State;
@@ -28,6 +29,7 @@ pub(super) fn routes() -> OpenApiRouter<ApiState> {
         .routes(routes!(disable))
         .routes(routes!(renew_recovery_codes))
         .routes(routes!(reset))
+        .routes(routes!(clear_failed_sign_ins))
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -276,5 +278,30 @@ async fn reset(
     Path(id): Path<i64>,
 ) -> Result<StatusCode, ApiError> {
     state.identity.reset_two_factor.execute(&auth.0, AccountId::new(id), &client).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Clears an account's failed sign-ins, for someone kept out by others'
+/// wrong passwords or codes: the account lock's count and the limit of
+/// codes from the authenticator app start anew. Needs `users.manage`.
+#[utoipa::path(
+    delete,
+    path = "/accounts/{id}/failed-sign-ins",
+    tag = "accounts",
+    security(("session" = [])),
+    params(("id" = i64, Path)),
+    responses(
+        (status = NO_CONTENT, description = "Cleared: the account signs in as if nothing had failed."),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`"),
+        (status = FORBIDDEN, body = Problem, description = "`forbidden`, `csrf_rejected`"),
+    )
+)]
+async fn clear_failed_sign_ins(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(id): Path<i64>,
+) -> Result<StatusCode, ApiError> {
+    state.identity.clear_failed_sign_ins.execute(&auth.0, AccountId::new(id), &client).await?;
     Ok(StatusCode::NO_CONTENT)
 }

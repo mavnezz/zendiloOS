@@ -314,3 +314,43 @@ async fn admins_see_who_signs_in_with_a_code_and_reset_it() {
         h.identity.audit.entries().into_iter().find(|e| e.action == "identity.two_factor_reset").unwrap();
     assert_eq!((entry.actor.as_deref(), entry.target.as_deref()), (Some("admin"), Some("alice")));
 }
+
+/// Others' wrong codes keep Alice from the app's codes; an administrator
+/// clears her failed sign-ins and she signs in with one.
+#[tokio::test]
+async fn admins_clear_an_accounts_failed_sign_ins() {
+    let h = Harness::new();
+    let admin = h.sign_in("admin", Role::Admin).await;
+    let (_, app, _) = alice_with_two_factor(&h).await;
+    let bob = h.sign_in("bob", Role::User).await;
+    let alice_id = id_of(&h, "alice");
+    let clear = |session: &Session, id: i64| {
+        empty(with_csrf(changing(Method::DELETE, &format!("/api/v1/accounts/{id}/failed-sign-ins")), session))
+    };
+    // The account lock (five failures by default) keeps her out.
+    for _ in 0..2 {
+        let token = login(&h, "alice").await.body["token"].clone();
+        for _ in 0..3 {
+            second_factor(&h, &token, "000000").await;
+        }
+    }
+    let locked = login(&h, "alice").await;
+    assert_problem(&locked, StatusCode::TOO_MANY_REQUESTS, "too_many_attempts");
+
+    assert_problem(&h.send(clear(&bob, alice_id)).await, StatusCode::FORBIDDEN, "forbidden");
+    assert_problem(&h.send(clear(&admin, 999)).await, StatusCode::NOT_FOUND, "not_found");
+    let done = h.send(clear(&admin, alice_id)).await;
+    assert_eq!(done.status, StatusCode::NO_CONTENT, "{:?}", done.body);
+    let entry = h
+        .identity
+        .audit
+        .entries()
+        .into_iter()
+        .find(|e| e.action == "identity.failed_sign_ins_clear")
+        .unwrap();
+    assert_eq!((entry.actor.as_deref(), entry.target.as_deref()), (Some("admin"), Some("alice")));
+
+    let token = login(&h, "alice").await.body["token"].clone();
+    let signed_in = second_factor(&h, &token, &app.code(&h, 0)).await;
+    assert_eq!(signed_in.status, StatusCode::OK, "{:?}", signed_in.body);
+}

@@ -45,6 +45,27 @@ export interface paths {
         patch: operations["update_account"];
         trace?: never;
     };
+    "/api/v1/accounts/{id}/failed-sign-ins": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Clears an account's failed sign-ins, for someone kept out by others'
+         *     wrong passwords or codes: the account lock's count and the limit of
+         *     codes from the authenticator app start anew. Needs `users.manage`.
+         */
+        delete: operations["clear_failed_sign_ins"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/accounts/{id}/password": {
         parameters: {
             query?: never;
@@ -7331,6 +7352,44 @@ export interface operations {
             };
             /** @description `last_admin`, `own_account` */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    clear_failed_sign_ins: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cleared: the account signs in as if nothing had failed. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `forbidden`, `csrf_rejected` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -1,6 +1,6 @@
 //! Two-factor sign-in: the second step of a sign-in, and an account
 //! setting up, turning off or renewing its second factor; an administrator
-//! resetting another's.
+//! resetting another's, or clearing an account's failed sign-ins.
 
 use std::sync::Arc;
 
@@ -96,7 +96,7 @@ impl CompleteSignIn {
             c.audit(audit(Outcome::Denied).by(&account.actor()).reason("disabled")).await?;
             return Err(IdentityError::AccountDisabled);
         }
-        let code_attempt = c.begin_code_attempt(&account.name, now)?;
+        let code_attempt = c.begin_code_attempt(&account.name, code.expose(), now)?;
         let Some(used) = c.check_code(&two_factor, code.expose(), now) else {
             let ended = c.wrong_code(&key);
             code_attempt.failed();
@@ -319,7 +319,7 @@ impl DisableTwoFactor {
             .await?
             .filter(|t| t.is_on())
             .ok_or(IdentityError::TwoFactorOff)?;
-        let code_attempt = c.begin_code_attempt(&account.name, now)?;
+        let code_attempt = c.begin_code_attempt(&account.name, code.expose(), now)?;
         if c.check_code(&two_factor, code.expose(), now).is_none() {
             code_attempt.failed();
             attempt.failed(request).await?;
@@ -382,7 +382,7 @@ impl RenewRecoveryCodes {
             .filter(|t| t.is_on())
             .ok_or(IdentityError::TwoFactorOff)?;
         // The app's code only: it shows the phone is still at hand.
-        let code_attempt = c.begin_code_attempt(&account.name, now)?;
+        let code_attempt = c.begin_code_attempt(&account.name, code.expose(), now)?;
         let step = match (TypedCode::parse(code.expose()), two_factor.secret.as_ref()) {
             (Some(TypedCode::OneTime(digits)), Some(secret)) => {
                 c.one_time_step(secret, &digits, two_factor.last_step, now)
@@ -406,6 +406,37 @@ impl RenewRecoveryCodes {
         c.end_sign_ins_of(auth.account.id);
         c.audit(audit(Outcome::Success)).await?;
         Ok(codes.iter().map(|code| show_recovery_code(code.expose())).collect())
+    }
+}
+
+/// Command: an administrator clears an account's failed sign-ins, for
+/// someone kept out by others' wrong passwords or codes: the account lock's
+/// count and the limits of codes from the app start anew. Addresses that
+/// failed stay limited, and blocked ones blocked.
+#[derive(Clone)]
+pub struct ClearFailedSignIns {
+    context: Arc<Context>,
+}
+
+impl ClearFailedSignIns {
+    pub(crate) fn new(context: Arc<Context>) -> Self {
+        Self { context }
+    }
+
+    pub async fn execute(
+        &self,
+        auth: &AuthContext,
+        id: AccountId,
+        request: &RequestContext,
+    ) -> Result<(), IdentityError> {
+        let c = &self.context;
+        Context::require(auth, Permission::UsersManage)?;
+        let account = c.ports.accounts.find_by_id(id).await?.ok_or(IdentityError::AccountNotFound)?;
+        c.clear_failures_of(&account.name);
+        let action = AuditAction::FailedSignInsClear.as_str();
+        let entry = AuditEntry::new(c.now(), action, Outcome::Success, request);
+        c.audit(entry.by(&auth.actor()).target(account.name.to_string())).await?;
+        Ok(())
     }
 }
 

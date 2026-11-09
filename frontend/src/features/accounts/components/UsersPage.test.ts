@@ -146,6 +146,29 @@ describe('the users', () => {
     expect(failed?.body).toBe('Two-factor sign-in is off.')
   })
 
+  it('clears the failed sign-ins of an account', async () => {
+    on('DELETE', '/api/v1/accounts/5/failed-sign-ins', () => undefined)
+    await show()
+
+    await pick('Actions for anna', 'Clear failed sign-ins')
+
+    expect(callsTo('DELETE', '/api/v1/accounts/5/failed-sign-ins')).toHaveLength(1)
+    expect(
+      useNotifications().items.some((n) => n.title.startsWith('Failed sign-ins of anna cleared')),
+    ).toBe(true)
+  })
+
+  it('says when failed sign-ins could not be cleared', async () => {
+    on('DELETE', '/api/v1/accounts/5/failed-sign-ins', () => problem(404, 'not_found'))
+    await show()
+
+    await pick('Actions for anna', 'Clear failed sign-ins')
+
+    expect(
+      useNotifications().items.some((n) => n.title === 'Failed sign-ins could not be cleared'),
+    ).toBe(true)
+  })
+
   it('deletes an account once confirmed', async () => {
     on('DELETE', '/api/v1/accounts/5', () => undefined)
     on('DELETE', '/api/v1/accounts/6', () => problem(500, 'internal'))

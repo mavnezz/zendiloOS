@@ -1167,10 +1167,19 @@ TLS is rustls with ring and the system's certificate authorities
   and the password step does not clear the account's failures, so knowing
   the password gives no more guesses; three wrong codes end the sign-in,
   the third answering `sign_in_expired`. Whatever the account lock is set
-  to, an account takes at most 10 wrong second codes an hour and 30 a day,
-  from wherever they come (also when turning it off or renewing recovery
-  codes), and a sign-in that succeeds does not reset that: someone with the
-  password and many addresses does not get to guess the six digits.
+  to, an account takes at most 10 wrong codes from the app an hour and 30 a
+  day, from wherever they come (also when turning it off or renewing
+  recovery codes), and a sign-in that succeeds does not reset that: someone
+  with the password and many addresses does not get to guess the six digits.
+  Recovery codes are not counted there, or someone who knows the password
+  could keep the owner from them for a day by sending wrong codes; guessing
+  one is hopeless anyway (ten of about 49 bits each, three tries a password
+  step, which takes an Argon2 run, at most two at once), and the address's
+  limit and block hold them as they hold passwords, as does the account lock
+  where it is set. Administrators clear an account's failed sign-ins on the
+  users page (the account lock's count and the limit of codes from the app,
+  audited as `identity.failed_sign_ins_clear`); the counts are kept in
+  memory, so restarting zendiloosd on the console clears them too.
   Under the lock of account changes the second step checks the sign-in
   still waits (sent twice at once, it starts one session) and reads the
   account and its second factor again: a password changed or reset, a

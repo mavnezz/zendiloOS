@@ -2176,6 +2176,10 @@ const de: Messages = {
       'Für den Fall, dass Telefon und Wiederherstellungscodes verloren sind: {name} wird überall abgemeldet und meldet sich mit dem Passwort allein an, bis die Zwei-Faktor-Anmeldung wieder eingerichtet ist.',
     twoFactorReset: 'Die Zwei-Faktor-Anmeldung von {name} wurde zurückgesetzt',
     resetTwoFactorFailed: 'Die Zwei-Faktor-Anmeldung konnte nicht zurückgesetzt werden',
+    clearFailedSignIns: 'Fehlgeschlagene Anmeldungen zurücksetzen',
+    failedSignInsCleared:
+      'Fehlgeschlagene Anmeldungen von {name} zurückgesetzt: Kontosperre und Grenze für Codes aus der App beginnen neu',
+    clearFailedSignInsFailed: 'Die fehlgeschlagenen Anmeldungen konnten nicht zurückgesetzt werden',
   },
   people: {
     tabs: { users: 'Benutzer', groups: 'Gruppen', advanced: 'Erweitert' },
@@ -2337,6 +2341,7 @@ const de: Messages = {
       identity_two_factor_disable: 'Zwei-Faktor-Anmeldung ausgeschaltet',
       identity_two_factor_reset: 'Zwei-Faktor-Anmeldung durch Admin zurückgesetzt',
       identity_recovery_codes_renew: 'Neue Wiederherstellungscodes',
+      identity_failed_sign_ins_clear: 'Fehlgeschlagene Anmeldungen durch Admin zurückgesetzt',
       system_reboot: 'Neustart',
       system_power_off: 'Herunterfahren',
       system_time_update: 'Uhrzeit-Einstellungen geändert',

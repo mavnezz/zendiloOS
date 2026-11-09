@@ -21,6 +21,7 @@ pub enum AuditAction {
     TwoFactorDisable,
     TwoFactorReset,
     RecoveryCodesRenew,
+    FailedSignInsClear,
 }
 
 impl AuditAction {
@@ -46,6 +47,7 @@ impl AuditAction {
             AuditAction::TwoFactorDisable => "identity.two_factor_disable",
             AuditAction::TwoFactorReset => "identity.two_factor_reset",
             AuditAction::RecoveryCodesRenew => "identity.recovery_codes_renew",
+            AuditAction::FailedSignInsClear => "identity.failed_sign_ins_clear",
         }
     }
 }
