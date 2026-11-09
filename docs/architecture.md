@@ -1519,8 +1519,13 @@ links, mounted under `/run/zendiloos-project-shares/<project>/`, a unit per
 project before Docker at boot; a missing folder a bind may create is made
 there, as Docker would; each pin is named by a hash of what it pins, so a
 bind whose source changed gets another and its container is made again),
-and no bind into a volume lets Docker make a missing folder (a pool not
-mounted yet would get it on the system's disk). It keeps the result as
+named volumes that bind (`o: bind` or `rbind`), secrets and configs from
+files alike, and no bind into a volume lets Docker make a missing folder
+(a pool not mounted yet would get it on the system's disk). A source that
+is relative or goes through `..` is refused: the kernel would not take it
+as it reads (a relative device starts where Docker runs, at `/`; Compose
+makes it absolute only for `o: bind` itself), and it could reach a share
+unpinned. It keeps the result as
 `/etc/zendiloos/projects/<project>.json` and runs Compose on that file with
 an empty `.env`; `down` removes it again. A project made before this was
 kept runs once its file is saved again. A project made elsewhere whose
