@@ -426,7 +426,7 @@ const de: Messages = {
     appearance: 'Darstellung',
     network: 'Netzwerk',
     locale: 'Uhrzeit & Sprache',
-    update: 'Aktualisieren & Wiederherstellen',
+    update: 'Updates',
     accounts: 'Benutzer',
     groups: 'Gruppen',
     fileServices: 'Dateidienste',
@@ -2342,6 +2342,7 @@ const de: Messages = {
     tabSettings: 'Einstellungen',
     system: 'System',
     version: 'Installierte Version',
+    currentNotes: 'Neu in dieser Version',
     channel: 'Kanal',
     kernel: 'Laufender Kernel',
     checkedAt: 'Zuletzt gesucht',
@@ -2457,7 +2458,7 @@ const de: Messages = {
     },
     updates_failed: {
       title: 'Update fehlgeschlagen',
-      body: 'Unter Systemsteuerung → Aktualisieren & Wiederherstellen steht, woran es lag.',
+      body: 'Unter Systemsteuerung → Updates steht, woran es lag.',
     },
     snapshot_failed: {
       title: 'Kein Snapshot von {share}',

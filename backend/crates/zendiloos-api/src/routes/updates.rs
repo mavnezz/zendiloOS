@@ -151,6 +151,9 @@ pub struct UpdateRun {
 pub struct UpdatesOverview {
     /// The version of zendiloOS that runs.
     pub current: String,
+    /// What changed in it, in Markdown, as its package brought it along;
+    /// null for a build without.
+    pub current_notes: Option<String>,
     pub settings: UpdateSettings,
     pub phase: UpdatePhase,
     pub phase_error: Option<String>,
@@ -183,6 +186,7 @@ fn overview_dto(overview: UpdateOverview) -> UpdatesOverview {
     };
     UpdatesOverview {
         current: overview.current,
+        current_notes: overview.current_notes,
         settings: UpdateSettings {
             channel: overview.settings.channel.into(),
             check_daily: overview.settings.check_daily,

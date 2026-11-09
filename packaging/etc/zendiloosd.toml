@@ -28,7 +28,9 @@
 #filter = "info"
 #format = "text"
 
-# Where zendiloOS's releases come from (docs/releases.md).
+# Where zendiloOS's releases come from (docs/releases.md), and what changed
+# in the version installed, which the package brings along.
 #[updates]
 #api = "https://api.github.com"
 #repository = "mavnezz/zendiloOS"
+#notes = "/usr/share/zendiloos/changes.md"

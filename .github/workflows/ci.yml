@@ -92,8 +92,8 @@ jobs:
     runs-on: ubuntu-24.04
     needs: check
     steps:
-      # The whole history: the version of a development build counts from
-      # the last tag.
+      # The whole history: a development build counts its version from the
+      # last tag, and its package lists the changes since.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
@@ -207,17 +207,14 @@ jobs:
           else
             # One rolling development build: the latest commit on main. Its
             # notes list what changed since the last release (the subjects of
-            # the squashed pull requests), as the NAS shows them before an update.
+            # the squashed pull requests), as the NAS shows them before an
+            # update; the package carries the same list, shown once it is
+            # installed (scripts/release-notes.sh).
             notes=dist/dev-notes.md
-            echo "The state of main at $GITHUB_SHA. Untested; for the development channel only." > "$notes"
-            if last=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "$GITHUB_SHA" 2>/dev/null) &&
-               total=$(git rev-list --no-merges --count "$last..$GITHUB_SHA") && [ "$total" -gt 0 ]; then
-              {
-                printf '\nChanges since %s:\n\n' "$last"
-                git log --no-merges --format='- %s' -n 50 "$last..$GITHUB_SHA"
-                [ "$total" -le 50 ] || printf -- '- … and %d earlier changes\n' "$((total - 50))"
-              } >> "$notes"
-            fi
+            {
+              printf 'The state of main at %s. Untested; for the development channel only.\n\n' "$GITHUB_SHA"
+              scripts/release-notes.sh "$VERSION"
+            } > "$notes"
             gh release delete dev --cleanup-tag --yes 2>/dev/null || true
             gh release create dev "${files[@]}" --prerelease --target "$GITHUB_SHA" \
               --title "Development build $VERSION" --notes-file "$notes"

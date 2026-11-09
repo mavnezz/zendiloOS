@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import {
+  ChevronRight,
   CircleCheck,
   LoaderCircle,
   PackageCheck,
@@ -19,6 +20,7 @@ import { Alert } from '@/shared/ui/alert'
 import { Badge } from '@/shared/ui/badge'
 import { Button } from '@/shared/ui/button'
 import { ConfirmDialog } from '@/shared/ui/confirm-dialog'
+import { Markdown } from '@/shared/ui/markdown'
 import { PageCard, PageFooter, PageHeader, PageTabs, SettingRow } from '@/shared/ui/page'
 import { RadioGroup, RadioGroupItem } from '@/shared/ui/radio-group'
 import { Switch } from '@/shared/ui/switch'
@@ -35,6 +37,7 @@ const failure = ref<string | null>(null)
 const asking = ref<'update' | 'restart' | null>(null)
 const showPackages = ref(false)
 const showNotes = ref(false)
+const showCurrentNotes = ref(false)
 
 /** The version this page was loaded with; another one means zendiloOS was updated. */
 const loadedWith = ref<string | null>(null)
@@ -170,7 +173,28 @@ const cell = 'px-3 py-1.5 text-left'
         </template>
         <dl class="grid gap-x-6 gap-y-2 sm:grid-cols-[11rem_1fr]">
           <dt class="text-muted-foreground">{{ t('updates.version') }}</dt>
-          <dd class="font-medium">zendiloOS {{ overview.current }}</dd>
+          <dd class="grid justify-items-start gap-1">
+            <span class="font-medium">zendiloOS {{ overview.current }}</span>
+            <button
+              v-if="overview.current_notes"
+              type="button"
+              class="flex items-center gap-1 text-primary hover:underline"
+              :aria-expanded="showCurrentNotes"
+              @click="showCurrentNotes = !showCurrentNotes"
+            >
+              <ChevronRight
+                class="size-3.5 transition-transform"
+                :class="showCurrentNotes && 'rotate-90'"
+              />
+              {{ t('updates.currentNotes') }}
+            </button>
+          </dd>
+          <dd v-if="showCurrentNotes && overview.current_notes" class="sm:col-span-2">
+            <Markdown
+              :source="overview.current_notes"
+              class="max-h-72 overflow-auto rounded-md bg-muted/50 p-3"
+            />
+          </dd>
           <dt class="text-muted-foreground">{{ t('updates.channel') }}</dt>
           <dd>{{ t(`updates.channels.${overview.settings.channel}`) }}</dd>
           <dt class="text-muted-foreground">{{ t('updates.kernel') }}</dt>
@@ -255,12 +279,11 @@ const cell = 'px-3 py-1.5 text-left'
             >
               {{ showNotes ? t('updates.hideNotes') : t('updates.showNotes') }}
             </button>
-            <p
+            <Markdown
               v-if="showNotes"
-              class="max-h-72 overflow-auto rounded-md bg-muted/50 p-3 text-[13px] whitespace-pre-wrap"
-            >
-              {{ overview.release.notes }}
-            </p>
+              :source="overview.release.notes"
+              class="max-h-72 overflow-auto rounded-md bg-muted/50 p-3"
+            />
           </section>
           <section v-if="overview.packages.length" class="grid gap-1.5">
             <h4 class="font-medium">

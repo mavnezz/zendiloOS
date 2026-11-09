@@ -21389,6 +21389,13 @@
             "type": "string",
             "description": "The version of zendiloOS that runs."
           },
+          "current_notes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What changed in it, in Markdown, as its package brought it along;\nnull for a build without."
+          },
           "newest_kernel": {
             "type": [
               "string",

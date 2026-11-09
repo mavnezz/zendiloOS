@@ -415,7 +415,7 @@ const en = {
     appearance: 'Appearance',
     network: 'Network',
     locale: 'Time & language',
-    update: 'Update & restore',
+    update: 'Updates',
     accounts: 'Users',
     groups: 'Groups',
     fileServices: 'File services',
@@ -2301,6 +2301,7 @@ const en = {
     tabSettings: 'Settings',
     system: 'System',
     version: 'Installed version',
+    currentNotes: "What's new in this version",
     channel: 'Channel',
     kernel: 'Running kernel',
     checkedAt: 'Last looked',
@@ -2414,7 +2415,7 @@ const en = {
     },
     updates_failed: {
       title: 'Update failed',
-      body: 'Control panel → Update & restore says why.',
+      body: 'Control panel → Updates says why.',
     },
     snapshot_failed: {
       title: 'No snapshot of {share}',

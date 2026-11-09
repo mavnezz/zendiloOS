@@ -10,7 +10,7 @@ vulnerability** in this repository. Do not open a public issue or pull
 request for it.
 
 A useful report says what is affected (the version, from Control panel
-→ Update & restore, or the package version), how it can be reproduced, and
+→ Updates, or the package version), how it can be reproduced, and
 what an attacker gains: from where (the local network, the internet,
 an account of which role) and with what result.
 

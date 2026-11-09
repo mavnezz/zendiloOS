@@ -51,6 +51,9 @@ pub enum Phase {
 pub struct UpdateOverview {
     /// The version of zendiloOS that runs.
     pub current: String,
+    /// What changed in it, in Markdown, as its package says; None for a
+    /// build without.
+    pub current_notes: Option<String>,
     pub settings: UpdateSettings,
     /// What the last check found, without what is installed since.
     pub check: Option<CheckResult>,
@@ -75,6 +78,7 @@ pub struct UpdatesPorts {
 pub struct Updates {
     ports: UpdatesPorts,
     current: String,
+    current_notes: Option<String>,
     phase: Arc<Mutex<Phase>>,
     /// One check or start at a time.
     busy: Arc<tokio::sync::Mutex<()>>,
@@ -86,9 +90,18 @@ impl Updates {
         Self {
             ports,
             current: current.into(),
+            current_notes: None,
             phase: Arc::new(Mutex::new(Phase::Idle)),
             busy: Arc::new(tokio::sync::Mutex::new(())),
         }
+    }
+
+    /// What changed in the version that runs, in Markdown, as its package
+    /// brought it along.
+    #[must_use]
+    pub fn with_current_notes(mut self, notes: Option<String>) -> Self {
+        self.current_notes = notes;
+        self
     }
 
     fn phase(&self) -> Phase {
@@ -107,7 +120,14 @@ impl Updates {
         if let Some(check) = &mut check {
             self.forget_installed(check, run.as_ref());
         }
-        Ok(UpdateOverview { current: self.current.clone(), settings, check, run, phase: self.phase() })
+        Ok(UpdateOverview {
+            current: self.current.clone(),
+            current_notes: self.current_notes.clone(),
+            settings,
+            check,
+            run,
+            phase: self.phase(),
+        })
     }
 
     /// The last update that installed: the NAS's record while it is one,
@@ -502,6 +522,17 @@ mod tests {
         assert_eq!(s.store.check.lock().unwrap().as_ref().unwrap().release, None);
         let check = s.updates.check(None, &request).await.unwrap();
         assert_eq!(check.release.unwrap().tag, "dev");
+    }
+
+    #[tokio::test]
+    async fn the_overview_says_what_changed_in_the_version_that_runs_if_its_package_says() {
+        let request = RequestContext::default();
+        let without = setup().updates.overview(&request).await.unwrap();
+        assert_eq!((without.current.as_str(), without.current_notes), ("0.1.0", None));
+
+        let updates = setup().updates.with_current_notes(Some("- Initial package".into()));
+        let with = updates.overview(&request).await.unwrap();
+        assert_eq!(with.current_notes.as_deref(), Some("- Initial package"));
     }
 
     #[tokio::test]

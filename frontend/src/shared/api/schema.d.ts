@@ -6864,6 +6864,11 @@ export interface components {
             checked_at?: number | null;
             /** @description The version of zendiloOS that runs. */
             current: string;
+            /**
+             * @description What changed in it, in Markdown, as its package brought it along;
+             *     null for a build without.
+             */
+            current_notes?: string | null;
             newest_kernel?: string | null;
             packages: components["schemas"]["PackageUpdate"][];
             /** @description Why apt could not be asked. */
