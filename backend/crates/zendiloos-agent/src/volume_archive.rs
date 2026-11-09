@@ -71,8 +71,15 @@ const XATTR_RECORD: &str = "SCHILY.xattr.";
 /// Where a manifest says which format it has.
 const MANIFEST_FORMAT: u32 = 1;
 /// Files with several names whose first name a backup keeps, to write the
-/// others as links; beyond, they are written whole.
+/// others as links, and what keeping them may take up in memory; beyond
+/// either, they are written whole. A count remembers as many to count each
+/// once; beyond, it is incomplete.
 const MAX_LINKS: usize = 1 << 20;
+const MAX_LINK_BYTES: usize = 256 * 1024 * 1024;
+/// What keeping a first name takes up beside the name itself: its place in
+/// the table (identity and path, the table's slack) and the name's
+/// allocation.
+const LINK_COST: usize = 128;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ArchiveError {
@@ -589,8 +596,21 @@ struct Level {
 /// Folders a walk notes at once in one folder before it goes into them;
 /// it lists the folder again for the rest.
 const NOTED: usize = 256;
-/// What the names of the folders still to count may take up.
+/// What the folders still to count may take up in memory, their names and
+/// what each costs beside (`NOTE_COST`: the name's allocation, its place in
+/// the list and the list's slack).
 const MAX_NOTED_BYTES: usize = 64 * 1024 * 1024;
+const NOTE_COST: usize = 64;
+
+/// What a count may keep in memory: the folders it noted to count, the
+/// files with several names it remembers.
+#[derive(Debug, Clone, Copy)]
+struct Room {
+    noted_bytes: usize,
+    linked: usize,
+}
+
+const COUNT_ROOM: Room = Room { noted_bytes: MAX_NOTED_BYTES, linked: MAX_LINKS };
 
 const WALKED: OFlags = OFlags::RDONLY.union(OFlags::DIRECTORY).union(OFlags::NOFOLLOW).union(OFlags::CLOEXEC);
 
@@ -607,14 +627,21 @@ fn up(current: &OwnedFd, id: (u64, u64)) -> Result<OwnedFd, Errno> {
 /// Counts what the files below `folder` hold, without following a link or
 /// entering another file system: at most `max_entries`, until `until`. A
 /// file with several names counts once. Incomplete where it stopped at a
-/// bound or could not look into a folder. It holds a descriptor or two,
-/// however wide or deep the folders are.
+/// bound, could not look into a folder or had no room to remember what it
+/// must (then it counts less, never more). It holds a descriptor or two,
+/// however wide or deep the folders are, and no more memory than
+/// [`COUNT_ROOM`] says.
 pub(crate) fn count(folder: &OwnedFd, max_entries: u64, until: Option<Instant>) -> Counted {
+    count_in(folder, max_entries, until, COUNT_ROOM)
+}
+
+fn count_in(folder: &OwnedFd, max_entries: u64, until: Option<Instant>, room: Room) -> Counted {
     let mut counted = Counted { complete: true, ..Counted::default() };
     let (Ok(top), Ok(stat)) = (folder.try_clone(), fstat(folder)) else { return Counted::default() };
     let device = identity(&stat).0;
     let mut linked = std::collections::HashSet::new();
     let mut noted_bytes = 0usize;
+    let cost = |name: &CStr| name.to_bytes().len() + NOTE_COST;
     let mut path: Vec<Level> = Vec::new();
     let (mut current, mut id) = (top, identity(&stat));
     loop {
@@ -646,14 +673,28 @@ pub(crate) fn count(folder: &OwnedFd, max_entries: u64, until: Option<Instant>) 
                         }
                     };
                     match kind(&stat) {
-                        FileType::RegularFile if stat.st_nlink < 2 || linked.insert(identity(&stat)) => {
-                            counted.bytes += u64::try_from(stat.st_size).unwrap_or(0);
+                        FileType::RegularFile => {
+                            let file = identity(&stat);
+                            let first = if stat.st_nlink < 2 {
+                                true
+                            } else if linked.len() < room.linked {
+                                linked.insert(file)
+                            } else {
+                                // No room to remember it: unless it was
+                                // counted already, it is left out, and the
+                                // count says "at least".
+                                counted.complete &= linked.contains(&file);
+                                false
+                            };
+                            if first {
+                                counted.bytes += u64::try_from(stat.st_size).unwrap_or(0);
+                            }
                         }
                         FileType::Directory if identity(&stat).0 == device => {
-                            noted_bytes += name.to_bytes().len();
-                            if path.len() >= MAX_DEPTH || noted_bytes > MAX_NOTED_BYTES {
+                            if path.len() >= MAX_DEPTH || noted_bytes + cost(name) > room.noted_bytes {
                                 counted.complete = false;
                             } else {
+                                noted_bytes += cost(name);
                                 pending.push(name.to_owned());
                             }
                         }
@@ -668,7 +709,7 @@ pub(crate) fn count(folder: &OwnedFd, max_entries: u64, until: Option<Instant>) 
         loop {
             let Some(level) = path.last_mut() else { return counted };
             if let Some(next) = level.pending.pop() {
-                noted_bytes -= next.to_bytes().len().min(noted_bytes);
+                noted_bytes = noted_bytes.saturating_sub(cost(&next));
                 match openat(&current, &next, WALKED, Mode::empty())
                     .and_then(|inner| Ok((fstat(&inner)?, inner)))
                 {
@@ -721,6 +762,8 @@ struct Writer<'p, W: Write> {
     device: u64,
     /// Files with more than one name: the first path in the archive.
     links: HashMap<(u64, u64), PathBuf>,
+    /// What keeping more of them may take up yet.
+    link_room: usize,
     progress: Progress<'p>,
     bytes: u64,
     entries: u64,
@@ -853,8 +896,11 @@ impl<W: Write> Writer<'_, W> {
         self.builder.append_data(&mut header, &path, content).map_err(|e| failed(what(), e))?;
         self.bytes += size;
         self.entries += 1;
-        // Its other names link to this one, now that it is in the archive.
-        if opened.st_nlink > 1 && self.links.len() < MAX_LINKS {
+        // Its other names link to this one, now that it is in the archive:
+        // as far as there is room to keep it.
+        let cost = path.as_os_str().len() + LINK_COST;
+        if opened.st_nlink > 1 && self.links.len() < MAX_LINKS && cost <= self.link_room {
+            self.link_room -= cost;
             self.links.insert(id, path);
         }
         Ok(())
@@ -883,6 +929,7 @@ fn write_archive(
         builder: tar::Builder::new(encoder),
         device,
         links: HashMap::new(),
+        link_room: MAX_LINK_BYTES,
         progress: Progress::new(total, report),
         bytes: 0,
         entries: 0,
@@ -899,23 +946,28 @@ fn write_archive(
 }
 
 /// Backs up one volume as `job` says; `report` hears how far it got.
+/// Whatever fails, nothing it wrote stays: its files are named before
+/// anything is written, the manifest is complete before either is put in
+/// place, and after that nothing fails.
 pub(crate) fn back_up(
     job: &BackupJob,
     now: i64,
     report: &mut dyn FnMut(u8),
 ) -> Result<BackupDone, ArchiveError> {
+    let too_long = |_| refused("the folder's path is too long");
+    let folder = job.folder.join(job.volume.as_str()).map_err(too_long)?;
+    let archive_name = format!("{}.tar.zst", job.name.as_str());
+    let manifest_name = format!("{}.json", job.name.as_str());
+    let archive_path = folder.join(&archive_name).map_err(too_long)?;
+    let manifest_path = folder.join(&manifest_name).map_err(too_long)?;
     let source = open_folder(&job.source, OFlags::RDONLY)?;
     let share = open_folder(&job.share, OFlags::PATH)?;
-    let folder =
-        job.folder.join(job.volume.as_str()).map_err(|_| refused("the folder's path is too long"))?;
     let target = make_folders(share.as_fd(), &folder)?;
     let swept = sweep_partials(target.as_fd());
     if swept > 0 {
         tracing::info!(swept, "hidden files earlier backups left are removed");
     }
     let total = count(&source, u64::MAX, None).bytes;
-    let archive_name = format!("{}.tar.zst", job.name.as_str());
-    let manifest_name = format!("{}.json", job.name.as_str());
     if statat(&target, manifest_name.as_str(), AtFlags::SYMLINK_NOFOLLOW).is_ok() {
         return Err(refused(format!("{manifest_name} exists already")));
     }
@@ -924,28 +976,31 @@ pub(crate) fn back_up(
         written = Some(write_archive(&source, file, total, report)?);
         Ok(())
     })?;
-    let Some(written) = written else {
-        discard(target.as_fd(), &archive);
-        return Err(ArchiveError::Failed("nothing written".into()));
-    };
-    let manifest = Manifest {
-        format: MANIFEST_FORMAT,
-        volume: job.volume.as_str().to_owned(),
-        driver: job.driver.clone(),
-        labels: job.labels.clone(),
-        size_bytes: written.data_bytes,
-        created: job.created.clone(),
-        backed_up_at: now,
-        zendiloos_version: crate::VERSION.to_owned(),
-        archive: archive_name.clone(),
-        sha256: written.sha256.clone(),
-        entries: Some(written.entries),
-    };
-    let manifest_json =
-        serde_json::to_string_pretty(&manifest).map_err(|e| failed("the manifest", e))? + "\n";
-    let manifest = match write_partial(target.as_fd(), &manifest_name, |mut file| {
-        file.write_all(manifest_json.as_bytes()).map_err(|e| failed(&manifest_name, e))
-    }) {
+    // The manifest, under a hidden name of its own beside the archive;
+    // should any of it fail, the archive goes again.
+    let manifest =
+        written.ok_or_else(|| ArchiveError::Failed("nothing written".into())).and_then(|written| {
+            let sha256 = ArchiveDigest::parse(&written.sha256).map_err(|e| failed("the digest", e))?;
+            let manifest = Manifest {
+                format: MANIFEST_FORMAT,
+                volume: job.volume.as_str().to_owned(),
+                driver: job.driver.clone(),
+                labels: job.labels.clone(),
+                size_bytes: written.data_bytes,
+                created: job.created.clone(),
+                backed_up_at: now,
+                zendiloos_version: crate::VERSION.to_owned(),
+                archive: archive_name.clone(),
+                sha256: written.sha256.clone(),
+                entries: Some(written.entries),
+            };
+            let json = serde_json::to_string_pretty(&manifest).map_err(|e| failed("the manifest", e))? + "\n";
+            let partial = write_partial(target.as_fd(), &manifest_name, |mut file| {
+                file.write_all(json.as_bytes()).map_err(|e| failed(&manifest_name, e))
+            })?;
+            Ok((written, sha256, json, partial))
+        });
+    let (written, sha256, manifest_json, manifest) = match manifest {
         Ok(manifest) => manifest,
         Err(error) => {
             discard(target.as_fd(), &archive);
@@ -953,19 +1008,17 @@ pub(crate) fn back_up(
         }
     };
     let (archive_file, manifest_file) = put_in_place(target.as_fd(), &archive, &manifest)?;
-    let file = |name: &str, placed: Placed| {
-        Ok::<_, ArchiveError>(WrittenFile {
-            path: folder.join(name).map_err(|_| refused("the folder's path is too long"))?,
-            bytes: placed.bytes,
-            device: placed.device,
-            inode: placed.inode,
-            modified: placed.modified,
-        })
+    let file = |path: SharePath, placed: Placed| WrittenFile {
+        path,
+        bytes: placed.bytes,
+        device: placed.device,
+        inode: placed.inode,
+        modified: placed.modified,
     };
     Ok(BackupDone {
-        archive: file(&archive_name, archive_file)?,
-        manifest: file(&manifest_name, manifest_file)?,
-        sha256: ArchiveDigest::parse(&written.sha256).map_err(|e| failed("the digest", e))?,
+        archive: file(archive_path, archive_file),
+        manifest: file(manifest_path, manifest_file),
+        sha256,
         data_bytes: written.data_bytes,
         entries: written.entries,
         manifest_json,

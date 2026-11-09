@@ -620,6 +620,30 @@ fn an_archive_is_never_left_without_its_manifest() {
     assert_eq!(fs::read_to_string(place.path("share/db-1.json")).unwrap(), "someone else's");
 }
 
+/// A backup whose files could not be named in a share path (the plan's
+/// folder as long as one may be) is refused before anything is written,
+/// never after its archive and manifest are in place, recorded nowhere.
+#[test]
+fn a_backup_that_cannot_name_its_files_writes_nothing() {
+    let place = Place::new();
+    fs::write(place.path("source/a"), "a").unwrap();
+    // `<folder>/db` fits in a share path, `<folder>/db/<archive>` not.
+    let mut folder = String::new();
+    while folder.len() < SharePath::MAX_BYTES - 19 {
+        if !folder.is_empty() {
+            folder.push('/');
+        }
+        folder.push_str(&"a".repeat((SharePath::MAX_BYTES - 19 - folder.len()).min(200)));
+    }
+    let job = BackupJob { folder: SharePath::parse(&folder).unwrap(), ..place.job() };
+    assert!(job.folder.join("db").is_ok());
+
+    let refused = back_up(&job, 0, &mut quiet);
+
+    assert!(matches!(&refused, Err(ArchiveError::Refused(why)) if why.contains("too long")), "{refused:?}");
+    assert_eq!(fs::read_dir(place.path("share")).unwrap().count(), 0, "not even its folders are made");
+}
+
 /// A file with two names whose first name was left out (replaced while it
 /// was read) is written whole under its second, never as a link to a name
 /// the archive does not hold.
@@ -631,15 +655,7 @@ fn a_file_whose_first_name_was_left_out_is_written_whole_under_its_second() {
     fs::hard_link(source.join("a"), source.join("b")).unwrap();
     let folder = open_folder(&source, OFlags::RDONLY).unwrap();
     let mut told = |_: u8| {};
-    let mut writer = Writer {
-        builder: tar::Builder::new(Vec::new()),
-        device: identity(&fstat(&folder).unwrap()).0,
-        links: HashMap::new(),
-        progress: Progress::new(4, &mut told),
-        bytes: 0,
-        entries: 0,
-        skipped: 0,
-    };
+    let mut writer = writer_of(&folder, MAX_LINK_BYTES, &mut told);
     // `a` as it was looked at before it was replaced: another file now.
     let mut stale = statat(&folder, "a", AtFlags::SYMLINK_NOFOLLOW).unwrap();
     stale.st_ino += 1;
@@ -648,17 +664,73 @@ fn a_file_whose_first_name_was_left_out_is_written_whole_under_its_second() {
     writer.regular(folder.as_fd(), c"b", &b, PathBuf::from("b")).unwrap();
     assert_eq!((writer.skipped, writer.entries), (1, 1));
 
+    let entries = entries_of(writer);
+    assert_eq!(entries, [("b".to_owned(), tar::EntryType::Regular, 4, None)]);
+}
+
+/// A writer of an archive in memory, of the volume `folder`, with `room`
+/// to keep first names.
+fn writer_of<'p>(folder: &OwnedFd, room: usize, told: &'p mut dyn FnMut(u8)) -> Writer<'p, Vec<u8>> {
+    Writer {
+        builder: tar::Builder::new(Vec::new()),
+        device: identity(&fstat(folder).unwrap()).0,
+        links: HashMap::new(),
+        link_room: room,
+        progress: Progress::new(4, told),
+        bytes: 0,
+        entries: 0,
+        skipped: 0,
+    }
+}
+
+/// What `writer` wrote: each entry's path, kind, size and link target.
+fn entries_of(writer: Writer<'_, Vec<u8>>) -> Vec<(String, tar::EntryType, u64, Option<String>)> {
     let bytes = writer.builder.into_inner().unwrap();
     let mut archive = tar::Archive::new(bytes.as_slice());
-    let entries: Vec<(String, tar::EntryType, u64)> = archive
+    archive
         .entries()
         .unwrap()
         .map(|e| {
             let e = e.unwrap();
-            (shown(&e.path_bytes()), e.header().entry_type(), e.header().size().unwrap())
+            let target = e.link_name_bytes().map(|target| shown(&target));
+            (shown(&e.path_bytes()), e.header().entry_type(), e.header().size().unwrap(), target)
         })
-        .collect();
-    assert_eq!(entries, [("b".to_owned(), tar::EntryType::Regular, 4)]);
+        .collect()
+}
+
+/// Files with several names whose first names there is no more room to
+/// keep (a volume of very many, or very deep ones) are written whole under
+/// each name: the archive holds their data all the same, and never a link
+/// to a name it does not hold.
+#[test]
+fn files_whose_first_names_there_is_no_room_for_are_written_whole() {
+    let place = Place::new();
+    let source = place.path("source");
+    for name in ["a", "b"] {
+        fs::write(source.join(name), "data").unwrap();
+        fs::hard_link(source.join(name), source.join(format!("{name}2"))).unwrap();
+    }
+    let folder = open_folder(&source, OFlags::RDONLY).unwrap();
+    let mut told = |_: u8| {};
+    // Room for one first name.
+    let mut writer = writer_of(&folder, 1 + LINK_COST, &mut told);
+    for name in ["a", "b", "a2", "b2"] {
+        let stat = statat(&folder, name, AtFlags::SYMLINK_NOFOLLOW).unwrap();
+        let c_name = CString::new(name).unwrap();
+        writer.regular(folder.as_fd(), &c_name, &stat, PathBuf::from(name)).unwrap();
+    }
+    assert_eq!((writer.links.len(), writer.link_room), (1, 0));
+
+    let regular = |name: &str| (name.to_owned(), tar::EntryType::Regular, 4, None);
+    assert_eq!(
+        entries_of(writer),
+        [
+            regular("a"),
+            regular("b"),
+            ("a2".to_owned(), tar::EntryType::Link, 0, Some("a".to_owned())),
+            regular("b2")
+        ]
+    );
 }
 
 #[test]
@@ -913,6 +985,40 @@ fn counting_stays_on_the_file_system_and_within_its_bounds() {
     assert!(!some.complete && some.entries == 4);
     let late = count(&source, u64::MAX, Some(Instant::now() - std::time::Duration::from_secs(1)));
     assert!(!late.complete);
+}
+
+/// A count that has no room left to note the folders still to count, or to
+/// remember the files with several names it counted, says "at least": it
+/// counts less, never more, and never calls that complete.
+#[test]
+fn a_count_without_room_for_what_it_must_remember_says_at_least() {
+    let place = Place::new();
+    let source = place.path("source");
+    for n in 0..40 {
+        fs::create_dir(source.join(format!("f{n:02}"))).unwrap();
+        fs::write(source.join(format!("f{n:02}/x")), "x").unwrap();
+    }
+    fs::create_dir(source.join("linked")).unwrap();
+    for n in 0..4 {
+        let file = source.join(format!("linked/{n}"));
+        fs::write(&file, [0u8; 100]).unwrap();
+        fs::hard_link(&file, source.join(format!("linked/{n}-again"))).unwrap();
+    }
+    let source = open_folder(&source, OFlags::RDONLY).unwrap();
+    let all = count(&source, u64::MAX, None);
+    assert_eq!((all.bytes, all.complete), (40 + 400, true), "{all:?}");
+
+    // Room to note ten folders at once: the top folder lists forty-one.
+    let narrow = Room { noted_bytes: 10 * (3 + NOTE_COST), linked: MAX_LINKS };
+    let counted = count_in(&source, u64::MAX, None, narrow);
+    assert!(!counted.complete && counted.bytes < all.bytes, "{counted:?}");
+    // Room to remember two of the four files with two names each.
+    let forgetful = Room { noted_bytes: MAX_NOTED_BYTES, linked: 2 };
+    let counted = count_in(&source, u64::MAX, None, forgetful);
+    assert_eq!((counted.bytes, counted.complete), (40 + 200, false), "{counted:?}");
+    // As many as there are: complete again.
+    let enough = Room { noted_bytes: 41 * (6 + NOTE_COST), linked: 4 };
+    assert_eq!(count_in(&source, u64::MAX, None, enough), all);
 }
 
 /// The backups in a plan's folder are found again: archive and manifest
