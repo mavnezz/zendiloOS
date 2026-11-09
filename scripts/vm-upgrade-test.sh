@@ -137,11 +137,14 @@ call GET /shares | jq -e --arg path "$path" '.[] | select(.name == "photos" and 
     || fail "the share is gone"
 call GET /storage/pools | jq -e '.[] | select(.name == "tank" and .state == "online" and .mount_point == "/volume1")' \
     >/dev/null || fail "the pool is not online at /volume1"
-# Each share once, one after the other, as zendiloosd starts.
-for name in $(call GET /shares | jq -r '.[].name'); do
-    wait_for "the migration of $name" "migration $name | jq -e .id" 600
-    job_succeeded "$(migration "$name" | jq -r .id)"
-done
+# Shares made before 0.3.0 are walked to share-level access once, one after
+# the other, as zendiloosd starts; later ones have it from the start.
+if dpkg --compare-versions "$(dpkg-deb -f "$old" Version)" lt 0.3.0~; then
+    for name in $(call GET /shares | jq -r '.[].name'); do
+        wait_for "the migration of $name" "migration $name | jq -e .id" 600
+        job_succeeded "$(migration "$name" | jq -r .id)"
+    done
+fi
 snapshot >"$work/after"
 diff -u "$work/before" "$work/after" || fail "files or owners changed"
 [[ $(vm "sudo stat -c '%U:%G %a' $path") == 'root:zendiloos-files 2770' ]] \
