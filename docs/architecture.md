@@ -1598,9 +1598,11 @@ transient unit (`systemd-run`, this binary as `backup-volume`, the job as
 hex digits on its command line), outside the agent's sandbox, which can
 write neither shares nor Docker's data, in a sandbox of its own: no
 network, no devices, no other processes seen (`ProtectProc=invisible`), its
-own IPC, `SystemCallFilter=@system-service`, `RestrictSUIDSGID`, the whole
-system read only but the share, `CAP_DAC_READ_SEARCH` and
-`CAP_DAC_OVERRIDE` only, 65536 descriptors. Each unit has a name of its own,
+own IPC, `SystemCallFilter=@system-service` (not `RestrictSUIDSGID`:
+systemd enforces it by blocking `openat2()`, which keeps the units' paths
+beneath their folders), the whole system read only but the share,
+`CAP_DAC_READ_SEARCH` and `CAP_DAC_OVERRIDE` only, 65536 descriptors. Each
+unit has a name of its own,
 `zendiloos-volume-<backup|restore|swap>-<volume>`, so systemd refuses a
 second one, and may run until ten minutes before the agent stops waiting
 (`RuntimeMaxSec`; six hours in all, zendiloosd waits ten minutes longer).

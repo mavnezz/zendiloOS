@@ -73,7 +73,11 @@ const COUNT_FOR: Duration = Duration::from_secs(20);
 const MAX_COUNTED: u64 = 1_000_000;
 
 /// What every unit's sandbox has. A descriptor or two for each level of
-/// the deepest folders a backup reads, and then some.
+/// the deepest folders a backup reads, and then some. Not
+/// `RestrictSUIDSGID`: to enforce it, systemd blocks `openat2()`, whose
+/// arguments seccomp cannot inspect, and `openat2()` is what keeps every
+/// unit's paths beneath their folders (a restore must give set-ID bits
+/// back anyway).
 const SANDBOX: [&str; 23] = [
     "--property=NoNewPrivileges=yes",
     "--property=ProtectSystem=strict",
@@ -99,9 +103,6 @@ const SANDBOX: [&str; 23] = [
     "--property=LimitNOFILE=65536",
     "--property=MemoryMax=1G",
 ];
-/// Units that make no file with set-ID bits: all but a restore's, which
-/// gives files their modes back.
-const NO_SET_ID: &str = "--property=RestrictSUIDSGID=yes";
 /// Removing what restores left, as the agent starts.
 const SWEEP_FOR: Duration = Duration::from_secs(40 * 60);
 /// A backup reads everything in the volume and writes the share, whoever
@@ -521,9 +522,6 @@ impl Volumes {
         let hex = encode(job);
         let mut args = vec![name.as_str(), "--wait", "--pipe", "--collect", "--quiet", description.as_str()];
         args.extend(SANDBOX);
-        if !matches!(unit.work, VolumeJob::Restore | VolumeJob::Swap) {
-            args.push(NO_SET_ID);
-        }
         args.extend([
             writable.as_str(),
             capabilities.as_str(),
