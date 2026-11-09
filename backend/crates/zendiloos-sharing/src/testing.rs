@@ -627,6 +627,11 @@ impl FileHost for Files {
         let path = std::env::temp_dir().join(format!("zendiloos-download-{}-{number}", std::process::id()));
         let error = |e| PortError::new("files", e);
         tokio::fs::write(&path, FILE_CONTENT).await.map_err(error)?;
+        // The same time whenever it is opened, as a file kept on a disk has:
+        // a download resumed with its date (`If-Range`) gets the part.
+        let written = std::fs::File::options().write(true).open(&path).map_err(error)?;
+        let modified = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        written.set_modified(modified).map_err(error)?;
         let file = tokio::fs::File::open(&path).await.map_err(error)?;
         let _ = tokio::fs::remove_file(&path).await;
         Ok((file, FILE_CONTENT.len() as u64))
