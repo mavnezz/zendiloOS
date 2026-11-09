@@ -53,6 +53,11 @@ const ROOT_MODE: u32 = 0o2770;
 /// renames or removes the bins in it, which Samba and the file manager
 /// make as root.
 const BINS_MODE: u32 = 0o3770;
+/// smbcontrol reads smb.conf and looks for the network interfaces, which
+/// the agent, without network and without sockets but AF_UNIX, cannot list:
+/// it would give up. Its messages to smbd go through Samba's sockets in
+/// /run/samba, so any interface will do.
+const SMBCONTROL_INTERFACES: &str = "--option=interfaces=127.0.0.1/8";
 /// How many entries the walk of a share goes through between two lines
 /// saying how far it got.
 const REPORT_EVERY: usize = if cfg!(test) { 2 } else { 10_000 };
@@ -388,9 +393,10 @@ impl Sharing {
                 // Every smbd reads the new rules first, then the shares'
                 // connections end; a client connecting again gets the new
                 // rules (a tree connection is checked when it is made).
-                run(&self.smbcontrol, &["smbd", "reload-config"]).await?;
+                run(&self.smbcontrol, &[SMBCONTROL_INTERFACES, "smbd", "reload-config"]).await?;
                 for share in close {
-                    run(&self.smbcontrol, &["smbd", "close-share", share.as_str()]).await?;
+                    run(&self.smbcontrol, &[SMBCONTROL_INTERFACES, "smbd", "close-share", share.as_str()])
+                        .await?;
                 }
             }
         } else {
@@ -1286,11 +1292,15 @@ mod tests {
         let calls = fs::read_to_string(dir.path().join("calls.log")).unwrap();
         let lines: Vec<&str> = calls.lines().collect();
         let reloaded = lines.iter().position(|l| l.contains("reload-or-restart smbd.service")).unwrap();
-        let config = lines.iter().position(|l| *l == "smbcontrol smbd reload-config").unwrap();
+        let config = lines
+            .iter()
+            .position(|l| *l == format!("smbcontrol {SMBCONTROL_INTERFACES} smbd reload-config"))
+            .unwrap();
         let closed: Vec<usize> =
             lines.iter().enumerate().filter(|(_, l)| l.contains("close-share")).map(|(n, _)| n).collect();
         assert!(reloaded < config && closed.iter().all(|n| config < *n), "{calls}");
-        assert!(calls.contains("smbcontrol smbd close-share media\nsmbcontrol smbd close-share photos\n"));
+        let close = |share: &str| format!("smbcontrol {SMBCONTROL_INTERFACES} smbd close-share {share}\n");
+        assert!(calls.contains(&format!("{}{}", close("media"), close("photos"))), "{calls}");
     }
 
     #[tokio::test]
