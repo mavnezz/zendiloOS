@@ -620,6 +620,30 @@ fn an_archive_is_never_left_without_its_manifest() {
     assert_eq!(fs::read_to_string(place.path("share/db-1.json")).unwrap(), "someone else's");
 }
 
+/// A backup whose files could not be named in a share path (the plan's
+/// folder as long as one may be) is refused before anything is written,
+/// never after its archive and manifest are in place, recorded nowhere.
+#[test]
+fn a_backup_that_cannot_name_its_files_writes_nothing() {
+    let place = Place::new();
+    fs::write(place.path("source/a"), "a").unwrap();
+    // `<folder>/db` fits in a share path, `<folder>/db/<archive>` not.
+    let mut folder = String::new();
+    while folder.len() < SharePath::MAX_BYTES - 19 {
+        if !folder.is_empty() {
+            folder.push('/');
+        }
+        folder.push_str(&"a".repeat((SharePath::MAX_BYTES - 19 - folder.len()).min(200)));
+    }
+    let job = BackupJob { folder: SharePath::parse(&folder).unwrap(), ..place.job() };
+    assert!(job.folder.join("db").is_ok());
+
+    let refused = back_up(&job, 0, &mut quiet);
+
+    assert!(matches!(&refused, Err(ArchiveError::Refused(why)) if why.contains("too long")), "{refused:?}");
+    assert_eq!(fs::read_dir(place.path("share")).unwrap().count(), 0, "not even its folders are made");
+}
+
 /// A file with two names whose first name was left out (replaced while it
 /// was read) is written whole under its second, never as a link to a name
 /// the archive does not hold.

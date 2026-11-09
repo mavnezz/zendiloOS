@@ -946,23 +946,28 @@ fn write_archive(
 }
 
 /// Backs up one volume as `job` says; `report` hears how far it got.
+/// Whatever fails, nothing it wrote stays: its files are named before
+/// anything is written, the manifest is complete before either is put in
+/// place, and after that nothing fails.
 pub(crate) fn back_up(
     job: &BackupJob,
     now: i64,
     report: &mut dyn FnMut(u8),
 ) -> Result<BackupDone, ArchiveError> {
+    let too_long = |_| refused("the folder's path is too long");
+    let folder = job.folder.join(job.volume.as_str()).map_err(too_long)?;
+    let archive_name = format!("{}.tar.zst", job.name.as_str());
+    let manifest_name = format!("{}.json", job.name.as_str());
+    let archive_path = folder.join(&archive_name).map_err(too_long)?;
+    let manifest_path = folder.join(&manifest_name).map_err(too_long)?;
     let source = open_folder(&job.source, OFlags::RDONLY)?;
     let share = open_folder(&job.share, OFlags::PATH)?;
-    let folder =
-        job.folder.join(job.volume.as_str()).map_err(|_| refused("the folder's path is too long"))?;
     let target = make_folders(share.as_fd(), &folder)?;
     let swept = sweep_partials(target.as_fd());
     if swept > 0 {
         tracing::info!(swept, "hidden files earlier backups left are removed");
     }
     let total = count(&source, u64::MAX, None).bytes;
-    let archive_name = format!("{}.tar.zst", job.name.as_str());
-    let manifest_name = format!("{}.json", job.name.as_str());
     if statat(&target, manifest_name.as_str(), AtFlags::SYMLINK_NOFOLLOW).is_ok() {
         return Err(refused(format!("{manifest_name} exists already")));
     }
@@ -971,28 +976,31 @@ pub(crate) fn back_up(
         written = Some(write_archive(&source, file, total, report)?);
         Ok(())
     })?;
-    let Some(written) = written else {
-        discard(target.as_fd(), &archive);
-        return Err(ArchiveError::Failed("nothing written".into()));
-    };
-    let manifest = Manifest {
-        format: MANIFEST_FORMAT,
-        volume: job.volume.as_str().to_owned(),
-        driver: job.driver.clone(),
-        labels: job.labels.clone(),
-        size_bytes: written.data_bytes,
-        created: job.created.clone(),
-        backed_up_at: now,
-        zendiloos_version: crate::VERSION.to_owned(),
-        archive: archive_name.clone(),
-        sha256: written.sha256.clone(),
-        entries: Some(written.entries),
-    };
-    let manifest_json =
-        serde_json::to_string_pretty(&manifest).map_err(|e| failed("the manifest", e))? + "\n";
-    let manifest = match write_partial(target.as_fd(), &manifest_name, |mut file| {
-        file.write_all(manifest_json.as_bytes()).map_err(|e| failed(&manifest_name, e))
-    }) {
+    // The manifest, under a hidden name of its own beside the archive;
+    // should any of it fail, the archive goes again.
+    let manifest =
+        written.ok_or_else(|| ArchiveError::Failed("nothing written".into())).and_then(|written| {
+            let sha256 = ArchiveDigest::parse(&written.sha256).map_err(|e| failed("the digest", e))?;
+            let manifest = Manifest {
+                format: MANIFEST_FORMAT,
+                volume: job.volume.as_str().to_owned(),
+                driver: job.driver.clone(),
+                labels: job.labels.clone(),
+                size_bytes: written.data_bytes,
+                created: job.created.clone(),
+                backed_up_at: now,
+                zendiloos_version: crate::VERSION.to_owned(),
+                archive: archive_name.clone(),
+                sha256: written.sha256.clone(),
+                entries: Some(written.entries),
+            };
+            let json = serde_json::to_string_pretty(&manifest).map_err(|e| failed("the manifest", e))? + "\n";
+            let partial = write_partial(target.as_fd(), &manifest_name, |mut file| {
+                file.write_all(json.as_bytes()).map_err(|e| failed(&manifest_name, e))
+            })?;
+            Ok((written, sha256, json, partial))
+        });
+    let (written, sha256, manifest_json, manifest) = match manifest {
         Ok(manifest) => manifest,
         Err(error) => {
             discard(target.as_fd(), &archive);
@@ -1000,19 +1008,17 @@ pub(crate) fn back_up(
         }
     };
     let (archive_file, manifest_file) = put_in_place(target.as_fd(), &archive, &manifest)?;
-    let file = |name: &str, placed: Placed| {
-        Ok::<_, ArchiveError>(WrittenFile {
-            path: folder.join(name).map_err(|_| refused("the folder's path is too long"))?,
-            bytes: placed.bytes,
-            device: placed.device,
-            inode: placed.inode,
-            modified: placed.modified,
-        })
+    let file = |path: SharePath, placed: Placed| WrittenFile {
+        path,
+        bytes: placed.bytes,
+        device: placed.device,
+        inode: placed.inode,
+        modified: placed.modified,
     };
     Ok(BackupDone {
-        archive: file(&archive_name, archive_file)?,
-        manifest: file(&manifest_name, manifest_file)?,
-        sha256: ArchiveDigest::parse(&written.sha256).map_err(|e| failed("the digest", e))?,
+        archive: file(archive_path, archive_file),
+        manifest: file(manifest_path, manifest_file),
+        sha256,
         data_bytes: written.data_bytes,
         entries: written.entries,
         manifest_json,
