@@ -23,7 +23,7 @@ use zendiloos_agent_proto::{
 };
 use zendiloos_exec::{Limits, Program};
 
-use crate::acl::{self, Acl, Owners, Rules, Who};
+use crate::acl::{self, Acl, Managed, Owners, Rules, Who};
 use crate::config::Tools;
 use crate::operations::OperationError;
 use crate::pools::{HostPaths, run};
@@ -403,7 +403,7 @@ impl Sharing {
 
     /// Owner `root`, mode 0770 and an ACL for each principal, inherited by
     /// new files. With `recursive`, existing contents follow, except the
-    /// users' recycle bins and other private folders (see `change_tree`).
+    /// users' recycle bins (see `change_tree`).
     ///
     /// A change of the share's folder alone (the one a person waits for)
     /// does not wait long for one going through its files: it is refused,
@@ -604,12 +604,11 @@ impl Sharing {
                 ),
             }
         }
-        Ok(Rules {
-            remove,
-            grant,
-            owners: owners(access, &passwd, &group),
-            managed: Some(crate::accounts::ID_MIN..=crate::accounts::ID_MAX),
-        })
+        let managed = Managed {
+            ids: crate::accounts::ID_MIN..=crate::accounts::ID_MAX,
+            groups: crate::passwd::group_id(&group, crate::accounts::USERS_GROUP).into_iter().collect(),
+        };
+        Ok(Rules { remove, grant, owners: owners(access, &passwd, &group), managed: Some(managed) })
     }
 
     /// The managed users who may write, directly or through a group, with
@@ -722,38 +721,57 @@ fn prepare_bin(bin: &fs::File, user: &str, uid: u32, gid: u32) -> Result<(), Ope
 }
 
 /// Folders deeper than this are not looked into; what is below counts as
-/// not changed.
+/// not changed. The folder at the limit itself is changed.
 const MAX_DEPTH: usize = if cfg!(test) { 8 } else { 256 };
-/// Entries that may fail before a change of a whole tree gives up.
-const MAX_FAILURES: usize = 100;
 
-/// The entries a change of a tree could not change.
+/// What a change of a tree could not change: entries, and folders too deep
+/// to look into. Counted, never a reason to stop: a walk goes on to the
+/// end whatever fails on the way, as whoever may write a share could make
+/// any number of failures (folders nested too deeply, say) and would
+/// otherwise keep every walk from the rest of the share, a revocation
+/// among it.
 #[derive(Debug, Default)]
 struct Failures {
     count: usize,
     first: Option<String>,
+    too_deep: usize,
+    first_too_deep: Option<String>,
 }
 
 impl Failures {
-    /// Notes one; too many end the change.
-    fn note(&mut self, path: &Path, error: Errno) -> Result<(), OperationError> {
-        self.note_why(path, std::io::Error::from(error))
-    }
-
-    fn note_why(&mut self, path: &Path, why: impl std::fmt::Display) -> Result<(), OperationError> {
+    fn note(&mut self, path: &Path, error: Errno) {
         self.count += 1;
         if self.first.is_none() {
-            self.first = Some(format!("{}: {why}", path.display()));
+            self.first = Some(format!("{}: {}", path.display(), std::io::Error::from(error)));
         }
-        if self.count > MAX_FAILURES { Err(self.error()) } else { Ok(()) }
+    }
+
+    fn note_too_deep(&mut self, path: &Path) {
+        self.too_deep += 1;
+        if self.first_too_deep.is_none() {
+            self.first_too_deep = Some(path.display().to_string());
+        }
+    }
+
+    fn any(&self) -> bool {
+        self.count > 0 || self.too_deep > 0
     }
 
     fn error(&self) -> OperationError {
-        OperationError::Failed(format!(
-            "the permissions of {} entries could not be changed, among them {}",
-            self.count,
-            self.first.as_deref().unwrap_or("?")
-        ))
+        let mut why = Vec::new();
+        if let Some(first) = &self.first {
+            why.push(format!(
+                "the permissions of {} entries could not be changed, among them {first}",
+                self.count
+            ));
+        }
+        if let Some(first) = &self.first_too_deep {
+            why.push(format!(
+                "{} folders are nested too deeply to look into, among them {first}",
+                self.too_deep
+            ));
+        }
+        OperationError::Failed(why.join("; "))
     }
 }
 
@@ -776,24 +794,33 @@ enum Pass {
 /// the bins or `@docker`.
 ///
 /// Left alone: links, other file systems, what is neither folder nor file,
-/// and the entries of the recycle bins and of every other private folder
-/// with what is in it (a folder only its owner may enter: renamed bins
-/// among them, which nobody else could reach anyway, and those passed to
-/// root from someone who may no longer write, which stay private). What is
-/// in them is still handed over. Only the folders on the way
+/// and the entries of the recycle bins with what is in them (`.recycle` at
+/// the share's top: each user's bin is private, only its owner enters it).
+/// What is in them is still handed over. Which entries are the bins' is told
+/// by where they are, never by a mode: the taking pass leaves a folder whose
+/// named entries all went at 0700, and the giving pass must not take it for
+/// a private one then, nor a later walk; everything else in the share is
+/// the share's, whatever its mode, so a folder an earlier walk left so gets
+/// its rules again. Only the folders on the way
 /// down are open at a time, each read as it goes, never held whole: a
 /// folder of millions of entries must not take the agent's memory. An entry
 /// that cannot be changed, or a folder too deep to look into, does not stop
 /// the others; the change fails at the end, naming one of them.
 fn change_tree(root: &Path, rules: &Rules) -> Result<(), OperationError> {
     let mut failures = Failures::default();
-    if !rules.remove.is_empty() || rules.owners.managed.is_some() || rules.managed.is_some() {
+    let taking = !rules.remove.is_empty() || rules.owners.managed.is_some() || rules.managed.is_some();
+    if taking {
         walk(root, rules, Pass::Remove, &mut failures)?;
     }
     if !rules.grant.is_empty() {
+        let taken = (failures.too_deep, failures.first_too_deep.clone());
         walk(root, rules, Pass::Grant, &mut failures)?;
+        // The same folders are too deep in both passes: counted once.
+        if taking {
+            (failures.too_deep, failures.first_too_deep) = taken;
+        }
     }
-    if failures.count > 0 { Err(failures.error()) } else { Ok(()) }
+    if failures.any() { Err(failures.error()) } else { Ok(()) }
 }
 
 const FOLDER: OFlags = OFlags::RDONLY.union(OFlags::DIRECTORY).union(OFlags::NOFOLLOW).union(OFlags::CLOEXEC);
@@ -806,7 +833,7 @@ struct Level {
     /// The share's root, where the recycle bins' folder is (`set_access`
     /// sets it on its own).
     top: bool,
-    /// In the bins or a private folder: only owners change.
+    /// In the bins: only owners change.
     private: bool,
 }
 
@@ -836,13 +863,6 @@ struct Found {
     owner: u32,
 }
 
-impl Found {
-    /// Only its owner may enter it.
-    fn is_private(&self) -> bool {
-        self.folder && self.mode & 0o077 == 0
-    }
-}
-
 fn walk(root: &Path, rules: &Rules, pass: Pass, failures: &mut Failures) -> Result<(), OperationError> {
     let unreadable = |e: Errno| OperationError::Read(root.to_owned(), e.into());
     let top = openat(CWD, root, FOLDER, Mode::empty()).map_err(unreadable)?;
@@ -856,7 +876,7 @@ fn walk(root: &Path, rules: &Rules, pass: Pass, failures: &mut Failures) -> Resu
                 // What is left of this folder cannot be read.
                 let path = level.path.clone();
                 stack.pop();
-                failures.note(&path, error)?;
+                failures.note(&path, error);
                 continue;
             }
             None => {
@@ -865,8 +885,11 @@ fn walk(root: &Path, rules: &Rules, pass: Pass, failures: &mut Failures) -> Resu
             }
         };
         let path = level.path.join(OsStr::from_bytes(name.as_bytes()));
-        let within = level.private;
-        if pass == Pass::Grant && (within || bin) {
+        // The bins by where they are, the same in both passes and in every
+        // walk: not by the mode, which the taking pass may have just made
+        // 0700 itself.
+        let private = level.private || bin;
+        if pass == Pass::Grant && private {
             continue;
         }
         let opened = level.folder.fd().and_then(|fd| open_entry(fd, &name, device));
@@ -874,27 +897,24 @@ fn walk(root: &Path, rules: &Rules, pass: Pass, failures: &mut Failures) -> Resu
             Ok(Some(found)) => found,
             Ok(None) => continue,
             Err(error) => {
-                failures.note(&path, error)?;
+                failures.note(&path, error);
                 continue;
             }
         };
-        let private = within || bin || found.is_private();
-        if pass == Pass::Grant && private {
-            continue;
-        }
+        // At the depth limit too: only what is below is not looked into.
         if let Err(error) = change_entry(&found, private, rules, pass) {
-            failures.note(&path, error)?;
+            failures.note(&path, error);
         }
         if !found.folder {
             continue;
         }
         if stack.len() >= MAX_DEPTH {
-            failures.note_why(&path, "folders are nested too deeply to look into")?;
+            failures.note_too_deep(&path);
             continue;
         }
         match rustix::fs::Dir::new(found.entry) {
             Ok(inner) => stack.push(Level { folder: inner, path, top: false, private }),
-            Err(error) => failures.note(&path, error)?,
+            Err(error) => failures.note(&path, error),
         }
     }
     Ok(())
@@ -936,8 +956,9 @@ fn open_entry(folder: impl AsFd, name: &CStr, device: u64) -> Result<Option<Foun
 
 /// One pass's change of `found`, through `/proc/self/fd`: the attributes
 /// of what was opened, whatever its path is by now. Default entries for
-/// folders only; of a `private` one only its owner, in the taking pass,
-/// and what passes to root from there stays private (see [`keep_private`]).
+/// folders only; in the bins (`private`) only the owner, in the taking
+/// pass, and what passes to root from there stays private (see
+/// [`keep_private`]).
 fn change_entry(found: &Found, private: bool, rules: &Rules, pass: Pass) -> Result<(), Errno> {
     if !private {
         change_acl(&found.entry, found.folder, found.mode, rules, pass)?;
@@ -959,11 +980,10 @@ fn change_entry(found: &Found, private: bool, rules: &Rules, pass: Pass) -> Resu
     Ok(())
 }
 
-/// What passed to root from a bin or a private folder keeps only its
-/// owner's entry, root's now, in its ACL and a folder's default ACL: its
-/// former owner may have opened it to the owning group (everyone's
-/// `zendiloos-users`), to others or to named people, who would reach it
-/// through root's ownership otherwise.
+/// What passed to root from a bin keeps only its owner's entry, root's now,
+/// in its ACL and a folder's default ACL: its former owner may have opened
+/// it to the owning group (everyone's `zendiloos-users`), to others or to
+/// named people, who would reach it through root's ownership otherwise.
 fn keep_private(entry: &OwnedFd, folder: bool, mode: u32) -> Result<(), Errno> {
     let path = format!("/proc/self/fd/{}", entry.as_raw_fd());
     if let Some(acl) = acl::owner_only(read_acl(&path, acl::ACCESS)?, mode) {
@@ -1133,7 +1153,8 @@ mod tests {
             [(Who::User(2001), SharePermission::ReadWrite), (Who::Group(2100), SharePermission::Read)]
         );
         assert_eq!(rules.remove, [Who::User(2002)], "anna keeps hers, a gone user has none");
-        assert_eq!(rules.managed, Some(crate::accounts::ID_MIN..=crate::accounts::ID_MAX), "they replace");
+        let managed = Managed { ids: crate::accounts::ID_MIN..=crate::accounts::ID_MAX, groups: vec![990] };
+        assert_eq!(rules.managed, Some(managed), "they replace, zendiloos-users's entries too");
         let unknown = sharing.rules(&[access(user("nobody"), true)], &[]).unwrap_err();
         assert!(unknown.to_string().contains("nobody"), "{unknown}");
         fs::remove_file(dir.path().join("group")).unwrap();
@@ -1275,7 +1296,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tree_is_changed_through_descriptors_and_private_folders_are_left_alone() {
+    fn a_tree_is_changed_through_descriptors_and_the_bins_are_left_alone() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("share");
         fs::create_dir_all(root.join("album/2024")).unwrap();
@@ -1285,11 +1306,13 @@ mod tests {
         fs::set_permissions(root.join("run.sh"), std::os::unix::fs::PermissionsExt::from_mode(0o755))
             .unwrap();
         fs::create_dir_all(root.join(RECYCLE_DIRECTORY).join("anna")).unwrap();
-        // A bin a writer renamed: private, so nobody else's entries go there.
-        let renamed = root.join("old-bin/bob");
-        fs::create_dir_all(&renamed).unwrap();
-        fs::write(renamed.join("deleted.txt"), "x").unwrap();
-        fs::set_permissions(&renamed, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+        // A folder only its owner may enter, outside the bins (a bin its
+        // owner moved out of them, one a walk left so): the share's, as
+        // everything there, whatever its mode.
+        let closed = root.join("old-bin/bob");
+        fs::create_dir_all(&closed).unwrap();
+        fs::write(closed.join("deleted.txt"), "x").unwrap();
+        fs::set_permissions(&closed, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
         let elsewhere = dir.path().join("elsewhere");
         fs::create_dir(&elsewhere).unwrap();
         std::os::unix::fs::symlink(&elsewhere, root.join("escape")).unwrap();
@@ -1309,7 +1332,7 @@ mod tests {
             ..Rules::default()
         };
         change_tree(&root, &after).unwrap();
-        for folder in ["album", "album/2024", "old-bin"] {
+        for folder in ["album", "album/2024", "old-bin", "old-bin/bob"] {
             let acl = access(folder);
             assert_eq!(
                 (acl.named(bob), acl.named(anna), acl.named(staff)),
@@ -1324,8 +1347,7 @@ mod tests {
         assert_eq!(access("run.sh").named(anna), Some(5));
         assert!(acl_of(&elsewhere, acl::ACCESS).is_none(), "not through the link");
         assert!(acl_of(&root.join(RECYCLE_DIRECTORY).join("anna"), acl::ACCESS).is_none(), "not the bins");
-        assert!(acl_of(&renamed, acl::ACCESS).is_none(), "not a private folder");
-        assert!(acl_of(&renamed.join("deleted.txt"), acl::ACCESS).is_none(), "nor what is in it");
+        assert_eq!(access("old-bin/bob/deleted.txt").named(anna), Some(4), "what is in a closed folder too");
     }
 
     /// Sets `entries` on `path`'s access ACL (and default ACL, for a
@@ -1407,6 +1429,151 @@ mod tests {
         assert_eq!(open.named(anna), Some(6));
     }
 
+    /// An entry of `who` in `path`'s access ACL.
+    fn named_of(path: &Path, who: Who) -> Option<u16> {
+        acl_of(path, acl::ACCESS).and_then(|acl| acl.named(who))
+    }
+
+    /// Rules that replace what is there, as `Sharing::rules` makes them.
+    fn replacing(grant: Vec<(Who, SharePermission)>) -> Rules {
+        let ids = crate::accounts::ID_MIN..=crate::accounts::ID_MAX;
+        Rules { grant, managed: Some(Managed { ids, groups: vec![990] }), ..Rules::default() }
+    }
+
+    /// What files made while `who` alone may write look like: the share's
+    /// default ACL (u::rwx, g::---, o::---, `who`:rwx) inherited.
+    fn tree_made_under(root: &Path, who: Who) {
+        fs::create_dir_all(root.join("projects/2024")).unwrap();
+        fs::write(root.join("projects/2024/report.txt"), "x").unwrap();
+        fs::write(root.join("top.txt"), "x").unwrap();
+        for folder in ["projects", "projects/2024"] {
+            set_named(&root.join(folder), 0o700, &[(who, 7)]);
+        }
+        set_named(&root.join("projects/2024/report.txt"), 0o600, &[(who, 6)]);
+        set_named(&root.join("top.txt"), 0o600, &[(who, 6)]);
+    }
+
+    fn mode_of(path: &Path) -> u32 {
+        fs::metadata(path).unwrap().mode() & 0o777
+    }
+
+    #[test]
+    fn a_share_given_to_another_group_gives_it_its_existing_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("share");
+        let (family, staff) = (Who::Group(2100), Who::Group(2101));
+        tree_made_under(&root, family);
+
+        // The share goes from family to staff: the taking pass leaves the
+        // folders without named entries, at 0700; the giving pass gives
+        // staff its entries all the same, deep down too.
+        change_tree(&root, &replacing(vec![(staff, SharePermission::ReadWrite)])).unwrap();
+
+        assert_eq!(named_of(&root.join("top.txt"), staff), Some(6));
+        for folder in ["projects", "projects/2024"] {
+            let path = root.join(folder);
+            assert_eq!(
+                (named_of(&path, staff), named_of(&path, family)),
+                (Some(7), None),
+                "{folder} (mode {:o})",
+                mode_of(&path)
+            );
+            assert_eq!(
+                acl_of(&path, acl::DEFAULT).unwrap().named(staff),
+                Some(7),
+                "{folder}: what comes later"
+            );
+        }
+        assert_eq!(named_of(&root.join("projects/2024/report.txt"), staff), Some(6));
+    }
+
+    #[test]
+    fn an_account_disabled_and_enabled_again_gets_its_folders_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("share");
+        let anna = Who::User(2001);
+        // anna's own share: only she may write.
+        tree_made_under(&root, anna);
+
+        // Disabled: denied, an entry of ---; the folders' masks go to ---,
+        // their modes to 0700.
+        change_tree(&root, &replacing(vec![(anna, SharePermission::Deny)])).unwrap();
+        assert_eq!(named_of(&root.join("projects"), anna), Some(0));
+        assert_eq!(mode_of(&root.join("projects")), 0o700);
+        // Enabled again: she writes everywhere again.
+        change_tree(&root, &replacing(vec![(anna, SharePermission::ReadWrite)])).unwrap();
+
+        assert_eq!(named_of(&root.join("top.txt"), anna), Some(6));
+        for folder in ["projects", "projects/2024"] {
+            assert_eq!(named_of(&root.join(folder), anna), Some(7), "{folder}");
+            assert_eq!(mode_of(&root.join(folder)), 0o770, "{folder}: the mask lets her in");
+        }
+        assert_eq!(named_of(&root.join("projects/2024/report.txt"), anna), Some(6));
+    }
+
+    #[test]
+    fn someone_denied_and_then_granted_gets_the_folders_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let sharing = with_accounts(dir.path());
+        let root = dir.path().join("share");
+        let ben = Who::User(2002);
+        tree_made_under(&root, ben);
+        let walk = |permission| {
+            let mut rules =
+                sharing.rules(&[ShareAccess { principal: user("ben"), permission }], &[]).unwrap();
+            // Owners are another test's: the files here are the test's own.
+            rules.owners = Owners::default();
+            change_tree(&root, &rules).unwrap();
+        };
+
+        walk(SharePermission::Deny);
+        assert_eq!(named_of(&root.join("projects/2024"), ben), Some(0));
+        walk(SharePermission::Read);
+
+        for folder in ["projects", "projects/2024"] {
+            assert_eq!(named_of(&root.join(folder), ben), Some(5), "{folder}");
+            assert_eq!(acl_of(&root.join(folder), acl::DEFAULT).unwrap().named(ben), Some(5), "{folder}");
+        }
+        assert_eq!(named_of(&root.join("projects/2024/report.txt"), ben), Some(4));
+        assert_eq!(named_of(&root.join("top.txt"), ben), Some(4));
+    }
+
+    #[test]
+    fn folders_an_earlier_walk_left_at_0700_get_their_rules_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("share");
+        let (anna, staff) = (Who::User(2001), Who::Group(2101));
+        // What the walks before left: folders whose named entries all went
+        // (0700, a default ACL of the base entries alone) with what is in
+        // them, and one whose only entry denies (anna disabled, its mask
+        // ---), all given nothing since.
+        fs::create_dir_all(root.join("moved/inner")).unwrap();
+        fs::write(root.join("moved/inner/plan.txt"), "x").unwrap();
+        fs::create_dir_all(root.join("denied")).unwrap();
+        for folder in ["moved", "moved/inner"] {
+            set_named(&root.join(folder), 0o700, &[]);
+        }
+        set_named(&root.join("moved/inner/plan.txt"), 0o600, &[]);
+        set_named(&root.join("denied"), 0o700, &[(anna, 0)]);
+        assert_eq!(mode_of(&root.join("denied")), 0o700);
+
+        change_tree(
+            &root,
+            &replacing(vec![(anna, SharePermission::ReadWrite), (staff, SharePermission::Read)]),
+        )
+        .unwrap();
+
+        for folder in ["moved", "moved/inner", "denied"] {
+            let path = root.join(folder);
+            assert_eq!((named_of(&path, anna), named_of(&path, staff)), (Some(7), Some(5)), "{folder}");
+            assert_eq!(mode_of(&path), 0o770, "{folder}");
+            let default = acl_of(&path, acl::DEFAULT).unwrap();
+            assert_eq!((default.named(anna), default.named(staff)), (Some(7), Some(5)), "{folder}");
+        }
+        let plan = root.join("moved/inner/plan.txt");
+        assert_eq!((named_of(&plan, anna), named_of(&plan, staff)), (Some(6), Some(4)));
+    }
+
     #[test]
     fn what_passes_to_root_from_a_private_place_keeps_only_its_owners_entry() {
         let dir = tempfile::tempdir().unwrap();
@@ -1465,7 +1632,7 @@ mod tests {
     }
 
     #[test]
-    fn what_those_who_may_not_write_own_is_handed_to_root_bins_and_private_folders_too() {
+    fn what_those_who_may_not_write_own_is_handed_to_root_bins_too() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("share");
         fs::create_dir_all(root.join("album")).unwrap();
@@ -1474,6 +1641,7 @@ mod tests {
         fs::write(root.join(RECYCLE_DIRECTORY).join("ben/old.txt"), "x").unwrap();
         // ben opened his bin to everyone and to anna.
         set_named(&root.join(RECYCLE_DIRECTORY).join("ben"), 0o777, &[(Who::User(4243), 7)]);
+        // A folder only its owner may enter, outside the bins: the share's.
         let private = root.join("private");
         fs::create_dir(&private).unwrap();
         fs::write(private.join("secret.txt"), "x").unwrap();
@@ -1492,7 +1660,7 @@ mod tests {
 
         let changed = change_tree(&root, &writing(vec![]));
         // Seven entries: the album and its photo, the bins' folder, a bin
-        // and what is in it, the private folder and its file; not the link.
+        // and what is in it, the closed folder and its file; not the link.
         if rustix::process::geteuid().is_root() {
             changed.unwrap();
             for path in ["album", "album/a.jpg", ".recycle", ".recycle/ben/old.txt", "private/secret.txt"] {
@@ -1507,7 +1675,11 @@ mod tests {
             let bin = acl_of(&root.join(RECYCLE_DIRECTORY).join("ben"), acl::ACCESS).unwrap();
             assert_eq!(bin.named(anna), Some(7), "a bin gets no entries: only its owner changes");
         }
-        assert!(acl_of(&private, acl::ACCESS).is_none(), "a private folder gets no entries");
+        assert_eq!(
+            acl_of(&private, acl::ACCESS).unwrap().named(anna),
+            Some(5),
+            "a closed folder is the share's"
+        );
         assert_eq!(acl_of(&root.join("album"), acl::ACCESS).unwrap().named(anna), Some(5));
     }
 
@@ -1548,8 +1720,75 @@ mod tests {
             change_tree(&root, &Rules { grant: vec![(anna, SharePermission::Read)], ..Rules::default() });
 
         let error = failed.unwrap_err().to_string();
-        assert!(error.contains("nested too deeply") && error.contains("1 entries"), "{error}");
+        assert!(error.contains("1 folders are nested too deeply"), "{error}");
+        assert!(!error.contains("could not be changed"), "{error}");
         assert_eq!(acl_of(&root.join("d0"), acl::ACCESS).unwrap().named(anna), Some(5), "above it: changed");
+        let mut limit = root.clone();
+        for n in 0..MAX_DEPTH {
+            limit = limit.join(format!("d{n}"));
+        }
+        assert_eq!(named_of(&limit, anna), Some(5), "the folder at the limit itself: changed");
+        assert_eq!(named_of(&limit.join(format!("d{MAX_DEPTH}")), anna), None, "below it: not looked into");
+    }
+
+    #[test]
+    fn folders_planted_too_deep_do_not_keep_a_revocation_from_the_rest_of_the_share() {
+        // A writer (bob) about to lose write access plants more folders
+        // nested too deeply than the hundred failures that used to end a
+        // walk; each chain holds a file of the share with bob's entry.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("share");
+        let (bob, anna) = (Who::User(2002), Who::User(2001));
+        let chains = 202;
+        for n in 0..chains {
+            let top = root.join(format!("c{n}"));
+            let mut deep = top.clone();
+            for level in 0..MAX_DEPTH + 1 {
+                deep = deep.join(format!("d{level}"));
+            }
+            fs::create_dir_all(&deep).unwrap();
+            fs::write(top.join("t.txt"), "x").unwrap();
+            set_named(&top.join("t.txt"), 0o600, &[(bob, 6), (anna, 6)]);
+        }
+        let rules = replacing(vec![(anna, SharePermission::ReadWrite)]);
+
+        // The walk fails, the share stays owed and is walked again.
+        for _ in 0..2 {
+            let error = change_tree(&root, &rules).unwrap_err().to_string();
+            assert!(error.contains(&format!("{chains} folders are nested too deeply")), "{error}");
+        }
+
+        let kept: Vec<usize> =
+            (0..chains).filter(|n| named_of(&root.join(format!("c{n}/t.txt")), bob).is_some()).collect();
+        assert!(kept.is_empty(), "bob keeps rw on {} of {chains} files: {kept:?}", kept.len());
+        assert!((0..chains).all(|n| named_of(&root.join(format!("c{n}/t.txt")), anna) == Some(6)));
+    }
+
+    #[test]
+    fn a_named_entry_for_everyones_primary_group_does_not_outlive_a_walk() {
+        // zendiloos-users (990 here): every managed account's primary group,
+        // below the managed IDs. A writer gave it rwx by name (setfacl over
+        // NFS, or "Domain Users" over SMB).
+        let dir = tempfile::tempdir().unwrap();
+        let sharing = with_accounts(dir.path());
+        let root = dir.path().join("share");
+        let (family, users) = (Who::Group(2100), Who::Group(990));
+        fs::create_dir_all(root.join("projects")).unwrap();
+        fs::write(root.join("projects/plan.txt"), "x").unwrap();
+        set_named(&root.join("projects"), 0o700, &[(family, 7), (users, 7)]);
+        set_named(&root.join("projects/plan.txt"), 0o600, &[(family, 6), (users, 6)]);
+
+        // family may only read now.
+        let mut rules = sharing.rules(&[access(group("family"), false)], &[]).unwrap();
+        rules.owners = Owners::default();
+        change_tree(&root, &rules).unwrap();
+
+        for path in ["projects", "projects/plan.txt"] {
+            assert_eq!(named_of(&root.join(path), family).map(|p| p & 2), Some(0), "{path}: family reads");
+            assert_eq!(named_of(&root.join(path), users), None, "{path}: no way round it for everyone");
+        }
+        let default = acl_of(&root.join("projects"), acl::DEFAULT).unwrap();
+        assert_eq!(default.named(users), None, "nor for what comes later");
     }
 
     #[test]
@@ -1590,14 +1829,20 @@ mod tests {
     }
 
     #[test]
-    fn failures_are_counted_and_too_many_end_the_change() {
+    fn failures_are_counted_with_the_first_of_each_kind() {
         let mut failures = Failures::default();
-        for _ in 0..MAX_FAILURES {
-            failures.note(Path::new("/volume1/media/a"), Errno::IO).unwrap();
+        assert!(!failures.any());
+        for _ in 0..1000 {
+            failures.note(Path::new("/volume1/media/a"), Errno::IO);
         }
-        let error = failures.note(Path::new("/volume1/media/b"), Errno::IO).unwrap_err();
-        assert!(error.to_string().contains("101 entries"), "{error}");
-        assert!(error.to_string().contains("/volume1/media/a"), "{error}");
+        failures.note(Path::new("/volume1/media/b"), Errno::IO);
+        failures.note_too_deep(Path::new("/volume1/media/deep"));
+        assert!(failures.any());
+        let error = failures.error().to_string();
+        assert!(error.contains("1001 entries could not be changed, among them /volume1/media/a"), "{error}");
+        assert!(
+            error.contains("1 folders are nested too deeply to look into, among them /volume1/media/deep")
+        );
     }
 
     #[test]
