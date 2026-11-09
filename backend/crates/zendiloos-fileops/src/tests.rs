@@ -1228,11 +1228,15 @@ fn a_copy_across_that_fails_removes_only_what_it_made() {
     let at = |name: &str| v.share_path("music").join(name);
 
     // Its folder made, then swapped for the user's own before the copy fails.
-    let (out, pieces) = std::sync::mpsc::sync_channel(PIECES_IN_FLIGHT);
-    out.send(Piece::Folder(c"album".to_owned())).unwrap();
+    // Each piece is handed over as it is taken: once the folder inside is,
+    // the copy's folder was made and opened, and only then is it swapped
+    // (swapped between the two, the copy would refuse the user's folder as
+    // taken instead).
+    let (out, pieces) = std::sync::mpsc::sync_channel(0);
     let written = std::thread::scope(|scope| {
         let receiving = scope.spawn(move || music.receive_entry(&path("album"), &pieces, Taken::Refuse));
-        appears(&at("album"));
+        out.send(Piece::Folder(c"album".to_owned())).unwrap();
+        out.send(Piece::Folder(c"inner".to_owned())).unwrap();
         fs::rename(at("album"), at("made")).unwrap();
         fs::rename(at("Private"), at("album")).unwrap();
         drop(out);
