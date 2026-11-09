@@ -2041,10 +2041,17 @@ stable release. Before an update zendiloosd downloads the three files to
 `/var/lib/zendiloos/updates`. The runner trusts none of it: it copies them
 out (never through a link, size-limited), checks the signature with the key
 the package brought along (`/usr/share/zendiloos/release-signing.pub`, or
-one an administrator put in `/etc/zendiloos`), the package's checksum, its
-name, architecture and version, and installs only a version newer than the
-installed one, so an old signed release cannot be brought back. A build
-without a key takes no updates of zendiloOS. How releases are made and
+one an administrator put in `/etc/zendiloos`), that the signature's trusted
+comment is `zendiloos <version>` of this very package (one key signs every
+build, the development build of each commit too), the package's checksum,
+its name, architecture and version, and installs only a version newer than
+the installed one, so an old signed release cannot be brought back. It is
+started with the NAS's channel (`run-packages <id> update <package>
+<channel>`, zendiloosd sends it along with the release) and takes a build
+only of a kind that channel takes, as its version says: `+dev.` only on
+development, `~rc.N` or `~beta.N` on test and development, a plain release
+everywhere, any other form as a development build. A build without a key
+takes no updates of zendiloOS. How releases are made and
 signed: `docs/releases.md`. What changed in the version that runs comes
 with its package (`/usr/share/zendiloos/changes.md`, `notes` in
 `[updates]`), read once when zendiloosd starts; the page shows it and an

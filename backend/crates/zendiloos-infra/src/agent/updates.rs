@@ -6,12 +6,12 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use zendiloos_agent_proto::{
-    AgentTransport, ErrorCode, PackageReport, PackageRun, PackageRunState, PackageTask, ReleasePackage,
-    Request, Response,
+    AgentTransport, ErrorCode, PackageReport, PackageRun, PackageRunState, PackageTask, ReleaseChannel,
+    ReleaseInstall, ReleasePackage, Request, Response,
 };
 use zendiloos_kernel::{PortError, RequestContext, Timestamp};
 use zendiloos_updates::application::ports::{HostError, HostPackages};
-use zendiloos_updates::domain::{HostReport, PackageUpdate, Release, RunState, UpdateRun};
+use zendiloos_updates::domain::{Channel, HostReport, PackageUpdate, Release, RunState, UpdateRun};
 
 use super::{WHAT, agent_error, call, call_raw, unexpected};
 
@@ -31,7 +31,7 @@ impl AgentUpdates {
     async fn start_task(
         &self,
         task: PackageTask,
-        release: Option<ReleasePackage>,
+        release: Option<ReleaseInstall>,
         context: &RequestContext,
     ) -> Result<String, HostError> {
         match call_raw(self.transport.as_ref(), Request::StartPackages { task, release }, context).await? {
@@ -88,11 +88,22 @@ impl HostPackages for AgentUpdates {
         }
     }
 
-    async fn start(&self, release: Option<&Release>, context: &RequestContext) -> Result<String, HostError> {
+    async fn start(
+        &self,
+        release: Option<&Release>,
+        channel: Channel,
+        context: &RequestContext,
+    ) -> Result<String, HostError> {
+        let channel = match channel {
+            Channel::Stable => ReleaseChannel::Stable,
+            Channel::Test => ReleaseChannel::Test,
+            Channel::Development => ReleaseChannel::Development,
+        };
         let release = release
             .map(|release| ReleasePackage::parse(&release.package.name))
             .transpose()
-            .map_err(|_| PortError::new(WHAT, "not a valid release package for the agent"))?;
+            .map_err(|_| PortError::new(WHAT, "not a valid release package for the agent"))?
+            .map(|package| ReleaseInstall { package, channel });
         self.start_task(PackageTask::Update, release, context).await
     }
 
@@ -131,10 +142,29 @@ mod tests {
         assert_eq!(found.security_updates(), 2);
         assert!(!found.restart_needed());
 
-        let id = updates.start(None, &context).await.unwrap();
-        let busy = updates.start(None, &context).await;
+        let id = updates.start(None, Channel::Stable, &context).await.unwrap();
+        let busy = updates.start(None, Channel::Stable, &context).await;
         assert!(matches!(busy, Err(HostError::Refused(_))), "{busy:?}");
         let run = updates.latest(&context).await.unwrap().unwrap();
         assert_eq!((run.id.as_str(), run.installs, run.state), (id.as_str(), true, RunState::Running));
+    }
+
+    #[tokio::test]
+    async fn a_release_goes_to_the_agent_with_the_channel_it_must_take() {
+        use zendiloos_updates::testing::release;
+
+        let updates = AgentUpdates::new(Arc::new(SimulatedAgent::new()));
+        let context = RequestContext::default();
+        let build = release("dev", "0.3.0+dev.20261109120000.gabc1234", true);
+        let refused = updates.start(Some(&build), Channel::Stable, &context).await;
+        assert!(
+            matches!(&refused, Err(HostError::Refused(why)) if why.contains("stable channel")),
+            "{refused:?}"
+        );
+        assert_eq!(updates.latest(&context).await.unwrap(), None, "nothing ran");
+
+        updates.start(Some(&build), Channel::Development, &context).await.unwrap();
+        let run = updates.latest(&context).await.unwrap().unwrap();
+        assert_eq!(run.zendiloos.as_deref(), Some("0.3.0+dev.20261109120000.gabc1234"));
     }
 }

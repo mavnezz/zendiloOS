@@ -39,6 +39,41 @@ impl PackageTask {
     }
 }
 
+/// Which builds of zendiloOS a NAS takes, its update channel; each takes
+/// those of the steadier ones too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReleaseChannel {
+    /// Releases: `1.2.0`.
+    Stable,
+    /// Release candidates and betas: `1.2.0~rc.1`.
+    Test,
+    /// Builds of a commit on `main`: `1.2.0+dev.<time>.g<commit>`.
+    Development,
+}
+
+impl ReleaseChannel {
+    const ALL: [Self; 3] = [Self::Stable, Self::Test, Self::Development];
+
+    /// The name the runner is started with.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Stable => "stable",
+            Self::Test => "test",
+            Self::Development => "development",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|channel| channel.as_str() == name)
+    }
+
+    /// Whether a build of `kind` may be installed on this channel.
+    pub fn takes(self, kind: Self) -> bool {
+        kind <= self
+    }
+}
+
 /// A release of zendiloOS for an update: the file name of its package,
 /// `zendiloos_<version>_<arch>.deb`, in the folder zendiloosd downloads
 /// to, beside `SHA256SUMS` and `SHA256SUMS.minisig`. The agent trusts none
@@ -77,6 +112,38 @@ impl ReleasePackage {
         let inner = &self.0["zendiloos_".len()..self.0.len() - ".deb".len()];
         inner.rsplit_once('_').map_or(inner, |(version, _)| version)
     }
+
+    /// Which kind of build the version names (`scripts/release-version.sh`):
+    /// a release is numbers and dots (`1.2.0`), a test release that, `~`
+    /// and a name (`1.2.0~rc.1`, `1.2.0~beta.2`). Everything else counts as
+    /// a development build, the build of a commit
+    /// (`1.2.0+dev.<time>.g<commit>`) among it.
+    pub fn kind(&self) -> ReleaseChannel {
+        let numbers = |text: &str| {
+            !text.is_empty()
+                && text.split('.').all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+        };
+        let version = self.version();
+        match version.split_once('~') {
+            None if numbers(version) => ReleaseChannel::Stable,
+            Some((release, name))
+                if numbers(release)
+                    && name.starts_with(|c: char| c.is_ascii_alphabetic())
+                    && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '.') =>
+            {
+                ReleaseChannel::Test
+            }
+            _ => ReleaseChannel::Development,
+        }
+    }
+}
+
+/// A release an update installs, and the channel of the NAS it is for: a
+/// build of a kind the channel does not take is refused.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleaseInstall {
+    pub package: ReleasePackage,
+    pub channel: ReleaseChannel,
 }
 
 impl TryFrom<String> for ReleasePackage {
@@ -166,6 +233,31 @@ mod tests {
         ] {
             assert!(ReleasePackage::parse(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn a_version_tells_which_channels_may_take_it() {
+        let kind =
+            |version: &str| ReleasePackage::parse(&format!("zendiloos_{version}_amd64.deb")).unwrap().kind();
+        assert_eq!(kind("0.3.0"), ReleaseChannel::Stable);
+        assert_eq!(kind("10.20.30"), ReleaseChannel::Stable);
+        assert_eq!(kind("0.3.1~rc.1"), ReleaseChannel::Test);
+        assert_eq!(kind("0.3.1~beta.2"), ReleaseChannel::Test);
+        assert_eq!(kind("0.1.1~vmtest1"), ReleaseChannel::Test);
+        assert_eq!(kind("0.3.0+dev.20261109120000.gabc1234"), ReleaseChannel::Development);
+        assert_eq!(kind("0.3.1~rc.1+dev.20261109120000.gabc1234"), ReleaseChannel::Development);
+        // Whatever CI does not make counts as the least steady.
+        for odd in ["0.3.0-1", "0.3.0~", "0.3.0~1", "0.3..0", "0.3.0.", "0.3.0~rc-1"] {
+            assert_eq!(kind(odd), ReleaseChannel::Development, "{odd}");
+        }
+
+        use ReleaseChannel::{Development, Stable, Test};
+        assert!(Stable.takes(Stable) && !Stable.takes(Test) && !Stable.takes(Development));
+        assert!(Test.takes(Stable) && Test.takes(Test) && !Test.takes(Development));
+        assert!(Development.takes(Stable) && Development.takes(Test) && Development.takes(Development));
+        assert_eq!(ReleaseChannel::parse("development"), Some(Development));
+        assert_eq!(ReleaseChannel::parse("nightly"), None);
+        assert_eq!(serde_json::to_string(&Test).unwrap(), "\"test\"");
     }
 
     #[test]

@@ -262,7 +262,8 @@ fn requests() -> Vec<Value> {
         json!({ "op": "show_on_console", "setup_code": "ABCD-EFGH-JKLM" }),
         json!({ "op": "show_on_console", "open_setup": true }),
         json!({ "op": "set_smb_password", "name": "anna", "password": "correct horse battery" }),
-        json!({ "op": "start_packages", "task": "update", "release": "zendiloos_9.9.9_amd64.deb" }),
+        json!({ "op": "start_packages", "task": "update",
+                "release": { "package": "zendiloos_9.9.9_amd64.deb", "channel": "stable" } }),
     ]
 }
 

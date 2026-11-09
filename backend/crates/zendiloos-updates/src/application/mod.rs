@@ -267,6 +267,8 @@ impl Updates {
         if !check.has_updates() {
             return Err(UpdatesError::NothingToDo);
         }
+        // The agent installs only what the channel takes, and is told it.
+        let channel = self.ports.store.settings().await?.channel;
         let release = check.release.clone();
         let target = release.as_ref().map_or_else(String::new, |release| release.version.clone());
         self.set_phase(Phase::Downloading);
@@ -282,7 +284,7 @@ impl Updates {
                 if !running.is_empty() {
                     return Err(HostError::Refused(format!("background work runs: {}", running.join(", "))));
                 }
-                this.ports.host.start(release.as_ref(), &context).await
+                this.ports.host.start(release.as_ref(), channel, &context).await
             }
             .await;
             let outcome = if started.is_ok() { Outcome::Success } else { Outcome::Failure };
@@ -550,6 +552,11 @@ mod tests {
         }
         assert_eq!(*s.releases.downloaded.lock().unwrap(), ["0.2.0"]);
         assert_eq!(*s.host.started.lock().unwrap(), [Some("0.2.0".to_owned())]);
+        assert_eq!(
+            *s.host.channels.lock().unwrap(),
+            [Channel::Stable],
+            "the agent checks the release against it"
+        );
         let overview = s.updates.overview(&request).await.unwrap();
         assert_eq!(overview.phase, Phase::Idle);
         let run = overview.run.unwrap();

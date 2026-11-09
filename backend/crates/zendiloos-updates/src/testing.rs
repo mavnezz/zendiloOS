@@ -7,7 +7,8 @@ use zendiloos_kernel::{PortError, RequestContext, Timestamp};
 
 use crate::application::ports::{HostError, HostPackages, ReleaseSource, UpdateStore};
 use crate::domain::{
-    Asset, CheckResult, HostReport, PackageUpdate, Release, RunState, UpdateRun, UpdateSettings, channel_of,
+    Asset, Channel, CheckResult, HostReport, PackageUpdate, Release, RunState, UpdateRun, UpdateSettings,
+    channel_of,
 };
 
 /// A release as GitHub would list it.
@@ -48,7 +49,9 @@ impl ReleaseSource for FakeReleases {
 pub struct FakeHost {
     pub packages: Mutex<Vec<PackageUpdate>>,
     pub run: Mutex<Option<UpdateRun>>,
+    /// The release of each update started, and the channel it was for.
     pub started: Mutex<Vec<Option<String>>>,
+    pub channels: Mutex<Vec<Channel>>,
 }
 
 impl Default for FakeHost {
@@ -63,6 +66,7 @@ impl Default for FakeHost {
             packages: Mutex::new(vec![package("openssl", true), package("tzdata", false)]),
             run: Mutex::default(),
             started: Mutex::default(),
+            channels: Mutex::default(),
         }
     }
 }
@@ -97,8 +101,14 @@ impl HostPackages for FakeHost {
         Ok(report)
     }
 
-    async fn start(&self, release: Option<&Release>, _: &RequestContext) -> Result<String, HostError> {
+    async fn start(
+        &self,
+        release: Option<&Release>,
+        channel: Channel,
+        _: &RequestContext,
+    ) -> Result<String, HostError> {
         self.started.lock().unwrap().push(release.map(|release| release.version.clone()));
+        self.channels.lock().unwrap().push(channel);
         self.packages.lock().unwrap().clear();
         let id = format!("run{}", self.started.lock().unwrap().len());
         *self.run.lock().unwrap() = Some(UpdateRun {

@@ -7,9 +7,12 @@
 #      the ZFS module checked for the newest kernel
 #   3. zendiloOS updates itself to a newer release, signed with a test key:
 #      the runner copies the files out of the download folder, checks the
-#      signature, the checksum and the version, installs, and zendiloosd
-#      comes back with the new version
-#   4. a changed package and an older release are refused
+#      signature, that it was made for this version, the channel, the
+#      checksum and the version, installs, and zendiloosd comes back with
+#      the new version
+#   4. a changed package, a signature made for another version, a test or
+#      development build on the stable channel and an older release are
+#      refused
 #
 # Usage: scripts/vm-update-test.sh NEXT_DEB [CURRENT_DEB]
 #   NEXT_DEB     a package of a newer version than the installed one, e.g.
@@ -67,23 +70,39 @@ wait_for() {
     fail "timed out waiting for $what"
 }
 
-# Puts a package with SHA256SUMS signed by the test key into the download folder.
+version_of() { basename "$1" | sed 's/^zendiloos_\(.*\)_amd64\.deb$/\1/'; }
+
+# The steadiest channel that takes a version, as the runner tells it.
+channel_of() {
+    case $1 in
+        *+*) echo development ;;
+        *~*) echo test ;;
+        *) echo stable ;;
+    esac
+}
+
+# Puts a package with SHA256SUMS signed by the test key into the download
+# folder; the signature is made for the package's version, as CI makes it,
+# or for what the second argument says.
 offer() {
-    local deb=$1 name
+    local deb=$1 name for
     name=$(basename "$deb")
+    for=${2:-zendiloos $(version_of "$deb")}
     vm "sudo rm -rf $spool && sudo install -d -o zendiloos -g zendiloos -m 0750 $spool"
     vm "sudo tee $spool/$name >/dev/null" <"$deb"
     vm "cd /tmp/zdl-key && sudo sh -c 'cd $spool && sha256sum $name > SHA256SUMS' \
-        && sudo cp $spool/SHA256SUMS . && minisign -S -s key -m SHA256SUMS -t 'zendiloos test' >/dev/null \
+        && sudo cp $spool/SHA256SUMS . && minisign -S -s key -m SHA256SUMS -t '$for' >/dev/null \
         && sudo cp SHA256SUMS.minisig $spool/ && sudo chown -R zendiloos:zendiloos $spool"
 }
 
-# Runs the update as the agent starts it; prints the run's record when done.
+# Runs the update as the agent starts it, for the channel that takes the
+# package or the one given; prints the run's record when done.
 run_update() {
-    local name=$1 id
+    local name=$1 id channel
+    channel=${2:-$(channel_of "$(version_of "$name")")}
     id=$(od -An -tx1 -N8 /dev/urandom | tr -d ' \n')
     vm "sudo systemd-run --unit=zendiloos-packages --collect --quiet --property=Type=exec \
-        /usr/libexec/zendiloos/zendiloos-agent run-packages $id update $name" >/dev/null
+        /usr/libexec/zendiloos/zendiloos-agent run-packages $id update $name $channel" >/dev/null
     wait_for "the run" "vm 'cat /var/lib/zendiloos-packages/run.json' | jq -e --arg id $id '.id == \$id and .state != \"running\"'" 1800
     vm 'cat /var/lib/zendiloos-packages/run.json'
 }
@@ -96,7 +115,8 @@ cleanup() {
 trap cleanup EXIT
 
 installed=$(vm "dpkg-query -W -f '\${Version}' zendiloos")
-next_version=$(basename "$next" | sed 's/^zendiloos_\(.*\)_amd64\.deb$/\1/')
+next_version=$(version_of "$next")
+current_version=$(version_of "$current")
 say "Signing in as $user (zendiloOS $installed installed, $next_version offered)"
 sign_in || fail "cannot sign in"
 
@@ -133,6 +153,19 @@ vm "echo changed | sudo tee -a $spool/$name >/dev/null"
 record=$(run_update "$name")
 jq -e '.state == "failed" and (.error | contains("checksum"))' <<<"$record" >/dev/null \
     || fail "a changed package was taken: $record"
+
+# A good signature, but made for another build.
+offer "$next" "zendiloos $current_version"
+record=$(run_update "$name")
+jq -e '.state == "failed" and (.error | contains("signature is for"))' <<<"$record" >/dev/null \
+    || fail "a signature made for $current_version was taken for $next_version: $record"
+
+if [[ $(channel_of "$next_version") != stable ]]; then
+    offer "$next"
+    record=$(run_update "$name" stable)
+    jq -e '.state == "failed" and (.error | contains("stable channel does not take"))' <<<"$record" >/dev/null \
+        || fail "the stable channel took $next_version: $record"
+fi
 
 offer "$next"
 record=$(run_update "$name")

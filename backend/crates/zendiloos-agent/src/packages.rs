@@ -15,7 +15,12 @@
 //! the package brought along (`/usr/share/zendiloos/release-signing.pub`,
 //! or one in `/etc/zendiloos`), the package's checksum, name, architecture
 //! and version, and only a newer version than the installed one: an old
-//! signed release cannot be brought back.
+//! signed release cannot be brought back. Every build is signed with the
+//! same key, the development build of each commit too; what the signature
+//! is for is its trusted comment, `zendiloos <version>`, which must name
+//! the version installed, and a build is taken only on a channel that
+//! takes its kind (a development build on the development channel, a test
+//! release on the test channel too).
 
 use std::fs;
 use std::io::{Read, Write};
@@ -26,7 +31,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest, Sha256};
 use zendiloos_agent_proto::{
-    PackageReport, PackageRun, PackageRunState, PackageTask, ReleasePackage, Response, UpgradablePackage,
+    PackageReport, PackageRun, PackageRunState, PackageTask, ReleaseChannel, ReleaseInstall, ReleasePackage,
+    Response, UpgradablePackage,
 };
 use zendiloos_exec::{Limits, Program};
 
@@ -61,7 +67,7 @@ impl Packages {
     pub(crate) async fn start(
         &self,
         task: PackageTask,
-        release: Option<&ReleasePackage>,
+        release: Option<&ReleaseInstall>,
     ) -> Result<Response, OperationError> {
         if release.is_some() && task != PackageTask::Update {
             return Err(OperationError::Refused("only an update installs a release".into()));
@@ -96,7 +102,7 @@ impl Packages {
             task.as_str(),
         ];
         if let Some(release) = release {
-            args.push(release.as_str());
+            args.extend([release.package.as_str(), release.channel.as_str()]);
         }
         let output = zendiloos_exec::run(&self.systemd_run, &args, LIMITS).await?;
         if !output.status.success() {
@@ -145,16 +151,28 @@ fn tempfile_folder() -> Result<PathBuf, OperationError> {
     Ok(std::env::temp_dir().join(format!("zendiloos-release-{name}")))
 }
 
-/// `run-packages <id> <task> [release]`, in `zendiloos-packages.service`:
-/// does the task, each step recorded.
-pub fn run_packages(paths: &HostPaths, id: &str, task: &str, release: Option<&str>) -> Result<(), String> {
+/// `run-packages <id> <task> [<release> <channel>]`, in
+/// `zendiloos-packages.service`: does the task, each step recorded.
+pub fn run_packages(
+    paths: &HostPaths,
+    id: &str,
+    task: &str,
+    release: Option<&str>,
+    channel: Option<&str>,
+) -> Result<(), String> {
     if id.is_empty() || id.len() > 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(format!("{id:?} is no run id"));
     }
     let task = PackageTask::parse(task).ok_or_else(|| format!("{task:?} is no task"))?;
-    let release = release
-        .map(|name| ReleasePackage::parse(name).map_err(|_| format!("{name:?} is no release")))
-        .transpose()?;
+    let release = match (release, channel) {
+        (None, None) => None,
+        (Some(name), Some(channel)) => Some(ReleaseInstall {
+            package: ReleasePackage::parse(name).map_err(|_| format!("{name:?} is no release"))?,
+            channel: ReleaseChannel::parse(channel).ok_or_else(|| format!("{channel:?} is no channel"))?,
+        }),
+        (Some(_), None) => return Err("a release is installed only for a channel".into()),
+        (None, Some(_)) => return Err("a channel comes only with a release".into()),
+    };
     if release.is_some() && task != PackageTask::Update {
         return Err("only an update installs a release".into());
     }
@@ -175,7 +193,7 @@ pub fn run_packages(paths: &HostPaths, id: &str, task: &str, release: Option<&st
         started_at: now(),
         finished_at: None,
         error: None,
-        release: release.as_ref().map(|release| release.version().to_owned()),
+        release: release.as_ref().map(|release| release.package.version().to_owned()),
         report: None,
     };
     record(&paths.packages, &run)?;
@@ -196,7 +214,7 @@ pub fn run_packages(paths: &HostPaths, id: &str, task: &str, release: Option<&st
 fn steps(
     paths: &HostPaths,
     task: PackageTask,
-    release: Option<&ReleasePackage>,
+    release: Option<&ReleaseInstall>,
     report: &mut Option<PackageReport>,
     mut step: impl FnMut(&str) -> Result<(), String>,
 ) -> Result<(), String> {
@@ -243,9 +261,10 @@ fn steps(
 }
 
 /// Copies the release out of the download folder, checks it and installs it.
-fn install_release(paths: &HostPaths, release: &ReleasePackage) -> Result<(), String> {
+fn install_release(paths: &HostPaths, install: &ReleaseInstall) -> Result<(), String> {
     let folder = paths.packages.join("release");
-    let package = take_release(paths, release, &folder)?;
+    let package = take_release(paths, install, &folder)?;
+    let release = &install.package;
     let field = |name: &str| -> Result<String, String> {
         let output = Command::new("/usr/bin/dpkg-deb")
             .args(["--field"])
@@ -274,9 +293,24 @@ fn install_release(paths: &HostPaths, release: &ReleasePackage) -> Result<(), St
 }
 
 /// Copies the release's three files from the download folder into `folder`
-/// (made anew, root's only), never through a link, and checks the
-/// signature and the package's checksum. Returns the copied package.
-fn take_release(paths: &HostPaths, release: &ReleasePackage, folder: &Path) -> Result<PathBuf, String> {
+/// (made anew, root's only), never through a link, and checks that the
+/// channel takes the build, the signature, that it was made for this
+/// version and the package's checksum. Returns the copied package.
+fn take_release(paths: &HostPaths, install: &ReleaseInstall, folder: &Path) -> Result<PathBuf, String> {
+    let release = &install.package;
+    let (kind, channel) = (release.kind(), install.channel);
+    if !channel.takes(kind) {
+        let build = match kind {
+            ReleaseChannel::Stable => "a release",
+            ReleaseChannel::Test => "a test release",
+            ReleaseChannel::Development => "a development build",
+        };
+        return Err(format!(
+            "{} is {build}, which the {} channel does not take",
+            release.version(),
+            channel.as_str()
+        ));
+    }
     let key = release_key(paths)?;
     let _ = fs::remove_dir_all(folder);
     fs::DirBuilder::new()
@@ -293,6 +327,15 @@ fn take_release(paths: &HostPaths, release: &ReleasePackage, folder: &Path) -> R
         .map_err(|_| "the release's signature cannot be read".to_owned())?;
     key.verify(&sums, &signature, false)
         .map_err(|_| "the release's signature does not match its key".to_owned())?;
+    // Signed too: which build the signature was made for (CI signs with
+    // `-t "zendiloos <version>"`); it must be the one installed.
+    let meant = format!("zendiloos {}", release.version());
+    if signature.trusted_comment() != meant {
+        return Err(format!(
+            "the release's signature is for {:?}, not for {meant:?}",
+            signature.trusted_comment()
+        ));
+    }
     let expected = String::from_utf8_lossy(&sums)
         .lines()
         .find_map(|line| {
@@ -589,7 +632,7 @@ mod tests {
         let mut recorded = run(PackageTask::Update);
         recorded.state = PackageRunState::Succeeded;
         record(folder.path(), &recorded).unwrap();
-        let again = run_packages(&paths, "ab12", "update", None).unwrap_err();
+        let again = run_packages(&paths, "ab12", "update", None, None).unwrap_err();
         assert!(again.contains("started before"), "{again}");
         let kept: PackageRun =
             serde_json::from_str(&fs::read_to_string(folder.path().join(STATE_FILE)).unwrap()).unwrap();
@@ -600,13 +643,17 @@ mod tests {
     fn only_hex_ids_known_tasks_and_release_names_run() {
         let paths =
             HostPaths { packages: std::env::temp_dir().join("zendiloos-never"), ..HostPaths::default() };
-        assert!(run_packages(&paths, "../x", "install-docker", None).unwrap_err().contains("no run id"));
-        assert!(run_packages(&paths, "ab12", "rm-rf", None).unwrap_err().contains("no task"));
+        let run = |task, release, channel| run_packages(&paths, "ab12", task, release, channel).unwrap_err();
+        let name = Some("zendiloos_1.0_amd64.deb");
         assert!(
-            run_packages(&paths, "ab12", "update", Some("../etc/shadow")).unwrap_err().contains("no release")
+            run_packages(&paths, "../x", "install-docker", None, None).unwrap_err().contains("no run id")
         );
-        let docker = run_packages(&paths, "ab12", "install-docker", Some("zendiloos_1.0_amd64.deb"));
-        assert!(docker.unwrap_err().contains("only an update"));
+        assert!(run("rm-rf", None, None).contains("no task"));
+        assert!(run("update", Some("../etc/shadow"), Some("stable")).contains("no release"));
+        assert!(run("install-docker", name, Some("stable")).contains("only an update"));
+        assert!(run("update", name, Some("nightly")).contains("no channel"));
+        assert!(run("update", name, None).contains("only for a channel"));
+        assert!(run("update", None, Some("stable")).contains("only with a release"));
     }
 
     #[test]
@@ -646,6 +693,75 @@ mod tests {
         trusted comment: zendiloos 9.9.9\n\
         xRAvEXYdiCSNSWJHQ2JmtSHjKY61Uz+J7Bn22qhUpJXTEAKzlSUEBlv/lwtADWtkFb5kPh2dk+6Xo2IKSl13BQ==\n";
 
+    /// Another key whose secret one is gone, made for signatures with other
+    /// trusted comments: `SIGNED_SUMS` signed for 9.9.8, and the checksums
+    /// of a development build signed for that build.
+    const OTHER_KEY: &str = "untrusted comment: minisign public key 64334BBC6AD71F0D\n\
+        RWQNH9dqvEszZBP8zLvEJaXEL3AzndjV/5wJLCtU4Vj2UFjaa1O4/Ijf\n";
+    const SIGNED_FOR_ANOTHER: &str = "untrusted comment: signature from minisign secret key\n\
+        RUQNH9dqvEszZE28tIZ5pPGptSWi2crgbDvT7WB7Thh69qZIOVhs/ObxnBOPBQDb1tdVxSKJ3tEmRIOMDVZbbw8VrDN1osBgTgY=\n\
+        trusted comment: zendiloos 9.9.8\n\
+        YbW99j5ug79YvQtA1AW2G/TQbQed51Ds7DtPqOjG2xqJSoF7CE3gmmL7htem2+RVGJvMANrEtQ+jjGzn8tTKAA==\n";
+    const DEVELOPMENT: &str = "zendiloos_9.9.9+dev.20261109120000.gabc1234_amd64.deb";
+    const DEVELOPMENT_SUMS: &str = "d400a577a056c0530d6acfc0e0a2f937be15323bffe02dfc81a8ca66b332a907  \
+        zendiloos_9.9.9+dev.20261109120000.gabc1234_amd64.deb\n";
+    const DEVELOPMENT_SIGNED: &str = "untrusted comment: signature from minisign secret key\n\
+        RUQNH9dqvEszZK9ejYeLNlNRnqqEZ1yc0ckau96IKa9JSiTMaDej4eANdET8QVDZZaL7FQRSy00nu51qlL0O8Ha929tiD0ZJgAs=\n\
+        trusted comment: zendiloos 9.9.9+dev.20261109120000.gabc1234\n\
+        lalLpd3mpRs+QBDw828tI7T7nNDkJI4ZNpfRG2Onmx4fKZRJ9G79/H00JUf5X+YoylMs2mTcvXSJs9e46NPvCw==\n";
+
+    fn install(name: &str, channel: ReleaseChannel) -> ReleaseInstall {
+        ReleaseInstall { package: ReleasePackage::parse(name).unwrap(), channel }
+    }
+
+    fn stable(name: &str) -> ReleaseInstall {
+        install(name, ReleaseChannel::Stable)
+    }
+
+    #[test]
+    fn a_signature_counts_only_for_the_build_it_names_on_a_channel_that_takes_it() {
+        let root = tempfile::tempdir().unwrap();
+        let spool = root.path().join("spool");
+        fs::create_dir_all(&spool).unwrap();
+        let key = root.path().join("release.pub");
+        fs::write(&key, OTHER_KEY).unwrap();
+        let paths =
+            HostPaths { update_spool: spool.clone(), release_keys: vec![key], ..HostPaths::default() };
+        let taken = root.path().join("taken");
+        let put = |name: &str, content: &str| {
+            let _ = fs::remove_file(spool.join(name));
+            fs::write(spool.join(name), content).unwrap();
+        };
+
+        // A good signature of checksums that list 9.9.9, made for 9.9.8.
+        let release = stable("zendiloos_9.9.9_amd64.deb");
+        put(release.package.as_str(), PACKAGE);
+        put(SUMS, SIGNED_SUMS);
+        put(SIGNATURE, SIGNED_FOR_ANOTHER);
+        let refused = take_release(&paths, &release, &taken).unwrap_err();
+        assert!(refused.contains("is for \"zendiloos 9.9.8\""), "{refused}");
+        // Nor does it make 9.9.8 of what they list.
+        let named = stable("zendiloos_9.9.8_amd64.deb");
+        put(named.package.as_str(), PACKAGE);
+        assert!(take_release(&paths, &named, &taken).unwrap_err().contains("does not list"));
+
+        // The build of a commit, signed for itself: on the development
+        // channel only.
+        put(DEVELOPMENT, PACKAGE);
+        put(SUMS, DEVELOPMENT_SUMS);
+        put(SIGNATURE, DEVELOPMENT_SIGNED);
+        for channel in [ReleaseChannel::Stable, ReleaseChannel::Test] {
+            let refused = take_release(&paths, &install(DEVELOPMENT, channel), &taken).unwrap_err();
+            let says = format!("a development build, which the {} channel does not take", channel.as_str());
+            assert!(refused.contains(&says), "{refused}");
+        }
+        assert!(take_release(&paths, &install(DEVELOPMENT, ReleaseChannel::Development), &taken).is_ok());
+
+        // A test release, refused before anything is read.
+        let candidate = take_release(&paths, &stable("zendiloos_9.9.9~rc.1_amd64.deb"), &taken).unwrap_err();
+        assert!(candidate.contains("9.9.9~rc.1 is a test release"), "{candidate}");
+    }
+
     #[test]
     fn a_release_is_taken_only_with_its_signature_and_checksum() {
         let root = tempfile::tempdir().unwrap();
@@ -659,23 +775,23 @@ mod tests {
             packages: root.path().join("packages"),
             ..HostPaths::default()
         };
-        let release = ReleasePackage::parse("zendiloos_9.9.9_amd64.deb").unwrap();
+        let release = stable("zendiloos_9.9.9_amd64.deb");
         let taken = root.path().join("taken");
         let put = |name: &str, content: &str| {
             let _ = fs::remove_file(spool.join(name));
             fs::write(spool.join(name), content).unwrap();
         };
-        put(release.as_str(), PACKAGE);
+        put(release.package.as_str(), PACKAGE);
         put(SUMS, SIGNED_SUMS);
         put(SIGNATURE, SIGNED);
         let package = take_release(&paths, &release, &taken).unwrap();
         assert_eq!(fs::read_to_string(package).unwrap(), PACKAGE);
 
-        put(release.as_str(), "another package\n");
+        put(release.package.as_str(), "another package\n");
         let refused = take_release(&paths, &release, &taken).unwrap_err();
         assert!(refused.contains("checksum"), "{refused}");
 
-        put(release.as_str(), PACKAGE);
+        put(release.package.as_str(), PACKAGE);
         put(SUMS, &SIGNED_SUMS.replace("d400", "0000"));
         let refused = take_release(&paths, &release, &taken).unwrap_err();
         assert!(refused.contains("signature does not match"), "{refused}");
@@ -702,9 +818,9 @@ mod tests {
             release_keys: vec![key.clone()],
             ..HostPaths::default()
         };
-        let release = ReleasePackage::parse("zendiloos_9.9.9_amd64.deb").unwrap();
+        let release = stable("zendiloos_9.9.9_amd64.deb");
         let taken = root.path().join("taken");
-        fs::write(spool.join(release.as_str()), PACKAGE).unwrap();
+        fs::write(spool.join(release.package.as_str()), PACKAGE).unwrap();
         fs::write(spool.join(SUMS), SIGNED_SUMS).unwrap();
 
         fs::write(&key, "no key at all").unwrap();
@@ -715,10 +831,6 @@ mod tests {
         assert!(take_release(&paths, &release, &taken).unwrap_err().contains("cannot be read"));
         fs::write(spool.join(SIGNATURE), SIGNED).unwrap();
         assert!(take_release(&paths, &release, &taken).is_ok());
-
-        let other = ReleasePackage::parse("zendiloos_9.9.8_amd64.deb").unwrap();
-        fs::write(spool.join(other.as_str()), PACKAGE).unwrap();
-        assert!(take_release(&paths, &other, &taken).unwrap_err().contains("does not list"));
     }
 
     #[test]
@@ -734,8 +846,8 @@ mod tests {
             packages: root.path().join("packages"),
             ..HostPaths::default()
         };
-        let release = ReleasePackage::parse("zendiloos_9.9.9_amd64.deb").unwrap();
-        fs::write(spool.join(release.as_str()), PACKAGE).unwrap();
+        let release = stable("zendiloos_9.9.9_amd64.deb");
+        fs::write(spool.join(release.package.as_str()), PACKAGE).unwrap();
         fs::write(spool.join(SUMS), SIGNED_SUMS).unwrap();
         fs::write(spool.join(SIGNATURE), SIGNED).unwrap();
 
@@ -806,7 +918,12 @@ mod tests {
                 root.join("refuse").display()
             ),
         );
-        let paths = HostPaths { packages: root.join("state"), ..HostPaths::default() };
+        let paths = HostPaths {
+            packages: root.join("state"),
+            update_spool: root.join("spool"),
+            release_keys: vec![root.join("release.pub")],
+            ..HostPaths::default()
+        };
         Packages::new(systemctl, systemd_run, paths)
     }
 
@@ -834,12 +951,36 @@ mod tests {
         let failed = packages.start(PackageTask::Update, None).await.unwrap_err();
         assert!(failed.to_string().contains("unit exists"), "{failed}");
 
-        let release = ReleasePackage::parse("zendiloos_9.9.9_amd64.deb").unwrap();
+        let release = stable("zendiloos_9.9.9_amd64.deb");
         let docker = packages.start(PackageTask::InstallDocker, Some(&release)).await.unwrap_err();
         assert!(docker.to_string().contains("only an update"));
         // No key here: the release is refused before anything runs.
         let unchecked = packages.start(PackageTask::Update, Some(&release)).await.unwrap_err();
         assert!(unchecked.to_string().contains("no key"), "{unchecked}");
+    }
+
+    #[tokio::test]
+    async fn the_runner_is_told_the_channel_it_checks_the_release_against() {
+        let root = tempfile::tempdir().unwrap();
+        let packages = packages(root.path());
+        let spool = root.path().join("spool");
+        fs::create_dir_all(&spool).unwrap();
+        fs::write(root.path().join("release.pub"), KEY).unwrap();
+        fs::write(spool.join("zendiloos_9.9.9_amd64.deb"), PACKAGE).unwrap();
+        fs::write(spool.join(SUMS), SIGNED_SUMS).unwrap();
+        fs::write(spool.join(SIGNATURE), SIGNED).unwrap();
+
+        let release = install("zendiloos_9.9.9_amd64.deb", ReleaseChannel::Test);
+        let Response::PackagesStarted { id } =
+            packages.start(PackageTask::Update, Some(&release)).await.unwrap()
+        else {
+            panic!()
+        };
+        let asked = fs::read_to_string(root.path().join("systemd-run.log")).unwrap();
+        assert!(
+            asked.contains(&format!("run-packages {id} update zendiloos_9.9.9_amd64.deb test")),
+            "{asked}"
+        );
     }
 
     #[tokio::test]

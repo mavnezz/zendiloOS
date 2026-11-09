@@ -621,6 +621,13 @@ impl AgentTransport for SimulatedAgent {
                 if packages.current().is_some_and(|run| run.state == PackageRunState::Running) {
                     return Ok(error(ErrorCode::Forbidden, "refused: apt is busy with another run"));
                 }
+                if let Some(release) = release
+                    && !release.channel.takes(release.package.kind())
+                {
+                    let refused =
+                        format!("refused: the {} channel does not take it", release.channel.as_str());
+                    return Ok(error(ErrorCode::Forbidden, &refused));
+                }
                 packages.runs += 1;
                 let id = format!("{:016x}", packages.runs);
                 let run = PackageRun {
@@ -631,7 +638,7 @@ impl AgentTransport for SimulatedAgent {
                     started_at: i64::try_from((self.clock)()).unwrap_or(i64::MAX),
                     finished_at: None,
                     error: None,
-                    release: release.as_ref().map(|release| release.version().to_owned()),
+                    release: release.as_ref().map(|release| release.package.version().to_owned()),
                     report: None,
                 };
                 packages.run = Some((run, std::time::Instant::now()));

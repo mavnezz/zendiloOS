@@ -41,8 +41,9 @@ enum Command {
     PinProject { project: String },
     /// Unmount them again
     UnpinProject { project: String },
-    /// Run apt on a task (in zendiloos-packages.service), recording each step
-    RunPackages { id: String, task: String, release: Option<String> },
+    /// Run apt on a task (in zendiloos-packages.service), recording each step;
+    /// an update installs the release given if the channel given takes it
+    RunPackages { id: String, task: String, release: Option<String>, channel: Option<String> },
     /// Take an ejected removable drive's disk off the bus, so it can be pulled out
     PowerOffDrive { disk: String },
     /// Back up a Docker volume into a share (a job of the system agent's, in a unit of its own)
@@ -84,8 +85,8 @@ fn main() -> anyhow::Result<()> {
 }
 
 async fn run(cli: Cli) -> anyhow::Result<()> {
-    if let Some(Command::RunPackages { id, task, release }) = &cli.command {
-        return run_packages(&HostPaths::default(), id, task, release.as_deref())
+    if let Some(Command::RunPackages { id, task, release, channel }) = &cli.command {
+        return run_packages(&HostPaths::default(), id, task, release.as_deref(), channel.as_deref())
             .map_err(|error| anyhow::anyhow!("{error}"));
     }
     let volume_job = match &cli.command {

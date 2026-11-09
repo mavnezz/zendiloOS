@@ -62,8 +62,8 @@ pub use network::{
     InvalidPrefix, Ipv4Config, Ipv6Config, NameServers, NetworkConfig, PendingNetwork, Prefix,
 };
 pub use packages::{
-    InvalidReleasePackage, PackageReport, PackageRun, PackageRunState, PackageTask, ReleasePackage,
-    UpgradablePackage,
+    InvalidReleasePackage, PackageReport, PackageRun, PackageRunState, PackageTask, ReleaseChannel,
+    ReleaseInstall, ReleasePackage, UpgradablePackage,
 };
 pub use removable::{
     InvalidRemovableId, MEMBER_SIGNATURES, REMOVABLE_PLACE, RemovableFilesystem, RemovableId,
@@ -246,9 +246,10 @@ pub enum Request {
     /// going on. Answers [`Response::PackagesStarted`].
     StartPackages {
         task: PackageTask,
-        /// For [`PackageTask::Update`] only: zendiloOS from this release.
+        /// For [`PackageTask::Update`] only: zendiloOS from this release,
+        /// if the NAS's channel takes its kind of build.
         #[serde(default)]
-        release: Option<ReleasePackage>,
+        release: Option<ReleaseInstall>,
     },
     /// The latest run of apt: [`Response::Packages`]. A run whose unit is
     /// gone without finishing counts as failed.
