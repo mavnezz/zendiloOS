@@ -23,6 +23,7 @@ pub(super) fn routes() -> OpenApiRouter<ApiState> {
         .routes(routes!(system_updates))
         .routes(routes!(check_system_updates))
         .routes(routes!(apply_system_updates))
+        .routes(routes!(finish_system_update))
         .routes(routes!(set_system_update_settings))
 }
 
@@ -134,7 +135,10 @@ pub enum UpdateRunState {
 pub struct UpdateRun {
     pub id: String,
     pub state: UpdateRunState,
-    /// `lists`, `debian`, `zendiloos`, `modules`.
+    /// It finishes an update that was cut off rather than updating.
+    pub finishes: bool,
+    /// `lists`, `debian`, `zendiloos`, `modules`; finishing: `configure`,
+    /// `repair`, `modules`.
     pub step: String,
     pub started_at: i64,
     pub finished_at: Option<i64>,
@@ -172,6 +176,9 @@ pub struct UpdatesOverview {
     /// The ZFS module is built for the newest kernel; without it a restart
     /// would leave the pools behind.
     pub zfs_ready: bool,
+    /// dpkg left packages half installed or half configured: an update
+    /// was cut off, and is finished with `POST /system/updates/finish`.
+    pub interrupted: bool,
     pub run: Option<UpdateRun>,
 }
 
@@ -218,9 +225,11 @@ fn overview_dto(overview: UpdateOverview) -> UpdatesOverview {
         newest_kernel: host.as_ref().and_then(|host| host.newest_kernel.clone()),
         restart_needed: host.as_ref().is_some_and(updates::HostReport::restart_needed),
         zfs_ready: host.as_ref().is_none_or(|host| host.zfs_ready),
+        interrupted: host.as_ref().is_some_and(|host| host.interrupted),
         run: overview.run.map(|run| UpdateRun {
             restart_needed: run.report.as_ref().is_some_and(updates::HostReport::restart_needed),
             zfs_ready: run.report.as_ref().is_none_or(|report| report.zfs_ready),
+            finishes: run.finishes,
             id: run.id,
             state: match run.state {
                 RunState::Running => UpdateRunState::Running,
@@ -292,6 +301,30 @@ async fn apply_system_updates(
 ) -> Result<StatusCode, ApiError> {
     auth.require(Permission::SystemManage)?;
     state.updates.apply(&auth.0.actor(), &client).await?;
+    Ok(StatusCode::ACCEPTED)
+}
+
+/// Finishes an update that was cut off (`interrupted` in the overview):
+/// dpkg configures what it unpacked, apt completes what is missing, in a
+/// run on the NAS the overview follows as `run`. Needs `system.manage`.
+/// Refused while background jobs run, as an update is.
+#[utoipa::path(
+    post,
+    path = "/system/updates/finish",
+    tag = "system",
+    security(("session" = [])),
+    responses(
+        (status = ACCEPTED, description = "Finishing begins."),
+        (status = CONFLICT, body = Problem, description = "`update_busy`, `jobs_running` (the detail names the jobs)"),
+    )
+)]
+async fn finish_system_update(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+) -> Result<StatusCode, ApiError> {
+    auth.require(Permission::SystemManage)?;
+    state.updates.finish(&auth.0.actor(), &client).await?;
     Ok(StatusCode::ACCEPTED)
 }
 

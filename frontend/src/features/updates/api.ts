@@ -40,6 +40,10 @@ export function useUpdateActions() {
       await unwrap(api.POST('/api/v1/system/updates/apply'))
       await refresh()
     },
+    finish: async () => {
+      await unwrap(api.POST('/api/v1/system/updates/finish'))
+      await refresh()
+    },
     save: async (settings: UpdateSettings) => {
       const saved = await unwrap(api.PUT('/api/v1/system/updates/settings', { body: settings }))
       await refresh()

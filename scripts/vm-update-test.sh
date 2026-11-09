@@ -13,6 +13,9 @@
 #   4. a changed package, a signature made for another version, a test or
 #      development build on the stable channel and an older release are
 #      refused
+#   5. an update cut off while dpkg configured (a package whose postinst
+#      fails until it may succeed) is found by a check and finished
+#      through the API
 #
 # Usage: scripts/vm-update-test.sh NEXT_DEB [CURRENT_DEB]
 #   NEXT_DEB     a package of a newer version than the installed one, e.g.
@@ -110,6 +113,8 @@ run_update() {
 cleanup() {
     set +e
     vm "sudo rm -rf /etc/zendiloos/release-signing.pub /tmp/zdl-key $spool" 2>/dev/null
+    vm 'sudo touch /run/zdl-half-done-may; sudo dpkg --purge zdl-half-done >/dev/null 2>&1;
+        sudo rm -rf /run/zdl-half-done-may /tmp/zdl-half /tmp/zdl-half-done.deb' 2>/dev/null
     rm -rf "$work"
 }
 trap cleanup EXIT
@@ -182,5 +187,27 @@ offer "$current"
 record=$(run_update "$(basename "$current")")
 jq -e '.state == "failed" and (.error | contains("not newer"))' <<<"$record" >/dev/null \
     || fail "an older release was taken: $record"
+
+say "5. An update cut off while dpkg configured is finished through the API"
+# A package that cannot be configured until it may: dpkg leaves it half
+# configured, as a power cut in the middle of an update would.
+vm 'rm -rf /tmp/zdl-half && mkdir -p /tmp/zdl-half/DEBIAN \
+    && printf "Package: zdl-half-done\nVersion: 1.0\nArchitecture: all\nMaintainer: Test <test@example.org>\nDescription: configures once it may\n" \
+        >/tmp/zdl-half/DEBIAN/control \
+    && printf "#!/bin/sh\n[ -e /run/zdl-half-done-may ] || exit 1\n" >/tmp/zdl-half/DEBIAN/postinst \
+    && chmod 0755 /tmp/zdl-half/DEBIAN/postinst \
+    && dpkg-deb --root-owner-group --build /tmp/zdl-half /tmp/zdl-half-done.deb >/dev/null'
+vm 'sudo dpkg -i /tmp/zdl-half-done.deb >/dev/null 2>&1' && fail "zdl-half-done was configured although it may not"
+[[ -n $(vm 'dpkg --audit') ]] || fail "dpkg lists nothing half done"
+wait_for "a check to start" "[[ \$(status POST /system/updates/check) == 202 ]]" 900
+wait_for "the check" "call GET /system/updates | jq -e '.phase == \"idle\" and .interrupted'" 900
+vm 'sudo touch /run/zdl-half-done-may'
+[[ $(status POST /system/updates/finish) == 202 ]] || fail "finishing did not start"
+wait_for "finishing" "call GET /system/updates | jq -e '.run.finishes and .run.state != \"running\"'" 1800
+run=$(call GET /system/updates | jq .run)
+jq -e '.state == "succeeded"' <<<"$run" >/dev/null || fail "finishing: $run"
+[[ -z $(vm 'dpkg --audit') ]] || fail "dpkg still lists: $(vm 'dpkg --audit')"
+call GET /system/updates | jq -e '.interrupted == false' >/dev/null || fail "the page still offers to finish"
+vm 'sudo dpkg --purge zdl-half-done >/dev/null && sudo rm -f /run/zdl-half-done-may'
 
 say "All update tests passed (put the VM back with: ZENDILOOS_VM=$ZENDILOOS_VM scripts/vm.sh install $current)"

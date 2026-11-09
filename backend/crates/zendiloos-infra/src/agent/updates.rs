@@ -58,6 +58,7 @@ fn update_run(run: PackageRun) -> UpdateRun {
     UpdateRun {
         id: run.id,
         installs: run.task.updates(),
+        finishes: run.task == PackageTask::Finish,
         state: match run.state {
             PackageRunState::Running => RunState::Running,
             PackageRunState::Succeeded => RunState::Succeeded,
@@ -82,6 +83,7 @@ fn report(report: PackageReport) -> HostReport {
         running_kernel: report.running_kernel,
         newest_kernel: report.newest_kernel,
         zfs_ready: report.zfs_ready,
+        interrupted: report.interrupted,
     }
 }
 
@@ -127,6 +129,10 @@ impl HostPackages for AgentUpdates {
             .map_err(|_| PortError::new(WHAT, "not a valid release package for the agent"))?
             .map(|package| ReleaseInstall { package, channel });
         self.start_task(PackageTask::Update, release, context).await
+    }
+
+    async fn finish(&self, context: &RequestContext) -> Result<String, HostError> {
+        self.start_task(PackageTask::Finish, None, context).await
     }
 
     async fn latest(&self, context: &RequestContext) -> Result<Option<UpdateRun>, HostError> {

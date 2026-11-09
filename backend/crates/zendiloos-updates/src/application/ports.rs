@@ -44,6 +44,11 @@ pub trait HostPackages: Send + Sync {
         context: &RequestContext,
     ) -> Result<String, HostError>;
 
+    /// Starts finishing an update that was cut off, in a unit of its own:
+    /// dpkg configures what it unpacked, apt completes what is missing.
+    /// Returns the run's id at once.
+    async fn finish(&self, context: &RequestContext) -> Result<String, HostError>;
+
     /// The latest run of apt, if any.
     async fn latest(&self, context: &RequestContext) -> Result<Option<UpdateRun>, HostError>;
 

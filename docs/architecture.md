@@ -2030,7 +2030,22 @@ made). Tasks
 are fixed: install Docker (`docker.io`, `docker-compose`) and the ACME
 client (`acme.sh`), the App Center's plugins; check (lists fetched, then
 `apt-get --simulate upgrade` parsed into packages, security updates marked
-by Debian's security archive); and update.
+by Debian's security archive); update; and finish an update.
+
+**An update cut off** (a power cut while DKMS builds ZFS for the new
+kernel, say) leaves packages unpacked or half configured. apt then sees
+nothing to upgrade and every install fails with "dpkg was interrupted".
+Each check and update reports it (`dpkg --audit` lists something:
+`interrupted` in the overview), and after an update that failed
+zendiloosd looks at once, without waiting for the daily check. The page
+then offers to finish the update (`POST /system/updates/finish`,
+`system.manage`, audited as `system.update_finish`): a run of the task
+`finish` in the packages unit, followed like an update and kept as the
+last update, so it survives the restart of zendiloosd that configuring
+zendiloOS's own package brings: `dpkg --configure -a`, then `apt-get
+--fix-broken install` from the lists it has, then the look at the kernel
+modules; it fails while `dpkg --audit` still lists something. It is
+refused while background jobs run, as an update is.
 
 **Releases.** zendiloosd reads the repository's releases from GitHub's API
 (`[updates]` in `zendiloosd.toml`): the package for this machine

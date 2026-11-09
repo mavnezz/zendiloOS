@@ -168,6 +168,7 @@ impl SimPackages {
                 &[(0, "lists"), (1, "debian"), (3, "zendiloos"), (4, "modules"), (5, "")]
             }
             PackageTask::Update => &[(0, "lists"), (1, "debian"), (3, "modules"), (4, "")],
+            PackageTask::Finish => &[(0, "configure"), (1, "repair"), (2, "modules"), (3, "")],
         };
         let elapsed = started.elapsed().as_secs();
         for (at, step) in steps {
@@ -211,6 +212,7 @@ impl SimPackages {
             running_kernel: "6.12.48+deb13-amd64".into(),
             newest_kernel: Some(if updated { "6.12.57+deb13-amd64" } else { "6.12.48+deb13-amd64" }.into()),
             zfs_ready: true,
+            interrupted: false,
         }
     }
 }
@@ -645,7 +647,7 @@ impl AgentTransport for SimulatedAgent {
                     id: id.clone(),
                     task: *task,
                     state: PackageRunState::Running,
-                    step: "lists".into(),
+                    step: if *task == PackageTask::Finish { "configure" } else { "lists" }.into(),
                     started_at: i64::try_from((self.clock)()).unwrap_or(i64::MAX),
                     finished_at: None,
                     error: None,

@@ -19,10 +19,13 @@ pub enum PackageTask {
     /// Debian's packages upgraded, then zendiloOS from a release when one is
     /// given, then a [`PackageReport`].
     Update,
+    /// What an update cut off left half done, finished: `dpkg --configure
+    /// -a`, then `apt-get --fix-broken install`, then a [`PackageReport`].
+    Finish,
 }
 
 impl PackageTask {
-    const ALL: [Self; 4] = [Self::InstallDocker, Self::InstallAcme, Self::Check, Self::Update];
+    const ALL: [Self; 5] = [Self::InstallDocker, Self::InstallAcme, Self::Check, Self::Update, Self::Finish];
 
     /// The name the runner is started with.
     pub fn as_str(self) -> &'static str {
@@ -31,6 +34,7 @@ impl PackageTask {
             Self::InstallAcme => "install-acme",
             Self::Check => "check",
             Self::Update => "update",
+            Self::Finish => "finish",
         }
     }
 
@@ -38,10 +42,11 @@ impl PackageTask {
         Self::ALL.into_iter().find(|task| task.as_str() == name)
     }
 
-    /// Whether it updates the system: the runner keeps the record of the
-    /// last such run apart, which the runs after it do not replace.
+    /// Whether it updates the system, finishing an update among it: the
+    /// runner keeps the record of the last such run apart, which the runs
+    /// after it do not replace.
     pub fn updates(self) -> bool {
-        self == Self::Update
+        matches!(self, Self::Update | Self::Finish)
     }
 }
 
@@ -186,6 +191,11 @@ pub struct PackageReport {
     pub newest_kernel: Option<String>,
     /// The ZFS module is built for that kernel (DKMS).
     pub zfs_ready: bool,
+    /// dpkg left packages unpacked or half configured, as `dpkg --audit`
+    /// lists them: an update was cut off, and [`PackageTask::Finish`]
+    /// finishes what it began.
+    #[serde(default)]
+    pub interrupted: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -271,6 +281,9 @@ mod tests {
         assert_eq!(PackageTask::parse("update"), Some(PackageTask::Update));
         assert_eq!(PackageTask::parse("install-docker"), Some(PackageTask::InstallDocker));
         assert_eq!(PackageTask::parse("install-acme"), Some(PackageTask::InstallAcme));
+        assert_eq!(PackageTask::parse("finish"), Some(PackageTask::Finish));
+        assert!(PackageTask::Update.updates() && PackageTask::Finish.updates());
+        assert!(!PackageTask::Check.updates() && !PackageTask::InstallDocker.updates());
         assert_eq!(PackageTask::parse("install-anything"), None);
         let json = serde_json::to_string(&PackageTask::InstallDocker).unwrap();
         assert_eq!(json, "\"install_docker\"");

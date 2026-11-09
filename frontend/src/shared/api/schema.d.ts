@@ -3602,6 +3602,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/system/updates/finish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Finishes an update that was cut off (`interrupted` in the overview):
+         *     dpkg configures what it unpacked, apt completes what is missing, in a
+         *     run on the NAS the overview follows as `run`. Needs `system.manage`.
+         *     Refused while background jobs run, as an update is.
+         */
+        post: operations["finish_system_update"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/system/updates/settings": {
         parameters: {
             query?: never;
@@ -6977,13 +6999,18 @@ export interface components {
             error?: string | null;
             /** Format: int64 */
             finished_at?: number | null;
+            /** @description It finishes an update that was cut off rather than updating. */
+            finishes: boolean;
             id: string;
             /** @description A newer kernel waits for a restart. */
             restart_needed: boolean;
             /** Format: int64 */
             started_at: number;
             state: components["schemas"]["UpdateRunState"];
-            /** @description `lists`, `debian`, `zendiloos`, `modules`. */
+            /**
+             * @description `lists`, `debian`, `zendiloos`, `modules`; finishing: `configure`,
+             *     `repair`, `modules`.
+             */
             step: string;
             /** @description The version of zendiloOS it installs. */
             zendiloos?: string | null;
@@ -7026,6 +7053,11 @@ export interface components {
              *     null for a build without.
              */
             current_notes?: string | null;
+            /**
+             * @description dpkg left packages half installed or half configured: an update
+             *     was cut off, and is finished with `POST /system/updates/finish`.
+             */
+            interrupted: boolean;
             newest_kernel?: string | null;
             packages: components["schemas"]["PackageUpdate"][];
             /** @description Why apt could not be asked. */
@@ -15793,6 +15825,33 @@ export interface operations {
                 content?: never;
             };
             /** @description `update_busy` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    finish_system_update: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Finishing begins. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `update_busy`, `jobs_running` (the detail names the jobs) */
             409: {
                 headers: {
                     [name: string]: unknown;

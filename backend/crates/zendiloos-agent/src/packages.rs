@@ -217,7 +217,7 @@ pub fn run_packages(
         id: id.to_owned(),
         task,
         state: PackageRunState::Running,
-        step: "lists".into(),
+        step: if task == PackageTask::Finish { "configure" } else { "lists" }.into(),
         started_at: now(),
         finished_at: None,
         error: None,
@@ -246,25 +246,33 @@ fn steps(
     report: &mut Option<PackageReport>,
     mut step: impl FnMut(&str) -> Result<(), String>,
 ) -> Result<(), String> {
-    step("lists")?;
-    if task != PackageTask::Check {
-        finish_interrupted()?;
-    }
-    apt(&["update"])?;
+    // apt's lists, fetched anew; what an interrupted run left half done is
+    // finished first, but for a check, which changes nothing.
+    let lists = |step: &mut dyn FnMut(&str) -> Result<(), String>| {
+        step("lists")?;
+        if task != PackageTask::Check {
+            finish_interrupted()?;
+        }
+        apt(&["update"])
+    };
     match task {
         PackageTask::InstallDocker => {
+            lists(&mut step)?;
             step("install")?;
             apt(&["install", "--yes", "docker.io", "docker-compose"])
         }
         PackageTask::InstallAcme => {
+            lists(&mut step)?;
             step("install")?;
             apt(&["install", "--yes", "acme.sh"])
         }
         PackageTask::Check => {
+            lists(&mut step)?;
             *report = Some(host_report()?);
             Ok(())
         }
         PackageTask::Update => {
+            lists(&mut step)?;
             step("debian")?;
             apt(&["--with-new-pkgs", "--yes", "upgrade"])?;
             if let Some(release) = release {
@@ -273,19 +281,37 @@ fn steps(
             }
             step("modules")?;
             let checked = host_report()?;
-            let zfs_ready = checked.zfs_ready;
-            let kernel = checked.newest_kernel.clone().unwrap_or_default();
-            *report = Some(checked);
-            if zfs_ready {
-                Ok(())
-            } else {
-                Err(format!(
-                    "the ZFS module is missing for kernel {kernel}: do not restart; the pools would not \
-                     be found. `dkms autoinstall -k {kernel}` builds it (the kernel's headers are needed)."
-                ))
+            *report = Some(checked.clone());
+            zfs_checked(&checked)
+        }
+        PackageTask::Finish => {
+            // Nothing fetched: what was unpacked is configured, and apt
+            // completes what is missing from the lists it has.
+            step("configure")?;
+            finish_interrupted()?;
+            step("repair")?;
+            apt(&["--fix-broken", "--yes", "install"])?;
+            step("modules")?;
+            let checked = host_report()?;
+            *report = Some(checked.clone());
+            if checked.interrupted {
+                return Err("dpkg still lists packages it did not finish (`dpkg --audit` names them)".into());
             }
+            zfs_checked(&checked)
         }
     }
+}
+
+/// Fails the run if the ZFS module is missing for the newest kernel.
+fn zfs_checked(report: &PackageReport) -> Result<(), String> {
+    if report.zfs_ready {
+        return Ok(());
+    }
+    let kernel = report.newest_kernel.clone().unwrap_or_default();
+    Err(format!(
+        "the ZFS module is missing for kernel {kernel}: do not restart; the pools would not be found. \
+         `dkms autoinstall -k {kernel}` builds it (the kernel's headers are needed)."
+    ))
 }
 
 /// Copies the release out of the download folder, checks it and installs it.
@@ -434,9 +460,10 @@ fn copy_plain(from: &Path, to: &Path, max: u64) -> Result<Vec<u8>, String> {
     Ok(kept)
 }
 
-/// What an upgrade would bring now, which kernel runs, which is newest, and
-/// whether ZFS is built for it.
+/// What an upgrade would bring now, which kernel runs, which is newest,
+/// whether ZFS is built for it, and whether dpkg left packages half done.
 fn host_report() -> Result<PackageReport, String> {
+    let interrupted = interrupted()?;
     let output = Command::new("/usr/bin/apt-get")
         .args(["--simulate", "--quiet", "-o", "Debug::NoLocking=1", "--with-new-pkgs", "upgrade"])
         .env_clear()
@@ -445,15 +472,41 @@ fn host_report() -> Result<PackageReport, String> {
         .stdin(Stdio::null())
         .output()
         .map_err(|e| format!("apt-get cannot be started: {e}"))?;
-    if !output.status.success() {
+    // With packages half installed apt may see nothing to upgrade, or
+    // refuse to plan: finishing the update comes first either way.
+    let upgradable = if output.status.success() {
+        String::from_utf8_lossy(&output.stdout).lines().filter_map(upgradable).collect()
+    } else if interrupted {
+        Vec::new()
+    } else {
         return Err(format!("apt-get --simulate upgrade failed ({})", output.status));
-    }
-    let upgradable = String::from_utf8_lossy(&output.stdout).lines().filter_map(upgradable).collect();
+    };
     let running_kernel = rustix::system::uname().release().to_string_lossy().into_owned();
     let newest_kernel = newest_kernel(Path::new("/lib/modules"))?;
     let zfs_ready =
         newest_kernel.as_deref().is_none_or(|kernel| has_zfs(&Path::new("/lib/modules").join(kernel)));
-    Ok(PackageReport { upgradable, running_kernel, newest_kernel, zfs_ready })
+    Ok(PackageReport { upgradable, running_kernel, newest_kernel, zfs_ready, interrupted })
+}
+
+/// Whether dpkg left packages unpacked, half installed or half configured,
+/// or with triggers waiting: `dpkg --audit` lists them (an update cut off,
+/// by a power cut while DKMS built ZFS, say), and says nothing otherwise.
+fn interrupted() -> Result<bool, String> {
+    let output = Command::new("/usr/bin/dpkg")
+        .arg("--audit")
+        .env_clear()
+        .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
+        .env("LANG", "C.UTF-8")
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("dpkg cannot be started: {e}"))?;
+    Ok(audit_lists_something(&output.stdout))
+}
+
+/// What `dpkg --audit` printed names packages: it prints nothing when all
+/// is well, whatever its exit status says.
+fn audit_lists_something(printed: &[u8]) -> bool {
+    !String::from_utf8_lossy(printed).trim().is_empty()
 }
 
 /// One line of `apt-get --simulate`: `Inst openssl [3.5.1-1] (3.5.4-1
@@ -716,6 +769,31 @@ mod tests {
         fs::create_dir_all(kernel.path().join("updates/dkms")).unwrap();
         fs::write(kernel.path().join("updates/dkms/zfs.ko.xz"), "").unwrap();
         assert!(has_zfs(kernel.path()));
+    }
+
+    #[test]
+    fn dpkg_tells_of_an_update_it_did_not_finish() {
+        let half = "The following packages are only half configured, probably due to problems\n\
+            configuring them the first time.  The configuration should be retried using\n\
+            dpkg --configure <package> or the configure menu option in dselect:\n \
+            zfs-dkms             OpenZFS filesystem kernel modules for Linux\n";
+        assert!(audit_lists_something(half.as_bytes()));
+        assert!(!audit_lists_something(b""));
+        assert!(!audit_lists_something(b"\n"));
+        assert_eq!(fs::metadata("/usr/bin/dpkg").is_ok(), interrupted().is_ok(), "dpkg answers where it is");
+    }
+
+    #[test]
+    fn finishing_an_update_is_kept_as_the_last_update_and_installs_no_release() {
+        let folder = tempfile::tempdir().unwrap();
+        let finish = run(PackageTask::Finish);
+        record(folder.path(), &finish).unwrap();
+        let kept: PackageRun =
+            serde_json::from_str(&fs::read_to_string(folder.path().join(UPDATE_FILE)).unwrap()).unwrap();
+        assert_eq!(kept, finish);
+        let paths = HostPaths { packages: folder.path().join("never"), ..HostPaths::default() };
+        let release = run_packages(&paths, "ab12", "finish", Some("zendiloos_1.0_amd64.deb"), Some("stable"));
+        assert!(release.unwrap_err().contains("only an update"));
     }
 
     /// A key made with `minisign -G -W` (its secret one is gone), and

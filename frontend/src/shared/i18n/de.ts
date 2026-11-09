@@ -2444,9 +2444,20 @@ const de: Messages = {
       debian: 'Debian-Pakete installieren',
       zendiloos: 'zendiloOS {version} installieren',
       modules: 'Kernel-Module prüfen',
+      configure: 'Entpackte Pakete einrichten',
+      repair: 'Fehlendes ergänzen',
     },
     done: 'Update abgeschlossen ({at}).',
     failed: 'Das Update ist fehlgeschlagen.',
+    finishTitle: 'Update abschließen',
+    finished: 'Das Update ist abgeschlossen ({at}).',
+    interrupted:
+      'Ein Update wurde abgebrochen: Debian-Pakete sind nur halb installiert. Schließen Sie es ab, bevor etwas anderes installiert wird.',
+    finishHint:
+      'Wurde das Update abgebrochen, richtet das Abschließen ein, was entpackt wurde, und ergänzt, was fehlt.',
+    confirmFinishTitle: 'Update abschließen?',
+    confirmFinishHint:
+      'dpkg richtet die entpackten Pakete ein, danach ergänzt apt, was fehlt. Ist zendiloOS darunter, ist die Oberfläche kurz nicht erreichbar.',
     reloadHint:
       'zendiloOS {version} ist installiert. Laden Sie die Seite neu, um die neue Oberfläche zu sehen.',
     reload: 'Neu laden',

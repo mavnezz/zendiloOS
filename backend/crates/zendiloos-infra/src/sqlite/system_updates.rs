@@ -80,6 +80,8 @@ struct StoredReport {
     running_kernel: String,
     newest_kernel: Option<String>,
     zfs_ready: bool,
+    #[serde(default)]
+    interrupted: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -118,6 +120,7 @@ impl From<&HostReport> for StoredReport {
             running_kernel: host.running_kernel.clone(),
             newest_kernel: host.newest_kernel.clone(),
             zfs_ready: host.zfs_ready,
+            interrupted: host.interrupted,
         }
     }
 }
@@ -133,6 +136,7 @@ impl From<StoredReport> for HostReport {
             running_kernel: host.running_kernel,
             newest_kernel: host.newest_kernel,
             zfs_ready: host.zfs_ready,
+            interrupted: host.interrupted,
         }
     }
 }
@@ -141,6 +145,9 @@ impl From<StoredReport> for HostReport {
 #[derive(Serialize, Deserialize)]
 struct StoredRun {
     id: String,
+    /// It finished an update that was cut off.
+    #[serde(default)]
+    finishes: bool,
     state: String,
     step: String,
     started_at: i64,
@@ -159,6 +166,7 @@ impl From<&UpdateRun> for StoredRun {
         };
         Self {
             id: run.id.clone(),
+            finishes: run.finishes,
             state: state.to_owned(),
             step: run.step.clone(),
             started_at: run.started_at.unix_seconds(),
@@ -183,6 +191,7 @@ impl TryFrom<StoredRun> for UpdateRun {
         Ok(Self {
             id: stored.id,
             installs: true,
+            finishes: stored.finishes,
             state,
             step: stored.step,
             started_at: Timestamp::from_unix_seconds(stored.started_at),
@@ -342,6 +351,7 @@ mod tests {
                 running_kernel: "6.12.48+deb13-amd64".into(),
                 newest_kernel: Some("6.12.57+deb13-amd64".into()),
                 zfs_ready: true,
+                interrupted: true,
             }),
             host_error: Some("nothing".into()),
         };
@@ -352,6 +362,7 @@ mod tests {
         let run = UpdateRun {
             id: "ab12".into(),
             installs: true,
+            finishes: true,
             state: RunState::Failed,
             step: "debian".into(),
             started_at: Timestamp::from_unix_seconds(100),

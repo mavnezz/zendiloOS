@@ -55,6 +55,10 @@ pub struct FakeHost {
     /// The release of each update started, and the channel it was for.
     pub started: Mutex<Vec<Option<String>>>,
     pub channels: Mutex<Vec<Channel>>,
+    /// dpkg left packages half done, until an update is finished.
+    pub interrupted: Mutex<bool>,
+    /// How often finishing an update was started.
+    pub finished: Mutex<usize>,
 }
 
 impl Default for FakeHost {
@@ -71,6 +75,8 @@ impl Default for FakeHost {
             update: Mutex::default(),
             started: Mutex::default(),
             channels: Mutex::default(),
+            interrupted: Mutex::default(),
+            finished: Mutex::default(),
         }
     }
 }
@@ -91,6 +97,7 @@ impl FakeHost {
             running_kernel: "6.12.48+deb13-amd64".into(),
             newest_kernel: Some("6.12.48+deb13-amd64".into()),
             zfs_ready: true,
+            interrupted: *self.interrupted.lock().unwrap(),
         }
     }
 }
@@ -103,6 +110,7 @@ impl HostPackages for FakeHost {
         self.record(UpdateRun {
             id: format!("check{}", self.started.lock().unwrap().len()),
             installs: false,
+            finishes: false,
             state: RunState::Succeeded,
             step: "lists".into(),
             started_at: Timestamp::from_unix_seconds(300),
@@ -127,6 +135,7 @@ impl HostPackages for FakeHost {
         self.record(UpdateRun {
             id: id.clone(),
             installs: true,
+            finishes: false,
             state: RunState::Succeeded,
             step: "modules".into(),
             started_at: Timestamp::from_unix_seconds(100),
@@ -134,6 +143,26 @@ impl HostPackages for FakeHost {
             error: None,
             zendiloos: release.map(|release| release.version.clone()),
             report: Some(HostReport { newest_kernel: Some("6.12.57+deb13-amd64".into()), ..self.report() }),
+        });
+        Ok(id)
+    }
+
+    /// Finishes at once: nothing is left half done.
+    async fn finish(&self, _: &RequestContext) -> Result<String, HostError> {
+        *self.interrupted.lock().unwrap() = false;
+        *self.finished.lock().unwrap() += 1;
+        let id = format!("finish{}", self.finished.lock().unwrap());
+        self.record(UpdateRun {
+            id: id.clone(),
+            installs: true,
+            finishes: true,
+            state: RunState::Succeeded,
+            step: "modules".into(),
+            started_at: Timestamp::from_unix_seconds(400),
+            finished_at: Some(Timestamp::from_unix_seconds(450)),
+            error: None,
+            zendiloos: None,
+            report: Some(self.report()),
         });
         Ok(id)
     }

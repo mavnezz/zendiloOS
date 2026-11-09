@@ -2401,9 +2401,20 @@ const en = {
       debian: 'Install the Debian packages',
       zendiloos: 'Install zendiloOS {version}',
       modules: 'Check the kernel modules',
+      configure: 'Configure the unpacked packages',
+      repair: 'Complete what is missing',
     },
     done: 'The update is done ({at}).',
     failed: 'The update failed.',
+    finishTitle: 'Finish the update',
+    finished: 'The update is finished ({at}).',
+    interrupted:
+      'An update was cut off: Debian packages are left half installed. Finish it before anything else is installed.',
+    finishHint:
+      'If the update was cut off, finishing it configures what was unpacked and completes what is missing.',
+    confirmFinishTitle: 'Finish the update?',
+    confirmFinishHint:
+      'dpkg configures the packages it unpacked, then apt completes what is missing. If zendiloOS is among them, the interface is away for a moment.',
     reloadHint: 'zendiloOS {version} is installed. Reload the page to see the new interface.',
     reload: 'Reload',
     confirmTitle: 'Install the updates?',

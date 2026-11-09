@@ -47,6 +47,7 @@ function overview(extra: Partial<UpdatesOverview> = {}): UpdatesOverview {
     newest_kernel: '6.12.2',
     settings: { channel: 'stable', check_daily: true },
     zfs_ready: true,
+    interrupted: false,
     ...extra,
   }
 }
@@ -137,6 +138,7 @@ describe('the update page', () => {
         restart_needed: true,
         run: {
           id: 'run1',
+          finishes: false,
           state: 'succeeded',
           step: 'modules',
           started_at: 1_790_000_000,
@@ -169,6 +171,7 @@ describe('the update page', () => {
         packages_error: 'apt failed',
         run: {
           id: 'run2',
+          finishes: false,
           state: 'failed',
           step: 'debian',
           started_at: 1_790_000_000,
@@ -191,6 +194,71 @@ describe('the update page', () => {
     expect(page()).toContain('files.copy photos')
   })
 
+  it('offers to finish an update dpkg did not finish, and follows it', async () => {
+    let finishing = false
+    on('GET', '/api/v1/system/updates', () =>
+      overview({
+        interrupted: !finishing,
+        packages: [],
+        release: null,
+        run: {
+          id: finishing ? 'run5' : 'run4',
+          finishes: finishing,
+          state: finishing ? 'running' : 'failed',
+          step: finishing ? 'repair' : 'debian',
+          started_at: 1_790_000_000,
+          finished_at: null,
+          zendiloos: null,
+          restart_needed: false,
+          zfs_ready: true,
+          error: finishing ? null : 'the run stopped before it finished (was the NAS restarted?)',
+        },
+      }),
+    )
+    on('POST', '/api/v1/system/updates/finish', () => {
+      finishing = true
+      return null
+    })
+    const { wrapper } = await mountApp(UpdatePage)
+    expect(page()).toContain(t('updates.interrupted'))
+    expect(page(), 'offered once, where dpkg says so').not.toContain(t('updates.finishHint'))
+    await click(new RegExp(t('updates.finishTitle')))
+    expect(wrapper.findComponent({ name: 'ConfirmDialog' }).props('title')).toBe(
+      t('updates.confirmFinishTitle'),
+    )
+    confirm(wrapper)
+    await settle()
+    expect(called('POST', '/api/v1/system/updates/finish')).toHaveLength(1)
+    expect(page()).not.toContain(t('updates.interrupted'))
+    expect(page()).toContain(t('updates.steps.configure'))
+    expect(page()).toContain(t('updates.steps.repair'))
+    expect(page()).not.toContain(t('updates.steps.lists'))
+  })
+
+  it('offers finishing after an update that failed, also before a look found why', async () => {
+    on(
+      'GET',
+      '/api/v1/system/updates',
+      overview({
+        run: {
+          id: 'run6',
+          finishes: false,
+          state: 'failed',
+          step: 'modules',
+          started_at: 1_790_000_000,
+          finished_at: 1_790_000_600,
+          zendiloos: null,
+          restart_needed: false,
+          zfs_ready: true,
+          error: 'apt-get upgrade failed',
+        },
+      }),
+    )
+    await mountApp(UpdatePage)
+    expect(page()).toContain(t('updates.finishHint'))
+    expect(page()).not.toContain(t('updates.interrupted'))
+  })
+
   it('shows a run going on, and a newer version than the page has', async () => {
     let current = '0.1.1'
     on('GET', '/api/v1/system/updates', () =>
@@ -198,6 +266,7 @@ describe('the update page', () => {
         current,
         run: {
           id: 'run3',
+          finishes: false,
           state: 'running',
           step: 'zendiloos',
           started_at: 1_790_000_000,

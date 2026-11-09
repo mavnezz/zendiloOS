@@ -24,6 +24,9 @@ pub struct HostReport {
     /// The ZFS module is built for the newest kernel; without it the pools
     /// would not import after a restart.
     pub zfs_ready: bool,
+    /// dpkg left packages half installed or half configured: an update was
+    /// cut off, and finishing it comes before anything else apt does.
+    pub interrupted: bool,
 }
 
 impl HostReport {
@@ -48,10 +51,13 @@ pub enum RunState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdateRun {
     pub id: String,
-    /// `update` installs; `check` only looks.
+    /// `update` installs, and so does finishing one; `check` only looks.
     pub installs: bool,
+    /// It finishes an update that was cut off rather than updating.
+    pub finishes: bool,
     pub state: RunState,
-    /// `lists`, `debian`, `zendiloos`, `modules`.
+    /// `lists`, `debian`, `zendiloos`, `modules`; finishing: `configure`,
+    /// `repair`, `modules`.
     pub step: String,
     pub started_at: Timestamp,
     pub finished_at: Option<Timestamp>,

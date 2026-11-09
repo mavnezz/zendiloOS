@@ -163,8 +163,9 @@ impl Updates {
     }
 
     /// Says how a finished update went, once, and keeps it: when a check or
-    /// another update starts, and on each tick.
-    async fn remember(&self, run: Option<&UpdateRun>) -> Result<(), UpdatesError> {
+    /// another update starts, and on each tick. Returns whether it told of
+    /// one that failed.
+    async fn remember(&self, run: Option<&UpdateRun>) -> Result<bool, UpdatesError> {
         if let Some(run) = run
             && run.installs
             && run.state != RunState::Running
@@ -173,8 +174,9 @@ impl Updates {
             self.ports.store.save_last_run(run).await?;
             self.ports.store.save_said("run", &run.id).await?;
             self.say_finished(run).await;
+            return Ok(run.state == RunState::Failed);
         }
-        Ok(())
+        Ok(false)
     }
 
     /// A release no newer than what runs is no update any more, nor one
@@ -347,6 +349,32 @@ impl Updates {
         Ok(())
     }
 
+    /// Finishes an update that was cut off (a power cut while dpkg
+    /// configured, say): dpkg configures what it unpacked, apt completes
+    /// what is missing, in a run on the NAS like an update's, followed in
+    /// the overview. Returns once it began. Refused while background work
+    /// runs, as an update is: zendiloOS's own package may be among what
+    /// is configured.
+    pub async fn finish(&self, actor: &Actor, request: &RequestContext) -> Result<(), UpdatesError> {
+        let _busy = self.busy.try_lock().map_err(|_| UpdatesError::Busy)?;
+        let running = self.ports.work.running().await;
+        if !running.is_empty() {
+            self.audit("system.update_finish", Outcome::Denied, actor, request, "").await;
+            return Err(UpdatesError::JobsRunning(running.join(", ")));
+        }
+        let (latest, update) = self.runs(request).await?;
+        if latest.as_ref().is_some_and(|run| run.state == RunState::Running) {
+            return Err(UpdatesError::Busy);
+        }
+        self.remember(updated(latest.as_ref(), update.as_ref())).await?;
+        let started = self.ports.host.finish(request).await;
+        let outcome = if started.is_ok() { Outcome::Success } else { Outcome::Failure };
+        self.audit("system.update_finish", outcome, actor, request, "").await;
+        let id = started?;
+        tracing::info!(run = id, "updates: finishing the update that was cut off");
+        Ok(())
+    }
+
     pub async fn settings(&self) -> Result<UpdateSettings, UpdatesError> {
         Ok(self.ports.store.settings().await?)
     }
@@ -375,16 +403,18 @@ impl Updates {
     }
 
     /// Runs every [`TICK`]: says how a finished update went, once, and
-    /// looks for updates when a day passed without.
+    /// looks for updates when a day passed without. After an update that
+    /// failed it looks at once: whether dpkg was left half done (a run cut
+    /// off by a restart) is what the page then offers to finish.
     pub async fn tick(&self) -> Result<(), UpdatesError> {
         let request = RequestContext::default();
         let (latest, update) = self.runs(&request).await?;
-        self.remember(updated(latest.as_ref(), update.as_ref())).await?;
+        let failed = self.remember(updated(latest.as_ref(), update.as_ref())).await?;
         let settings = self.ports.store.settings().await?;
         let last = self.ports.store.last_check().await?.map(|check| check.checked_at);
         let due =
             last.is_none_or(|at| self.ports.clock.now().unix_seconds() - at.unix_seconds() >= DAY_SECONDS);
-        if settings.check_daily && due {
+        if (settings.check_daily && due) || failed {
             match self.check(None, &request).await {
                 Ok(_) | Err(UpdatesError::Busy) => {}
                 Err(error) => return Err(error),
@@ -604,6 +634,10 @@ mod tests {
             self.host.start(release, channel, context).await
         }
 
+        async fn finish(&self, context: &RequestContext) -> Result<String, HostError> {
+            self.host.finish(context).await
+        }
+
         async fn latest(&self, context: &RequestContext) -> Result<Option<UpdateRun>, HostError> {
             self.host.latest(context).await
         }
@@ -739,6 +773,7 @@ mod tests {
         s.host.record(UpdateRun {
             id: "run1".into(),
             installs: true,
+            finishes: false,
             state: RunState::Running,
             step: "debian".into(),
             started_at: Timestamp::from_unix_seconds(100),
@@ -784,6 +819,7 @@ mod tests {
         *s.host.run.lock().unwrap() = Some(UpdateRun {
             id: "run9".into(),
             installs: true,
+            finishes: false,
             state: RunState::Failed,
             step: "debian".into(),
             started_at: Timestamp::from_unix_seconds(100),
@@ -812,6 +848,7 @@ mod tests {
         let run = |id: &str, installs: bool, state: RunState, error: Option<&str>| UpdateRun {
             id: id.into(),
             installs,
+            finishes: false,
             state,
             step: "debian".into(),
             started_at: Timestamp::from_unix_seconds(100),
@@ -832,6 +869,58 @@ mod tests {
         assert_eq!((shown.id.as_str(), shown.state), ("run9", RunState::Failed));
         s.updates.tick().await.unwrap();
         assert_eq!(s.said.all().iter().filter(|n| n.code == "updates_failed").count(), 1, "once");
+    }
+
+    #[tokio::test]
+    async fn an_update_cut_off_while_dpkg_configured_is_found_and_finished() {
+        let s = setup();
+        let request = RequestContext::default();
+        s.releases.releases.lock().unwrap().clear();
+        // A power cut while DKMS built ZFS for the new kernel: apt sees
+        // nothing to upgrade, dpkg lists what it did not configure.
+        s.host.packages.lock().unwrap().clear();
+        *s.host.interrupted.lock().unwrap() = true;
+        s.host.record(UpdateRun {
+            id: "run9".into(),
+            installs: true,
+            finishes: false,
+            state: RunState::Failed,
+            step: "debian".into(),
+            started_at: Timestamp::from_unix_seconds(10),
+            finished_at: None,
+            error: Some("the run stopped before it finished (was the NAS restarted?)".into()),
+            zendiloos: None,
+            report: None,
+        });
+
+        // The tick tells of it and looks at once.
+        s.updates.tick().await.unwrap();
+        let overview = s.updates.overview(&request).await.unwrap();
+        assert!(
+            overview
+                .check
+                .as_ref()
+                .and_then(|check| check.host.as_ref())
+                .is_some_and(|host| host.interrupted)
+        );
+        assert!(matches!(s.updates.apply(&alice(), &request).await, Err(UpdatesError::NothingToDo)));
+
+        *s.work.0.lock().unwrap() = vec!["storage.scrub tank".into()];
+        let refused = s.updates.finish(&alice(), &request).await;
+        assert!(matches!(refused, Err(UpdatesError::JobsRunning(_))), "{refused:?}");
+        s.work.0.lock().unwrap().clear();
+
+        s.updates.finish(&alice(), &request).await.unwrap();
+        assert_eq!(*s.host.finished.lock().unwrap(), 1);
+        let overview = s.updates.overview(&request).await.unwrap();
+        let run = overview.run.unwrap();
+        assert!(run.finishes && run.state == RunState::Succeeded, "{run:?}");
+        let host = overview.check.unwrap().host.unwrap();
+        assert!(!host.interrupted, "the end of the run says dpkg is done");
+
+        s.updates.tick().await.unwrap();
+        let installed = s.said.all().into_iter().filter(|n| n.code == "updates_installed").count();
+        assert_eq!(installed, 1, "how it went is said");
     }
 
     #[tokio::test]

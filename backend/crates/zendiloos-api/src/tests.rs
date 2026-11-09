@@ -1846,6 +1846,7 @@ fn openapi_documents_every_route() {
             "/api/v1/system/updates",
             "/api/v1/system/updates/apply",
             "/api/v1/system/updates/check",
+            "/api/v1/system/updates/finish",
             "/api/v1/system/updates/settings",
             "/api/v1/system/web-server",
             "/api/v1/system/web-server/confirm",
@@ -4241,4 +4242,15 @@ async fn administrators_look_for_updates_and_install_them() {
     let saved = send(Method::GET, "/api/v1/system/updates", None, &admin).await;
     assert_eq!(saved.body["settings"]["channel"], "development");
     assert_eq!(saved.body["release"], Value::Null, "what was found was for the other channel");
+    assert_eq!(saved.body["interrupted"], false);
+
+    let denied = send(Method::POST, "/api/v1/system/updates/finish", None, &user).await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN);
+    let finish = send(Method::POST, "/api/v1/system/updates/finish", None, &admin).await;
+    assert_eq!(finish.status, StatusCode::ACCEPTED, "{:?}", finish.body);
+    let finished = send(Method::GET, "/api/v1/system/updates", None, &admin).await;
+    assert_eq!(
+        (&finished.body["run"]["finishes"], &finished.body["run"]["state"]),
+        (&json!(true), &json!("succeeded"))
+    );
 }
