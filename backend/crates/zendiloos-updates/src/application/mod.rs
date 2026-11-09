@@ -9,7 +9,9 @@ use zendiloos_kernel::{Actor, AuditEntry, AuditLog, Clock, Outcome, PortError, R
 use zendiloos_notify::{Level, NewNotification, Notifier};
 
 use self::ports::{HostError, HostPackages, ReleaseSource, UpdateStore};
-use crate::domain::{CheckResult, RunState, UpdateRun, UpdateSettings, compare_versions, newest_for};
+use crate::domain::{
+    Channel, CheckResult, Release, RunState, UpdateRun, UpdateSettings, compare_versions, newest_for,
+};
 
 /// How often [`Updates::tick`] wants to run; a daily check comes after a
 /// day without one.
@@ -82,6 +84,10 @@ pub struct Updates {
     phase: Arc<Mutex<Phase>>,
     /// One check or start at a time.
     busy: Arc<tokio::sync::Mutex<()>>,
+    /// A check's result and a change of the channel are saved one after
+    /// the other: what was found for one channel is never kept once
+    /// another is set.
+    saving: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Updates {
@@ -93,6 +99,7 @@ impl Updates {
             current_notes: None,
             phase: Arc::new(Mutex::new(Phase::Idle)),
             busy: Arc::new(tokio::sync::Mutex::new(())),
+            saving: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -118,7 +125,7 @@ impl Updates {
         let run = self.last_update(latest).await?;
         let mut check = self.ports.store.last_check().await?;
         if let Some(check) = &mut check {
-            self.forget_installed(check, run.as_ref());
+            self.forget_installed(check, run.as_ref(), settings.channel);
         }
         Ok(UpdateOverview {
             current: self.current.clone(),
@@ -154,14 +161,13 @@ impl Updates {
         Ok(())
     }
 
-    /// A release no newer than what runs is no update any more; after a
-    /// finished update, apt's report from its end counts.
-    fn forget_installed(&self, check: &mut CheckResult, run: Option<&UpdateRun>) {
-        if check
-            .release
-            .as_ref()
-            .is_some_and(|release| compare_versions(&release.version, &self.current).is_le())
-        {
+    /// A release no newer than what runs is no update any more, nor one
+    /// the channel does not take; after a finished update, apt's report
+    /// from its end counts.
+    fn forget_installed(&self, check: &mut CheckResult, run: Option<&UpdateRun>, channel: Channel) {
+        if check.release.as_ref().is_some_and(|release| {
+            compare_versions(&release.version, &self.current).is_le() || !channel.takes(release.channel)
+        }) {
             check.release = None;
         }
         if let Some(run) = run
@@ -218,19 +224,35 @@ impl Updates {
         self.set_phase(Phase::Checking);
         let result = self.look(request).await;
         self.set_phase(Phase::Idle);
-        let check = result?;
+        let (mut check, releases) = result?;
         if let Some(actor) = actor {
             self.audit("system.update_check", Outcome::Success, actor, request, "").await;
         }
-        self.ports.store.save_check(&check).await?;
+        {
+            // The release is the channel's as it is now: an administrator
+            // may have set another while apt fetched its lists.
+            let _saving = self.saving.lock().await;
+            let channel = self.ports.store.settings().await?.channel;
+            check.release = releases
+                .as_deref()
+                .and_then(|releases| newest_for(channel, releases, &self.current))
+                .cloned();
+            self.ports.store.save_check(&check).await?;
+        }
         self.say_available(&check).await;
         Ok(check)
     }
 
-    async fn look(&self, request: &RequestContext) -> Result<CheckResult, UpdatesError> {
-        let settings = self.ports.store.settings().await?;
-        let (release, release_error) = match self.ports.releases.releases().await {
-            Ok(releases) => (newest_for(settings.channel, &releases, &self.current).cloned(), None),
+    /// What GitHub and apt say: the releases for this machine (none if
+    /// GitHub could not be asked, which the result says) and the result
+    /// without its release, which is picked for the channel when it is
+    /// saved.
+    async fn look(
+        &self,
+        request: &RequestContext,
+    ) -> Result<(CheckResult, Option<Vec<Release>>), UpdatesError> {
+        let (releases, release_error) = match self.ports.releases.releases().await {
+            Ok(releases) => (Some(releases), None),
             Err(error) => (None, Some(error)),
         };
         let (host, host_error) = match self.ports.host.check(request).await {
@@ -238,7 +260,14 @@ impl Updates {
             Err(HostError::Refused(reason)) if reason.contains("busy") => return Err(UpdatesError::Busy),
             Err(error) => (None, Some(error.to_string())),
         };
-        Ok(CheckResult { checked_at: self.ports.clock.now(), release, release_error, host, host_error })
+        let check = CheckResult {
+            checked_at: self.ports.clock.now(),
+            release: None,
+            release_error,
+            host,
+            host_error,
+        };
+        Ok((check, releases))
     }
 
     /// Installs what the last check found: the release is downloaded, then
@@ -263,12 +292,12 @@ impl Updates {
         self.remember(latest.as_ref()).await?;
         let mut check = self.ports.store.last_check().await?.ok_or(UpdatesError::NotChecked)?;
         let run = self.last_update(latest).await?;
-        self.forget_installed(&mut check, run.as_ref());
+        // The agent installs only what the channel takes, and is told it.
+        let channel = self.ports.store.settings().await?.channel;
+        self.forget_installed(&mut check, run.as_ref(), channel);
         if !check.has_updates() {
             return Err(UpdatesError::NothingToDo);
         }
-        // The agent installs only what the channel takes, and is told it.
-        let channel = self.ports.store.settings().await?.channel;
         let release = check.release.clone();
         let target = release.as_ref().map_or_else(String::new, |release| release.version.clone());
         self.set_phase(Phase::Downloading);
@@ -313,17 +342,20 @@ impl Updates {
         actor: &Actor,
         request: &RequestContext,
     ) -> Result<UpdateSettings, UpdatesError> {
-        let before = self.ports.store.settings().await?;
-        self.ports.store.save_settings(&settings).await?;
-        self.audit("system.update_settings", Outcome::Success, actor, request, settings.channel.as_str())
-            .await;
-        if before.channel != settings.channel {
-            // What was found was for the other channel.
-            if let Some(mut check) = self.ports.store.last_check().await? {
-                check.release = None;
-                self.ports.store.save_check(&check).await?;
+        {
+            let _saving = self.saving.lock().await;
+            let before = self.ports.store.settings().await?;
+            self.ports.store.save_settings(&settings).await?;
+            if before.channel != settings.channel {
+                // What was found was for the other channel.
+                if let Some(mut check) = self.ports.store.last_check().await? {
+                    check.release = None;
+                    self.ports.store.save_check(&check).await?;
+                }
             }
         }
+        self.audit("system.update_settings", Outcome::Success, actor, request, settings.channel.as_str())
+            .await;
         Ok(settings)
     }
 
@@ -438,7 +470,7 @@ mod tests {
     use zendiloos_notify::testing::MemoryNotifications;
 
     use super::*;
-    use crate::domain::Channel;
+    use crate::domain::HostReport;
     use crate::testing::{FakeHost, FakeReleases, MemoryStore, release};
 
     struct Fixed;
@@ -524,6 +556,89 @@ mod tests {
         assert_eq!(s.store.check.lock().unwrap().as_ref().unwrap().release, None);
         let check = s.updates.check(None, &request).await.unwrap();
         assert_eq!(check.release.unwrap().tag, "dev");
+    }
+
+    /// apt as [`FakeHost`], whose check waits until `go` once it began.
+    struct SlowCheck {
+        host: FakeHost,
+        began: tokio::sync::Notify,
+        go: tokio::sync::Notify,
+    }
+
+    #[async_trait]
+    impl HostPackages for SlowCheck {
+        async fn check(&self, context: &RequestContext) -> Result<HostReport, HostError> {
+            self.began.notify_one();
+            self.go.notified().await;
+            self.host.check(context).await
+        }
+
+        async fn start(
+            &self,
+            release: Option<&Release>,
+            channel: Channel,
+            context: &RequestContext,
+        ) -> Result<String, HostError> {
+            self.host.start(release, channel, context).await
+        }
+
+        async fn latest(&self, context: &RequestContext) -> Result<Option<UpdateRun>, HostError> {
+            self.host.latest(context).await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_check_that_ran_while_the_channel_changed_offers_what_the_new_channel_takes() {
+        let s = setup();
+        let host = Arc::new(SlowCheck {
+            host: FakeHost::default(),
+            began: tokio::sync::Notify::new(),
+            go: tokio::sync::Notify::new(),
+        });
+        let updates = Updates::new(UpdatesPorts { host: host.clone(), ..s.updates.ports.clone() }, "0.1.0");
+        let request = RequestContext::default();
+        let mut settings = updates.settings().await.unwrap();
+        settings.channel = Channel::Development;
+        updates.set_settings(settings, &alice(), &request).await.unwrap();
+
+        // Looked for on the development channel; back on stable while apt
+        // fetches its lists.
+        updates.start_check(&alice(), &request).await.unwrap();
+        host.began.notified().await;
+        settings.channel = Channel::Stable;
+        updates.set_settings(settings, &alice(), &request).await.unwrap();
+        host.go.notify_one();
+        for _ in 0..200 {
+            if s.store.check.lock().unwrap().as_ref().is_some_and(|check| check.host.is_some()) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
+        let overview = updates.overview(&request).await.unwrap();
+        assert_eq!(overview.settings.channel, Channel::Stable);
+        let offered = overview.check.and_then(|check| check.release).map(|release| release.tag);
+        assert_eq!(offered.as_deref(), Some("v0.2.0"), "the stable release, not the development build");
+        let said = s.said.all();
+        assert_eq!(said.last().map(|n| n.params["version"].as_str()), Some("0.2.0"));
+    }
+
+    #[tokio::test]
+    async fn a_release_the_channel_does_not_take_is_neither_offered_nor_installed() {
+        let s = setup();
+        let request = RequestContext::default();
+        // Kept from before, for another channel, however it got there.
+        *s.store.check.lock().unwrap() = Some(CheckResult {
+            checked_at: zendiloos_kernel::Timestamp::from_unix_seconds(40),
+            release: Some(release("dev", "0.3.0~rc.1+dev.1", true)),
+            release_error: None,
+            host: None,
+            host_error: None,
+        });
+        let overview = s.updates.overview(&request).await.unwrap();
+        assert_eq!(overview.check.unwrap().release, None);
+        assert!(matches!(s.updates.apply(&alice(), &request).await, Err(UpdatesError::NothingToDo)));
+        assert!(s.releases.downloaded.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

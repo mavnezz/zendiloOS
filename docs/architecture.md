@@ -2037,7 +2037,9 @@ release, test for a pre-release (`v1.2.0-rc.1`), development for the rolling
 release `dev` built from every commit on main. Each channel takes the
 steadier ones too; only a version newer than the running one, in dpkg's
 order, is offered, so coming back from test to stable waits for a newer
-stable release. Before an update zendiloosd downloads the three files to
+stable release. A check picks its release for the channel set when it
+ends, so a channel changed while apt fetched its lists counts, and a
+release the channel does not take is neither shown nor installed. Before an update zendiloosd downloads the three files to
 `/var/lib/zendiloos/updates`. The runner trusts none of it: it copies them
 out (never through a link, size-limited), checks the signature with the key
 the package brought along (`/usr/share/zendiloos/release-signing.pub`, or
