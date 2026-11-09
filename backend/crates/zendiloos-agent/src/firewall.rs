@@ -14,10 +14,11 @@
 //! returns: by a timer in the agent and, should the agent or the machine
 //! restart first, when the agent starts. So rules that shut the browser out
 //! undo themselves. While it waits, what others send on connections opened
-//! before it meets the rules as well, not only new connections: the
-//! confirmation, which a browser sends on the connection it has open, gets
-//! through only if the rules let that browser in. Once confirmed, the rules
-//! are written again without that.
+//! before it meets the rules as well, not only new connections, in both
+//! chains: the confirmation, which a browser sends on the connection it has
+//! open (to nginx, or to a reverse proxy in a container that Docker forwards
+//! it to), gets through only if the rules let that browser in. Once
+//! confirmed, the rules are written again without that.
 //!
 //! The table has two chains. `input` filters new connections to the NAS:
 //! answers, the loopback, Docker's bridges (by their exact names), what
@@ -136,7 +137,8 @@ pub(crate) enum Phase {
     /// The rules kept: connections opened before pass at once.
     Kept,
     /// A change waits: what others send on connections opened before it
-    /// meets the rules too, so its confirmation proves the browser gets in.
+    /// meets the rules too, forwarded or not, so its confirmation proves
+    /// the browser gets in.
     Waiting,
 }
 
@@ -184,13 +186,16 @@ pub(crate) fn ruleset(config: Option<&FirewallConfig>, phase: Phase) -> String {
     for rule in config.rules.iter() {
         text.extend(lines(rule, false));
     }
+    // Forwarded connections wait as well: a browser may reach the web
+    // interface through a container (a reverse proxy on a published port),
+    // and its confirmation then comes forwarded, past the input chain.
     let _ = write!(
         text,
         "\t\t{fallback}\n\
          \t}}\n\
          \tchain forward {{\n\
          \t\ttype filter hook forward priority filter - 5; policy accept;\n\
-         \t\tct state established,related accept\n\
+         {answers}\
          \t\t# Containers reach each other and the world.\n\
          \t\tiifname {bridges} accept\n\
          \t\tiifname \"veth*\" accept\n\

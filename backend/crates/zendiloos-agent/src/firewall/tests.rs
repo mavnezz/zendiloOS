@@ -175,11 +175,35 @@ fn while_a_change_waits_connections_opened_before_meet_the_rules() {
     assert!(input.find("\t\tct state related accept\n").is_some());
     let rule = input.find("tcp dport { 443 } accept").expect("the rule");
     assert!(reply < rule);
-    // The forward chain is the same either way.
     let kept = ruleset(Some(&config(rules, FirewallVerdict::Drop)), Phase::Kept);
-    assert_eq!(chain(&waiting, "forward"), chain(&kept, "forward"));
-    assert!(chain(&kept, "input").contains("\t\tct state established,related accept\n"));
+    for name in ["input", "forward"] {
+        assert!(chain(&kept, name).contains("\t\tct state established,related accept\n"), "{kept}");
+    }
+    assert_eq!(chain(&waiting, "published"), chain(&kept, "published"));
     assert_eq!(ruleset(None, Phase::Waiting), ruleset(None, Phase::Kept));
+}
+
+/// The web interface behind a reverse proxy in a container, published on
+/// 443: the browser's open connection to the proxy is forwarded by Docker,
+/// and the proxy reaches nginx over a Docker bridge. A change whose rules
+/// no longer let anyone reach 443 must not get its confirmation through
+/// that connection: forwarded, it meets the rules while the change waits,
+/// as the input chain's connections do.
+#[test]
+fn while_a_change_waits_forwarded_connections_opened_before_meet_the_rules() {
+    let web_interface_only = rule(FirewallSource::Any, tcp(&[(8443, 8443)]), false, FirewallVerdict::Accept);
+    let waiting = ruleset(Some(&config(vec![web_interface_only], FirewallVerdict::Drop)), Phase::Waiting);
+    let forward = chain(&waiting, "forward");
+    let jump = forward.find("ct status dnat jump published").expect("the jump");
+    let before_the_rules: Vec<&str> = forward[..jump].lines().map(str::trim).collect();
+    assert!(
+        !before_the_rules.contains(&"ct state established,related accept"),
+        "the browser's side of a forwarded connection passes without meeting the rules:\n{forward}"
+    );
+    assert!(before_the_rules.contains(&"ct state established ct direction reply accept"), "{forward}");
+    assert!(before_the_rules.contains(&"ct state related accept"), "{forward}");
+    // Nothing that forwards lets 443 in: the fallback decides.
+    assert_eq!(chain(&waiting, "published").trim_end(), "chain published {\n\t\tdrop");
 }
 
 /// The rules in `dir`; `nft -c` fails while `fail` is there, and

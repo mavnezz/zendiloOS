@@ -2148,14 +2148,15 @@ removes the table; removing the package removes it too.
 **Changes go back unless confirmed**, as network and web server changes do:
 the file replaced is kept as `zendiloos.nft.previous` and returns after 90
 seconds, by a timer in the agent and after its restart. While a change
-waits, what others send on connections opened before it meets the rules too
-(only answers to the NAS's own connections pass at once), so the
-confirmation, which a browser sends on the connection it has open, gets
-through only if the new rules let that browser in; once confirmed, the rules
-are written again without that. zendiloosd saves the settings only once
-confirmed, and keeps a change waiting in memory only: after its restart
-nobody can confirm it, and the first refresh ends it with the rules kept in
-force. Every refresh names the change it began, if any, and the agent
+waits, what others send on connections opened before it meets the rules too,
+in both chains (only answers pass at once), so the confirmation, which a
+browser sends on the connection it has open, gets through only if the new
+rules let that browser in, also when that connection goes to a reverse proxy
+in a container and is forwarded; once confirmed, the rules are written again
+without that. zendiloosd saves the settings only once confirmed, and keeps
+a change waiting in memory only: after its restart nobody can confirm it,
+and the first refresh ends it with the rules kept in force. Every refresh
+names the change it began, if any, and the agent
 decides under the same lock as its timer, so rules for a change that just
 went back are never put in force again. It also refuses settings that would keep out
 the browser asking for them (its address from `X-Real-IP`, the interface
