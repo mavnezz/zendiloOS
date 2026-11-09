@@ -254,7 +254,7 @@ vm-pool-delete-test:
 vm-notify-test:
     scripts/vm-notify-test.sh
 
-# The firewall in the second VM: rules for SMB and a project, the lock-out check, going back, a reboot
+# The firewall in the second VM: rules for SMB and a project, open connections while a change waits, new Docker bridges, the lock-out check, going back, a reboot
 vm-firewall-test:
     scripts/vm-firewall-test.sh
 

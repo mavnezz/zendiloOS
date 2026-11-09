@@ -8,9 +8,17 @@
 #      blocked services are listed and told in a notification
 #   3. an allow rule for SMB from the client's address lets it in again
 #   4. an allow rule for the project opens its published port
-#   5. rules that would shut out this browser are refused
-#   6. a change not confirmed goes back by itself after 90 seconds
-#   7. the rules are in force again after a reboot, before the network
+#   5. while a change that closes the project's port waits, a connection to
+#      that port opened before it carries nothing (it is forwarded to the
+#      container, past the input chain); never confirmed, the change goes
+#      back by itself
+#   6. a Docker network made after the rules were written, its bridge named
+#      otherwise (com.docker.network.bridge.name): the client routing to its
+#      containers' addresses reaches none of them at once, though the rules
+#      never name that bridge, while the containers reach each other
+#   7. rules that would shut out this browser are refused
+#   8. a change not confirmed goes back by itself after 90 seconds
+#   9. the rules are in force again after a reboot, before the network
 #
 # The client is a network namespace inside the VM (192.168.77.2), joined
 # to the VM by a veth pair (192.168.77.1 on fwtest0): its connections reach
@@ -18,10 +26,13 @@
 # published port through Docker's forwarding, as another machine's would.
 # The host's own requests (API, SSH) come from QEMU's gateway (10.0.2.2) and
 # are always allowed by the rules here. The project needs Docker; without
-# it, those steps are skipped. Everything is put back as it was: the
-# firewall off, the namespace and the project gone. Runs in the second VM by
-# default (the first holds a LAN test); account and password as for
-# vm-storage-test.sh.
+# it, those steps are skipped. Step 6 reaches the container that publishes a
+# port at its own address: Docker's rules let that through (before Docker
+# 28, which drops such connections itself; Debian 13 has 26), so only the
+# firewall's drop stops it. Steps 5 and 8 wait 90 seconds each. Everything
+# is put back as it was: the firewall off, the namespace, the project and
+# the containers gone. Runs in the second VM by default (the first holds a
+# LAN test); account and password as for vm-storage-test.sh.
 set -euo pipefail
 
 export ZENDILOOS_VM=${ZENDILOOS_VM:-2}
@@ -35,6 +46,10 @@ work=$(mktemp -d)
 nas=192.168.77.1
 client=192.168.77.2
 web_port=18090
+# Step 6's network: a bridge not named as Docker names its own.
+custom_bridge=fwcustom0
+custom_net=10.250.77
+custom_port=18091
 
 say() { printf '\033[1m%s\033[0m\n' "$*"; }
 fail() { printf '\033[31mFAILED: %s\033[0m\n' "$*" >&2; exit 1; }
@@ -86,9 +101,21 @@ apply() {
 }
 
 # Whether the client in the namespace gets a TCP connection to PORT of the
-# NAS within three seconds.
+# NAS (or of ADDRESS) within three seconds.
 reaches() {
-    vm "sudo timeout 3 ip netns exec fwtest bash -c 'exec 3<>/dev/tcp/$nas/$1'" >/dev/null 2>&1
+    vm "sudo timeout 3 ip netns exec fwtest bash -c 'exec 3<>/dev/tcp/${2:-$nas}/$1'" >/dev/null 2>&1
+}
+
+# Whether the forward chain lets connections opened before pass at once, as
+# it does with the rules kept (not while a change waits).
+established_pass() {
+    local chain
+    chain=$(vm "sudo nft list chain inet zendiloos_firewall forward")
+    [[ $chain == *"ct state established,related accept"* ]]
+}
+
+custom_down() {
+    vm "sudo docker rm -f fwtest-a fwtest-b; sudo docker network rm fwcustom" >/dev/null 2>&1 || true
 }
 
 client_up() {
@@ -116,6 +143,7 @@ cleanup() {
         # By the project's label: the reboot empties /tmp and its compose.yaml.
         vm "sudo docker ps -aq --filter label=com.docker.compose.project=fwtest | xargs -r sudo docker rm -f;
             sudo docker network rm fwtest_default; sudo rm -rf /tmp/fwtest" >/dev/null 2>&1 || true
+        custom_down
     fi
     rm -rf "$work"
 }
@@ -174,12 +202,76 @@ if [[ $docker == yes ]]; then
         || fail "no rule for the published port"
 fi
 
-say "5. Rules that would shut out this browser are refused"
+say "5. A connection opened before a change that closes the project's port carries nothing while it waits"
+if [[ $docker == yes ]]; then
+    # One connection from the client to the project's port, held open: a
+    # HEAD request at once, another once /tmp/fwtest/go is there; the status
+    # line of each answer goes to a file, `none` for no answer in 5 seconds.
+    vm "sudo rm -f /tmp/fwtest/go /tmp/fwtest/first /tmp/fwtest/second && cat > /tmp/fwtest/held.sh" <<EOF
+exec 3<>/dev/tcp/$nas/$web_port || exit 1
+answer() {
+    printf 'HEAD / HTTP/1.1\r\nHost: fwtest\r\n\r\n' >&3
+    local status line
+    IFS= read -r -t 5 status <&3 || { echo none; return; }
+    while IFS= read -r -t 5 line <&3 && [[ \$line != \$'\r' ]]; do :; done
+    echo "\${status%\$'\r'}"
+}
+answer >/tmp/fwtest/first
+for _ in \$(seq 1 300); do [[ -e /tmp/fwtest/go ]] && break; sleep 0.2; done
+answer >/tmp/fwtest/second
+EOF
+    vm "sudo setsid -f ip netns exec fwtest bash /tmp/fwtest/held.sh </dev/null >/dev/null 2>&1"
+    wait_for "the open connection's first answer" "vm 'grep -q \" 200 \" /tmp/fwtest/first'" 15
+    established_pass || fail "the rules kept do not let connections opened before pass"
+    # The project's rule left out: only the fallback, deny, is left for it.
+    reply=$(call PUT /security/firewall "$(settings true deny "$smb_rule")")
+    [[ $(tail -1 <<<"$reply") == 202 ]] || fail "applying: $reply"
+    established_pass && fail "connections opened before pass the forward chain while the change waits"
+    vm "touch /tmp/fwtest/go"
+    wait_for "the open connection's second try" "vm 'test -s /tmp/fwtest/second'" 15
+    second=$(vm 'cat /tmp/fwtest/second')
+    [[ $second == none ]] || fail "the connection opened before carried an answer while the change waits: $second"
+    reaches $web_port && fail "a new connection reaches the port the change closes"
+    say "   never confirmed: waiting 90 seconds for it to go back"
+    wait_for "the rules from before" "reaches $web_port" 120
+    setup=$(body GET /security/firewall)
+    [[ $(jq -r .pending <<<"$setup") == null ]] || fail "still waiting: $setup"
+    [[ $(jq -r '.current.rules | map(.service) | index("project")' <<<"$setup") != null ]] \
+        || fail "the kept rules changed: $setup"
+    established_pass || fail "back to the rules kept, connections opened before do not pass"
+fi
+
+say "6. A Docker network made since, its bridge named otherwise, is kept from outside at once"
+if [[ $docker == yes ]]; then
+    started=$(date +%s)
+    vm "sudo docker network create -o com.docker.network.bridge.name=$custom_bridge \
+            --subnet $custom_net.0/24 fwcustom >/dev/null &&
+        sudo docker run -d --name fwtest-a --network fwcustom --ip $custom_net.10 -p $custom_port:80 \
+            nginx:alpine >/dev/null &&
+        sudo docker run -d --name fwtest-b --network fwcustom --ip $custom_net.11 nginx:alpine >/dev/null" \
+        || fail "cannot start the containers on $custom_bridge"
+    # Both serve: the NAS itself reaches them, and they reach each other.
+    wait_for "the containers on $custom_bridge" \
+        "vm 'timeout 3 bash -c \"exec 3<>/dev/tcp/$custom_net.10/80 && exec 4<>/dev/tcp/$custom_net.11/80\"'" 30
+    vm "sudo docker exec fwtest-b wget -q -O /dev/null -T 3 http://fwtest-a/" \
+        || fail "the containers on $custom_bridge do not reach each other"
+    # The client routes to them through the NAS (its default route).
+    reaches 80 $custom_net.10 && fail "the client reaches the container publishing a port, at its own address"
+    reaches 80 $custom_net.11 && fail "the client reaches a container that publishes nothing"
+    (( $(date +%s) - started < 30 )) || say "   (that took more than the 30 seconds between the firewall's refreshes)"
+    rules=$(vm "sudo nft list table inet zendiloos_firewall")
+    [[ $rules == *"$custom_bridge"* ]] && fail "the rules name $custom_bridge: the drop must not need its name"
+    vm "sudo docker exec fwtest-a wget -q -O /dev/null -T 3 http://fwtest-b/" \
+        || fail "the containers on $custom_bridge no longer reach each other"
+    custom_down
+fi
+
+say "7. Rules that would shut out this browser are refused"
 locked=$(jq -cn '{enabled: true, fallback: "deny", rules: []}')
 reply=$(call PUT /security/firewall "$locked")
 [[ $(tail -1 <<<"$reply") == 409 && $reply == *would_lock_out* ]] || fail "not refused: $reply"
 
-say "6. A change not confirmed goes back by itself"
+say "8. A change not confirmed goes back by itself"
 reply=$(call PUT /security/firewall "$(settings true deny)")
 [[ $(tail -1 <<<"$reply") == 202 ]] || fail "applying: $reply"
 reaches 445 && fail "the unconfirmed change is not in force"
@@ -189,7 +281,7 @@ setup=$(body GET /security/firewall)
 [[ $(jq -r .pending <<<"$setup") == null ]] || fail "still waiting: $setup"
 [[ $(jq -r '.current.rules | map(.service) | index("smb")' <<<"$setup") != null ]] || fail "the kept rules changed"
 
-say "7. After a reboot the rules are in force before the network"
+say "9. After a reboot the rules are in force before the network"
 vm 'sudo systemctl reboot' || true
 sleep 10
 wait_for "the VM after the reboot" "vm true" 300
