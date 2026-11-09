@@ -57,6 +57,9 @@ pub struct RemovableDrive {
     pub mount_point: Option<String>,
     /// Only known while mounted.
     pub space: Option<SpaceUsage>,
+    /// Which plugging in of its disk this is ([`BlockDevice::plugged_in`]):
+    /// a drive ejected stays so until it is plugged in again.
+    pub plugged_in: Option<String>,
 }
 
 impl RemovableDrive {
@@ -150,6 +153,7 @@ fn on_disk(disk: &BlockDevice) -> Vec<RemovableDrive> {
                 read_only: disk.read_only || device.read_only,
                 space: mount_point.as_ref().and_then(|_| found.and_then(|f| f.space)),
                 mount_point,
+                plugged_in: disk.plugged_in.clone(),
             }
         })
         .collect()

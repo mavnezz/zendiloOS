@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM removable_ejected WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "9ae660dcb76c95cb65a8dc9435c3bb41ed2d76d2500555ea6405571c0031fb3d"
+}

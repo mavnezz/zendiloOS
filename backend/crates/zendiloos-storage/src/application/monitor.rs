@@ -237,6 +237,7 @@ mod tests {
                 wwn: None,
                 id_link: None,
                 id_path: None,
+                plugged_in: None,
                 transport: Some("usb".into()),
                 rotational: true,
                 removable: false,

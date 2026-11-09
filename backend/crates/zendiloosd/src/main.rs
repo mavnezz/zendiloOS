@@ -42,10 +42,10 @@ use zendiloos_infra::notify::NetworkChannels;
 use zendiloos_infra::sharing::DrivesForFiles;
 use zendiloos_infra::sqlite::{
     Database, Occupants, SqliteAccountAddresses, SqliteAccounts, SqliteAppSources, SqliteAuditLog,
-    SqliteCertificates, SqliteChannels, SqliteDiskInventory, SqliteEnclosure, SqliteFirewall, SqliteGroups,
-    SqliteInstalledApps, SqliteJobs, SqliteNotifications, SqlitePreferences, SqliteProjects, SqliteSecurity,
-    SqliteSelfTestPlans, SqliteSessions, SqliteShareProjects, SqliteShares, SqliteSystemUpdates,
-    SqliteTwoFactor, SqliteUpdateSettings, SqliteVolumeBackups,
+    SqliteCertificates, SqliteChannels, SqliteDiskInventory, SqliteEjectedDrives, SqliteEnclosure,
+    SqliteFirewall, SqliteGroups, SqliteInstalledApps, SqliteJobs, SqliteNotifications, SqlitePreferences,
+    SqliteProjects, SqliteSecurity, SqliteSelfTestPlans, SqliteSessions, SqliteShareProjects, SqliteShares,
+    SqliteSystemUpdates, SqliteTwoFactor, SqliteUpdateSettings, SqliteVolumeBackups,
 };
 use zendiloos_infra::updates::{GitHubReleases, installed_notes};
 use zendiloos_jobs::Jobs;
@@ -198,6 +198,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         catalog: Arc::new(BuiltInCatalog::load()?),
         enclosure: Arc::new(SqliteEnclosure::new(database.clone())),
         inventory: Arc::new(SqliteDiskInventory::new(database.clone())),
+        ejected: Arc::new(SqliteEjectedDrives::new(database.clone())),
         admin: agent_storage,
         jobs: jobs.clone(),
         audit: audit.clone(),

@@ -231,6 +231,7 @@ mod tests {
             wwn: None,
             id_link: None,
             id_path: None,
+            plugged_in: None,
             transport: None,
             rotational: true,
             removable: false,

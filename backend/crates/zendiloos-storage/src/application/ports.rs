@@ -3,7 +3,7 @@
 //! request context for correlation; the self-test plans are in the
 //! database.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use async_trait::async_trait;
 use zendiloos_kernel::{PortError, RequestContext, Timestamp};
@@ -200,6 +200,21 @@ pub trait DiskLocator: Send + Sync {
         duration: std::time::Duration,
         context: &RequestContext,
     ) -> Result<(), PortError>;
+}
+
+/// Removable drives an administrator ejected without powering them off, in
+/// the database: they stay unmounted across restarts of zendiloosd and the
+/// agent until they are plugged in again.
+#[async_trait]
+pub trait EjectedDrives: Send + Sync {
+    /// The drives ejected, by id, each with the plugging in of its disk it
+    /// was ejected in ([`crate::domain::RemovableDrive::plugged_in`]).
+    async fn ejected(&self) -> Result<BTreeMap<String, Option<String>>, PortError>;
+
+    async fn eject(&self, id: &str, plugged_in: Option<&str>) -> Result<(), PortError>;
+
+    /// The drive is mounted again, pulled out or plugged in anew.
+    async fn forget(&self, id: &str) -> Result<(), PortError>;
 }
 
 /// A disk present now, as the inventory notes it.

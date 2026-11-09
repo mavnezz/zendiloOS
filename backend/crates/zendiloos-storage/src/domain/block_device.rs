@@ -19,6 +19,10 @@ pub struct BlockDevice {
     /// Where a whole disk is plugged in: udev's `ID_PATH`, its
     /// `/dev/disk/by-path` name, e.g. `pci-0000:05:00.0-ata-1`.
     pub id_path: Option<String>,
+    /// What tells this plugging in of a whole disk apart from any other,
+    /// before and after: the boot and the kernel's sequence number of the
+    /// disk (udev's `DISKSEQ`), which every disk that appears gets anew.
+    pub plugged_in: Option<String>,
     /// Transport as the kernel names it: `sata`, `nvme`, `usb`, `virtio`, …
     pub transport: Option<String>,
     pub rotational: bool,
@@ -87,6 +91,7 @@ pub(crate) mod testing {
             wwn: None,
             id_link: None,
             id_path: None,
+            plugged_in: None,
             transport: None,
             rotational: false,
             removable: false,

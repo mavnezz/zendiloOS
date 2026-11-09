@@ -14,9 +14,9 @@ use std::sync::Arc;
 
 pub use error::StorageError;
 use ports::{
-    ArraySource, BlockDeviceSource, DiskInventoryStore, DiskLocator, EnclosureCatalog, EnclosureStore,
-    MachineSource, PlanTokens, PoolAdmin, RemovableHost, SelfTestPlanStore, SmartSource, VolumeOccupants,
-    ZfsSource,
+    ArraySource, BlockDeviceSource, DiskInventoryStore, DiskLocator, EjectedDrives, EnclosureCatalog,
+    EnclosureStore, MachineSource, PlanTokens, PoolAdmin, RemovableHost, SelfTestPlanStore, SmartSource,
+    VolumeOccupants, ZfsSource,
 };
 use zendiloos_jobs::Jobs;
 use zendiloos_kernel::{AuditLog, Clock};
@@ -44,6 +44,7 @@ pub struct StoragePorts {
     pub enclosure: Arc<dyn EnclosureStore>,
     pub locator: Arc<dyn DiskLocator>,
     pub inventory: Arc<dyn DiskInventoryStore>,
+    pub ejected: Arc<dyn EjectedDrives>,
 }
 
 /// All use cases of this context.
@@ -76,6 +77,7 @@ impl StorageUseCases {
         let removable = Arc::new(removable::RemovableDrives::new(
             ports.devices.clone(),
             ports.removable,
+            ports.ejected,
             ports.audit.clone(),
             ports.clock.clone(),
             ports.notifier.clone(),

@@ -12,8 +12,8 @@ use zendiloos_jobs::Jobs;
 use zendiloos_kernel::{AuditLog, Clock, PortError, RequestContext};
 
 use crate::application::ports::{
-    AdminError, ArraySource, BlockDeviceSource, DiskInventoryStore, DiskLocator, EnclosureCatalog,
-    EnclosureStore, MachineSource, NewPool, PlanTokens, PoolAdmin, RemovableHost, SeenDisk,
+    AdminError, ArraySource, BlockDeviceSource, DiskInventoryStore, DiskLocator, EjectedDrives,
+    EnclosureCatalog, EnclosureStore, MachineSource, NewPool, PlanTokens, PoolAdmin, RemovableHost, SeenDisk,
     SelfTestPlanStore, SmartSource, Steps, VolumeOccupants, ZfsSource,
 };
 use crate::application::{StoragePorts, StorageUseCases};
@@ -42,6 +42,13 @@ pub struct FakeStorage {
     pub stick: Mutex<Option<bool>>,
     /// Ejecting the stick fails as for open files while set.
     pub stick_busy: Mutex<bool>,
+    /// How often the stick was plugged in: each time its disk gets another
+    /// sequence number from the kernel.
+    pub stick_plugged: Mutex<u64>,
+    /// The drives ejected, as the database keeps them.
+    pub ejected: Mutex<std::collections::BTreeMap<String, Option<String>>>,
+    /// Reading or writing which drives are ejected fails while set.
+    pub ejected_fails: Mutex<bool>,
     /// What the firmware calls the machine.
     pub machine: Mutex<Machine>,
     /// Reading the machine's names fails while set.
@@ -220,12 +227,14 @@ impl FakeStorage {
             enclosure: fake.clone(),
             locator: fake.clone(),
             inventory: fake.clone(),
+            ejected: fake.clone(),
         };
         (ports, fake)
     }
 
     /// Plugs the USB stick in, not mounted.
     pub fn plug_stick(&self) {
+        *self.stick_plugged.lock().unwrap() += 1;
         *self.stick.lock().unwrap() = Some(false);
     }
 
@@ -432,6 +441,7 @@ fn device(name: &str, kind: DeviceKind) -> BlockDevice {
         wwn: None,
         id_link: None,
         id_path: None,
+        plugged_in: None,
         transport: None,
         rotational: true,
         removable: false,
@@ -514,7 +524,8 @@ impl BlockDeviceSource for FakeStorage {
             system,
         ];
         if let Some(mounted) = *self.stick.lock().unwrap() {
-            devices.push(stick(mounted));
+            let plugged_in = format!("boot/{}", self.stick_plugged.lock().unwrap());
+            devices.push(BlockDevice { plugged_in: Some(plugged_in), ..stick(mounted) });
         }
         if *self.dock.lock().unwrap() {
             let without_sdg = *self.dock_without_sdg.lock().unwrap();
@@ -699,6 +710,29 @@ impl EnclosureStore for FakeStorage {
 
     async fn save(&self, choice: Option<&EnclosureChoice>) -> Result<(), PortError> {
         *self.chosen.lock().unwrap() = choice.cloned();
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl EjectedDrives for FakeStorage {
+    async fn ejected(&self) -> Result<std::collections::BTreeMap<String, Option<String>>, PortError> {
+        if *self.ejected_fails.lock().unwrap() {
+            return Err(PortError::new("ejected drives", std::io::Error::other("the database is gone")));
+        }
+        Ok(self.ejected.lock().unwrap().clone())
+    }
+
+    async fn eject(&self, id: &str, plugged_in: Option<&str>) -> Result<(), PortError> {
+        if *self.ejected_fails.lock().unwrap() {
+            return Err(PortError::new("ejected drives", std::io::Error::other("the database is gone")));
+        }
+        self.ejected.lock().unwrap().insert(id.to_owned(), plugged_in.map(str::to_owned));
+        Ok(())
+    }
+
+    async fn forget(&self, id: &str) -> Result<(), PortError> {
+        self.ejected.lock().unwrap().remove(id);
         Ok(())
     }
 }
