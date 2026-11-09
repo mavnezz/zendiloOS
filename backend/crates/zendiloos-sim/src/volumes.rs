@@ -211,6 +211,8 @@ pub(crate) fn handle(
             };
             Some(Response::BackupRemoved { removed })
         }
+        // Nothing of a volume's work outlives its request here.
+        Request::EndVolumeWork { .. } => Some(Response::VolumeWorkEnded { stopped: false }),
         _ => None,
     }
 }

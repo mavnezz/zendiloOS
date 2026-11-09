@@ -87,6 +87,8 @@ impl Containers {
         containers.into_iter().find(|c| c.id == id || c.name == id).ok_or(ContainersError::NotFound)
     }
 
+    /// Starts, stops, restarts or removes a container; refused while a
+    /// backup or restore holds it.
     pub async fn control_container(
         &self,
         id: &str,
@@ -95,6 +97,7 @@ impl Containers {
         context: &RequestContext,
     ) -> Result<(), ContainersError> {
         let container = self.find_container(id, context).await?;
+        self.not_held(&container)?;
         let done =
             self.ports.engine.control_container(&container.id, action, context).await.map_err(Into::into);
         let audited = match action {

@@ -47,8 +47,10 @@ enum Command {
     PowerOffDrive { disk: String },
     /// Back up a Docker volume into a share (a job of the system agent's, in a unit of its own)
     BackupVolume { job: String },
-    /// Restore a Docker volume from an archive in a share (likewise)
+    /// Extract an archive in a share beside a Docker volume's data, to restore it (likewise)
     RestoreVolume { job: String },
+    /// Swap what a restore extracted in for the volume's data (likewise)
+    SwapVolume { job: String },
     /// Remove a file a backup of a volume wrote (likewise)
     RemoveVolumeBackup { job: String },
 }
@@ -85,6 +87,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     let volume_job = match &cli.command {
         Some(Command::BackupVolume { job }) => Some((VolumeJob::BackUp, job)),
         Some(Command::RestoreVolume { job }) => Some((VolumeJob::Restore, job)),
+        Some(Command::SwapVolume { job }) => Some((VolumeJob::Swap, job)),
         Some(Command::RemoveVolumeBackup { job }) => Some((VolumeJob::RemoveBackup, job)),
         _ => None,
     };
@@ -123,6 +126,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             | Command::PowerOffDrive { .. }
             | Command::BackupVolume { .. }
             | Command::RestoreVolume { .. }
+            | Command::SwapVolume { .. }
             | Command::RemoveVolumeBackup { .. } => unreachable!("handled above"),
         };
         outcome.map_err(|error| anyhow::anyhow!("{name}: {error}"))?;

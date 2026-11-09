@@ -142,6 +142,14 @@ impl VolumeArchiver for AgentVolumeArchiver {
             other => Err(unexpected(other).into()),
         }
     }
+
+    async fn end_work(&self, volume: &str, context: &RequestContext) -> Result<bool, EngineError> {
+        let request = Request::EndVolumeWork { volume: VolumeName::parse(volume).map_err(refused)? };
+        match self.ask(request, &zendiloos_containers::application::ports::NoSteps, context).await? {
+            Response::VolumeWorkEnded { stopped } => Ok(stopped),
+            other => Err(unexpected(other).into()),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -188,6 +196,8 @@ mod tests {
             .await;
         assert!(matches!(busy, Err(EngineError::Refused(_))), "a running container uses it: {busy:?}");
         assert!(archiver.remove(&place(), &written.archive, &context).await.unwrap());
+        assert!(!archiver.end_work("stack_cache", &context).await.unwrap(), "nothing runs");
+        assert!(matches!(archiver.end_work("-x", &context).await, Err(EngineError::Refused(_))));
     }
 
     #[tokio::test]
@@ -238,5 +248,9 @@ mod tests {
         let odd = answering(Response::Done);
         let file = BackupFile { path: "a".into(), bytes: 0, device: 0, inode: 0 };
         assert!(odd.remove(&place(), &file, &context).await.is_err());
+        let odd = answering(Response::Done);
+        assert!(odd.end_work("db", &context).await.is_err());
+        let ended = answering(Response::VolumeWorkEnded { stopped: true });
+        assert!(ended.end_work("db", &context).await.unwrap());
     }
 }

@@ -246,10 +246,17 @@ pub struct Backup {
     /// As the manifest says: what a volume made again from it gets.
     pub driver: String,
     pub labels: BTreeMap<String, String>,
-    /// Containers stopped for it and not yet started again.
-    pub stopped: Vec<String>,
     /// Who started it; none for the schedule.
     pub by: Option<String>,
+}
+
+/// A container a backup or restore of `volume` stopped, not started again
+/// since: started once nothing holds it any more, also after a restart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwedStart {
+    pub container: String,
+    pub volume: String,
+    pub since: Timestamp,
 }
 
 impl Backup {
@@ -410,7 +417,6 @@ mod tests {
             outcome,
             driver: "local".into(),
             labels: BTreeMap::new(),
-            stopped: vec![],
             by: None,
         }
     }

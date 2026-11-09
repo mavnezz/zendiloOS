@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, volume, share_id, started_at, finished_at, state, error,\n                    archive_path, archive_bytes, archive_device, archive_inode,\n                    manifest_path, manifest_bytes, manifest_device, manifest_inode,\n                    sha256, data_bytes, manifest, stopped, started_by\n             FROM docker_backups WHERE id = ?",
+  "query": "SELECT id, volume, share_id, started_at, finished_at, state, error,\n                    archive_path, archive_bytes, archive_device, archive_inode,\n                    manifest_path, manifest_bytes, manifest_device, manifest_inode,\n                    sha256, data_bytes, manifest, started_by\n             FROM docker_backups WHERE ?1 IS NULL OR volume = ?1\n             ORDER BY started_at DESC, id DESC",
   "describe": {
     "columns": [
       {
@@ -202,19 +202,8 @@
         }
       },
       {
-        "name": "stopped",
-        "ordinal": 18,
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "docker_backups",
-            "name": "stopped"
-          }
-        }
-      },
-      {
         "name": "started_by",
-        "ordinal": 19,
+        "ordinal": 18,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -246,9 +235,8 @@
       true,
       true,
       true,
-      false,
       true
     ]
   },
-  "hash": "e7c52c26c6980af3b7246df60ec60afb3b4bd48dc55856c8d0b2d2ac95c65319"
+  "hash": "95ba084c49a268791ec742f10dd5f0d42bcb82093e6155fb1a0571c6c390c783"
 }

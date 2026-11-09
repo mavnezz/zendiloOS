@@ -226,10 +226,13 @@ impl Containers {
             .start("containers.update", Some(target.clone()), Some(actor), move |progress| async move {
                 let done = match (&way, &deployment) {
                     (UpdateWay::Project(project), Some(how)) => {
-                        progress.step("redeploying", None).await;
-                        how.run(&this, project, true, &super::projects::JobLines(progress.clone()), &context)
-                            .await
-                            .map_err(ContainersError::from)
+                        async {
+                            this.until_free(project, &progress, &context).await?;
+                            progress.step("redeploying", None).await;
+                            let lines = super::projects::JobLines(progress.clone());
+                            Ok(how.run(&this, project, true, &lines, &context).await?)
+                        }
+                        .await
                     }
                     (UpdateWay::PullOnly(image), _) | (UpdateWay::Project(image), None) => {
                         progress.step("pulling", None).await;

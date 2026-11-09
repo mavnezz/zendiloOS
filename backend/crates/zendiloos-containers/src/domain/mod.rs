@@ -3,13 +3,14 @@ mod compose;
 mod details;
 mod engine;
 mod history;
+mod holds;
 mod project;
 mod updates;
 mod volumes;
 
 pub use backups::{
     Backup, BackupFile, BackupFrequency, BackupOutcome, BackupPlan, BackupSchedule, BackupTarget,
-    DEFAULT_KEEP, FAILURES_KEPT, InvalidBackupPlan, MAX_KEEP, WrittenBackup, backup_stem, beyond,
+    DEFAULT_KEEP, FAILURES_KEPT, InvalidBackupPlan, MAX_KEEP, OwedStart, WrittenBackup, backup_stem, beyond,
     is_share_folder, stale_failures,
 };
 pub use compose::{ComposeModel, ComposeService, Risk, ServiceMount, file_reads, risks};
@@ -22,6 +23,7 @@ pub use engine::{
     Image, Mount, Network, PublishedPort, UsageSample, short_id,
 };
 pub use history::{Moment, UsageHistory, UsagePoint};
+pub use holds::{Holds, Unclaimable};
 pub use project::{
     APP_FILES, COMPOSE_FILE, InvalidProjectName, Origin, OwnProject, Project, ProjectName, ProjectTemplate,
     assemble, bind_folders,

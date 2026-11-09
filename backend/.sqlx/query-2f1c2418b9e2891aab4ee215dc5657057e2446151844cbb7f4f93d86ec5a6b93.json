@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT container, volume, since FROM docker_owed_starts ORDER BY since, container, volume",
+  "describe": {
+    "columns": [
+      {
+        "name": "container",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "docker_owed_starts",
+            "name": "container"
+          }
+        }
+      },
+      {
+        "name": "volume",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "docker_owed_starts",
+            "name": "volume"
+          }
+        }
+      },
+      {
+        "name": "since",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "docker_owed_starts",
+            "name": "since"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "2f1c2418b9e2891aab4ee215dc5657057e2446151844cbb7f4f93d86ec5a6b93"
+}

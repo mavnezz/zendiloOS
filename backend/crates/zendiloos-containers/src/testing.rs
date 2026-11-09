@@ -18,9 +18,9 @@ use crate::application::{Containers, ContainersPorts};
 use crate::domain::{
     AttachedNetwork, Backup, BackupFile, BackupOutcome, BackupPlan, ComposeListing, ComposeModel,
     ComposeService, Container, ContainerAction, ContainerDetails, ContainerProcess, ContainerState,
-    ContainerUsage, DiskUsage, Image, Mount, Network, OwnProject, PROJECT_LABEL, Privileges, ProjectName,
-    PublishedPort, RegistryImage, ResourceLimits, ServiceMount, UpdateSettings, UsageSample, Volume,
-    VolumeSize, WrittenBackup,
+    ContainerUsage, DiskUsage, Image, Mount, Network, OwedStart, OwnProject, PROJECT_LABEL, Privileges,
+    ProjectName, PublishedPort, RegistryImage, ResourceLimits, ServiceMount, UpdateSettings, UsageSample,
+    Volume, VolumeSize, WrittenBackup,
 };
 
 /// A container of `project` (if any) from `image`.
@@ -705,13 +705,16 @@ impl BackupShares for FakeBackupShares {
 
 /// Backups as the agent would make them, recorded as calls; `fail` makes
 /// the next one fail with its reason. Files removed are those of the
-/// archives written, by inode.
+/// archives written, by inode. Ending a volume's work says nothing ran,
+/// unless `unanswering`.
 #[derive(Default)]
 pub struct FakeArchiver {
     pub calls: Mutex<Vec<String>>,
     pub fail: Mutex<Option<String>>,
     /// Inodes of the files there are.
     pub files: Mutex<Vec<u64>>,
+    /// The agent cannot be reached: ending work fails.
+    pub unanswering: std::sync::atomic::AtomicBool,
 }
 
 impl FakeArchiver {
@@ -785,13 +788,22 @@ impl VolumeArchiver for FakeArchiver {
         files.retain(|&inode| inode != file.inode);
         Ok(files.len() < before)
     }
+
+    async fn end_work(&self, volume: &str, _: &RequestContext) -> Result<bool, EngineError> {
+        self.calls.lock().unwrap().push(format!("end work on {volume}"));
+        if self.unanswering.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(EngineError::Port(PortError::new("agent", "not answering")));
+        }
+        Ok(false)
+    }
 }
 
-/// Plans and runs in memory.
+/// Plans, runs and the starts owed in memory.
 #[derive(Default)]
 pub struct MemoryBackups {
     pub plans: Mutex<Vec<BackupPlan>>,
     pub runs: Mutex<Vec<Backup>>,
+    pub owed: Mutex<Vec<OwedStart>>,
 }
 
 /// The labels a manifest of the fake archiver gives.
@@ -843,17 +855,9 @@ impl BackupRepository for MemoryBackups {
             outcome: BackupOutcome::Running,
             driver: "local".into(),
             labels: BTreeMap::new(),
-            stopped: vec![],
             by: backup.by.clone(),
         });
         Ok(id)
-    }
-
-    async fn stopped(&self, id: i64, containers: &[String]) -> Result<(), PortError> {
-        for run in self.runs.lock().unwrap().iter_mut().filter(|r| r.id == id) {
-            run.stopped = containers.to_vec();
-        }
-        Ok(())
     }
 
     async fn finish(
@@ -905,6 +909,23 @@ impl BackupRepository for MemoryBackups {
             run.finished_at = Some(at);
         }
         Ok(cut)
+    }
+
+    async fn owed_starts(&self) -> Result<Vec<OwedStart>, PortError> {
+        Ok(self.owed.lock().unwrap().clone())
+    }
+
+    async fn owe_start(&self, container: &str, volume: &str, at: Timestamp) -> Result<(), PortError> {
+        let mut owed = self.owed.lock().unwrap();
+        if !owed.iter().any(|o| o.container == container && o.volume == volume) {
+            owed.push(OwedStart { container: container.to_owned(), volume: volume.to_owned(), since: at });
+        }
+        Ok(())
+    }
+
+    async fn started(&self, container: &str) -> Result<(), PortError> {
+        self.owed.lock().unwrap().retain(|o| o.container != container);
+        Ok(())
     }
 }
 

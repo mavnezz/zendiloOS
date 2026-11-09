@@ -403,14 +403,21 @@ pub enum Request {
     /// Replaces the contents of a local volume no running container uses
     /// with the archive `archive` of the share, if its SHA-256 is `sha256`:
     /// checked before anything is extracted, and again of what was
-    /// extracted. Extracted into a fresh folder beside the data, each entry
-    /// beneath it (no absolute paths, no `..`, no link followed, no
-    /// devices), then swapped in; a failure leaves the old contents.
+    /// extracted. Extracted into a fresh folder beside the data by one
+    /// unit, each entry beneath it (no absolute paths, no `..`, no link
+    /// followed, no devices); then, if still no running container uses the
+    /// volume, swapped in by another. A failure leaves the old contents.
     RestoreVolume {
         volume: VolumeName,
         share: ShareLocation,
         archive: SharePath,
         sha256: ArchiveDigest,
+    },
+    /// Stops what a backup or restore of `volume` left running (its units,
+    /// should their client have gone) and answers once nothing runs for it
+    /// any more. Answers [`Response::VolumeWorkEnded`].
+    EndVolumeWork {
+        volume: VolumeName,
     },
     /// Deletes a file a backup wrote, if `path` still is that file (device
     /// and inode); never anything else. Answers [`Response::BackupRemoved`].
@@ -841,6 +848,7 @@ impl Request {
             Request::BackUpVolume { .. } => "back_up_volume",
             Request::RestoreVolume { .. } => "restore_volume",
             Request::RemoveVolumeBackup { .. } => "remove_volume_backup",
+            Request::EndVolumeWork { .. } => "end_volume_work",
             Request::CheckCompose { .. } => "check_compose",
             Request::ControlProject { .. } => "control_project",
             Request::DeployProject { .. } => "deploy_project",
@@ -1105,6 +1113,11 @@ pub enum Response {
     BackupRemoved {
         removed: bool,
     },
+    /// Nothing runs any more for the volume; `stopped`: something still ran
+    /// and was stopped.
+    VolumeWorkEnded {
+        stopped: bool,
+    },
     Snapshots {
         /// `zfs list -H -p -t snapshot -o name,creation,used,referenced,`
         /// `zendiloos:schedule,zendiloos:note`.
@@ -1355,6 +1368,7 @@ impl Request {
             | Request::PruneVolumes {}
             | Request::BackUpVolume { .. }
             | Request::RestoreVolume { .. }
+            | Request::EndVolumeWork { .. }
             | Request::ControlProject { .. }
             // The ACME server checks the names: up to minutes with DNS.
             | Request::IssueCertificate { .. } => true,
@@ -1390,6 +1404,25 @@ impl Request {
     /// blinking for minutes never keep the quick requests waiting.
     pub fn is_burst(&self) -> bool {
         matches!(self, Request::ReadBurst { .. })
+    }
+
+    /// A backup or restore of a volume, or what ends one: up to hours in
+    /// units of their own, in places of their own, so that the long places
+    /// stay free for deploys, pulls, drives and pools.
+    pub fn is_volume_work(&self) -> bool {
+        matches!(
+            self,
+            Request::BackUpVolume { .. }
+                | Request::RestoreVolume { .. }
+                | Request::RemoveVolumeBackup { .. }
+                | Request::EndVolumeWork { .. }
+        )
+    }
+
+    /// Counting what the volumes' data takes up: bounded, but seconds of
+    /// walking each time; one at a time, in a place of its own.
+    pub fn is_count(&self) -> bool {
+        matches!(self, Request::DockerVolumeSizes {})
     }
 
     pub fn role(&self) -> Role {
@@ -2302,6 +2335,14 @@ mod tests {
         };
         assert_eq!((remove.name(), remove.is_long()), ("remove_volume_backup", false));
         assert!(Request::DockerVolumeSizes {}.is_long() && !Request::DockerVolumes {}.is_long());
+        // Places of their own, never the long ones of deploys and pulls.
+        let end = Request::EndVolumeWork { volume: VolumeName::parse("x1").unwrap() };
+        assert_eq!((end.name(), end.is_long()), ("end_volume_work", true));
+        for work in [&backup, &restore, &remove, &end] {
+            assert!(work.is_volume_work() && !work.is_count(), "{work:?}");
+        }
+        assert!(Request::DockerVolumeSizes {}.is_count() && !Request::DockerVolumeSizes {}.is_volume_work());
+        assert!(!Request::PruneVolumes {}.is_volume_work() && !Request::DockerVolumes {}.is_count());
         let names = [
             Request::DockerVolumes {}.name(),
             Request::PruneVolumes {}.name(),

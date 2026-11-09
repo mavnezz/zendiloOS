@@ -247,7 +247,8 @@ impl Containers {
         Ok(Some(self.deploy(name.to_string(), Deployment::Own(config), false, actor, context).await?))
     }
 
-    /// Pulls (if `pull`) and brings up a project's containers, in a job.
+    /// Pulls (if `pull`) and brings up a project's containers, in a job;
+    /// once no backup or restore holds them any more.
     async fn deploy(
         &self,
         name: String,
@@ -262,11 +263,13 @@ impl Containers {
             .ports
             .jobs
             .start("containers.project_deploy", Some(name.clone()), Some(actor), move |progress| async move {
-                progress.step(if pull { "pulling" } else { "starting" }, Some(0.1)).await;
-                let done = how.run(&this, &name, pull, &JobLines(progress.clone()), &context).await;
-                let done = this
-                    .audited("containers.project_deploy", &name, &who, &context, done.map_err(Into::into))
-                    .await;
+                let done = async {
+                    this.until_free(&name, &progress, &context).await?;
+                    progress.step(if pull { "pulling" } else { "starting" }, Some(0.1)).await;
+                    Ok(how.run(&this, &name, pull, &JobLines(progress.clone()), &context).await?)
+                }
+                .await;
+                let done = this.audited("containers.project_deploy", &name, &who, &context, done).await;
                 done.map_err(|error| job_error(&error))
             })
             .await?;
@@ -347,6 +350,7 @@ impl Containers {
             return Err(ContainersError::Invalid("only start, stop and restart".into()));
         }
         let project = self.project(name, context).await?;
+        self.project_not_held(&project.name, context).await?;
         let done =
             self.ports.engine.control_project(&project.name, action, context).await.map_err(Into::into);
         let audited = match action {
@@ -389,6 +393,7 @@ impl Containers {
         if matches!(project.origin, Origin::App { .. }) {
             return Err(ContainersError::AppProject);
         }
+        self.project_not_held(&project.name, context).await?;
         let own = match &project.origin {
             Origin::Own(own) => Some(own.name.clone()),
             _ => None,

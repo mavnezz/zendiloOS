@@ -122,6 +122,7 @@ impl Operations {
             volumes: Volumes::new(
                 Program::new(&tools.docker)?,
                 Program::new(&tools.systemd_run)?,
+                Program::new(&tools.systemctl)?,
                 paths.host.clone(),
             ),
             projects: Projects::new(
@@ -278,6 +279,7 @@ impl Operations {
             Request::RemoveVolumeBackup { share, path, device, inode } => {
                 self.volumes.remove_backup(share, path, *device, *inode).await
             }
+            Request::EndVolumeWork { volume } => self.volumes.end_work(volume).await,
             Request::CheckCompose { project, directory, compose } => {
                 self.docker.check_compose(project, directory, compose).await
             }

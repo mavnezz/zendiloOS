@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO docker_owed_starts (container, volume, since) VALUES (?, ?, ?)\n             ON CONFLICT (container, volume) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "699a99d75b8792ffdd695a1cec5c96ed10c916d2892b8d95d8062f5aba926286"
+}

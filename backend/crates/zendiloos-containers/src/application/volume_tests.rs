@@ -193,7 +193,8 @@ async fn a_backup_stops_the_containers_that_use_the_volume_and_starts_them_again
     assert_eq!(runs.len(), 1);
     let written = runs[0].written().unwrap();
     assert_eq!(written.archive.path, "backups/kuma_data/kuma_data-20261105-010000.tar.zst");
-    assert_eq!((runs[0].by.as_deref(), runs[0].stopped.len()), (Some("alice"), 0));
+    assert_eq!(runs[0].by.as_deref(), Some("alice"));
+    assert!(t.backups.owed.lock().unwrap().is_empty(), "started again: owed nothing");
     assert_eq!(runs[0].labels["com.docker.compose.project"], "kuma");
     assert!(audit.actions().contains(&(
         "containers.volume_backup",
@@ -242,8 +243,16 @@ async fn a_failed_backup_is_told_and_its_containers_run_again() {
     assert_eq!(job.state, JobState::Failed);
     assert!(job.error.unwrap().detail.unwrap().contains("kuma-1"));
     let runs = t.containers.backups("kuma_data").await.unwrap();
-    assert!(runs[0].written().is_some() && runs[0].stopped.is_empty(), "{runs:?}");
+    assert!(runs[0].written().is_some(), "{runs:?}");
     assert_eq!(t.notifications.all().len(), 2);
+    // Owed a start, tried again every minute: once it starts, owed nothing.
+    let owed: Vec<String> = t.backups.owed.lock().unwrap().iter().map(|o| o.container.clone()).collect();
+    assert_eq!(owed, ["kuma-1"]);
+    assert_eq!(t.containers.start_owed_containers().await, 0, "still stubborn");
+    t.engine.stubborn.lock().unwrap().clear();
+    assert_eq!(t.containers.start_owed_containers().await, 1);
+    assert!(t.backups.owed.lock().unwrap().is_empty());
+    assert!(t.archiver.calls().contains(&"end work on kuma_data".to_owned()), "asked first");
 }
 
 #[tokio::test]
@@ -417,15 +426,123 @@ async fn after_a_restart_runs_cut_off_fail_and_their_containers_start_again() {
             by: None,
         };
         let id = backups.start(&new).await.unwrap();
-        backups.stopped(id, &["kuma-1".to_owned()]).await.unwrap();
+        backups.owe_start("kuma-1", "kuma_data", new.started_at).await.unwrap();
         id
     };
+    {
+        use super::ports::DockerEngine;
+        t.engine
+            .control_container("kuma-1-id", crate::domain::ContainerAction::Stop, &context())
+            .await
+            .unwrap();
+    }
+    // The agent cannot say yet whether the work on kuma_data ended.
+    t.archiver.unanswering.store(true, std::sync::atomic::Ordering::Relaxed);
 
     assert_eq!(t.containers.recover_backups().await, 1);
+    assert_eq!(container_calls(&t), ["stop kuma-1-id"], "not started under work that may run on");
+    t.archiver.unanswering.store(false, std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(t.containers.start_owed_containers().await, 1);
 
-    assert_eq!(container_calls(&t), ["start kuma-1-id"]);
+    assert_eq!(container_calls(&t), ["stop kuma-1-id", "start kuma-1-id"]);
     let run = t.containers.backups("kuma_data").await.unwrap().into_iter().find(|b| b.id == id).unwrap();
-    assert!(matches!(run.outcome, BackupOutcome::Failed(_)) && run.stopped.is_empty(), "{run:?}");
+    assert!(matches!(run.outcome, BackupOutcome::Failed(_)), "{run:?}");
+    assert!(t.backups.owed.lock().unwrap().is_empty());
     assert_eq!(t.notifications.all()[0].code, "docker_backup_failed");
     assert_eq!(t.containers.recover_backups().await, 0);
+}
+
+/// Lets each volume's backup through once told to, and says when it came.
+struct GatedArchiver {
+    inner: Arc<crate::testing::FakeArchiver>,
+    gates: std::collections::HashMap<String, (tokio::sync::Notify, tokio::sync::Notify)>,
+}
+
+#[async_trait]
+impl super::ports::VolumeArchiver for GatedArchiver {
+    async fn back_up(
+        &self,
+        volume: &str,
+        place: &super::ports::SharePlace,
+        folder: &str,
+        stem: &str,
+        steps: &dyn super::ports::Steps,
+        context: &RequestContext,
+    ) -> Result<crate::domain::WrittenBackup, super::ports::EngineError> {
+        let (entered, release) = &self.gates[volume];
+        entered.notify_one();
+        release.notified().await;
+        self.inner.back_up(volume, place, folder, stem, steps, context).await
+    }
+
+    async fn restore(
+        &self,
+        volume: &str,
+        place: &super::ports::SharePlace,
+        archive: &str,
+        sha256: &str,
+        steps: &dyn super::ports::Steps,
+        context: &RequestContext,
+    ) -> Result<(), super::ports::EngineError> {
+        self.inner.restore(volume, place, archive, sha256, steps, context).await
+    }
+
+    async fn remove(
+        &self,
+        place: &super::ports::SharePlace,
+        file: &crate::domain::BackupFile,
+        context: &RequestContext,
+    ) -> Result<bool, super::ports::EngineError> {
+        self.inner.remove(place, file, context).await
+    }
+
+    async fn end_work(
+        &self,
+        volume: &str,
+        context: &RequestContext,
+    ) -> Result<bool, super::ports::EngineError> {
+        self.inner.end_work(volume, context).await
+    }
+}
+
+/// Two volumes of one container, both backed up with it stopped: the
+/// second waits for its turn, and the container runs again only once the
+/// second is done, never while it is read.
+#[tokio::test]
+async fn a_shared_container_stays_stopped_until_the_last_backup_holding_it_ended() {
+    let (mut t, _, _) = setup();
+    {
+        let mut all = t.engine.containers.lock().unwrap();
+        let c = all.iter_mut().find(|c| c.name == "kuma-1").unwrap();
+        *c = crate::testing::mounting(c.clone(), "orphan");
+    }
+    let gated = Arc::new(GatedArchiver {
+        inner: t.archiver.clone(),
+        gates: ["kuma_data", "orphan"]
+            .into_iter()
+            .map(|s| (s.to_owned(), (tokio::sync::Notify::new(), tokio::sync::Notify::new())))
+            .collect(),
+    });
+    t.containers.ports.archiver = gated.clone();
+    for volume in ["kuma_data", "orphan"] {
+        t.containers.set_backup_plan(volume, nightly(7, true), &alice(), &context()).await.unwrap();
+    }
+    let up = |t: &TestContainers| {
+        t.engine.containers.lock().unwrap().iter().any(|c| c.name == "kuma-1" && c.state.is_up())
+    };
+    let a = t.containers.back_up_now("kuma_data", &alice(), &context()).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), gated.gates["kuma_data"].0.notified()).await.unwrap();
+    assert!(!up(&t));
+    let b = t.containers.back_up_now("orphan", &alice(), &context()).await.unwrap();
+    let waiting = tokio::time::timeout(Duration::from_millis(200), gated.gates["orphan"].0.notified()).await;
+    assert!(waiting.is_err(), "one at a time: orphan waits for its turn");
+
+    gated.gates["kuma_data"].1.notify_one();
+    assert_eq!(finished(&t, a.id).await.state, JobState::Succeeded);
+    tokio::time::timeout(Duration::from_secs(5), gated.gates["orphan"].0.notified()).await.unwrap();
+    assert!(!up(&t), "kuma-1 stays stopped while orphan is read");
+    gated.gates["orphan"].1.notify_one();
+    assert_eq!(finished(&t, b.id).await.state, JobState::Succeeded);
+    assert!(up(&t));
+    assert_eq!(container_calls(&t), ["stop kuma-1-id", "start kuma-1-id"], "never started in between");
 }

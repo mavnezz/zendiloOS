@@ -965,6 +965,7 @@ const de: Messages = {
         6: 'Sonntags',
       },
       steps: {
+        waiting: 'Wartet auf eine andere Sicherung oder Wiederherstellung',
         stopping: 'Die Container werden gestoppt',
         backing_up: 'Wird gesichert',
         starting: 'Die Container werden wieder gestartet',
@@ -2930,6 +2931,8 @@ const de: Messages = {
     volume_in_use: 'Laufende Container nutzen das Volume',
     volume_busy:
       'Das Volume wird gerade gesichert oder wiederhergestellt; versuchen Sie es danach erneut.',
+    containers_held:
+      'Eine Sicherung oder Wiederherstellung eines Volumes hält diese Container angehalten, bis sie fertig ist; versuchen Sie es danach erneut',
     source_exists: 'Dieser Katalog ist schon da.',
     official_source: 'Der Community-Katalog ist fest eingebaut.',
     not_a_catalog: 'Das ist kein App-Katalog',

@@ -4,14 +4,15 @@ use async_trait::async_trait;
 use serde_json::Value;
 use zendiloos_containers::application::ports::{BackupRepository, NewBackup};
 use zendiloos_containers::domain::{
-    Backup, BackupFile, BackupFrequency, BackupOutcome, BackupPlan, BackupSchedule, BackupTarget,
+    Backup, BackupFile, BackupFrequency, BackupOutcome, BackupPlan, BackupSchedule, BackupTarget, OwedStart,
     WrittenBackup,
 };
 use zendiloos_kernel::{PortError, Timestamp};
 
 use super::Database;
 
-/// [`BackupRepository`] on `docker_backup_plans` and `docker_backups`.
+/// [`BackupRepository`] on `docker_backup_plans`, `docker_backups` and
+/// `docker_owed_starts`.
 #[derive(Debug, Clone)]
 pub struct SqliteVolumeBackups {
     db: Database,
@@ -103,7 +104,6 @@ struct Row {
     sha256: Option<String>,
     data_bytes: Option<i64>,
     manifest: Option<String>,
-    stopped: String,
     started_by: Option<String>,
 }
 
@@ -131,7 +131,6 @@ impl Row {
             outcome,
             driver,
             labels,
-            stopped: serde_json::from_str(&self.stopped).unwrap_or_default(),
             by: self.started_by,
         })
     }
@@ -158,7 +157,6 @@ macro_rules! rows {
                 sha256: row.sha256,
                 data_bytes: row.data_bytes,
                 manifest: row.manifest,
-                stopped: row.stopped,
                 started_by: row.started_by,
             }
             .backup()
@@ -255,15 +253,6 @@ impl BackupRepository for SqliteVolumeBackups {
         Ok(result.last_insert_rowid())
     }
 
-    async fn stopped(&self, id: i64, containers: &[String]) -> Result<(), PortError> {
-        let stopped = serde_json::to_string(containers).map_err(|e| PortError::new("volume backups", e))?;
-        sqlx::query!("UPDATE docker_backups SET stopped = ? WHERE id = ?", stopped, id)
-            .execute(self.db.pool())
-            .await
-            .map_err(db_error)?;
-        Ok(())
-    }
-
     async fn finish(
         &self,
         id: i64,
@@ -323,7 +312,7 @@ impl BackupRepository for SqliteVolumeBackups {
             "SELECT id, volume, share_id, started_at, finished_at, state, error,
                     archive_path, archive_bytes, archive_device, archive_inode,
                     manifest_path, manifest_bytes, manifest_device, manifest_inode,
-                    sha256, data_bytes, manifest, stopped, started_by
+                    sha256, data_bytes, manifest, started_by
              FROM docker_backups WHERE ?1 IS NULL OR volume = ?1
              ORDER BY started_at DESC, id DESC",
             volume
@@ -339,7 +328,7 @@ impl BackupRepository for SqliteVolumeBackups {
             "SELECT id, volume, share_id, started_at, finished_at, state, error,
                     archive_path, archive_bytes, archive_device, archive_inode,
                     manifest_path, manifest_bytes, manifest_device, manifest_inode,
-                    sha256, data_bytes, manifest, stopped, started_by
+                    sha256, data_bytes, manifest, started_by
              FROM docker_backups WHERE id = ?",
             id
         )
@@ -363,7 +352,7 @@ impl BackupRepository for SqliteVolumeBackups {
             "SELECT id, volume, share_id, started_at, finished_at, state, error,
                     archive_path, archive_bytes, archive_device, archive_inode,
                     manifest_path, manifest_bytes, manifest_device, manifest_inode,
-                    sha256, data_bytes, manifest, stopped, started_by
+                    sha256, data_bytes, manifest, started_by
              FROM docker_backups WHERE state = 'running' ORDER BY id"
         )
         .fetch_all(&mut *transaction)
@@ -381,6 +370,46 @@ impl BackupRepository for SqliteVolumeBackups {
         .map_err(db_error)?;
         transaction.commit().await.map_err(db_error)?;
         Ok(cut)
+    }
+
+    async fn owed_starts(&self) -> Result<Vec<OwedStart>, PortError> {
+        let rows = sqlx::query!(
+            "SELECT container, volume, since FROM docker_owed_starts ORDER BY since, container, volume"
+        )
+        .fetch_all(self.db.pool())
+        .await
+        .map_err(db_error)?;
+        Ok(rows
+            .into_iter()
+            .map(|row| OwedStart {
+                container: row.container,
+                volume: row.volume,
+                since: Timestamp::from_unix_seconds(row.since),
+            })
+            .collect())
+    }
+
+    async fn owe_start(&self, container: &str, volume: &str, at: Timestamp) -> Result<(), PortError> {
+        let since = at.unix_seconds();
+        sqlx::query!(
+            "INSERT INTO docker_owed_starts (container, volume, since) VALUES (?, ?, ?)
+             ON CONFLICT (container, volume) DO NOTHING",
+            container,
+            volume,
+            since
+        )
+        .execute(self.db.pool())
+        .await
+        .map_err(db_error)?;
+        Ok(())
+    }
+
+    async fn started(&self, container: &str) -> Result<(), PortError> {
+        sqlx::query!("DELETE FROM docker_owed_starts WHERE container = ?", container)
+            .execute(self.db.pool())
+            .await
+            .map_err(db_error)?;
+        Ok(())
     }
 }
 
@@ -443,7 +472,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runs_keep_what_they_wrote_and_what_they_stopped() {
+    async fn runs_keep_what_they_wrote() {
         let (_dir, db) = temporary_database().await;
         let store = SqliteVolumeBackups::new(db.clone());
         let new = |at: i64, by: Option<&str>| NewBackup {
@@ -453,7 +482,6 @@ mod tests {
             by: by.map(str::to_owned),
         };
         let first = store.start(&new(100, Some("alice"))).await.unwrap();
-        store.stopped(first, &["tesla-db-1".to_owned()]).await.unwrap();
         store.finish(first, Timestamp::from_unix_seconds(150), Ok(&written(7))).await.unwrap();
         let second = store.start(&new(200, None)).await.unwrap();
         store.finish(second, Timestamp::from_unix_seconds(250), Err("no space left")).await.unwrap();
@@ -464,10 +492,7 @@ mod tests {
         assert_eq!(runs[0].outcome, BackupOutcome::Failed("no space left".into()));
         let done = &runs[1];
         assert_eq!(done.written(), Some(&written(7)), "device and inode as they were");
-        assert_eq!(
-            (done.by.as_deref(), done.stopped.as_slice()),
-            (Some("alice"), &["tesla-db-1".to_owned()][..])
-        );
+        assert_eq!(done.by.as_deref(), Some("alice"));
         assert_eq!(
             (done.driver.as_str(), done.labels["com.docker.compose.project"].as_str()),
             ("local", "tesla")
@@ -477,15 +502,33 @@ mod tests {
         assert_eq!(store.backup(other).await.unwrap().unwrap().outcome, BackupOutcome::Running);
 
         // After a restart: the running one failed, as it was told.
-        store.stopped(other, &["web".to_owned()]).await.unwrap();
         let cut = store.interrupted(Timestamp::from_unix_seconds(400)).await.unwrap();
-        assert_eq!((cut.len(), cut[0].id, cut[0].stopped.as_slice()), (1, other, &["web".to_owned()][..]));
+        assert_eq!((cut.len(), cut[0].id), (1, other));
         let after = store.backup(other).await.unwrap().unwrap();
         assert!(matches!(after.outcome, BackupOutcome::Failed(_)));
         assert!(store.interrupted(Timestamp::from_unix_seconds(500)).await.unwrap().is_empty());
 
         store.forget(first).await.unwrap();
         assert!(store.backup(first).await.unwrap().is_none());
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn starts_owed_are_kept_until_each_container_started() {
+        let (_dir, db) = temporary_database().await;
+        let store = SqliteVolumeBackups::new(db.clone());
+        let at = |seconds: i64| Timestamp::from_unix_seconds(seconds);
+        store.owe_start("app", "app_data", at(100)).await.unwrap();
+        store.owe_start("app", "app_db", at(200)).await.unwrap();
+        store.owe_start("app", "app_data", at(300)).await.unwrap();
+        store.owe_start("web", "app_db", at(200)).await.unwrap();
+        let owed = store.owed_starts().await.unwrap();
+        let seen: Vec<(&str, &str, i64)> =
+            owed.iter().map(|o| (o.container.as_str(), o.volume.as_str(), o.since.unix_seconds())).collect();
+        assert_eq!(seen, [("app", "app_data", 100), ("app", "app_db", 200), ("web", "app_db", 200)]);
+        store.started("app").await.unwrap();
+        let owed = store.owed_starts().await.unwrap();
+        assert_eq!(owed.iter().map(|o| o.container.as_str()).collect::<Vec<_>>(), ["web"]);
         db.close().await;
     }
 

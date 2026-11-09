@@ -19,9 +19,11 @@
 //! extracted; it is extracted into a fresh folder beside the volume's data,
 //! each entry beneath it (no absolute paths, no `..`, every folder on the
 //! way opened with `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS`, no device
-//! nodes), while the same bytes are hashed again; only if they still match
-//! does the fresh folder take the data's place, swapped in one rename
-//! (`RENAME_EXCHANGE`). Anything else leaves the old contents as they were.
+//! nodes), while the same bytes are hashed again (`restore-volume`). Only
+//! if they still match, and the system agent finds no running container on
+//! the volume after that, does the fresh folder take the data's place,
+//! swapped in one rename (`RENAME_EXCHANGE`) by a unit of its own
+//! (`swap-volume`). Anything else leaves the old contents as they were.
 
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::{CStr, CString, OsStr};
@@ -149,12 +151,38 @@ pub(crate) struct RestoreJob {
     pub sha256: ArchiveDigest,
 }
 
+/// What a restore's first unit made: the archive extracted into `fresh`,
+/// a folder beside the data, for the second to swap in.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct RestoreDone {
+pub(crate) struct Extracted {
     pub entries: u64,
-    /// The old contents could not all be removed after the swap: they are
-    /// left in this folder beside the data.
+    pub fresh: String,
+}
+
+/// What the system agent asks of the unit that swaps a restore's fresh
+/// folder in for the data, or, with `discard`, removes it instead.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SwapJob {
+    pub volume_dir: PathBuf,
+    pub fresh: String,
+    pub discard: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Swapped {
+    /// The old contents (or, discarding, what was extracted) could not all
+    /// be removed: they are left in this folder beside the data.
     pub left_over: Option<String>,
+}
+
+/// What a restore's fresh folder is called: `_data.zendiloos-restore-`
+/// and 16 hex digits.
+const FRESH_PREFIX: &str = "_data.zendiloos-restore-";
+
+fn is_fresh_name(name: &[u8]) -> bool {
+    name.strip_prefix(FRESH_PREFIX.as_bytes())
+        .is_some_and(|hex| hex.len() == 16 && hex.iter().all(u8::is_ascii_hexdigit))
 }
 
 /// What the system agent asks of the unit that removes a backup's file.
@@ -997,11 +1025,29 @@ fn remove_tree(folder: BorrowedFd<'_>, name: &CStr, device: u64, depth: usize) -
     unlinkat(folder, name, AtFlags::REMOVEDIR)
 }
 
-/// Restores a volume as `job` says; `report` hears each step and how far.
-pub(crate) fn restore(
+/// The volume's folder in Docker's data root, and its file system.
+fn volume_folder(path: &Path) -> Result<(OwnedFd, u64), ArchiveError> {
+    let volume = open_folder(path, OFlags::PATH)?;
+    let device = identity(&fstat(&volume).map_err(|e| failed("the volume", e))?).0;
+    Ok((volume, device))
+}
+
+/// The folder `name` beside the data: on the volume's file system, no link.
+fn folder_beside(volume: BorrowedFd<'_>, name: &str, device: u64) -> Result<(), ArchiveError> {
+    let stat = statat(volume, name, AtFlags::SYMLINK_NOFOLLOW).map_err(|e| failed(name, e))?;
+    if kind(&stat) != FileType::Directory || identity(&stat).0 != device {
+        return Err(refused(format!("{name} is no folder of Docker's data root")));
+    }
+    Ok(())
+}
+
+/// Extracts the archive `job` names into a fresh folder beside the
+/// volume's data, for [`swap`] to swap in; `report` hears each step and how
+/// far. A failure removes what it made.
+pub(crate) fn extract_volume(
     job: &RestoreJob,
     report: &mut dyn FnMut(&'static str, u8),
-) -> Result<RestoreDone, ArchiveError> {
+) -> Result<Extracted, ArchiveError> {
     let share = open_folder(&job.share, OFlags::PATH)?;
     let (mut file, size) = open_archive(share.as_fd(), &job.archive)?;
     let digest = hash_file(&mut file, size, &mut |percent| report("verifying", percent))?;
@@ -1011,46 +1057,72 @@ pub(crate) fn restore(
             job.archive.as_str()
         )));
     }
-    let volume = open_folder(&job.volume_dir, OFlags::PATH)?;
-    let device = identity(&fstat(&volume).map_err(|e| failed("the volume", e))?).0;
-    let data =
-        statat(&volume, "_data", AtFlags::SYMLINK_NOFOLLOW).map_err(|e| failed("the volume's data", e))?;
-    if kind(&data) != FileType::Directory || identity(&data).0 != device {
-        return Err(refused("the volume's data is no folder of Docker's data root"));
-    }
+    let (volume, device) = volume_folder(&job.volume_dir)?;
+    folder_beside(volume.as_fd(), "_data", device)?;
     let mut random = [0u8; 8];
     rustix::rand::getrandom(&mut random, rustix::rand::GetRandomFlags::empty())
         .map_err(|e| failed("no random name", e))?;
-    let fresh = CString::new(format!("_data.zendiloos-restore-{:016x}", u64::from_le_bytes(random)))
-        .map_err(|e| failed("a name", e))?;
-    mkdirat(&volume, fresh.as_c_str(), Mode::from_raw_mode(0o700))
+    let fresh = format!("{FRESH_PREFIX}{:016x}", u64::from_le_bytes(random));
+    let fresh_c = CString::new(fresh.as_str()).map_err(|e| failed("a name", e))?;
+    mkdirat(&volume, fresh_c.as_c_str(), Mode::from_raw_mode(0o700))
         .map_err(|e| failed("a fresh folder", e))?;
-    let extracted = beneath(volume.as_fd(), fresh.to_bytes(), OFlags::PATH | OFlags::DIRECTORY)
+    let extracted = beneath(volume.as_fd(), fresh.as_bytes(), OFlags::PATH | OFlags::DIRECTORY)
         .map_err(|e| failed("the fresh folder", e))
         .and_then(|root| {
             extract(&mut file, root.as_fd(), size, &digest, &mut |percent| report("restoring", percent))
-        })
-        .and_then(|entries| {
-            renameat_with(&volume, "_data", &volume, fresh.as_c_str(), RenameFlags::EXCHANGE)
-                .map(|()| entries)
-                .map_err(|e| failed("swapping the data", e))
         });
     match extracted {
-        Ok(entries) => {
-            // The old contents are under the fresh name now.
-            let left_over = remove_tree(volume.as_fd(), &fresh, device, 0).err().map(|error| {
-                tracing::warn!(%error, "the old contents of the volume could not all be removed");
-                fresh.to_string_lossy().into_owned()
-            });
-            Ok(RestoreDone { entries, left_over })
-        }
+        Ok(entries) => Ok(Extracted { entries, fresh }),
         Err(error) => {
-            if let Err(cleanup) = remove_tree(volume.as_fd(), &fresh, device, 0) {
+            if let Err(cleanup) = remove_tree(volume.as_fd(), &fresh_c, device, 0) {
                 tracing::warn!(%cleanup, "what was extracted could not all be removed");
             }
             Err(error)
         }
     }
+}
+
+/// Swaps the fresh folder `job` names in for the volume's data, in one
+/// rename, and removes the old contents; with `discard`, removes the fresh
+/// folder instead.
+pub(crate) fn swap(job: &SwapJob) -> Result<Swapped, ArchiveError> {
+    if !is_fresh_name(job.fresh.as_bytes()) {
+        return Err(refused(format!("{} is no folder a restore made", job.fresh)));
+    }
+    let (volume, device) = volume_folder(&job.volume_dir)?;
+    folder_beside(volume.as_fd(), &job.fresh, device)?;
+    let fresh = CString::new(job.fresh.as_str()).map_err(|e| failed("a name", e))?;
+    if !job.discard {
+        folder_beside(volume.as_fd(), "_data", device)?;
+        renameat_with(&volume, "_data", &volume, fresh.as_c_str(), RenameFlags::EXCHANGE)
+            .map_err(|e| failed("swapping the data", e))?;
+    }
+    // The old contents are under the fresh name now, or what was extracted.
+    let left_over = remove_tree(volume.as_fd(), &fresh, device, 0).err().map(|error| {
+        tracing::warn!(%error, "a folder beside the volume's data could not all be removed");
+        job.fresh.clone()
+    });
+    Ok(Swapped { left_over })
+}
+
+/// What a whole restore did: extracted, then swapped in.
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct RestoreDone {
+    pub entries: u64,
+    pub left_over: Option<String>,
+}
+
+/// Restores a volume as `job` says, both units' work in one.
+#[cfg(test)]
+pub(crate) fn restore(
+    job: &RestoreJob,
+    report: &mut dyn FnMut(&'static str, u8),
+) -> Result<RestoreDone, ArchiveError> {
+    let extracted = extract_volume(job, report)?;
+    let swap = SwapJob { volume_dir: job.volume_dir.clone(), fresh: extracted.fresh, discard: false };
+    let swapped = self::swap(&swap)?;
+    Ok(RestoreDone { entries: extracted.entries, left_over: swapped.left_over })
 }
 
 /// Removes a backup's file if it still is the one written; `false` if it
@@ -1105,7 +1177,10 @@ pub(crate) fn decode<T: serde::de::DeserializeOwned>(hex: &str) -> Result<T, Str
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VolumeJob {
     BackUp,
+    /// A restore's first part: the archive extracted beside the data.
     Restore,
+    /// Its second: swapped in.
+    Swap,
     RemoveBackup,
 }
 
@@ -1115,7 +1190,18 @@ impl VolumeJob {
         match self {
             Self::BackUp => "backup-volume",
             Self::Restore => "restore-volume",
+            Self::Swap => "swap-volume",
             Self::RemoveBackup => "remove-volume-backup",
+        }
+    }
+
+    /// The word for it in its unit's name.
+    pub(crate) fn word(self) -> &'static str {
+        match self {
+            Self::BackUp => "backup",
+            Self::Restore => "restore",
+            Self::Swap => "swap",
+            Self::RemoveBackup => "remove",
         }
     }
 }
@@ -1137,8 +1223,12 @@ pub fn run_volume_job(kind: VolumeJob, hex: &str, now: i64, out: &mut dyn Write)
                     .and_then(|done| serde_json::to_value(done).map_err(|e| failed("the result", e)))
             }),
             VolumeJob::Restore => decode::<RestoreJob>(hex).map_err(ArchiveError::Refused).and_then(|job| {
-                restore(&job, &mut progress)
+                extract_volume(&job, &mut progress)
                     .and_then(|done| serde_json::to_value(done).map_err(|e| failed("the result", e)))
+            }),
+            VolumeJob::Swap => decode::<SwapJob>(hex).map_err(ArchiveError::Refused).and_then(|job| {
+                progress("restoring", 100);
+                swap(&job).and_then(|done| serde_json::to_value(done).map_err(|e| failed("the result", e)))
             }),
             VolumeJob::RemoveBackup => decode::<RemoveJob>(hex)
                 .map_err(ArchiveError::Refused)

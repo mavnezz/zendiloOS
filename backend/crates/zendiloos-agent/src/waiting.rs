@@ -88,6 +88,25 @@ pub(crate) fn flag_when_given_up(stop: std::sync::Arc<std::sync::atomic::AtomicB
     Some(Watching(task))
 }
 
+/// Resolves once the request's client hung up or the agent is asked to
+/// stop, for work that ends itself then (a volume's unit, which would
+/// otherwise run on unseen); never outside a request.
+pub(crate) async fn given_up() {
+    let Ok(Turn { mut gone, mut stopping, .. }) = TURN.try_with(Clone::clone) else {
+        return std::future::pending().await;
+    };
+    tokio::select! {
+        () = set(&mut gone) => {}
+        () = set(&mut stopping) => {}
+    }
+}
+
+/// Whether the request's client hung up or the agent is asked to stop;
+/// never outside a request.
+pub(crate) fn is_given_up() -> bool {
+    TURN.try_with(|turn| *turn.gone.borrow() || *turn.stopping.borrow()).unwrap_or(false)
+}
+
 /// Watches as long as it lives.
 #[derive(Debug)]
 pub(crate) struct Watching(tokio::task::JoinHandle<()>);
@@ -196,6 +215,31 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         assert!(stop.load(Ordering::Relaxed), "the agent stops");
+    }
+
+    #[tokio::test]
+    async fn work_that_ends_itself_hears_when_its_client_hangs_up_or_the_agent_stops() {
+        assert!(!is_given_up(), "outside a request");
+        let outside = tokio::time::timeout(Duration::from_millis(20), given_up()).await;
+        assert!(outside.is_err(), "never outside a request");
+        for client in [true, false] {
+            let (turn, gone, stopping) = turn(None);
+            let waiting = tokio::spawn(turn.clone().scope(given_up()));
+            assert!(!turn.scope(async { is_given_up() }).await);
+            if client {
+                gone.send(true).unwrap()
+            } else {
+                stopping.send(true).unwrap()
+            }
+            tokio::time::timeout(Duration::from_secs(5), waiting).await.unwrap().unwrap();
+            let (turn, gone, stopping) = self::turn(None);
+            if client {
+                gone.send(true).unwrap()
+            } else {
+                stopping.send(true).unwrap()
+            }
+            assert!(turn.scope(async { is_given_up() }).await);
+        }
     }
 
     #[tokio::test]

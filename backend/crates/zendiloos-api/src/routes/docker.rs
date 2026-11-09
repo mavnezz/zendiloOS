@@ -88,6 +88,9 @@ impl From<ContainersError> for ApiError {
             ContainersError::VolumeBusy(volume) => {
                 rejected(StatusCode::CONFLICT, "volume_busy", Some(volume))
             }
+            ContainersError::Held(names) => {
+                rejected(StatusCode::CONFLICT, "containers_held", Some(names.join(", ")))
+            }
             ContainersError::Port(e) => ApiError::internal(e),
         }
     }
