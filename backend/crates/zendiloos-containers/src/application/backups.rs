@@ -258,8 +258,7 @@ impl Containers {
         actor: Option<&Actor>,
         context: &RequestContext,
     ) -> Result<Job, ContainersError> {
-        let stops = plan.stop_containers;
-        self.claim(&plan.volume, stops, stops, context).await?;
+        self.claim(&plan.volume, plan.stop_containers, context).await?;
         let this = self.clone();
         let (who, context) = (actor.cloned(), context.clone());
         let volume = plan.volume.clone();
@@ -488,7 +487,7 @@ impl Containers {
             .locate(backup.share_id)
             .await?
             .ok_or_else(|| ContainersError::Refused("the share the backup lies in is gone".into()))?;
-        self.claim(&name, true, stop_containers, context).await?;
+        self.claim(&name, true, context).await?;
         let this = self.clone();
         let (who, context) = (actor.clone(), context.clone());
         let audited = format!("{name} ← {}", written.archive.path);

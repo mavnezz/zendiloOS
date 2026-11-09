@@ -2,12 +2,15 @@
 //! restored (docs/architecture.md, 4.9).
 //!
 //! Each backup or restore claims its volume when it is asked for, with the
-//! containers it will keep stopped: those that use the volume and run, and
-//! those another backup or restore stopped. They take turns, one at a time
-//! on the whole NAS, and stop the containers only once their turn came. A
-//! container stopped for one starts again only once the last claim holding
-//! it ended, so a container of two volumes backed up one after the other
-//! stays stopped until both are done.
+//! containers it will keep stopped: every container that uses the volume,
+//! whether it runs, is being stopped or was stopped by another backup or
+//! restore (one stopped by hand is never started by it). They take turns,
+//! one at a time on the whole NAS, and stop the containers only once their
+//! turn came. A container stopped for one starts again only once the last
+//! claim holding it ended, so a container of two volumes backed up one
+//! after the other stays stopped until both are done. A claim keeps its turn
+//! while its containers start again, so no other backup or restore begins
+//! beside a start.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -40,6 +43,9 @@ pub struct Holds {
     running: Option<String>,
     /// Containers a backup or restore stopped, not started again since.
     stopped: BTreeSet<String>,
+    /// Containers owed a start are being started outside any claim (the
+    /// minute's look): no claim takes its turn meanwhile.
+    starting: bool,
     /// Docker's data is being moved.
     moving: bool,
 }
@@ -78,6 +84,16 @@ impl Holds {
         self.claims.values().any(|claim| claim.containers.contains(container))
     }
 
+    /// Whether a claim other than `volume`'s holds `container`.
+    pub fn is_held_elsewhere(&self, container: &str, volume: &str) -> bool {
+        self.claims.iter().any(|(claimed, claim)| claimed != volume && claim.containers.contains(container))
+    }
+
+    /// The containers `volume`'s claim holds.
+    pub fn held_by(&self, volume: &str) -> Vec<String> {
+        self.claims.get(volume).map(|claim| claim.containers.iter().cloned().collect()).unwrap_or_default()
+    }
+
     /// Whether a backup or restore stopped `container` and nothing started
     /// it since.
     pub fn is_stopped(&self, container: &str) -> bool {
@@ -88,7 +104,7 @@ impl Holds {
     /// container another stopped first, so that it is stopped no longer
     /// than need be; otherwise the one claimed first.
     pub fn next(&self) -> Option<&str> {
-        if self.running.is_some() {
+        if self.running.is_some() || self.starting {
             return None;
         }
         let waits_on_it = |volume: &&String| {
@@ -141,6 +157,21 @@ impl Holds {
             self.claims.get(running).is_some_and(|claim| claim.stops) && volumes.contains(&running)
         });
         kept || working
+    }
+
+    /// Containers owed a start are to be started outside any claim: only
+    /// while no claim has its turn, and none takes it until they are; whether
+    /// that may be now.
+    pub fn begin_starts(&mut self) -> bool {
+        if self.running.is_some() || self.starting {
+            return false;
+        }
+        self.starting = true;
+        true
+    }
+
+    pub fn end_starts(&mut self) {
+        self.starting = false;
     }
 
     /// Docker's data starts moving: refused while a volume is claimed.
@@ -218,6 +249,24 @@ mod tests {
         holds.claim("logs", false, []).unwrap();
         assert!(holds.take_turn("logs"));
         assert!(!holds.blocks("worker", &["logs"]), "a backup that leaves them running");
+    }
+
+    #[test]
+    fn a_claim_knows_what_others_hold_and_none_takes_its_turn_while_containers_start() {
+        let mut holds = Holds::default();
+        holds.claim("app_data", true, names(&["app", "web"])).unwrap();
+        holds.claim("app_db", true, names(&["app"])).unwrap();
+        assert!(holds.is_held_elsewhere("app", "app_data") && !holds.is_held_elsewhere("web", "app_data"));
+        assert_eq!(holds.held_by("app_data"), ["app", "web"]);
+        assert!(holds.held_by("nothing").is_empty());
+
+        assert!(holds.begin_starts());
+        assert!(!holds.begin_starts(), "one at a time");
+        assert_eq!(holds.next(), None, "no turn while containers start");
+        assert!(!holds.take_turn("app_data"));
+        holds.end_starts();
+        assert!(holds.take_turn("app_data"));
+        assert!(!holds.begin_starts(), "not while a claim has its turn");
     }
 
     #[test]

@@ -1562,10 +1562,13 @@ backed up.
 A run is a job, by hand ("Back up now") or on the schedule, and so is a
 restore. Each claims its volume when it is asked for (one at a time per
 volume, `volume_busy` otherwise) with the containers it will keep stopped:
-those that use the volume and run, if it stops them, and those another
-backup or restore stopped. Backups and restores then take turns, one at a
-time on the whole NAS ("waiting" meanwhile; a claim holding a container
-another one stopped goes first), and only once its turn came, right before
+every container that uses the volume, if it stops them, whatever Docker
+said of it a moment before (running, being stopped, stopped by another
+backup or restore, being started again by one that ended; one stopped by
+hand is owed no start, so holding it starts nothing). Backups and restores
+then take turns, one at a time on the whole NAS ("waiting" meanwhile; a
+claim holding a container another one stopped goes first), and only once
+its turn came, right before
 the agent starts the work, does a run stop the running containers that use
 the volume. Each is noted first as owed a start (`docker_owed_starts`, with
 the volume). A container stays stopped until the last claim holding it
@@ -1576,12 +1579,17 @@ project controlled or deleted (`containers_held`); deploys, redeploys,
 image updates and updates of one container wait in their job until nothing
 holds the project's containers; Docker's data does not move while a volume
 is claimed, and no volume is claimed while it moves. When a run ends,
-whatever came of it, its claim goes, and the containers nothing else
-holds are started again; each is forgotten only once its start succeeded.
-A container stays owed when its start fails, and every minute, and when
-zendiloosd starts, those nothing holds are started, each only after the
-agent said nothing works on their volumes any more (`EndVolumeWork`, which
-stops what a restart left). zendiloosd is not ordered after
+whatever came of it, the containers nothing else holds are started again,
+each looked at right before its start (one a backup or restore asked for
+meanwhile holds stays stopped for it), and only then does its claim go: it
+keeps its turn while they start, so no other backup or restore begins
+beside a start and finds a container stopped that is about to run. Each is
+forgotten only once its start succeeded. A container stays owed when its
+start fails, and every minute, and when zendiloosd starts, those nothing
+holds are started (not while a backup or restore has its turn), each only
+after the agent said nothing works on their volumes any more
+(`EndVolumeWork`, which stops what a restart left). zendiloosd is not
+ordered after
 `docker.service`: Docker waits for its pool's mount and has no start
 timeout, and the web interface must come up without it; the minute's look
 starts the containers once Docker is up. The run is recorded

@@ -113,6 +113,13 @@ pub struct FakeEngine {
     pub volumes: Mutex<Vec<Volume>>,
     /// Containers, by ID, that will not start.
     pub stubborn: Mutex<Vec<String>>,
+    /// How long a stop takes, the container running meanwhile: one that
+    /// ignores SIGTERM takes Docker's ten seconds.
+    pub stop_takes: Mutex<std::time::Duration>,
+    /// How long the next listing of the containers takes (Docker busy);
+    /// `listing_late` says one is under way.
+    pub next_listing_takes: Mutex<Option<std::time::Duration>>,
+    pub listing_late: std::sync::atomic::AtomicBool,
     pub listings: Mutex<Vec<ComposeListing>>,
     /// What Compose reads from a file containing `privileged: true`; plain
     /// otherwise; a file containing `broken` it cannot read.
@@ -140,6 +147,9 @@ impl Default for FakeEngine {
                 container("lonely", None, "alpine", false),
             ]),
             stubborn: Mutex::new(vec![]),
+            stop_takes: Mutex::new(std::time::Duration::ZERO),
+            next_listing_takes: Mutex::new(None),
+            listing_late: std::sync::atomic::AtomicBool::new(false),
             volumes: Mutex::new(vec![
                 volume("kuma_data", Some("kuma")),
                 volume("stack_db", Some("stack")),
@@ -182,6 +192,12 @@ impl FakeEngine {
 #[async_trait]
 impl DockerEngine for FakeEngine {
     async fn containers(&self, _: &RequestContext) -> Result<Vec<Container>, EngineError> {
+        let takes = self.next_listing_takes.lock().unwrap().take();
+        if let Some(takes) = takes {
+            self.listing_late.store(true, std::sync::atomic::Ordering::Relaxed);
+            tokio::time::sleep(takes).await;
+            self.listing_late.store(false, std::sync::atomic::Ordering::Relaxed);
+        }
         Ok(self.containers.lock().unwrap().clone())
     }
 
@@ -236,6 +252,10 @@ impl DockerEngine for FakeEngine {
         self.call(format!("{} {id}", action.as_str()));
         if action == ContainerAction::Start && self.stubborn.lock().unwrap().iter().any(|s| s == id) {
             return Err(EngineError::Failed("it exited at once".into()));
+        }
+        let takes = *self.stop_takes.lock().unwrap();
+        if action == ContainerAction::Stop && !takes.is_zero() {
+            tokio::time::sleep(takes).await;
         }
         let mut containers = self.containers.lock().unwrap();
         let container =

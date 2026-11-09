@@ -67,7 +67,7 @@ impl Containers {
             return Err(ContainersError::Refused(format!("{} is used by {}", volume.name, users.join(", "))));
         }
         let done = async {
-            self.claim(&volume.name, false, false, context).await?;
+            self.claim(&volume.name, false, context).await?;
             let removed =
                 self.ports.engine.remove_volume(&volume.name, context).await.map_err(ContainersError::from);
             self.unclaim(&volume.name);

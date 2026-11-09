@@ -277,6 +277,118 @@ async fn containers_stopped_for_a_backup_are_started_once_docker_is_up() {
     assert!(world.backups.owed.lock().unwrap().is_empty(), "owed nothing once it started");
 }
 
+/// "Back up now" for two volumes of one container, the second asked for
+/// before, during and after the stop the first makes (a container that
+/// ignores SIGTERM takes Docker's ten seconds): the container is stopped
+/// once and started once, after the second.
+#[tokio::test]
+async fn a_container_stopped_slowly_for_one_volume_stays_stopped_for_its_other() {
+    for when in ["at once", "while it stops", "while the first is written"] {
+        let world = World::new();
+        {
+            let mut containers = world.engine.containers.lock().unwrap();
+            containers
+                .push(mounting(mounting(container("app", Some("app"), "app", true), "app_data"), "app_db"));
+            let mut volumes = world.engine.volumes.lock().unwrap();
+            volumes.push(volume("app_data", Some("app")));
+            volumes.push(volume("app_db", Some("app")));
+        }
+        *world.engine.stop_takes.lock().unwrap() = Duration::from_millis(300);
+        let archiver = held(&world, &["app_data"], false, "app");
+        let containers = world.containers(archiver.clone());
+        let context = RequestContext::default();
+        for name in ["app_data", "app_db"] {
+            containers.set_backup_plan(name, nightly(true), &alice(), &context).await.unwrap();
+        }
+
+        containers.back_up_now("app_data", &alice(), &context).await.unwrap();
+        match when {
+            "while it stops" => tokio::time::sleep(Duration::from_millis(100)).await,
+            "while the first is written" => world.until(|| archiver.entered.lock().unwrap().len() == 1).await,
+            _ => {}
+        }
+        containers.back_up_now("app_db", &alice(), &context).await.unwrap();
+        world.until(|| archiver.entered.lock().unwrap().len() == 1).await;
+        archiver.open.notify_one();
+        world.until(|| world.jobs_running() == 0).await;
+
+        let calls: Vec<String> =
+            world.engine.calls().into_iter().filter(|c| c.ends_with(" app-id")).collect();
+        assert_eq!(calls, ["stop app-id", "start app-id"], "the second asked for {when}");
+        assert_eq!(world.state("app"), ContainerState::Running, "{when}");
+        let seen = archiver.seen.lock().unwrap().clone();
+        assert!(seen.iter().all(|(_, ran)| !ran), "{when}: ran while a volume of it was written: {seen:?}");
+    }
+}
+
+/// The second backup asked for while the first, done writing, is about to
+/// start the container again (Docker slow to list the containers for it):
+/// the container stays stopped for the second, and the first leaves it to
+/// the second, which starts it once done.
+#[tokio::test]
+async fn a_container_the_first_backup_is_about_to_start_stays_stopped_for_the_second() {
+    let world = World::new();
+    {
+        let mut containers = world.engine.containers.lock().unwrap();
+        containers.push(mounting(mounting(container("app", Some("app"), "app", true), "app_data"), "app_db"));
+        let mut volumes = world.engine.volumes.lock().unwrap();
+        volumes.push(volume("app_data", Some("app")));
+        volumes.push(volume("app_db", Some("app")));
+    }
+    let archiver = held(&world, &["app_data"], false, "app");
+    let containers = world.containers(archiver.clone());
+    let context = RequestContext::default();
+    for name in ["app_data", "app_db"] {
+        containers.set_backup_plan(name, nightly(true), &alice(), &context).await.unwrap();
+    }
+    containers.back_up_now("app_data", &alice(), &context).await.unwrap();
+    world.until(|| archiver.entered.lock().unwrap().len() == 1).await;
+    assert_eq!(world.state("app"), ContainerState::Exited);
+
+    // The first is written; looking for the container to start it again
+    // takes a while, and the second is asked for meanwhile.
+    *world.engine.next_listing_takes.lock().unwrap() = Some(Duration::from_millis(300));
+    archiver.open.notify_one();
+    world.until(|| world.engine.listing_late.load(std::sync::atomic::Ordering::Relaxed)).await;
+    containers.back_up_now("app_db", &alice(), &context).await.unwrap();
+    world.until(|| world.jobs_running() == 0).await;
+
+    let calls: Vec<String> = world.engine.calls().into_iter().filter(|c| c.ends_with(" app-id")).collect();
+    assert_eq!(calls, ["stop app-id", "start app-id"], "started between the two, and stopped again");
+    assert_eq!(world.state("app"), ContainerState::Running);
+    assert!(world.backups.owed.lock().unwrap().is_empty());
+}
+
+/// The minute's look starts nothing beside a backup or restore that has
+/// its turn: it could start a container the backup just found stopped.
+#[tokio::test]
+async fn the_minutes_look_waits_for_the_backup_that_has_its_turn() {
+    let world = World::new();
+    let archiver = held(&world, &["orphan"], false, "kuma-1");
+    let containers = world.containers(archiver.clone());
+    let context = RequestContext::default();
+    // Owed a start from before, nothing holding it.
+    super::ports::BackupRepository::owe_start(
+        world.backups.as_ref(),
+        "kuma-1",
+        "kuma_data",
+        world.clock.now(),
+    )
+    .await
+    .unwrap();
+    containers.control_container("kuma-1", ContainerAction::Stop, &alice(), &context).await.unwrap();
+    containers.set_backup_plan("orphan", nightly(false), &alice(), &context).await.unwrap();
+    containers.back_up_now("orphan", &alice(), &context).await.unwrap();
+    world.until(|| archiver.entered.lock().unwrap().len() == 1).await;
+
+    assert_eq!(containers.start_owed_containers().await, 0, "not while a backup has its turn");
+    assert_eq!(world.state("kuma-1"), ContainerState::Exited);
+    archiver.open.notify_one();
+    world.until(|| world.jobs_running() == 0).await;
+    assert_eq!(containers.start_owed_containers().await, 1);
+    assert_eq!(world.state("kuma-1"), ContainerState::Running);
+}
+
 /// Two volumes of one container on the same schedule, containers stopped:
 /// one backup at a time, and the container stays stopped from the first's
 /// start to the second's end.

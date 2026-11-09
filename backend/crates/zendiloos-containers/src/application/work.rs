@@ -67,26 +67,21 @@ fn volumes_of(container: &Container) -> Vec<&str> {
 }
 
 impl Containers {
-    /// Claims `volume` for a backup or restore: it holds the containers
-    /// that use it and run (if `stop_running`), and those another backup or
-    /// restore stopped, until it ends. `stops`: the volume's containers must
-    /// not run while it works.
+    /// Claims `volume` for a backup or restore: it holds every container
+    /// that uses it until it ends, whatever Docker said of it a moment ago
+    /// (running, being stopped, stopped by another backup or restore, being
+    /// started again by one that ended); one stopped by hand is never owed a
+    /// start, so holding it starts nothing. `stops`: the volume's containers
+    /// must not run while it works.
     pub(super) async fn claim(
         &self,
         volume: &str,
         stops: bool,
-        stop_running: bool,
         context: &RequestContext,
     ) -> Result<(), ContainersError> {
         let containers = if stops { self.ports.engine.containers(context).await? } else { Vec::new() };
-        self.work.change(|holds| {
-            let held: Vec<String> = users(volume, &containers)
-                .into_iter()
-                .filter(|user| (user.running && stop_running) || holds.is_stopped(&user.name))
-                .map(|user| user.name)
-                .collect();
-            holds.claim(volume, stops, held)
-        })?;
+        let held: Vec<String> = users(volume, &containers).into_iter().map(|user| user.name).collect();
+        self.work.change(|holds| holds.claim(volume, stops, held))?;
         Ok(())
     }
 
@@ -134,11 +129,14 @@ impl Containers {
         Ok(stopped)
     }
 
-    /// `volume`'s backup or restore ended: its claim goes, and the
-    /// containers no other one holds start again if they are owed a start.
-    /// `ended`: the agent answered, so its work ended; otherwise it is asked
-    /// to end it first, and if it cannot say so, nothing starts until the
-    /// minute's look ([`Containers::start_owed_containers`]).
+    /// `volume`'s backup or restore ended: the containers it holds that no
+    /// other one holds start again if they are owed a start, and then its
+    /// claim goes. It keeps its turn meanwhile, so no other backup or restore
+    /// begins beside a start; one asked for meanwhile that holds a container
+    /// too keeps it stopped. `ended`: the agent answered, so its work ended;
+    /// otherwise it is asked to end it first, and if it cannot say so,
+    /// nothing starts until the minute's look
+    /// ([`Containers::start_owed_containers`]).
     pub(super) async fn finish(
         &self,
         volume: &str,
@@ -146,7 +144,20 @@ impl Containers {
         steps: &dyn Steps,
         context: &RequestContext,
     ) -> Result<(), ContainersError> {
-        let free = self.work.change(|holds| holds.release(volume));
+        let started = self.start_held(volume, ended, steps, context).await;
+        self.work.change(|holds| holds.release(volume));
+        started
+    }
+
+    /// What [`Containers::finish`] starts again, while `volume`'s claim
+    /// still holds its turn.
+    async fn start_held(
+        &self,
+        volume: &str,
+        ended: bool,
+        steps: &dyn Steps,
+        context: &RequestContext,
+    ) -> Result<(), ContainersError> {
         if !ended && let Err(error) = self.ports.archiver.end_work(volume, context).await {
             tracing::warn!(%error, volume, "containers: the agent does not say the work on the volume ended");
             return Err(ContainersError::Failed(format!(
@@ -155,12 +166,19 @@ impl Containers {
         }
         let owed: BTreeSet<String> =
             self.ports.backups.owed_starts().await?.into_iter().map(|owed| owed.container).collect();
-        let starting: Vec<String> = free.into_iter().filter(|name| owed.contains(name)).collect();
+        let starting: Vec<String> = {
+            let holds = self.work.holds();
+            holds
+                .held_by(volume)
+                .into_iter()
+                .filter(|name| owed.contains(name) && !holds.is_held_elsewhere(name, volume))
+                .collect()
+        };
         if starting.is_empty() {
             return Ok(());
         }
         steps.step("starting", None);
-        let failed = self.start_owed(&starting, context).await;
+        let failed = self.start_owed(&starting, Some(volume), context).await;
         if failed.is_empty() {
             Ok(())
         } else {
@@ -168,12 +186,31 @@ impl Containers {
         }
     }
 
-    /// Starts each container named, owed a start; one that started, or is
-    /// gone, is owed nothing any more. Those that would not start.
-    async fn start_owed(&self, names: &[String], context: &RequestContext) -> Vec<String> {
+    /// Starts each container named, owed a start, unless a claim other than
+    /// `volume`'s holds it by now (looked at right before its start: one
+    /// asked for meanwhile keeps it stopped). One that started, or is gone,
+    /// is owed nothing any more. Those that would not start.
+    async fn start_owed(
+        &self,
+        names: &[String],
+        volume: Option<&str>,
+        context: &RequestContext,
+    ) -> Vec<String> {
         let mut failed = Vec::new();
         for name in names {
-            let started = match self.find_container(name, context).await {
+            let container = self.find_container(name, context).await;
+            let held = {
+                let holds = self.work.holds();
+                match volume {
+                    Some(volume) => holds.is_held_elsewhere(name, volume),
+                    None => holds.is_held(name),
+                }
+            };
+            if held {
+                tracing::info!(container = name, "containers: kept stopped for another backup or restore");
+                continue;
+            }
+            let started = match container {
                 Ok(container) => self
                     .ports
                     .engine
@@ -206,6 +243,17 @@ impl Containers {
     /// on their volumes any more, stopping what a restart left. Run at
     /// startup and every minute; how many started.
     pub async fn start_owed_containers(&self) -> usize {
+        // Not beside a backup or restore: one that begins could find a
+        // container not yet running and leave it to run during its work.
+        if !self.work.change(Holds::begin_starts) {
+            return 0;
+        }
+        let started = self.start_owed_now().await;
+        self.work.change(Holds::end_starts);
+        started
+    }
+
+    async fn start_owed_now(&self) -> usize {
         let owed = match self.ports.backups.owed_starts().await {
             Ok(owed) => owed,
             Err(error) => {
@@ -245,7 +293,7 @@ impl Containers {
         if startable.is_empty() {
             return 0;
         }
-        let failed = self.start_owed(&startable, &context).await;
+        let failed = self.start_owed(&startable, None, &context).await;
         startable.len() - failed.len()
     }
 
