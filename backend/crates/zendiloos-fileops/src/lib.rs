@@ -1,7 +1,14 @@
 //! File operations beneath the root of a share, with the credentials of the
-//! calling thread. The files agent calls them on a thread that took on a
-//! user's credentials, so the file system's permissions decide, exactly as
-//! for SMB and NFS; the simulator calls them in a scratch directory.
+//! calling thread. The files agent calls them, in a personal folder on a
+//! thread that took on its user's credentials, so the file system's
+//! permissions decide; on a share or a removable drive on a thread with
+//! root's access to files, after zendiloosd checked the share's rules
+//! (docs/architecture.md, 4.4). The simulator calls them in a scratch
+//! directory.
+//!
+//! What is made in a share takes the owner of the folder it is made in and
+//! the group `zendiloos-files` ([`NewEntries::Inherit`]), as Samba gives
+//! what it writes there; elsewhere it is the calling thread's.
 //!
 //! Paths from requests are resolved with `openat2` beneath the share's root
 //! (`RESOLVE_BENEATH | RESOLVE_NO_XDEV | RESOLVE_NO_MAGICLINKS`): neither
@@ -19,9 +26,9 @@ use std::time::Instant;
 
 use rustix::fs::Timespec;
 use rustix::fs::{
-    Access, AtFlags, Dir, FileType, Mode, OFlags, RenameFlags, ResolveFlags, Stat, StatxFlags, Timestamps,
-    accessat, fstat, futimens, mkdirat, open, openat, openat2, readlinkat, renameat_with, statat, statx,
-    symlinkat, unlinkat,
+    Access, AtFlags, Dir, FileType, Gid, Mode, OFlags, RenameFlags, ResolveFlags, Stat, StatxFlags,
+    Timestamps, Uid, accessat, chownat, fstat, futimens, mkdirat, open, openat, openat2, readlinkat,
+    renameat_with, statat, statx, symlinkat, unlinkat,
 };
 use rustix::io::Errno;
 use rustix::rand::{GetRandomFlags, getrandom};
@@ -125,6 +132,54 @@ fn clash(folder: BorrowedFd<'_>, name: &CStr) -> FileError {
 /// half written, and only where it began is a leftover ever removed.
 fn upload_under_way(name: &CStr) -> bool {
     name.to_bytes().starts_with(UPLOAD_PREFIX.as_bytes())
+}
+
+/// Whose what is made in a root is.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum NewEntries {
+    /// The calling thread's: a personal folder (its user's), a removable
+    /// drive (root's, or the owners its file system has). Recycle bins are
+    /// their user's alone (0700).
+    #[default]
+    Maker,
+    /// The owner of the folder it is made in, and `group`
+    /// (`zendiloos-files`): a share, worked on with root's access to files.
+    /// The recycle bin is everyone's who may use the share.
+    Inherit { group: u32 },
+}
+
+impl NewEntries {
+    /// Gives `made`, just made in `folder`, its owners. Its own descriptor,
+    /// never its name: whoever may write the folder could put something
+    /// else there meanwhile.
+    fn adopt(self, folder: BorrowedFd<'_>, made: BorrowedFd<'_>) -> Result<(), FileError> {
+        let NewEntries::Inherit { group } = self else { return Ok(()) };
+        let owner = fstat(folder)?.st_uid;
+        chownat(made, c"", Some(Uid::from_raw(owner)), Some(Gid::from_raw(group)), AtFlags::EMPTY_PATH)?;
+        Ok(())
+    }
+
+    /// As [`Self::adopt`], for a link just made as `name` in `folder`, as
+    /// long as a link has the name.
+    fn adopt_link(self, folder: BorrowedFd<'_>, name: &CStr) -> Result<(), FileError> {
+        let NewEntries::Inherit { group } = self else { return Ok(()) };
+        if kind(&statat(folder, name, AtFlags::SYMLINK_NOFOLLOW)?) != FileType::Symlink {
+            return Ok(());
+        }
+        let owner = fstat(folder)?.st_uid;
+        let (owner, group) = (Some(Uid::from_raw(owner)), Some(Gid::from_raw(group)));
+        chownat(folder, name, owner, group, AtFlags::SYMLINK_NOFOLLOW)?;
+        Ok(())
+    }
+
+    /// A user's recycle bin: their own on a personal folder, everyone's who
+    /// may use a share there.
+    fn bin_mode(self) -> u32 {
+        match self {
+            NewEntries::Maker => 0o700,
+            NewEntries::Inherit { .. } => 0o770,
+        }
+    }
 }
 
 /// What a search found, and why it ended early, if it did.
@@ -286,6 +341,7 @@ fn open_link(directory: BorrowedFd<'_>, name: &CStr) -> Result<Option<(Stat, CSt
 /// On failure, what was created is removed again. Uploads under way are
 /// left out (the top refused), and so are devices, pipes, sockets and
 /// file systems mounted inside.
+#[allow(clippy::too_many_arguments)]
 fn copy_new(
     source: BorrowedFd<'_>,
     name: &CStr,
@@ -294,6 +350,7 @@ fn copy_new(
     file_system: u64,
     depth: u32,
     copied: &mut Copied,
+    owners: NewEntries,
 ) -> Result<(), FileError> {
     if upload_under_way(name) {
         return if depth == 0 {
@@ -326,6 +383,10 @@ fn copy_new(
             if !some_names(&to, 1)?.is_empty() {
                 return Err(nested(FileError::Exists));
             }
+            if let Err(error) = owners.adopt(target, to.as_fd()) {
+                let _ = remove_entry(target, target_name, device(&made), 0, Some(identity(&made)));
+                return Err(nested(error));
+            }
             let folder = copied.folder(name, &opened);
             let filled = (|| {
                 // Read as it goes: what is copied lands in another folder.
@@ -335,7 +396,16 @@ fn copy_new(
                     if child == c"." || child == c".." {
                         continue;
                     }
-                    match copy_new(from.as_fd(), child, to.as_fd(), child, file_system, depth + 1, copied) {
+                    match copy_new(
+                        from.as_fd(),
+                        child,
+                        to.as_fd(),
+                        child,
+                        file_system,
+                        depth + 1,
+                        copied,
+                        owners,
+                    ) {
                         Ok(()) => {}
                         Err(FileError::Exists) => return Err(clash(to.as_fd(), child)),
                         Err(error) => return Err(nested(error)),
@@ -368,7 +438,9 @@ fn copy_new(
                 let (mut from, mut to) = (File::from(from), File::from(to));
                 // copy_file_range: on ZFS, blocks are cloned instead of copied.
                 std::io::copy(&mut from, &mut to)?;
+                // Its times while it is the maker's, then its owners.
                 futimens(&to, &timestamps(&opened))?;
+                owners.adopt(target, to.as_fd())?;
                 Ok::<_, FileError>(())
             })();
             if let Err(error) = written {
@@ -380,6 +452,7 @@ fn copy_new(
         FileType::Symlink => {
             let Some((opened, link)) = open_link(source, name)? else { return Ok(()) };
             symlinkat(link.as_c_str(), target, target_name)?;
+            owners.adopt_link(target, target_name)?;
             copied.link(name, &opened, &link);
         }
         // Devices, pipes and sockets are not copied.
@@ -449,13 +522,18 @@ fn remove_entry(
 }
 
 /// Opens directory `name` in `directory`, creating it with `mode` first if
-/// it does not exist.
-fn enter(directory: &OwnedFd, name: &str, mode: u32) -> Result<OwnedFd, FileError> {
-    match mkdirat(directory, name, Mode::from_raw_mode(mode)) {
-        Ok(()) | Err(Errno::EXIST) => {}
+/// it does not exist; one made here gets the owners `owners` give.
+fn enter(directory: &OwnedFd, name: &str, mode: u32, owners: NewEntries) -> Result<OwnedFd, FileError> {
+    let made = match mkdirat(directory, name, Mode::from_raw_mode(mode)) {
+        Ok(()) => true,
+        Err(Errno::EXIST) => false,
         Err(error) => return Err(error.into()),
+    };
+    let entered = open_beneath_flags(directory.as_fd(), &c_name(name)?, OFlags::PATH | OFlags::DIRECTORY)?;
+    if made {
+        owners.adopt(directory.as_fd(), entered.as_fd())?;
     }
-    open_beneath_flags(directory.as_fd(), &c_name(name)?, OFlags::PATH | OFlags::DIRECTORY)
+    Ok(entered)
 }
 
 /// The root directory of one share.
@@ -464,6 +542,8 @@ pub struct ShareRoot {
     directory: OwnedFd,
     file_system: u64,
     inode: u64,
+    /// Whose what is made here is.
+    new_entries: NewEntries,
 }
 
 impl ShareRoot {
@@ -484,7 +564,12 @@ impl ShareRoot {
         if require_mount && device(&stat) == device(&fstat(&volume_directory)?) {
             return Err(FileError::Invalid("the share is not mounted"));
         }
-        Ok(Self { directory, file_system: device(&stat), inode: inode(&stat) })
+        Ok(Self {
+            directory,
+            file_system: device(&stat),
+            inode: inode(&stat),
+            new_entries: NewEntries::Maker,
+        })
     }
 
     /// The snapshot `label` of a mounted share, as a root of its own: ZFS
@@ -508,7 +593,12 @@ impl ShareRoot {
         if device(&stat) == live.file_system {
             return Err(FileError::Invalid("the snapshot is not mounted"));
         }
-        Ok(Self { directory, file_system: device(&stat), inode: inode(&stat) })
+        Ok(Self {
+            directory,
+            file_system: device(&stat),
+            inode: inode(&stat),
+            new_entries: NewEntries::Maker,
+        })
     }
 
     /// The personal folder of `user`, `<volumes>/volume<N>/@homes/<user>`,
@@ -528,7 +618,12 @@ impl ShareRoot {
         if device(&stat) != homes_device {
             return Err(FileError::Invalid("the personal folder is not a folder of the homes' dataset"));
         }
-        Ok(Self { directory, file_system: device(&stat), inode: inode(&stat) })
+        Ok(Self {
+            directory,
+            file_system: device(&stat),
+            inode: inode(&stat),
+            new_entries: NewEntries::Maker,
+        })
     }
 
     /// A removable drive's root, `<places>/<id>`: with `require_mount`, only
@@ -542,7 +637,18 @@ impl ShareRoot {
         if require_mount && device(&stat) == device(&fstat(&base)?) {
             return Err(FileError::Invalid("the drive is not mounted"));
         }
-        Ok(Self { directory, file_system: device(&stat), inode: inode(&stat) })
+        Ok(Self {
+            directory,
+            file_system: device(&stat),
+            inode: inode(&stat),
+            new_entries: NewEntries::Maker,
+        })
+    }
+
+    /// What is made here then is given as `new_entries` says.
+    #[must_use]
+    pub fn with_new_entries(self, new_entries: NewEntries) -> Self {
+        Self { new_entries, ..self }
     }
 
     fn same_as(&self, other: &ShareRoot) -> bool {
@@ -780,7 +886,13 @@ impl ShareRoot {
             let name = format!("{UPLOAD_PREFIX}{:016x}", u64::from_le_bytes(random));
             let flags = OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC;
             match openat(&parent, name.as_str(), flags, Mode::from_raw_mode(0o666)) {
-                Ok(file) => return Ok((file, name)),
+                Ok(file) => {
+                    if let Err(error) = self.new_entries.adopt(parent.as_fd(), file.as_fd()) {
+                        let _ = unlinkat(&parent, name.as_str(), AtFlags::empty());
+                        return Err(error);
+                    }
+                    return Ok((file, name));
+                }
                 Err(Errno::EXIST) => continue,
                 Err(error) => return Err(error.into()),
             }
@@ -802,8 +914,27 @@ impl ShareRoot {
     }
 
     pub fn make_directory(&self, path: &SharePath) -> Result<(), FileError> {
+        self.make_directory_for(path, None)
+    }
+
+    /// As [`Self::make_directory`]; in a root whose entries take their
+    /// folder's owner ([`NewEntries::Inherit`]), with `owner` the folder is
+    /// that UID's instead (and the group's).
+    pub fn make_directory_for(&self, path: &SharePath, owner: Option<u32>) -> Result<(), FileError> {
         let (parent, name) = self.parent(path)?;
-        Ok(mkdirat(&parent, name, Mode::from_raw_mode(0o777))?)
+        mkdirat(&parent, name, Mode::from_raw_mode(0o777))?;
+        if let NewEntries::Inherit { group } = self.new_entries {
+            // A link put in its place meanwhile is not followed.
+            let made = open_beneath_flags(parent.as_fd(), &c_name(name)?, OFlags::PATH | OFlags::DIRECTORY)?;
+            match owner {
+                Some(owner) => {
+                    let (owner, group) = (Some(Uid::from_raw(owner)), Some(Gid::from_raw(group)));
+                    chownat(&made, c"", owner, group, AtFlags::EMPTY_PATH)?;
+                }
+                None => self.new_entries.adopt(parent.as_fd(), made.as_fd())?,
+            }
+        }
+        Ok(())
     }
 
     /// Renames or moves `from` to `to` in `target`, which may be another
@@ -857,6 +988,7 @@ impl ShareRoot {
                     self.file_system,
                     0,
                     &mut copied,
+                    target.new_entries,
                 )?;
                 target.sync()?;
                 self.remove_copied(from, &copied)
@@ -902,6 +1034,7 @@ impl ShareRoot {
                 self.file_system,
                 0,
                 &mut Copied::off(),
+                target.new_entries,
             ) {
                 Ok(()) => {
                     return directory.join(&name).map_err(|_| FileError::Invalid("the path is too long"));
@@ -948,7 +1081,7 @@ impl ShareRoot {
         let mut target = SharePath::root();
         for folder in folders {
             let folder = original_name(folder);
-            directory = enter(&directory, folder, 0o777)?;
+            directory = enter(&directory, folder, 0o777, self.new_entries)?;
             target = target.join(folder).map_err(too_long)?;
         }
         let original = original_name(name);
@@ -974,24 +1107,30 @@ impl ShareRoot {
 
     /// As Samba's `vfs_recycle` does with `keeptree` and `versions`:
     /// `.recycle/<user>/<folders>/<name>`, or `Copy #N of <name>` there if
-    /// taken. The user's directory is private to them.
+    /// taken. In a personal folder the user's directory is private to them;
+    /// in a share, everyone who may use the share sees the bin, and the
+    /// folder of each user says who deleted what.
     fn recycle(&self, path: &SharePath, user: &str) -> Result<(), FileError> {
         if !is_file_name(user) {
             return Err(FileError::Invalid("not a valid user name"));
         }
         let (parent, name) = self.parent(path)?;
-        // The agent creates `.recycle` with the share's permissions; if it is
-        // missing, it inherits them from the share's root.
-        let mut bin = enter(&self.directory(&SharePath::root())?, RECYCLE_DIRECTORY, 0o777)?;
-        bin = enter(&bin, user, 0o700)?;
-        // Another writer could have made a folder of this name first, to
-        // read what lands in it.
-        let own = fstat(&bin)?;
-        if own.st_uid != rustix::process::geteuid().as_raw() || own.st_mode & 0o077 != 0 {
-            return Err(FileError::Invalid("the recycle bin is not yours alone; ask an administrator"));
+        // The agent creates a share's `.recycle` with the share's
+        // permissions; if it is missing, it inherits them from the root.
+        let owners = self.new_entries;
+        let mut bin = enter(&self.directory(&SharePath::root())?, RECYCLE_DIRECTORY, 0o777, owners)?;
+        bin = enter(&bin, user, owners.bin_mode(), owners)?;
+        if owners == NewEntries::Maker {
+            // Another one who may write the personal folder (an
+            // administrator over SMB, say) could have made a folder of this
+            // name first, to read what lands in it.
+            let own = fstat(&bin)?;
+            if own.st_uid != rustix::process::geteuid().as_raw() || own.st_mode & 0o077 != 0 {
+                return Err(FileError::Invalid("the recycle bin is not yours alone; ask an administrator"));
+            }
         }
         for folder in path.parent().unwrap_or_default().names() {
-            bin = enter(&bin, folder, 0o700)?;
+            bin = enter(&bin, folder, owners.bin_mode(), owners)?;
         }
         for version in 0..MAX_NUMBERED {
             let target = if version == 0 { name.to_owned() } else { format!("Copy #{version} of {name}") };

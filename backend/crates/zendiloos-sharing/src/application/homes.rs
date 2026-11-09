@@ -52,7 +52,7 @@ impl SharingUseCases {
             }
         }
         self.ports.shares.set_homes_location(Some(&location)).await?;
-        self.apply_locked(request).await?;
+        self.apply_locked(&[], request).await?;
         self.audit("sharing.homes_enable", Outcome::Success, pool, actor, request).await;
         Ok(HomesSettings { location: Some(location), homes: self.ports.shares.homes().await? })
     }
@@ -61,7 +61,7 @@ impl SharingUseCases {
     pub async fn disable_homes(&self, actor: &Actor, request: &RequestContext) -> Result<(), SharingError> {
         let _changes = self.changes.lock().await;
         self.ports.shares.set_homes_location(None).await?;
-        self.apply_locked(request).await?;
+        self.apply_locked(&[], request).await?;
         self.audit("sharing.homes_disable", Outcome::Success, "", actor, request).await;
         Ok(())
     }
@@ -90,7 +90,7 @@ impl SharingUseCases {
         let name = names.accounts.get(&account).ok_or(SharingError::UnknownSubject)?.clone();
         if !enabled {
             self.ports.shares.remove_home(account).await?;
-            self.apply_locked(request).await?;
+            self.apply_locked(&[], request).await?;
             self.audit("sharing.home_remove", Outcome::Success, &name, actor, request).await;
             return Ok(None);
         }
@@ -103,7 +103,7 @@ impl SharingUseCases {
         self.ports.host.set_home(&location.pool, location.volume, &name, quota_bytes, request).await?;
         let home = Home { account, quota_bytes };
         self.ports.shares.set_home(&home).await?;
-        self.apply_locked(request).await?;
+        self.apply_locked(&[], request).await?;
         self.audit("sharing.home_set", Outcome::Success, &name, actor, request).await;
         Ok(Some(home))
     }

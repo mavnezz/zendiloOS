@@ -24,8 +24,8 @@ use rustix::fs::{
 use zendiloos_agent_proto::{SharePath, is_file_name};
 
 use super::{
-    Copied, FileError, MAX_DEPTH, MAX_NUMBERED, ShareRoot, c_name, clash, device, identity, kind, nested,
-    numbered, open_beneath_flags, open_link, remove_entry, some_names, timestamps, upload_under_way,
+    Copied, FileError, MAX_DEPTH, MAX_NUMBERED, NewEntries, ShareRoot, c_name, clash, device, identity, kind,
+    nested, numbered, open_beneath_flags, open_link, remove_entry, some_names, timestamps, upload_under_way,
 };
 
 /// One entry of what is copied, as the source's side read it.
@@ -138,11 +138,19 @@ fn send(
     Ok(())
 }
 
-fn write_file(from: OwnedFd, to: OwnedFd, times: &Timestamps) -> Result<(), FileError> {
+/// Writes `from` into `to`, made in `folder`, gives it `times` while it is
+/// still the maker's, then its owners.
+fn write_file(
+    from: OwnedFd,
+    to: OwnedFd,
+    times: &Timestamps,
+    folder: BorrowedFd<'_>,
+    owners: NewEntries,
+) -> Result<(), FileError> {
     let (mut from, mut to) = (File::from(from), File::from(to));
     std::io::copy(&mut from, &mut to)?;
     futimens(&to, times)?;
-    Ok(())
+    owners.adopt(folder, to.as_fd())
 }
 
 fn new_file(directory: BorrowedFd<'_>, name: &CStr) -> Result<OwnedFd, rustix::io::Errno> {
@@ -151,13 +159,15 @@ fn new_file(directory: BorrowedFd<'_>, name: &CStr) -> Result<OwnedFd, rustix::i
 }
 
 /// A new folder `name` in `directory`, opened, and empty: whoever may write
-/// `directory` could put one of their own in its place.
-fn new_folder(directory: BorrowedFd<'_>, name: &CStr) -> Result<OwnedFd, FileError> {
+/// `directory` could put one of their own in its place. Given its owners
+/// at once, before anything goes in.
+fn new_folder(directory: BorrowedFd<'_>, name: &CStr, owners: NewEntries) -> Result<OwnedFd, FileError> {
     mkdirat(directory, name, Mode::from_raw_mode(0o777))?;
     let folder = open_beneath_flags(directory, name, OFlags::RDONLY | OFlags::DIRECTORY)?;
     if !some_names(&folder, 1)?.is_empty() {
         return Err(nested(FileError::Exists));
     }
+    owners.adopt(directory, folder.as_fd())?;
     Ok(folder)
 }
 
@@ -171,23 +181,30 @@ fn made_not(directory: BorrowedFd<'_>, name: &CStr, error: FileError) -> FileErr
 
 /// Fills `directory` with what comes, up to the [`Piece::Leave`] of the
 /// folder it is.
-fn fill(directory: BorrowedFd<'_>, pieces: &Receiver<Piece>, depth: u32) -> Result<(), FileError> {
+fn fill(
+    directory: BorrowedFd<'_>,
+    pieces: &Receiver<Piece>,
+    depth: u32,
+    owners: NewEntries,
+) -> Result<(), FileError> {
     loop {
         match next(pieces)? {
             Piece::Folder(name) => {
                 if depth >= MAX_DEPTH {
                     return Err(FileError::Invalid("folders are nested too deeply"));
                 }
-                let folder = new_folder(directory, &name).map_err(|e| made_not(directory, &name, e))?;
-                fill(folder.as_fd(), pieces, depth + 1)?;
+                let folder =
+                    new_folder(directory, &name, owners).map_err(|e| made_not(directory, &name, e))?;
+                fill(folder.as_fd(), pieces, depth + 1, owners)?;
             }
             Piece::File { name, file, times } => {
                 let to = new_file(directory, &name).map_err(|e| made_not(directory, &name, e.into()))?;
-                write_file(file, to, &times)?;
+                write_file(file, to, &times, directory, owners)?;
             }
             Piece::Link { name, target } => {
                 symlinkat(target.as_c_str(), directory, &name)
                     .map_err(|e| made_not(directory, &name, e.into()))?;
+                owners.adopt_link(directory, &name)?;
             }
             Piece::Leave => return Ok(()),
             Piece::Done => return Err(out_of_order()),
@@ -202,12 +219,18 @@ enum Made {
     Link,
 }
 
-fn make_top(parent: BorrowedFd<'_>, name: &CStr, first: &Piece) -> Result<Made, FileError> {
+fn make_top(
+    parent: BorrowedFd<'_>,
+    name: &CStr,
+    first: &Piece,
+    owners: NewEntries,
+) -> Result<Made, FileError> {
     match first {
-        Piece::Folder(_) => Ok(Made::Folder(new_folder(parent, name)?)),
+        Piece::Folder(_) => Ok(Made::Folder(new_folder(parent, name, owners)?)),
         Piece::File { .. } => Ok(Made::File(new_file(parent, name)?)),
         Piece::Link { target, .. } => {
             symlinkat(target.as_c_str(), parent, name)?;
+            owners.adopt_link(parent, name)?;
             Ok(Made::Link)
         }
         Piece::Leave | Piece::Done => Err(out_of_order()),
@@ -255,7 +278,7 @@ impl ShareRoot {
                 return Err(FileError::Invalid("the name is too long"));
             }
             let c = c_name(&name)?;
-            let made = match make_top(parent.as_fd(), &c, &first) {
+            let made = match make_top(parent.as_fd(), &c, &first, self.new_entries) {
                 Ok(made) => made,
                 Err(FileError::Exists) => continue,
                 Err(error) => return Err(error),
@@ -268,8 +291,10 @@ impl ShareRoot {
                 Made::Link => None,
             };
             let filled = match (made, first) {
-                (Made::Folder(folder), Piece::Folder(_)) => fill(folder.as_fd(), pieces, 1),
-                (Made::File(file), Piece::File { file: from, times, .. }) => write_file(from, file, &times),
+                (Made::Folder(folder), Piece::Folder(_)) => fill(folder.as_fd(), pieces, 1, self.new_entries),
+                (Made::File(file), Piece::File { file: from, times, .. }) => {
+                    write_file(from, file, &times, parent.as_fd(), self.new_entries)
+                }
                 (Made::Link, Piece::Link { .. }) => Ok(()),
                 _ => Err(out_of_order()),
             }

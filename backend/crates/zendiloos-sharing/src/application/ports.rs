@@ -7,8 +7,8 @@ use zendiloos_kernel::{PortError, RequestContext, Timestamp};
 
 use crate::domain::{
     Access, AppAccess, EntryFacts, Favourite, FileLocation, FilePath, FileServices, Found, Frequency, Home,
-    HomesLocation, Listing, NewShare, Permission, Principal, Share, ShareId, ShareName, ShareSettings,
-    ShareUsage, SharingConfig, Snapshot, SnapshotSchedule,
+    HomesLocation, Listing, NewShare, Share, ShareId, ShareName, ShareSettings, ShareUsage, SharingConfig,
+    Snapshot, SnapshotSchedule,
 };
 
 #[async_trait]
@@ -18,7 +18,9 @@ pub trait ShareRepository: Send + Sync {
 
     async fn find(&self, id: ShareId) -> Result<Option<Share>, PortError>;
 
-    /// `None` if the name is taken.
+    /// `None` if the name is taken. A new share's files have share-level
+    /// access from the start: no walk is owed (see
+    /// [`Self::migrations_owed`]).
     async fn create(&self, share: NewShare) -> Result<Option<Share>, PortError>;
 
     /// Stores description, recycle bin, access, NFS clients and
@@ -54,13 +56,14 @@ pub trait ShareRepository: Send + Sync {
         schedules: &[SnapshotSchedule],
     ) -> Result<(), PortError>;
 
-    /// The account's favourite folders, in its order.
-    /// What the accounts of apps may do, on all shares.
+    /// What the accounts of apps installed the earlier way were given, on
+    /// all shares.
     async fn app_access(&self) -> Result<Vec<AppAccess>, PortError>;
 
     /// Replaces what `account` (an app's) may do: exactly `access`.
     async fn set_app_access(&self, account: &str, access: &[(ShareId, Access)]) -> Result<(), PortError>;
 
+    /// The account's favourite folders, in its order.
     async fn favourites(&self, account: i64) -> Result<Vec<Favourite>, PortError>;
 
     /// The file services as set; the defaults until someone sets them.
@@ -85,20 +88,18 @@ pub trait ShareRepository: Send + Sync {
     /// Replaces the account's favourites.
     async fn set_favourites(&self, account: i64, favourites: &[Favourite]) -> Result<(), PortError>;
 
-    /// Marks the files of `shares` as owing them their rules: whatever
-    /// happens next, they are walked until a walk that read the rules after
-    /// this mark ends without errors (docs/architecture.md, 4.4). Each mark
-    /// is newer than all before it.
-    async fn owe_access(&self, shares: &[ShareId]) -> Result<(), PortError>;
+    /// The shares, not being deleted, whose files still wait for the walk
+    /// that gives them share-level access (docs/architecture.md, 4.4): made
+    /// before it came, or rolled back to a snapshot from before it, by name.
+    async fn migrations_owed(&self) -> Result<Vec<ShareId>, PortError>;
 
-    /// The shares, not being deleted, whose files owe them their rules,
-    /// each with its latest mark.
-    async fn access_owed(&self) -> Result<Vec<(ShareId, u64)>, PortError>;
+    /// When the share's files were given share-level access; `None` while
+    /// the walk is owed.
+    async fn migrated_at(&self, share: ShareId) -> Result<Option<Timestamp>, PortError>;
 
-    /// A walk that read the share's rules when its latest mark was `mark`
-    /// gave them to every file: what it owed up to that mark is settled,
-    /// a later mark stays.
-    async fn access_settled(&self, share: ShareId, mark: u64) -> Result<(), PortError>;
+    /// Records the share's files as given share-level access `at`, or as
+    /// owing the walk again (`None`).
+    async fn set_migrated(&self, share: ShareId, at: Option<Timestamp>) -> Result<(), PortError>;
 }
 
 /// Names of accounts and groups by ID, from the Identity context.
@@ -177,7 +178,7 @@ pub enum HostError {
     Port(#[from] PortError),
 }
 
-/// Datasets, server configuration and directory permissions; needs the
+/// Datasets, server configuration and the shares' folders; needs the
 /// privileged agents.
 #[async_trait]
 pub trait ShareHost: Send + Sync {
@@ -197,8 +198,15 @@ pub trait ShareHost: Send + Sync {
         context: &RequestContext,
     ) -> Result<(), HostError>;
 
-    /// Replaces what the SMB and NFS servers offer.
-    async fn apply(&self, config: &SharingConfig, context: &RequestContext) -> Result<(), HostError>;
+    /// Replaces what the SMB and NFS servers offer; then the open SMB
+    /// connections of `close` end, so that clients connect again under the
+    /// new rules.
+    async fn apply(
+        &self,
+        config: &SharingConfig,
+        close: &[ShareName],
+        context: &RequestContext,
+    ) -> Result<(), HostError>;
 
     /// The personal folders' dataset on `pool`, mounted at
     /// `/volume<volume>/@homes`.
@@ -264,15 +272,25 @@ pub trait ShareHost: Send + Sync {
         context: &RequestContext,
     ) -> Result<(), HostError>;
 
-    /// Permissions of the share's directory; with `recursive` also of its
-    /// contents.
-    async fn set_access(
+    /// The share's folder as every share has it: owner root, group
+    /// `zendiloos-files`, mode 2770 and that group's one ACL, inherited by
+    /// what is made in it; and the recycle bins' folder.
+    async fn prepare_share(
         &self,
         volume: u16,
         name: &ShareName,
-        access: &[(Principal, Permission)],
-        removed: &[Principal],
-        recursive: bool,
+        context: &RequestContext,
+    ) -> Result<(), HostError>;
+
+    /// The walk to share-level access, once per share: the folder as
+    /// [`Self::prepare_share`] makes it, then every entry given the group's
+    /// ACL entries and rid of the named entries of people and their groups;
+    /// apps' entries and owners stay. Tells `lines` how far it got.
+    async fn migrate_share(
+        &self,
+        volume: u16,
+        name: &ShareName,
+        lines: &(dyn for<'line> Fn(&'line str) + Send + Sync),
         context: &RequestContext,
     ) -> Result<(), HostError>;
 }
@@ -301,8 +319,12 @@ pub enum FileHostError {
     Port(#[from] PortError),
 }
 
-/// Share contents, handled on the host with the credentials of `user`, the
-/// Linux name of an account: the file system decides what is allowed.
+/// Contents of shares, personal folders and removable drives, handled on
+/// the host for `user`, the Linux name of an account. In a personal folder
+/// as that user, so the file system decides; on a share with root's access
+/// to files, confined beneath the share's root, after the use cases
+/// checked the share's rules; what is made in a share takes the folder's
+/// owner and the group `zendiloos-files`. `user` names the recycle bin.
 #[async_trait]
 pub trait FileHost: Send + Sync {
     async fn list(
@@ -349,10 +371,13 @@ pub trait FileHost: Send + Sync {
         context: &RequestContext,
     ) -> Result<(tokio::fs::File, String), FileHostError>;
 
+    /// A new folder; with `own`, on a share it is `user`'s instead of its
+    /// parent folder's owner's.
     async fn make_directory(
         &self,
         user: &str,
         at: &FileLocation,
+        own: bool,
         context: &RequestContext,
     ) -> Result<(), FileHostError>;
 

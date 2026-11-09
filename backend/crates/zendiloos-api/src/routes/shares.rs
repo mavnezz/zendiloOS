@@ -10,7 +10,7 @@ use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 use zendiloos_identity::domain::Permission;
 use zendiloos_sharing::application::{NewShareInput, ShareChanges, SharingError};
-use zendiloos_sharing::domain::{self as sharing, NfsClient, NfsSquash, ShareId};
+use zendiloos_sharing::domain::{self as sharing, NfsClient, ShareId};
 
 use crate::auth::Auth;
 use crate::error::{ApiError, Problem};
@@ -134,7 +134,10 @@ pub struct ShareRule {
     pub access: ShareRuleLevel,
 }
 
-/// A host or network that may mount the share over NFS, and how.
+/// A host or network that may mount the share over NFS, and how. Whoever
+/// is on that client has the share's read, or read and write, access,
+/// whatever user they claim to be: every request is squashed to the group
+/// `zendiloos-files`.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NfsRule {
@@ -142,9 +145,6 @@ pub struct NfsRule {
     /// (`nas.local`) or a pattern with `*` and `?` (`*.example.com`).
     pub network: String,
     pub write: bool,
-    /// Whose identity the client's requests keep; `root` if not given.
-    #[serde(default)]
-    pub squash: NfsSquashKind,
     /// Writes answered before they are on disk; off if not given.
     #[serde(default, rename = "async")]
     pub asynchronous: bool,
@@ -153,43 +153,11 @@ pub struct NfsRule {
     pub insecure: bool,
 }
 
-/// Whose identity an NFS client's requests keep: `none` (root stays root),
-/// `root` (root becomes the anonymous user), `all` (everyone does).
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum NfsSquashKind {
-    None,
-    #[default]
-    Root,
-    All,
-}
-
-impl From<NfsSquash> for NfsSquashKind {
-    fn from(squash: NfsSquash) -> Self {
-        match squash {
-            NfsSquash::None => Self::None,
-            NfsSquash::Root => Self::Root,
-            NfsSquash::All => Self::All,
-        }
-    }
-}
-
-impl From<NfsSquashKind> for NfsSquash {
-    fn from(squash: NfsSquashKind) -> Self {
-        match squash {
-            NfsSquashKind::None => Self::None,
-            NfsSquashKind::Root => Self::Root,
-            NfsSquashKind::All => Self::All,
-        }
-    }
-}
-
 impl From<NfsClient> for NfsRule {
     fn from(client: NfsClient) -> Self {
         Self {
             network: client.network,
             write: client.write,
-            squash: client.squash.into(),
             asynchronous: client.asynchronous,
             insecure: client.insecure,
         }
@@ -201,7 +169,6 @@ impl From<NfsRule> for NfsClient {
         Self {
             network: rule.network,
             write: rule.write,
-            squash: rule.squash.into(),
             asynchronous: rule.asynchronous,
             insecure: rule.insecure,
         }
@@ -454,15 +421,10 @@ pub struct UpdateShareRequest {
     pub settings: Option<ShareSettingsDto>,
 }
 
-#[derive(Debug, Serialize, ToSchema)]
-pub struct ShareUpdate {
-    pub share: Share,
-    /// Applies changed permissions to existing files, if they changed.
-    pub job: Option<Job>,
-}
-
-/// Changes a share. New permissions apply to the share at once and to its
-/// existing files in a job. Needs `shares.manage`.
+/// Changes a share. New rules hold for the share as a whole at once, over
+/// SMB and in the file manager; where they take access away from anyone,
+/// the share's open SMB connections end. No file changes. Needs
+/// `shares.manage`.
 #[utoipa::path(
     patch,
     path = "/shares/{id}",
@@ -471,9 +433,9 @@ pub struct ShareUpdate {
     params(("id" = i64, Path)),
     request_body = UpdateShareRequest,
     responses(
-        (status = OK, body = ShareUpdate),
+        (status = OK, body = Share),
         (status = NOT_FOUND, body = Problem, description = "`not_found`"),
-        (status = CONFLICT, body = Problem, description = "`refused`: rules being applied to the files, or off the network while Macs back up to it"),
+        (status = CONFLICT, body = Problem, description = "`refused`: off the network while Macs back up to it"),
         (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_input`, `unknown_subject`, `duplicate_rule`"),
     )
 )]
@@ -483,7 +445,7 @@ async fn update_share(
     Client(client): Client,
     Path(id): Path<i64>,
     ApiJson(request): ApiJson<UpdateShareRequest>,
-) -> Result<Json<ShareUpdate>, ApiError> {
+) -> Result<Json<Share>, ApiError> {
     auth.require(Permission::SharesManage)?;
     let changes = ShareChanges {
         description: request.description.map(Some),
@@ -493,8 +455,8 @@ async fn update_share(
         nfs: request.nfs.map(|clients| clients.into_iter().map(NfsClient::from).collect()),
         settings: request.settings.map(TryInto::try_into).transpose()?,
     };
-    let (share, job) = state.sharing.update(ShareId::new(id), changes, &auth.0.actor(), &client).await?;
-    Ok(Json(ShareUpdate { share: share.into(), job: job.map(Job::from) }))
+    let share = state.sharing.update(ShareId::new(id), changes, &auth.0.actor(), &client).await?;
+    Ok(Json(share.into()))
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -516,7 +478,7 @@ pub struct DeleteShareRequest {
     responses(
         (status = ACCEPTED, body = Job),
         (status = NOT_FOUND, body = Problem, description = "`not_found`"),
-        (status = CONFLICT, body = Problem, description = "`share_used_by_apps`, `share_used_by_projects`: the detail names them"),
+        (status = CONFLICT, body = Problem, description = "`share_used_by_apps`, `share_used_by_projects`: the detail names them; `refused`: its one-time walk to share-level access is under way"),
         (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`confirmation_mismatch`"),
     )
 )]
@@ -713,17 +675,18 @@ pub struct RollbackRequest {
 pub struct RolledBack {
     /// Labels of the later snapshots that went with the rollback.
     pub destroyed: Vec<String>,
-    /// Gives the files the permissions recorded now, instead of those the
-    /// snapshot brought back; absent if it could not be started yet (it
-    /// is started later).
+    /// Only for a snapshot from before the share's one-time walk to
+    /// share-level access (`sharing.migrate_permissions`): the walk again,
+    /// as the snapshot brought back the entries per person of then.
+    /// Absent otherwise, or if it could not be started yet (it is started
+    /// later).
     pub job: Option<Job>,
 }
 
 /// Returns the share to a snapshot: everything changed since is lost, and
-/// so are the snapshots taken after it. The share's folder gets the
-/// permissions recorded now at once, its files in a job. Needs
-/// `shares.manage` and the share's name as confirmation; refused while
-/// permissions are being applied to its files.
+/// so are the snapshots taken after it. The share's rules hold as recorded
+/// now. Needs `shares.manage` and the share's name as confirmation; refused
+/// while the share's one-time walk to share-level access is under way.
 #[utoipa::path(
     post,
     path = "/shares/{id}/snapshots/{label}/rollback",
@@ -734,7 +697,7 @@ pub struct RolledBack {
     responses(
         (status = OK, body = RolledBack),
         (status = NOT_FOUND, body = Problem, description = "`not_found`"),
-        (status = CONFLICT, body = Problem, description = "`refused`: permissions being applied to the files"),
+        (status = CONFLICT, body = Problem, description = "`refused`: the share's walk to share-level access is under way"),
         (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`confirmation_mismatch`"),
     )
 )]
@@ -1082,15 +1045,9 @@ pub struct SetSubjectAccessRequest {
     pub rules: Vec<SubjectRule>,
 }
 
-#[derive(Debug, Serialize, ToSchema)]
-pub struct SubjectAccessUpdate {
-    /// One per share that changed: its existing files follow.
-    pub jobs: Vec<Job>,
-}
-
 /// Sets an account's or group's rules on several shares at once. Each
-/// share that changes gets its permissions at once and its existing files
-/// in a job. Needs `shares.manage`.
+/// share that changes holds its new rules at once (see `PATCH
+/// /shares/{id}`). Needs `shares.manage`.
 #[utoipa::path(
     put,
     path = "/shares/access/{kind}/{id}",
@@ -1099,7 +1056,7 @@ pub struct SubjectAccessUpdate {
     params(("kind" = SubjectKind, Path), ("id" = i64, Path)),
     request_body = SetSubjectAccessRequest,
     responses(
-        (status = OK, body = SubjectAccessUpdate),
+        (status = NO_CONTENT, description = "Set."),
         (status = NOT_FOUND, body = Problem, description = "`not_found`: a share"),
         (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`unknown_subject`, `duplicate_rule`"),
     )
@@ -1110,15 +1067,15 @@ async fn set_subject_access(
     Client(client): Client,
     Path((kind, id)): Path<(SubjectKind, i64)>,
     ApiJson(request): ApiJson<SetSubjectAccessRequest>,
-) -> Result<Json<SubjectAccessUpdate>, ApiError> {
+) -> Result<StatusCode, ApiError> {
     auth.require(Permission::SharesManage)?;
     let rules: Vec<(ShareId, Option<sharing::Permission>)> = request
         .rules
         .into_iter()
         .map(|rule| (ShareId::new(rule.share_id), rule.rule.map(Into::into)))
         .collect();
-    let jobs = state.sharing.set_subject_access(subject(kind, id), &rules, &auth.0.actor(), &client).await?;
-    Ok(Json(SubjectAccessUpdate { jobs: jobs.into_iter().map(Job::from).collect() }))
+    state.sharing.set_subject_access(subject(kind, id), &rules, &auth.0.actor(), &client).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Where the personal folders are.

@@ -140,8 +140,8 @@ function serve(admin = false): void {
     answer('GET', '/api/v1/accounts', [])
     answer('GET', '/api/v1/groups', [])
     on('POST', '/api/v1/shares', ({ body }) => share(9, (body as { name: string }).name))
-    on('PATCH', '/api/v1/shares/1', () => ({ share: share(1, 'photos'), job: null }))
-    on('PATCH', '/api/v1/shares/3', () => ({ share: share(3, 'media'), job: null }))
+    on('PATCH', '/api/v1/shares/1', () => share(1, 'photos'))
+    on('PATCH', '/api/v1/shares/3', () => share(3, 'media'))
     on('POST', '/api/v1/shares/3/delete', () => job(8, 'sharing.delete'))
   }
 }
@@ -823,7 +823,7 @@ describe('folders on a volume', () => {
     await use('Properties')
     expect(page()).toContain('Properties of photos')
     await click('Permissions')
-    expect(page()).toContain('In Files, for apps and over the network alike.')
+    expect(page()).toContain('Over SMB and in Files; NFS goes by computer instead.')
     await click('Sharing')
     const shared = [
       ...document.body.querySelectorAll<HTMLLabelElement>('[role="dialog"] label'),

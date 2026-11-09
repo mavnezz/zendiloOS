@@ -85,8 +85,20 @@ EOF
     fi
 }
 
+# Access to a share is the share's as a whole after 0.2.0: the files of
+# shares made before keep entries per person until zendiloosd has walked
+# them, once, one share after another, as jobs (docs/architecture.md, 4.4).
+# Samba and the file manager hold the rules meanwhile; NFS clients and apps
+# reach what a walk got to. The group zendiloos-files comes from sysusers.
+announce_share_walks() {
+    if [ -n "$1" ] && dpkg --compare-versions "$1" lt 0.2.1~; then
+        echo "zendiloos: the shares' files are given share-level access in the background, one share at a time (see the jobs)" >&2
+    fi
+}
+
 case "$1" in
     configure)
+        announce_share_walks "$2"
         load_zfs
         # Earlier packages linked the console text to a file zendiloosd wrote.
         if [ -L /run/issue.d/zendiloos.issue ]; then rm -f /run/issue.d/zendiloos.issue; fi

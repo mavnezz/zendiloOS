@@ -5,9 +5,9 @@ use zendiloos_kernel::{PortError, Timestamp};
 use zendiloos_sharing::application::ports::{Directory, Names, PendingUpload, ShareRepository};
 use zendiloos_sharing::domain::{
     Access, AccessRule, AppAccess, Compression, Favourite, FileLocation, FilePath, FileRoot, FileServices,
-    Frequency, Home, HomesLocation, NewShare, NfsClient, NfsSquash, Permission, REMOVABLE_PREFIX, RecordSize,
-    Share, ShareId, ShareName, ShareSettings, SmbEncryption, SmbProtocol, SmbSigning, SnapshotSchedule,
-    Subject, TimeMachine, is_drive_id,
+    Frequency, Home, HomesLocation, NewShare, NfsClient, Permission, REMOVABLE_PREFIX, RecordSize, Share,
+    ShareId, ShareName, ShareSettings, SmbEncryption, SmbProtocol, SmbSigning, SnapshotSchedule, Subject,
+    TimeMachine, is_drive_id,
 };
 
 use super::Database;
@@ -97,14 +97,12 @@ async fn replace_rules(
     }
     for (position, client) in nfs.iter().enumerate() {
         let position = position as i64;
-        let squash = client.squash.as_str();
         sqlx::query!(
-            "INSERT INTO share_nfs_clients (share_id, network, write, squash, async, insecure, position)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO share_nfs_clients (share_id, network, write, async, insecure, position)
+             VALUES (?, ?, ?, ?, ?, ?)",
             id,
             client.network,
             client.write,
-            squash,
             client.asynchronous,
             client.insecure,
             position
@@ -125,7 +123,7 @@ impl SqliteShares {
         .map_err(db_error)?;
         let clients = sqlx::query!(
             r#"SELECT share_id AS "share_id!", network AS "network!", write AS "write!: bool",
-                      squash AS "squash!", async AS "asynchronous!: bool", insecure AS "insecure!: bool"
+                      async AS "asynchronous!: bool", insecure AS "insecure!: bool"
                FROM share_nfs_clients ORDER BY position"#
         )
         .fetch_all(self.db.pool())
@@ -148,11 +146,9 @@ impl SqliteShares {
         }
         let mut nfs: HashMap<i64, Vec<NfsClient>> = HashMap::new();
         for client in clients {
-            let squash = NfsSquash::parse(&client.squash).ok_or_else(|| stored("NFS squash"))?;
             nfs.entry(client.share_id).or_default().push(NfsClient {
                 network: client.network,
                 write: client.write,
-                squash,
                 asynchronous: client.asynchronous,
                 insecure: client.insecure,
             });
@@ -291,8 +287,8 @@ impl ShareRepository for SqliteShares {
         let mut tx = self.db.pool().begin().await.map_err(db_error)?;
         let id = sqlx::query_scalar!(
             r#"INSERT INTO shares (name, description, pool, volume, recycle_bin, quota_bytes, compression, record_size,
-                                   created_at, updated_at, shared)
-               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?10)
+                                   created_at, updated_at, shared, permissions_migrated_at)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?10, ?9)
                ON CONFLICT (name) DO NOTHING
                RETURNING id AS "id!""#,
             name,
@@ -361,36 +357,30 @@ impl ShareRepository for SqliteShares {
         Ok(())
     }
 
-    async fn owe_access(&self, shares: &[ShareId]) -> Result<(), PortError> {
-        let mut tx = self.db.pool().begin().await.map_err(db_error)?;
-        for id in shares.iter().map(|id| id.get()) {
-            sqlx::query!("UPDATE shares SET access_owed = access_owed + 1 WHERE id = ?", id)
-                .execute(&mut *tx)
-                .await
-                .map_err(db_error)?;
-        }
-        tx.commit().await.map_err(db_error)
-    }
-
-    async fn access_owed(&self) -> Result<Vec<(ShareId, u64)>, PortError> {
-        let rows = sqlx::query!(
-            r#"SELECT id AS "id!", access_owed FROM shares
-               WHERE deleting = 0 AND access_given < access_owed ORDER BY name"#
+    async fn migrations_owed(&self) -> Result<Vec<ShareId>, PortError> {
+        let rows = sqlx::query_scalar!(
+            r#"SELECT id AS "id!" FROM shares
+               WHERE deleting = 0 AND permissions_migrated_at IS NULL ORDER BY name"#
         )
         .fetch_all(self.db.pool())
         .await
         .map_err(db_error)?;
-        rows.into_iter()
-            .map(|row| {
-                let mark = u64::try_from(row.access_owed).map_err(|_| stored("owed access"))?;
-                Ok((ShareId::new(row.id), mark))
-            })
-            .collect()
+        Ok(rows.into_iter().map(ShareId::new).collect())
     }
 
-    async fn access_settled(&self, share: ShareId, mark: u64) -> Result<(), PortError> {
-        let (id, mark) = (share.get(), i64::try_from(mark).map_err(|_| stored("owed access"))?);
-        sqlx::query!("UPDATE shares SET access_given = MAX(access_given, ?) WHERE id = ?", mark, id)
+    async fn migrated_at(&self, share: ShareId) -> Result<Option<Timestamp>, PortError> {
+        let id = share.get();
+        let at = sqlx::query_scalar!("SELECT permissions_migrated_at FROM shares WHERE id = ?", id)
+            .fetch_optional(self.db.pool())
+            .await
+            .map_err(db_error)?
+            .flatten();
+        Ok(at.map(Timestamp::from_unix_seconds))
+    }
+
+    async fn set_migrated(&self, share: ShareId, at: Option<Timestamp>) -> Result<(), PortError> {
+        let (id, at) = (share.get(), at.map(Timestamp::unix_seconds));
+        sqlx::query!("UPDATE shares SET permissions_migrated_at = ? WHERE id = ?", at, id)
             .execute(self.db.pool())
             .await
             .map_err(db_error)?;
@@ -846,12 +836,7 @@ mod tests {
             ],
             nfs: vec![
                 NfsClient::new("192.168.1.0/24", false),
-                NfsClient {
-                    squash: NfsSquash::All,
-                    asynchronous: true,
-                    insecure: true,
-                    ..NfsClient::new("*.example.com", true)
-                },
+                NfsClient { asynchronous: true, insecure: true, ..NfsClient::new("*.example.com", true) },
             ],
             settings: ShareSettings {
                 quota_bytes: Some(5 << 30),
@@ -923,28 +908,70 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn what_a_shares_files_owe_is_settled_only_up_to_the_mark_a_walk_read() {
+    async fn a_new_share_owes_no_walk_one_from_before_does_until_walked() {
         let (_dir, db) = temporary_database().await;
         let shares = SqliteShares::new(db.clone());
         let photos = shares.create(share_named("photos")).await.unwrap().unwrap().id;
         let media = shares.create(share_named("media")).await.unwrap().unwrap().id;
-        assert!(shares.access_owed().await.unwrap().is_empty(), "a new share owes nothing");
+        assert!(shares.migrations_owed().await.unwrap().is_empty(), "made with share-level access");
+        assert_eq!(shares.migrated_at(photos).await.unwrap(), Some(Timestamp::from_unix_seconds(100)));
 
-        shares.owe_access(&[photos, media]).await.unwrap();
-        assert_eq!(shares.access_owed().await.unwrap(), [(media, 1), (photos, 1)]);
-        // A walk of photos read mark 1; meanwhile its rules changed again.
-        shares.owe_access(&[photos]).await.unwrap();
-        shares.access_settled(photos, 1).await.unwrap();
-        shares.access_settled(media, 1).await.unwrap();
-        assert_eq!(shares.access_owed().await.unwrap(), [(photos, 2)], "the later mark stays");
-        shares.access_settled(photos, 2).await.unwrap();
-        shares.access_settled(photos, 1).await.unwrap();
-        assert!(shares.access_owed().await.unwrap().is_empty(), "an older walk takes nothing back");
-
-        shares.owe_access(&[media]).await.unwrap();
-        shares.set_deleting(media, true).await.unwrap();
-        assert!(shares.access_owed().await.unwrap().is_empty(), "a share being deleted is walked no more");
+        // As the update leaves the shares made before it.
+        shares.set_migrated(photos, None).await.unwrap();
+        shares.set_migrated(media, None).await.unwrap();
+        assert_eq!(shares.migrations_owed().await.unwrap(), [media, photos], "by name");
+        shares.set_migrated(media, Some(Timestamp::from_unix_seconds(200))).await.unwrap();
+        assert_eq!(shares.migrations_owed().await.unwrap(), [photos]);
+        assert_eq!(shares.migrated_at(media).await.unwrap(), Some(Timestamp::from_unix_seconds(200)));
+        shares.set_deleting(photos, true).await.unwrap();
+        assert!(
+            shares.migrations_owed().await.unwrap().is_empty(),
+            "a share being deleted is walked no more"
+        );
+        assert_eq!(shares.migrated_at(ShareId::new(99)).await.unwrap(), None);
         db.close().await;
+    }
+
+    #[tokio::test]
+    async fn the_update_leaves_every_share_owing_its_walk_and_every_nfs_client_squashed() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("sqlite://{}", dir.path().join("before.db").display());
+        let options = <sqlx::sqlite::SqliteConnectOptions as std::str::FromStr>::from_str(&url)
+            .unwrap()
+            .create_if_missing(true);
+        let pool = sqlx::SqlitePool::connect_with(options).await.unwrap();
+        // The schema as 0042 left it, with a share and an NFS rule of root
+        // kept as root.
+        let migrator = sqlx::migrate!("./migrations");
+        for migration in migrator.iter().filter(|m| m.version < 43) {
+            // The migrations of this crate, as embedded.
+            sqlx::raw_sql(migration.sql.clone()).execute(&pool).await.unwrap();
+        }
+        sqlx::raw_sql(
+            "INSERT INTO shares (name, pool, volume, recycle_bin, created_at, updated_at, access_owed, access_given)
+                 VALUES ('photos', 'tank', 1, 1, 100, 100, 3, 2);
+             INSERT INTO share_nfs_clients (share_id, network, write, position, squash)
+                 SELECT id, '10.0.0.5', 1, 0, 'none' FROM shares;",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let update = migrator.iter().find(|m| m.version == 43).unwrap();
+        sqlx::raw_sql(update.sql.clone()).execute(&pool).await.unwrap();
+
+        let owed: Vec<(String, Option<i64>)> =
+            sqlx::query_as("SELECT name, permissions_migrated_at FROM shares")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(owed, [("photos".to_owned(), None)], "walked once after the update");
+        let clients: Vec<(String, i64)> =
+            sqlx::query_as("SELECT network, write FROM share_nfs_clients").fetch_all(&pool).await.unwrap();
+        assert_eq!(clients, [("10.0.0.5".to_owned(), 1)], "the rule stays, without whose identity it keeps");
+        for gone in ["SELECT access_owed FROM shares", "SELECT squash FROM share_nfs_clients"] {
+            assert!(sqlx::raw_sql(gone).execute(&pool).await.is_err(), "{gone}");
+        }
+        pool.close().await;
     }
 
     #[tokio::test]

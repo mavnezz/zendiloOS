@@ -1,20 +1,19 @@
 //! Permissions as one account or group sees them: what it may do on every
-//! share, set in one go; and following changes to groups and accounts,
-//! which the shares' files have to follow: denied members carry entries of
-//! their own, disabled accounts too, and what those who may no longer
-//! write own passes to root.
+//! share, set in one go; and following changes to groups and accounts.
+//! Access is the share's as a whole: Samba follows a group's members
+//! itself, and nothing in the files changes. What follows a change is the
+//! servers' configuration written again and, where someone lost access,
+//! the share's open SMB connections ended, so the next connection holds
+//! the new rules.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, HashSet};
 
-use zendiloos_jobs::Job;
 use zendiloos_kernel::{Actor, RequestContext};
 
 use super::SharingUseCases;
 use super::ports::Names;
-use super::shares::{ShareChanges, SharingError, acl};
-use crate::domain::{
-    Access, AccessRule, AppAccess, Permission, Principal, Share, ShareId, ShareName, Subject, effective,
-};
+use super::shares::{ShareChanges, SharingError, narrowed, reach};
+use crate::domain::{Access, AccessRule, Permission, Share, ShareId, ShareName, Subject, effective};
 
 /// What happens to an account's access everywhere, as the Identity context
 /// tells it.
@@ -24,57 +23,6 @@ pub enum AccountChange {
     /// Enabled again.
     Enabled,
     Deleted,
-}
-
-/// `names` as they are once `change` has happened to `account`.
-fn changed(names: &Names, account: i64, change: AccountChange) -> Names {
-    let mut then = names.clone();
-    match change {
-        AccountChange::Disabled => {
-            then.disabled.insert(account);
-        }
-        AccountChange::Enabled => {
-            then.disabled.remove(&account);
-        }
-        AccountChange::Deleted => {
-            then.accounts.remove(&account);
-            then.disabled.remove(&account);
-            for members in then.members.values_mut() {
-                members.retain(|id| *id != account);
-            }
-        }
-    }
-    then
-}
-
-/// The accounts that may write where `rules` apply, as `names` say: what
-/// they own there stays theirs (4.4, Owners).
-fn writers(rules: &[AccessRule], names: &Names) -> BTreeSet<i64> {
-    names
-        .accounts
-        .keys()
-        .copied()
-        .filter(|id| !names.disabled.contains(id))
-        .filter(|id| {
-            let groups: Vec<i64> = names
-                .members
-                .iter()
-                .filter(|(_, members)| members.contains(id))
-                .map(|(group, _)| *group)
-                .collect();
-            effective(rules, *id, &groups) == Some(Access::ReadWrite)
-        })
-        .collect()
-}
-
-/// Whether a change of the directory from `before` to `after` leaves
-/// `share`'s files owing it its rules: its ACL changes, or someone may no
-/// longer write there, whose files pass to root.
-fn owes(share: &Share, before: &Names, after: &Names, apps: &[AppAccess]) -> bool {
-    let then = acl(&share.access, before, share.id, apps);
-    let now = acl(&share.access, after, share.id, apps);
-    let same = then.len() == now.len() && then.iter().all(|entry| now.contains(entry));
-    !same || !writers(&share.access, before).is_subset(&writers(&share.access, after))
 }
 
 /// One share as an account or group sees it.
@@ -87,6 +35,16 @@ pub struct SubjectAccess {
     /// What it may do in the end: for an account with its groups' rules
     /// (see [`effective`]), for a group what its own rule grants.
     pub effective: Option<Access>,
+}
+
+/// The shares where someone may do less after the directory went from
+/// `before` to `after`.
+fn narrowed_shares(shares: &[Share], before: &Names, after: &Names) -> Vec<ShareName> {
+    shares
+        .iter()
+        .filter(|share| narrowed(&reach(share, before), &reach(share, after)))
+        .map(|share| share.name.clone())
+        .collect()
 }
 
 impl SharingUseCases {
@@ -115,15 +73,16 @@ impl SharingUseCases {
     }
 
     /// Sets `subject`'s rule on the shares named, `None` for no rule;
-    /// other shares and other subjects keep theirs. Each share that
-    /// changes gets its permissions at once, its contents in a job.
+    /// other shares and other subjects keep theirs. Each share that changes
+    /// holds its new rules at once (see [`Self::update`]). Returns the
+    /// shares that changed.
     pub async fn set_subject_access(
         &self,
         subject: Subject,
         rules: &[(ShareId, Option<Permission>)],
         actor: &Actor,
         request: &RequestContext,
-    ) -> Result<Vec<Job>, SharingError> {
+    ) -> Result<Vec<ShareName>, SharingError> {
         let shares = self.ports.shares.list().await?;
         let mut seen = HashSet::new();
         for (id, _) in rules {
@@ -134,7 +93,7 @@ impl SharingUseCases {
                 return Err(SharingError::ShareNotFound);
             }
         }
-        let mut jobs = Vec::new();
+        let mut changed = Vec::new();
         for (id, permission) in rules {
             let Some(share) = shares.iter().find(|share| share.id == *id) else { continue };
             if share.rule_of(subject) == *permission {
@@ -146,191 +105,83 @@ impl SharingUseCases {
                 access.push(AccessRule { subject, permission: *permission });
             }
             let changes = ShareChanges { access: Some(access), ..ShareChanges::default() };
-            let (_, job) = self.update(*id, changes, actor, request).await?;
-            jobs.extend(job);
+            changed.push(self.update(*id, changes, actor, request).await?.name);
         }
-        Ok(jobs)
+        Ok(changed)
     }
 
-    /// The members of `group` are about to become `after`; nothing has
-    /// changed yet. The shares whose files will have to follow are marked
-    /// owing them their rules first, so that whatever stops the change
-    /// halfway, nothing of it is lost. Returns their names.
-    pub async fn group_members_changing(
-        &self,
-        group: i64,
-        after: &[i64],
-    ) -> Result<Vec<ShareName>, SharingError> {
-        let _changes = self.changes.lock().await;
-        let now = self.ports.directory.names().await?;
-        let mut then = now.clone();
-        then.members.insert(group, after.to_vec());
-        self.mark_owing(&now, &then).await
-    }
-
-    /// The members of `group` changed from `before`; `owing` are the
-    /// shares [`Self::group_members_changing`] named. Where the group is
-    /// denied, members who left lose their entry and new ones get one;
-    /// where it may write, those who left hand what they own over (4.4,
-    /// Owners) and new members get their recycle bins; where it reads, the
-    /// group entry covers them already. Samba follows the group itself.
-    /// See [`Self::follow`]: returns the shares whose files follow in the
-    /// background.
+    /// The members of `group` changed from `before` to what the directory
+    /// says now. Samba follows the group itself; where a member who left
+    /// (or one who came, to a group that is denied) may do less now, the
+    /// share's open connections end. Returns those shares.
     pub async fn group_members_changed(
         &self,
         group: i64,
         before: &[i64],
-        owing: &[ShareName],
-        actor: &Actor,
         request: &RequestContext,
     ) -> Result<Vec<ShareName>, SharingError> {
         let _changes = self.changes.lock().await;
         let now = self.ports.directory.names().await?;
         let mut then = now.clone();
         then.members.insert(group, before.to_vec());
-        self.follow(&then, &now, owing, actor, request).await
+        let shares = self.ports.shares.list().await?;
+        let close = narrowed_shares(&shares, &then, &now);
+        self.apply_locked(&close, request).await?;
+        Ok(close)
     }
 
-    /// `account` is about to be disabled, enabled again or deleted;
-    /// nothing has changed yet. Marks the shares whose files will have to
-    /// follow, as [`Self::group_members_changing`] does. A disabled account
-    /// may do nothing anywhere, as if denied, and what it owns passes to
-    /// root where it wrote.
+    /// The shares `account` may use now, over SMB: those whose connections
+    /// end when it is disabled or deleted. Asked before the change, while
+    /// the account, its rules and groups are still there.
     pub async fn account_changing(
         &self,
         account: i64,
         change: AccountChange,
     ) -> Result<Vec<ShareName>, SharingError> {
-        let _changes = self.changes.lock().await;
-        let now = self.ports.directory.names().await?;
-        let then = changed(&now, account, change);
-        self.mark_owing(&now, &then).await
+        if change == AccountChange::Enabled {
+            return Ok(Vec::new());
+        }
+        let names = self.ports.directory.names().await?;
+        let shares = self.ports.shares.list().await?;
+        Ok(shares
+            .iter()
+            .filter(|share| reach(share, &names).contains_key(&account))
+            .map(|share| share.name.clone())
+            .collect())
     }
 
-    /// `account` was disabled, enabled again or deleted; `owing` are the
-    /// shares [`Self::account_changing`] named. See [`Self::follow`].
+    /// `account` was disabled, enabled again or deleted; `reached` are the
+    /// shares [`Self::account_changing`] named. Samba's sections deny a
+    /// disabled account by name (and Samba has it disabled besides); a
+    /// deleted one is named no more. The connections of `reached` end.
     pub async fn account_changed(
         &self,
         account: i64,
         change: AccountChange,
-        owing: &[ShareName],
-        actor: &Actor,
+        reached: &[ShareName],
         request: &RequestContext,
-    ) -> Result<Vec<ShareName>, SharingError> {
+    ) -> Result<(), SharingError> {
         let _changes = self.changes.lock().await;
-        let now = self.ports.directory.names().await?;
-        // How it was before. A deleted account went with its rules: what
-        // it could do is not known any more, and the shares named before
-        // follow.
-        let then = match change {
-            AccountChange::Disabled => changed(&now, account, AccountChange::Enabled),
-            AccountChange::Enabled => changed(&now, account, AccountChange::Disabled),
-            AccountChange::Deleted => now.clone(),
+        let close: Vec<ShareName> = match change {
+            AccountChange::Enabled => Vec::new(),
+            AccountChange::Disabled | AccountChange::Deleted => {
+                let shares: BTreeMap<ShareName, ()> =
+                    self.ports.shares.list().await?.into_iter().map(|share| (share.name, ())).collect();
+                reached.iter().filter(|name| shares.contains_key(name)).cloned().collect()
+            }
         };
-        self.follow(&then, &now, owing, actor, request).await
+        tracing::debug!(account, ?change, shares = close.len(), "sharing follows an account");
+        self.apply_locked(&close, request).await
     }
 
-    /// Marks the shares a change of the directory from `before` to `after`
-    /// leaves owing their files their rules, and names them.
-    async fn mark_owing(&self, before: &Names, after: &Names) -> Result<Vec<ShareName>, SharingError> {
-        let shares = self.ports.shares.list().await?;
-        let apps = self.ports.shares.app_access().await?;
-        let owing: Vec<&Share> = shares.iter().filter(|share| owes(share, before, after, &apps)).collect();
-        if !owing.is_empty() {
-            let ids: Vec<ShareId> = owing.iter().map(|share| share.id).collect();
-            self.ports.shares.owe_access(&ids).await?;
-        }
-        Ok(owing.into_iter().map(|share| share.name.clone()).collect())
-    }
-
-    /// After a change of the directory from `before` to `after`, for every
-    /// share it leaves owing its files their rules, and those in `owing`:
-    /// marked again (a walk that read the directory before the change must
-    /// not settle it); its folder gets the rules at once, unless a walk is
-    /// under way, which would give the folder back the rules it read (the
-    /// walk queued next gives the folder its rules first); its files in a
-    /// walk. Where the change makes new writers, the folder is set again,
-    /// which makes their recycle bins: a writer whose bin is not made first
-    /// could have one made by another writer, who would then see what
-    /// lands in it. A share that cannot be changed now does not keep the
-    /// others from it: it stays owed and is walked again later (see
-    /// [`Self::reconcile_access`]). Returns the shares whose files follow
-    /// in the background.
-    async fn follow(
-        &self,
-        before: &Names,
-        after: &Names,
-        owing: &[ShareName],
-        actor: &Actor,
-        request: &RequestContext,
-    ) -> Result<Vec<ShareName>, SharingError> {
-        let shares = self.ports.shares.list().await?;
-        let apps = self.ports.shares.app_access().await?;
-        let owed: HashSet<ShareId> = shares
-            .iter()
-            .filter(|share| owing.contains(&share.name) || owes(share, before, after, &apps))
-            .map(|share| share.id)
-            .collect();
-        if !owed.is_empty() {
-            self.ports.shares.owe_access(&owed.iter().copied().collect::<Vec<_>>()).await?;
-        }
-        let mut following = Vec::new();
-        for share in &shares {
-            let gains = !writers(&share.access, after).is_subset(&writers(&share.access, before));
-            let mut owes = owed.contains(&share.id);
-            if !owes && !gains {
-                continue;
-            }
-            let now = acl(&share.access, after, share.id, &apps);
-            let removed: Vec<Principal> = acl(&share.access, before, share.id, &apps)
-                .into_iter()
-                .map(|(principal, _)| principal)
-                .filter(|principal| !now.iter().any(|(entry, _)| entry == principal))
-                .collect();
-            let set = if self.walks.is_under_way(share.id) {
-                tracing::info!(
-                    share = share.name.as_str(),
-                    "a walk is under way: the next gives the folder its rules"
-                );
-                false
-            } else {
-                let set = self
-                    .ports
-                    .host
-                    .set_access(share.volume, &share.name, &now, &removed, false, request)
-                    .await;
-                if let Err(error) = &set {
-                    tracing::warn!(%error, share = share.name.as_str(), "the share's folder follows in a walk");
-                }
-                set.is_ok()
-            };
-            // The folder (and the new writers' bins) is the walk's then.
-            if !set && !owes {
-                if let Err(error) = self.ports.shares.owe_access(&[share.id]).await {
-                    tracing::warn!(%error, share = share.name.as_str(), "cannot mark the share's files as owing");
-                }
-                owes = true;
-            }
-            if !owes {
-                continue;
-            }
-            if let Err(error) = self.access_job(share, removed, Some(actor), request).await {
-                tracing::warn!(%error, share = share.name.as_str(), "cannot walk the share now; it is walked later");
-            }
-            following.push(share.name.clone());
-        }
-        Ok(following)
-    }
-
-    /// `group` is about to be deleted: its rules go first, while its
-    /// members are still known, and with them the entries of members it
-    /// denied.
+    /// `group` is about to be deleted: its rules go first, as a change of
+    /// each share's rules, while its members are still known.
     pub async fn group_deleting(
         &self,
         group: i64,
         actor: &Actor,
         request: &RequestContext,
-    ) -> Result<Vec<Job>, SharingError> {
+    ) -> Result<(), SharingError> {
         let subject = Subject::Group(group);
         let rules: Vec<(ShareId, Option<Permission>)> = self
             .ports
@@ -341,6 +192,7 @@ impl SharingUseCases {
             .filter(|share| share.rule_of(subject).is_some())
             .map(|share| (share.id, None))
             .collect();
-        self.set_subject_access(subject, &rules, actor, request).await
+        self.set_subject_access(subject, &rules, actor, request).await?;
+        Ok(())
     }
 }

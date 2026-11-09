@@ -737,38 +737,28 @@ fn ids(ids: &[AccountId]) -> String {
     ids.iter().map(|id| id.get().to_string()).collect::<Vec<_>>().join(",")
 }
 
-/// Records what it is told about groups, as `changing <group> <after>`,
-/// `members <group> <before> <following>` or `deleting <group>`; answers
-/// `following` as what follows a change of members. Refuses what is about
-/// to happen while `refuse` is set.
+/// Records what it is told about groups, as `members <group> <before>`
+/// or `deleting <group>`. Refuses (or fails, after a change) while
+/// `refuse` is set.
 #[derive(Default)]
 pub struct RecordingGroupObserver {
     pub events: Mutex<Vec<String>>,
     pub refuse: std::sync::atomic::AtomicBool,
-    pub following: Mutex<Vec<String>>,
 }
 
 #[async_trait]
 impl GroupObserver for RecordingGroupObserver {
-    async fn members_changing(&self, group: GroupId, after: &[AccountId]) -> Result<Vec<String>, PortError> {
-        if self.refuse.load(Ordering::Relaxed) {
-            return Err(PortError::new("sharing", "refused"));
-        }
-        self.events.lock().unwrap().push(format!("changing {} [{}]", group.get(), ids(after)));
-        Ok(self.following.lock().unwrap().clone())
-    }
-
     async fn members_changed(
         &self,
         group: GroupId,
         before: &[AccountId],
-        following: &[String],
-        _: &zendiloos_kernel::Actor,
         _: &RequestContext,
-    ) -> Result<Vec<String>, PortError> {
-        let line = format!("members {} [{}] [{}]", group.get(), ids(before), following.join(","));
-        self.events.lock().unwrap().push(line);
-        Ok(self.following.lock().unwrap().clone())
+    ) -> Result<(), PortError> {
+        self.events.lock().unwrap().push(format!("members {} [{}]", group.get(), ids(before)));
+        if self.refuse.load(Ordering::Relaxed) {
+            return Err(PortError::new("sharing", "cannot follow"));
+        }
+        Ok(())
     }
 
     async fn deleting(
@@ -786,14 +776,14 @@ impl GroupObserver for RecordingGroupObserver {
 }
 
 /// Records what it is told about accounts, as `disabling <account>` (and
-/// `enabling`, `deleting`) before and `disabled <account> <following>`
-/// (and `enabled`, `deleted`) after; answers `following` as what follows.
-/// Refuses what is about to happen while `refuse` is set.
+/// `enabling`, `deleting`) before and `disabled <account> <noted>` (and
+/// `enabled`, `deleted`) after; answers `noted` before. Refuses what is
+/// about to happen while `refuse` is set.
 #[derive(Default)]
 pub struct RecordingAccountObserver {
     pub events: Mutex<Vec<String>>,
     pub refuse: std::sync::atomic::AtomicBool,
-    pub following: Mutex<Vec<String>>,
+    pub noted: Mutex<Vec<String>>,
 }
 
 fn change_words(change: AccessChange) -> (&'static str, &'static str) {
@@ -815,20 +805,19 @@ impl AccountObserver for RecordingAccountObserver {
             return Err(PortError::new("sharing", "refused"));
         }
         self.events.lock().unwrap().push(format!("{} {}", change_words(change).0, account.get()));
-        Ok(self.following.lock().unwrap().clone())
+        Ok(self.noted.lock().unwrap().clone())
     }
 
     async fn access_changed(
         &self,
         account: AccountId,
         change: AccessChange,
-        following: &[String],
-        _: &zendiloos_kernel::Actor,
+        noted: &[String],
         _: &RequestContext,
-    ) -> Result<Vec<String>, PortError> {
-        let line = format!("{} {} [{}]", change_words(change).1, account.get(), following.join(","));
+    ) -> Result<(), PortError> {
+        let line = format!("{} {} [{}]", change_words(change).1, account.get(), noted.join(","));
         self.events.lock().unwrap().push(line);
-        Ok(self.following.lock().unwrap().clone())
+        Ok(())
     }
 }
 

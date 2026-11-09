@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT permissions_migrated_at FROM shares WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "permissions_migrated_at",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "shares",
+            "name": "permissions_migrated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "60969571e05c0b8da342a1df40315366cb3f306d98b9df144925449b1528baf5"
+}

@@ -3,17 +3,14 @@
 //! written directly, so a share's whole tree is changed without starting a
 //! program for every file.
 //!
-//! The edits are those of `setfacl -x` and `-m`: entries of named users and
-//! groups are removed or set, and the mask becomes the union of the group
-//! class (the owning group and every named entry). A walk replaces what the
-//! rules decide, whatever an earlier walk left: the named entries of the
-//! IDs zendiloOS hands out (and of `zendiloos-users`, every account's
-//! primary group) that the rules do not grant go, and the owning group and
-//! others get nothing, as on the share's folder; entries of other IDs
-//! stay. An ACL without named entries keeps no mask; the kernel
-//! then keeps it as the file's mode alone.
-
-use zendiloos_agent_proto::SharePermission;
+//! A share's access is the share's as a whole, enforced by Samba and
+//! zendiloosd (docs/architecture.md, 4.4); on disk every share has one ACL:
+//! the group `zendiloos-files` may read and write, and what is made in a
+//! folder inherits that. The edits here are those of `setfacl -x` and `-m`:
+//! named entries are removed or set, and the mask becomes the union of the
+//! group class (the owning group and every named entry). An ACL without
+//! named entries keeps no mask; the kernel then keeps it as the file's mode
+//! alone.
 
 pub(crate) const ACCESS: &str = "system.posix_acl_access";
 pub(crate) const DEFAULT: &str = "system.posix_acl_default";
@@ -29,10 +26,13 @@ const UNDEFINED_ID: u32 = u32::MAX;
 const READ: u16 = 4;
 const WRITE: u16 = 2;
 const EXECUTE: u16 = 1;
+const ALL: u16 = READ | WRITE | EXECUTE;
 
-/// A named entry's subject, by ID.
+/// A named entry's subject, by ID. Only groups are given entries; the
+/// tests look at users' too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Who {
+    #[cfg(test)]
     User(u32),
     Group(u32),
 }
@@ -40,6 +40,7 @@ pub(crate) enum Who {
 impl Who {
     fn key(self) -> (u16, u32) {
         match self {
+            #[cfg(test)]
             Who::User(uid) => (USER, uid),
             Who::Group(gid) => (GROUP, gid),
         }
@@ -137,36 +138,30 @@ impl Acl {
         }
     }
 
-    pub(crate) fn remove(&mut self, who: Who) {
-        let (tag, id) = who.key();
-        self.entries.retain(|e| (e.tag, e.id) != (tag, id));
-    }
-
-    /// Without `rules.remove`; and where the rules replace
-    /// (`rules.managed`), without the named entries of managed IDs they do
-    /// not grant, and with nothing for the owning group and others.
-    fn strip(&mut self, rules: &Rules) {
-        for who in &rules.remove {
-            self.remove(*who);
-        }
-        if let Some(managed) = &rules.managed {
-            let granted =
-                |entry: &Entry| rules.grant.iter().any(|(who, _)| who.key() == (entry.tag, entry.id));
-            self.entries.retain(|e| !(managed.holds(e) && !granted(e)));
-            for entry in &mut self.entries {
-                if entry.tag == GROUP_OBJ || entry.tag == OTHER {
-                    entry.perm = 0;
-                }
-            }
-        }
-    }
-
     pub(crate) fn set(&mut self, who: Who, perm: u16) {
         let (tag, id) = who.key();
         match self.entries.iter_mut().find(|e| (e.tag, e.id) == (tag, id)) {
             Some(entry) => entry.perm = perm,
             None => self.entries.push(Entry { tag, perm, id }),
         }
+    }
+
+    /// The owner's, the owning group's and others' entries set to `mode`'s.
+    fn set_base(&mut self, mode: u32) {
+        let class = |shift: u32| ((mode >> shift) & 0o7) as u16;
+        for entry in &mut self.entries {
+            match entry.tag {
+                USER_OBJ => entry.perm = class(6),
+                GROUP_OBJ => entry.perm = class(3),
+                OTHER => entry.perm = class(0),
+                _ => {}
+            }
+        }
+    }
+
+    /// Without the named entries `managed` holds.
+    fn strip(&mut self, managed: &Managed) {
+        self.entries.retain(|e| !managed.holds(e));
     }
 
     /// The mask as setfacl computes it, or none without named entries.
@@ -190,171 +185,110 @@ impl Acl {
     }
 
     #[cfg(test)]
-    fn mask(&self) -> Option<u16> {
+    pub(crate) fn mask(&self) -> Option<u16> {
         self.entries.iter().find(|e| e.tag == MASK).map(|e| e.perm)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_named(&self) -> bool {
+        self.entries.iter().any(|e| e.tag == USER || e.tag == GROUP)
     }
 }
 
-/// A share's rules for what is in it: who loses their entries, who gets
-/// which, and whose files pass to root. Folders get the entries as default
-/// entries too, for what is made in them later.
-#[derive(Debug, Clone, Default)]
-pub(crate) struct Rules {
-    pub(crate) remove: Vec<Who>,
-    pub(crate) grant: Vec<(Who, SharePermission)>,
-    pub(crate) owners: Owners,
-    /// The IDs whose named entries are the rules' alone (see [`Managed`]):
-    /// a walk removes those the rules do not grant and gives the owning
-    /// group and others nothing, so what a walk that failed or stopped left
-    /// is made good by the next. `None`: only `remove` goes.
-    pub(crate) managed: Option<Managed>,
-}
-
-/// The IDs zendiloOS hands out, of people, apps and groups (those gone
-/// since among them), and the groups below them every managed account is
-/// in: `zendiloos-users`, each one's primary group, which no rule names.
-/// A named entry for it someone set (over NFS, or as "Domain Users" over
-/// SMB) would let every account through, the denied ones too.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The IDs whose named entries share-level access replaces: the accounts
+/// and groups zendiloOS manages (people and their groups, those gone since
+/// among them) and `zendiloos-users`, every account's primary group. The
+/// apps' accounts and groups (`app-<id>`, given shares before apps became
+/// administrators' projects) keep theirs, so installed apps keep working;
+/// so do IDs zendiloOS does not hand out (system accounts, the owner's own
+/// user, the users containers run as).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Managed {
-    pub(crate) ids: std::ops::RangeInclusive<u32>,
-    /// GIDs outside `ids`: only group entries of theirs.
+    pub(crate) ids: Option<std::ops::RangeInclusive<u32>>,
+    /// GIDs outside `ids` whose group entries go too: `zendiloos-users`.
     pub(crate) groups: Vec<u32>,
+    /// The apps' UIDs, whose user entries stay.
+    pub(crate) app_users: Vec<u32>,
+    /// The apps' GIDs, whose group entries stay.
+    pub(crate) app_groups: Vec<u32>,
 }
 
 impl Managed {
-    /// Whether `entry` is a named entry of a managed ID.
+    /// Whether `entry` is a named entry that goes.
     fn holds(&self, entry: &Entry) -> bool {
+        let managed = |id: &u32| self.ids.as_ref().is_some_and(|ids| ids.contains(id));
         match entry.tag {
-            USER => self.ids.contains(&entry.id),
-            GROUP => self.ids.contains(&entry.id) || self.groups.contains(&entry.id),
+            USER => managed(&entry.id) && !self.app_users.contains(&entry.id),
+            GROUP => {
+                (managed(&entry.id) && !self.app_groups.contains(&entry.id))
+                    || self.groups.contains(&entry.id)
+            }
             _ => false,
         }
     }
 }
 
-/// Who may own what is in a share. The kernel gives a file's owner the
-/// owner's entry (`user::`) whatever named entries say, and lets them
-/// change the mode and the ACL: whoever may not write a share would still
-/// write their own files in it (over NFS, say), and could make them
-/// writable again. So what an account zendiloOS manages owns in a share
-/// passes to root once it may not write there; the share's entries alone
-/// then say what it may do. Other UIDs (system accounts, those containers
-/// run as) are no accounts of the share's rules and keep theirs.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct Owners {
-    /// The UIDs of the accounts zendiloOS manages; none: nobody's pass.
-    pub(crate) managed: Option<std::ops::RangeInclusive<u32>>,
-    /// Those of them that may write, and keep what they own.
-    pub(crate) writers: Vec<u32>,
+/// What `zendiloos-files` gets on a file: read and write, and execute only
+/// where somebody may execute it already (setfacl's `X`), so sharing a
+/// folder does not make its files programs.
+fn file_perm(mode: u32) -> u16 {
+    if mode & 0o111 != 0 { ALL } else { READ | WRITE }
 }
 
-impl Owners {
-    /// Whether what `owner` owns passes to root.
-    pub(crate) fn hand_over(&self, owner: u32) -> bool {
-        self.managed.as_ref().is_some_and(|managed| managed.contains(&owner))
-            && !self.writers.contains(&owner)
-    }
-}
-
-/// What a permission is on a folder, and in a folder's default ACL.
-fn folder_perm(permission: SharePermission) -> u16 {
-    match permission {
-        SharePermission::Deny => 0,
-        SharePermission::Read => READ | EXECUTE,
-        SharePermission::ReadWrite => READ | WRITE | EXECUTE,
-    }
-}
-
-/// On a file, execute only where somebody may execute it already
-/// (setfacl's `X`): sharing a folder does not make its files programs.
-fn file_perm(permission: SharePermission, executable: bool) -> u16 {
-    let execute = if executable { EXECUTE } else { 0 };
-    match permission {
-        SharePermission::Deny => 0,
-        SharePermission::Read => READ | execute,
-        SharePermission::ReadWrite => READ | WRITE | execute,
-    }
-}
-
-/// The access ACL `current` (the mode's if `None`) without what the rules
-/// take away (see [`Rules::managed`]). `None` if nothing changes.
-pub(crate) fn without(current: Option<Acl>, mode: u32, rules: &Rules) -> Option<Acl> {
+/// The access ACL `current` (the mode's if `None`) of an entry in a share:
+/// the named entries `managed` holds gone, the group `files` with read and
+/// write (and search, or execute where it is a program). Other named
+/// entries and the base entries stay. `None` if nothing changes.
+pub(crate) fn shared(
+    current: Option<Acl>,
+    mode: u32,
+    folder: bool,
+    files: u32,
+    managed: &Managed,
+) -> Option<Acl> {
     let before = current.unwrap_or_else(|| Acl::from_mode(mode));
     let mut acl = before.clone();
-    acl.strip(rules);
-    if acl == before {
-        return None;
-    }
-    acl.fix_mask();
-    Some(acl)
-}
-
-/// The access ACL `current` (the mode's if `None`) with `rules.grant`.
-/// `None` if nothing changes.
-pub(crate) fn with(current: Option<Acl>, mode: u32, folder: bool, rules: &Rules) -> Option<Acl> {
-    let before = current.unwrap_or_else(|| Acl::from_mode(mode));
-    let mut acl = before.clone();
-    let executable = folder || mode & 0o111 != 0;
-    for (who, permission) in &rules.grant {
-        let perm = if folder { folder_perm(*permission) } else { file_perm(*permission, executable) };
-        acl.set(*who, perm);
-    }
+    acl.strip(managed);
+    acl.set(Who::Group(files), if folder { ALL } else { file_perm(mode) });
     acl.fix_mask();
     (acl != before).then_some(acl)
 }
 
-/// A folder's default ACL `current` without what the rules take away;
-/// `None` if nothing changes (or it has none).
-pub(crate) fn default_without(current: Option<Acl>, rules: &Rules) -> Option<Acl> {
-    let before = current?;
-    let mut acl = before.clone();
-    acl.strip(rules);
-    if acl == before {
-        return None;
-    }
-    acl.fix_mask();
-    Some(acl)
-}
-
-/// A folder's default ACL `current` with `rules.grant`, made from `access`
-/// (the folder's access ACL) if it has none. `None` if nothing changes.
-pub(crate) fn default_with(current: Option<Acl>, access: &Acl, rules: &Rules) -> Option<Acl> {
-    if rules.grant.is_empty() {
-        return None;
-    }
+/// A folder's default ACL `current` as in a share: as [`shared`] does, for
+/// what is made in the folder later; made from `access` (the folder's
+/// access ACL) if it has none. `None` if nothing changes.
+pub(crate) fn shared_default(
+    current: Option<Acl>,
+    access: &Acl,
+    files: u32,
+    managed: &Managed,
+) -> Option<Acl> {
     let before = current.clone();
     let mut acl = current.unwrap_or_else(|| access.base());
-    for (who, permission) in &rules.grant {
-        acl.set(*who, folder_perm(*permission));
-    }
+    acl.strip(managed);
+    acl.set(Who::Group(files), ALL);
     acl.fix_mask();
     (Some(&acl) != before.as_ref()).then_some(acl)
 }
 
-/// What passes to root from a private place (a recycle bin and what is in
-/// it) stays private, root's alone: the ACL `current` (the mode's if
-/// `None`) with the owner's entry only, nothing for the owning group and
-/// others, no named entries. `None` if it is so already.
-pub(crate) fn owner_only(current: Option<Acl>, mode: u32) -> Option<Acl> {
-    let before = current.unwrap_or_else(|| Acl::from_mode(mode));
-    let entries = before
-        .entries
-        .iter()
-        .filter(|e| [USER_OBJ, GROUP_OBJ, OTHER].contains(&e.tag))
-        .map(|e| Entry { perm: if e.tag == USER_OBJ { e.perm } else { 0 }, ..*e })
-        .collect();
-    let acl = Acl { entries };
-    (acl != before).then_some(acl)
+/// The ACL, access or default, of a share's root (and of its `.recycle`):
+/// owner and owning group read and write, others nothing (`mode`'s base
+/// entries), the group `files` too; the named entries `managed` holds
+/// gone, others kept (an app's, given the share before). A new share's
+/// root has exactly `u::rwx, g::rwx, g:zendiloos-files:rwx, m::rwx,
+/// o::---`.
+pub(crate) fn root(current: Option<Acl>, mode: u32, files: u32, managed: &Managed) -> Acl {
+    let mut acl = current.unwrap_or_else(|| Acl::from_mode(mode));
+    acl.set_base(mode);
+    acl.strip(managed);
+    acl.set(Who::Group(files), ALL);
+    acl.fix_mask();
+    acl
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn rules(remove: &[Who], grant: &[(Who, SharePermission)]) -> Rules {
-        Rules { remove: remove.to_vec(), grant: grant.to_vec(), ..Rules::default() }
-    }
 
     /// An ACL of `mode` with these named entries and their mask.
     fn named(mode: u32, entries: &[(Who, u16)]) -> Acl {
@@ -370,67 +304,85 @@ mod tests {
         acl.entries.iter().find(|e| e.tag == tag).map(|e| e.perm)
     }
 
+    fn managed() -> Managed {
+        Managed { ids: Some(2000..=59999), groups: vec![990], app_users: vec![2500], app_groups: vec![2501] }
+    }
+
     #[test]
-    fn a_replacing_walk_takes_what_the_rules_do_not_grant_and_leaves_foreign_ids_alone() {
-        let (bob, anna, kids, gone, debian) =
-            (Who::User(2002), Who::User(2001), Who::Group(2100), Who::Group(2200), Who::User(1000));
-        let (users, user_990) = (Who::Group(990), Who::User(990));
-        // bob kept rwx from a walk that failed, a deleted group its entry,
-        // the owner's own user (unmanaged) got one by hand, a writer opened
-        // it to everyone's primary group by name (a system account of the
-        // same number keeps its entry); the file's owner opened it to the
-        // owning group and to others.
+    fn named_entries_of_people_and_their_groups_go_apps_and_foreign_ones_stay() {
+        let (anna, family, users, files) = (Who::User(2001), Who::Group(2100), Who::Group(990), 995);
+        let (app, app_group, debian, user_990) =
+            (Who::User(2500), Who::Group(2501), Who::User(1000), Who::User(990));
         let left = named(
-            0o777,
-            &[(bob, 7), (anna, 5), (kids, 5), (gone, 7), (debian, 7), (users, 7), (user_990, 5)],
+            0o750,
+            &[(anna, 7), (family, 5), (users, 7), (app, 7), (app_group, 5), (debian, 7), (user_990, 5)],
         );
-        let replacing = Rules {
-            grant: vec![(anna, SharePermission::Read), (kids, SharePermission::ReadWrite)],
-            managed: Some(Managed { ids: 2000..=59999, groups: vec![990] }),
-            ..Rules::default()
-        };
 
-        let stripped = without(Some(left.clone()), 0o777, &replacing).unwrap();
-        assert_eq!(stripped.named(bob), None, "not granted: gone without being named");
-        assert_eq!(stripped.named(gone), None);
-        assert_eq!(stripped.named(users), None, "everyone's primary group is managed");
-        assert_eq!(stripped.named(user_990), Some(5), "a user of that number is not");
-        assert_eq!((stripped.named(anna), stripped.named(kids)), (Some(5), Some(5)), "granted ones stay");
-        assert_eq!(stripped.named(debian), Some(7), "not an ID zendiloOS hands out");
-        assert_eq!((base(&stripped, GROUP_OBJ), base(&stripped, OTHER)), (Some(0), Some(0)));
-        assert_eq!(base(&stripped, USER_OBJ), Some(7), "the owner's own entry stays");
-        assert_eq!(stripped.mask(), Some(7), "the union of what is left");
-        let default = default_without(Some(left.clone()), &replacing).unwrap();
+        let now = shared(Some(left.clone()), 0o750, true, files, &managed()).unwrap();
+
+        assert_eq!((now.named(anna), now.named(family), now.named(users)), (None, None, None));
+        assert_eq!((now.named(app), now.named(app_group)), (Some(7), Some(5)), "an app keeps working");
+        assert_eq!((now.named(debian), now.named(user_990)), (Some(7), Some(5)), "not ours to take");
+        assert_eq!(now.named(Who::Group(files)), Some(7));
         assert_eq!(
-            (default.named(bob), default.named(debian), base(&default, GROUP_OBJ), base(&default, OTHER)),
-            (None, Some(7), Some(0), Some(0))
+            (base(&now, USER_OBJ), base(&now, GROUP_OBJ), base(&now, OTHER)),
+            (Some(7), Some(5), Some(0))
         );
-        let plain = without(None, 0o664, &replacing).unwrap();
-        assert_eq!(plain, Acl::from_mode(0o600), "a file without an ACL: its mode's group and others");
-        assert!(without(Some(stripped), 0o770, &replacing).is_none(), "so already");
-
-        // Without `managed` (rules that only take away) only `remove` goes.
-        let adding = Rules { managed: None, ..replacing };
-        assert!(without(Some(left), 0o777, &adding).is_none());
+        assert_eq!(now.mask(), Some(7), "the union of what is left");
+        assert!(shared(Some(now), 0o770, true, files, &managed()).is_none(), "so already");
     }
 
     #[test]
-    fn what_passes_to_root_from_a_private_place_keeps_only_the_owners_entry() {
-        let opened = named(0o777, &[(Who::User(2003), 7), (Who::User(1000), 5)]);
-        assert_eq!(owner_only(Some(opened), 0o777), Some(Acl::from_mode(0o700)));
-        assert!(owner_only(None, 0o700).is_none(), "private already");
-        assert_eq!(owner_only(None, 0o640), Some(Acl::from_mode(0o600)));
+    fn files_get_execute_only_where_somebody_has_it() {
+        let files = 995;
+        let plain = shared(None, 0o640, false, files, &managed()).unwrap();
+        assert_eq!(plain.named(Who::Group(files)), Some(6));
+        assert_eq!(plain.mask(), Some(6));
+        let program = shared(None, 0o750, false, files, &managed()).unwrap();
+        assert_eq!(program.named(Who::Group(files)), Some(7));
+        let private = shared(None, 0o600, false, files, &managed()).unwrap();
+        assert_eq!(private.mask(), Some(6), "a private file is the share's too");
+        assert_eq!(base(&private, OTHER), Some(0));
     }
 
     #[test]
-    fn what_managed_accounts_that_may_not_write_own_passes_to_root() {
-        let owners = Owners { managed: Some(2000..=59999), writers: vec![2001] };
-        assert!(!owners.hand_over(2001), "a writer keeps theirs");
-        assert!(owners.hand_over(2002), "one who may only read, or not at all");
-        assert!(owners.hand_over(2999), "an account gone since");
-        assert!(!owners.hand_over(999), "a container's or system account's stays");
-        assert!(!owners.hand_over(0));
-        assert!(!Owners::default().hand_over(2002), "without the managed range, nothing passes");
+    fn a_folders_default_acl_gives_what_comes_later_the_group() {
+        let files = 995;
+        let access = Acl::from_mode(0o700);
+        let made = shared_default(None, &access, files, &managed()).unwrap();
+        assert_eq!(made.named(Who::Group(files)), Some(7));
+        assert_eq!(
+            (base(&made, USER_OBJ), base(&made, GROUP_OBJ)),
+            (Some(7), Some(0)),
+            "from the folder's own"
+        );
+        let left = named(0o770, &[(Who::User(2001), 7), (Who::User(1000), 5)]);
+        let now = shared_default(Some(left), &access, files, &managed()).unwrap();
+        assert_eq!((now.named(Who::User(2001)), now.named(Who::User(1000))), (None, Some(5)));
+        assert!(shared_default(Some(now), &access, files, &managed()).is_none(), "so already");
+    }
+
+    #[test]
+    fn a_new_shares_root_has_exactly_the_one_acl() {
+        let files = 995;
+        let acl = root(None, 0o2770, files, &managed());
+        let mut expected = Acl::from_mode(0o770);
+        expected.set(Who::Group(files), 7);
+        expected.fix_mask();
+        assert_eq!(acl, expected);
+        // An old root (owner root, 0770, an entry per person, one app's).
+        let old = named(0o700, &[(Who::User(2001), 7), (Who::User(2500), 5)]);
+        let acl = root(Some(old), 0o2770, files, &managed());
+        assert_eq!((acl.named(Who::User(2001)), acl.named(Who::User(2500))), (None, Some(5)));
+        assert_eq!((base(&acl, GROUP_OBJ), base(&acl, OTHER), acl.mask()), (Some(7), Some(0), Some(7)));
+    }
+
+    #[test]
+    fn without_managed_ids_only_the_group_is_added() {
+        let left = named(0o770, &[(Who::User(2001), 7)]);
+        let now = shared(Some(left), 0o770, true, 995, &Managed::default()).unwrap();
+        assert_eq!(now.named(Who::User(2001)), Some(7));
+        assert_eq!(now.named(Who::Group(995)), Some(7));
     }
 
     #[test]
@@ -469,57 +421,10 @@ mod tests {
 
     #[test]
     fn removing_the_last_named_entry_leaves_no_mask() {
-        let mut acl = Acl::from_mode(0o770);
-        acl.set(Who::User(1000), 7);
+        let mut acl = named(0o770, &[(Who::User(2001), 7)]);
+        acl.strip(&managed());
         acl.fix_mask();
-        let gone = without(Some(acl), 0o770, &rules(&[Who::User(1000)], &[])).unwrap();
-        assert_eq!(gone, Acl::from_mode(0o770));
-        assert!(without(None, 0o640, &rules(&[Who::User(1000)], &[])).is_none(), "nothing to remove");
-    }
-
-    #[test]
-    fn files_get_execute_only_where_somebody_has_it() {
-        let grant = rules(
-            &[],
-            &[(Who::User(1000), SharePermission::ReadWrite), (Who::Group(2000), SharePermission::Read)],
-        );
-        let plain = with(None, 0o640, false, &grant).unwrap();
-        assert_eq!(plain.named(Who::User(1000)), Some(6));
-        assert_eq!(plain.named(Who::Group(2000)), Some(4));
-        let program = with(None, 0o750, false, &grant).unwrap();
-        assert_eq!(program.named(Who::User(1000)), Some(7));
-        let folder = with(None, 0o750, true, &grant).unwrap();
-        assert_eq!(folder.named(Who::Group(2000)), Some(5));
-        let denied =
-            with(None, 0o750, true, &rules(&[], &[(Who::User(1000), SharePermission::Deny)])).unwrap();
-        assert_eq!(denied.named(Who::User(1000)), Some(0));
-        assert!(with(Some(folder.clone()), 0o770, true, &grant).is_none(), "already so");
-    }
-
-    #[test]
-    fn a_first_default_entry_brings_the_base_entries_along() {
-        let access = Acl::from_mode(0o750);
-        let grant = rules(&[], &[(Who::User(1000), SharePermission::Read)]);
-        let default = default_with(None, &access, &grant).unwrap();
-        let mut expected = Acl::from_mode(0o750);
-        expected.set(Who::User(1000), 5);
-        expected.fix_mask();
-        assert_eq!(default, expected);
-        assert!(default_with(None, &access, &rules(&[Who::User(1)], &[])).is_none());
-        assert!(default_without(None, &rules(&[Who::User(1000)], &[])).is_none(), "none to change");
-        let gone = default_without(Some(default), &rules(&[Who::User(1000)], &[])).unwrap();
-        assert_eq!(gone, Acl::from_mode(0o750));
-    }
-
-    #[test]
-    fn a_denied_file_gets_nothing_and_an_untouched_default_stays() {
-        let denied =
-            with(None, 0o755, false, &rules(&[], &[(Who::User(1000), SharePermission::Deny)])).unwrap();
-        assert_eq!(denied.named(Who::User(1000)), Some(0), "not even execute");
-        let default = Acl::from_mode(0o750);
-        assert!(
-            default_without(Some(default), &rules(&[Who::User(1000)], &[])).is_none(),
-            "nobody to remove"
-        );
+        assert_eq!(acl, Acl::from_mode(0o770));
+        assert!(!acl.has_named());
     }
 }

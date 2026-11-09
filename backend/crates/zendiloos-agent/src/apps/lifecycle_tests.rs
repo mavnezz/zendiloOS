@@ -304,7 +304,7 @@ fn the_time_zone_comes_from_where_localtime_leads() {
 #[test]
 fn the_facts_a_template_needs_come_from_the_machine() {
     let f = Fixture::new("facts");
-    let users = "zendiloos-users:x:1500:\napp-shm:x:2100:\n";
+    let users = "zendiloos-users:x:1500:\nzendiloos-files:x:995:\napp-shm:x:2100:\n";
     fs::write(f.path("group"), users).unwrap();
     let alice = "alice:x:2001:1500:Alice:/nonexistent:/usr/sbin/nologin\n";
     let owner = "owner:x:1000:1000::/home/owner:/bin/bash\n";
@@ -317,11 +317,11 @@ fn the_facts_a_template_needs_come_from_the_machine() {
 
     let expected = Response::HostFacts {
         uid: 2001,
-        gid: 1500,
+        gid: 995,
         time_zone: "Europe/Berlin".into(),
         devices: vec![device("/dev/dri")],
     };
-    assert_eq!(facts, expected);
+    assert_eq!(facts, expected, "the account, in the group whose access the shares give");
     let unmanaged = f.apps.facts(&UserName::parse("owner").unwrap(), &asked);
     assert!(unmanaged.is_err(), "the owner's own user is no account of zendiloOS");
     let many = vec![device("/dev/dri"); DevicePath::MAX_COUNT + 1];

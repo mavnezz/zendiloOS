@@ -132,11 +132,12 @@ impl ProjectStorage for SharesForProjects {
         self.writable(actor, share_id).await?;
         let id = ShareId::new(share_id);
         let folder = path(folder)?;
-        // Each folder on the way, as far as it is missing.
+        // Each folder on the way, as far as it is missing; the
+        // administrator's, whose account the containers run as.
         let mut made = FilePath::root();
         for part in folder.as_str().split('/') {
             made = made.join(part).map_err(|e| StorageError::Invalid(e.to_string()))?;
-            match self.files.make_directory(actor, id, made.clone(), context).await {
+            match self.files.make_own_directory(actor, id, made.clone(), context).await {
                 Ok(()) | Err(FilesError::Exists) => {}
                 Err(error) => return Err(storage_error(error)),
             }

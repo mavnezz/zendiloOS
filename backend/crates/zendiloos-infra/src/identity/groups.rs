@@ -5,10 +5,9 @@ use zendiloos_kernel::{Actor, PortError, RequestContext};
 use zendiloos_sharing::application::{AccountChange, SharingUseCases};
 use zendiloos_sharing::domain::ShareName;
 
-/// [`GroupObserver`] for the Sharing context: members of a group denied a
-/// share carry ACL entries of their own, which follow the group, and what
-/// those who leave a group that writes own passes to root. What follows
-/// is the shares, by name, whose files are walked in the background.
+/// [`GroupObserver`] for the Sharing context: Samba follows a group's
+/// members itself; where someone may do less now, the share's open
+/// connections end. Before a group goes, its rules go.
 pub struct SharingFollowsGroups {
     sharing: SharingUseCases,
 }
@@ -33,31 +32,16 @@ fn shares(names: &[String]) -> Vec<ShareName> {
     names.iter().filter_map(|name| ShareName::parse(name).ok()).collect()
 }
 
-fn named(shares: Vec<ShareName>) -> Vec<String> {
-    shares.into_iter().map(|share| share.to_string()).collect()
-}
-
 #[async_trait]
 impl GroupObserver for SharingFollowsGroups {
-    async fn members_changing(&self, group: GroupId, after: &[AccountId]) -> Result<Vec<String>, PortError> {
-        Ok(named(self.sharing.group_members_changing(group.get(), &ids(after)).await.map_err(failed)?))
-    }
-
     async fn members_changed(
         &self,
         group: GroupId,
         before: &[AccountId],
-        following: &[String],
-        actor: &Actor,
         context: &RequestContext,
-    ) -> Result<Vec<String>, PortError> {
-        let owing = shares(following);
-        let following = self
-            .sharing
-            .group_members_changed(group.get(), &ids(before), &owing, actor, context)
-            .await
-            .map_err(failed)?;
-        Ok(named(following))
+    ) -> Result<(), PortError> {
+        self.sharing.group_members_changed(group.get(), &ids(before), context).await.map_err(failed)?;
+        Ok(())
     }
 
     async fn deleting(
@@ -66,15 +50,13 @@ impl GroupObserver for SharingFollowsGroups {
         actor: &Actor,
         context: &RequestContext,
     ) -> Result<(), PortError> {
-        self.sharing.group_deleting(group.get(), actor, context).await.map_err(failed)?;
-        Ok(())
+        self.sharing.group_deleting(group.get(), actor, context).await.map_err(failed)
     }
 }
 
 /// [`AccountObserver`] for the Sharing context: a disabled account may do
-/// nothing on any share, as if denied, and what it owns passes to root;
-/// a deleted one's ID loses its entries and its files. Whatever follows
-/// is named as for [`SharingFollowsGroups`].
+/// nothing on any share (Samba denies it by name), and the open
+/// connections of the shares a disabled or deleted account could use end.
 pub struct SharingFollowsAccounts {
     sharing: SharingUseCases,
 }
@@ -96,24 +78,18 @@ fn change(change: AccessChange) -> AccountChange {
 #[async_trait]
 impl AccountObserver for SharingFollowsAccounts {
     async fn access_changing(&self, account: AccountId, to: AccessChange) -> Result<Vec<String>, PortError> {
-        Ok(named(self.sharing.account_changing(account.get(), change(to)).await.map_err(failed)?))
+        let reached = self.sharing.account_changing(account.get(), change(to)).await.map_err(failed)?;
+        Ok(reached.into_iter().map(|share| share.to_string()).collect())
     }
 
     async fn access_changed(
         &self,
         account: AccountId,
         to: AccessChange,
-        following: &[String],
-        actor: &Actor,
+        noted: &[String],
         context: &RequestContext,
-    ) -> Result<Vec<String>, PortError> {
-        let owing = shares(following);
-        let following = self
-            .sharing
-            .account_changed(account.get(), change(to), &owing, actor, context)
-            .await
-            .map_err(failed)?;
-        Ok(named(following))
+    ) -> Result<(), PortError> {
+        self.sharing.account_changed(account.get(), change(to), &shares(noted), context).await.map_err(failed)
     }
 }
 

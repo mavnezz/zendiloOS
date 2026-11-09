@@ -93,16 +93,13 @@ impl UpdateGroup {
         Self { context }
     }
 
-    /// Returns the group and what follows the change of its members in the
-    /// background, named (the shares whose files are given their
-    /// permissions anew); the audit names it too.
     pub async fn execute(
         &self,
         auth: &AuthContext,
         id: GroupId,
         changes: GroupChanges,
         request: &RequestContext,
-    ) -> Result<(Group, Vec<String>), IdentityError> {
+    ) -> Result<Group, IdentityError> {
         let c = &self.context;
         Context::require(auth, Permission::UsersManage)?;
         let description = changes.description.map(|d| text::description(d.as_deref())).transpose()?;
@@ -111,13 +108,9 @@ impl UpdateGroup {
         let now = c.now();
         let mut group = c.ports.groups.find_by_id(id).await?.ok_or(IdentityError::GroupNotFound)?;
         let before = group.members.clone();
-        let mut following = Vec::new();
         if let Some(members) = changes.members {
             let (members, names) = c.members(members).await?;
             if members != group.members {
-                // Others note what has to follow first: whatever stops the
-                // change halfway, they make it up.
-                following = c.ports.group_observer.members_changing(group.id, &members).await?;
                 c.ports.system.set_group_members(&group.name, &names, request).await?;
                 group.members = members;
             }
@@ -128,39 +121,16 @@ impl UpdateGroup {
         group.updated_at = now;
         c.ports.groups.update(&group).await?;
         if group.members != before {
-            // The change stands; what others cannot follow now they make up
-            // later, as noted.
-            let actor = auth.actor();
-            match c.ports.group_observer.members_changed(group.id, &before, &following, &actor, request).await
-            {
-                Ok(more) => join(&mut following, more),
-                Err(error) => {
-                    tracing::warn!(%error, group = group.name.as_str(), "others follow the group's members later");
-                }
+            // The change stands: Samba follows the group's members itself on
+            // the next connection; others end what may no longer go on.
+            if let Err(error) = c.ports.group_observer.members_changed(group.id, &before, request).await {
+                tracing::warn!(%error, group = group.name.as_str(), "others did not follow the group's members");
             }
         }
 
         let entry = AuditEntry::new(now, AuditAction::GroupUpdate.as_str(), Outcome::Success, request);
-        c.audit(entry.by(&auth.actor()).target(pending(group.name.as_str(), &following))).await?;
-        Ok((group, following))
-    }
-}
-
-/// `more` added to `following`, each once.
-pub(super) fn join(following: &mut Vec<String>, more: Vec<String>) {
-    for item in more {
-        if !following.contains(&item) {
-            following.push(item);
-        }
-    }
-}
-
-/// An audit target with what follows in the background, if anything.
-pub(super) fn pending(target: &str, following: &[String]) -> String {
-    if following.is_empty() {
-        target.to_owned()
-    } else {
-        format!("{target} (pending: {})", following.join(", "))
+        c.audit(entry.by(&auth.actor()).target(group.name.as_str())).await?;
+        Ok(group)
     }
 }
 

@@ -29,6 +29,9 @@ ExecStart=/usr/libexec/zendiloos/zendiloos-agent
 # - shares: datasets and mount units as for pools; Samba and NFS
 #   configuration in /etc, NFS state in /var/lib/nfs; smbd, wsdd2 and
 #   nfs-server are started, stopped, enabled and disabled by systemd;
+#   smbcontrol makes every smbd read the configuration again and ends the
+#   connections of a share someone lost access to (Samba's messages, in
+#   /run/samba and /var/lib/samba);
 # - personal folders: their dataset and mount unit as for shares, and
 #   each user's quota (zfs userquota); the folders themselves are the files
 #   agent's;

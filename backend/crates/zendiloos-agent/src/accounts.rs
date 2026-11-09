@@ -21,6 +21,11 @@ use crate::passwd;
 
 /// Primary group of every managed user; created by the package (sysusers).
 pub const USERS_GROUP: &str = "zendiloos-users";
+/// The system user and group the shares' files are given to, created by
+/// the package (sysusers): every share's folder lets this group read and
+/// write, NFS clients are squashed to it and apps run in it
+/// (docs/architecture.md, 4.4). No account of a person.
+pub const FILES_GROUP: &str = "zendiloos-files";
 pub const ID_MIN: u32 = 2000;
 pub const ID_MAX: u32 = 59999;
 const MANAGED_IDS: RangeInclusive<u32> = ID_MIN..=ID_MAX;

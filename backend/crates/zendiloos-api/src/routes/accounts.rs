@@ -175,21 +175,10 @@ pub struct UpdateAccountRequest {
     pub password_locked: Option<bool>,
 }
 
-/// An account as changed, and the shares whose files follow the change in
-/// the background.
-#[derive(Debug, Serialize, ToSchema)]
-pub struct UpdatedAccount {
-    #[serde(flatten)]
-    pub account: Account,
-    /// Names of the shares whose files are given their permissions anew
-    /// in the background, e.g. after the account was disabled.
-    pub pending_shares: Vec<String>,
-}
-
 /// Changes another account's full name, role or whether it is enabled.
-/// Disabling ends its sessions and SMB access, and keeps it out of the
-/// shares' files as if denied (NFS): the files of the shares it could use
-/// follow in the background.
+/// Disabling ends its sessions and its SMB access: Samba has it disabled
+/// and denies it by name on every share, and the open connections of the
+/// shares it could use end.
 #[utoipa::path(
     patch,
     path = "/accounts/{id}",
@@ -198,7 +187,7 @@ pub struct UpdatedAccount {
     params(("id" = i64, Path)),
     request_body = UpdateAccountRequest,
     responses(
-        (status = OK, body = UpdatedAccount),
+        (status = OK, body = Account),
         (status = NOT_FOUND, body = Problem, description = "`not_found`"),
         (status = CONFLICT, body = Problem, description = "`last_admin`, `own_account`"),
         (status = FORBIDDEN, body = Problem, description = "`forbidden`, `csrf_rejected`"),
@@ -210,7 +199,7 @@ async fn update_account(
     Client(client): Client,
     Path(id): Path<i64>,
     ApiJson(request): ApiJson<UpdateAccountRequest>,
-) -> Result<Json<UpdatedAccount>, ApiError> {
+) -> Result<Json<Account>, ApiError> {
     let changes = AccountChanges {
         full_name: request.full_name.map(Some),
         description: request.description.map(Some),
@@ -219,10 +208,10 @@ async fn update_account(
         disabled: request.disabled,
         password_locked: request.password_locked,
     };
-    let (account, pending_shares) =
+    let account =
         state.identity.update_account.execute(&auth.0, AccountId::new(id), changes, &client).await?;
     let two_factor = state.identity.two_factor_accounts.execute(&auth.0).await?.contains(&account.id);
-    Ok(Json(UpdatedAccount { account: Account::new(account, two_factor), pending_shares }))
+    Ok(Json(Account::new(account, two_factor)))
 }
 
 /// Deletes another account with its Linux user. Its files stay.
@@ -373,20 +362,9 @@ pub struct UpdateGroupRequest {
     pub members: Option<Vec<i64>>,
 }
 
-/// A group as changed, and the shares whose files follow the change in the
-/// background.
-#[derive(Debug, Serialize, ToSchema)]
-pub struct UpdatedGroup {
-    #[serde(flatten)]
-    pub group: Group,
-    /// Names of the shares whose files are given their permissions anew in
-    /// the background: where the group is denied, or where it may write
-    /// and someone left it.
-    pub pending_shares: Vec<String>,
-}
-
-/// Changes a group's description or members. The change stands at once;
-/// the files of the shares it touches follow in the background.
+/// Changes a group's description or members. The change stands at once:
+/// Samba follows a group's members itself on the next connection, and the
+/// open connections end of shares where a member may do less now.
 #[utoipa::path(
     patch,
     path = "/groups/{id}",
@@ -395,7 +373,7 @@ pub struct UpdatedGroup {
     params(("id" = i64, Path)),
     request_body = UpdateGroupRequest,
     responses(
-        (status = OK, body = UpdatedGroup),
+        (status = OK, body = Group),
         (status = NOT_FOUND, body = Problem, description = "`not_found`"),
     )
 )]
@@ -405,14 +383,13 @@ async fn update_group(
     Client(client): Client,
     Path(id): Path<i64>,
     ApiJson(request): ApiJson<UpdateGroupRequest>,
-) -> Result<Json<UpdatedGroup>, ApiError> {
+) -> Result<Json<Group>, ApiError> {
     let changes = GroupChanges {
         description: request.description.map(Some),
         members: request.members.map(|ids| ids.into_iter().map(AccountId::new).collect()),
     };
-    let (group, pending_shares) =
-        state.identity.update_group.execute(&auth.0, GroupId::new(id), changes, &client).await?;
-    Ok(Json(UpdatedGroup { group: group.into(), pending_shares }))
+    let group = state.identity.update_group.execute(&auth.0, GroupId::new(id), changes, &client).await?;
+    Ok(Json(group.into()))
 }
 
 /// Deletes a group with its Linux group.

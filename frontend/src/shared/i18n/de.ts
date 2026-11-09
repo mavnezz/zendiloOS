@@ -1154,7 +1154,7 @@ const de: Messages = {
     smb1Note:
       'SMB 1 wird nicht angeboten: Über diese Version haben sich Erpressungstrojaner wie WannaCry verbreitet, und aktuelle Systeme sprechen sie nicht mehr.',
     nfsExplanation:
-      'NFS vertraut den Computern, in die es exportiert: Wer einen Computer eines erlaubten Netzes kontrolliert, handelt dort als beliebiger Benutzer. Exportieren Sie nur in Netze, die Sie kontrollieren, und nehmen Sie SMB, wo es geht.',
+      'NFS vertraut den Computern, in die es exportiert: Wer einen erlaubten Computer nutzt, bekommt den Zugriff, den seine Regel gibt, als welcher Benutzer er sich auch ausgibt. Exportieren Sie nur in Netze, die Sie kontrollieren, und nehmen Sie SMB, wo es geht.',
     discoveryExplanation:
       'Die Erkennung macht das NAS nur leichter auffindbar; über seine Adresse ist es immer erreichbar. Ausgeschaltet kündigt es sich im Netz nicht mehr an.',
     advanced: {
@@ -2137,7 +2137,6 @@ const de: Messages = {
     enable: 'Aktivieren',
     disable: 'Deaktivieren',
     toggleFailed: 'Das Konto konnte nicht geändert werden',
-    sharesFollow: 'Die Dateien in {shares} bekommen ihre Berechtigungen im Hintergrund.',
     description: 'Beschreibung',
     email: 'E-Mail',
     groups: 'Gruppen',
@@ -2310,7 +2309,7 @@ const de: Messages = {
       files_delete: 'Dateien löschen',
       files_move: 'Dateien verschieben',
       files_restore_snapshot: 'Aus einem Snapshot zurückkopieren',
-      sharing_apply_access: 'Freigaberechte anwenden',
+      sharing_migrate_permissions: 'Auf Rechte je Freigabe umstellen',
       sharing_delete_share: 'Freigabe löschen',
       storage_create_pool: 'Pool anlegen',
       storage_destroy_pool: 'Pool löschen',
@@ -2604,14 +2603,14 @@ const de: Messages = {
       members: 'Keine Mitglieder | Ein Mitglied | {n} Mitglieder',
       showMembers: 'Mitglieder von {name}',
       appliesToAll:
-        'Die Regeln gelten für den Ordner und alles darin; vorhandene Dateien erhalten sie nach dem Speichern im Hintergrund.',
+        'Die Regeln gelten für den Ordner und alles darin, sobald sie gespeichert sind; offene SMB-Verbindungen von jemandem, der den Zugriff verliert, enden.',
       reachedAs: 'Rechner erreichen ihn als',
       servicesHint:
         'SMB selbst, seine Version und Arbeitsgruppe, wird für alle Ordner in der Systemsteuerung unter Dateidienste eingestellt.',
       yourAccess: 'Ihr Zugriff',
       network: 'Netzwerk',
       accessHint:
-        'In Dateien, für Apps und im Netzwerk gleichermaßen. Auch Administratoren brauchen einen Eintrag.',
+        'Über SMB und in Dateien; NFS richtet sich stattdessen nach Rechnern. Auch Administratoren brauchen einen Eintrag.',
       shared: 'Im Netzwerk freigeben',
       sharedHint:
         'Bietet {name} über SMB (Windows, macOS, Linux) und den NFS-Rechnern unten an. Nicht freigegeben ist er nur auf dem NAS nutzbar, mit denselben Berechtigungen.',
@@ -2626,19 +2625,8 @@ const de: Messages = {
       permission: 'Berechtigung',
       readOnly: 'Nur lesen',
       readWrite: 'Lesen und schreiben',
-      squash: 'Benutzerzuordnung',
-      squashes: {
-        root: 'Root als anonym',
-        all: 'Alle als anonym',
-        none: 'Keine Zuordnung',
-      },
-      squashHints: {
-        root: 'Root des Rechners gilt als anonymer Benutzer; alle anderen behalten ihre Benutzer-ID.',
-        all: 'Jeder auf dem Rechner gilt als anonymer Benutzer, wer er dort auch ist.',
-        none: 'Jeder behält seine Benutzer-ID, auch root: Root des Rechners darf im Ordner alles.',
-      },
-      rootWarning:
-        'Nur für Rechner, die Sie selbst verwalten: Deren root ist in diesem Ordner root.',
+      anyUser:
+        'Wer einen Rechner dieser Regel nutzt, bekommt den gewählten Zugriff auf den ganzen Ordner, als welcher Benutzer er sich auch ausgibt: NFS glaubt, was der Rechner sagt, daher gilt jede Anfrage als Gruppe zendiloos-files.',
       security: 'Sicherheit',
       async: 'Schreibvorgänge bestätigen, bevor sie auf der Platte sind (async)',
       asyncHint:
@@ -2794,8 +2782,7 @@ const de: Messages = {
       rollbackLater:
         'Der spätere Snapshot wird ebenfalls gelöscht. | Die {count} späteren Snapshots werden ebenfalls gelöscht.',
       rollbackConfirm: 'Geben Sie zur Bestätigung {share} ein',
-      rolledBack:
-        'Die Freigabe ist wieder auf dem Stand vom {time}. Ihre Dateien bekommen im Hintergrund wieder die Berechtigungen von jetzt.',
+      rolledBack: 'Die Freigabe ist wieder auf dem Stand vom {time}.',
       open: 'Snapshots',
       title: 'Snapshots von {name}',
       description:
@@ -2845,7 +2832,7 @@ const de: Messages = {
       'Über SMB gelöschte Dateien landen in .recycle/<Benutzer> der Freigabe, statt zu verschwinden.',
     nfs: 'NFS',
     nfsWarning:
-      'NFS vertraut den Benutzer-IDs, die der Client schickt. Erlauben Sie nur vertrauenswürdige Rechner.',
+      'NFS unterscheidet Rechner, nicht Personen: Wer einen der Rechner unten nutzt, darf lesen oder lesen und schreiben, wie seine Regel sagt, als welcher Benutzer er sich auch ausgibt. Erlauben Sie nur vertrauenswürdige Rechner.',
     nfsNetwork: 'IP-Adresse oder Netz, z. B. 192.168.1.0/24',
     nfsWrite: 'Schreiben',
     nfsAdd: 'Rechner oder Netz hinzufügen',
@@ -2853,7 +2840,6 @@ const de: Messages = {
     create: 'Freigabe anlegen',
     created: 'Freigabe {name} wurde angelegt',
     saved: 'Änderungen an {name} gespeichert',
-    savedHint: 'Vorhandene Dateien erhalten die neuen Rechte im Hintergrund.',
     deleteTitle: 'Freigabe {name} löschen?',
     deleteDescription:
       'Alle Dateien in {path} werden gelöscht. Das lässt sich nicht rückgängig machen.',

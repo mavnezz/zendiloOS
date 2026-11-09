@@ -10,8 +10,8 @@ use tempfile::TempDir;
 use zendiloos_agent::config::Tools;
 use zendiloos_agent::{AccountFiles, Erasable, ErasePolicy, HostPaths, Operations, Paths};
 use zendiloos_agent_proto::{
-    AppName, DiskId, ErrorCode, FileServices, GroupName, Layout, NfsClient, NfsExport, NfsHost, NfsSquash,
-    PoolName, Principal, Request, Response, Role, ShareAccess, ShareCompression, ShareName, SharePermission,
+    AppName, DiskId, ErrorCode, FileServices, GroupName, Layout, NfsClient, NfsExport, NfsHost, PoolName,
+    Principal, Request, Response, Role, ShareAccess, ShareCompression, ShareName, SharePermission,
     ShareRecordSize, SmbProtocol, SmbShare, SnapshotFrequency, SnapshotLabel, SnapshotNote, VolumeNumber,
     Workgroup,
 };
@@ -105,10 +105,11 @@ fn host(erasable: Erasable) -> Host {
     fs::create_dir_all(root.join("volume1/photos")).unwrap();
     fs::write(
         root.join("passwd"),
-        "root:x:0:0::/root:/bin/bash\nanna:x:2000:990::/nonexistent:/usr/sbin/nologin\n",
+        "root:x:0:0::/root:/bin/bash\nanna:x:2000:990::/nonexistent:/usr/sbin/nologin\n\
+         zendiloos-files:x:995:995::/:/usr/sbin/nologin\n",
     )
     .unwrap();
-    fs::write(root.join("group"), "root:x:0:\nzendiloos-users:x:990:\n").unwrap();
+    fs::write(root.join("group"), "root:x:0:\nzendiloos-users:x:990:\nzendiloos-files:x:995:\n").unwrap();
 
     let log = root.join("calls.log");
     let by_id = root.join("dev/disk/by-id");
@@ -151,7 +152,7 @@ fn host(erasable: Erasable) -> Host {
         ),
         testparm: script("testparm", ""),
         exportfs: script("exportfs", ""),
-        setfacl: script("setfacl", ""),
+        smbcontrol: script("smbcontrol", ""),
         busctl: script("busctl", ""),
         timedatectl: script("timedatectl", ""),
         sshd: script("sshd", ""),
@@ -530,19 +531,24 @@ async fn writes_samba_and_nfs_configuration_after_checking_it() {
         clients: vec![NfsClient {
             network: NfsHost::parse("192.168.1.0/24").unwrap(),
             write: false,
-            squash: NfsSquash::Root,
             asynchronous: false,
             insecure: false,
         }],
     }];
 
-    let request = Request::ApplySharing { smb, nfs, services: services(true), homes: None };
+    let request = Request::ApplySharing { smb, nfs, services: services(true), homes: None, close: vec![] };
     assert_eq!(host.run(request.clone()).await, Response::Done);
 
     let samba = fs::read_to_string(host.path("samba/zendiloos.conf")).unwrap();
     assert!(samba.contains("[photos]\n   path = /volume1/photos\n   valid users = @family\n"), "{samba}");
     let exports = fs::read_to_string(host.path("exports.d/zendiloos.exports")).unwrap();
-    assert!(exports.contains("/volume1/photos 192.168.1.0/24(ro,"), "{exports}");
+    assert!(
+        exports.contains(
+            "/volume1/photos 192.168.1.0/24(ro,sync,no_subtree_check,all_squash,anonuid=995,anongid=995,"
+        ),
+        "{exports}"
+    );
+    assert!(samba.contains("   force user = root\n   force group = zendiloos-files\n"), "{samba}");
     assert_eq!(
         host.calls(),
         [
@@ -584,13 +590,13 @@ async fn servers_that_are_off_stop_and_stay_off_with_their_configuration_kept() 
         clients: vec![NfsClient {
             network: NfsHost::parse("192.168.1.0/24").unwrap(),
             write: false,
-            squash: NfsSquash::Root,
             asynchronous: false,
             insecure: false,
         }],
     }];
 
-    let request = Request::ApplySharing { smb: vec![], nfs, services: services(false), homes: None };
+    let request =
+        Request::ApplySharing { smb: vec![], nfs, services: services(false), homes: None, close: vec![] };
     assert_eq!(host.run(request).await, Response::Done);
 
     let samba = fs::read_to_string(host.path("samba/zendiloos.conf")).unwrap();
@@ -613,14 +619,12 @@ async fn servers_that_are_off_stop_and_stay_off_with_their_configuration_kept() 
 #[tokio::test]
 async fn each_agent_serves_only_its_role() {
     let host = host(Erasable::Policy(ErasePolicy::Unused));
-    let access = Request::SetShareAccess {
-        volume: VolumeNumber::new(1).unwrap(),
-        name: share("photos"),
-        access: vec![],
-        removed: vec![],
-        recursive: false,
-    };
-    assert_refused(host.run(access).await, ErrorCode::Forbidden, "not for the System agent");
+    for request in [
+        Request::PrepareShare { volume: VolumeNumber::new(1).unwrap(), name: share("photos") },
+        Request::MigrateShare { volume: VolumeNumber::new(1).unwrap(), name: share("photos") },
+    ] {
+        assert_refused(host.run(request).await, ErrorCode::Forbidden, "not for the System agent");
+    }
 }
 
 #[tokio::test]

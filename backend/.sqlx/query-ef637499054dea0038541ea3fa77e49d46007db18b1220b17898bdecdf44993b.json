@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT share_id AS \"share_id!\", network AS \"network!\", write AS \"write!: bool\",\n                      squash AS \"squash!\", async AS \"asynchronous!: bool\", insecure AS \"insecure!: bool\"\n               FROM share_nfs_clients ORDER BY position",
+  "query": "SELECT share_id AS \"share_id!\", network AS \"network!\", write AS \"write!: bool\",\n                      async AS \"asynchronous!: bool\", insecure AS \"insecure!: bool\"\n               FROM share_nfs_clients ORDER BY position",
   "describe": {
     "columns": [
       {
@@ -37,19 +37,8 @@
         }
       },
       {
-        "name": "squash!",
-        "ordinal": 3,
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "share_nfs_clients",
-            "name": "squash"
-          }
-        }
-      },
-      {
         "name": "asynchronous!: bool",
-        "ordinal": 4,
+        "ordinal": 3,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -60,7 +49,7 @@
       },
       {
         "name": "insecure!: bool",
-        "ordinal": 5,
+        "ordinal": 4,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -78,9 +67,8 @@
       false,
       false,
       false,
-      false,
       false
     ]
   },
-  "hash": "4daac7b5157786a5451e052f510cdeaff89a7f6efe24972da8d04344252cb921"
+  "hash": "ef637499054dea0038541ea3fa77e49d46007db18b1220b17898bdecdf44993b"
 }

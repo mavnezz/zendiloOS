@@ -16,9 +16,9 @@ pub use services::{
 };
 pub use share::{
     Access, AccessRule, AppAccess, Compression, InvalidNetwork, InvalidNfsHost, InvalidSettings,
-    InvalidShareName, MAX_NFS_HOST, MIN_QUOTA_BYTES, NewShare, NfsClient, NfsSpec, NfsSquash, Permission,
-    Principal, RecordSize, Share, ShareId, ShareName, ShareSettings, ShareUsage, SharingConfig, SmbSpec,
-    Subject, effective, network, nfs_host,
+    InvalidShareName, MAX_NFS_HOST, MIN_QUOTA_BYTES, NewShare, NfsClient, NfsSpec, Permission, Principal,
+    RecordSize, Share, ShareId, ShareName, ShareSettings, ShareUsage, SharingConfig, SmbSpec, Subject,
+    effective, network, nfs_host,
 };
 pub use snapshot::{
     Frequency, InvalidNote, InvalidSchedule, LABEL_FORMAT, MAX_KEEP, MAX_NOTE_CHARS, Snapshot,

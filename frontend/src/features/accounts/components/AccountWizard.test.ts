@@ -82,12 +82,11 @@ describe('creating an account', () => {
 
   it('creates the account, then its groups, personal folder and share rules', async () => {
     on('POST', '/api/v1/accounts', () => account(6, 'ben'))
-    on('PATCH', '/api/v1/groups/2', ({ body }) => ({
-      ...group(2, 'staff', (body as { members: number[] }).members),
-      pending_shares: [],
-    }))
+    on('PATCH', '/api/v1/groups/2', ({ body }) =>
+      group(2, 'staff', (body as { members: number[] }).members),
+    )
     on('PUT', '/api/v1/homes/6', () => ({ account_id: 6, quota_bytes: 5 * 1024 ** 3 }))
-    on('PUT', '/api/v1/shares/access/account/6', () => ({ jobs: [] }))
+    on('PUT', '/api/v1/shares/access/account/6', () => undefined)
     const wrapper = await open()
 
     await type('#account-name', ' ben ')
@@ -175,11 +174,8 @@ describe('creating an account', () => {
 
 describe('editing an account', () => {
   it('fills the form from the account, and saves only what changed after it', async () => {
-    on('PATCH', '/api/v1/accounts/5', () => ({ ...anna, pending_shares: [] }))
-    on('PATCH', '/api/v1/groups/1', () => ({
-      ...group(1, 'family', []),
-      pending_shares: ['photos'],
-    }))
+    on('PATCH', '/api/v1/accounts/5', () => anna)
+    on('PATCH', '/api/v1/groups/1', () => group(1, 'family', []))
     on('PUT', '/api/v1/homes/5', () => null)
     const wrapper = await open({ account: anna })
 
@@ -206,16 +202,14 @@ describe('editing an account', () => {
     })
     expect(callsTo('PUT', '/api/v1/shares/access/account/5')).toHaveLength(0)
     expect(wrapper.emitted('update:open')?.at(-1)).toEqual([false])
-    // Leaving family: the files of photos follow in the background.
-    expect(useNotifications().items[0]).toMatchObject({
-      title: 'Changes to anna saved',
-      body: 'The files in photos get their permissions in the background.',
-    })
+    // Leaving family holds at once: nothing follows in the background.
+    expect(useNotifications().items[0]).toMatchObject({ title: 'Changes to anna saved' })
+    expect(useNotifications().items[0]!.body).toBeUndefined()
   })
 
   it('leaves role and locks alone for the own account, and shows the permissions tab', async () => {
-    on('PATCH', '/api/v1/accounts/5', () => ({ ...anna, pending_shares: [] }))
-    on('PUT', '/api/v1/shares/access/account/5', () => ({ jobs: [] }))
+    on('PATCH', '/api/v1/accounts/5', () => anna)
+    on('PUT', '/api/v1/shares/access/account/5', () => undefined)
     await open({ account: anna, own: true })
 
     expect(input('#account-role').disabled).toBe(true)

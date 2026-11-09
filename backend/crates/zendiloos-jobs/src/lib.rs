@@ -424,7 +424,7 @@ impl Jobs {
 
 #[async_trait]
 impl RunningWork for Jobs {
-    /// Each as `kind target`, e.g. `sharing.apply_access photos`.
+    /// Each as `kind target`, e.g. `sharing.migrate_permissions photos`.
     async fn running(&self) -> Vec<String> {
         Jobs::running(self)
             .into_iter()
@@ -610,7 +610,7 @@ mod tests {
         let (jobs, _) = jobs();
         let mut events = jobs.subscribe();
         let (finish, finished) = tokio::sync::oneshot::channel::<()>();
-        jobs.start("sharing.apply_access", Some("photos".into()), None, |_| async move {
+        jobs.start("sharing.migrate_permissions", Some("photos".into()), None, |_| async move {
             let _ = finished.await;
             Ok(())
         })
@@ -621,7 +621,7 @@ mod tests {
         for _ in 0..3 {
             next(&mut events).await;
         }
-        assert_eq!(RunningWork::running(&jobs).await, ["sharing.apply_access photos"]);
+        assert_eq!(RunningWork::running(&jobs).await, ["sharing.migrate_permissions photos"]);
 
         finish.send(()).unwrap();
         assert_eq!(next(&mut events).await.state, JobState::Succeeded);

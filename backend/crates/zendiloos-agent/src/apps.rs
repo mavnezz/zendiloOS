@@ -184,16 +184,21 @@ impl Apps {
     }
 
     /// What filling in an app of a catalog for `user`'s project takes from
-    /// the machine: the account's UID and primary GID (one zendiloOS
-    /// manages), the time zone, and which of `devices` are there.
+    /// the machine: the account's UID (one zendiloOS manages) and the GID of
+    /// `zendiloos-files`, the group whose access every share's folder gives,
+    /// so the containers reach the shares they mount; the time zone, and
+    /// which of `devices` are there.
     pub(crate) fn facts(&self, user: &UserName, devices: &[DevicePath]) -> Result<Response, OperationError> {
         if devices.len() > DevicePath::MAX_COUNT {
             return Err(refused("too many devices at once"));
         }
         let (passwd, group) = (read(&self.accounts.passwd)?, read(&self.accounts.group)?);
         require_managed(&passwd, &group, user)?;
-        let (uid, gid) = passwd::lookup(&passwd, user.as_str())
+        let (uid, _) = passwd::lookup(&passwd, user.as_str())
             .ok_or_else(|| OperationError::NotManaged(format!("user {}", user.as_str())))?;
+        let files = crate::accounts::FILES_GROUP;
+        let gid = passwd::group_id(&group, files)
+            .ok_or_else(|| OperationError::Setup(format!("the group {files} is missing")))?;
         let devices =
             devices.iter().filter(|device| self.paths.dev.join(device.inside()).exists()).cloned().collect();
         Ok(Response::HostFacts { uid, gid, time_zone: self.time_zone(), devices })

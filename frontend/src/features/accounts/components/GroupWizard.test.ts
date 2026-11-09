@@ -47,7 +47,7 @@ beforeEach(() => {
 describe('creating a group', () => {
   it('needs a name, then takes members and rules in three steps', async () => {
     on('POST', '/api/v1/groups', () => group(2, 'staff', [6]))
-    on('PUT', '/api/v1/shares/access/group/2', () => ({ jobs: [] }))
+    on('PUT', '/api/v1/shares/access/group/2', () => undefined)
     const wrapper = await open()
 
     await click('Next')
@@ -118,12 +118,8 @@ describe('creating a group', () => {
 
 describe('editing a group', () => {
   it('keeps its name and changes members and rules from tabs', async () => {
-    on('PATCH', '/api/v1/groups/1', ({ body }) => ({
-      ...family,
-      ...(body as object),
-      pending_shares: ['photos'],
-    }))
-    on('PUT', '/api/v1/shares/access/group/1', () => ({ jobs: [] }))
+    on('PATCH', '/api/v1/groups/1', ({ body }) => ({ ...family, ...(body as object) }))
+    on('PUT', '/api/v1/shares/access/group/1', () => undefined)
     const wrapper = await open({ group: family })
 
     expect(document.body.querySelector<HTMLInputElement>('#group-name')!.disabled).toBe(true)
@@ -142,10 +138,8 @@ describe('editing a group', () => {
       rules: [{ share_id: 10, rule: null }],
     })
     expect(wrapper.emitted('update:open')?.at(-1)).toEqual([false])
-    // The new member's access reaches the files of photos in the background.
-    expect(useNotifications().items[0]).toMatchObject({
-      title: 'Changes to family saved',
-      body: 'The files in photos get their permissions in the background.',
-    })
+    // The new member's access holds at once: nothing follows in the background.
+    expect(useNotifications().items[0]).toMatchObject({ title: 'Changes to family saved' })
+    expect(useNotifications().items[0]!.body).toBeUndefined()
   })
 })

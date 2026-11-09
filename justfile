@@ -202,7 +202,7 @@ vm-sharing-test:
 vm-accounts-test:
     scripts/vm-accounts-test.sh
 
-# Share files following group members, disabled accounts, rollbacks and cut-off walks, read with getfacl in the VM
+# Share-level access in the VM: SMB and NFS by host, group members and disabled accounts without walks, apps in zendiloos-files, the migration from per-file ACLs
 vm-permissions-test:
     scripts/vm-permissions-test.sh
 

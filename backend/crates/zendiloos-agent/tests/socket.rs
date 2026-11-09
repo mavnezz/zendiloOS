@@ -95,7 +95,7 @@ impl Agent {
             ),
             testparm: script("testparm", ""),
             exportfs: script("exportfs", ""),
-            setfacl: script("setfacl", ""),
+            smbcontrol: script("smbcontrol", ""),
             useradd: script("useradd", ""),
             userdel: script("userdel", ""),
             groupadd: script("groupadd", ""),
@@ -403,8 +403,7 @@ async fn long_requests_walks_and_users_have_places_of_their_own() {
         "{\"op\":\"destroy_pool\",\"name\":\"tank\",\"volume\":1}".to_owned(),
         // The files agent's: they take their places, then the wrong agent refuses them.
         format!("{{\"op\":\"copy_entry\",\"user\":\"anna\",\"from\":{location},\"to\":{location}}}"),
-        "{\"op\":\"set_share_access\",\"volume\":1,\"name\":\"media\",\"access\":[],\"removed\":[],\"recursive\":true}"
-            .to_owned(),
+        "{\"op\":\"migrate_share\",\"volume\":1,\"name\":\"media\"}".to_owned(),
     ] {
         let request: Request = serde_json::from_str(&request).unwrap();
         let answer = agent.client().call(request.clone(), None).await.unwrap();

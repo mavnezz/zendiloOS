@@ -1,19 +1,30 @@
-//! The files agent's work inside shares. Each request runs on a thread of
-//! its own that first takes on the credentials of a managed user, so the
-//! file system checks permissions and ACLs exactly as for that user's SMB
-//! and NFS access. On Linux, credentials belong to a thread when set with
-//! the raw system calls (as rustix does; glibc's wrappers would change the
-//! whole process), and they end with the thread.
+//! The files agent's work inside shares, personal folders and removable
+//! drives. Each request runs on a thread of its own that first takes on the
+//! rights it works with, and they end with the thread. On Linux,
+//! credentials and capabilities belong to a thread when set with the raw
+//! system calls (as rustix does; glibc's wrappers would change the whole
+//! process).
 //!
-//! On a removable drive the thread keeps root's access to files instead
-//! (`CAP_DAC_OVERRIDE` and `CAP_DAC_READ_SEARCH`, nothing else): a drive
-//! formatted elsewhere has owners nobody here has, and only an
-//! administrator's request reaches one. That override is taken out of
-//! every other thread of the files agent ([`lower_file_overrides`]). A copy
-//! or move between a drive and a folder on a volume runs on two threads,
-//! one with each side's credentials (see `zendiloos_fileops::Piece`): what
-//! lands on a volume belongs to the person and takes the folder's ACL, as
-//! an upload does, and only what the person may read leaves one.
+//! - In a personal folder the thread takes on the credentials of its
+//!   user, so the file system decides, as for the user's SMB access: only
+//!   that user may enter it.
+//! - On a share the thread keeps root's access to files
+//!   (`CAP_DAC_OVERRIDE` and `CAP_DAC_READ_SEARCH`) and `CAP_CHOWN`,
+//!   nothing else: access to a share is the share's as a whole, and
+//!   zendiloosd sends only what the share's rules allow (read only
+//!   accounts never get a change), as Samba does working as root. The
+//!   paths stay beneath the share's root (`zendiloos_fileops`); what is
+//!   made takes the owner of the folder it is made in and the group
+//!   `zendiloos-files` (docs/architecture.md, 4.4).
+//! - On a removable drive the thread keeps root's access to files
+//!   (`CAP_DAC_OVERRIDE` and `CAP_DAC_READ_SEARCH`): a drive formatted
+//!   elsewhere has owners nobody here has, and only an administrator's
+//!   request reaches one.
+//!
+//! The override is taken out of every other thread of the files agent
+//! ([`lower_file_overrides`]). A copy or move between places of different
+//! rights (a drive or a personal folder and a share) runs on two threads,
+//! one with each side's rights (see `zendiloos_fileops::Piece`).
 
 use std::io;
 use std::os::fd::OwnedFd;
@@ -26,9 +37,11 @@ use rustix::thread::{
     CapabilitySet, capabilities, set_capabilities, set_thread_groups, set_thread_res_gid, set_thread_res_uid,
 };
 use zendiloos_agent_proto::{EntryFacts, FileLocation, FileRoot, Request, Response, SharePath, UserName};
-use zendiloos_fileops::{Copied, FileError, PIECES_IN_FLIGHT, SearchBounds, ShareRoot, Taken, settle};
+use zendiloos_fileops::{
+    Copied, FileError, NewEntries, PIECES_IN_FLIGHT, SearchBounds, ShareRoot, Taken, settle,
+};
 
-use crate::accounts::{AccountFiles, ID_MAX, ID_MIN, USERS_GROUP};
+use crate::accounts::{AccountFiles, FILES_GROUP, ID_MAX, ID_MIN, USERS_GROUP};
 use crate::operations::OperationError;
 use crate::passwd;
 
@@ -158,9 +171,15 @@ fn become_user(identity: &Identity) -> io::Result<()> {
 /// rights: read, search and write any file there, nothing else.
 const DRIVE_ACCESS: CapabilitySet = CapabilitySet::DAC_OVERRIDE.union(CapabilitySet::DAC_READ_SEARCH);
 
+/// What a thread working on a share may do beyond its UID's rights: read,
+/// search and write any file there, and give what it makes the owners of
+/// the folder it makes it in; nothing else.
+const SHARE_ACCESS: CapabilitySet = DRIVE_ACCESS.union(CapabilitySet::CHOWN);
+
 /// Takes root's override of file permissions (`CAP_DAC_OVERRIDE`) out of
 /// the calling thread's effective set, keeping it permitted: in the files
-/// agent only a thread working on a removable drive takes it up again.
+/// agent only a thread working on a share or a removable drive takes it up
+/// again.
 /// Called on every thread of the files agent's runtime as it starts.
 pub fn lower_file_overrides() -> io::Result<()> {
     let mut sets = capabilities(None)?;
@@ -168,18 +187,20 @@ pub fn lower_file_overrides() -> io::Result<()> {
     Ok(set_capabilities(None, sets)?)
 }
 
-/// Keeps only [`DRIVE_ACCESS`], of what this thread is permitted, effective.
-fn take_drive_access() -> io::Result<()> {
+/// Keeps only `access`, of what this thread is permitted, effective.
+fn take_only(access: CapabilitySet) -> io::Result<()> {
     let mut sets = capabilities(None)?;
-    sets.effective = sets.permitted & DRIVE_ACCESS;
+    sets.effective = sets.permitted & access;
     Ok(set_capabilities(None, sets)?)
 }
 
 /// Whose rights work on a root.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Acting {
-    /// A managed user's, by their credentials.
+    /// A managed user's, by their credentials: in their personal folder.
     User(Identity),
+    /// Root's access to files, on a share ([`SHARE_ACCESS`]).
+    Share,
     /// Root's access to files, on a removable drive.
     Drive,
 }
@@ -188,7 +209,8 @@ impl Acting {
     fn at(location: &FileLocation, identity: &Identity) -> Self {
         match location.root {
             FileRoot::Removable(_) => Acting::Drive,
-            FileRoot::Share(_) | FileRoot::Home => Acting::User(identity.clone()),
+            FileRoot::Share(_) => Acting::Share,
+            FileRoot::Home => Acting::User(identity.clone()),
         }
     }
 }
@@ -202,6 +224,7 @@ async fn spawn_as<T: Send + 'static>(
     let (sender, receiver) = tokio::sync::oneshot::channel();
     let name = match acting {
         Acting::User(_) => "files-as-user",
+        Acting::Share => "files-on-share",
         Acting::Drive => "files-on-drive",
     };
     std::thread::Builder::new()
@@ -209,7 +232,8 @@ async fn spawn_as<T: Send + 'static>(
         .spawn(move || {
             let ready = match &acting {
                 Acting::User(identity) => become_user(identity),
-                Acting::Drive => take_drive_access(),
+                Acting::Share => take_only(SHARE_ACCESS),
+                Acting::Drive => take_only(DRIVE_ACCESS),
             };
             // Without its rights, `work` is dropped unrun.
             let _ = sender.send(ready.map(|()| work()));
@@ -227,14 +251,6 @@ async fn run<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, FileError> + Send + 'static,
 ) -> Result<T, OperationError> {
     spawn_as(acting, work).await?.map_err(OperationError::File)
-}
-
-/// Runs `work` on a new thread with `identity`'s credentials.
-async fn as_user<T: Send + 'static>(
-    identity: Identity,
-    work: impl FnOnce() -> Result<T, FileError> + Send + 'static,
-) -> Result<T, OperationError> {
-    run(Acting::User(identity), work).await
 }
 
 /// One side of a copy across rights: its root and path, and whose rights.
@@ -309,11 +325,25 @@ impl Files {
         Ok(Identity { uid, gid, groups })
     }
 
+    /// The GID of `zendiloos-files`, the group what is made in a share
+    /// takes.
+    fn files_group(&self) -> Result<u32, OperationError> {
+        passwd::group_id(&read(&self.accounts.group)?, FILES_GROUP)
+            .ok_or_else(|| OperationError::Setup(format!("the group {FILES_GROUP} is missing")))
+    }
+
     /// Opened as root, before the switch: refused unless the share's own
-    /// dataset is mounted. A personal folder is always `user`'s own.
+    /// dataset is mounted. A personal folder is always `user`'s own. What is
+    /// made in a share takes the owner of the folder it is made in and the
+    /// group `zendiloos-files`.
     fn share(&self, location: &FileLocation, user: &UserName) -> Result<ShareRoot, OperationError> {
         match (&location.root, &location.snapshot) {
-            (FileRoot::Share(share), None) => ShareRoot::open(&self.volumes, location.volume, share, true),
+            (FileRoot::Share(share), None) => {
+                let root = ShareRoot::open(&self.volumes, location.volume, share, true)
+                    .map_err(OperationError::File)?;
+                let group = self.files_group()?;
+                Ok(root.with_new_entries(NewEntries::Inherit { group }))
+            }
             (FileRoot::Share(share), Some(label)) => {
                 ShareRoot::open_snapshot(&self.volumes, location.volume, share, label)
             }
@@ -410,10 +440,11 @@ impl Files {
                 let (file, name) = run(acting, move || share.create_upload(&path)).await?;
                 Ok((Response::Upload { name }, Some(file)))
             }
-            Request::MakeDirectory { user, location } => {
+            Request::MakeDirectory { user, location, own } => {
                 let identity = self.identity(user)?;
                 let (share, path) = (self.writable(location, user)?, location.path.clone());
-                run(Acting::at(location, &identity), move || share.make_directory(&path)).await?;
+                let owner = own.then_some(identity.uid);
+                run(Acting::at(location, &identity), move || share.make_directory_for(&path, owner)).await?;
                 Ok((Response::Done, None))
             }
             Request::MoveEntry { user, from, to, replace } => {
@@ -485,7 +516,8 @@ impl Files {
                 }
                 let (share, path) = (self.writable(location, user)?, location.path.clone());
                 let owner = user.as_str().to_owned();
-                let path = as_user(identity, move || share.restore(&path, &owner)).await?;
+                let acting = Acting::at(location, &identity);
+                let path = run(acting, move || share.restore(&path, &owner)).await?;
                 Ok((Response::Restored { path }, None))
             }
             Request::ArchiveFolder { user, location } => {
@@ -555,7 +587,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             directory.join("group"),
-            "root:x:0:\nzendiloos-users:x:990:\nfamily:x:2000:anna,ben\nwork:x:2002:ben\n",
+            "root:x:0:\nzendiloos-users:x:990:\nzendiloos-files:x:995:\nfamily:x:2000:anna,ben\nwork:x:2002:ben\n",
         )
         .unwrap();
         let accounts = AccountFiles {
@@ -584,7 +616,7 @@ mod tests {
         // The empty folder of a drive not mounted: nothing lands on the tmpfs.
         for request in [
             Request::ListDirectory { user: anna.clone(), location: drive("1A2B-3C4D", "") },
-            Request::MakeDirectory { user: anna.clone(), location: drive("1A2B-3C4D", "new") },
+            Request::MakeDirectory { user: anna.clone(), location: drive("1A2B-3C4D", "new"), own: false },
             Request::CreateUpload { user: anna.clone(), location: drive("1A2B-3C4D", "") },
         ] {
             let refused = files.execute(&request).await;
@@ -619,10 +651,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn on_a_drive_a_thread_keeps_root_access_to_files_and_nothing_else() {
+    async fn on_a_drive_or_a_share_a_thread_keeps_root_access_to_files_and_nothing_else() {
         let effective = spawn_as(Acting::Drive, || capabilities(None).map(|sets| sets.effective)).await;
         let effective = effective.unwrap().unwrap();
         assert!(DRIVE_ACCESS.contains(effective), "{effective:?}");
+        let effective = spawn_as(Acting::Share, || capabilities(None).map(|sets| sets.effective)).await;
+        let effective = effective.unwrap().unwrap();
+        assert!(SHARE_ACCESS.contains(effective), "{effective:?}");
+        assert!(!SHARE_ACCESS.contains(CapabilitySet::SETUID | CapabilitySet::FOWNER));
         let lowered = std::thread::spawn(|| {
             lower_file_overrides()?;
             Ok::<_, io::Error>(capabilities(None)?.effective)
@@ -738,7 +774,10 @@ mod tests {
         let song = files.execute(&Request::EntryFacts { user: anna.clone(), location: at("song.mp3") }).await;
         let Ok((Response::Facts { facts: song }, None)) = song else { panic!("{song:?}") };
         assert_eq!((song.folder, song.bytes), (false, 4));
-        files.execute(&Request::MakeDirectory { user: anna.clone(), location: at("new") }).await.unwrap();
+        files
+            .execute(&Request::MakeDirectory { user: anna.clone(), location: at("new"), own: false })
+            .await
+            .unwrap();
         let copied = files
             .execute(&Request::CopyEntry { user: anna.clone(), from: at("song.mp3"), to: at("new/song.mp3") })
             .await;
@@ -842,7 +881,7 @@ mod tests {
         let snapshot = zendiloos_agent_proto::SnapshotLabel::parse("zdl-2026-11-05_19.40.01").unwrap();
         let frozen = FileLocation { snapshot: Some(snapshot), ..location };
         for request in [
-            Request::MakeDirectory { user: user("anna"), location: frozen.clone() },
+            Request::MakeDirectory { user: user("anna"), location: frozen.clone(), own: false },
             Request::RemoveEntry { user: user("anna"), location: frozen.clone(), recycle: false },
             Request::CreateUpload { user: user("anna"), location: frozen.clone() },
         ] {
@@ -855,7 +894,7 @@ mod tests {
     async fn work_runs_on_a_thread_with_the_users_credentials_only() {
         let (uid, gid) = (rustix::process::getuid().as_raw(), rustix::process::getgid().as_raw());
         let identity = Identity { uid, gid, groups: vec![gid] };
-        let result = as_user(identity, || Ok(7)).await;
+        let result = run(Acting::User(identity), || Ok(7)).await;
         if rustix::process::geteuid().is_root() {
             assert_eq!(result.unwrap(), 7);
         } else {

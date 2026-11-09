@@ -28,10 +28,10 @@ use ports::{
 pub struct IdentityPorts {
     pub accounts: Arc<dyn AccountRepository>,
     pub groups: Arc<dyn GroupRepository>,
-    /// Others following groups' members, e.g. shares that deny a group.
+    /// Others following groups' members, e.g. Samba's share sections.
     pub group_observer: Arc<dyn GroupObserver>,
     /// Others following accounts disabled, enabled again or deleted, e.g.
-    /// the shares' files.
+    /// the shares' open connections.
     pub account_observer: Arc<dyn AccountObserver>,
     pub sessions: Arc<dyn SessionRepository>,
     pub security: Arc<dyn SecurityRepository>,

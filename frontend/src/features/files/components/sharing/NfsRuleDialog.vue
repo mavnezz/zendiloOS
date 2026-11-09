@@ -1,10 +1,8 @@
 <script setup lang="ts">
-import { TriangleAlert } from 'lucide-vue-next'
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import type { NfsRule, NfsSquash } from '@/shared/api/types'
-import { Alert } from '@/shared/ui/alert'
+import type { NfsRule } from '@/shared/api/types'
 import { Button } from '@/shared/ui/button'
 import { ModalDialog } from '@/shared/ui/dialog'
 import { Input } from '@/shared/ui/input'
@@ -12,7 +10,11 @@ import { Label } from '@/shared/ui/label'
 
 import { isNfsClient } from '../../lib/permissions'
 
-/** One computer or network that may mount a folder over NFS, and how; `rule` null makes a new one. */
+/**
+ * One computer or network that may mount a folder over NFS, and how; `rule`
+ * null makes a new one. Every request from it counts as the group
+ * zendiloos-files, whoever the computer says it comes from.
+ */
 const props = defineProps<{ rule: NfsRule | null; taken: string[] }>()
 const open = defineModel<boolean>('open', { default: false })
 const emit = defineEmits<{ save: [rule: NfsRule] }>()
@@ -20,17 +22,14 @@ const emit = defineEmits<{ save: [rule: NfsRule] }>()
 const { t } = useI18n()
 const client = ref('')
 const write = ref(false)
-const squash = ref<NfsSquash>('root')
 const asynchronous = ref(false)
 const insecure = ref(false)
-const SQUASHES: NfsSquash[] = ['root', 'all', 'none']
 
 watch(open, (isOpen) => {
   if (!isOpen) return
   const rule = props.rule
   client.value = rule?.network ?? ''
   write.value = rule?.write ?? false
-  squash.value = rule?.squash ?? 'root'
   asynchronous.value = rule?.async ?? false
   insecure.value = rule?.insecure ?? false
 })
@@ -46,7 +45,6 @@ function submit(): void {
   emit('save', {
     network: normalized.value,
     write: write.value,
-    squash: squash.value,
     async: asynchronous.value,
     insecure: insecure.value,
   })
@@ -89,22 +87,12 @@ const select = 'h-9 rounded-md border bg-background px-3 text-sm shadow-xs'
           <option :value="false">{{ t('explorer.nfs.readOnly') }}</option>
           <option :value="true">{{ t('explorer.nfs.readWrite') }}</option>
         </select>
-        <Label for="nfs-squash">{{ t('explorer.nfs.squash') }}</Label>
-        <select id="nfs-squash" v-model="squash" :class="select">
-          <option v-for="kind in SQUASHES" :key="kind" :value="kind">
-            {{ t(`explorer.nfs.squashes.${kind}`) }}
-          </option>
-        </select>
         <Label for="nfs-security">{{ t('explorer.nfs.security') }}</Label>
         <select id="nfs-security" :class="select" disabled>
           <option>AUTH_SYS</option>
         </select>
       </div>
-      <p class="text-xs text-muted-foreground">{{ t(`explorer.nfs.squashHints.${squash}`) }}</p>
-      <Alert v-if="squash === 'none'">
-        <TriangleAlert class="text-amber-600 dark:text-amber-400" />
-        {{ t('explorer.nfs.rootWarning') }}
-      </Alert>
+      <p class="text-xs text-muted-foreground">{{ t('explorer.nfs.anyUser') }}</p>
       <label class="flex items-start gap-2 text-sm">
         <input v-model="asynchronous" type="checkbox" class="mt-0.5 size-4 accent-primary" />
         <span>
