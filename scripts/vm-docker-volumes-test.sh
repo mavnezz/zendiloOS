@@ -321,8 +321,13 @@ sleep 2
 back_up_now
 kept=$(call GET "/docker/volumes/$volume/backups" | jq '[.[] | select(.state == "succeeded")] | length')
 [[ $kept == 2 ]] || fail "$kept backups are kept"
-vm "sudo test ! -e $archive && sudo test ! -e $manifest" || fail "the oldest backup stayed"
-[[ $(vm "sudo ls $backups" | grep -c '\.tar\.zst$') == 3 ]] || fail "in the folder: $(vm "sudo ls $backups")"
+vm "sudo test ! -e $writable_path" || fail "an older backup stayed"
+# The first archive was changed in step 6: no longer what was recorded, so
+# it stays; its manifest was not changed and goes.
+vm "sudo test -f $archive" || fail "the archive changed in the share was removed"
+vm "sudo test ! -e $manifest" || fail "the first backup's manifest stayed"
+# The two kept, the changed one and the one nobody recorded.
+[[ $(vm "sudo ls $backups" | grep -c '\.tar\.zst$') == 4 ]] || fail "in the folder: $(vm "sudo ls $backups")"
 vm "sudo test -f $backups/$volume-19990101-000000.tar.zst" || fail "a file nobody recorded was removed"
 
 say "12. Cleaning up"
