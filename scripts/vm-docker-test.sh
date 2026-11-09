@@ -5,11 +5,19 @@
 #   1. a project's Compose file is checked: what reaches beyond the
 #      containers needs consent; a plain one is written into a share and
 #      deployed, as the administrator who made it
+#   1b. the check names a named volume binding / with `o: rbind`, a bind of
+#      Docker's data (`@docker`) and the external network `host`
+#   1c. a confirmation holds for what was checked: an included file in the
+#      share changed after the check, the project is not made
+#      (`compose_changed`), and checking again shows the change
 #   2. the project stops, starts, writes logs, changes and is deployed again;
 #      one container shows its details and processes, and a terminal in it
 #      answers, follows a new size and ends with the socket
 #   3. a network comes and goes; registries are asked for newer images
 #   4. the project is removed; its folder stays
+#   4b. a project made outside zendiloOS (Compose in /opt) that binds a
+#      folder in a share is neither redeployed nor updated here, but its
+#      containers stop and start
 #   5. Docker's data moves to another pool and back, and the app on it runs
 #      again each time
 #
@@ -28,6 +36,8 @@ password=${ZENDILOOS_PASSWORD:-correct horse battery}
 share=dockertest
 spare=dockermove
 project=ztest
+# Made with Compose in the VM, outside zendiloOS.
+foreign=zforeign
 work=$(mktemp -d)
 
 say() { printf '\033[1m%s\033[0m\n' "$*"; }
@@ -59,18 +69,29 @@ wait_for() {
     fail "timed out waiting for $what"
 }
 
-job_succeeded() {
-    local id=$1 seconds=${2:-600} state
+# The state of job $1 once it ended: "succeeded …" or "failed <code> <detail>".
+job_end() {
+    local id=$1 seconds=${2:-600}
     [[ $id =~ ^[0-9]+$ ]] || fail "no job: $id"
     wait_for "job $id" "[[ \$(call GET /jobs/$id | jq -r .state) != running ]]" "$seconds"
-    state=$(call GET "/jobs/$id" | jq -r '.state + " " + (.error_code // "") + " " + (.error_detail // "")')
-    [[ $state == succeeded* ]] || fail "job $id: $state"
+    call GET "/jobs/$id" | jq -r '.state + " " + (.error_code // "") + " " + (.error_detail // "")'
+}
+
+job_succeeded() {
+    local state
+    state=$(job_end "$@")
+    [[ $state == succeeded* ]] || fail "job $1: $state"
 }
 
 kuma_runs() { [[ $(vm "sudo docker inspect -f '{{.State.Running}}' uptime-kuma-uptime-kuma-1") == true ]]; }
 
+remove_foreign() {
+    vm "if [ -f /opt/$foreign/compose.yaml ]; then sudo docker compose -f /opt/$foreign/compose.yaml -p $foreign down; fi; sudo rm -rf /opt/$foreign" >/dev/null 2>&1
+}
+
 cleanup() {
     set +e
+    remove_foreign
     call DELETE "/docker/projects/$project" >/dev/null
     call DELETE /docker/networks/ztest_net >/dev/null
     for id in $(call GET /shares | jq -r --arg s "$share" '.[] | select(.name == $s) | .id'); do
@@ -90,6 +111,7 @@ home=$(call GET /docker/data | jq -er .current.pool) || fail "Docker's data is n
 vm 'sudo docker image inspect alpine:3.20 >/dev/null 2>&1 || sudo docker pull -q alpine:3.20' >/dev/null
 
 say "Cleaning up an earlier run"
+remove_foreign || true
 for id in $(call GET /shares | jq -r --arg s "$share" '.[] | select(.name == $s) | .id'); do
     job_succeeded "$(call POST "/shares/$id/delete" "{\"confirm\":\"$share\"}" | jq -r .id)"
 done
@@ -123,6 +145,37 @@ owner=$(vm "sudo stat -c %U $folder/compose.yaml")
 [[ $owner == "$user" ]] || fail "the file belongs to $owner"
 call GET "/docker/projects/$project" | jq -e '.kind == "own" and .running == 1' >/dev/null \
     || fail "project: $(call GET "/docker/projects/$project")"
+
+say "1b. What named volumes, zendiloOS's folders and networks give is named"
+# A check only: nothing of it is made.
+check() {
+    call POST /docker/compose/check "$(jq -n --arg n "$1" --argjson s "$share_id" --arg f "docker/$1" --arg c "$2" \
+        '{name:$n,share_id:$s,folder:$f,compose:$c}')"
+}
+reaching=$(printf 'services:\n  app:\n    image: alpine:3.20\n    volumes:\n      - root:/host\n      - /volume%s/@docker:/docker-data\n    networks:\n      - outside\nvolumes:\n  root:\n    driver_opts:\n      type: none\n      o: rbind\n      device: /\nnetworks:\n  outside:\n    name: host\n    external: true\n' "$volume")
+named=$(check zreach "$reaching" | jq -c '[.risks[] | [.kind, .detail]]')
+for risk in '["system_path","/"]' "[\"system_path\",\"/volume$volume/@docker\"]" '["host_network",null]'; do
+    jq -e --argjson r "$risk" 'any(. == $r)' <<<"$named" >/dev/null || fail "$risk is not named: $named"
+done
+
+say "1c. A confirmation holds for what was checked"
+included="/volume$volume/$share/docker/zinclude"
+vm "sudo mkdir -p $included && printf 'services:\n  extra:\n    image: alpine:3.20\n    command: [\"sleep\", \"3600\"]\n' | sudo tee $included/extra.yaml >/dev/null"
+with_include=$'include:\n  - extra.yaml\nservices:\n  app:\n    image: alpine:3.20\n    command: ["sleep", "3600"]\n'
+checked=$(check zinclude "$with_include")
+jq -e '[.risks[].kind] == ["from_share"]' <<<"$checked" >/dev/null || fail "risks: $checked"
+# Someone who may write the share changes the included file, after the
+# check and before the project is made.
+vm "printf '    privileged: true\n' | sudo tee -a $included/extra.yaml >/dev/null"
+accepted=$(jq -n --argjson s "$share_id" --arg c "$with_include" --arg d "$(jq -r .digest <<<"$checked")" \
+    '{name:"zinclude",share_id:$s,folder:"docker/zinclude",compose:$c,start:false,accepted:$d}')
+[[ $(status POST /docker/projects "$accepted") == 409 ]] || fail "made with a stale confirmation: $(cat "$work/last")"
+jq -e '.code == "compose_changed"' "$work/last" >/dev/null || fail "$(cat "$work/last")"
+vm "sudo test ! -e $included/compose.yaml" || fail "the file was written"
+[[ $(status GET /docker/projects/zinclude) == 404 ]] || fail "the project was made"
+check zinclude "$with_include" | jq -e '.risks | any(.kind == "privileged" and .service == "extra")' >/dev/null \
+    || fail "checked again, the change is not shown"
+vm "sudo rm -rf $included"
 
 say "2. Stop, start, logs, change"
 [[ $(status POST "/docker/projects/$project/stop") == 204 ]] || fail "stop"
@@ -182,6 +235,30 @@ job_succeeded "$(jq -r .id "$work/last")"
 [[ -z $(vm "sudo docker ps -aq --filter label=com.docker.compose.project=$project") ]] || fail "containers left"
 vm "sudo test -f $folder/compose.yaml" || fail "the folder went"
 [[ $(status GET "/docker/projects/$project") == 404 ]] || fail "still listed"
+
+say "4b. A project made elsewhere that binds a folder in a share"
+bound="/volume$volume/$share/$foreign-data"
+vm "sudo mkdir -p /opt/$foreign $bound && printf 'services:\n  app:\n    image: alpine:3.20\n    command: [\"sleep\", \"3600\"]\n    volumes:\n      - %s:/data\n' $bound | sudo tee /opt/$foreign/compose.yaml >/dev/null"
+vm "sudo docker compose -f /opt/$foreign/compose.yaml -p $foreign up -d --quiet-pull" >/dev/null 2>&1 \
+    || fail "Compose in the VM cannot bring up $foreign"
+call GET "/docker/projects/$foreign" | jq -e '.kind == "foreign" and .running == 1' >/dev/null \
+    || fail "listed as: $(call GET "/docker/projects/$foreign")"
+made=$(vm "sudo docker inspect -f '{{.Id}}' $foreign-app-1")
+# It runs from its own file, so its bind would be mounted by its path,
+# through whatever link someone put in the folder's place.
+[[ $(status POST "/docker/projects/$foreign/redeploy") == 202 ]] || fail "redeploy: $(cat "$work/last")"
+state=$(job_end "$(jq -r .id "$work/last")")
+[[ $state == failed*"binds $bound by its path"* ]] || fail "redeployed: $state"
+[[ $(status POST "/docker/containers/$foreign-app-1/update") == 202 ]] || fail "update: $(cat "$work/last")"
+state=$(job_end "$(jq -r .id "$work/last")")
+[[ $state == failed*"binds $bound by its path"* ]] || fail "updated: $state"
+[[ $(vm "sudo docker inspect -f '{{.Id}}' $foreign-app-1") == "$made" ]] || fail "its container was made again"
+# Stopping and starting changes nothing of how its container was made.
+[[ $(status POST "/docker/projects/$foreign/stop") == 204 ]] || fail "stop: $(cat "$work/last")"
+call GET "/docker/projects/$foreign" | jq -e '.running == 0' >/dev/null || fail "still running"
+[[ $(status POST "/docker/projects/$foreign/start") == 204 ]] || fail "start: $(cat "$work/last")"
+call GET "/docker/projects/$foreign" | jq -e '.running == 1' >/dev/null || fail "not running again"
+remove_foreign
 
 say "5. Docker's data to another pool and back"
 free=$(call GET /storage/disks | jq -c '[.[] | select((.usage == "unused" or .usage == "foreign") and .id_link != null and (.read_only | not)) | .name][:2]')
