@@ -153,6 +153,8 @@ fn restore(archive: &WrittenFile, sha256: &ArchiveDigest) -> Request {
         share: share(),
         archive: archive.path.clone(),
         sha256: sha256.clone(),
+        data_bytes: 1 << 20,
+        entries: Some(64),
     }
 }
 
@@ -201,12 +203,13 @@ async fn a_volume_is_backed_up_into_the_share_and_restored_from_it() {
     let host = Host::new(false);
 
     let answer = host.agent.execute(&backup("db")).await;
-    let Response::VolumeBackedUp { archive, manifest, sha256, data_bytes, manifest_json } = answer else {
+    let Response::VolumeBackedUp { archive, manifest, sha256, data_bytes, entries, manifest_json } = answer
+    else {
         panic!("{answer:?}")
     };
     assert_eq!(archive.path.as_str(), "docker/db/db-20261108-030000.tar.zst");
     assert_eq!(manifest.path.as_str(), "docker/db/db-20261108-030000.json");
-    assert_eq!(data_bytes, 3);
+    assert_eq!((data_bytes, entries), (3, 2), "the folder and PG_VERSION");
     assert!(
         manifest_json.contains(r#""volume": "db""#) && manifest_json.contains(sha256.as_str()),
         "{manifest_json}"

@@ -273,8 +273,8 @@ impl Operations {
             Request::BackUpVolume { volume, share, folder, name } => {
                 self.volumes.back_up(volume, share, folder, name).await
             }
-            Request::RestoreVolume { volume, share, archive, sha256 } => {
-                self.volumes.restore(volume, share, archive, sha256).await
+            Request::RestoreVolume { volume, share, archive, sha256, data_bytes, entries } => {
+                self.volumes.restore(volume, share, archive, sha256, (*data_bytes, *entries)).await
             }
             Request::RemoveVolumeBackup { share, path, device, inode } => {
                 self.volumes.remove_backup(share, path, *device, *inode).await

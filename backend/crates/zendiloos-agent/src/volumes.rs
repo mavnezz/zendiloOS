@@ -511,6 +511,7 @@ impl Volumes {
             manifest: done.manifest,
             sha256: done.sha256,
             data_bytes: done.data_bytes,
+            entries: done.entries,
             manifest_json: done.manifest_json,
         })
     }
@@ -521,6 +522,7 @@ impl Volumes {
         share: &ShareLocation,
         archive: &SharePath,
         sha256: &ArchiveDigest,
+        (data_bytes, entries): (u64, Option<u64>),
     ) -> Result<Response, OperationError> {
         let until = Instant::now() + WORK_FOR;
         let local = self.inspect(volume).await?;
@@ -533,6 +535,8 @@ impl Volumes {
             share: share_root,
             archive: archive.clone(),
             sha256: sha256.clone(),
+            data_bytes,
+            entries,
         };
         let unit = |work: VolumeJob, description: String, until: Instant| Unit {
             work,

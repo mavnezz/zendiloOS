@@ -753,6 +753,7 @@ impl VolumeArchiver for FakeArchiver {
             manifest: file(format!("{stem}.json"), inode + 1),
             sha256: "ab".repeat(32),
             data_bytes: 4096,
+            entries: Some(3),
             manifest_json: format!(
                 r#"{{"volume":"{volume}","driver":"local","labels":{{"com.docker.compose.project":"kuma"}}}}"#
             ),
@@ -763,11 +764,11 @@ impl VolumeArchiver for FakeArchiver {
         &self,
         volume: &str,
         place: &SharePlace,
-        archive: &str,
-        sha256: &str,
+        written: &WrittenBackup,
         _: &dyn Steps,
         _: &RequestContext,
     ) -> Result<(), EngineError> {
+        let (archive, sha256) = (&written.archive.path, &written.sha256);
         let short = &sha256[..4.min(sha256.len())];
         self.calls.lock().unwrap().push(format!("restore {volume} from {}/{archive} {short}", place.share));
         match self.fail.lock().unwrap().take() {

@@ -164,10 +164,11 @@ pub(crate) fn handle(
                 manifest,
                 sha256: zendiloos_agent_proto::ArchiveDigest::parse(&sha256).ok()?,
                 data_bytes: 37 * 1024 * 1024,
+                entries: 120,
                 manifest_json,
             })
         }
-        Request::RestoreVolume { volume, share, archive, sha256 } => {
+        Request::RestoreVolume { volume, share, archive, sha256, .. } => {
             if !volumes.iter().any(|v| v.name == volume.as_str()) {
                 return Some(failed("Docker: no such volume"));
             }
@@ -283,6 +284,8 @@ mod tests {
             share: share.clone(),
             archive: archive.path.clone(),
             sha256,
+            data_bytes: 37 << 20,
+            entries: Some(120),
         };
         // Not while its container runs; then only the archive recorded.
         let busy = call(restore(sha256.clone())).await.unwrap();
@@ -331,6 +334,8 @@ mod tests {
             share: share.clone(),
             archive: archive.path.clone(),
             sha256,
+            data_bytes: 37 << 20,
+            entries: None,
         };
         assert_eq!(agent.call(restore, None).await.unwrap(), Response::Done);
         let remove = Request::RemoveVolumeBackup { share, path: archive.path, device: 1, inode: 1 };

@@ -18,3 +18,7 @@ FROM docker_backups, json_each(docker_backups.stopped) AS stopped
 WHERE docker_backups.stopped <> '[]';
 
 ALTER TABLE docker_backups DROP COLUMN stopped;
+
+-- The entries of a run's archive: restoring extracts no more than it held.
+-- NULL for runs recorded before entries were counted.
+ALTER TABLE docker_backups ADD COLUMN entries INTEGER;

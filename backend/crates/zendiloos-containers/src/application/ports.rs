@@ -407,14 +407,14 @@ pub trait VolumeArchiver: Send + Sync {
         context: &RequestContext,
     ) -> Result<WrittenBackup, EngineError>;
 
-    /// Replaces the volume's contents with the archive at `archive` in the
-    /// share, if its SHA-256 is `sha256`.
+    /// Replaces the volume's contents with the archive `written` names in
+    /// the share, if it is still the one written: its SHA-256, no more data
+    /// and entries than it held.
     async fn restore(
         &self,
         volume: &str,
         place: &SharePlace,
-        archive: &str,
-        sha256: &str,
+        written: &WrittenBackup,
         steps: &dyn Steps,
         context: &RequestContext,
     ) -> Result<(), EngineError>;

@@ -480,11 +480,8 @@ impl Containers {
                 let restored = match ready {
                     Ok(()) => {
                         steps.step("restoring", Some(0));
-                        let restored = this
-                            .ports
-                            .archiver
-                            .restore(&name, &place, &written.archive.path, &written.sha256, &steps, &context)
-                            .await;
+                        let restored =
+                            this.ports.archiver.restore(&name, &place, &written, &steps, &context).await;
                         let ended = answered(&restored);
                         restored.map_err(|error| (error.into(), ended))
                     }

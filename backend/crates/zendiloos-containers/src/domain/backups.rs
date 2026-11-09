@@ -223,6 +223,9 @@ pub struct WrittenBackup {
     pub sha256: String,
     /// What the volume's files held.
     pub data_bytes: u64,
+    /// The archive's entries; unknown for backups recorded before they
+    /// were counted.
+    pub entries: Option<u64>,
     /// The manifest as written beside the archive.
     pub manifest_json: String,
 }
@@ -433,6 +436,7 @@ mod tests {
             manifest: file,
             sha256: "ab".repeat(32),
             data_bytes: 1,
+            entries: Some(1),
             manifest_json: "{}".into(),
         })
     }

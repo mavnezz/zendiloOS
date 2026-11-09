@@ -401,17 +401,22 @@ pub enum Request {
         name: BackupStem,
     },
     /// Replaces the contents of a local volume no running container uses
-    /// with the archive `archive` of the share, if its SHA-256 is `sha256`:
-    /// checked before anything is extracted, and again of what was
-    /// extracted. Extracted into a fresh folder beside the data by one
-    /// unit, each entry beneath it (no absolute paths, no `..`, no link
-    /// followed, no devices); then, if still no running container uses the
-    /// volume, swapped in by another. A failure leaves the old contents.
+    /// with the archive `archive` of the share, if only root may write it
+    /// and its SHA-256 is `sha256`: checked before anything is extracted,
+    /// and again of what was extracted. Extracted into a fresh folder beside
+    /// the data by one unit, each entry beneath it (no absolute paths, no
+    /// `..`, no link followed, no devices), no more than the backup's
+    /// `data_bytes` and `entries` and a little; then, if still no running
+    /// container uses the volume, swapped in by another. A failure leaves
+    /// the old contents.
     RestoreVolume {
         volume: VolumeName,
         share: ShareLocation,
         archive: SharePath,
         sha256: ArchiveDigest,
+        data_bytes: u64,
+        /// Unknown for backups recorded before entries were counted.
+        entries: Option<u64>,
     },
     /// Stops what a backup or restore of `volume` left running (its units,
     /// should their client have gone) and answers once nothing runs for it
@@ -1100,12 +1105,14 @@ pub enum Response {
         sizes: Vec<VolumeSize>,
     },
     /// A volume was backed up: its archive and manifest, the archive's
-    /// SHA-256, what its data took up and the manifest as written.
+    /// SHA-256, what its data took up, its entries and the manifest as
+    /// written.
     VolumeBackedUp {
         archive: WrittenFile,
         manifest: WrittenFile,
         sha256: ArchiveDigest,
         data_bytes: u64,
+        entries: u64,
         manifest_json: String,
     },
     /// Whether the backup's file was removed: `false` if it was gone or is
@@ -2312,13 +2319,14 @@ mod tests {
             "op": "restore_volume", "volume": "teslamate_db",
             "share": { "volume": 1, "share": "backups" },
             "archive": "docker/teslamate_db/teslamate_db-20261108-030000.tar.zst", "sha256": "ab".repeat(32),
+            "data_bytes": 4096, "entries": null,
         }))
         .unwrap();
         assert_eq!((restore.name(), restore.is_long()), ("restore_volume", true));
         for bad in [
-            json!({ "op": "restore_volume", "volume": "-x", "share": { "volume": 1, "share": "b" }, "archive": "a", "sha256": "ab".repeat(32) }),
-            json!({ "op": "restore_volume", "volume": "x", "share": { "volume": 1, "share": "b" }, "archive": "../a", "sha256": "ab".repeat(32) }),
-            json!({ "op": "restore_volume", "volume": "x", "share": { "volume": 1, "share": "b" }, "archive": "a", "sha256": "short" }),
+            json!({ "op": "restore_volume", "volume": "-x", "share": { "volume": 1, "share": "b" }, "archive": "a", "sha256": "ab".repeat(32), "data_bytes": 1, "entries": 1 }),
+            json!({ "op": "restore_volume", "volume": "x", "share": { "volume": 1, "share": "b" }, "archive": "../a", "sha256": "ab".repeat(32), "data_bytes": 1, "entries": 1 }),
+            json!({ "op": "restore_volume", "volume": "x", "share": { "volume": 1, "share": "b" }, "archive": "a", "sha256": "short", "data_bytes": 1, "entries": 1 }),
             json!({ "op": "back_up_volume", "volume": "x", "share": { "volume": 1, "share": "b" }, "folder": "", "name": "a/b" }),
             json!({ "op": "create_volume", "name": "x", "labels": { "a=b": "c" } }),
         ] {

@@ -479,12 +479,11 @@ impl super::ports::VolumeArchiver for GatedArchiver {
         &self,
         volume: &str,
         place: &super::ports::SharePlace,
-        archive: &str,
-        sha256: &str,
+        written: &crate::domain::WrittenBackup,
         steps: &dyn super::ports::Steps,
         context: &RequestContext,
     ) -> Result<(), super::ports::EngineError> {
-        self.inner.restore(volume, place, archive, sha256, steps, context).await
+        self.inner.restore(volume, place, written, steps, context).await
     }
 
     async fn remove(

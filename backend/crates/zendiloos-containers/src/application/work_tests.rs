@@ -105,15 +105,14 @@ impl VolumeArchiver for HeldArchiver {
         &self,
         volume: &str,
         place: &SharePlace,
-        archive: &str,
-        sha256: &str,
+        written: &WrittenBackup,
         steps: &dyn Steps,
         context: &RequestContext,
     ) -> Result<(), EngineError> {
         if self.restores_hang {
             std::future::pending::<()>().await;
         }
-        self.inner.restore(volume, place, archive, sha256, steps, context).await
+        self.inner.restore(volume, place, written, steps, context).await
     }
 
     async fn remove(
@@ -451,12 +450,11 @@ impl VolumeArchiver for SlowArchiver {
         &self,
         volume: &str,
         place: &SharePlace,
-        archive: &str,
-        sha256: &str,
+        written: &WrittenBackup,
         steps: &dyn Steps,
         context: &RequestContext,
     ) -> Result<(), EngineError> {
-        self.inner.restore(volume, place, archive, sha256, steps, context).await
+        self.inner.restore(volume, place, written, steps, context).await
     }
 
     async fn remove(

@@ -103,6 +103,7 @@ struct Row {
     manifest_file: Option<BackupFile>,
     sha256: Option<String>,
     data_bytes: Option<i64>,
+    entries: Option<i64>,
     manifest: Option<String>,
     started_by: Option<String>,
 }
@@ -118,6 +119,7 @@ impl Row {
                 manifest: self.manifest_file.ok_or_else(|| stored("manifest"))?,
                 sha256: self.sha256.ok_or_else(|| stored("sha256"))?,
                 data_bytes: u64::try_from(self.data_bytes.unwrap_or(0)).unwrap_or(0),
+                entries: self.entries.and_then(|entries| u64::try_from(entries).ok()),
                 manifest_json: self.manifest.unwrap_or_default(),
             }),
             _ => return Err(stored("state")),
@@ -156,6 +158,7 @@ macro_rules! rows {
                 ),
                 sha256: row.sha256,
                 data_bytes: row.data_bytes,
+                entries: row.entries,
                 manifest: row.manifest,
                 started_by: row.started_by,
             }
@@ -268,11 +271,12 @@ impl BackupRepository for SqliteVolumeBackups {
                 let (manifest_bytes, manifest_device, manifest_inode) =
                     (bytes(manifest.bytes), signed(manifest.device), signed(manifest.inode));
                 let data_bytes = bytes(written.data_bytes);
+                let entries = written.entries.map(bytes);
                 sqlx::query!(
                     "UPDATE docker_backups SET finished_at = ?, state = 'succeeded', error = NULL,
                          archive_path = ?, archive_bytes = ?, archive_device = ?, archive_inode = ?,
                          manifest_path = ?, manifest_bytes = ?, manifest_device = ?, manifest_inode = ?,
-                         sha256 = ?, data_bytes = ?, manifest = ?
+                         sha256 = ?, data_bytes = ?, entries = ?, manifest = ?
                      WHERE id = ?",
                     at,
                     archive.path,
@@ -285,6 +289,7 @@ impl BackupRepository for SqliteVolumeBackups {
                     manifest_inode,
                     written.sha256,
                     data_bytes,
+                    entries,
                     written.manifest_json,
                     id
                 )
@@ -312,7 +317,7 @@ impl BackupRepository for SqliteVolumeBackups {
             "SELECT id, volume, share_id, started_at, finished_at, state, error,
                     archive_path, archive_bytes, archive_device, archive_inode,
                     manifest_path, manifest_bytes, manifest_device, manifest_inode,
-                    sha256, data_bytes, manifest, started_by
+                    sha256, data_bytes, entries, manifest, started_by
              FROM docker_backups WHERE ?1 IS NULL OR volume = ?1
              ORDER BY started_at DESC, id DESC",
             volume
@@ -328,7 +333,7 @@ impl BackupRepository for SqliteVolumeBackups {
             "SELECT id, volume, share_id, started_at, finished_at, state, error,
                     archive_path, archive_bytes, archive_device, archive_inode,
                     manifest_path, manifest_bytes, manifest_device, manifest_inode,
-                    sha256, data_bytes, manifest, started_by
+                    sha256, data_bytes, entries, manifest, started_by
              FROM docker_backups WHERE id = ?",
             id
         )
@@ -352,7 +357,7 @@ impl BackupRepository for SqliteVolumeBackups {
             "SELECT id, volume, share_id, started_at, finished_at, state, error,
                     archive_path, archive_bytes, archive_device, archive_inode,
                     manifest_path, manifest_bytes, manifest_device, manifest_inode,
-                    sha256, data_bytes, manifest, started_by
+                    sha256, data_bytes, entries, manifest, started_by
              FROM docker_backups WHERE state = 'running' ORDER BY id"
         )
         .fetch_all(&mut *transaction)
@@ -441,6 +446,7 @@ mod tests {
             manifest: file("db-20261108-030000.json", inode + 1),
             sha256: "ab".repeat(32),
             data_bytes: 4096,
+            entries: Some(12),
             manifest_json:
                 r#"{"volume":"db","driver":"local","labels":{"com.docker.compose.project":"tesla"}}"#.into(),
         }
