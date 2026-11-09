@@ -5,6 +5,7 @@ import { click, mountApp, page, settle } from '@/desktop/testing/mount'
 import { called, on, problem, reset } from '@/shared/test-support/server'
 import type { UpdatesOverview } from '@/shared/api/types'
 import { i18n } from '@/shared/i18n'
+import { Markdown } from '@/shared/ui/markdown'
 
 import UpdatePage from './UpdatePage.vue'
 
@@ -78,6 +79,29 @@ describe('the update page', () => {
     confirm(wrapper)
     await settle()
     expect(called('POST', '/api/v1/system/updates/apply')).toHaveLength(1)
+  })
+
+  it('renders the release notes as Markdown, with HTML as text', async () => {
+    on(
+      'GET',
+      '/api/v1/system/updates',
+      overview({
+        release: {
+          ...overview().release!,
+          notes: '## New\n\n- <b>Bold</b> claims, *quietly*\n\n<script>alert(1)</script>',
+        },
+      }),
+    )
+    const { wrapper } = await mountApp(UpdatePage)
+
+    await click(new RegExp(t('updates.showNotes')))
+    const notes = wrapper.findComponent(Markdown)
+    expect(notes.find('h2').text()).toBe('New')
+    expect(notes.find('em').text()).toBe('quietly')
+    expect(notes.find('b').exists()).toBe(false)
+    expect(notes.find('script').exists()).toBe(false)
+    expect(notes.text()).toContain('<b>Bold</b> claims')
+    expect(notes.text()).toContain('<script>alert(1)</script>')
   })
 
   it('follows a run and offers the restart it needs', async () => {

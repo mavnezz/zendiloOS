@@ -27,6 +27,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-vue-next": "^1.0.0",
+    "markdown-it": "^15.0.3",
     "openapi-fetch": "^0.17.0",
     "pinia": "^4.1.0",
     "reka-ui": "^2.11.0",

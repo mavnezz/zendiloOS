@@ -19,6 +19,7 @@ import { Alert } from '@/shared/ui/alert'
 import { Badge } from '@/shared/ui/badge'
 import { Button } from '@/shared/ui/button'
 import { ConfirmDialog } from '@/shared/ui/confirm-dialog'
+import { Markdown } from '@/shared/ui/markdown'
 import { PageCard, PageFooter, PageHeader, PageTabs, SettingRow } from '@/shared/ui/page'
 import { RadioGroup, RadioGroupItem } from '@/shared/ui/radio-group'
 import { Switch } from '@/shared/ui/switch'
@@ -255,12 +256,11 @@ const cell = 'px-3 py-1.5 text-left'
             >
               {{ showNotes ? t('updates.hideNotes') : t('updates.showNotes') }}
             </button>
-            <p
+            <Markdown
               v-if="showNotes"
-              class="max-h-72 overflow-auto rounded-md bg-muted/50 p-3 text-[13px] whitespace-pre-wrap"
-            >
-              {{ overview.release.notes }}
-            </p>
+              :source="overview.release.notes"
+              class="max-h-72 overflow-auto rounded-md bg-muted/50 p-3"
+            />
           </section>
           <section v-if="overview.packages.length" class="grid gap-1.5">
             <h4 class="font-medium">
