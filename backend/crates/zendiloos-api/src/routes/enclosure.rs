@@ -673,8 +673,9 @@ async fn stop_locate(
 /// A disk the NAS has seen, by serial number.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct InventoryDisk {
-    /// Its serial number; while another disk present reports the same one
-    /// (the disks of some USB docks), with its port: `SERIAL@ID_PATH`.
+    /// Its serial number; once two disks were seen reporting the same one
+    /// at once (the disks of some USB docks), with its port, whether the
+    /// other is there or not: `SERIAL@ID_PATH`.
     pub serial: String,
     /// As last seen.
     pub model: Option<String>,

@@ -9,7 +9,10 @@
 //! (another entry under the name, a file written to, a new entry in a
 //! folder) stays and is counted, and only what still is what was copied
 //! goes. FAT keeps times in steps of two seconds, which is why the size is
-//! compared too.
+//! compared too. A folder that stays without being looked into is counted
+//! with everything of it the record holds; so is the moved entry itself
+//! when it is gone from its place by then: renamed or removed meanwhile,
+//! nothing of it was moved.
 //!
 //! Device and inode alone do not tell an entry: ext4 gives a new entry the
 //! number of one just removed, and ZFS reuses object numbers too. A file or
@@ -21,12 +24,34 @@
 //! number among them, keeps its place once what in it is still as copied
 //! went.
 //!
+//! FAT and exFAT have no inode numbers: the kernel numbers an entry anew
+//! (`iunique()`) whenever it forgot it and reads it again, which a big copy
+//! makes it do, and shows its modification time as its change time once
+//! it read it again. On those ([`Copied::on_fat`]) an entry is told by its
+//! name, kind, size and modification time alone.
+//!
+//! Times move in steps: a clock tick on most file systems, two seconds on
+//! FAT. A change in the same step as the one before it leaves the times as
+//! they were, so an entry changed within a step before the copy looked at
+//! it is looked at again once the step is over ([`Copied::settled`]):
+//! whatever changes it after that moves its times. One that keeps changing
+//! stays.
+//!
+//! A move tried again after it left part of its source finds its earlier
+//! copy in the target: it goes on into a folder of the name there, adding
+//! what is missing. A file the target has under the same name already
+//! counts as moved if it is the same, byte for byte; otherwise the source's
+//! stays ([`Copied::stays`]), and the target's is never touched.
+//!
 //! The record has a budget, like an archive's plan: a move of more entries
 //! than that keeps its copy and its source whole and says so.
 
 use std::collections::HashSet;
 use std::ffi::CStr;
+use std::fs::File;
+use std::io::Read;
 use std::os::fd::{AsFd, BorrowedFd};
+use std::time::{Duration, SystemTime};
 
 use rustix::fs::{AtFlags, FileType, OFlags, Stat, fstat, statat, unlinkat};
 use rustix::io::Errno;
@@ -42,6 +67,19 @@ pub const MAX_MOVED_ENTRIES: usize = 500_000;
 /// write the folder could fill it with long names or links to long targets,
 /// and the record must not take the files agent's memory.
 pub const MAX_MOVED_NAME_BYTES: usize = 16 * 1024 * 1024;
+
+/// `statfs` types (`f_type`) of file systems without inode numbers of their
+/// own: FAT (`MSDOS_SUPER_MAGIC`, also vfat) and exFAT.
+const FAT_TYPES: [i64; 2] = [0x4d44, 0x2011_bab0];
+
+/// The longest step of a file system's times, a clock tick of the kernel
+/// (ZFS, ext4 before multigrain times) with room to spare.
+const TIME_STEP: Duration = Duration::from_millis(50);
+/// FAT keeps modification times in steps of two seconds.
+const FAT_TIME_STEP: Duration = Duration::from_millis(2050);
+/// How often an entry changed within a step is looked at again before it
+/// stays as one that keeps changing.
+const SETTLE_LOOKS: u32 = 3;
 
 /// A time as `fstat` tells it, to the nanosecond.
 type Time = (i64, u32);
@@ -68,6 +106,19 @@ enum What {
     },
 }
 
+/// What of an entry stays in the source whatever it is by then.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Stays {
+    /// Nothing: it goes if it is still what was copied.
+    No,
+    /// A folder that kept changing while it was copied: what in it is
+    /// still as copied goes, the folder stays.
+    Itself,
+    /// It and everything of it: the target has another under its name, or
+    /// a file kept changing.
+    All,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Entry {
     /// Its name in the record's names, with the NUL that ends it.
@@ -75,6 +126,7 @@ struct Entry {
     device: u64,
     inode: u64,
     what: What,
+    stays: Stays,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,6 +151,9 @@ pub struct Copied {
     state: State,
     /// The most entries and bytes of names it records.
     budget: (usize, usize),
+    /// The source is FAT or exFAT: entries are told without inode numbers
+    /// and change times.
+    fat: bool,
 }
 
 /// What a move left in its source, and one of it as an example.
@@ -135,14 +190,74 @@ fn changed(stat: &Stat) -> Time {
     (i64::from(stat.st_ctime), u32::try_from(stat.st_ctime_nsec).unwrap_or(0))
 }
 
-/// Size, change and modification time of a file.
+/// When the entry's contents last changed, as far as its times say.
 #[allow(clippy::useless_conversion)]
-fn file_facts(stat: &Stat) -> (u64, Time, Time) {
-    (
-        u64::try_from(stat.st_size).unwrap_or(0),
-        changed(stat),
-        (i64::from(stat.st_mtime), u32::try_from(stat.st_mtime_nsec).unwrap_or(0)),
-    )
+fn modified(stat: &Stat) -> Time {
+    (i64::from(stat.st_mtime), u32::try_from(stat.st_mtime_nsec).unwrap_or(0))
+}
+
+/// Whether a file system of `statfs` type `f_type` numbers its entries anew
+/// whenever the kernel reads them again: FAT and exFAT.
+pub(crate) fn is_fat(f_type: i64) -> bool {
+    FAT_TYPES.contains(&f_type)
+}
+
+/// Whether `directory` is on FAT or exFAT.
+#[allow(clippy::useless_conversion)]
+pub(crate) fn is_fat_at(directory: BorrowedFd<'_>) -> bool {
+    rustix::fs::fstatfs(directory).is_ok_and(|fs| is_fat(i64::from(fs.f_type)))
+}
+
+/// How long after `now` a change to an entry last changed at `time` could
+/// still leave its times as they are, on a file system whose times move in
+/// steps of `step`; none once it could not. A time far ahead (a camera's
+/// clock set wrong) is one no change gets now.
+fn unsettled_for(time: Time, step: Duration, now: SystemTime) -> Option<Duration> {
+    let time = Duration::new(u64::try_from(time.0).ok()?, time.1);
+    let now = now.duration_since(SystemTime::UNIX_EPOCH).ok()?;
+    if time > now + step {
+        return None;
+    }
+    (time + step).checked_sub(now).filter(|left| !left.is_zero())
+}
+
+/// Whether `a` and `b` hold the same bytes, read from where each is now.
+fn same_bytes(a: &File, b: &File) -> bool {
+    let (mut a, mut b) = (a, b);
+    let mut left = vec![0u8; 64 * 1024];
+    let mut right = vec![0u8; 64 * 1024];
+    loop {
+        let read = match a.read(&mut left) {
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return false,
+        };
+        if read == 0 {
+            // Both at their end.
+            return matches!(b.read(&mut right[..1]), Ok(0));
+        }
+        if b.read_exact(&mut right[..read]).is_err() || left[..read] != right[..read] {
+            return false;
+        }
+    }
+}
+
+/// Whether the regular file `name` in `directory` holds what `file` holds:
+/// for a move gone on into its earlier copy, which has it already then.
+/// Anything that cannot be read is not the same.
+pub(crate) fn same_file(file: &File, directory: BorrowedFd<'_>, name: &CStr) -> bool {
+    let Ok(other) = open_beneath_flags(directory, name, OFlags::RDONLY | OFlags::NONBLOCK) else {
+        return false;
+    };
+    let (Ok(mine), Ok(theirs)) = (fstat(file), fstat(&other)) else { return false };
+    kind(&theirs) == FileType::RegularFile
+        && mine.st_size == theirs.st_size
+        && same_bytes(file, &File::from(other))
+}
+
+/// Whether the link `name` in `directory` points to `target`.
+pub(crate) fn same_link(directory: BorrowedFd<'_>, name: &CStr, target: &CStr) -> bool {
+    matches!(open_link(directory, name), Ok(Some((_, now))) if now.as_c_str() == target)
 }
 
 impl Copied {
@@ -159,6 +274,7 @@ impl Copied {
             count: 0,
             state: State::On,
             budget: (entries, name_bytes),
+            fat: false,
         }
     }
 
@@ -167,9 +283,33 @@ impl Copied {
         Self { state: State::Off, ..Self::recording() }
     }
 
+    /// The record of a source on FAT or exFAT (`fat`): entries are told
+    /// without inode numbers and change times.
+    pub(crate) fn on_fat(self, fat: bool) -> Self {
+        Self { fat, ..self }
+    }
+
     /// Entries copied.
     pub fn count(&self) -> u64 {
         self.count
+    }
+
+    /// For a move: a name taken in a folder that was there before is gone
+    /// on with, not refused.
+    pub(crate) fn moving(&self) -> bool {
+        self.state != State::Off
+    }
+
+    /// Whether `stat` is of the entry recorded as `recorded` (device and
+    /// inode), as far as its number tells: on FAT and exFAT it does not.
+    fn is(&self, recorded: (u64, u64), stat: &Stat) -> bool {
+        let (device, inode) = identity(stat);
+        device == recorded.0 && (self.fat || inode == recorded.1)
+    }
+
+    /// When the entry last changed, as far as its file system keeps it.
+    fn changed(&self, stat: &Stat) -> Time {
+        if self.fat { modified(stat) } else { changed(stat) }
     }
 
     /// Records an entry, its name, and for a link its `target`, which
@@ -200,15 +340,49 @@ impl Copied {
             other => other,
         };
         let (device, inode) = identity(stat);
-        self.entries.push(Entry { name: (start, length), device, inode, what });
+        self.entries.push(Entry { name: (start, length), device, inode, what, stays: Stays::No });
         Some(self.entries.len() - 1)
+    }
+
+    /// `stat` of the entry opened as `entry` for a move, as it is once a
+    /// change to it moves its times: if it changed within a step of its
+    /// file system's times before, it is looked at again once the step is
+    /// over. Also whether it settled; one that kept changing stays
+    /// ([`Copied::stays`]). A plain copy looks once.
+    pub(crate) fn settled(&self, entry: BorrowedFd<'_>, stat: Stat) -> Result<(Stat, bool), FileError> {
+        self.settle_with(stat, || Ok(fstat(entry)?), SystemTime::now, std::thread::sleep)
+    }
+
+    /// [`Copied::settled`], looking at the entry with `look`, at the time
+    /// `now` tells, waiting with `wait`.
+    fn settle_with(
+        &self,
+        mut stat: Stat,
+        mut look: impl FnMut() -> Result<Stat, FileError>,
+        now: impl Fn() -> SystemTime,
+        wait: impl Fn(Duration),
+    ) -> Result<(Stat, bool), FileError> {
+        if self.state != State::On {
+            return Ok((stat, true));
+        }
+        let step = if self.fat { FAT_TIME_STEP } else { TIME_STEP };
+        for _ in 0..SETTLE_LOOKS {
+            let Some(left) = unsettled_for(self.changed(&stat), step, now()) else {
+                return Ok((stat, true));
+            };
+            wait(left);
+            stat = look()?;
+        }
+        let settled = unsettled_for(self.changed(&stat), step, now()).is_none();
+        Ok((stat, settled))
     }
 
     /// A folder copied, `stat` from the descriptor it was read through,
     /// taken before it was read; what is copied next is in it, up to
     /// [`Copied::leave`].
     pub(crate) fn folder(&mut self, name: &CStr, stat: &Stat) -> Option<usize> {
-        self.add(name, stat, What::Folder { end: 0, changed: changed(stat) }, &[])
+        let changed = self.changed(stat);
+        self.add(name, stat, What::Folder { end: 0, changed }, &[])
     }
 
     /// The folder `index` names (from [`Copied::folder`]) ends.
@@ -223,15 +397,34 @@ impl Copied {
 
     /// A regular file copied, `stat` from the descriptor it was read from,
     /// taken before it was read.
-    pub(crate) fn file(&mut self, name: &CStr, stat: &Stat) {
-        let (size, changed, modified) = file_facts(stat);
-        self.add(name, stat, What::File { size, changed, modified }, &[]);
+    pub(crate) fn file(&mut self, name: &CStr, stat: &Stat) -> Option<usize> {
+        let (size, changed, modified) =
+            (u64::try_from(stat.st_size).unwrap_or(0), self.changed(stat), modified(stat));
+        self.add(name, stat, What::File { size, changed, modified }, &[])
     }
 
     /// A symbolic link copied, `stat` from a descriptor of the link itself
     /// and `target` read through it.
-    pub(crate) fn link(&mut self, name: &CStr, stat: &Stat, target: &CStr) {
-        self.add(name, stat, What::Link { changed: changed(stat), target: (0, 0) }, target.to_bytes());
+    pub(crate) fn link(&mut self, name: &CStr, stat: &Stat, target: &CStr) -> Option<usize> {
+        let changed = self.changed(stat);
+        self.add(name, stat, What::Link { changed, target: (0, 0) }, target.to_bytes())
+    }
+
+    /// The entry `index` names (from [`Copied::folder`], [`Copied::file`]
+    /// or [`Copied::link`]) stays in the source as `stays` says.
+    pub(crate) fn stays(&mut self, index: Option<usize>, stays: Stays) {
+        if let Some(entry) = index.and_then(|index| self.entries.get_mut(index)) {
+            entry.stays = stays;
+        }
+    }
+
+    /// The entries the target had others under the name of stay, with
+    /// everything of them: `pieces` counts what was sent, folders, files
+    /// and links, from 0, as the record does.
+    pub(crate) fn stay_where_taken(&mut self, pieces: &[usize]) {
+        for &piece in pieces {
+            self.stays(Some(piece), Stays::All);
+        }
     }
 
     fn bytes(&self, (start, length): Span) -> &[u8] {
@@ -262,6 +455,15 @@ impl Copied {
             }
         }
     }
+
+    /// As if the kernel had forgotten every entry and numbered it anew when
+    /// it read it again, as FAT and exFAT do (`iunique()`).
+    #[cfg(test)]
+    pub(crate) fn number_anew(&mut self) {
+        for entry in &mut self.entries {
+            entry.inode = entry.inode.wrapping_add(1_000_003);
+        }
+    }
 }
 
 /// A walk of the record, removing what still is what was copied.
@@ -279,9 +481,20 @@ struct Removal<'a> {
 }
 
 impl Removal<'_> {
-    /// The entry looked at stays.
+    /// The entry looked at stays, by itself.
     fn keep(&mut self) {
-        self.kept.count += 1;
+        self.keep_counting(1);
+    }
+
+    /// The entry looked at stays, with everything of it the record holds,
+    /// not looked into.
+    fn keep_all(&mut self, index: usize) {
+        let count = self.copied.after(index) - index;
+        self.keep_counting(u64::try_from(count).unwrap_or(u64::MAX));
+    }
+
+    fn keep_counting(&mut self, count: u64) {
+        self.kept.count += count;
         if self.kept.example.is_none() {
             let mut path = self.from.clone();
             for &index in self.way.iter().skip(1) {
@@ -305,32 +518,38 @@ impl Removal<'_> {
 
     fn remove_one(&mut self, directory: BorrowedFd<'_>, index: usize) {
         let entry = self.copied.entries[index];
+        if entry.stays == Stays::All {
+            return self.keep_all(index);
+        }
         let recorded = (entry.device, entry.inode);
         let name = self.copied.name(index);
         let stat = match statat(directory, name, AtFlags::SYMLINK_NOFOLLOW) {
+            // The moved entry itself, renamed or removed meanwhile: it was
+            // not moved, wherever it is.
+            Err(Errno::NOENT) if index == 0 => return self.keep_all(index),
             Err(Errno::NOENT) => return, // gone meanwhile
-            Err(_) => return self.keep(),
+            Err(_) => return self.keep_all(index),
             Ok(stat) => stat,
         };
-        let same = identity(&stat) == recorded;
+        let same = self.copied.is(recorded, &stat);
         let removed = match entry.what {
             What::Folder { changed: then, .. } => {
                 if !same || kind(&stat) != FileType::Directory {
-                    return self.keep();
+                    return self.keep_all(index);
                 }
                 // Only the folder looked at: whoever may write here could
                 // swap it for another meanwhile.
                 let inner = match open_beneath_flags(directory, name, OFlags::PATH | OFlags::DIRECTORY) {
-                    Err(FileError::NotFound) => return,
-                    Err(_) => return self.keep(),
+                    Err(FileError::NotFound) if index > 0 => return,
+                    Err(_) => return self.keep_all(index),
                     Ok(inner) => inner,
                 };
-                let Ok(opened) = fstat(&inner) else { return self.keep() };
-                if identity(&opened) != recorded {
-                    return self.keep();
+                let Ok(opened) = fstat(&inner) else { return self.keep_all(index) };
+                if !self.copied.is(recorded, &opened) {
+                    return self.keep_all(index);
                 }
                 // Before what is in it goes, which changes it too.
-                let unchanged = changed(&opened) == then;
+                let unchanged = self.copied.changed(&opened) == then && entry.stays == Stays::No;
                 let mut child = index + 1;
                 while child < self.copied.after(index) {
                     self.remove(inner.as_fd(), child);
@@ -341,15 +560,14 @@ impl Removal<'_> {
                 }
                 unlinkat(directory, name, AtFlags::REMOVEDIR)
             }
-            What::File { size, changed, modified } => {
-                let (now_size, now_changed, now_modified) = file_facts(&stat);
+            What::File { size, changed, modified: then } => {
                 // Another name of it went: that alone changed it.
                 let by_us = self.unlinked.contains(&recorded);
                 let unchanged = same
                     && kind(&stat) == FileType::RegularFile
-                    && now_size == size
-                    && now_modified == modified
-                    && (now_changed == changed || by_us);
+                    && u64::try_from(stat.st_size).unwrap_or(0) == size
+                    && modified(&stat) == then
+                    && (self.copied.changed(&stat) == changed || by_us);
                 if !unchanged {
                     return self.keep();
                 }
@@ -362,12 +580,12 @@ impl Removal<'_> {
                 // The link itself and what it points to, of the one link
                 // that has the name now.
                 let (opened, now_target) = match open_link(directory, name) {
-                    Err(FileError::NotFound) => return,
+                    Err(FileError::NotFound) if index > 0 => return,
                     Ok(Some(link)) => link,
                     Ok(None) | Err(_) => return self.keep(),
                 };
-                let unchanged = identity(&opened) == recorded
-                    && changed(&opened) == then
+                let unchanged = self.copied.is(recorded, &opened)
+                    && self.copied.changed(&opened) == then
                     && now_target.as_bytes() == self.copied.bytes(target);
                 if !unchanged {
                     return self.keep();
@@ -412,5 +630,111 @@ impl ShareRoot {
             return Err(FileError::PartlyMoved(removal.kept));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn at(seconds: u64, millis: u64) -> SystemTime {
+        SystemTime::UNIX_EPOCH + Duration::from_secs(seconds) + Duration::from_millis(millis)
+    }
+
+    #[test]
+    fn fat_and_exfat_are_told_by_their_statfs_type() {
+        // MSDOS_SUPER_MAGIC (vfat and msdos), EXFAT_SUPER_MAGIC.
+        assert!(is_fat(0x4d44) && is_fat(0x2011_bab0));
+        // ext4, tmpfs, ZFS, ntfs3: inode numbers of their own.
+        for other in [0xef53, 0x0102_1994, 0x2fc1_2fc1, 0x7366_746e] {
+            assert!(!is_fat(other), "{other:#x}");
+        }
+    }
+
+    #[test]
+    fn an_entry_changed_within_a_step_of_its_times_is_looked_at_again_after_it() {
+        let step = Duration::from_millis(50);
+        // Changed 10 ms ago: another change now could get the same time.
+        assert_eq!(unsettled_for((1000, 0), step, at(1000, 10)), Some(Duration::from_millis(40)));
+        // A step ago or longer: any change from now on moves its times.
+        assert_eq!(unsettled_for((1000, 0), step, at(1000, 50)), None);
+        assert_eq!(unsettled_for((900, 0), step, at(1000, 0)), None);
+        // A little ahead (a coarse clock, rounding): waited out as well.
+        assert_eq!(unsettled_for((1000, 20_000_000), step, at(1000, 0)), Some(Duration::from_millis(70)));
+        // Far ahead or before 1970: a clock set wrong, no change now gets it.
+        assert_eq!(unsettled_for((5000, 0), step, at(1000, 0)), None);
+        assert_eq!(unsettled_for((-5, 0), step, at(1000, 0)), None);
+        // FAT's two seconds.
+        let fat = unsettled_for((1000, 0), FAT_TIME_STEP, at(1001, 0));
+        assert_eq!(fat, Some(Duration::from_millis(1050)));
+    }
+
+    #[test]
+    fn on_fat_neither_inode_numbers_nor_change_times_tell_an_entry() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("a.jpg"), "a").unwrap();
+        let stat = rustix::fs::stat(directory.path().join("a.jpg")).unwrap();
+        // As the kernel shows it after it read it again: another number,
+        // the modification time as the change time.
+        let mut again = stat;
+        again.st_ino = stat.st_ino.wrapping_add(7);
+        again.st_ctime = stat.st_mtime + 3;
+        let (fat, other) = (Copied::recording().on_fat(true), Copied::recording());
+        let recorded = identity(&stat);
+        assert!(fat.is(recorded, &again) && fat.changed(&again) == fat.changed(&stat));
+        assert!(!other.is(recorded, &again) && other.changed(&again) != other.changed(&stat));
+        // Another device is another entry anywhere.
+        again.st_dev = stat.st_dev.wrapping_add(1);
+        assert!(!fat.is(recorded, &again));
+    }
+
+    /// Looks at an entry with the times `changes` gives it (milliseconds),
+    /// one look after another, on a clock that starts at 1000 s and moves
+    /// only by the waits; says how it ended and how long it waited.
+    fn settle(copied: &Copied, changes: &[i64]) -> (bool, Duration) {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("a"), "a").unwrap();
+        let mut stat = rustix::fs::stat(directory.path().join("a")).unwrap();
+        let at_time = |stat: &mut Stat, millis: i64| {
+            let (seconds, nanos) = (millis / 1000, (millis % 1000) * 1_000_000);
+            (stat.st_ctime, stat.st_mtime) = (seconds, seconds);
+            (stat.st_ctime_nsec, stat.st_mtime_nsec) = (nanos as _, nanos as _);
+        };
+        at_time(&mut stat, changes[0]);
+        let looks = std::cell::Cell::new(0);
+        let now = std::cell::Cell::new(at(1000, 0));
+        let waited = std::cell::Cell::new(Duration::ZERO);
+        let (_, settled) = copied
+            .settle_with(
+                stat,
+                || {
+                    looks.set(looks.get() + 1);
+                    let mut again = stat;
+                    at_time(&mut again, changes[looks.get().min(changes.len() - 1)]);
+                    Ok(again)
+                },
+                || now.get(),
+                |wait| {
+                    now.set(now.get() + wait);
+                    waited.set(waited.get() + wait);
+                },
+            )
+            .unwrap();
+        (settled, waited.get())
+    }
+
+    #[test]
+    fn an_entry_that_keeps_changing_while_it_is_looked_at_stays() {
+        let (fat, other) = (Copied::recording().on_fat(true), Copied::recording());
+        // Changed long before: looked at once.
+        assert_eq!(settle(&other, &[900_000]), (true, Duration::ZERO));
+        // Changed as it is looked at, then no more: once more, after the step.
+        assert_eq!(settle(&other, &[1_000_000, 1_000_000]), (true, TIME_STEP));
+        assert_eq!(settle(&fat, &[1_000_000, 1_000_000]), (true, FAT_TIME_STEP));
+        // Changed again whenever it is looked at: it stays.
+        let (settled, waited) = settle(&other, &[1_000_000, 1_000_050, 1_000_100, 1_000_150]);
+        assert_eq!((settled, waited), (false, TIME_STEP * SETTLE_LOOKS));
+        // A plain copy looks once.
+        assert_eq!(settle(&Copied::off(), &[1_000_000]), (true, Duration::ZERO));
     }
 }

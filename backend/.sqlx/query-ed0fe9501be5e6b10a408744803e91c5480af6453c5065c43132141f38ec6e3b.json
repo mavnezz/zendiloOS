@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, plugged_in FROM removable_ejected",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "removable_ejected",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "plugged_in",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "removable_ejected",
+            "name": "plugged_in"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "ed0fe9501be5e6b10a408744803e91c5480af6453c5065c43132141f38ec6e3b"
+}

@@ -531,7 +531,10 @@ impl OperationError {
                 FileError::Exists => ErrorCode::Conflict,
                 FileError::Invalid(_) | FileError::CaseClash(..) => ErrorCode::InvalidRequest,
                 // A move answers what it left (`Response::PartlyMoved`).
-                FileError::PartlyMoved(_) | FileError::NotDurable(_) | FileError::Io(_) => ErrorCode::Failed,
+                FileError::PartlyMoved(_)
+                | FileError::NotDurable(_)
+                | FileError::ArchiveChanged(_)
+                | FileError::Io(_) => ErrorCode::Failed,
             },
             _ => ErrorCode::Failed,
         }

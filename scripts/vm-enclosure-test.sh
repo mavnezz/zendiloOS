@@ -13,10 +13,15 @@
 #      writes, and stops when asked
 #   5. the inventory keeps what was noted about a disk, and refuses to
 #      forget one present
+#   6. two disks reporting one serial number, as a USB dock's bridge does,
+#      are two records of the inventory by serial number and port, and stay
+#      exactly those two when one is pulled out and zendiloosd restarts
 #
-# Needs the VM started, the package installed and set up; account and
-# password as for vm-storage-test.sh. Runs in the second VM by default (the
-# first holds a LAN test). Puts back the enclosure and the noted details.
+# Needs the VM started by a vm.sh with the monitor (for step 6), the package
+# installed and set up; account and password as for vm-storage-test.sh. Runs
+# in the second VM by default (the first holds a LAN test). Puts back the
+# enclosure and the noted details, and forgets the dock's disks again (that
+# their serial number is shared stays known).
 set -euo pipefail
 
 export ZENDILOOS_VM=${ZENDILOOS_VM:-2}
@@ -47,6 +52,25 @@ status() {
     curl "${args[@]}" "$api$path"
 }
 
+wait_for() {
+    local what=$1 check=$2 seconds=$3
+    for _ in $(seq 1 "$seconds"); do
+        if eval "$check" >/dev/null 2>&1; then return 0; fi
+        sleep 1
+    done
+    fail "timed out waiting for $what"
+}
+
+# The inventory's records of the dock's disks (step 6): serial number and
+# the disk present, if one is.
+records() {
+    call GET /storage/inventory \
+        | jq -c --arg d "$dock" '[.[] | select(.serial | startswith($d)) | [.serial, .disk]] | sort'
+}
+
+# The inventory's path of the record $1.
+record_path() { echo "/storage/inventory/$(jq -rn --arg s "$1" '$s | @uri')"; }
+
 # Reads and writes completed on the disk, from the kernel's counters.
 reads() { vm "cat /sys/block/$1/stat" | awk '{ print $1 }'; }
 writes() { vm "cat /sys/block/$1/stat" | awk '{ print $5 }'; }
@@ -64,8 +88,15 @@ as_choice() {
 }
 
 serial=ZDL-SATA-1
+dock=ZDL-DOCK-1
+docked=()
 cleanup() {
     set +e
+    for id in "${docked[@]}"; do "$root/scripts/vm.sh" removable-detach "$id" 2>/dev/null; done
+    if (( ${#docked[@]} )); then
+        sleep 3
+        for record in $(records | jq -r '.[][0]'); do call DELETE "$(record_path "$record")" >/dev/null; done
+    fi
     if [[ -s $work/enclosure ]]; then
         choice=$(as_choice <"$work/enclosure")
         if [[ $choice == null ]]; then
@@ -190,6 +221,31 @@ call GET /storage/inventory | jq -e --arg s "$serial" \
 [[ $(status PUT "/storage/inventory/$serial" '{"purchased": "2024-03-01", "warranty_until": "2024-01-01"}') == 422 ]] \
     || fail "a warranty ending before the purchase was taken"
 [[ $(status DELETE "/storage/inventory/$serial") == 409 ]] || fail "a disk present was forgotten"
+
+say "6. Two disks of one serial number, as in a USB dock: two records, whichever is there"
+# Empty, so nothing mounts them; big enough to be disks.
+for n in 0 1; do
+    truncate -s 80M "$work/dock$n.img"
+    "$root/scripts/vm.sh" removable-attach "$work/dock$n.img" "dock$n" rw "$dock"
+    docked+=("dock$n")
+done
+wait_for "both disks" "[[ \$(records | jq 'map(select(.[1] != null)) | length') == 2 ]]" 30
+both=$(records)
+jq -e --arg d "$dock" 'length == 2 and all(.[0] | startswith($d + "@pci-"))' <<<"$both" >/dev/null \
+    || fail "not kept apart by port: $both"
+"$root/scripts/vm.sh" removable-detach dock0
+docked=(dock1)
+vm "sudo systemctl restart zendiloosd"
+wait_for "zendiloosd to answer again" "[[ \$(status GET /storage/inventory) == 200 ]]" 90
+wait_for "one disk of the dock" "[[ \$(records | jq 'map(select(.[1] != null)) | length') == 1 ]]" 30
+alone=$(records)
+[[ $(jq -c 'map(.[0])' <<<"$alone") == "$(jq -c 'map(.[0])' <<<"$both")" ]] || fail "other records: $both, then $alone"
+"$root/scripts/vm.sh" removable-detach dock1
+docked=()
+wait_for "the dock's disks to go" "[[ \$(records | jq 'map(select(.[1] != null)) | length') == 0 ]]" 30
+for record in $(jq -r '.[][0]' <<<"$both"); do
+    [[ $(status DELETE "$(record_path "$record")") == 204 ]] || fail "forgetting $record: $(cat "$work/last")"
+done
 
 say "Putting the enclosure back"
 choice=$(as_choice <"$work/enclosure")

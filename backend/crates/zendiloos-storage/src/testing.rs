@@ -12,8 +12,8 @@ use zendiloos_jobs::Jobs;
 use zendiloos_kernel::{AuditLog, Clock, PortError, RequestContext};
 
 use crate::application::ports::{
-    AdminError, ArraySource, BlockDeviceSource, DiskInventoryStore, DiskLocator, EnclosureCatalog,
-    EnclosureStore, MachineSource, NewPool, PlanTokens, PoolAdmin, RemovableHost, SeenDisk,
+    AdminError, ArraySource, BlockDeviceSource, DiskInventoryStore, DiskLocator, EjectedDrives,
+    EnclosureCatalog, EnclosureStore, MachineSource, NewPool, PlanTokens, PoolAdmin, RemovableHost, SeenDisk,
     SelfTestPlanStore, SmartSource, Steps, VolumeOccupants, ZfsSource,
 };
 use crate::application::{StoragePorts, StorageUseCases};
@@ -42,6 +42,13 @@ pub struct FakeStorage {
     pub stick: Mutex<Option<bool>>,
     /// Ejecting the stick fails as for open files while set.
     pub stick_busy: Mutex<bool>,
+    /// How often the stick was plugged in: each time udev sets its disk up
+    /// anew.
+    pub stick_plugged: Mutex<u64>,
+    /// The drives ejected, as the database keeps them.
+    pub ejected: Mutex<std::collections::BTreeMap<String, Option<String>>>,
+    /// Reading or writing which drives are ejected fails while set.
+    pub ejected_fails: Mutex<bool>,
     /// What the firmware calls the machine.
     pub machine: Mutex<Machine>,
     /// Reading the machine's names fails while set.
@@ -54,11 +61,15 @@ pub struct FakeStorage {
     pub chosen: Mutex<Option<EnclosureChoice>>,
     /// The disks seen.
     pub inventory: Mutex<Vec<InventoryRecord>>,
+    /// Serial numbers seen on two disks at once.
+    pub shared_serials: Mutex<std::collections::BTreeSet<String>>,
     /// Reading the block devices fails while set.
     pub devices_fail: Mutex<bool>,
     /// A USB dock with two disks (`sdg`, `sdh`) whose bridge reports its
     /// own serial number, [`DOCK_SERIAL`], for both, while set.
     pub dock: Mutex<bool>,
+    /// The dock's `sdg` is pulled out while set: `sdh` is there alone.
+    pub dock_without_sdg: Mutex<bool>,
     /// While set, each SMART read waits for a permit of it (and gives it
     /// back), as a slow disk would.
     pub smart_gate: Mutex<Option<Arc<tokio::sync::Semaphore>>>,
@@ -216,12 +227,14 @@ impl FakeStorage {
             enclosure: fake.clone(),
             locator: fake.clone(),
             inventory: fake.clone(),
+            ejected: fake.clone(),
         };
         (ports, fake)
     }
 
     /// Plugs the USB stick in, not mounted.
     pub fn plug_stick(&self) {
+        *self.stick_plugged.lock().unwrap() += 1;
         *self.stick.lock().unwrap() = Some(false);
     }
 
@@ -428,6 +441,7 @@ fn device(name: &str, kind: DeviceKind) -> BlockDevice {
         wwn: None,
         id_link: None,
         id_path: None,
+        plugged_in: None,
         transport: None,
         rotational: true,
         removable: false,
@@ -510,10 +524,12 @@ impl BlockDeviceSource for FakeStorage {
             system,
         ];
         if let Some(mounted) = *self.stick.lock().unwrap() {
-            devices.push(stick(mounted));
+            let plugged_in = format!("boot/{}", self.stick_plugged.lock().unwrap());
+            devices.push(BlockDevice { plugged_in: Some(plugged_in), ..stick(mounted) });
         }
         if *self.dock.lock().unwrap() {
-            for name in ["sdg", "sdh"] {
+            let without_sdg = *self.dock_without_sdg.lock().unwrap();
+            for name in ["sdg", "sdh"].into_iter().filter(|name| !(without_sdg && *name == "sdg")) {
                 devices.push(BlockDevice { transport: Some("usb".to_owned()), ..unused(name, DOCK_SERIAL) });
             }
         }
@@ -699,6 +715,29 @@ impl EnclosureStore for FakeStorage {
 }
 
 #[async_trait]
+impl EjectedDrives for FakeStorage {
+    async fn ejected(&self) -> Result<std::collections::BTreeMap<String, Option<String>>, PortError> {
+        if *self.ejected_fails.lock().unwrap() {
+            return Err(PortError::new("ejected drives", std::io::Error::other("the database is gone")));
+        }
+        Ok(self.ejected.lock().unwrap().clone())
+    }
+
+    async fn eject(&self, id: &str, plugged_in: Option<&str>) -> Result<(), PortError> {
+        if *self.ejected_fails.lock().unwrap() {
+            return Err(PortError::new("ejected drives", std::io::Error::other("the database is gone")));
+        }
+        self.ejected.lock().unwrap().insert(id.to_owned(), plugged_in.map(str::to_owned));
+        Ok(())
+    }
+
+    async fn forget(&self, id: &str) -> Result<(), PortError> {
+        self.ejected.lock().unwrap().remove(id);
+        Ok(())
+    }
+}
+
+#[async_trait]
 impl DiskInventoryStore for FakeStorage {
     async fn records(&self) -> Result<Vec<InventoryRecord>, PortError> {
         Ok(self.inventory.lock().unwrap().clone())
@@ -737,5 +776,14 @@ impl DiskInventoryStore for FakeStorage {
         let before = records.len();
         records.retain(|record| record.serial != serial);
         Ok(records.len() < before)
+    }
+
+    async fn shared_serials(&self) -> Result<std::collections::BTreeSet<String>, PortError> {
+        Ok(self.shared_serials.lock().unwrap().clone())
+    }
+
+    async fn note_shared(&self, serials: &std::collections::BTreeSet<String>) -> Result<(), PortError> {
+        self.shared_serials.lock().unwrap().extend(serials.iter().cloned());
+        Ok(())
     }
 }

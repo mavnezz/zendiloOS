@@ -5362,8 +5362,9 @@ export interface components {
             /** @description `YYYY-MM-DD`. */
             purchased?: string | null;
             /**
-             * @description Its serial number; while another disk present reports the same one
-             *     (the disks of some USB docks), with its port: `SERIAL@ID_PATH`.
+             * @description Its serial number; once two disks were seen reporting the same one
+             *     at once (the disks of some USB docks), with its port, whether the
+             *     other is there or not: `SERIAL@ID_PATH`.
              */
             serial: string;
             /** Format: int64 */

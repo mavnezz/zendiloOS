@@ -783,9 +783,12 @@ pub enum Request {
     },
     /// Renames or moves; between shares by copying, writing the copy out and
     /// removing what was copied, unchanged since. `conflict` if `to`
-    /// exists, unless `replace` and both are files. A move that left part
-    /// of its source answers [`Response::PartlyMoved`]. Within one root it
-    /// is a rename, and quick ([`Request::is_long`]).
+    /// exists, unless `replace` and both are files; between shares a move
+    /// goes on into a folder `to` (a move tried again, into its earlier
+    /// copy) and takes a file `to` of the same contents for the source's.
+    /// A move that left part of its source answers
+    /// [`Response::PartlyMoved`]. Within one root it is a rename, and quick
+    /// ([`Request::is_long`]).
     MoveEntry {
         user: UserName,
         from: FileLocation,

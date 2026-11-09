@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT serial FROM disk_shared_serials",
+  "describe": {
+    "columns": [
+      {
+        "name": "serial",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "disk_shared_serials",
+            "name": "serial"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "7aa80c66ae94d9d86a7f56d7d1aa77aed983274aa2ce754333c8fd3a43dd4bfb"
+}

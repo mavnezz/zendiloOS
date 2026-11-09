@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO removable_ejected (id, plugged_in) VALUES (?, ?) ON CONFLICT (id) DO UPDATE SET plugged_in = excluded.plugged_in",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "dbb6602ee3bbec7b9b603e276a048eababdd2aa0ff8bf69439b6349fe24c3766"
+}

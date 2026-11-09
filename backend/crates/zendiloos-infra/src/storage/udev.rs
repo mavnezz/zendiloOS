@@ -1,34 +1,55 @@
 //! `udevadm info --export-db` of the block devices that are disks: where
 //! each is plugged in, udev's `ID_PATH` (the name of its link in
-//! `/dev/disk/by-path`). zendiloosd cannot look into `/dev` itself
-//! (`PrivateDevices`), so the agent passes udev's database on.
+//! `/dev/disk/by-path`), and when udev first set each up
+//! (`USEC_INITIALIZED`), which a disk gets anew whenever it is added.
+//! zendiloosd
+//! cannot look into `/dev` itself (`PrivateDevices`), so the agent passes
+//! udev's database on.
 
 use std::collections::HashMap;
 
-/// Kernel name to port path, for each disk udev gave one.
-pub fn port_paths(export: &str) -> HashMap<String, String> {
-    let mut paths = HashMap::new();
+/// Kernel name to the value of `property`, for each disk udev gave one.
+fn of_disks(export: &str, property: &str) -> HashMap<String, String> {
+    let mut values = HashMap::new();
     // One device per paragraph: `P:` its sysfs path, `E:` its properties.
     for device in export.split("\n\n") {
-        let (mut name, mut path, mut disk) = (None, None, true);
+        let (mut name, mut found, mut disk) = (None, None, true);
         for line in device.lines() {
-            let Some(property) = line.strip_prefix("E: ") else { continue };
-            match property.split_once('=') {
+            let Some(line) = line.strip_prefix("E: ") else { continue };
+            match line.split_once('=') {
                 Some(("DEVNAME", value)) => name = value.strip_prefix("/dev/"),
-                Some(("ID_PATH", value)) => path = Some(value),
+                Some((key, value)) if key == property => found = Some(value),
                 // Older udev may not filter: partitions have the disk's path.
                 Some(("DEVTYPE", value)) => disk = value == "disk",
                 _ => {}
             }
         }
-        if let (Some(name), Some(path), true) = (name, path, disk)
+        if let (Some(name), Some(value), true) = (name, found, disk)
             && !name.contains('/')
-            && !path.is_empty()
+            && !value.is_empty()
         {
-            paths.insert(name.to_owned(), path.to_owned());
+            values.insert(name.to_owned(), value.to_owned());
         }
     }
-    paths
+    values
+}
+
+/// Kernel name to port path, for each disk udev gave one.
+pub fn port_paths(export: &str) -> HashMap<String, String> {
+    of_disks(export, "ID_PATH")
+}
+
+/// Kernel name to when udev first set the disk up (`USEC_INITIALIZED`,
+/// microseconds of this boot's monotonic clock). It is kept through the
+/// disk's change events and set anew only when the disk is added, plugged
+/// in again. The kernel's sequence number (`DISKSEQ`) is no such mark: a
+/// removable disk gets another one at every media change the kernel
+/// assumes, as when another disk is plugged into the same SCSI bus.
+pub fn initialized(export: &str) -> HashMap<String, u64> {
+    of_disks(export, "USEC_INITIALIZED")
+        .into_iter()
+        .filter_map(|(name, usec)| Some((name, usec.parse().ok()?)))
+        .collect()
 }
 
 #[cfg(test)]
@@ -54,6 +75,16 @@ mod tests {
                 ("vdb", "pci-0000:00:03.0"),
             ]
         );
+    }
+
+    #[test]
+    fn reads_when_udev_set_up_the_test_vm_s_disks() {
+        let set_up = initialized(VM);
+        assert_eq!(set_up.get("sdd"), Some(&1839511));
+        assert_eq!(set_up.len(), 7, "{set_up:?}");
+        let odd = "E: DEVNAME=/dev/sdq\nE: DEVTYPE=disk\nE: USEC_INITIALIZED=soon\n\n\
+                   E: DEVNAME=/dev/sdq1\nE: DEVTYPE=partition\nE: USEC_INITIALIZED=9\n";
+        assert!(initialized(odd).is_empty());
     }
 
     #[test]

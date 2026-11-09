@@ -42,13 +42,32 @@ impl BlockDeviceSource for AgentStorage {
                 let mut devices =
                     lsblk::parse(&lsblk_json).map_err(|e| PortError::new("block device list", e))?;
                 let ports = udev::port_paths(&udev_db);
+                let initialized = udev::initialized(&udev_db);
+                let boot = boot_id();
                 for disk in devices.iter_mut().filter(|device| device.kind == DeviceKind::Disk) {
                     disk.id_path = ports.get(&disk.name).cloned();
+                    disk.plugged_in =
+                        initialized.get(&disk.name).map(|usec| plugged_in(boot.as_deref(), *usec));
                 }
                 Ok(devices)
             }
             other => Err(unexpected(other)),
         }
+    }
+}
+
+/// The kernel's id of this boot: udev's times count anew from it.
+fn boot_id() -> Option<String> {
+    let id = std::fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()?;
+    Some(id.trim().to_owned()).filter(|id| !id.is_empty())
+}
+
+/// Which plugging in of a disk udev's time of setting it up, `usec`,
+/// names, in the boot `boot`; without it, as far as the time tells.
+fn plugged_in(boot: Option<&str>, usec: u64) -> String {
+    match boot {
+        Some(boot) => format!("{boot}/{usec}"),
+        None => usec.to_string(),
     }
 }
 
@@ -398,6 +417,7 @@ mod tests {
             read_only: false,
             mount_point: None,
             space: None,
+            plugged_in: None,
         };
         assert!(matches!(busy.eject(&drive("1A2B-3C4D"), true, &context).await, Err(AdminError::Conflict)));
         let refused = AgentStorage::new(Arc::new(Scripted::refusing(ErrorCode::Forbidden, "on a SATA disk")));
@@ -574,6 +594,25 @@ mod tests {
     }
 
     use std::time::Duration;
+
+    /// Which plugging in of a disk it is: the boot, and when udev set the
+    /// disk up, which it does anew whenever the disk is added; disks only.
+    #[tokio::test]
+    async fn disks_are_told_by_the_boot_and_when_udev_set_them_up() {
+        let lsblk_json = include_str!("../storage/fixtures/lsblk-vm.json").to_owned();
+        let udev_db = include_str!("../storage/fixtures/udevadm-vm.txt").to_owned();
+        let agent = Scripted::answering([Response::BlockDevices { lsblk_json, udev_db }]);
+        let devices =
+            AgentStorage::new(Arc::new(agent)).block_devices(&RequestContext::default()).await.unwrap();
+
+        let boot = boot_id().expect("Linux has a boot id");
+        let sdd = devices.iter().find(|device| device.name == "sdd").unwrap();
+        assert_eq!(sdd.plugged_in, Some(format!("{boot}/1839511")));
+        assert!(
+            devices.iter().flat_map(|disk| &disk.children).all(|partition| partition.plugged_in.is_none())
+        );
+        assert_eq!(plugged_in(None, 6), "6", "as far as the time tells without the boot");
+    }
 
     #[tokio::test]
     async fn the_simulated_nas_is_a_dxp4800_plus_with_its_disks_in_their_bays() {

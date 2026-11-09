@@ -3,6 +3,8 @@
 //! request context for correlation; the self-test plans are in the
 //! database.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use async_trait::async_trait;
 use zendiloos_kernel::{PortError, RequestContext, Timestamp};
 
@@ -200,6 +202,21 @@ pub trait DiskLocator: Send + Sync {
     ) -> Result<(), PortError>;
 }
 
+/// Removable drives an administrator ejected without powering them off, in
+/// the database: they stay unmounted across restarts of zendiloosd and the
+/// agent until they are plugged in again.
+#[async_trait]
+pub trait EjectedDrives: Send + Sync {
+    /// The drives ejected, by id, each with the plugging in of its disk it
+    /// was ejected in ([`crate::domain::RemovableDrive::plugged_in`]).
+    async fn ejected(&self) -> Result<BTreeMap<String, Option<String>>, PortError>;
+
+    async fn eject(&self, id: &str, plugged_in: Option<&str>) -> Result<(), PortError>;
+
+    /// The drive is mounted again, pulled out or plugged in anew.
+    async fn forget(&self, id: &str) -> Result<(), PortError>;
+}
+
 /// A disk present now, as the inventory notes it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SeenDisk {
@@ -224,4 +241,13 @@ pub trait DiskInventoryStore: Send + Sync {
 
     /// Whether there was a record of this serial number.
     async fn remove(&self, serial: &str) -> Result<bool, PortError>;
+
+    /// The serial numbers two disks were seen reporting at once, as the
+    /// disks of some USB docks report their bridge's: their disks are kept
+    /// by serial number and port ([`crate::domain::serial_key`]).
+    async fn shared_serials(&self) -> Result<BTreeSet<String>, PortError>;
+
+    /// Notes `serials` as shared, for good: forgetting a disk does not
+    /// forget that its serial number is not its own.
+    async fn note_shared(&self, serials: &BTreeSet<String>) -> Result<(), PortError>;
 }
