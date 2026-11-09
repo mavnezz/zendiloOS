@@ -235,6 +235,56 @@
         ]
       }
     },
+    "/api/v1/accounts/{id}/failed-sign-ins": {
+      "delete": {
+        "tags": [
+          "accounts"
+        ],
+        "summary": "Clears an account's failed sign-ins, for someone kept out by others'\nwrong passwords or codes: the account lock's count and the limit of\ncodes from the authenticator app start anew. Needs `users.manage`.",
+        "operationId": "clear_failed_sign_ins",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Cleared: the account signs in as if nothing had failed."
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/accounts/{id}/password": {
       "post": {
         "tags": [

@@ -34,6 +34,8 @@ pub struct InMemoryAccounts {
     last_id: AtomicI64,
     /// Group memberships go with a deleted account, as in the database.
     groups: Mutex<Option<Arc<InMemoryGroups>>>,
+    /// Accounts looked up so far, by ID or by name.
+    reads: AtomicUsize,
 }
 
 impl InMemoryAccounts {
@@ -46,6 +48,12 @@ impl InMemoryAccounts {
         let account = new.stored(AccountId::new(self.last_id.fetch_add(1, Ordering::Relaxed) + 1));
         accounts.push(account.clone());
         account
+    }
+
+    /// Accounts looked up so far, by ID or by name: what a request costs the
+    /// database.
+    pub fn reads(&self) -> usize {
+        self.reads.load(Ordering::SeqCst)
     }
 
     pub fn update(&self, id: AccountId, change: impl FnOnce(&mut Account)) {
@@ -61,12 +69,14 @@ impl AccountRepository for InMemoryAccounts {
     }
 
     async fn find_by_id(&self, id: AccountId) -> Result<Option<Account>, PortError> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
         // As a database does: requests made at once take turns here.
         tokio::task::yield_now().await;
         Ok(self.accounts.lock().unwrap().iter().find(|a| a.id == id).cloned())
     }
 
     async fn find_by_name(&self, name: &AccountName) -> Result<Option<Account>, PortError> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
         Ok(self.accounts.lock().unwrap().iter().find(|a| &a.name == name).cloned())
     }
 

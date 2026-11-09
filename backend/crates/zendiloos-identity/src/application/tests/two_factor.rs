@@ -8,7 +8,7 @@ use zendiloos_kernel::{Clock, Outcome, RequestContext, Secret};
 use super::{PASSWORD, from, login_input, password_login, signed_in};
 use crate::application::commands::ChangePasswordInput;
 use crate::application::{AuthContext, IdentityError, LoginOutcome, SecondFactorChallenge, SignedIn};
-use crate::domain::{AuditAction, Role, TotpSecret};
+use crate::domain::{AccountId, AuditAction, Role, TotpSecret};
 use crate::testing::TestIdentity;
 
 /// Sets up the second factor of `auth`'s account and moves the clock on to
@@ -625,6 +625,151 @@ async fn wrong_codes_are_bounded_per_account_from_anywhere_whatever_the_lock() {
     // An hour on, codes are taken again.
     t.clock.advance(Duration::from_secs(60 * 60));
     let challenge = password_step(&t, &from(2)).await;
+    assert!(code_step(&t, &challenge, &t.code_now(alice.account.id, 0), &from(2)).await.is_ok());
+}
+
+/// Someone who knows Alice's password but has no code sends wrong codes:
+/// three a sign-in from a dozen addresses, pacing themselves under the
+/// address limits, the account lock turned off. Thirty, the most a day
+/// takes from the app.
+async fn others_use_up_the_wrong_codes(t: &TestIdentity) {
+    let mut wrong = 0;
+    for hour in 0..3u8 {
+        for sign_in in 0..4u8 {
+            let attacker = from(60 + hour * 4 + sign_in);
+            let challenge = password_step(t, &attacker).await;
+            for _ in 0..3 {
+                let refused = code_step(t, &challenge, "000000", &attacker).await;
+                if matches!(refused, Err(IdentityError::TooManyAttempts { .. })) {
+                    break;
+                }
+                assert!(refused.is_err());
+                wrong += 1;
+            }
+        }
+        t.clock.advance(Duration::from_secs(60 * 60));
+    }
+    assert_eq!(wrong, 30);
+}
+
+async fn without_the_account_lock(t: &TestIdentity) {
+    use crate::domain::SecuritySettings;
+    let admin = signed_in(t, "admin", Role::Admin).await;
+    let off = SecuritySettings { account_lock: None, ..SecuritySettings::default() };
+    t.use_cases.set_security.execute(&admin, off, &from(9)).await.unwrap();
+}
+
+/// Wrong codes others send keep the owner from codes of the app for the
+/// day, but not from the recovery codes: those are for when the app is out
+/// of reach, and guessing one is hopeless.
+#[tokio::test]
+async fn whoever_knows_the_password_cannot_keep_the_owner_from_a_recovery_code() {
+    let t = TestIdentity::new();
+    let (alice, codes) = alice_with_two_factor(&t).await;
+    without_the_account_lock(&t).await;
+    others_use_up_the_wrong_codes(&t).await;
+
+    let challenge = password_step(&t, &from(2)).await;
+    let app = code_step(&t, &challenge, &t.code_now(alice.account.id, 0), &from(2)).await;
+    assert!(matches!(app, Err(IdentityError::TooManyAttempts { .. })), "{app:?}");
+    let recovery = code_step(&t, &challenge, &codes[0], &from(2)).await;
+    assert!(recovery.is_ok(), "the owner's recovery code: {recovery:?}");
+    assert_eq!(last_audit(&t), (AuditAction::Login.as_str(), Outcome::Success, Some("recovery_code")));
+}
+
+/// Recovery codes are left out of the account's limit of codes from the
+/// app, not out of the throttles: a wrong one counts as a wrong password
+/// does, against the account lock and the address.
+#[tokio::test]
+async fn wrong_recovery_codes_count_as_wrong_passwords_do() {
+    let t = TestIdentity::new();
+    alice_with_two_factor(&t).await;
+    // Of the form of a recovery code, and none of them.
+    let guess = "zzzzz-zzzzz";
+    // The account lock: five failures within 15 minutes, from anywhere.
+    let mut refused = None;
+    for n in 0..4u8 {
+        let request = from(30 + n);
+        let challenge = password_step(&t, &request).await;
+        for _ in 0..2 {
+            match code_step(&t, &challenge, guess, &request).await {
+                Err(IdentityError::InvalidCode) => {}
+                other => {
+                    refused = Some(other);
+                    break;
+                }
+            }
+        }
+        if refused.is_some() {
+            break;
+        }
+    }
+    assert!(matches!(refused, Some(Err(IdentityError::TooManyAttempts { .. }))), "{refused:?}");
+    let locked = t.use_cases.login.execute(login_input("alice", PASSWORD), &from(40)).await;
+    assert!(matches!(locked, Err(IdentityError::TooManyAttempts { .. })), "{locked:?}");
+
+    // Without the lock, one address takes no more than its limit.
+    let t = TestIdentity::new();
+    let (_, codes) = alice_with_two_factor(&t).await;
+    without_the_account_lock(&t).await;
+    let mut wrong = 0;
+    let stopped = loop {
+        let challenge = match t.use_cases.login.execute(login_input("alice", PASSWORD), &from(50)).await {
+            Ok(LoginOutcome::SecondFactor(challenge)) => challenge,
+            other => break other.map(|_| ()),
+        };
+        let mut ended = None;
+        for _ in 0..3 {
+            match code_step(&t, &challenge, guess, &from(50)).await {
+                Err(IdentityError::InvalidCode | IdentityError::SignInExpired) => wrong += 1,
+                other => {
+                    ended = Some(other.map(|_| ()));
+                    break;
+                }
+            }
+        }
+        if let Some(ended) = ended {
+            break ended;
+        }
+        assert!(wrong <= 20, "{wrong} wrong recovery codes from one address");
+    };
+    assert!(
+        matches!(stopped, Err(IdentityError::TooManyAttempts { .. } | IdentityError::AddressBlocked)),
+        "{stopped:?}"
+    );
+    assert!(wrong < 20, "{wrong}");
+    // Elsewhere, the owner still gets in with one.
+    let challenge = password_step(&t, &from(2)).await;
+    assert!(code_step(&t, &challenge, &codes[1], &from(2)).await.is_ok());
+}
+
+/// Kept from the app's codes by others' wrong ones, the owner asks an
+/// administrator, who clears the account's failed sign-ins: the app's code
+/// is taken at once. Audited; not for others than administrators.
+#[tokio::test]
+async fn an_administrator_clears_an_accounts_failed_sign_ins() {
+    let t = TestIdentity::new();
+    let (alice, _) = alice_with_two_factor(&t).await;
+    without_the_account_lock(&t).await;
+    others_use_up_the_wrong_codes(&t).await;
+    let challenge = password_step(&t, &from(2)).await;
+    let app = code_step(&t, &challenge, &t.code_now(alice.account.id, 0), &from(2)).await;
+    assert!(matches!(app, Err(IdentityError::TooManyAttempts { .. })), "{app:?}");
+
+    let admin = signed_in_again(&t, "admin").await;
+    let bob = signed_in(&t, "bob", Role::User).await;
+    let forbidden = t.use_cases.clear_failed_sign_ins.execute(&bob, alice.account.id, &from(9)).await;
+    assert!(matches!(forbidden, Err(IdentityError::Forbidden)), "{forbidden:?}");
+    let nobody = AccountId::new(999);
+    let missing = t.use_cases.clear_failed_sign_ins.execute(&admin, nobody, &from(9)).await;
+    assert!(matches!(missing, Err(IdentityError::AccountNotFound)), "{missing:?}");
+    t.use_cases.clear_failed_sign_ins.execute(&admin, alice.account.id, &from(9)).await.unwrap();
+    let entry = t.audit.entries().pop().unwrap();
+    assert_eq!(
+        (entry.action, entry.target.as_deref()),
+        (AuditAction::FailedSignInsClear.as_str(), Some("alice"))
+    );
+
     assert!(code_step(&t, &challenge, &t.code_now(alice.account.id, 0), &from(2)).await.is_ok());
 }
 

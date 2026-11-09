@@ -2134,6 +2134,10 @@ const en = {
       'For someone who lost their phone and their recovery codes: {name} is signed out everywhere and signs in with the password alone until they set it up again.',
     twoFactorReset: 'Two-factor sign-in of {name} was reset',
     resetTwoFactorFailed: 'Two-factor sign-in could not be reset',
+    clearFailedSignIns: 'Clear failed sign-ins',
+    failedSignInsCleared:
+      'Failed sign-ins of {name} cleared: the account lock and the limit of codes from the app start anew',
+    clearFailedSignInsFailed: 'Failed sign-ins could not be cleared',
   },
   people: {
     tabs: { users: 'Users', groups: 'Groups', advanced: 'Advanced' },
@@ -2294,6 +2298,7 @@ const en = {
       identity_two_factor_disable: 'Two-factor sign-in turned off',
       identity_two_factor_reset: 'Two-factor sign-in reset by admin',
       identity_recovery_codes_renew: 'New recovery codes',
+      identity_failed_sign_ins_clear: 'Failed sign-ins cleared by admin',
       system_reboot: 'Restart',
       system_power_off: 'Shut down',
       system_time_update: 'Time settings changed',
@@ -2432,7 +2437,7 @@ const en = {
     },
     certificate_not_taken: {
       title: 'New certificate for {name} not taken',
-      body: '{reason} The web interface still shows the one before. Issue it again in the ACME client (App Center).',
+      body: '{reason} The web interface still shows the one before; it takes the new one at the daily look for renewals, or issue it again in the ACME client (App Center).',
     },
     docker_backup_failed: {
       title: 'No backup of the volume {volume}',

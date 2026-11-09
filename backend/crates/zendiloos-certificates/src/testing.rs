@@ -136,6 +136,7 @@ impl CertificateRepository for MemoryCertificates {
             last_attempt_at: None,
             last_error: None,
             last_output: Vec::new(),
+            served: true,
         };
         stored.certificates.push(made.clone());
         Ok(made)
@@ -169,20 +170,51 @@ impl CertificateRepository for MemoryCertificates {
                 found.issued_at = Some(attempt.at);
                 found.not_after = Some(*not_after);
                 found.last_error = None;
+                found.served = true;
             }
             Err(reason) => found.last_error = Some(reason.clone()),
         }
         Ok(true)
     }
 
+    async fn record_served(&self, id: i64, served: Result<(), String>) -> Result<bool, PortError> {
+        let mut stored = self.stored.lock().unwrap();
+        let Some(found) = stored.certificates.iter_mut().find(|c| c.id == id) else { return Ok(false) };
+        found.served = served.is_ok();
+        match served {
+            Ok(()) if found.last_attempt_at == found.issued_at => found.last_error = None,
+            Ok(()) => {}
+            Err(reason) => found.last_error = Some(reason),
+        }
+        Ok(true)
+    }
+
     async fn web_server(&self) -> Result<WebServer, PortError> {
+        pause().await;
         Ok(self.stored.lock().unwrap().web)
     }
 
     async fn save_web_server(&self, web: &WebServer) -> Result<(), PortError> {
+        pause().await;
         self.stored.lock().unwrap().web = *web;
         Ok(())
     }
+}
+
+/// Lets others run once, as a database does while it reads or writes:
+/// requests made at once take turns here.
+async fn pause() {
+    let mut paused = false;
+    std::future::poll_fn(|cx| {
+        if paused {
+            std::task::Poll::Ready(())
+        } else {
+            paused = true;
+            cx.waker().wake_by_ref();
+            std::task::Poll::Pending
+        }
+    })
+    .await;
 }
 
 /// How long a certificate the fake issues holds.
@@ -199,7 +231,10 @@ pub struct FakeAcmeHost {
     /// Confirming a change of the web server fails.
     confirm_fails: AtomicBool,
     pending_until: Mutex<Option<Timestamp>>,
-    applied: Mutex<Option<WebServer>>,
+    /// What nginx serves, and what returns unless the change waiting is
+    /// confirmed.
+    in_force: Mutex<WebServer>,
+    before: Mutex<Option<WebServer>>,
     calls: Mutex<Vec<String>>,
     now: Mutex<Option<Timestamp>>,
 }
@@ -239,11 +274,14 @@ impl FakeAcmeHost {
     /// The change applied went back by itself: not confirmed in time.
     pub fn roll_back(&self) {
         *self.pending_until.lock().unwrap() = None;
-        *self.applied.lock().unwrap() = None;
+        if let Some(before) = self.before.lock().unwrap().take() {
+            *self.in_force.lock().unwrap() = before;
+        }
     }
 
-    pub fn applied(&self) -> Option<WebServer> {
-        *self.applied.lock().unwrap()
+    /// The settings nginx serves the web interface with.
+    pub fn in_force(&self) -> WebServer {
+        *self.in_force.lock().unwrap()
     }
 
     pub fn calls(&self) -> Vec<String> {
@@ -311,7 +349,8 @@ impl AcmeHost for FakeAcmeHost {
         self.call(format!("apply {:?} {} {:?}", web.http_port, web.https_port, web.certificate_id));
         let now = self.now.lock().unwrap().unwrap_or(Timestamp::from_unix_seconds(1_793_880_000));
         *pending = Some(now.saturating_add(Duration::from_secs(u64::from(confirm_within))));
-        *self.applied.lock().unwrap() = Some(*web);
+        let before = std::mem::replace(&mut *self.in_force.lock().unwrap(), *web);
+        *self.before.lock().unwrap() = Some(before);
         Ok(())
     }
 
@@ -324,6 +363,16 @@ impl AcmeHost for FakeAcmeHost {
             return Err(HostError::Refused("no change waits for confirmation".into()));
         }
         self.call("confirm".into());
+        *self.before.lock().unwrap() = None;
+        Ok(())
+    }
+
+    async fn keep_web(&self, web: &WebServer, _context: &RequestContext) -> Result<(), HostError> {
+        if self.pending_until.lock().unwrap().is_some() {
+            return Err(HostError::Conflict);
+        }
+        self.call(format!("keep {:?} {} {:?}", web.http_port, web.https_port, web.certificate_id));
+        *self.in_force.lock().unwrap() = *web;
         Ok(())
     }
 

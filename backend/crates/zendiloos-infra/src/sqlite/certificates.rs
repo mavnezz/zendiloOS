@@ -198,7 +198,8 @@ impl CertificateRepository for SqliteCertificates {
     async fn certificates(&self) -> Result<Vec<Certificate>, PortError> {
         let rows = sqlx::query!(
             r#"SELECT id, domains, key_type, account_id, challenge_id, auto_renew AS "auto_renew: bool",
-                      created_at, issued_at, not_after, last_attempt_at, last_error, last_output
+                      created_at, issued_at, not_after, last_attempt_at, last_error, last_output,
+                      served AS "served: bool"
                FROM certificates ORDER BY id"#
         )
         .fetch_all(self.db.pool())
@@ -220,6 +221,7 @@ impl CertificateRepository for SqliteCertificates {
                     last_attempt_at: row.last_attempt_at.map(Timestamp::from_unix_seconds),
                     last_error: row.last_error,
                     last_output: serde_json::from_str(&row.last_output).unwrap_or_default(),
+                    served: row.served,
                 })
             })
             .collect()
@@ -258,6 +260,7 @@ impl CertificateRepository for SqliteCertificates {
             last_attempt_at: None,
             last_error: None,
             last_output: Vec::new(),
+            served: true,
         })
     }
 
@@ -296,7 +299,7 @@ impl CertificateRepository for SqliteCertificates {
                 let not_after = not_after.unix_seconds();
                 sqlx::query!(
                     "UPDATE certificates SET issued_at = ?, not_after = ?, last_attempt_at = ?, last_error = NULL,
-                         last_output = ?
+                         last_output = ?, served = 1
                      WHERE id = ?",
                     at,
                     not_after,
@@ -317,6 +320,30 @@ impl CertificateRepository for SqliteCertificates {
                 )
                 .execute(self.db.pool())
                 .await
+            }
+        }
+        .map_err(db_error)?;
+        Ok(changed.rows_affected() > 0)
+    }
+
+    async fn record_served(&self, id: i64, served: Result<(), String>) -> Result<bool, PortError> {
+        let changed = match served {
+            // The last error is the reload's while nothing was tried since
+            // the issuance.
+            Ok(()) => {
+                sqlx::query!(
+                    "UPDATE certificates SET served = 1,
+                         last_error = CASE WHEN last_attempt_at IS issued_at THEN NULL ELSE last_error END
+                     WHERE id = ?",
+                    id
+                )
+                .execute(self.db.pool())
+                .await
+            }
+            Err(reason) => {
+                sqlx::query!("UPDATE certificates SET served = 0, last_error = ? WHERE id = ?", reason, id)
+                    .execute(self.db.pool())
+                    .await
             }
         }
         .map_err(db_error)?;
@@ -403,6 +430,29 @@ mod tests {
         assert_eq!((kept.issued_at, kept.not_after), (Some(now), Some(until)), "the issued one still holds");
         assert_eq!(kept.last_error.as_deref(), Some("DNS API: unauthorized"));
         assert!(kept.last_output.is_empty());
+        assert!(kept.served);
+        // Issued, but nginx did not take it: not served, with why, until it
+        // does; the reason goes with it while nothing was tried since.
+        let later = Timestamp::from_unix_seconds(now.unix_seconds() + 60);
+        let issued = Attempt { at: later, outcome: Ok(until), output: vec![] };
+        assert!(repository.record_attempt(certificate.id, &issued).await.unwrap());
+        assert!(
+            repository.record_served(certificate.id, Err("nginx: [emerg] refused".into())).await.unwrap()
+        );
+        let kept = repository.certificates().await.unwrap().remove(0);
+        assert!(!kept.served);
+        assert_eq!(kept.last_error.as_deref(), Some("nginx: [emerg] refused"));
+        assert!(repository.record_served(certificate.id, Ok(())).await.unwrap());
+        let kept = repository.certificates().await.unwrap().remove(0);
+        assert!(kept.served && kept.last_error.is_none(), "{kept:?}");
+        assert!(
+            repository.record_served(certificate.id, Err("nginx: [emerg] refused".into())).await.unwrap()
+        );
+        assert!(repository.record_attempt(certificate.id, &failed).await.unwrap());
+        assert!(repository.record_served(certificate.id, Ok(())).await.unwrap());
+        let kept = repository.certificates().await.unwrap().remove(0);
+        assert_eq!(kept.last_error.as_deref(), Some("DNS API: unauthorized"), "a try since keeps its error");
+        assert!(!repository.record_served(certificate.id + 1, Ok(())).await.unwrap());
         let fewer = NewCertificate { domains: vec!["nas.example.org".into()], auto_renew: false, ..new };
         assert!(repository.update_certificate(certificate.id, &fewer).await.unwrap());
         assert_eq!(repository.certificates().await.unwrap()[0].domains, ["nas.example.org"]);

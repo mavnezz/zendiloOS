@@ -192,7 +192,8 @@ impl AcmeHost for AgentAcme {
     ) -> Result<(), HostError> {
         let confirm_within =
             ConfirmWithin::seconds(confirm_within).map_err(|_| invalid("time to confirm"))?;
-        let request = Request::ApplyWebServer { config: web_config(web)?, confirm_within };
+        let request =
+            Request::ApplyWebServer { config: web_config(web)?, confirm_within: Some(confirm_within) };
         match call_raw(self.transport(), request, context).await? {
             Response::Done => Ok(()),
             other => Err(host_error(other)),
@@ -201,6 +202,14 @@ impl AcmeHost for AgentAcme {
 
     async fn confirm_web(&self, context: &RequestContext) -> Result<(), HostError> {
         match call_raw(self.transport(), Request::ConfirmWebServer {}, context).await? {
+            Response::Done => Ok(()),
+            other => Err(host_error(other)),
+        }
+    }
+
+    async fn keep_web(&self, web: &WebServer, context: &RequestContext) -> Result<(), HostError> {
+        let request = Request::ApplyWebServer { config: web_config(web)?, confirm_within: None };
+        match call_raw(self.transport(), request, context).await? {
             Response::Done => Ok(()),
             other => Err(host_error(other)),
         }
@@ -282,6 +291,9 @@ mod tests {
         acme.confirm_web(&context).await.unwrap();
         assert!(matches!(acme.confirm_web(&context).await, Err(HostError::Refused(_))));
         acme.reload_certificate(&context).await.unwrap();
+        // Settings confirmed before stay at once.
+        acme.keep_web(&web, &context).await.unwrap();
+        assert!(acme.web_state(&context).await.unwrap().pending_until.is_none());
         acme.remove(3, &context).await.unwrap();
         let gone = acme.apply_web(&web, 90, &context).await;
         assert!(matches!(gone, Err(HostError::Refused(_))), "{gone:?}");

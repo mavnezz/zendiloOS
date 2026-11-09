@@ -541,9 +541,13 @@ pub enum Request {
     /// Writes nginx's ports and certificate, checks them (`nginx -t`) and
     /// reloads nginx; unless [`Request::ConfirmWebServer`] comes within
     /// `confirm_within`, the old settings return (also after a restart).
+    /// Without `confirm_within`, `config` was confirmed before and is put in
+    /// force for good (nothing happens when the files say it already); the
+    /// old settings return only if nginx refuses it. Refused while a change
+    /// waits.
     ApplyWebServer {
         config: WebServerConfig,
-        confirm_within: ConfirmWithin,
+        confirm_within: Option<ConfirmWithin>,
     },
     /// Keeps the change that waits to be confirmed.
     ConfirmWebServer {},

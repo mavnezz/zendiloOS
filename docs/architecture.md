@@ -1058,8 +1058,10 @@ TLS is rustls with ring and the system's certificate authorities
   names cost as much time as wrong passwords, so response times do not
   reveal which accounts exist. A disabled account is answered as a wrong
   password (`invalid_credentials`, in the same time, and counted as a
-  failure), so a sign-in does not tell that its password was right; the
-  audit log records it as denied for being disabled.
+  failure), so a sign-in does not tell that its password was right: it is
+  decided on the account as read before the password check, with no more
+  reads of the database than a wrong password takes. The audit log records
+  it as denied for being disabled.
 - Sessions: 256-bit random token in a cookie (`HttpOnly`, `SameSite=Strict`,
   `Path=/`; with secure cookies also `Secure` and the `__Host-` prefix). The
   cookie has no `Max-Age` and ends with the browser session. The database
@@ -1167,10 +1169,19 @@ TLS is rustls with ring and the system's certificate authorities
   and the password step does not clear the account's failures, so knowing
   the password gives no more guesses; three wrong codes end the sign-in,
   the third answering `sign_in_expired`. Whatever the account lock is set
-  to, an account takes at most 10 wrong second codes an hour and 30 a day,
-  from wherever they come (also when turning it off or renewing recovery
-  codes), and a sign-in that succeeds does not reset that: someone with the
-  password and many addresses does not get to guess the six digits.
+  to, an account takes at most 10 wrong codes from the app an hour and 30 a
+  day, from wherever they come (also when turning it off or renewing
+  recovery codes), and a sign-in that succeeds does not reset that: someone
+  with the password and many addresses does not get to guess the six digits.
+  Recovery codes are not counted there, or someone who knows the password
+  could keep the owner from them for a day by sending wrong codes; guessing
+  one is hopeless anyway (ten of about 49 bits each, three tries a password
+  step, which takes an Argon2 run, at most two at once), and the address's
+  limit and block hold them as they hold passwords, as does the account lock
+  where it is set. Administrators clear an account's failed sign-ins on the
+  users page (the account lock's count and the limit of codes from the app,
+  audited as `identity.failed_sign_ins_clear`); the counts are kept in
+  memory, so restarting zendiloosd on the console clears them too.
   Under the lock of account changes the second step checks the sign-in
   still waits (sent twice at once, it starts one session) and reads the
   account and its second factor again: a password changed or reset, a
@@ -2056,10 +2067,14 @@ chain and key, size-limited, to `/etc/zendiloos/web/certificates/<n>`
 (root's; the key 0600). It opens them folder by folder without following a
 link (acme.sh's account owns those folders) and without waiting (a pipe in
 place of a file is refused). The pair goes to `<n>.zendiloos-new` first, on
-disk, is checked there (`openssl x509 -enddate` reads the chain, and the
-key's public key is the certificate's) and only then takes the place of the
-pair served, in one step (`RENAME_EXCHANGE`): whatever fails, nginx finds
-the working pair from before, never half a pair. acme.sh's folder of a
+disk, is checked there (the chain holds certificates only, at most ten, as
+nginx reads every block of it; openssl reads each, `openssl verify
+-partial_chain` finds each issued by the one after it, and the key's public
+key is the first's) and only then takes the place of the pair served, in one
+step (`RENAME_EXCHANGE`). There `nginx -t` reads it, under the lock changes
+of the web server take, and if nginx refuses it, the pair from before
+returns, in one step too: whatever fails, nginx finds the working pair from
+before, never half a pair. acme.sh's folder of a
 removed certificate, and of a removed account (its key at the authority),
 is removed by its account, in a unit of its own: the agent may read anything
 but write only what is root's. Numbers of accounts and certificates can come
@@ -2077,7 +2092,10 @@ certificate the web interface shows, or a change of it waiting for
 confirmation would, is taken by nginx at once (`nginx -t`, reload, under the
 lock the agent changes the web server with); when nginx does not take it,
 that is told (`certificate_not_taken`, an error, also when issued by hand)
-and the job fails, rather than calling it renewed.
+and the job fails, rather than calling it renewed. The certificate is then
+recorded as not served (`served`, migration 0045, with why as its last
+error), and each daily look has nginx take it again, told as renewed once it
+does, rather than leaving the one before until the next renewal.
 
 **The web interface's settings** (Control panel → Web interface): the HTTP
 port, whether plain HTTP redirects to HTTPS or is not served, the HTTPS port,
@@ -2102,7 +2120,14 @@ old files return, by a timer and after a restart of the agent (holding the
 lock changes take, so no change begins while they return). zendiloosd
 saves the settings as it confirms them (first, and takes them back if the
 agent cannot keep the change), so the database never holds settings that
-went back.
+went back; applying and confirming take turns under a lock of their own, so
+of two confirmations sent at once one gets through and the other takes
+nothing back. Had zendiloosd stopped between saving the settings and the
+agent hearing of the confirmation, the host went back to the ones before:
+at its start zendiloosd waits until no change waits on the host and puts the
+settings saved in force again, for good (they were confirmed from the
+browser at their address; `ApplyWebServer` without a time to confirm in,
+which leaves nginx alone while the files say them already).
 
 ### 4.12 Firewall
 
@@ -2135,9 +2160,15 @@ DHCP's answers, then the rules, then the fallback. Its `forward` chain lets
 containers' own traffic pass and sends what Docker forwards to a published
 port (`ct status dnat`) through the rules that are about all ports, a project
 or ports, matched by the port it was sent to (`ct original proto-dst`), then
-the fallback; any other new connection from outside to Docker's bridges (a
-LAN host routing to a container's address through the NAS) is dropped. A drop
-there is final; an accept never overrides Docker's own drops. The agent has no network of its own (`PrivateNetwork`): `nft -c`
+the fallback; any other new connection from outside to a bridge (a LAN host
+routing to a container's address through the NAS) is dropped. That drop knows
+bridges by the kernel's kind of device (`meta oifkind "bridge"`), not by
+name: every bridge but the machine's own (those the network context finds
+with a member besides containers' `veth`s: a network card, a bond, a VM's
+`tap`), so also one Docker made after the rules were written or named
+otherwise (`com.docker.network.bridge.name`); containers on such a bridge
+still reach each other. A drop there is final; an accept never overrides
+Docker's own drops. The agent has no network of its own (`PrivateNetwork`): `nft -c`
 checks the file in a transient unit, and `zendiloos-firewall.service`
 (`nft -f`, early at boot before `network-pre.target`, after Debian's
 `nftables.service`, and again when that restarts or reloads, as its
@@ -2148,14 +2179,15 @@ removes the table; removing the package removes it too.
 **Changes go back unless confirmed**, as network and web server changes do:
 the file replaced is kept as `zendiloos.nft.previous` and returns after 90
 seconds, by a timer in the agent and after its restart. While a change
-waits, what others send on connections opened before it meets the rules too
-(only answers to the NAS's own connections pass at once), so the
-confirmation, which a browser sends on the connection it has open, gets
-through only if the new rules let that browser in; once confirmed, the rules
-are written again without that. zendiloosd saves the settings only once
-confirmed, and keeps a change waiting in memory only: after its restart
-nobody can confirm it, and the first refresh ends it with the rules kept in
-force. Every refresh names the change it began, if any, and the agent
+waits, what others send on connections opened before it meets the rules too,
+in both chains (only answers pass at once), so the confirmation, which a
+browser sends on the connection it has open, gets through only if the new
+rules let that browser in, also when that connection goes to a reverse proxy
+in a container and is forwarded; once confirmed, the rules are written again
+without that. zendiloosd saves the settings only once confirmed, and keeps
+a change waiting in memory only: after its restart nobody can confirm it,
+and the first refresh ends it with the rules kept in force. Every refresh
+names the change it began, if any, and the agent
 decides under the same lock as its timer, so rules for a change that just
 went back are never put in force again. It also refuses settings that would keep out
 the browser asking for them (its address from `X-Real-IP`, the interface

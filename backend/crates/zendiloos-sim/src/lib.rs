@@ -826,8 +826,10 @@ impl AgentTransport for SimulatedAgent {
                 } else if config.certificate.is_some_and(|n| !acme.issued.contains(&n)) {
                     error(ErrorCode::Forbidden, "refused: the certificate is not issued")
                 } else {
-                    let revert_at = now + i64::from(confirm_within.get());
-                    acme.pending = Some(zendiloos_agent_proto::PendingWebServer { revert_at });
+                    // Without a time to confirm in, the settings stay at once.
+                    acme.pending = confirm_within.map(|within| zendiloos_agent_proto::PendingWebServer {
+                        revert_at: now + i64::from(within.get()),
+                    });
                     Response::Done
                 }
             }
@@ -1699,7 +1701,7 @@ mod tests {
 
         let config =
             |certificate| WebServerConfig { http: None, https: WebPort::new(8443).unwrap(), certificate };
-        let within = ConfirmWithin::seconds(90).unwrap();
+        let within = ConfirmWithin::seconds(90).ok();
         let apply =
             |certificate| Request::ApplyWebServer { config: config(certificate), confirm_within: within };
         refused(&agent.call(apply(Some(4)), None).await.unwrap(), ErrorCode::Forbidden);
@@ -1723,6 +1725,11 @@ mod tests {
             Response::Done
         );
         refused(&agent.call(apply(Some(3)), None).await.unwrap(), ErrorCode::Forbidden);
+        // Settings confirmed before stay at once.
+        let keep = Request::ApplyWebServer { config: config(None), confirm_within: None };
+        assert_eq!(agent.call(keep, None).await.unwrap(), Response::Done);
+        let state = agent.call(Request::WebServerState {}, None).await.unwrap();
+        assert_eq!(state, Response::WebServerState { pending: None });
     }
 
     #[tokio::test]
@@ -1738,6 +1745,7 @@ mod tests {
             rules: FirewallRules::new(vec![]).unwrap(),
             fallback: FirewallVerdict::Drop,
             bridges: vec![],
+            own_bridges: vec![],
         };
         let within = ConfirmWithin::seconds(90).ok();
         let apply = |config: Option<FirewallConfig>, confirm_within, waiting| Request::ApplyFirewall {

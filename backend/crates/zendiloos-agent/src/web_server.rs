@@ -9,6 +9,8 @@
 //! is confirmed in time, the previous files return: by a timer in the
 //! agent, and, should the agent or the machine restart first, when the
 //! agent starts. So settings the browser cannot reach undo themselves.
+//! Settings confirmed before, which zendiloosd puts in force again at its
+//! start, stay at once.
 //!
 //! `nginx -t` runs in a transient unit: it opens nginx's log and its
 //! temporary folders, which the agent's sandbox has read-only.
@@ -19,7 +21,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, MutexGuard};
 use tokio::task::JoinHandle;
 use zendiloos_agent_proto::{ConfirmWithin, PendingWebServer, Response, WebServerConfig};
 use zendiloos_exec::{Limits, Program, Surroundings};
@@ -118,6 +120,21 @@ struct Pending {
     timer: JoinHandle<()>,
 }
 
+/// The lock changes of the web server take, held for a change of what
+/// nginx reads made elsewhere (a certificate's pair swapped in): no change
+/// is applied, goes back or reloads nginx meanwhile.
+pub(crate) struct Held<'a> {
+    web_server: &'a WebServer,
+    _pending: MutexGuard<'a, Option<Pending>>,
+}
+
+impl Held<'_> {
+    /// `nginx -t`: whether nginx would start with what it reads now.
+    pub(crate) async fn check(&self) -> Result<(), OperationError> {
+        self.web_server.check().await
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct WebServer {
     systemctl: Program,
@@ -186,10 +203,11 @@ impl WebServer {
         Ok(())
     }
 
+    /// See [`zendiloos_agent_proto::Request::ApplyWebServer`].
     pub(crate) async fn apply(
         self: &Arc<Self>,
         config: &WebServerConfig,
-        confirm_within: ConfirmWithin,
+        confirm_within: Option<ConfirmWithin>,
     ) -> Result<Response, OperationError> {
         let (certificate, key) = self.paths.certificate(config);
         if !certificate.is_file() || !key.is_file() {
@@ -199,6 +217,63 @@ impl WebServer {
         if pending.is_some() {
             return Err(OperationError::Conflict);
         }
+        let Some(confirm_within) = confirm_within else {
+            return self.keep(config).await;
+        };
+        self.put(config).await?;
+        let seconds = confirm_within.get();
+        let agent = Arc::clone(self);
+        let timer = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(u64::from(seconds))).await;
+            // Held while the old settings return: no change begins meanwhile
+            // and has its files put back half way.
+            let mut pending = agent.pending.lock().await;
+            if pending.take().is_some() {
+                tracing::warn!("web server: not confirmed in time, the old settings return");
+                agent.restore().await;
+            }
+        });
+        *pending = Some(Pending { revert_at: now() + i64::from(seconds), timer });
+        tracing::info!(
+            http = ?config.http.map(|p| p.get()),
+            https = config.https.get(),
+            certificate = ?config.certificate,
+            seconds,
+            "web server: applied, waiting for confirmation"
+        );
+        Ok(Response::Done)
+    }
+
+    /// Puts settings confirmed before in force again, with `pending` held:
+    /// zendiloosd saved them as it confirmed them, and the host went back
+    /// to the old ones had zendiloosd stopped before the confirmation came.
+    async fn keep(&self, config: &WebServerConfig) -> Result<Response, OperationError> {
+        let texts = [http_file(config, &self.paths), https_file(config, &self.paths)];
+        let in_force = FILES
+            .iter()
+            .zip(&texts)
+            .all(|(name, text)| fs::read_to_string(self.file(name)).is_ok_and(|now| now == *text));
+        if in_force {
+            return Ok(Response::Done);
+        }
+        self.put(config).await?;
+        for name in FILES {
+            let previous = self.previous(name);
+            fs::remove_file(&previous).map_err(|e| OperationError::Write(previous, e))?;
+        }
+        tracing::warn!(
+            http = ?config.http.map(|p| p.get()),
+            https = config.https.get(),
+            certificate = ?config.certificate,
+            "web server: the settings confirmed before are in force again"
+        );
+        Ok(Response::Done)
+    }
+
+    /// Writes the files for `config`, keeping those it replaces beside them,
+    /// and has nginx check and take them, with `pending` held: refused, the
+    /// files before return at once.
+    async fn put(&self, config: &WebServerConfig) -> Result<(), OperationError> {
         let directory = &self.paths.directory;
         fs::create_dir_all(directory).map_err(|e| OperationError::Write(directory.clone(), e))?;
         for name in FILES {
@@ -230,27 +305,7 @@ impl WebServer {
             self.restore().await;
             return Err(error);
         }
-        let seconds = confirm_within.get();
-        let agent = Arc::clone(self);
-        let timer = tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(u64::from(seconds))).await;
-            // Held while the old settings return: no change begins meanwhile
-            // and has its files put back half way.
-            let mut pending = agent.pending.lock().await;
-            if pending.take().is_some() {
-                tracing::warn!("web server: not confirmed in time, the old settings return");
-                agent.restore().await;
-            }
-        });
-        *pending = Some(Pending { revert_at: now() + i64::from(seconds), timer });
-        tracing::info!(
-            http = ?config.http.map(|p| p.get()),
-            https = config.https.get(),
-            certificate = ?config.certificate,
-            seconds,
-            "web server: applied, waiting for confirmation"
-        );
-        Ok(Response::Done)
+        Ok(())
     }
 
     pub(crate) async fn confirm(&self) -> Result<Response, OperationError> {
@@ -265,6 +320,11 @@ impl WebServer {
         }
         tracing::info!("web server: confirmed");
         Ok(Response::Done)
+    }
+
+    /// See [`Held`].
+    pub(crate) async fn hold(&self) -> Held<'_> {
+        Held { web_server: self, _pending: self.pending.lock().await }
     }
 
     /// nginx reads its certificate again: it was renewed. Not while a
@@ -414,7 +474,7 @@ mod tests {
     async fn a_change_stays_once_confirmed() {
         let dir = tempfile::tempdir().unwrap();
         let web = web_server(dir.path());
-        let within = ConfirmWithin::seconds(30).unwrap();
+        let within = ConfirmWithin::seconds(30).ok();
         let refused = web.apply(&config(None, 8443, Some(3)), within).await.unwrap_err();
         assert!(refused.to_string().contains("not issued"), "{refused}");
 
@@ -431,12 +491,41 @@ mod tests {
         assert_eq!(calls(dir.path()), 1);
     }
 
+    /// Settings zendiloosd confirmed before, which the host went back from
+    /// (zendiloosd stopped before the agent heard of the confirmation): put
+    /// in force for good, at once; nothing happens while they are.
+    #[tokio::test]
+    async fn settings_confirmed_before_are_put_in_force_again_for_good() {
+        let dir = tempfile::tempdir().unwrap();
+        let web = web_server(dir.path());
+        let https = || fs::read_to_string(dir.path().join("web/https.conf")).unwrap();
+        let previous = |name: &str| dir.path().join(format!("web/{name}.previous")).exists();
+        let moved = config(Some(80), 8443, None);
+        assert_eq!(web.apply(&moved, None).await.unwrap(), Response::Done);
+        assert_eq!(web.state().await, Response::WebServerState { pending: None });
+        assert!(https().contains("listen 8443 ssl"), "{}", https());
+        assert!(!previous("http.conf") && !previous("https.conf"));
+        assert_eq!(calls(dir.path()), 1);
+        // In force already: nginx is left alone.
+        web.apply(&moved, None).await.unwrap();
+        assert_eq!(calls(dir.path()), 1);
+
+        // nginx refuses them: the files before stay.
+        fs::write(dir.path().join("fail"), "").unwrap();
+        assert!(web.apply(&config(None, 9443, None), None).await.is_err());
+        assert!(https().contains("listen 8443 ssl") && !previous("https.conf"));
+        fs::remove_file(dir.path().join("fail")).unwrap();
+        // Not while a change waits for its confirmation.
+        web.apply(&config(None, 443, None), ConfirmWithin::seconds(30).ok()).await.unwrap();
+        assert!(matches!(web.apply(&moved, None).await, Err(OperationError::Conflict)));
+    }
+
     #[tokio::test]
     async fn settings_nginx_refuses_go_back_at_once() {
         let dir = tempfile::tempdir().unwrap();
         let web = web_server(dir.path());
         fs::write(dir.path().join("fail"), "").unwrap();
-        let failed = web.apply(&config(Some(80), 8443, None), ConfirmWithin::seconds(30).unwrap()).await;
+        let failed = web.apply(&config(Some(80), 8443, None), ConfirmWithin::seconds(30).ok()).await;
         assert_eq!(failed.unwrap_err().to_string(), "nginx: [emerg] bind() to 0.0.0.0:8443 failed");
         // There were no files before: there are none now.
         assert!(
@@ -455,7 +544,7 @@ mod tests {
         let web = web_server(dir.path());
         fs::create_dir_all(dir.path().join("web")).unwrap();
         fs::write(dir.path().join("web/https.conf"), "listen 443 ssl;\n").unwrap();
-        web.apply(&config(None, 8443, None), ConfirmWithin::seconds(30).unwrap()).await.unwrap();
+        web.apply(&config(None, 8443, None), ConfirmWithin::seconds(30).ok()).await.unwrap();
         // What the timer does when the time is up.
         web.pending.lock().await.take().unwrap().timer.abort();
         web.restore().await;

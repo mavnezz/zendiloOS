@@ -14,19 +14,23 @@
 //! returns: by a timer in the agent and, should the agent or the machine
 //! restart first, when the agent starts. So rules that shut the browser out
 //! undo themselves. While it waits, what others send on connections opened
-//! before it meets the rules as well, not only new connections: the
-//! confirmation, which a browser sends on the connection it has open, gets
-//! through only if the rules let that browser in. Once confirmed, the rules
-//! are written again without that.
+//! before it meets the rules as well, not only new connections, in both
+//! chains: the confirmation, which a browser sends on the connection it has
+//! open (to nginx, or to a reverse proxy in a container that Docker forwards
+//! it to), gets through only if the rules let that browser in. Once
+//! confirmed, the rules are written again without that.
 //!
 //! The table has two chains. `input` filters new connections to the NAS:
 //! answers, the loopback, Docker's bridges (by their exact names), what
 //! IPv6 and DHCP need, then the rules, then the fallback. `forward` filters
 //! new connections Docker forwards to its containers' published ports (`ct
 //! status dnat`), matched by the port they were sent to, and drops the
-//! other new connections from outside to Docker's bridges (sent straight to
-//! a container's address through the NAS); the rest passes on to Docker's
-//! own chains. An accepting rule here never overrides another table's drop.
+//! other new connections from outside to a bridge (sent straight to a
+//! container's address through the NAS): to any bridge, known by the
+//! kernel's kind of device, but the machine's own, so one Docker made since
+//! the rules were written, or named otherwise, is kept from outside too.
+//! The rest passes on to Docker's own chains. An accepting rule here never
+//! overrides another table's drop.
 
 use std::fmt::Write as _;
 use std::fs;
@@ -39,7 +43,7 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use zendiloos_agent_proto::{
     ConfirmWithin, DockerBridge, FirewallConfig, FirewallPorts, FirewallRule, FirewallSource,
-    FirewallTraffic, FirewallVerdict, PendingFirewall, Response, WaitingFirewall,
+    FirewallTraffic, FirewallVerdict, InterfaceName, PendingFirewall, Response, WaitingFirewall,
 };
 use zendiloos_exec::{Limits, Program, Surroundings};
 
@@ -136,7 +140,8 @@ pub(crate) enum Phase {
     /// The rules kept: connections opened before pass at once.
     Kept,
     /// A change waits: what others send on connections opened before it
-    /// meets the rules too, so its confirmation proves the browser gets in.
+    /// meets the rules too, forwarded or not, so its confirmation proves
+    /// the browser gets in.
     Waiting,
 }
 
@@ -150,12 +155,28 @@ fn bridges(config: &FirewallConfig) -> String {
     format!("{{ {} }}", quoted.join(", "))
 }
 
+/// `meta oifkind "bridge" oifname != { "br-lan" }` (with `direction`
+/// `oif`, or `iif`): any bridge but the machine's own, whatever its name,
+/// so also one Docker made after the rules were written.
+fn other_bridges(config: &FirewallConfig, direction: &str) -> String {
+    let mut names: Vec<&str> = config.own_bridges.iter().map(InterfaceName::as_str).collect();
+    names.sort_unstable();
+    names.dedup();
+    let mut matched = format!("meta {direction}kind \"bridge\"");
+    if !names.is_empty() {
+        let quoted: Vec<String> = names.iter().map(|name| format!("\"{name}\"")).collect();
+        let _ = write!(matched, " {direction}name != {{ {} }}", quoted.join(", "));
+    }
+    matched
+}
+
 /// The rules file: the table replaced by the rules, or removed.
 pub(crate) fn ruleset(config: Option<&FirewallConfig>, phase: Phase) -> String {
     let mut text = format!("{HEADER}{REPLACE}");
     let Some(config) = config else { return text };
     let fallback = verdict(config.fallback);
     let bridges = bridges(config);
+    let (from_bridges, to_bridges) = (other_bridges(config, "iif"), other_bridges(config, "oif"));
     let answers = match phase {
         Phase::Kept => "\t\tct state established,related accept\n",
         Phase::Waiting => {
@@ -184,21 +205,27 @@ pub(crate) fn ruleset(config: Option<&FirewallConfig>, phase: Phase) -> String {
     for rule in config.rules.iter() {
         text.extend(lines(rule, false));
     }
+    // Forwarded connections wait as well: a browser may reach the web
+    // interface through a container (a reverse proxy on a published port),
+    // and its confirmation then comes forwarded, past the input chain.
     let _ = write!(
         text,
         "\t\t{fallback}\n\
          \t}}\n\
          \tchain forward {{\n\
          \t\ttype filter hook forward priority filter - 5; policy accept;\n\
-         \t\tct state established,related accept\n\
+         {answers}\
          \t\t# Containers reach each other and the world.\n\
          \t\tiifname {bridges} accept\n\
          \t\tiifname \"veth*\" accept\n\
          \t\t# What Docker forwards to a published port, from outside.\n\
          \t\tct status dnat jump published\n\
+         \t\t# Containers on a bridge not listed (made since, or named otherwise)\n\
+         \t\t# reach each other too.\n\
+         \t\t{from_bridges} accept\n\
          \t\t# Nothing else from outside reaches a container, not even sent to\n\
-         \t\t# its address through the NAS.\n\
-         \t\toifname {bridges} drop\n\
+         \t\t# its address through the NAS: no bridge but the machine's own.\n\
+         \t\t{to_bridges} drop\n\
          \t}}\n\
          \tchain published {{\n"
     );

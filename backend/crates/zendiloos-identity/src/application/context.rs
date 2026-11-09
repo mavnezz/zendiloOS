@@ -29,10 +29,12 @@ pub(crate) const MAX_PENDING_PER_NETWORK: usize = 20;
 pub(crate) const MAX_CODE_FAILURES: u8 = 3;
 /// How long a second factor being set up waits for its first code.
 pub(crate) const SETUP_LIFETIME: Duration = Duration::from_secs(10 * 60);
-/// Wrong second codes an account takes at most within each window, from
-/// wherever they come and whatever the account lock is set to. A sign-in
-/// that succeeds does not reset them: the owner signing in meanwhile gives
-/// someone who knows the password and guesses codes no new tries.
+/// Wrong codes from the app an account takes at most within each window,
+/// from wherever they come and whatever the account lock is set to. A
+/// sign-in that succeeds does not reset them: the owner signing in
+/// meanwhile gives someone who knows the password and guesses codes no new
+/// tries. Recovery codes are not counted here (see
+/// [`Context::begin_code_attempt`]); an administrator clears the counts.
 pub(crate) const CODE_LIMITS: [(Duration, usize); 2] =
     [(Duration::from_secs(60 * 60), 10), (Duration::from_secs(24 * 60 * 60), 30)];
 
@@ -189,10 +191,11 @@ impl Drop for Attempt<'_> {
 }
 
 /// A second code checked for an account, which [`Context::begin_code_attempt`]
-/// let through; like [`Attempt`], it counts as failed until it ends.
+/// let through; like [`Attempt`], it counts as failed until it ends. One
+/// without a key (a recovery code) is not counted.
 pub(crate) struct CodeAttempt<'a> {
     context: &'a Context,
-    key: ThrottleKey,
+    key: Option<ThrottleKey>,
     now: Timestamp,
     ended: bool,
 }
@@ -201,14 +204,16 @@ impl CodeAttempt<'_> {
     /// The code was wrong: counted against the account's limits.
     pub(crate) fn failed(mut self) {
         self.ended = true;
-        self.context.end_code_attempt(&self.key, true, self.now);
+        if let Some(key) = &self.key {
+            self.context.end_code_attempt(key, true, self.now);
+        }
     }
 }
 
 impl Drop for CodeAttempt<'_> {
     fn drop(&mut self) {
-        if !self.ended {
-            self.context.end_code_attempt(&self.key, false, self.now);
+        if let (false, Some(key)) = (self.ended, &self.key) {
+            self.context.end_code_attempt(key, false, self.now);
         }
     }
 }
@@ -353,13 +358,23 @@ impl Context {
         self.codes.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Starts checking a second code of `account`: refused once it took
-    /// too many wrong ones ([`CODE_LIMITS`]).
+    /// Starts checking `code`, a second code of `account`. One from the app
+    /// is refused once the account took too many wrong ones
+    /// ([`CODE_LIMITS`]). A recovery code is not counted there: someone who
+    /// knows the password and sends wrong codes must not keep the owner from
+    /// the codes kept for when the app is out of reach, and guessing one is
+    /// hopeless (ten codes of about 49 bits each). It counts against what a
+    /// password counts against, from the attempt the caller began: the
+    /// address's limit and block, and the account lock as set.
     pub(crate) fn begin_code_attempt(
         &self,
         account: &AccountName,
+        code: &str,
         now: Timestamp,
     ) -> Result<CodeAttempt<'_>, IdentityError> {
+        if matches!(TypedCode::parse(code), Some(TypedCode::Recovery(_))) {
+            return Ok(CodeAttempt { context: self, key: None, now, ended: false });
+        }
         let key = ThrottleKey::Account(account.clone());
         let mut codes = self.codes();
         for throttle in codes.iter() {
@@ -370,12 +385,22 @@ impl Context {
         for throttle in codes.iter_mut() {
             throttle.start(&key);
         }
-        Ok(CodeAttempt { context: self, key, now, ended: false })
+        Ok(CodeAttempt { context: self, key: Some(key), now, ended: false })
     }
 
     fn end_code_attempt(&self, key: &ThrottleKey, failed: bool, now: Timestamp) {
         for throttle in self.codes().iter_mut() {
             throttle.end(key, failed, now);
+        }
+    }
+
+    /// Forgets the failed attempts of `account`: against the account lock
+    /// and against the limits of codes from the app.
+    pub(crate) fn clear_failures_of(&self, account: &AccountName) {
+        let key = ThrottleKey::Account(account.clone());
+        self.clear_throttle(&key);
+        for throttle in self.codes().iter_mut() {
+            throttle.clear(&key);
         }
     }
 

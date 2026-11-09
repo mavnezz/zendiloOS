@@ -16,7 +16,7 @@ use tokio::task::JoinHandle;
 use zendiloos_agent_proto::{AgentTransport, ConsoleSetupCode, Request, Response, UnixTransport};
 use zendiloos_api::{ApiState, UseCases};
 use zendiloos_apps::application::{Catalogs, Docker, InstallPorts, Installs, TemplatePorts, Templates};
-use zendiloos_certificates::application::{Certificates, CertificatesPorts};
+use zendiloos_certificates::application::{Certificates, CertificatesError, CertificatesPorts, InStep};
 use zendiloos_containers::application::{Containers, ContainersPorts};
 use zendiloos_firewall::application::{Firewall, FirewallPorts};
 use zendiloos_identity::application::commands::{PendingSetup, PurgeExpiredSessions};
@@ -49,7 +49,7 @@ use zendiloos_infra::sqlite::{
 };
 use zendiloos_infra::updates::{GitHubReleases, installed_notes};
 use zendiloos_jobs::Jobs;
-use zendiloos_kernel::{AllWork, AuditLog, RequestContext};
+use zendiloos_kernel::{AllWork, AuditLog, Clock, RequestContext};
 use zendiloos_network::application::NetworkUseCases;
 use zendiloos_notify::Notifier;
 use zendiloos_notify::channels::{ChannelPorts, Channels};
@@ -647,12 +647,15 @@ fn spawn_update_checks(updates: Updates) -> JoinHandle<()> {
     })
 }
 
-/// Renews certificates a month before they end, looked at daily (the
-/// first time five minutes after the start); acme.sh's own renewal is
-/// never set up.
+/// First brings the web server in step with the settings saved (see
+/// [`Certificates::bring_web_server_in_step`]); then renews certificates a
+/// month before they end, looked at daily (the first time five minutes
+/// after the start); acme.sh's own renewal is never set up.
 fn spawn_certificate_renewal(certificates: Certificates) -> JoinHandle<()> {
     tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(300)).await;
+        let started = tokio::time::Instant::now();
+        bring_web_server_in_step(&certificates).await;
+        tokio::time::sleep_until(started + Duration::from_secs(300)).await;
         let mut daily = tokio::time::interval(Duration::from_secs(24 * 3600));
         daily.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
@@ -664,6 +667,38 @@ fn spawn_certificate_renewal(certificates: Certificates) -> JoinHandle<()> {
             }
         }
     })
+}
+
+/// Waits out a change waiting on the host (it goes back by itself, as
+/// nobody can confirm it now), and tries again for a few minutes while the
+/// agent does not answer. What the agent refuses, or nginx, stays refused:
+/// that is logged.
+async fn bring_web_server_in_step(certificates: &Certificates) {
+    let context = RequestContext::default();
+    let mut failures = 0;
+    loop {
+        match certificates.bring_web_server_in_step(&context).await {
+            Ok(InStep::Done) => return,
+            Ok(InStep::WaitUntil(until)) => {
+                let left = until.unix_seconds().saturating_sub(SystemClock.now().unix_seconds());
+                let wait = u64::try_from(left).unwrap_or(0).clamp(1, 120) + 2;
+                tokio::time::sleep(Duration::from_secs(wait)).await;
+            }
+            Err(error @ (CertificatesError::Refused(_) | CertificatesError::HostFailed(_))) => {
+                tracing::warn!(%error, "certificates: the host does not take the web server's settings saved");
+                return;
+            }
+            Err(error) if failures < 20 => {
+                failures += 1;
+                tracing::debug!(%error, "certificates: cannot bring the web server in step yet");
+                tokio::time::sleep(Duration::from_secs(15)).await;
+            }
+            Err(error) => {
+                tracing::warn!(%error, "certificates: cannot bring the web server in step with its settings");
+                return;
+            }
+        }
+    }
 }
 
 /// Keeps the firewall's rules in force with the ports the services use:

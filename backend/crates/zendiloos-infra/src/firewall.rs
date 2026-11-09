@@ -1,6 +1,7 @@
 //! What the firewall's services stand for now, from the other contexts:
 //! the web interface's ports, the SSH server, the file services, the ports
-//! Docker projects publish, Docker's bridges, and the NAS's interfaces.
+//! Docker projects publish, Docker's bridges and the machine's own, and the
+//! NAS's interfaces.
 
 use std::sync::Mutex;
 
@@ -108,8 +109,9 @@ impl ServiceFacts for ServicesForFirewall {
         match self.network.get_network.execute().await {
             Ok(network) => {
                 facts.bridges = network.docker_bridges.into_iter().filter(|name| name != "docker0").collect();
+                facts.own_bridges = network.own_bridges;
             }
-            Err(error) => tracing::warn!(%error, "firewall: cannot read Docker's bridges"),
+            Err(error) => tracing::warn!(%error, "firewall: cannot read the bridges"),
         }
         facts.clone_into(&mut self.last.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
         facts

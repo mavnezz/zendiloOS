@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE certificates SET served = 1,\n                         last_error = CASE WHEN last_attempt_at IS issued_at THEN NULL ELSE last_error END\n                     WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "f3870e8825a5e7b80e134f654a8327923310bdc0bcb6b47e9ebcc7a222b0f3e8"
+}

@@ -2,6 +2,7 @@
 import {
   KeyRound,
   ListFilter,
+  LockOpen,
   Pencil,
   Power,
   ShieldCheck,
@@ -76,6 +77,7 @@ function actionsFor(account: Account): Action[] {
       icon: ShieldOff,
       disabled: own || !account.two_factor,
     },
+    { id: 'failed-sign-ins', label: t('users.clearFailedSignIns'), icon: LockOpen },
     {
       id: 'toggle',
       label: account.disabled ? t('people.enable') : t('people.disable'),
@@ -91,6 +93,7 @@ async function run(account: Account, action: string): Promise<void> {
   else if (action === 'password') resetting.value = account
   else if (action === 'two-factor') resettingTwoFactor.value = account
   else if (action === 'delete') deleting.value = account
+  else if (action === 'failed-sign-ins') await clearFailedSignIns(account)
   else if (action === 'toggle') {
     try {
       await accountActions.updateAccount(account.id, { disabled: !account.disabled })
@@ -108,6 +111,15 @@ async function resetTwoFactor(): Promise<void> {
     notifications.notify('success', t('users.twoFactorReset', { name: account.name }))
   } catch (failure) {
     notifications.notify('error', t('users.resetTwoFactorFailed'), problemMessage(failure))
+  }
+}
+
+async function clearFailedSignIns(account: Account): Promise<void> {
+  try {
+    await accountActions.clearFailedSignIns(account.id)
+    notifications.notify('success', t('users.failedSignInsCleared', { name: account.name }))
+  } catch (failure) {
+    notifications.notify('error', t('users.clearFailedSignInsFailed'), problemMessage(failure))
   }
 }
 

@@ -218,7 +218,7 @@ vm-ssh-test:
 vm-security-test:
     scripts/vm-security-test.sh
 
-# Two-factor sign-in in the second VM: setup, codes, recovery codes, other address, reset
+# Two-factor sign-in in the second VM: setup, codes, recovery codes, other address, the codes' limit and clearing it, reset
 vm-two-factor-test:
     scripts/vm-two-factor-test.sh
 
@@ -254,9 +254,13 @@ vm-pool-delete-test:
 vm-notify-test:
     scripts/vm-notify-test.sh
 
-# The firewall in the second VM: rules for SMB and a project, the lock-out check, going back, a reboot
+# The firewall in the second VM: rules for SMB and a project, open connections while a change waits, new Docker bridges, the lock-out check, going back, a reboot
 vm-firewall-test:
     scripts/vm-firewall-test.sh
+
+# The web interface's settings and certificates in the second VM: saved settings after a restart, confirmations at once, chains acme.sh hands over, renewals nginx does not take
+vm-web-server-test:
+    scripts/vm-web-server-test.sh
 
 # Network changes with confirmation, in the second VM (ZENDILOOS_VM=2)
 vm-network-test:

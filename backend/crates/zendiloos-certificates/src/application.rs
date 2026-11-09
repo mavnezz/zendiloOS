@@ -47,8 +47,12 @@ pub trait CertificateRepository: Send + Sync {
     ) -> Result<Certificate, PortError>;
     async fn update_certificate(&self, id: i64, certificate: &NewCertificate) -> Result<bool, PortError>;
     async fn delete_certificate(&self, id: i64) -> Result<bool, PortError>;
-    /// Records a try to issue or renew it.
+    /// Records a try to issue or renew it; one that issued it is served.
     async fn record_attempt(&self, id: i64, attempt: &Attempt) -> Result<bool, PortError>;
+    /// Records whether nginx took the pair last issued: `Err` with why not,
+    /// kept as the last error; `Ok` takes that error back, if nothing was
+    /// tried since.
+    async fn record_served(&self, id: i64, served: Result<(), String>) -> Result<bool, PortError>;
 
     async fn web_server(&self) -> Result<WebServer, PortError>;
     async fn save_web_server(&self, web: &WebServer) -> Result<(), PortError>;
@@ -119,6 +123,9 @@ pub trait AcmeHost: Send + Sync {
         context: &RequestContext,
     ) -> Result<(), HostError>;
     async fn confirm_web(&self, context: &RequestContext) -> Result<(), HostError>;
+    /// Puts settings confirmed before in force for good, at once; nothing
+    /// changes while they are. Refused (`Conflict`) while a change waits.
+    async fn keep_web(&self, web: &WebServer, context: &RequestContext) -> Result<(), HostError>;
     /// The certificate the web interface shows (or a change waiting would)
     /// was renewed: nginx takes the new one.
     async fn reload_certificate(&self, context: &RequestContext) -> Result<(), HostError>;
@@ -179,6 +186,16 @@ pub struct AcmePlugin {
     pub installed: bool,
 }
 
+/// What came of [`Certificates::bring_web_server_in_step`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InStep {
+    /// The host serves the web interface as the database says.
+    Done,
+    /// A change waits on the host, which it goes back from by itself at
+    /// this time unless confirmed: try again then.
+    WaitUntil(Timestamp),
+}
+
 /// The web server's settings, and a change waiting for confirmation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WebServerSettings {
@@ -201,6 +218,10 @@ pub struct Certificates {
     ports: Arc<CertificatesPorts>,
     /// Settings applied and waiting for confirmation; saved once confirmed.
     pending: Arc<Mutex<Option<WebServer>>>,
+    /// Held while the web server's settings change, from reading them to
+    /// the host's answer: two confirmations at once must not leave the
+    /// database saying other settings than the host keeps.
+    web: Arc<tokio::sync::Mutex<()>>,
     /// Certificates being issued now: not issued twice at once, nor deleted.
     issuing: Arc<Mutex<BTreeSet<i64>>>,
 }
@@ -239,6 +260,7 @@ impl Certificates {
         Self {
             ports: Arc::new(ports),
             pending: Arc::new(Mutex::new(None)),
+            web: Arc::new(tokio::sync::Mutex::new(())),
             issuing: Arc::new(Mutex::new(BTreeSet::new())),
         }
     }
@@ -583,9 +605,63 @@ impl Certificates {
         Ok(job)
     }
 
+    /// Whether the web interface shows certificate `id`, or a change waiting
+    /// would.
+    async fn shown(&self, id: i64) -> bool {
+        let shown = self.ports.repository.web_server().await.ok().and_then(|w| w.certificate_id);
+        let waiting =
+            self.pending.lock().unwrap_or_else(PoisonError::into_inner).and_then(|w| w.certificate_id);
+        shown == Some(id) || waiting == Some(id)
+    }
+
+    /// Has nginx take certificate `id`, renewed, if the web interface shows
+    /// it; whether it did.
+    async fn take(&self, id: i64, context: &RequestContext) -> Result<bool, HostError> {
+        if !self.shown(id).await {
+            return Ok(false);
+        }
+        self.ports.host.reload_certificate(context).await.map(|()| true)
+    }
+
+    /// nginx did not take the pair issued for certificate `id`: recorded as
+    /// not served, and told.
+    async fn not_taken(&self, id: i64, name: &str, error: &HostError) {
+        tracing::error!(%error, name, "certificates: nginx did not take the renewed certificate");
+        let reason = format!("the web interface did not take the new certificate: {error}");
+        if let Err(error) = self.ports.repository.record_served(id, Err(reason)).await {
+            tracing::error!(%error, "certificates: cannot record that nginx did not take the certificate");
+        }
+        let told = NewNotification::new(Level::Error, "certificate_not_taken")
+            .with("name", name)
+            .with("reason", error.to_string());
+        self.ports.notifier.notify(told).await;
+    }
+
+    /// A certificate renewed that nginx did not take: it takes it now, if
+    /// the web interface still shows it (one shown later is taken when the
+    /// settings are applied, which reloads nginx).
+    async fn serve(&self, certificate: &Certificate, context: &RequestContext) {
+        let name = certificate.common_name();
+        match self.take(certificate.id, context).await {
+            Ok(taken) => {
+                if let Err(error) = self.ports.repository.record_served(certificate.id, Ok(())).await {
+                    tracing::error!(%error, name, "certificates: cannot record that nginx took the certificate");
+                    return;
+                }
+                if taken {
+                    tracing::info!(name, "certificates: nginx took the renewed certificate");
+                    let told = NewNotification::new(Level::Success, "certificate_renewed").with("name", name);
+                    self.ports.notifier.notify(told).await;
+                }
+            }
+            Err(error) => self.not_taken(certificate.id, name, &error).await,
+        }
+    }
+
     /// Records what came of an issuance, has nginx take a renewed
     /// certificate it shows (or a change waiting would), and tells of
-    /// renewals: one nginx did not take is told as that.
+    /// renewals: one nginx did not take is recorded as not served and told
+    /// as that, and the daily look has nginx take it later.
     async fn issued(
         &self,
         certificate: &Certificate,
@@ -607,23 +683,8 @@ impl Certificates {
         }
         match outcome {
             Ok(_) => {
-                let shown = self.ports.repository.web_server().await.ok().and_then(|w| w.certificate_id);
-                let waiting = self
-                    .pending
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .and_then(|w| w.certificate_id);
-                let reloaded = if shown == Some(certificate.id) || waiting == Some(certificate.id) {
-                    self.ports.host.reload_certificate(context).await
-                } else {
-                    Ok(())
-                };
-                if let Err(error) = reloaded {
-                    tracing::error!(%error, "certificates: nginx did not take the renewed certificate");
-                    let told = NewNotification::new(Level::Error, "certificate_not_taken")
-                        .with("name", name)
-                        .with("reason", error.to_string());
-                    self.ports.notifier.notify(told).await;
+                if let Err(error) = self.take(certificate.id, context).await {
+                    self.not_taken(certificate.id, name, &error).await;
                     return Err(JobError::new(
                         "agent_failed",
                         Some(format!("the web interface did not take the new certificate: {error}")),
@@ -647,7 +708,8 @@ impl Certificates {
         }
     }
 
-    /// The daily look: certificates due are renewed, each in a job.
+    /// The daily look: certificates renewed that nginx did not take it
+    /// takes now; certificates due are renewed, each in a job.
     pub async fn renew_due(&self) -> Result<Vec<Job>, CertificatesError> {
         let context = RequestContext::default();
         if !self.ports.host.installed(&context).await? {
@@ -658,7 +720,13 @@ impl Certificates {
         for certificate in self.ports.repository.certificates().await? {
             let issuing =
                 self.issuing.lock().unwrap_or_else(PoisonError::into_inner).contains(&certificate.id);
-            if !certificate.renewal_due(now) || issuing {
+            if issuing {
+                continue;
+            }
+            if !certificate.served {
+                self.serve(&certificate, &context).await;
+            }
+            if !certificate.renewal_due(now) {
                 continue;
             }
             match self.issue(certificate.id, None, &context).await {
@@ -699,6 +767,7 @@ impl Certificates {
         actor: &Actor,
         context: &RequestContext,
     ) -> Result<(), CertificatesError> {
+        let _web = self.web.lock().await;
         let before = self.ports.repository.web_server().await?;
         web.check(&self.ports.repository.certificates().await?, self.now())?;
         for port in web.new_ports(&before) {
@@ -722,6 +791,7 @@ impl Certificates {
         actor: &Actor,
         context: &RequestContext,
     ) -> Result<(), CertificatesError> {
+        let _web = self.web.lock().await;
         let waiting = *self.pending.lock().unwrap_or_else(PoisonError::into_inner);
         let Some(web) = waiting else {
             return Err(CertificatesError::Refused("no change waits for confirmation".into()));
@@ -741,6 +811,27 @@ impl Certificates {
         }
         *self.pending.lock().unwrap_or_else(PoisonError::into_inner) = None;
         Ok(())
+    }
+}
+
+impl Certificates {
+    /// At start: the host serves the web interface as the database says.
+    /// Settings are saved as they are confirmed, just before the host is
+    /// told to keep them; had zendiloosd stopped in between, the host went
+    /// back to the ones before, by itself. Those saved were confirmed from
+    /// the browser at their address: they are put in force again, for good.
+    /// A change waiting on the host is left to be confirmed or to go back.
+    pub async fn bring_web_server_in_step(
+        &self,
+        context: &RequestContext,
+    ) -> Result<InStep, CertificatesError> {
+        let _web = self.web.lock().await;
+        if let Some(until) = self.ports.host.web_state(context).await?.pending_until {
+            return Ok(InStep::WaitUntil(until));
+        }
+        let web = self.ports.repository.web_server().await?;
+        self.ports.host.keep_web(&web, context).await?;
+        Ok(InStep::Done)
     }
 }
 

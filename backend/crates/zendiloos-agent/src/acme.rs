@@ -18,10 +18,13 @@
 //! acme.sh wrote is opened folder by folder without following a link (its
 //! account owns them all and could point one elsewhere) and without
 //! waiting (a pipe in place of a file is refused). The pair goes to a
-//! folder beside (`<n>.zendiloos-new`), is checked there (openssl reads the
-//! chain, and the key belongs to the certificate), and then takes the
-//! place of the pair served in one step (`RENAME_EXCHANGE`): nginx never
-//! finds half a pair, nor a pair that does not work, whatever fails.
+//! folder beside (`<n>.zendiloos-new`), is checked there (the chain holds
+//! certificates only, openssl reads each, each is issued by the one after
+//! it, and the key belongs to the first), and then takes the place of the
+//! pair served in one step (`RENAME_EXCHANGE`). There `nginx -t` reads it
+//! as nginx would, under the lock changes of the web server take, and if
+//! it refuses, the pair from before returns in one step: nginx never finds
+//! half a pair, nor a pair that does not work, whatever fails.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -34,6 +37,7 @@ use zendiloos_exec::{Limits, Program, Surroundings};
 
 use crate::config::Tools;
 use crate::operations::OperationError;
+use crate::web_server::WebServer;
 
 /// The account acme.sh runs as.
 pub const ACME_USER: &str = "zendiloos-acme";
@@ -43,6 +47,8 @@ const ISSUE_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 const QUICK: Limits = Limits { timeout: Duration::from_secs(30), max_stdout: 64 * 1024 };
 /// Largest certificate chain or key copied.
 const MAX_PEM: u64 = 256 * 1024;
+/// Most certificates in a chain: the certificate and its intermediates.
+const MAX_CHAIN: usize = 10;
 
 /// Where acme.sh and what it makes are; other than the real places in tests.
 #[derive(Debug, Clone)]
@@ -231,6 +237,27 @@ fn write_file(path: &Path, content: &[u8], mode: u32) -> Result<(), OperationErr
     fs::rename(&temporary, path).map_err(|e| OperationError::Write(path.to_owned(), e))
 }
 
+/// The certificates of `chain`, each PEM block on its own, in order; `None`
+/// if it holds anything else, or none. nginx reads every block of the file
+/// it is given, and does not start on one it cannot read.
+pub(crate) fn chain_blocks(chain: &str) -> Option<Vec<&str>> {
+    const BEGIN: &str = "-----BEGIN CERTIFICATE-----";
+    const END: &str = "-----END CERTIFICATE-----";
+    let mut blocks = Vec::new();
+    let mut rest = chain.trim_start();
+    while !rest.is_empty() {
+        let after = rest.strip_prefix(BEGIN)?;
+        let (body, _) = after.split_once(END)?;
+        if !body.bytes().all(|b| b.is_ascii_alphanumeric() || b"+/=\r\n".contains(&b)) {
+            return None;
+        }
+        let length = BEGIN.len() + body.len() + END.len();
+        blocks.push(&rest[..length]);
+        rest = rest[length..].trim_start();
+    }
+    (!blocks.is_empty()).then_some(blocks)
+}
+
 const MONTHS: [&str; 12] =
     ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -287,7 +314,13 @@ impl Acme {
         Response::AcmeState { installed: self.installed() }
     }
 
-    pub(crate) async fn issue(&self, order: &AcmeOrder) -> Result<Response, OperationError> {
+    /// Issues the certificate `order` asks for, and puts it where `nginx`
+    /// reads it once both openssl and nginx take it.
+    pub(crate) async fn issue(
+        &self,
+        order: &AcmeOrder,
+        nginx: &WebServer,
+    ) -> Result<Response, OperationError> {
         if !self.installed() {
             return Err(OperationError::Setup("acme.sh is not installed".into()));
         }
@@ -335,7 +368,7 @@ impl Acme {
                 return Err(error);
             }
         };
-        self.put_in_place(order.certificate, &staged)?;
+        self.put_in_place(order.certificate, &staged, nginx).await?;
         Ok(Response::CertificateIssued { not_after })
     }
 
@@ -373,17 +406,68 @@ impl Acme {
         Ok(staged)
     }
 
-    /// The pair in `folder` works: openssl reads the chain (its end is
-    /// answered), and the key is the certificate's.
+    /// The pair in `folder` works: the chain holds certificates only, each
+    /// of which openssl reads, each issued by the one after it, and the key
+    /// is the first's; until when that one holds. Each certificate is
+    /// checked in a file of its own, beside the pair, removed afterwards.
     async fn check(&self, folder: &Path) -> Result<i64, OperationError> {
-        let (chain, key) = (folder.join("fullchain.pem"), folder.join("key.pem"));
-        let (chain, key) = (chain.display().to_string(), key.display().to_string());
-        let end = self.openssl(&["x509", "-noout", "-enddate", "-in", &chain]).await?;
+        let chain = folder.join("fullchain.pem");
+        let text = fs::read_to_string(&chain).map_err(|e| OperationError::Read(chain.clone(), e))?;
+        let blocks = chain_blocks(&text)
+            .filter(|blocks| blocks.len() <= MAX_CHAIN)
+            .ok_or_else(|| OperationError::Failed("the chain holds something besides certificates".into()))?;
+        let mut files = Vec::new();
+        let mut written = Ok(());
+        for (n, block) in blocks.iter().enumerate() {
+            let file = folder.join(format!("chain.{n}.pem"));
+            written = write_file(&file, block.as_bytes(), 0o600);
+            if written.is_err() {
+                break;
+            }
+            files.push(file);
+        }
+        let checked = match written {
+            Ok(()) => self.check_chain(&files, &folder.join("key.pem")).await,
+            Err(error) => Err(error),
+        };
+        for file in &files {
+            let _ = fs::remove_file(file);
+        }
+        checked
+    }
+
+    /// See [`Acme::check`]: `certificates` are the chain's, the first one
+    /// the certificate itself.
+    async fn check_chain(&self, certificates: &[PathBuf], key: &Path) -> Result<i64, OperationError> {
+        let shown: Vec<String> = certificates.iter().map(|file| file.display().to_string()).collect();
+        let Some(first) = shown.first() else {
+            return Err(OperationError::Failed("the chain holds no certificate".into()));
+        };
+        let end = self.openssl(&["x509", "-noout", "-enddate", "-in", first]).await?;
         let until = not_after(&end)
             .ok_or_else(|| OperationError::Failed(format!("openssl: cannot read {}", end.trim())))?;
-        let certificates = self.openssl(&["x509", "-noout", "-pubkey", "-in", &chain]).await?;
-        let keys = self.openssl(&["pkey", "-pubout", "-in", &key]).await?;
-        if certificates.trim().is_empty() || certificates != keys {
+        for (n, file) in shown.iter().enumerate().skip(1) {
+            if self.openssl(&["x509", "-noout", "-in", file]).await.is_err() {
+                return Err(OperationError::Failed(format!(
+                    "certificate {} of the chain cannot be read",
+                    n + 1
+                )));
+            }
+        }
+        // Each is checked against the next alone (`-partial_chain`), so none
+        // is skipped and no other certificate of the system's counts.
+        for (n, pair) in shown.windows(2).enumerate() {
+            let args = ["verify", "-no_check_time", "-partial_chain", "-trusted", &pair[1], &pair[0]];
+            if self.openssl(&args).await.is_err() {
+                return Err(OperationError::Failed(format!(
+                    "certificate {} of the chain is not issued by the one after it",
+                    n + 1
+                )));
+            }
+        }
+        let certificate = self.openssl(&["x509", "-noout", "-pubkey", "-in", first]).await?;
+        let keys = self.openssl(&["pkey", "-pubout", "-in", &key.display().to_string()]).await?;
+        if certificate.trim().is_empty() || certificate != keys {
             return Err(OperationError::Failed("the certificate and its key do not belong together".into()));
         }
         Ok(until)
@@ -394,18 +478,48 @@ impl Acme {
         String::from_utf8(output.stdout).map_err(|_| OperationError::NotUtf8)
     }
 
-    /// Puts the pair checked in `staged` where nginx reads it, in one step;
-    /// the one before goes.
-    fn put_in_place(&self, certificate: u32, staged: &Path) -> Result<(), OperationError> {
+    /// Puts the pair checked in `staged` where nginx reads it, in one step,
+    /// and has `nginx -t` read it there: then the one before goes; refused,
+    /// the one before returns, in one step too, so nginx is never left with
+    /// a pair it would not start with.
+    async fn put_in_place(
+        &self,
+        certificate: u32,
+        staged: &Path,
+        nginx: &WebServer,
+    ) -> Result<(), OperationError> {
         use rustix::fs::{CWD, RenameFlags, renameat_with};
         use rustix::io::Errno;
         let served = self.paths.served(certificate);
         let write = |error: io::Error| OperationError::Write(served.clone(), error);
-        match renameat_with(CWD, staged, CWD, &served, RenameFlags::EXCHANGE) {
+        // Held from the swap until it stands or is undone: no change of the
+        // web server, and no reload, meets the new pair before nginx -t did.
+        let held = nginx.hold().await;
+        let exchanged = match renameat_with(CWD, staged, CWD, &served, RenameFlags::EXCHANGE) {
             // The pair before is in `staged` now.
-            Ok(()) => fs::remove_dir_all(staged).map_err(write)?,
-            Err(Errno::NOENT) => fs::rename(staged, &served).map_err(write)?,
+            Ok(()) => true,
+            Err(Errno::NOENT) => {
+                fs::rename(staged, &served).map_err(write)?;
+                false
+            }
             Err(error) => return Err(write(error.into())),
+        };
+        sync_folder(&self.paths.certificates)?;
+        if let Err(refused) = held.check().await {
+            let back = if exchanged {
+                renameat_with(CWD, staged, CWD, &served, RenameFlags::EXCHANGE).map_err(io::Error::from)
+            } else {
+                fs::rename(&served, staged)
+            };
+            back.map_err(write)?;
+            let _ = fs::remove_dir_all(staged);
+            sync_folder(&self.paths.certificates)?;
+            return Err(OperationError::Failed(format!(
+                "nginx does not take the new certificate: {refused}"
+            )));
+        }
+        if exchanged {
+            fs::remove_dir_all(staged).map_err(write)?;
         }
         sync_folder(&self.paths.certificates)
     }
@@ -574,7 +688,7 @@ mod tests {
                 "#!/bin/sh\nwhile [ $# -gt 0 ]; do [ \"$1\" = --cert-home ] && home=$2; [ \"$1\" = --domain ] && [ -z \"$main\" ] && main=$2; shift; done\n\
                  echo \"[Sat Nov  7 12:00:00 UTC 2026] Creating domain key\"\n\
                  if [ -f {fail} ]; then echo \"[Sat Nov  7 12:00:01 UTC 2026] Error add txt for domain\"; exit 1; fi\n\
-                 mkdir -p \"$home/${{main}}_ecc\"\nprintf -- '-----BEGIN CERTIFICATE-----\\n' > \"$home/${{main}}_ecc/fullchain.cer\"\n\
+                 mkdir -p \"$home/${{main}}_ecc\"\nprintf -- '-----BEGIN CERTIFICATE-----\\nMIIB\\n-----END CERTIFICATE-----\\n' > \"$home/${{main}}_ecc/fullchain.cer\"\n\
                  printf -- '-----BEGIN PRIVATE KEY-----\\n' > \"$home/${{main}}_ecc/$main.key\"\necho Cert success.\n",
                 fail = fail.display()
             ),
@@ -597,13 +711,38 @@ mod tests {
         Acme::new(&tools, paths).unwrap()
     }
 
+    /// nginx as `nginx -t` sees it, through [`acme`]'s systemd-run: it
+    /// refuses while `nginx-refuses` is there.
+    fn nginx(dir: &Path) -> WebServer {
+        let nginx = dir.join("nginx");
+        fs::write(
+            &nginx,
+            format!(
+                "#!/bin/sh\nif [ -f {} ]; then echo 'nginx: [emerg] cannot load certificate'; exit 1; fi\n",
+                dir.join("nginx-refuses").display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&nginx, fs::Permissions::from_mode(0o755)).unwrap();
+        let tools = Tools {
+            systemd_run: dir.join("systemd-run"),
+            systemctl: "/bin/false".into(),
+            nginx,
+            ..Tools::default()
+        };
+        WebServer::new(&tools, crate::web_server::WebServerPaths::default()).unwrap()
+    }
+
     #[tokio::test]
     async fn a_certificate_is_issued_copied_for_nginx_and_removed() {
         let dir = tempfile::tempdir().unwrap();
-        let acme = acme(dir.path());
+        let (acme, nginx) = (acme(dir.path()), nginx(dir.path()));
         assert_eq!(acme.state(), Response::AcmeState { installed: true });
         let dns = order(ionos("s3cr3t"), AcmeKey::Ec256);
-        assert_eq!(acme.issue(&dns).await.unwrap(), Response::CertificateIssued { not_after: 1_801_917_015 });
+        assert_eq!(
+            acme.issue(&dns, &nginx).await.unwrap(),
+            Response::CertificateIssued { not_after: 1_801_917_015 }
+        );
         let served = dir.path().join("web/certificates/3");
         assert!(fs::read_to_string(served.join("fullchain.pem")).unwrap().contains("BEGIN CERTIFICATE"));
         let mode = fs::metadata(served.join("key.pem")).unwrap().permissions().mode();
@@ -613,7 +752,7 @@ mod tests {
         assert!(!dir.path().join("run/3.env").exists());
 
         fs::write(dir.path().join("fail"), "").unwrap();
-        let failed = acme.issue(&dns).await.unwrap_err();
+        let failed = acme.issue(&dns, &nginx).await.unwrap_err();
         assert_eq!(failed.to_string(), "acme.sh: Error add txt for domain");
         assert!(!dir.path().join("run/3.env").exists());
 
@@ -622,7 +761,11 @@ mod tests {
             credentials: DnsCredentials::default(),
         };
         assert!(
-            acme.issue(&order(unknown, AcmeKey::Ec256)).await.unwrap_err().to_string().contains("no DNS API")
+            acme.issue(&order(unknown, AcmeKey::Ec256), &nginx)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("no DNS API")
         );
 
         assert_eq!(acme.remove(3).await.unwrap(), Response::Done);
@@ -636,7 +779,7 @@ mod tests {
         assert_eq!(acme.remove(3).await.unwrap(), Response::Done, "nothing left is fine");
         fs::remove_file(dir.path().join("share/acme.sh")).unwrap();
         assert_eq!(acme.state(), Response::AcmeState { installed: false });
-        assert!(acme.issue(&dns).await.unwrap_err().to_string().contains("not installed"));
+        assert!(acme.issue(&dns, &nginx).await.unwrap_err().to_string().contains("not installed"));
     }
 
     #[tokio::test]
@@ -698,9 +841,9 @@ mod tests {
     #[tokio::test]
     async fn a_pair_that_does_not_work_leaves_the_one_served() {
         let dir = tempfile::tempdir().unwrap();
-        let acme = acme(dir.path());
+        let (acme, nginx) = (acme(dir.path()), nginx(dir.path()));
         let dns = order(ionos("s3cr3t"), AcmeKey::Ec256);
-        acme.issue(&dns).await.unwrap();
+        acme.issue(&dns, &nginx).await.unwrap();
         let served = dir.path().join("web/certificates/3");
         fs::write(served.join("fullchain.pem"), "-----BEGIN CERTIFICATE----- working").unwrap();
         fs::write(served.join("key.pem"), "-----BEGIN PRIVATE KEY----- working").unwrap();
@@ -710,13 +853,13 @@ mod tests {
         };
 
         openssl("#!/bin/sh\necho 'unable to load certificate' >&2\nexit 1\n");
-        assert!(acme.issue(&dns).await.is_err());
+        assert!(acme.issue(&dns, &nginx).await.is_err());
         // The key is another's: its public key differs from the certificate's.
         openssl(
             "#!/bin/sh\ncase \"$*\" in *-enddate*) echo 'notAfter=Feb  6 12:30:15 2027 GMT';; \
              *-pubkey*) echo certificate;; *) echo other;; esac\n",
         );
-        let mismatched = acme.issue(&dns).await.unwrap_err();
+        let mismatched = acme.issue(&dns, &nginx).await.unwrap_err();
         assert_eq!(mismatched.to_string(), "the certificate and its key do not belong together");
         assert!(fs::read_to_string(served.join("fullchain.pem")).unwrap().contains("working"));
         assert!(fs::read_to_string(served.join("key.pem")).unwrap().contains("working"));
@@ -726,9 +869,148 @@ mod tests {
         openssl(
             "#!/bin/sh\ncase \"$*\" in *-enddate*) echo 'notAfter=Feb  6 12:30:15 2027 GMT';; *) echo same;; esac\n",
         );
-        acme.issue(&dns).await.unwrap();
+        acme.issue(&dns, &nginx).await.unwrap();
         assert!(!fs::read_to_string(served.join("fullchain.pem")).unwrap().contains("working"));
         assert!(!fs::read_to_string(served.join("key.pem")).unwrap().contains("working"));
         assert!(!dir.path().join("web/certificates/3.zendiloos-new").exists());
+    }
+
+    /// nginx reads the new pair where it is served once it took the place
+    /// of the one before; should `nginx -t` refuse it there, the one before
+    /// returns, and nginx starts next time as it did.
+    #[tokio::test]
+    async fn a_pair_nginx_refuses_is_swapped_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let (acme, nginx) = (acme(dir.path()), nginx(dir.path()));
+        let dns = order(ionos("s3cr3t"), AcmeKey::Ec256);
+        acme.issue(&dns, &nginx).await.unwrap();
+        let served = dir.path().join("web/certificates/3");
+        fs::write(served.join("fullchain.pem"), "-----BEGIN CERTIFICATE----- working").unwrap();
+        fs::write(served.join("key.pem"), "-----BEGIN PRIVATE KEY----- working").unwrap();
+
+        fs::write(dir.path().join("nginx-refuses"), "").unwrap();
+        let refused = acme.issue(&dns, &nginx).await.unwrap_err();
+        assert_eq!(
+            refused.to_string(),
+            "nginx does not take the new certificate: nginx: [emerg] cannot load certificate"
+        );
+        assert!(fs::read_to_string(served.join("fullchain.pem")).unwrap().contains("working"));
+        assert!(fs::read_to_string(served.join("key.pem")).unwrap().contains("working"));
+        assert!(!dir.path().join("web/certificates/3.zendiloos-new").exists());
+
+        // Never served before: nothing is left in its place.
+        let other = AcmeOrder { certificate: 4, ..dns.clone() };
+        assert!(acme.issue(&other, &nginx).await.is_err());
+        assert!(!dir.path().join("web/certificates/4").exists());
+        assert!(!dir.path().join("web/certificates/4.zendiloos-new").exists());
+    }
+
+    #[test]
+    fn a_chain_is_certificates_and_nothing_else() {
+        let block = |body: &str| format!("-----BEGIN CERTIFICATE-----\n{body}\n-----END CERTIFICATE-----\n");
+        let chain = format!("{}\n{}", block("MIIB/w=="), block("MIIC\r\nAA+b"));
+        let blocks = chain_blocks(&chain).unwrap();
+        assert_eq!(blocks.len(), 2);
+        assert!(blocks[1].starts_with("-----BEGIN") && blocks[1].ends_with("CERTIFICATE-----"));
+        for odd in [
+            String::new(),
+            "\n\n".to_owned(),
+            format!("{}-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n", block("MIIB")),
+            format!("{}garbage\n", block("MIIB")),
+            format!("subject=CN = nas\n{}", block("MIIB")),
+            block("not*base64*at*all"),
+            "-----BEGIN CERTIFICATE-----\nMIIB\n".to_owned(),
+            block("MIIB\n-----BEGIN CERTIFICATE-----\nMIIC"),
+        ] {
+            assert!(chain_blocks(&odd).is_none(), "{odd:?}");
+        }
+    }
+
+    /// With the real openssl: every certificate of the chain is read, each
+    /// must be issued by the one after it, and the key is the first's. nginx
+    /// reads every block of the chain and does not start on one it cannot
+    /// read; a chain of certificates that do not belong together is no use
+    /// to a browser.
+    #[tokio::test]
+    async fn every_certificate_of_the_chain_is_read_and_follows_from_the_next() {
+        let openssl = PathBuf::from("/usr/bin/openssl");
+        if !openssl.exists() {
+            eprintln!("no openssl here: skipped");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("openssl.cnf");
+        fs::write(
+            &config,
+            "[req]\ndistinguished_name = dn\n[dn]\n\
+             [ca]\nbasicConstraints = critical,CA:TRUE\nkeyUsage = critical,keyCertSign\nsubjectKeyIdentifier = hash\n\
+             [leaf]\nbasicConstraints = critical,CA:FALSE\nauthorityKeyIdentifier = keyid\n",
+        )
+        .unwrap();
+        let run = |args: &[&str]| {
+            let made =
+                std::process::Command::new(&openssl).args(args).current_dir(dir.path()).output().unwrap();
+            assert!(made.status.success(), "{args:?}: {}", String::from_utf8_lossy(&made.stderr));
+        };
+        let ec = ["-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-config", "openssl.cnf"];
+        for (name, subject) in [("ca", "/CN=Test CA"), ("other", "/CN=Other CA")] {
+            let (key, certificate) = (format!("{name}.key"), format!("{name}.pem"));
+            run(&[
+                &["req", "-x509", "-extensions", "ca", "-days", "2", "-subj", subject][..],
+                &ec[..],
+                &["-keyout", &key, "-out", &certificate],
+            ]
+            .concat());
+        }
+        run(&[
+            &["req", "-new", "-subj", "/CN=nas.example.org"][..],
+            &ec[..],
+            &["-keyout", "leaf.key", "-out", "leaf.csr"],
+        ]
+        .concat());
+        let sign = "x509 -req -in leaf.csr -CA ca.pem -CAkey ca.key -set_serial 2 -days 2 \
+                    -extfile openssl.cnf -extensions leaf -out leaf.pem";
+        run(&sign.split_whitespace().collect::<Vec<_>>());
+        let read = |name: &str| fs::read_to_string(dir.path().join(name)).unwrap();
+        let tools = Tools {
+            openssl: openssl.clone(),
+            systemd_run: "/bin/false".into(),
+            rm: "/usr/bin/rm".into(),
+            ..Tools::default()
+        };
+        let paths = AcmePaths {
+            script: dir.path().join("acme.sh"),
+            state: dir.path().join("state"),
+            runtime: dir.path().join("run"),
+            certificates: dir.path().join("certificates"),
+        };
+        let acme = Acme::new(&tools, paths).unwrap();
+        let pair = dir.path().join("pair");
+        fs::create_dir_all(&pair).unwrap();
+        fs::write(pair.join("key.pem"), read("leaf.key")).unwrap();
+        let check = |chain: String| {
+            fs::write(pair.join("fullchain.pem"), chain).unwrap();
+            acme.check(&pair)
+        };
+
+        assert!(check(read("leaf.pem") + &read("ca.pem")).await.is_ok());
+        assert!(check(read("leaf.pem")).await.is_ok(), "the certificate alone");
+        let broken = "-----BEGIN CERTIFICATE-----\nTUlJQgo=\n-----END CERTIFICATE-----\n";
+        assert_eq!(
+            check(read("leaf.pem") + broken).await.unwrap_err().to_string(),
+            "certificate 2 of the chain cannot be read"
+        );
+        assert_eq!(
+            check(read("leaf.pem") + &read("other.pem")).await.unwrap_err().to_string(),
+            "certificate 1 of the chain is not issued by the one after it"
+        );
+        assert!(check(read("leaf.pem") + &read("ca.pem") + &read("other.pem")).await.is_err());
+        assert_eq!(
+            check(read("leaf.pem") + &read("ca.key")).await.unwrap_err().to_string(),
+            "the chain holds something besides certificates"
+        );
+        assert!(check(read("ca.pem") + &read("leaf.pem")).await.is_err(), "the key is the first's");
+        let left: Vec<_> = fs::read_dir(&pair).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(left.len(), 2, "only the pair is left: {left:?}");
     }
 }

@@ -304,7 +304,7 @@ impl Operations {
             Request::ProjectFiles { project } => self.docker.project_files(project).await,
             Request::SetWebTls { minimum } => self.web.set_tls(*minimum).await,
             Request::AcmeState {} => Ok(self.acme.state()),
-            Request::IssueCertificate { order } => self.acme.issue(order).await,
+            Request::IssueCertificate { order } => self.acme.issue(order, &self.web_server).await,
             Request::RemoveCertificate { certificate } => self.acme.remove(*certificate).await,
             Request::RemoveAcmeAccount { account } => self.acme.remove_account(*account).await,
             Request::WebServerState {} => Ok(self.web_server.state().await),
