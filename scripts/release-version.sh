@@ -3,7 +3,7 @@
 #
 #   tag v1.2.3          → 1.2.3                  stable
 #   tag v1.2.3-rc.1     → 1.2.3~rc.1             test (sorts before 1.2.3)
-#   a commit on main    → <last tag>+dev.<UTC time>.g<commit>   development
+#   a commit on main    → <last tag>+dev.<commit's UTC time>.g<commit>   development
 #
 # The ref comes as the first argument or from GITHUB_REF; without a release
 # tag, the build counts as a development build of the current commit.
@@ -27,4 +27,7 @@ if [[ -n $last ]]; then
 else
     base=$(sed -n '1s/^zendiloos (\([^)]*\)).*/\1/p' "$(dirname "$0")/../debian/changelog")
 fi
-printf '%s+dev.%s.g%s\n' "$base" "$(date -u +%Y%m%d%H%M%S)" "$(git rev-parse --short=7 HEAD)"
+# The commit's time, not the build's: a later build of an older commit (a
+# re-run) must not count as newer than what main holds now.
+when=$(TZ=UTC git log -1 --format=%cd --date=format-local:%Y%m%d%H%M%S)
+printf '%s+dev.%s.g%s\n' "$base" "$when" "$(git rev-parse --short=7 HEAD)"
