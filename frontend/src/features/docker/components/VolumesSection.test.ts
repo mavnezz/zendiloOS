@@ -47,6 +47,7 @@ function backup(id: number, extra: Partial<VolumeBackup> = {}): VolumeBackup {
     sha256: 'ab'.repeat(32),
     data_bytes: 5_000_000,
     started_by: null,
+    imported: false,
     ...extra,
   }
 }
@@ -79,6 +80,7 @@ const plan = {
   keep: 7,
   stop_containers: true,
   next_at: 1_790_100_000,
+  paused: false,
 }
 
 const volumes: DockerVolume[] = [
@@ -321,6 +323,22 @@ describe('the volumes page', () => {
       stop_containers: false,
     })
     expect(page()).toContain(`${t('errors.volume_in_use')} (tesla-db-1)`)
+  })
+
+  it('shows a paused plan, resumes it, and backs up only then', async () => {
+    on('GET', '/api/v1/docker/volumes', [
+      volume('tesla_db', { plan: { ...plan, paused: true }, last_backup: backup(1) }),
+    ])
+    on('POST', '/api/v1/docker/volumes/tesla_db/backup-plan/resume', plan)
+    const wrapper = await open()
+    expect(page()).toContain(t('docker.volumes.paused'))
+    const actions = wrapper.findAllComponents({ name: 'ActionMenu' })[0]!.props('actions') as {
+      id: string
+      disabled?: boolean
+    }[]
+    expect(actions.find((action) => action.id === 'now')?.disabled).toBe(true)
+    await choose(wrapper, 0, 'resume')
+    expect(called('POST', '/api/v1/docker/volumes/tesla_db/backup-plan/resume')).toHaveLength(1)
   })
 
   it('backs up from the list of backups too', async () => {

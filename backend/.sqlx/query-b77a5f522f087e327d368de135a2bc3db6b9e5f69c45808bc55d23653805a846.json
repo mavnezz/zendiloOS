@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT volume, share_id, folder, frequency, day, hour, keep,\n                      stop_containers AS \"stop_containers: bool\", since\n               FROM docker_backup_plans ORDER BY volume",
+  "query": "SELECT volume, share_id, folder, frequency, day, hour, keep,\n                      stop_containers AS \"stop_containers: bool\", since, paused AS \"paused: bool\"\n               FROM docker_backup_plans ORDER BY volume",
   "describe": {
     "columns": [
       {
@@ -101,6 +101,17 @@
             "name": "since"
           }
         }
+      },
+      {
+        "name": "paused: bool",
+        "ordinal": 9,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "docker_backup_plans",
+            "name": "paused"
+          }
+        }
       }
     ],
     "parameters": {
@@ -115,8 +126,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "c68b167114ebae4f72106072c26c2d1034d29838cc3893be5c52b40dc169a47a"
+  "hash": "b77a5f522f087e327d368de135a2bc3db6b9e5f69c45808bc55d23653805a846"
 }

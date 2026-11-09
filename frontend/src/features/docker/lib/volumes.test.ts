@@ -4,7 +4,9 @@ import type { DockerVolume, Job } from '@/shared/api/types'
 import { i18n } from '@/shared/i18n'
 
 import {
+  backupWorkRuns,
   defaultPlan,
+  groupMatches,
   hourText,
   matches,
   pickerPath,
@@ -72,6 +74,26 @@ describe('volumes', () => {
     ]
     expect(volumeJob(jobs, 'tesla_db')).toBe(jobs[3])
     expect(volumeJob(jobs, 'nothing')).toBeUndefined()
+  })
+
+  it('know when any backup, restore or import runs', () => {
+    expect(backupWorkRuns([job('containers.image_pull', 'x')])).toBe(false)
+    expect(backupWorkRuns([job('containers.volume_import', 'backups/old', 'succeeded')])).toBe(
+      false,
+    )
+    expect(backupWorkRuns([job('containers.volume_import', 'backups/old')])).toBe(true)
+    expect(backupWorkRuns([job('containers.volume_backup', 'tesla_db')])).toBe(true)
+  })
+
+  it('have their backups found by volume or archive', () => {
+    const group = {
+      volume: 'gone_db',
+      backups: [{ archive: 'old/gone_db/x.tar.zst' }, { archive: null }],
+    }
+    expect(groupMatches(group, '')).toBe(true)
+    expect(groupMatches(group, ' GONE ')).toBe(true)
+    expect(groupMatches(group, 'old/')).toBe(true)
+    expect(groupMatches(group, 'tesla')).toBe(false)
   })
 
   it('are found by name or project', () => {

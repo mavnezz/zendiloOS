@@ -30,7 +30,15 @@
 #      next backup there, a restore's fresh folder when the agent starts
 #  11. retention: with two kept, the third backup removes the oldest
 #      archive and its manifest, and a look-alike file nobody recorded stays
-#  12. everything made is removed again
+#  12. a volume deleted outside zendiloOS: its backups and plan stay on the
+#      Backups page, the volume marked deleted, and it is restored from
+#      there under its own name
+#  13. the database forgets two backups (as after setting zendiloOS up
+#      anew) and the folder is imported: the backup only root may write is
+#      recorded and restored, the one made group-writable is refused with
+#      why; importing again records nothing; retention leaves the imported
+#      backup alone, and removing it by hand removes its files
+#  14. everything made is removed again
 #
 # Needs the VM running with the package installed and set up, Docker's data
 # on a pool and the image alpine:3.20 (fetched if missing); account and
@@ -112,6 +120,13 @@ inside() { vm "sudo docker exec $container sh -c '$1'"; }
 # What the volume $1 holds at $2, seen from a container of its own.
 in_volume() { vm "sudo docker run --rm -v $1:/v:ro alpine:3.20 sh -c '$2'"; }
 volume_json() { call GET /docker/volumes | jq -c --arg v "$1" '.[] | select(.name == $v)'; }
+# The Backups page's group of volume $1.
+backup_group() { call GET /docker/backups | jq -c --arg v "$1" '.[] | select(.volume == $v)'; }
+# Forgets the record of backup $1, as a database set up anew would not know it.
+forget_record() {
+    vm 'command -v sqlite3 >/dev/null || sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sqlite3 >/dev/null'
+    vm "sudo sqlite3 -cmd '.timeout 10000' /var/lib/zendiloos/zendiloos.db 'DELETE FROM docker_backups WHERE id = $1'"
+}
 
 back_up_now() {
     [[ $(status POST "/docker/volumes/${1:-$volume}/backups") == 202 ]] || fail "back up: $(cat "$work/last")"
@@ -132,6 +147,7 @@ cleanup() {
     set +e
     call DELETE "/docker/volumes/$volume/backup-plan" >/dev/null
     call DELETE "/docker/volumes/$extra/backup-plan" >/dev/null
+    call DELETE "/docker/volumes/$copy/backup-plan" >/dev/null
     remove_project
     vm "sudo docker volume rm -f $volume $extra $copy" >/dev/null 2>&1
     for id in $(call GET /shares | jq -r --arg s "$share" '.[] | select(.name == $s) | .id'); do
@@ -150,6 +166,7 @@ vm 'sudo docker image inspect alpine:3.20 >/dev/null 2>&1 || sudo docker pull -q
 say "Cleaning up an earlier run"
 call DELETE "/docker/volumes/$volume/backup-plan" >/dev/null || true
 call DELETE "/docker/volumes/$extra/backup-plan" >/dev/null || true
+call DELETE "/docker/volumes/$copy/backup-plan" >/dev/null || true
 remove_project
 vm "sudo docker volume rm -f $volume $extra $copy" >/dev/null 2>&1 || true
 for id in $(call GET /shares | jq -r --arg s "$share" '.[] | select(.name == $s) | .id'); do
@@ -209,7 +226,7 @@ sum=$(vm "sudo sha256sum $archive" | cut -d' ' -f1)
     == "$volume $sum $project" ]] || fail "the manifest: $(vm "sudo cat $manifest")"
 for file in "$archive" "$manifest"; do
     acl=$(vm "sudo getfacl -p $file")
-    grep -q "^user:$user:r" <<<"$acl" || fail "$file lacks the share's ACL: $acl"
+    grep -q '^group:zendiloos-files:r' <<<"$acl" || fail "$file lacks the share's ACL: $acl"
     grep -q '^mask::r-' <<<"$acl" || fail "the share's writers may write $file: $acl"
     [[ $(vm "sudo stat -c '%U %a' $file") =~ ^root\ [0-7][0145][0145]$ ]] \
         || fail "only root may write $file: $(vm "sudo stat -c '%U %a' $file")"
@@ -330,9 +347,73 @@ vm "sudo test ! -e $manifest" || fail "the first backup's manifest stayed"
 [[ $(vm "sudo ls $backups" | grep -c '\.tar\.zst$') == 4 ]] || fail "in the folder: $(vm "sudo ls $backups")"
 vm "sudo test -f $backups/$volume-19990101-000000.tar.zst" || fail "a file nobody recorded was removed"
 
-say "12. Cleaning up"
+say "12. A volume deleted outside zendiloOS is restored from the Backups page"
+[[ $(status PUT "/docker/volumes/$copy/backup-plan" "$plan") == 200 ]] || fail "plan: $(cat "$work/last")"
+back_up_now "$copy"
+sleep 2
+back_up_now "$copy"
+vm "sudo docker volume rm $copy" >/dev/null
+group=$(backup_group "$copy")
+[[ $(jq -r '.exists' <<<"$group") == false ]] || fail "$copy is not marked deleted: $group"
+[[ $(jq -r '.plan.paused' <<<"$group") == false ]] || fail "the plan of $copy is gone: $group"
+(( $(jq '[.backups[] | select(.state == "succeeded")] | length' <<<"$group") == 2 )) \
+    || fail "the backups of $copy: $group"
+newest=$(jq -c '.backups[0]' <<<"$group")
+older=$(jq -c '.backups[1]' <<<"$group")
+[[ $(restore "$(jq -r .id <<<"$newest")" '{"target":"own_name"}') == 202 ]] \
+    || fail "restore of the deleted $copy: $(cat "$work/last")"
+job_succeeded "$(jq -r .id "$work/last")"
+[[ $(in_volume "$copy" 'cat /v/state') == first ]] || fail "$copy was not made again from its backup"
+[[ $(backup_group "$copy" | jq -r .exists) == true ]] || fail "$copy is still marked deleted"
+
+say "13. Backups the database forgot are imported from their folder"
+forget_record "$(jq -r .id <<<"$newest")"
+forget_record "$(jq -r .id <<<"$older")"
+[[ $(backup_group "$copy" | jq '.backups | length') == 0 ]] || fail "the records stayed: $(backup_group "$copy")"
+newest_path=$(jq -r .archive <<<"$newest")
+older_path=$(jq -r .archive <<<"$older")
+# Group-writable, as a share's ACL could make it.
+vm "sudo chmod g+w /volume$number/$share/$older_path"
+import=$(jq -n --argjson share "$share_id" '{share_id:$share,folder:"docker-backups"}')
+[[ $(status POST /docker/backups/import "$import") == 202 ]] || fail "import: $(cat "$work/last")"
+imported_job=$(jq -r .id "$work/last")
+job_succeeded "$imported_job"
+output=$(call GET "/jobs/$imported_job" | jq -r '.output[]')
+grep -qxF "Recorded $newest_path" <<<"$output" || fail "not recorded: $output"
+grep -qxF "Refused $older_path: the archive: writable by others" <<<"$output" \
+    || fail "a group-writable archive was not refused: $output"
+grep -q "^1 recorded, " <<<"$output" || fail "the import's count: $output"
+group=$(backup_group "$copy")
+taken=$(jq -c '.backups[0]' <<<"$group")
+[[ $(jq -r '.imported' <<<"$taken") == true && $(jq -r .archive <<<"$taken") == "$newest_path" ]] \
+    || fail "the imported backup: $group"
+[[ $(jq -r .sha256 <<<"$taken") == $(jq -r .sha256 <<<"$newest") ]] || fail "another SHA-256: $taken"
+vm "sudo docker run --rm -v $copy:/v alpine:3.20 sh -c 'echo changed > /v/state'"
+[[ $(restore "$(jq -r .id <<<"$taken")" '{"target":"own_name"}') == 202 ]] \
+    || fail "restore of the imported backup: $(cat "$work/last")"
+job_succeeded "$(jq -r .id "$work/last")"
+[[ $(in_volume "$copy" 'cat /v/state') == first ]] || fail "the imported backup was not restored"
+[[ $(status POST /docker/backups/import "$import") == 202 ]] || fail "import again: $(cat "$work/last")"
+again_job=$(jq -r .id "$work/last")
+job_succeeded "$again_job"
+call GET "/jobs/$again_job" | jq -r '.output[]' | grep -q "^0 recorded, " \
+    || fail "recorded again: $(call GET "/jobs/$again_job" | jq -r '.output[]')"
+# The plan keeps two: its next two backups leave the imported one alone.
+sleep 2
+back_up_now "$copy"
+sleep 2
+back_up_now "$copy"
+vm "sudo test -f /volume$number/$share/$newest_path" || fail "retention removed the imported archive"
+[[ $(backup_group "$copy" | jq '[.backups[] | select(.imported)] | length') == 1 ]] \
+    || fail "the imported backup was forgotten: $(backup_group "$copy")"
+[[ $(status DELETE "/docker/backups/$(jq -r .id <<<"$taken")") == 204 ]] || fail "remove: $(cat "$work/last")"
+vm "sudo test ! -e /volume$number/$share/$newest_path" || fail "the imported archive stayed"
+vm "sudo test -f /volume$number/$share/$older_path" || fail "a file nobody recorded was removed"
+
+say "14. Cleaning up"
 [[ $(status DELETE "/docker/volumes/$volume/backup-plan") == 204 ]] || fail "the plan: $(cat "$work/last")"
 [[ $(status DELETE "/docker/volumes/$extra/backup-plan") == 204 ]] || fail "the plan: $(cat "$work/last")"
+[[ $(status DELETE "/docker/volumes/$copy/backup-plan") == 204 ]] || fail "the plan: $(cat "$work/last")"
 remove_project
 [[ $(status DELETE "/docker/volumes/$volume") == 204 ]] || fail "removing $volume: $(cat "$work/last")"
 [[ $(status DELETE "/docker/volumes/$extra") == 204 ]] || fail "removing $extra: $(cat "$work/last")"

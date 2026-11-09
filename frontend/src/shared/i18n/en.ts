@@ -617,6 +617,7 @@ const en = {
       images: 'Images',
       networks: 'Networks',
       volumes: 'Volumes',
+      backups: 'Backups',
       activity: 'Logs',
       management: 'Management',
     },
@@ -922,6 +923,9 @@ const en = {
       next: 'Next: {at}',
       lastFailed: 'The last one failed',
       lastAt: 'Last: {at}',
+      paused: 'Paused: the volume was gone when a backup was due',
+      resume: 'Resume backup plan',
+      resumed: 'Backup plan resumed',
       none: 'There are no volumes.',
       setUp: 'Set up backup',
       editPlan: 'Backup plan',
@@ -931,7 +935,7 @@ const en = {
       remove: 'Delete',
       removeTitle: 'Delete volume {name}?',
       removeText:
-        'The volume and all the data in it are deleted, and its backup plan ends. Its backups stay.',
+        'The volume and all the data in it are deleted, and its backup plan ends. Its backups stay, under Backups.',
       started: 'Runs in the background.',
       schedule: {
         daily: 'Daily at {at}',
@@ -955,6 +959,7 @@ const en = {
         creating: 'Making the volume',
         verifying: 'Checking the archive',
         restoring: 'Restoring',
+        scanning: 'Looking for backups',
       },
       plan: {
         title: 'Back up {name}',
@@ -1014,6 +1019,50 @@ const en = {
           'Everything in the volume {name} is replaced by the backup of {at}. What is in it now is lost.',
       },
     },
+    backups: {
+      import: 'Import from a folder',
+      none: 'No backups are recorded. Set up a backup plan under Volumes, or import backups from a folder.',
+      deleted: 'Deleted',
+      deletedHint:
+        'There is no volume of this name now. Restoring under its own name makes it again.',
+      noPlan: 'No backup plan',
+      paused: 'Paused',
+      pausedHint:
+        'The volume was gone when a backup was due, so the plan makes none until you resume it. Its backups stay until you delete them.',
+      pausedGone: 'Once a volume of this name is there again, you can resume the plan.',
+      pausedBack:
+        'A volume of this name is there again. Resume the plan if it is the same one: its new backups then count toward what the plan keeps, and the oldest of these are deleted.',
+      resume: 'Resume plan',
+      resumed: 'Backup plan resumed',
+      deletePlan: 'Delete plan',
+      deletePlanTitle: 'Delete the backup plan of {name}?',
+      deletePlanText: 'No more backups are made. Those made so far stay.',
+      planDeleted: 'Backup plan deleted',
+      imported: 'Imported',
+      importedHint: 'Found in a folder and recorded; it belongs to no plan, and none deletes it.',
+      remove: 'Delete backup',
+      removeTitle: 'Delete this backup of {name}?',
+      removeText:
+        'The archive of {at} and its manifest are deleted from the shared folder. The backup cannot be restored afterwards.',
+      removeFailedText: 'The record of this run that failed is removed.',
+      removed: 'Backup deleted',
+      importDialog: {
+        title: 'Import backups',
+        hint: 'Records the backups of volumes kept in a folder, for instance after zendiloOS was set up anew, so that they can be restored here.',
+        folder: 'Folder',
+        rules:
+          'Taken are archives named <volume>-YYYYMMDD-HHMMSS.tar.zst with their manifest (.json) beside them, in this folder and the folders in it: only if nobody but root may change them, and only if the archive is the one its manifest names. Backups recorded already are passed over.',
+        noPlan:
+          'Imported backups belong to no backup plan, so none deletes them. Delete them here once you no longer need them.',
+        start: 'Import',
+        output: 'What was found',
+        waiting: 'Looking at the folder …',
+        running: 'Importing …',
+        succeeded: 'Done. Files that were refused are listed with why.',
+        failed: 'The import failed.',
+        again: 'Import another folder',
+      },
+    },
     activity: {
       refresh: 'Refresh',
       outcome: 'Result',
@@ -1040,7 +1089,9 @@ const en = {
         backup_plan: 'Backup plan set:',
         backup_plan_delete: 'Backup plan ended:',
         volume_backup: 'Volume backed up:',
-        volume_backup_remove: 'Old backup deleted:',
+        volume_backup_remove: 'Backup deleted:',
+        backup_plan_resume: 'Backup plan resumed:',
+        volume_backup_import: 'Backups imported from:',
         volume_restore: 'Volume restored:',
         project_create: 'Project created:',
         project_change: 'Compose file changed:',
@@ -2283,6 +2334,7 @@ const en = {
       containers_data_move: 'Move Docker’s data',
       containers_volume_backup: 'Back up volume',
       containers_volume_restore: 'Restore volume',
+      containers_volume_import: 'Import backups',
       apps_update: 'Update app',
       apps_uninstall: 'Remove app',
       certificates_acme_install: 'Install the ACME client',
@@ -2868,6 +2920,8 @@ const en = {
     share_denied: 'You may not write in this shared folder.',
     volume_in_use: 'Running containers use the volume',
     volume_busy: 'A backup or restore of the volume is under way; try again once it has ended.',
+    plan_paused:
+      'The volume’s backup plan is paused, as the volume was gone when a backup was due. Resume it first.',
     containers_held:
       'A backup or restore of a volume keeps these containers stopped until it has ended; try again then',
     source_exists: 'This catalog is there already.',

@@ -96,16 +96,25 @@ const variants = { running: 'info', succeeded: 'success', failed: 'destructive' 
             }}</TableCell>
             <TableCell>
               <span class="grid gap-0.5">
-                <Badge :variant="variants[backup.state]">{{
-                  t(`docker.volumes.list.states.${backup.state}`)
-                }}</Badge>
+                <span class="flex flex-wrap gap-1">
+                  <Badge :variant="variants[backup.state]">{{
+                    t(`docker.volumes.list.states.${backup.state}`)
+                  }}</Badge>
+                  <Badge
+                    v-if="backup.imported"
+                    variant="outline"
+                    :title="t('docker.backups.importedHint')"
+                    >{{ t('docker.backups.imported') }}</Badge
+                  >
+                </span>
                 <span v-if="backup.error" class="text-xs break-words text-destructive">{{
                   backup.error
                 }}</span>
               </span>
             </TableCell>
             <TableCell class="hidden text-muted-foreground @xl:table-cell">{{
-              backup.started_by ?? t('docker.volumes.list.schedule')
+              backup.started_by ??
+              (backup.imported ? t('docker.backups.imported') : t('docker.volumes.list.schedule'))
             }}</TableCell>
             <TableCell>
               <Button
@@ -124,7 +133,7 @@ const variants = { running: 'info', succeeded: 'success', failed: 'destructive' 
       </Table>
     </div>
     <div v-if="volume?.plan" class="flex justify-end">
-      <Button :disabled="working || starting" @click="now">
+      <Button :disabled="working || starting || volume.plan.paused" @click="now">
         <HardDriveDownload />
         {{ t('docker.volumes.backUpNow') }}
       </Button>

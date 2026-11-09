@@ -325,15 +325,17 @@ async fn plans_run_at_their_local_hour_and_catch_up_once() {
     assert_eq!(runs.len(), 2);
     assert_eq!(runs[0].by, None, "the schedule's");
 
-    // A plan whose volume is gone fails when it is due, and is told.
+    // A plan whose volume is gone pauses when it is due; the others run.
     t.containers.set_backup_plan("stack_db", nightly(7, false), &alice(), &context()).await.unwrap();
     t.engine.volumes.lock().unwrap().retain(|v| v.name != "stack_db");
     clock.set(2 * DAY + 2 * HOUR);
-    for job in t.containers.run_due_backups().await {
+    let jobs = t.containers.run_due_backups().await;
+    assert_eq!(jobs.iter().map(|job| job.target.as_deref()).collect::<Vec<_>>(), [Some("orphan")]);
+    for job in jobs {
         finished(&t, job.id).await;
     }
-    let told: Vec<String> = t.notifications.all().iter().map(|n| n.params["volume"].clone()).collect();
-    assert_eq!(told, ["stack_db"]);
+    assert!(t.notifications.all().is_empty(), "no failure told");
+    assert!(t.containers.backup_plan("stack_db").await.unwrap().unwrap().plan.paused);
 }
 
 const DAY: i64 = 24 * HOUR;
@@ -547,6 +549,17 @@ impl super::ports::VolumeArchiver for GatedArchiver {
         context: &RequestContext,
     ) -> Result<bool, super::ports::EngineError> {
         self.inner.end_work(volume, context).await
+    }
+
+    async fn scan(
+        &self,
+        place: &super::ports::SharePlace,
+        folder: &str,
+        known: &[String],
+        steps: &dyn super::ports::Steps,
+        context: &RequestContext,
+    ) -> Result<super::ports::ScannedArchives, super::ports::EngineError> {
+        self.inner.scan(place, folder, known, steps, context).await
     }
 }
 

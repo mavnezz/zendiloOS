@@ -64,13 +64,13 @@ struct Pending {
 
 /// A job's step and progress from a step reported without waiting: the
 /// newest is published, one at a time.
-struct JobSteps {
+pub(super) struct JobSteps {
     progress: Progress,
     pending: Arc<Mutex<Pending>>,
 }
 
 impl JobSteps {
-    fn new(progress: Progress) -> Self {
+    pub(super) fn new(progress: Progress) -> Self {
         Self { progress, pending: Arc::default() }
     }
 }
@@ -162,6 +162,8 @@ impl Containers {
             keep: input.keep,
             stop_containers: input.stop_containers,
             since: self.now(),
+            // Set anew for a volume that is there: it runs again.
+            paused: false,
         }
         .checked()?;
         let done = self.ports.backups.save_plan(&plan).await.map_err(Into::into);
@@ -196,13 +198,19 @@ impl Containers {
         context: &RequestContext,
     ) -> Result<Job, ContainersError> {
         let plan = self.backup_plan(volume).await?.ok_or(ContainersError::NotFound)?.plan;
+        if plan.paused {
+            return Err(ContainersError::PlanPaused(plan.volume));
+        }
         self.start_backup(plan, Some(actor), context).await
     }
 
     /// Starts the backups whose time has come; run every minute. A plan
     /// counts as run once it was started, whatever comes of it: the next
     /// comes at its time. A plan noted while the clock was ahead counts from
-    /// now on, once the clock was put right.
+    /// now on, once the clock was put right. A plan whose volume is gone is
+    /// paused instead of failing every time: until an administrator resumes
+    /// it, as a volume of that name made again may be another one, whose
+    /// backups would push the gone one's out of what the plan keeps.
     pub async fn run_due_backups(&self) -> Vec<Job> {
         let now = self.now();
         let offsets = |at| self.ports.clock.utc_offset(at);
@@ -228,6 +236,26 @@ impl Containers {
                 due.push(plan);
             }
         }
+        if !due.is_empty() {
+            match self.ports.engine.volumes(&RequestContext::default()).await {
+                Ok(volumes) => {
+                    let (there, gone): (Vec<BackupPlan>, Vec<BackupPlan>) =
+                        due.into_iter().partition(|plan| volumes.iter().any(|v| v.name == plan.volume));
+                    due = there;
+                    for plan in gone {
+                        tracing::info!(
+                            volume = plan.volume,
+                            "backups: the volume is gone; its plan is paused"
+                        );
+                        if let Err(error) = self.ports.backups.pause_plan(&plan.volume, true, now).await {
+                            tracing::warn!(%error, volume = plan.volume, "backups: cannot pause the plan");
+                        }
+                    }
+                }
+                // Docker does not answer: the runs fail and are told.
+                Err(error) => tracing::info!(%error, "backups: cannot look at the volumes"),
+            }
+        }
         for plan in due {
             if let Err(error) = self.ports.backups.ran(&plan.volume, now).await {
                 tracing::warn!(%error, volume = plan.volume, "backups: cannot note the run; not started");
@@ -245,7 +273,7 @@ impl Containers {
         jobs
     }
 
-    async fn told_failure(&self, volume: &str, reason: &str) {
+    pub(super) async fn told_failure(&self, volume: &str, reason: &str) {
         let told = NewNotification::new(Level::Error, "docker_backup_failed")
             .with("volume", volume)
             .with("reason", reason);
@@ -428,7 +456,7 @@ impl Containers {
         }
     }
 
-    async fn remove_files(
+    pub(super) async fn remove_files(
         &self,
         place: &SharePlace,
         written: &WrittenBackup,

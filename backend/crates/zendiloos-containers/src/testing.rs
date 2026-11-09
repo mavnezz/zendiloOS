@@ -10,10 +10,10 @@ use zendiloos_jobs::testing::MemoryJobs;
 use zendiloos_kernel::{Actor, AuditLog, Clock, PortError, RequestContext, Timestamp};
 
 use crate::application::ports::{
-    BackupRepository, BackupShares, CheckedCompose, DataPlace, DockerData, DockerEngine, EngineError, Lines,
-    NewBackup, ProjectAction, ProjectPlace, ProjectRepository, ProjectStorage, Registries, SharePlace,
-    ShareReaders, Steps, StorageError, TerminalInput, TerminalSession, UpdateSettingsRepository,
-    VolumeArchiver,
+    BackupRepository, BackupShares, CheckedCompose, DataPlace, DockerData, DockerEngine, EngineError,
+    FoundArchive, Lines, NewBackup, ProjectAction, ProjectPlace, ProjectRepository, ProjectStorage,
+    Registries, ScannedArchives, SharePlace, ShareReaders, Steps, StorageError, TerminalInput,
+    TerminalSession, UpdateSettingsRepository, VolumeArchiver,
 };
 use crate::application::{Containers, ContainersPorts};
 use crate::domain::{
@@ -747,6 +747,8 @@ pub struct FakeArchiver {
     pub unanswering: std::sync::atomic::AtomicBool,
     /// What the next restore says it left beside the data.
     pub left_over: Mutex<Option<String>>,
+    /// What a scan of a folder finds.
+    pub found: Mutex<ScannedArchives>,
 }
 
 impl FakeArchiver {
@@ -830,6 +832,20 @@ impl VolumeArchiver for FakeArchiver {
         }
         Ok(false)
     }
+
+    async fn scan(
+        &self,
+        place: &SharePlace,
+        folder: &str,
+        known: &[String],
+        _: &dyn Steps,
+        _: &RequestContext,
+    ) -> Result<ScannedArchives, EngineError> {
+        self.calls.lock().unwrap().push(format!("scan {}/{folder} knowing {}", place.share, known.len()));
+        let mut scanned = self.found.lock().unwrap().clone();
+        scanned.found.retain(|found| !known.contains(&found.written.archive.path));
+        Ok(scanned)
+    }
 }
 
 /// Plans, runs and the starts owed in memory.
@@ -877,6 +893,37 @@ impl BackupRepository for MemoryBackups {
         Ok(())
     }
 
+    async fn pause_plan(&self, volume: &str, paused: bool, at: Timestamp) -> Result<(), PortError> {
+        for plan in self.plans.lock().unwrap().iter_mut().filter(|p| p.volume == volume) {
+            plan.paused = paused;
+            plan.since = at;
+        }
+        Ok(())
+    }
+
+    async fn import(&self, share_id: i64, found: &FoundArchive) -> Result<bool, PortError> {
+        let mut runs = self.runs.lock().unwrap();
+        let path = &found.written.archive.path;
+        if runs.iter().any(|r| r.share_id == share_id && r.written().is_some_and(|w| &w.archive.path == path))
+        {
+            return Ok(false);
+        }
+        let id = runs.iter().map(|r| r.id).max().unwrap_or(0) + 1;
+        runs.push(Backup {
+            id,
+            volume: found.volume.clone(),
+            share_id,
+            started_at: found.backed_up_at,
+            finished_at: Some(found.backed_up_at),
+            outcome: BackupOutcome::Succeeded(found.written.clone()),
+            driver: "local".into(),
+            labels: manifest_labels(&found.written.manifest_json),
+            by: None,
+            imported: true,
+        });
+        Ok(true)
+    }
+
     async fn start(&self, backup: &NewBackup) -> Result<i64, PortError> {
         let mut runs = self.runs.lock().unwrap();
         let id = runs.iter().map(|r| r.id).max().unwrap_or(0) + 1;
@@ -890,6 +937,7 @@ impl BackupRepository for MemoryBackups {
             driver: "local".into(),
             labels: BTreeMap::new(),
             by: backup.by.clone(),
+            imported: false,
         });
         Ok(id)
     }

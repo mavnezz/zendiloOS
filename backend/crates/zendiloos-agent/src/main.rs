@@ -55,6 +55,8 @@ enum Command {
     RemoveVolumeBackup { job: String },
     /// Remove what restores left beside the volumes' data (likewise, as the agent starts)
     SweepVolumes { job: String },
+    /// Look for backups of Docker volumes in a folder of a share, to record them again (likewise)
+    ScanVolumeBackups { job: String },
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -92,6 +94,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Some(Command::SwapVolume { job }) => Some((VolumeJob::Swap, job)),
         Some(Command::RemoveVolumeBackup { job }) => Some((VolumeJob::RemoveBackup, job)),
         Some(Command::SweepVolumes { job }) => Some((VolumeJob::Sweep, job)),
+        Some(Command::ScanVolumeBackups { job }) => Some((VolumeJob::Scan, job)),
         _ => None,
     };
     if let Some((kind, job)) = volume_job {
@@ -131,7 +134,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             | Command::RestoreVolume { .. }
             | Command::SwapVolume { .. }
             | Command::RemoveVolumeBackup { .. }
-            | Command::SweepVolumes { .. } => unreachable!("handled above"),
+            | Command::SweepVolumes { .. }
+            | Command::ScanVolumeBackups { .. } => unreachable!("handled above"),
         };
         outcome.map_err(|error| anyhow::anyhow!("{name}: {error}"))?;
         println!("{name}: folders of shares {done}");

@@ -5,6 +5,7 @@ import { api, unwrap } from '@/shared/api/client'
 import type {
   BackupPlanRequest,
   ImageUpdateSettings,
+  ImportBackupsRequest,
   NewDockerProject,
   RestoreRequest,
 } from '@/shared/api/types'
@@ -506,6 +507,36 @@ export function backUpNow(name: string) {
 /** Restores backup `id`, in a job. */
 export function restoreBackup(id: number, body: RestoreRequest) {
   return unwrap(api.POST('/api/v1/docker/backups/{id}/restore', { params: { path: { id } }, body }))
+}
+
+/**
+ * Every volume with recorded backups or a plan, also those deleted, with
+ * their backups; asked again more often while a backup, restore or import
+ * runs.
+ */
+export function useBackupGroups(working: Ref<boolean>) {
+  return useQuery({
+    queryKey: ['docker', 'backups'],
+    queryFn: () => unwrap(api.GET('/api/v1/docker/backups')),
+    refetchInterval: () => (working.value ? 3000 : REFRESH),
+  })
+}
+
+/** Deletes backup `id`: its archive and manifest, and its record. */
+export function removeBackup(id: number) {
+  return unwrap(api.DELETE('/api/v1/docker/backups/{id}', { params: { path: { id } } }))
+}
+
+/** Resumes the paused backup plan of volume `name`. */
+export function resumeBackupPlan(name: string) {
+  return unwrap(
+    api.POST('/api/v1/docker/volumes/{name}/backup-plan/resume', { params: { path: { name } } }),
+  )
+}
+
+/** Records the backups found in a folder of a share, in a job. */
+export function importBackups(body: ImportBackupsRequest) {
+  return unwrap(api.POST('/api/v1/docker/backups/import', { body }))
 }
 
 /** Asks the Docker app's lists again. */

@@ -9,9 +9,11 @@ use zendiloos_agent_proto::{
     self as proto, AgentTransport, ArchiveDigest, BackupStem, ErrorCode, Request, Response, ShareLocation,
     ShareName, SharePath, VolumeName, VolumeNumber, WrittenFile,
 };
-use zendiloos_containers::application::ports::{EngineError, SharePlace, Steps, VolumeArchiver};
+use zendiloos_containers::application::ports::{
+    EngineError, FoundArchive, ScannedArchives, SharePlace, Steps, VolumeArchiver,
+};
 use zendiloos_containers::domain::{BackupFile, WrittenBackup};
-use zendiloos_kernel::RequestContext;
+use zendiloos_kernel::{RequestContext, Timestamp};
 
 use super::{call_raw_reporting, unexpected};
 
@@ -156,6 +158,45 @@ impl VolumeArchiver for AgentVolumeArchiver {
             other => Err(unexpected(other).into()),
         }
     }
+
+    async fn scan(
+        &self,
+        place: &SharePlace,
+        folder: &str,
+        known: &[String],
+        steps: &dyn Steps,
+        context: &RequestContext,
+    ) -> Result<ScannedArchives, EngineError> {
+        let request = Request::ScanVolumeBackups {
+            share: share(place)?,
+            folder: path(folder)?,
+            known: known.iter().map(|known| path(known)).collect::<Result<_, _>>()?,
+        };
+        match self.ask(request, steps, context).await? {
+            Response::VolumeBackupsScanned { found, refused } => Ok(ScannedArchives {
+                found: found
+                    .into_iter()
+                    .map(|found| FoundArchive {
+                        volume: found.volume.as_str().to_owned(),
+                        backed_up_at: Timestamp::from_unix_seconds(found.backed_up_at),
+                        written: WrittenBackup {
+                            archive: file(found.archive),
+                            manifest: file(found.manifest),
+                            sha256: found.sha256.as_str().to_owned(),
+                            data_bytes: found.data_bytes,
+                            entries: found.entries,
+                            manifest_json: found.manifest_json,
+                        },
+                    })
+                    .collect(),
+                refused: refused
+                    .into_iter()
+                    .map(|file| (file.path.as_str().to_owned(), file.reason))
+                    .collect(),
+            }),
+            other => Err(unexpected(other).into()),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -211,6 +252,10 @@ mod tests {
         assert!(restored.is_ok(), "{restored:?}");
         let busy = archiver.restore("stack_cache", &place(), &written, &heard, &context).await;
         assert!(matches!(busy, Err(EngineError::Refused(_))), "a running container uses it: {busy:?}");
+        // Without shares on disk, the simulated agent finds none.
+        let known = [written.archive.path.clone()];
+        let scanned = archiver.scan(&place(), "docker", &known, &heard, &context).await.unwrap();
+        assert_eq!(scanned, ScannedArchives::default());
         assert!(archiver.remove(&place(), &written.archive, &context).await.unwrap());
         assert!(!archiver.end_work("stack_cache", &context).await.unwrap(), "nothing runs");
         assert!(matches!(archiver.end_work("-x", &context).await, Err(EngineError::Refused(_))));
@@ -242,6 +287,10 @@ mod tests {
         );
         let odd = BackupFile { path: "../x".into(), bytes: 0, device: 0, inode: 0, modified: None };
         assert!(matches!(archiver.remove(&place(), &odd, &context).await, Err(EngineError::Refused(_))));
+        let up = archiver.scan(&place(), "../up", &[], &heard, &context).await;
+        assert!(matches!(up, Err(EngineError::Refused(_))), "{up:?}");
+        let known = archiver.scan(&place(), "old", &["/etc/x".into()], &heard, &context).await;
+        assert!(matches!(known, Err(EngineError::Refused(_))), "{known:?}");
         assert!(agent.asked().is_empty(), "nothing odd was sent");
     }
 
@@ -273,5 +322,46 @@ mod tests {
         assert!(odd.end_work("db", &context).await.is_err());
         let ended = answering(Response::VolumeWorkEnded { stopped: true });
         assert!(ended.end_work("db", &context).await.unwrap());
+        let odd = answering(Response::Done);
+        assert!(odd.scan(&place(), "", &[], &heard, &context).await.is_err());
+        let at = |path: &str, inode: u64| WrittenFile {
+            path: SharePath::parse(path).unwrap(),
+            bytes: 10,
+            device: 2,
+            inode,
+            modified: 1_762_570_800_000_000_000,
+        };
+        let scanned = answering(Response::VolumeBackupsScanned {
+            found: vec![proto::FoundBackup {
+                volume: VolumeName::parse("db").unwrap(),
+                archive: at("old/db/db-20261108-030000.tar.zst", 5),
+                manifest: at("old/db/db-20261108-030000.json", 6),
+                sha256: ArchiveDigest::parse(&digest).unwrap(),
+                data_bytes: 4096,
+                entries: None,
+                backed_up_at: 1_762_570_800,
+                manifest_json: "{}".into(),
+            }],
+            refused: vec![proto::RefusedBackupFile {
+                path: SharePath::parse("old/db-1.tar.zst").unwrap(),
+                reason: "the archive: writable by others".into(),
+            }],
+        });
+        let scanned = scanned.scan(&place(), "old", &[], &heard, &context).await.unwrap();
+        let found = &scanned.found[0];
+        assert_eq!(
+            (found.volume.as_str(), found.backed_up_at.unix_seconds(), found.written.entries),
+            ("db", 1_762_570_800, None)
+        );
+        assert_eq!(found.written.archive.path, "old/db/db-20261108-030000.tar.zst");
+        assert_eq!(
+            (found.written.manifest.inode, found.written.manifest.modified),
+            (6, Some(1_762_570_800_000_000_000))
+        );
+        assert_eq!((found.written.sha256.as_str(), found.written.data_bytes), (digest.as_str(), 4096));
+        assert_eq!(
+            scanned.refused,
+            [("old/db-1.tar.zst".to_owned(), "the archive: writable by others".to_owned())]
+        );
     }
 }

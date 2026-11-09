@@ -450,6 +450,36 @@ pub trait VolumeArchiver: Send + Sync {
     /// answers once nothing works on it any more: whether something still
     /// did.
     async fn end_work(&self, volume: &str, context: &RequestContext) -> Result<bool, EngineError>;
+
+    /// Looks for backups in `folder` of the share and the folders in it,
+    /// passing over the archives `known` (paths in the share): pairs of
+    /// archive and manifest only root may write, the archive's SHA-256 the
+    /// manifest's; the rest refused with why.
+    async fn scan(
+        &self,
+        place: &SharePlace,
+        folder: &str,
+        known: &[String],
+        steps: &dyn Steps,
+        context: &RequestContext,
+    ) -> Result<ScannedArchives, EngineError>;
+}
+
+/// A backup found in a folder: the volume it is of, when it was made, and
+/// what it wrote, as its manifest says and its files are.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FoundArchive {
+    pub volume: String,
+    pub backed_up_at: zendiloos_kernel::Timestamp,
+    pub written: WrittenBackup,
+}
+
+/// What a scan found, and the files it refused with why.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ScannedArchives {
+    pub found: Vec<FoundArchive>,
+    /// Path in the share, and why.
+    pub refused: Vec<(String, String)>,
 }
 
 /// A run of a backup as it starts.
@@ -475,6 +505,19 @@ pub trait BackupRepository: Send + Sync {
 
     /// Runs of the plan are due from `at` on.
     async fn ran(&self, volume: &str, at: zendiloos_kernel::Timestamp) -> Result<(), PortError>;
+
+    /// Pauses the volume's plan, or resumes it with runs due from `at` on.
+    async fn pause_plan(
+        &self,
+        volume: &str,
+        paused: bool,
+        at: zendiloos_kernel::Timestamp,
+    ) -> Result<(), PortError>;
+
+    /// Records a backup found again in a folder of share `share_id`, as a
+    /// run that succeeded, of no plan; false if a run of that archive is
+    /// recorded already.
+    async fn import(&self, share_id: i64, found: &FoundArchive) -> Result<bool, PortError>;
 
     async fn start(&self, backup: &NewBackup) -> Result<i64, PortError>;
 

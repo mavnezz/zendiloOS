@@ -183,6 +183,10 @@ pub struct BackupPlan {
     pub stop_containers: bool,
     /// When it was made or changed, or last ran: runs are due from then.
     pub since: Timestamp,
+    /// Its volume was gone when a run was due: it runs no more until an
+    /// administrator resumes it (or sets it anew) once a volume of the name
+    /// is there again.
+    pub paused: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -235,9 +239,9 @@ impl BackupPlan {
     }
 
     /// Whether it should back up at `now`, with the host's clock `offsets`
-    /// ahead of UTC.
+    /// ahead of UTC; never while paused.
     pub fn is_due(&self, now: Timestamp, offsets: UtcOffsets<'_>) -> bool {
-        self.schedule.latest(now, offsets) > self.since
+        !self.paused && self.schedule.latest(now, offsets) > self.since
     }
 
     /// Whether it was noted as made or run later than `now`: the clock was
@@ -298,6 +302,9 @@ pub struct Backup {
     pub labels: BTreeMap<String, String>,
     /// Who started it; none for the schedule.
     pub by: Option<String>,
+    /// Found again in a folder and recorded, of no plan: retention never
+    /// removes it.
+    pub imported: bool,
 }
 
 /// A container a backup or restore of `volume` stopped, not started again
@@ -320,9 +327,10 @@ impl Backup {
 
 /// The archives retention removes: those of runs that succeeded beyond the
 /// newest `keep`. Newest as recorded, not by their clock: a run while the
-/// clock was ahead never outlives the one just written.
+/// clock was ahead never outlives the one just written. Backups found again
+/// in a folder belong to no plan: never removed, nor counted.
 pub fn beyond(backups: &[Backup], keep: u32) -> Vec<&Backup> {
-    let mut kept: Vec<&Backup> = backups.iter().filter(|b| b.written().is_some()).collect();
+    let mut kept: Vec<&Backup> = backups.iter().filter(|b| b.written().is_some() && !b.imported).collect();
     kept.sort_by_key(|b| std::cmp::Reverse(b.id));
     kept.into_iter().skip(keep as usize).collect()
 }
@@ -367,6 +375,7 @@ mod tests {
             keep: DEFAULT_KEEP,
             stop_containers: true,
             since: at(since),
+            paused: false,
         }
     }
 
@@ -384,6 +393,8 @@ mod tests {
         assert_eq!(ran.schedule.next(at(10 * HOUR), &|_| 0), at(DAY + 3 * HOUR));
         assert_eq!(ran.schedule.next(at(2 * HOUR), &|_| 0), at(3 * HOUR));
         assert_eq!(ran.schedule.next(at(3 * HOUR), &|_| 0), at(DAY + 3 * HOUR), "after, not at");
+        let paused = BackupPlan { paused: true, ..ran };
+        assert!(!paused.is_due(at(DAY + 3 * HOUR), &|_| 0), "never while paused");
     }
 
     #[test]
@@ -470,6 +481,7 @@ mod tests {
             driver: "local".into(),
             labels: BTreeMap::new(),
             by: None,
+            imported: false,
         }
     }
 
@@ -506,6 +518,13 @@ mod tests {
             (1..=12).map(|n| run(n, n * HOUR, BackupOutcome::Failed("x".into()))).collect();
         let stale: Vec<i64> = stale_failures(&failures).iter().map(|b| b.id).collect();
         assert_eq!(stale, [2, 1]);
+        // Found again in a folder: of no plan, never removed nor counted.
+        let mut found = backups.clone();
+        for old in found.iter_mut().filter(|b| b.id <= 2) {
+            old.imported = true;
+        }
+        let gone: Vec<i64> = beyond(&found, 6).iter().map(|b| b.id).collect();
+        assert_eq!(gone, [3], "seven recorded by the plan, six kept");
     }
 
     #[test]

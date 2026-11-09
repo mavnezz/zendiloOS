@@ -32,6 +32,7 @@ fn plan(frequency: BackupFrequency, since: Timestamp) -> BackupPlan {
         keep: 7,
         stop_containers: true,
         since,
+        paused: false,
     }
 }
 
@@ -138,6 +139,7 @@ fn written(id: i64, started: Timestamp) -> Backup {
         driver: "local".into(),
         labels: BTreeMap::new(),
         by: None,
+        imported: false,
     }
 }
 

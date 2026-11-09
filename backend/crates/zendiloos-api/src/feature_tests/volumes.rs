@@ -1,5 +1,7 @@
 //! Docker's volumes through the API: listed with who uses them, removed,
-//! backed up on a plan or at once, and restored, with the refusals.
+//! backed up on a plan or at once, and restored, with the refusals; their
+//! backups as a whole, also of volumes deleted, and backups found again in
+//! a folder.
 
 use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
@@ -207,9 +209,12 @@ async fn a_volume_is_backed_up_at_once_and_restored() {
 async fn volumes_are_for_those_who_manage_containers() {
     let h = Harness::new();
     let viewer = h.sign_in("bob", Role::ReadOnly).await;
-    for path in
-        ["/api/v1/docker/volumes", "/api/v1/docker/volumes/sizes", "/api/v1/docker/volumes/x1/backups"]
-    {
+    for path in [
+        "/api/v1/docker/volumes",
+        "/api/v1/docker/volumes/sizes",
+        "/api/v1/docker/volumes/x1/backups",
+        "/api/v1/docker/backups",
+    ] {
         assert_problem(
             &h.send(empty(with_cookie(get(path), &viewer))).await,
             StatusCode::FORBIDDEN,
@@ -222,8 +227,153 @@ async fn volumes_are_for_those_who_manage_containers() {
         (Method::PUT, "/api/v1/docker/volumes/x1/backup-plan", plan()),
         (Method::POST, "/api/v1/docker/volumes/x1/backups", json!({})),
         (Method::POST, "/api/v1/docker/backups/1/restore", json!({ "target": "own_name" })),
+        (Method::DELETE, "/api/v1/docker/backups/1", json!({})),
+        (Method::POST, "/api/v1/docker/volumes/x1/backup-plan/resume", json!({})),
+        (Method::POST, "/api/v1/docker/backups/import", json!({ "share_id": 1, "folder": "" })),
     ] {
         let reply = h.send(json(with_csrf(changing(method, path), &viewer), body)).await;
         assert_problem(&reply, StatusCode::FORBIDDEN, "forbidden");
     }
+}
+
+#[tokio::test]
+async fn the_backups_of_a_deleted_volume_are_listed_restored_and_removed() {
+    let h = Harness::new();
+    let admin = admin(&h).await;
+    h.send(json(
+        with_csrf(changing(Method::PUT, "/api/v1/docker/volumes/orphan/backup-plan"), &admin),
+        plan(),
+    ))
+    .await;
+    let started = h.send(empty(with_csrf(post("/api/v1/docker/volumes/orphan/backups"), &admin))).await;
+    assert_eq!(ended(&h, &started.body["id"]).await.state, zendiloos_jobs::JobState::Succeeded);
+    let removed =
+        h.send(empty(with_csrf(changing(Method::DELETE, "/api/v1/docker/volumes/orphan"), &admin))).await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{:?}", removed.body);
+
+    let groups = h.send(empty(with_cookie(get("/api/v1/docker/backups"), &admin))).await;
+    assert_eq!(groups.status, StatusCode::OK, "{:?}", groups.body);
+    let orphan = &groups.body[0];
+    assert_eq!(
+        (orphan["volume"].clone(), orphan["exists"].clone(), orphan["plan"].clone()),
+        (json!("orphan"), json!(false), Value::Null),
+        "removed in zendiloOS, with its plan"
+    );
+    let backup = &orphan["backups"][0];
+    assert_eq!((backup["state"].clone(), backup["imported"].clone()), (json!("succeeded"), json!(false)));
+    let id = backup["id"].as_i64().unwrap();
+
+    let restored = h
+        .send(json(
+            with_csrf(post(&format!("/api/v1/docker/backups/{id}/restore")), &admin),
+            json!({ "target": "own_name" }),
+        ))
+        .await;
+    assert_eq!(restored.status, StatusCode::ACCEPTED, "{:?}", restored.body);
+    assert_eq!(ended(&h, &restored.body["id"]).await.state, zendiloos_jobs::JobState::Succeeded);
+    let groups = h.send(empty(with_cookie(get("/api/v1/docker/backups"), &admin))).await;
+    assert_eq!(groups.body[0]["exists"], true, "made again");
+
+    let path = format!("/api/v1/docker/backups/{id}");
+    let gone = h.send(empty(with_csrf(changing(Method::DELETE, &path), &admin))).await;
+    assert_eq!(gone.status, StatusCode::NO_CONTENT, "{:?}", gone.body);
+    assert!(h.archiver.calls().iter().any(|call| call.starts_with("remove docker/backups/orphan/")));
+    let again = h.send(empty(with_csrf(changing(Method::DELETE, &path), &admin))).await;
+    assert_problem(&again, StatusCode::NOT_FOUND, "not_found");
+    let groups = h.send(empty(with_cookie(get("/api/v1/docker/backups"), &admin))).await;
+    assert_eq!(groups.body, json!([]));
+}
+
+#[tokio::test]
+async fn a_plan_is_resumed_only_for_a_volume_that_is_there() {
+    let h = Harness::new();
+    let admin = admin(&h).await;
+    let resume = |volume: &str| {
+        let path = format!("/api/v1/docker/volumes/{volume}/backup-plan/resume");
+        h.send(empty(with_csrf(post(&path), &admin)))
+    };
+    assert_problem(&resume("stack_db").await, StatusCode::NOT_FOUND, "not_found");
+    h.send(json(
+        with_csrf(changing(Method::PUT, "/api/v1/docker/volumes/stack_db/backup-plan"), &admin),
+        plan(),
+    ))
+    .await;
+    let resumed = resume("stack_db").await;
+    assert_eq!(resumed.status, StatusCode::OK, "{:?}", resumed.body);
+    assert_eq!(resumed.body["paused"], false);
+    h.engine.volumes.lock().unwrap().retain(|volume| volume.name != "stack_db");
+    let gone = resume("stack_db").await;
+    assert_problem(&gone, StatusCode::CONFLICT, "refused");
+    let groups = h.send(empty(with_cookie(get("/api/v1/docker/backups"), &admin))).await;
+    let group = &groups.body[0];
+    assert_eq!(
+        (group["volume"].clone(), group["exists"].clone(), group["plan"]["paused"].clone()),
+        (json!("stack_db"), json!(false), json!(false))
+    );
+}
+
+#[tokio::test]
+async fn backups_found_again_in_a_folder_are_imported_in_a_job() {
+    use zendiloos_containers::application::ports::{FoundArchive, ScannedArchives};
+    use zendiloos_containers::domain::{BackupFile, WrittenBackup};
+
+    let h = Harness::new();
+    let admin = admin(&h).await;
+    let file = |path: &str, inode: u64| BackupFile {
+        path: path.into(),
+        bytes: 10,
+        device: 1,
+        inode,
+        modified: Some(1),
+    };
+    *h.archiver.found.lock().unwrap() = ScannedArchives {
+        found: vec![FoundArchive {
+            volume: "lost".into(),
+            backed_up_at: zendiloos_kernel::Timestamp::from_unix_seconds(1_793_000_000),
+            written: WrittenBackup {
+                archive: file("old/lost/lost-20261027-030000.tar.zst", 5),
+                manifest: file("old/lost/lost-20261027-030000.json", 6),
+                sha256: "ef".repeat(32),
+                data_bytes: 100,
+                entries: Some(2),
+                manifest_json: r#"{"volume":"lost","driver":"local","labels":{}}"#.into(),
+            },
+        }],
+        refused: vec![(
+            "old/lost/lost-20261026-030000.tar.zst".into(),
+            "the archive: writable by others".into(),
+        )],
+    };
+    let import = |body: Value| h.send(json(with_csrf(post("/api/v1/docker/backups/import"), &admin), body));
+
+    let started = import(json!({ "share_id": 1, "folder": "old" })).await;
+    assert_eq!(started.status, StatusCode::ACCEPTED, "{:?}", started.body);
+    assert_eq!(started.body["kind"], "containers.volume_import");
+    let job = ended(&h, &started.body["id"]).await;
+    assert_eq!(job.state, zendiloos_jobs::JobState::Succeeded);
+    assert!(
+        job.output.contains(
+            &"Refused old/lost/lost-20261026-030000.tar.zst: the archive: writable by others".to_owned()
+        ),
+        "{:?}",
+        job.output
+    );
+    let groups = h.send(empty(with_cookie(get("/api/v1/docker/backups"), &admin))).await;
+    let lost = groups.body.as_array().unwrap().iter().find(|group| group["volume"] == "lost").unwrap();
+    assert_eq!((lost["exists"].clone(), lost["plan"].clone()), (json!(false), Value::Null));
+    assert_eq!(
+        (lost["backups"][0]["imported"].clone(), lost["backups"][0]["started_by"].clone()),
+        (json!(true), Value::Null)
+    );
+
+    assert_problem(
+        &import(json!({ "share_id": 2, "folder": "" })).await,
+        StatusCode::FORBIDDEN,
+        "share_denied",
+    );
+    assert_problem(
+        &import(json!({ "share_id": 1, "folder": "a/../b" })).await,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "invalid_input",
+    );
 }

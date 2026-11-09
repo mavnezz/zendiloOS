@@ -5,6 +5,9 @@ type Translate = (key: string, values?: Record<string, unknown>) => string
 /** The jobs that work on a volume. */
 const VOLUME_JOBS = ['containers.volume_backup', 'containers.volume_restore']
 
+/** The job that records the backups found in a folder. */
+export const IMPORT_JOB = 'containers.volume_import'
+
 /** An hour of the day as the plans show it: `03:00`. */
 export function hourText(hour: number): string {
   return `${String(hour).padStart(2, '0')}:00`
@@ -36,6 +39,13 @@ export function volumeJob(jobs: readonly Job[], volume: string): Job | undefined
   )
 }
 
+/** Whether any backup, restore or import runs. */
+export function backupWorkRuns(jobs: readonly Job[]): boolean {
+  return jobs.some(
+    (job) => job.state === 'running' && (VOLUME_JOBS.includes(job.kind) || job.kind === IMPORT_JOB),
+  )
+}
+
 /** Whether a volume matches what was typed into the search: its name or project. */
 export function matches(volume: DockerVolume, term: string): boolean {
   const wanted = term.trim().toLowerCase()
@@ -43,6 +53,19 @@ export function matches(volume: DockerVolume, term: string): boolean {
     !wanted ||
     volume.name.toLowerCase().includes(wanted) ||
     (volume.project ?? '').toLowerCase().includes(wanted)
+  )
+}
+
+/** The backup groups whose volume or archives match what was typed into the search. */
+export function groupMatches(
+  group: { volume: string; backups: readonly { archive?: string | null }[] },
+  term: string,
+): boolean {
+  const wanted = term.trim().toLowerCase()
+  return (
+    !wanted ||
+    group.volume.toLowerCase().includes(wanted) ||
+    group.backups.some((backup) => (backup.archive ?? '').toLowerCase().includes(wanted))
   )
 }
 

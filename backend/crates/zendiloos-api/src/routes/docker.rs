@@ -91,6 +91,9 @@ impl From<ContainersError> for ApiError {
             ContainersError::Held(names) => {
                 rejected(StatusCode::CONFLICT, "containers_held", Some(names.join(", ")))
             }
+            ContainersError::PlanPaused(volume) => {
+                rejected(StatusCode::CONFLICT, "plan_paused", Some(volume))
+            }
             ContainersError::Port(e) => ApiError::internal(e),
         }
     }

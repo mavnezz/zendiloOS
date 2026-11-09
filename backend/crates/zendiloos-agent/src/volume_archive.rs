@@ -47,7 +47,9 @@ use rustix::fs::{
 use rustix::io::Errno;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use zendiloos_agent_proto::{ArchiveDigest, BackupStem, SharePath, VolumeName, WrittenFile};
+use zendiloos_agent_proto::{
+    ArchiveDigest, BackupStem, FoundBackup, RefusedBackupFile, SharePath, VolumeName, WrittenFile,
+};
 
 /// Deepest nesting of folders backed up or restored.
 const MAX_DEPTH: usize = 1024;
@@ -146,6 +148,10 @@ pub(crate) struct Manifest {
     pub zendiloos_version: String,
     pub archive: String,
     pub sha256: String,
+    /// The archive's entries, for a restore to bound itself by; missing in
+    /// manifests written before they were counted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entries: Option<u64>,
 }
 
 /// What the system agent asks of a restore's unit.
@@ -933,6 +939,7 @@ pub(crate) fn back_up(
         zendiloos_version: crate::VERSION.to_owned(),
         archive: archive_name.clone(),
         sha256: written.sha256.clone(),
+        entries: Some(written.entries),
     };
     let manifest_json =
         serde_json::to_string_pretty(&manifest).map_err(|e| failed("the manifest", e))? + "\n";
@@ -981,18 +988,204 @@ fn open_archive(share: BorrowedFd<'_>, path: &SharePath) -> Result<(File, u64), 
     if kind(&stat) != FileType::RegularFile {
         return Err(refused(format!("{} is no file", path.as_str())));
     }
-    // Others could change it between the checks and the extraction. The
-    // group's bits are the ACL mask where it has one: without write in
-    // them, no entry of its ACL may write either.
-    if stat.st_uid != rustix::process::geteuid().as_raw() || stat.st_mode & 0o022 != 0 {
+    // Others could change it between the checks and the extraction.
+    if let Err(why) = root_only(&stat) {
         return Err(refused(format!(
-            "{} may be written by others than zendiloOS (mode {:o}), so it could have been changed; \
-             it is not restored",
+            "{} may be written by others than zendiloOS ({why}, mode {:o}), so it could have been \
+             changed; it is not restored",
             path.as_str(),
             stat.st_mode & 0o7777
         )));
     }
     Ok((File::from(file), u64::try_from(stat.st_size).unwrap_or(0)))
+}
+
+/// Whether only root (the account the units run as) may write a file: it
+/// is its owner's, and neither its group nor others may write. Where it has
+/// an ACL, the group's bits are the ACL's mask: without write in them, no
+/// entry of the ACL may write either.
+fn root_only(stat: &Stat) -> Result<(), &'static str> {
+    if stat.st_uid != rustix::process::geteuid().as_raw() {
+        return Err("not root's");
+    }
+    if stat.st_mode & 0o022 != 0 {
+        return Err("writable by others");
+    }
+    Ok(())
+}
+
+/// What the system agent asks of the unit that looks for backups in a
+/// folder of a share, to record them again.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ScanJob {
+    pub share: PathBuf,
+    pub folder: SharePath,
+    /// Archives recorded already: passed over, not hashed.
+    pub known: Vec<SharePath>,
+}
+
+/// What a scan found, and what it refused.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Scanned {
+    pub found: Vec<FoundBackup>,
+    pub refused: Vec<RefusedBackupFile>,
+}
+
+/// Archives a scan looks at, at most.
+const MAX_SCANNED: usize = 2000;
+/// Folders in the folder scanned it looks into, at most.
+const MAX_SCANNED_FOLDERS: usize = 2000;
+/// What a manifest may take up.
+const MAX_MANIFEST: u64 = 64 * 1024;
+
+/// The volume a backup's archive is of, by its name
+/// (`<volume>-YYYYMMDD-HHMMSS.tar.zst`).
+fn archive_volume(name: &str) -> Option<&str> {
+    let stem = name.strip_suffix(".tar.zst")?;
+    let at = stem.len().checked_sub(16)?;
+    let (volume, time) = stem.split_at(at);
+    let time = time.as_bytes();
+    let digits = |range: std::ops::Range<usize>| time[range].iter().all(u8::is_ascii_digit);
+    (time[0] == b'-' && time[9] == b'-' && digits(1..9) && digits(10..16)).then_some(volume)
+}
+
+/// A file of `folder` opened for reading: regular, not through a link,
+/// writable by root only.
+fn open_root_only(folder: BorrowedFd<'_>, name: &str) -> Result<(File, Stat), String> {
+    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::NOCTTY | OFlags::CLOEXEC;
+    let file = openat(folder, name, flags, Mode::empty()).map_err(|error| match error {
+        Errno::NOENT => "not there".to_owned(),
+        Errno::LOOP => "a link".to_owned(),
+        other => other.to_string(),
+    })?;
+    let stat = fstat(&file).map_err(|e| e.to_string())?;
+    if kind(&stat) != FileType::RegularFile {
+        return Err("no file".to_owned());
+    }
+    root_only(&stat).map_err(str::to_owned)?;
+    Ok((File::from(file), stat))
+}
+
+fn found_file(path: SharePath, stat: &Stat) -> WrittenFile {
+    let (device, inode) = identity(stat);
+    WrittenFile {
+        path,
+        bytes: u64::try_from(stat.st_size).unwrap_or(0),
+        device,
+        inode,
+        modified: modified(stat),
+    }
+}
+
+/// One archive `name` of `folder` and its manifest beside it, checked and
+/// hashed; why not, if not.
+fn scan_one(
+    folder: BorrowedFd<'_>,
+    at: &SharePath,
+    name: &str,
+    progress: &mut Progress<'_>,
+) -> Result<FoundBackup, String> {
+    let volume = archive_volume(name).ok_or("not named as a backup is: <volume>-YYYYMMDD-HHMMSS.tar.zst")?;
+    let volume = VolumeName::parse(volume).map_err(|_| "not named after a volume".to_owned())?;
+    let path = |name: &str| at.join(name).map_err(|_| "its path is too long".to_owned());
+    let (mut archive, archive_stat) =
+        open_root_only(folder, name).map_err(|why| format!("the archive: {why}"))?;
+    let manifest_name = format!("{}.json", name.trim_end_matches(".tar.zst"));
+    let (manifest_file, manifest_stat) =
+        open_root_only(folder, &manifest_name).map_err(|why| match why.as_str() {
+            "not there" => "no manifest beside it".to_owned(),
+            other => format!("its manifest: {other}"),
+        })?;
+    let mut manifest_json = String::new();
+    manifest_file
+        .take(MAX_MANIFEST + 1)
+        .read_to_string(&mut manifest_json)
+        .map_err(|e| format!("its manifest cannot be read: {e}"))?;
+    if manifest_json.len() as u64 > MAX_MANIFEST {
+        return Err("its manifest is too large".to_owned());
+    }
+    let manifest: Manifest =
+        serde_json::from_str(&manifest_json).map_err(|e| format!("its manifest cannot be read: {e}"))?;
+    if manifest.format != MANIFEST_FORMAT || manifest.volume != volume.as_str() || manifest.archive != name {
+        return Err("its manifest is of another archive".to_owned());
+    }
+    let sha256 =
+        ArchiveDigest::parse(&manifest.sha256).map_err(|_| "its manifest names no SHA-256".to_owned())?;
+    let mut hashing = Hashing::new(io::sink());
+    io::copy(&mut Told { inner: &mut archive, progress }, &mut hashing)
+        .map_err(|e| format!("the archive: {e}"))?;
+    if hashing.digest() != sha256.as_str() {
+        return Err("its SHA-256 is not the one its manifest names".to_owned());
+    }
+    Ok(FoundBackup {
+        volume,
+        archive: found_file(path(name)?, &archive_stat),
+        manifest: found_file(path(&manifest_name)?, &manifest_stat),
+        sha256,
+        data_bytes: manifest.size_bytes,
+        entries: manifest.entries,
+        backed_up_at: manifest.backed_up_at,
+        manifest_json,
+    })
+}
+
+/// Looks for backups in `job.folder` of the share and in the folders in it
+/// (a plan's folder holds one per volume), never through a link or onto
+/// another file system: archive and manifest pairs, both writable by root
+/// only, the archive's SHA-256 the manifest's. Those `job.known` are passed
+/// over; others are refused with why. `report` hears how far the hashing
+/// got.
+pub(crate) fn scan(job: &ScanJob, report: &mut dyn FnMut(u8)) -> Result<Scanned, ArchiveError> {
+    let share = open_folder(&job.share, OFlags::PATH)?;
+    let top = beneath(share.as_fd(), job.folder.as_str().as_bytes(), OFlags::PATH | OFlags::DIRECTORY)
+        .map_err(|error| match error {
+            Errno::NOENT => refused(format!("{} is not there", job.folder.as_str())),
+            other => link_on_the_way(job.folder.as_str(), other),
+        })?;
+    let mut folders = vec![(job.folder.clone(), top)];
+    let inside = names_in(folders[0].1.as_fd(), |name| !name.starts_with(b"."))
+        .map_err(|e| failed(job.folder.as_str(), e))?;
+    for name in inside.into_iter().take(MAX_SCANNED_FOLDERS) {
+        let Ok(text) = name.to_str() else { continue };
+        let Ok(path) = job.folder.join(text) else { continue };
+        if let Ok(folder) = beneath(folders[0].1.as_fd(), name.as_bytes(), OFlags::PATH | OFlags::DIRECTORY) {
+            folders.push((path, folder));
+        }
+    }
+    // The archives, and what hashing them takes.
+    let mut archives = Vec::new();
+    for (index, (path, folder)) in folders.iter().enumerate() {
+        let names = names_in(folder.as_fd(), |name| name.ends_with(b".tar.zst") && !name.starts_with(b"."))
+            .map_err(|e| failed(path.as_str(), e))?;
+        for name in names {
+            let Ok(text) = name.into_string() else { continue };
+            let Ok(archive) = path.join(&text) else { continue };
+            if !job.known.contains(&archive) {
+                archives.push((index, text, archive));
+            }
+        }
+    }
+    archives.truncate(MAX_SCANNED);
+    let total = archives
+        .iter()
+        .filter_map(|(index, name, _)| {
+            statat(&folders[*index].1, name.as_str(), AtFlags::SYMLINK_NOFOLLOW).ok()
+        })
+        .map(|stat| u64::try_from(stat.st_size).unwrap_or(0))
+        .sum();
+    let mut progress = Progress::new(total, report);
+    let mut scanned = Scanned { found: Vec::new(), refused: Vec::new() };
+    for (index, name, archive) in archives {
+        let (path, folder) = &folders[index];
+        match scan_one(folder.as_fd(), path, &name, &mut progress) {
+            Ok(found) => scanned.found.push(found),
+            Err(reason) => scanned.refused.push(RefusedBackupFile { path: archive, reason }),
+        }
+    }
+    // What was refused before it was hashed: done all the same.
+    progress.add(progress.total.saturating_sub(progress.done));
+    Ok(scanned)
 }
 
 /// The SHA-256 of what `file` holds from its start.
@@ -1598,10 +1791,24 @@ pub(crate) fn remove_backup(job: &RemoveJob) -> Result<bool, ArchiveError> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum UnitLine {
-    Progress { step: String, percent: u8 },
+    Progress {
+        step: String,
+        percent: u8,
+    },
     Done(serde_json::Value),
-    Failed { message: String, refused: bool },
+    Failed {
+        message: String,
+        refused: bool,
+    },
+    /// A piece of what the unit did, as JSON text: an answer too long for
+    /// one line comes in pieces, then `Done` (whose value then counts for
+    /// nothing).
+    Part(String),
 }
+
+/// What a line of a unit carries at most of an answer: lines are cut at
+/// 4096 bytes, and the JSON in a JSON string may take up to twice as much.
+const PART_BYTES: usize = 1500;
 
 /// A job as it travels on a unit's command line: hex digits of its JSON,
 /// which neither systemd nor a shell reads anything into.
@@ -1630,6 +1837,8 @@ pub enum VolumeJob {
     /// What restores left beside the volumes' data, removed as the agent
     /// starts.
     Sweep,
+    /// Backups looked for in a folder, to record them again.
+    Scan,
 }
 
 impl VolumeJob {
@@ -1641,6 +1850,7 @@ impl VolumeJob {
             Self::Swap => "swap-volume",
             Self::RemoveBackup => "remove-volume-backup",
             Self::Sweep => "sweep-volumes",
+            Self::Scan => "scan-volume-backups",
         }
     }
 
@@ -1652,6 +1862,7 @@ impl VolumeJob {
             Self::Swap => "swap",
             Self::RemoveBackup => "remove",
             Self::Sweep => "sweep",
+            Self::Scan => "scan",
         }
     }
 }
@@ -1686,11 +1897,30 @@ pub fn run_volume_job(kind: VolumeJob, hex: &str, now: i64, out: &mut dyn Write)
             VolumeJob::Sweep => decode::<SweepJob>(hex).map_err(ArchiveError::Refused).and_then(|job| {
                 sweep(&job).and_then(|done| serde_json::to_value(done).map_err(|e| failed("the result", e)))
             }),
+            VolumeJob::Scan => decode::<ScanJob>(hex).map_err(ArchiveError::Refused).and_then(|job| {
+                scan(&job, &mut |percent| progress("scanning", percent))
+                    .and_then(|done| serde_json::to_value(done).map_err(|e| failed("the result", e)))
+            }),
         }
     };
     match outcome {
         Ok(value) => {
-            say(out, &UnitLine::Done(value));
+            let text = value.to_string();
+            if text.len() <= PART_BYTES {
+                say(out, &UnitLine::Done(value));
+            } else {
+                let mut rest = text.as_str();
+                while !rest.is_empty() {
+                    let mut at = PART_BYTES.min(rest.len());
+                    while !rest.is_char_boundary(at) {
+                        at -= 1;
+                    }
+                    let (part, after) = rest.split_at(at);
+                    say(out, &UnitLine::Part(part.to_owned()));
+                    rest = after;
+                }
+                say(out, &UnitLine::Done(serde_json::Value::Null));
+            }
             true
         }
         Err(error) => {

@@ -3,6 +3,7 @@ import {
   Box,
   Boxes,
   Database,
+  DatabaseBackup,
   Disc3,
   LayoutDashboard,
   Network,
@@ -17,6 +18,7 @@ import { AppFrame, type NavGroup } from '@/shared/ui/frame'
 
 import { OPEN_CONTAINER } from '../lib/navigation'
 import ActivitySection from './ActivitySection.vue'
+import BackupsSection from './BackupsSection.vue'
 import ContainerDetail from './ContainerDetail.vue'
 import ContainersSection from './ContainersSection.vue'
 import ImagesSection from './ImagesSection.vue'
@@ -35,6 +37,7 @@ const SECTIONS = [
   'images',
   'networks',
   'volumes',
+  'backups',
   'activity',
   'management',
 ] as const
@@ -51,6 +54,7 @@ const icons = {
   images: Disc3,
   networks: Network,
   volumes: Database,
+  backups: DatabaseBackup,
   activity: ScrollText,
   management: Settings2,
 }
@@ -189,6 +193,7 @@ watch(
     <ImagesSection v-else-if="section === 'images'" />
     <NetworksSection v-else-if="section === 'networks'" />
     <VolumesSection v-else-if="section === 'volumes'" />
+    <BackupsSection v-else-if="section === 'backups'" />
     <ActivitySection v-else-if="section === 'activity'" />
     <ManagementSection v-else-if="section === 'management'" />
   </AppFrame>

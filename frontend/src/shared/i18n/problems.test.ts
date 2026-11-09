@@ -30,6 +30,7 @@ const CODES = [
   'volume_in_use',
   'volume_busy',
   'containers_held',
+  'plan_paused',
 ]
 
 describe('problem messages', () => {

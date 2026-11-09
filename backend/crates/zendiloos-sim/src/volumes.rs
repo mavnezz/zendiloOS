@@ -10,7 +10,9 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use zendiloos_agent_proto::{ErrorCode, Request, Response, ShareLocation, SharePath, WrittenFile};
+use zendiloos_agent_proto::{
+    ErrorCode, FoundBackup, RefusedBackupFile, Request, Response, ShareLocation, SharePath, WrittenFile,
+};
 
 #[derive(Debug, Clone)]
 pub(crate) struct SimVolume {
@@ -222,8 +224,72 @@ pub(crate) fn handle(
         }
         // Nothing of a volume's work outlives its request here.
         Request::EndVolumeWork { .. } => Some(Response::VolumeWorkEnded { stopped: false }),
+        Request::ScanVolumeBackups { share, folder, known } => {
+            let (found, refused) = match share_folder(files, share) {
+                Some(root) => scan(&root, folder, known),
+                None => (Vec::new(), Vec::new()),
+            };
+            Some(Response::VolumeBackupsScanned { found, refused })
+        }
         _ => None,
     }
+}
+
+/// The simulated backups in `folder` of a share and the folders in it: a
+/// manifest beside each archive, naming its SHA-256.
+fn scan(root: &Path, folder: &SharePath, known: &[SharePath]) -> (Vec<FoundBackup>, Vec<RefusedBackupFile>) {
+    let (mut found, mut refused) = (Vec::new(), Vec::new());
+    let mut folders = vec![folder.clone()];
+    if let Ok(entries) = std::fs::read_dir(root.join(folder.as_str())) {
+        for entry in entries.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_dir())) {
+            if let Ok(inner) = folder.join(&entry.file_name().to_string_lossy()) {
+                folders.push(inner);
+            }
+        }
+    }
+    for at in folders {
+        let Ok(entries) = std::fs::read_dir(root.join(at.as_str())) else { continue };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Some(stem) = name.strip_suffix(".tar.zst") else { continue };
+            let Ok(archive) = at.join(&name) else { continue };
+            if known.contains(&archive) {
+                continue;
+            }
+            let Ok(manifest) = at.join(&format!("{stem}.json")) else { continue };
+            let read = std::fs::read_to_string(root.join(manifest.as_str())).ok();
+            let value: Value =
+                read.as_deref().and_then(|text| serde_json::from_str(text).ok()).unwrap_or_default();
+            let bytes = std::fs::read(root.join(archive.as_str())).unwrap_or_default();
+            let volume =
+                value["volume"].as_str().and_then(|v| zendiloos_agent_proto::VolumeName::parse(v).ok());
+            let sha256 = zendiloos_agent_proto::ArchiveDigest::parse(&digest(&bytes)).ok();
+            let files = (
+                written(&archive, &root.join(archive.as_str())),
+                written(&manifest, &root.join(manifest.as_str())),
+            );
+            match (volume, sha256, files, read) {
+                (Some(volume), Some(sha256), (Ok(archive), Ok(manifest)), Some(manifest_json))
+                    if value["sha256"].as_str() == Some(sha256.as_str()) =>
+                {
+                    found.push(FoundBackup {
+                        volume,
+                        archive,
+                        manifest,
+                        sha256,
+                        data_bytes: value["size_bytes"].as_u64().unwrap_or(0),
+                        entries: value["entries"].as_u64(),
+                        backed_up_at: value["backed_up_at"].as_i64().unwrap_or(0),
+                        manifest_json,
+                    });
+                }
+                _ => {
+                    refused.push(RefusedBackupFile { path: archive, reason: "no manifest beside it".into() })
+                }
+            }
+        }
+    }
+    (found, refused)
 }
 
 #[cfg(test)]
@@ -314,6 +380,14 @@ mod tests {
             bytes: file.bytes,
             modified: Some(file.modified),
         };
+        let scan = Request::ScanVolumeBackups {
+            share: share.clone(),
+            folder: SharePath::parse("docker").unwrap(),
+            known: vec![],
+        };
+        let Response::VolumeBackupsScanned { found, refused } = call(scan).await.unwrap() else { panic!() };
+        assert_eq!((found.len(), refused.len()), (1, 0));
+        assert_eq!(found[0].archive.path, archive.path);
         assert_eq!(call(remove(&manifest)).await.unwrap(), Response::BackupRemoved { removed: true });
         assert_eq!(call(remove(&manifest)).await.unwrap(), Response::BackupRemoved { removed: false });
         assert!(!folder.join("stack_cache-20261108-030000.json").exists());

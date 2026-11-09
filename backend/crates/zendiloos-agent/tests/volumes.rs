@@ -361,6 +361,41 @@ async fn what_a_restore_cut_off_left_beside_the_data_goes() {
     ));
 }
 
+/// The backups in a folder are found again through the agent, by a unit
+/// that reads only; those recorded already are passed over.
+#[tokio::test]
+async fn backups_in_a_folder_are_found_again_by_a_unit_that_only_reads() {
+    let host = Host::new(false);
+    let Response::VolumeBackedUp { archive, sha256, .. } = host.agent.execute(&backup("db")).await else {
+        panic!()
+    };
+    let scan = |known: Vec<SharePath>| Request::ScanVolumeBackups {
+        share: share(),
+        folder: SharePath::parse("docker").unwrap(),
+        known,
+    };
+
+    let answer = host.agent.execute(&scan(vec![])).await;
+    let Response::VolumeBackupsScanned { found, refused } = answer else { panic!("{answer:?}") };
+    assert!(refused.is_empty(), "{refused:?}");
+    assert_eq!(found.len(), 1);
+    assert_eq!(
+        (&found[0].archive.path, &found[0].sha256, found[0].volume.as_str()),
+        (&archive.path, &sha256, "db")
+    );
+    let unit = host.calls().into_iter().find(|call| call.contains(" scan-volume-backups ")).unwrap();
+    assert!(unit.contains("--unit=zendiloos-volume-scan-"), "{unit}");
+    assert!(!unit.contains("ReadWritePaths"), "it reads only: {unit}");
+    assert!(unit.contains("--property=CapabilityBoundingSet=CAP_DAC_READ_SEARCH "), "{unit}");
+
+    let Response::VolumeBackupsScanned { found, .. } =
+        host.agent.execute(&scan(vec![archive.path.clone()])).await
+    else {
+        panic!()
+    };
+    assert!(found.is_empty(), "recorded already");
+}
+
 /// A volume removed between the listing and the inspection is left out of
 /// the list, which does not fail.
 #[tokio::test]

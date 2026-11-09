@@ -630,6 +630,7 @@ const de: Messages = {
       images: 'Images',
       networks: 'Netzwerke',
       volumes: 'Volumes',
+      backups: 'Sicherungen',
       activity: 'Protokolle',
       management: 'Verwaltung',
     },
@@ -939,6 +940,9 @@ const de: Messages = {
       next: 'Nächste: {at}',
       lastFailed: 'Die letzte ist fehlgeschlagen',
       lastAt: 'Letzte: {at}',
+      paused: 'Pausiert: Das Volume fehlte, als eine Sicherung fällig war',
+      resume: 'Sicherungsplan fortsetzen',
+      resumed: 'Sicherungsplan fortgesetzt',
       none: 'Es gibt keine Volumes.',
       setUp: 'Sicherung einrichten',
       editPlan: 'Sicherungsplan',
@@ -948,7 +952,7 @@ const de: Messages = {
       remove: 'Löschen',
       removeTitle: 'Volume {name} löschen?',
       removeText:
-        'Das Volume und alle Daten darin werden gelöscht, sein Sicherungsplan endet. Seine Sicherungen bleiben.',
+        'Das Volume und alle Daten darin werden gelöscht, sein Sicherungsplan endet. Seine Sicherungen bleiben, unter Sicherungen.',
       started: 'Läuft im Hintergrund.',
       schedule: {
         daily: 'Täglich um {at}',
@@ -972,6 +976,7 @@ const de: Messages = {
         creating: 'Das Volume wird angelegt',
         verifying: 'Das Archiv wird geprüft',
         restoring: 'Wird wiederhergestellt',
+        scanning: 'Sicherungen werden gesucht',
       },
       plan: {
         title: '{name} sichern',
@@ -1033,6 +1038,52 @@ const de: Messages = {
           'Alles im Volume {name} wird durch die Sicherung vom {at} ersetzt. Was jetzt darin ist, geht verloren.',
       },
     },
+    backups: {
+      import: 'Aus einem Ordner importieren',
+      none: 'Es sind keine Sicherungen verzeichnet. Richten Sie unter Volumes einen Sicherungsplan ein oder importieren Sie Sicherungen aus einem Ordner.',
+      deleted: 'Gelöscht',
+      deletedHint:
+        'Ein Volume mit diesem Namen gibt es jetzt nicht. Wiederherstellen unter seinem eigenen Namen legt es neu an.',
+      noPlan: 'Kein Sicherungsplan',
+      paused: 'Pausiert',
+      pausedHint:
+        'Das Volume fehlte, als eine Sicherung fällig war; der Plan macht keine mehr, bis Sie ihn fortsetzen. Seine Sicherungen bleiben, bis Sie sie löschen.',
+      pausedGone:
+        'Sobald es wieder ein Volume mit diesem Namen gibt, können Sie den Plan fortsetzen.',
+      pausedBack:
+        'Es gibt wieder ein Volume mit diesem Namen. Setzen Sie den Plan fort, wenn es dasselbe ist: Seine neuen Sicherungen zählen dann zu denen, die der Plan aufbewahrt, und die ältesten von diesen werden gelöscht.',
+      resume: 'Plan fortsetzen',
+      resumed: 'Sicherungsplan fortgesetzt',
+      deletePlan: 'Plan löschen',
+      deletePlanTitle: 'Den Sicherungsplan von {name} löschen?',
+      deletePlanText: 'Es werden keine Sicherungen mehr gemacht. Die bisherigen bleiben.',
+      planDeleted: 'Sicherungsplan gelöscht',
+      imported: 'Importiert',
+      importedHint:
+        'In einem Ordner gefunden und verzeichnet; sie gehört zu keinem Plan, und keiner löscht sie.',
+      remove: 'Sicherung löschen',
+      removeTitle: 'Diese Sicherung von {name} löschen?',
+      removeText:
+        'Das Archiv vom {at} und sein Manifest werden aus dem freigegebenen Ordner gelöscht. Die Sicherung lässt sich danach nicht mehr wiederherstellen.',
+      removeFailedText: 'Der Eintrag dieses fehlgeschlagenen Laufs wird entfernt.',
+      removed: 'Sicherung gelöscht',
+      importDialog: {
+        title: 'Sicherungen importieren',
+        hint: 'Verzeichnet die Sicherungen von Volumes, die in einem Ordner liegen, etwa nachdem zendiloOS neu eingerichtet wurde, damit sie sich hier wiederherstellen lassen.',
+        folder: 'Ordner',
+        rules:
+          'Übernommen werden Archive namens <Volume>-JJJJMMTT-HHMMSS.tar.zst mit ihrem Manifest (.json) daneben, in diesem Ordner und den Ordnern darin: nur wenn niemand außer root sie ändern darf und nur wenn das Archiv das ist, das sein Manifest nennt. Schon verzeichnete Sicherungen werden übersprungen.',
+        noPlan:
+          'Importierte Sicherungen gehören zu keinem Sicherungsplan, also löscht keiner sie. Löschen Sie sie hier, sobald Sie sie nicht mehr brauchen.',
+        start: 'Importieren',
+        output: 'Was gefunden wurde',
+        waiting: 'Der Ordner wird durchsucht …',
+        running: 'Wird importiert …',
+        succeeded: 'Fertig. Abgelehnte Dateien stehen mit dem Grund dabei.',
+        failed: 'Der Import ist fehlgeschlagen.',
+        again: 'Einen weiteren Ordner importieren',
+      },
+    },
     activity: {
       refresh: 'Aktualisieren',
       outcome: 'Ergebnis',
@@ -1059,7 +1110,9 @@ const de: Messages = {
         backup_plan: 'Sicherungsplan festgelegt:',
         backup_plan_delete: 'Sicherungsplan beendet:',
         volume_backup: 'Volume gesichert:',
-        volume_backup_remove: 'Alte Sicherung gelöscht:',
+        volume_backup_remove: 'Sicherung gelöscht:',
+        backup_plan_resume: 'Sicherungsplan fortgesetzt:',
+        volume_backup_import: 'Sicherungen importiert aus:',
         volume_restore: 'Volume wiederhergestellt:',
         project_create: 'Projekt erstellt:',
         project_change: 'Compose-Datei geändert:',
@@ -2324,6 +2377,7 @@ const de: Messages = {
       containers_data_move: 'Docker-Daten umziehen',
       containers_volume_backup: 'Volume sichern',
       containers_volume_restore: 'Volume wiederherstellen',
+      containers_volume_import: 'Sicherungen importieren',
       apps_update: 'App aktualisieren',
       apps_uninstall: 'App entfernen',
       certificates_acme_install: 'ACME-Client installieren',
@@ -2923,6 +2977,8 @@ const de: Messages = {
     volume_in_use: 'Laufende Container nutzen das Volume',
     volume_busy:
       'Das Volume wird gerade gesichert oder wiederhergestellt; versuchen Sie es danach erneut.',
+    plan_paused:
+      'Der Sicherungsplan des Volumes ist pausiert, da das Volume fehlte, als eine Sicherung fällig war. Setzen Sie ihn zuerst fort.',
     containers_held:
       'Eine Sicherung oder Wiederherstellung eines Volumes hält diese Container angehalten, bis sie fertig ist; versuchen Sie es danach erneut',
     source_exists: 'Dieser Katalog ist schon da.',

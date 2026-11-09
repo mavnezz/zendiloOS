@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO docker_backup_plans\n                 (volume, share_id, folder, frequency, day, hour, keep, stop_containers, since, paused)\n             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\n             ON CONFLICT (volume) DO UPDATE SET\n                 share_id = excluded.share_id, folder = excluded.folder, frequency = excluded.frequency,\n                 day = excluded.day, hour = excluded.hour, keep = excluded.keep,\n                 stop_containers = excluded.stop_containers, since = excluded.since, paused = excluded.paused",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 10
+    },
+    "nullable": []
+  },
+  "hash": "feee146e4b7fceb76178c7d7ceb674cc14676c99ceb813fca68ecd143bec7e96"
+}

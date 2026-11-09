@@ -1555,7 +1555,8 @@ by `..`, which must be the folder it came from, and keeps only the names
 still to count. Counting has a place of its own in the agent, one at a
 time. `docker system df -v` would walk every volume without bounds, and
 cannot print JSON. A volume no container uses is removed (`docker volume
-rm`, without `--force`; its backup plan goes with it, its backups stay),
+rm`, without `--force`; its backup plan goes with it, its backups stay,
+on the Backups page),
 and all unused ones at once (`docker volume prune --all --force`, named
 ones too), each after a confirmation; pruning is refused while a volume is
 backed up or restored, or waits for its turn.
@@ -1583,6 +1584,19 @@ that was off at that hour backs up once as soon as it is on again
 ahead and is put right) counts from now on. Only local volumes without
 mount options (an NFS or bind volume's data is not in Docker's folder) are
 backed up.
+
+A plan whose volume is gone when a run is due (removed outside zendiloOS,
+e.g. by `docker compose down -v`) is paused (`paused`): no run, no failure
+told night after night, a line in the log; its recorded backups stay until
+they are removed. "Back up now" is refused while it is paused
+(`plan_paused`). A volume of the same name made again does not resume it:
+the administrator does (`POST /docker/volumes/{name}/backup-plan/resume`,
+refused while there is no such volume), or sets the plan anew, or deletes
+it. Resuming by itself would be the wrong guess as often as the right one:
+the new volume may be another app's, or empty, and the plan's retention
+counts its backups and the old ones alike, so a few nights of the new
+volume's backups would remove the last ones of the volume that was
+deleted. Runs are due from the resumption on.
 
 A run is a job, by hand ("Back up now") or on the schedule, and so is a
 restore. Each claims its volume when it is asked for (one at a time per
@@ -1621,8 +1635,45 @@ starts the containers once Docker is up. The run is recorded
 (`docker_backups`) with what it wrote, and a run that failed or could not
 start a container again is told (`docker_backup_failed`, in the routing
 group *Docker*). The audit log has `containers.backup_plan`,
-`containers.backup_plan_delete`, `containers.volume_backup`,
-`containers.volume_backup_remove` and `containers.volume_restore`.
+`containers.backup_plan_delete`, `containers.backup_plan_resume`,
+`containers.volume_backup`, `containers.volume_backup_remove` (by
+retention and by hand), `containers.volume_backup_import` and
+`containers.volume_restore`.
+
+**The Backups page** (`GET /docker/backups`) lists every volume with
+recorded backups or a plan, by name, also those gone (marked deleted), with
+its plan (paused or not) and its backups: size, time, result, who started
+it, whether it was imported. From there a backup is restored, also one of a
+volume deleted (under its own name, which makes it again, or into a volume
+that exists), and removed by hand (`DELETE /docker/backups/{id}`: archive
+and manifest, each while it is still the file written, and the record; of a
+run that failed, the record only), not while it runs nor while any backup
+or restore is under way, as one may be reading it.
+
+**Importing backups** (`POST /docker/backups/import`, a job,
+`containers.volume_import`) records the backups in a folder of a share the
+administrator may write and in the folders in it, for a database that lost
+them (zendiloOS set up anew, its database restored from before). The agent
+looks (`ScanVolumeBackups`, in a transient unit of its own with
+`CAP_DAC_READ_SEARCH` only and the system read only, at most 2000 folders
+and 2000 archives) at every `<volume>-YYYYMMDD-HHMMSS.tar.zst`, by
+descriptor beneath the share without following a link, and takes it only if
+the archive and the manifest beside it are regular files of root's that
+nobody else may write (no group or other write bit, so no ACL entry may
+either: the group's bits are the ACL's mask), the manifest names this
+archive and volume, and the archive's SHA-256, hashed as it is read, is the
+one the manifest names. What it refuses is listed on the job with why
+("the archive: writable by others", "no manifest beside it", "its SHA-256
+is not the one its manifest names", …); archives zendiloosd recorded
+already are passed over, before and after the agent looked. An imported
+backup is recorded as a run that succeeded, at the time its manifest
+names, of no plan (`imported`, no one started it): retention never removes
+it, and it does not count toward any plan's number; it goes when it is
+removed by hand. Its restore checks it as any other: by the SHA-256, data
+and entries recorded, with the driver and labels of its manifest as read
+at import. The agent's answers come in pieces of 1500 bytes
+(`{"part": …}`), as a unit's lines are cut at 4096, so neither a long list
+of findings nor a volume with long labels is cut short.
 
 The agent checks a backup itself (`BackUpVolume`): a local volume whose
 data lies in Docker's data root, as it inspects it, a share that is
