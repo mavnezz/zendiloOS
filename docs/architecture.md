@@ -415,7 +415,7 @@ simple to audit.
   `systemd-mount`, `busctl`, `timedatectl`, `lsblk`, `smartctl`, `zpool`,
   `zfs`, `sgdisk`, `wipefs`, `udevadm`, `umount`, `rmdir`, `rm`,
   `useradd`, `userdel`, `groupadd`, `groupdel`, `gpasswd`, `smbpasswd`,
-  `testparm`, `exportfs`, `setfacl`, `sshd`, `docker`, `dockerd`,
+  `testparm`, `exportfs`, `smbcontrol`, `sshd`, `docker`, `dockerd`,
   `setsid`, `openssl`, `nginx`, `nft`.
 - **Reads** of fixed files where no program is needed: `/proc/mdstat`, and
   DMI's `sys_vendor` and `product_name` (`/sys/class/dmi/id`), which name
@@ -484,7 +484,7 @@ Loopback, `veth`, `tun`/`tap` and Docker's bridges are left out.
 |---|---|---|
 | Device on the LAN without an account | log in, take over during initial setup | throttling, setup code (none on a machine installed from the ISO, whose setup is open to the own network only: **accepted**, as on other NAS systems, between installing and setting it up), no default password, TLS |
 | Someone who has an account's password (phished, reused elsewhere, seen) | sign in to the web interface as that account | two-factor sign-in per account (4.5): a code from an authenticator app, or a recovery code, after the password; codes throttled like passwords. **Accepted:** SMB and NFS keep the password alone, as they have no second factor; the codes guard the web interface, where accounts and the system are changed |
-| Signed-in user without admin rights | other users' files, privilege escalation | server-side permission checks, file access with the user's own kernel permissions |
+| Signed-in user without admin rights | other users' files, privilege escalation | server-side permission checks: a share's rules for every operation, in zendiloosd and Samba, the files agent confined beneath the share's root; in the personal folder file access with the user's own kernel permissions (4.4) |
 | Web page in the same browser | CSRF, WebSocket hijacking | `SameSite=Strict`, CSRF header, origin check including the WebSocket upgrade, strict CSP |
 | Compromised `zendiloosd` | root | the agent offers only validated domain operations, no generic execution; system disk protected. **Accepted limit:** an administrator may run any Compose project and give an app the Docker socket (4.9), and the agent carries that out as asked, so whoever controls `zendiloosd` controls Docker and with it the machine; an administrator's account is as good as root, as on other NAS systems |
 | Malicious container | host | Docker access only through agent policy (see 4.9) |
@@ -499,7 +499,9 @@ separate account.
   login, the second factor of the web login, preferences).
 - For every account the agent creates a Linux account: UID from 2000, group
   `zendiloos-users`, shell `nologin`, no home directory, locked Linux
-  password. Files on shares therefore belong to the right user.
+  password. What it writes in its personal folder belongs to it; in a
+  share, what is written takes the owner of the folder it lands in and the
+  group `zendiloos-files` (4.4).
 - UIDs and GIDs are never reused. The agent keeps the highest ID it ever
   handed out in `/etc/zendiloos/id-high-water` and passes the next one to
   `useradd`/`groupadd` explicitly: files and ACL entries keep the number,
@@ -629,9 +631,10 @@ TLS is rustls with ring and the system's certificate authorities
   `<pool>/<name>` at `/volume<N>/<name>`, with its permissions, recycle
   bins, snapshots, quota, compression and record size. The file manager
   makes one with "new folder" on a volume (an administrator who manages
-  shares; the creator may read and write, nobody else yet). Its
-  permissions hold everywhere: in the file manager, for apps and projects,
-  over SMB and NFS. **Shared** is a flag of its own: only a shared folder
+  shares; the creator may read and write, nobody else yet). Its rules
+  hold for the folder as a whole, in the file manager as over SMB, with
+  NFS clients named by computer and apps by what their Compose files
+  mount. **Shared** is a flag of its own: only a shared folder
   goes into Samba's configuration and NFS's exports; one not shared is used
   on the NAS alone (a project's folder people may look into, say), keeps
   its NFS clients for when it is shared again, and loses nothing when
@@ -640,43 +643,60 @@ TLS is rustls with ring and the system's certificate authorities
   volume are not renamed: the dataset, its mount unit, Samba's and NFS's
   sections, the snapshots' names and whatever mounts its path (apps,
   projects, uploads under way) would all have to follow at once.
-- Share permissions (per account or group: no rule, deny, read, read and
-  write) live in the database and are applied twice: in the Samba
-  configuration (`valid users`, `invalid users`, `read only = yes`,
-  `write list`) and as POSIX ACLs on the share's directory (owner root,
-  mode 0770, an entry and a default entry per account or group). The same
-  rules therefore hold for SMB, NFS and the file manager. A share nobody
-  may use is not offered at all: Samba would read an empty `valid users` as
-  "everybody". Administrators need a rule like everyone else.
+- **Access is the share's as a whole.** Its rules (per account or group:
+  no rule, deny, read, read and write) live in the database, and nothing
+  is written into its files per person: Samba enforces them in the share's
+  section, `zendiloosd` for the file manager before anything reaches the
+  files agent, and NFS names computers, not people (below). A change holds
+  at once: Samba reads its configuration again (a reload, which open
+  connections survive) and, where the change takes access away from anyone
+  (a denial, reading instead of writing, a rule gone, the share off the
+  network or deleted), the share's open SMB connections end (`smbcontrol
+  smbd close-share`, after every smbd has read the new rules), so nobody
+  keeps what they may no longer do; clients connect again under the new
+  rules. No file changes and no job runs. A share nobody may use is not
+  offered at all: Samba would read an empty `valid users` as "everybody".
+  Administrators need a rule like everyone else.
 - **Which rule wins:** a denial, the account's own or one of its groups';
   then the account's own rule, as it is more specific; then the broadest
-  grant of its groups. POSIX ACLs say the same for accounts (a named user
-  entry comes before the group entries), but cannot deny a group: its
-  members get a named entry without permissions of their own instead, so a
-  member's own grant is replaced. Samba keeps the group itself in
-  `invalid users` and follows its members. A disabled account may do
-  nothing anywhere while it is disabled: Samba has it disabled
-  (`smbpasswd -d`), and the ACLs deny it as a rule would, wherever the
-  rules name it, itself or through a group, since NFS clients reach the
-  files by its ID and not by signing in; what it owns passes to root where
-  it wrote (see Owners).
-- **Following groups and accounts.** The Sharing context hears of changes
-  to groups' members and to accounts (disabled, enabled again, deleted)
-  from the Identity context (`GroupObserver`, `AccountObserver`, bridged in
-  infrastructure), before the change, to mark the shares it will touch
-  (see Owed access), and after it. Where a group is denied, members who
-  left lose their entry and new ones get one; where it may write, those
-  who left hand over what they own (see Owners) and the share's folder is
-  set again, which makes the new members' recycle bins; a disabled,
-  enabled or deleted account's entries and files follow wherever the rules
-  named it. Each share is handled on its own: one that cannot be changed
-  now does not keep the others from it. The change itself is never refused
-  for a walk under way: it stands in the Identity context already. The
-  share's folder then waits for the walk queued next, which gives it the
-  rules first (changed now, the walk under way would give the folder back
-  the rules it read). The answer and the audit entry of the change name the
-  shares whose files follow in the background. When a group is deleted,
-  its rules go first, as a change of each share's rules.
+  grant of its groups. Samba's section says the same: `valid users`
+  (whoever may read or write), `write list` (whoever may write), `read only
+  = yes` for the rest, and `invalid users` (whoever is denied), which wins
+  over `valid users` and `write list`, also for a member of a group listed
+  there. Groups stay groups (`@family`): Samba follows their members
+  itself, on the next connection. A disabled account may do nothing
+  anywhere: Samba has it disabled (`smbpasswd -d`) and denies it by name in
+  every section whose rules would let it in, its own rule or a group's; it
+  cannot sign in to the web interface either.
+- **Samba works on the files as root.** Each share's section has `force
+  user = root`, `force group = zendiloos-files`, `inherit owner = yes`,
+  `create mask = 0660`, `directory mask = 2770` and `nt acl support = no`:
+  the rules above are the only ones; what Samba writes takes the owner of
+  the folder it lands in (an app's folder stays the app's) and the group
+  `zendiloos-files`; Windows' security dialog changes nothing. The share
+  `home` of the personal folders is the exception (below): there each user
+  is themselves.
+- **Following groups and accounts.** The Sharing context hears from the
+  Identity context (`GroupObserver`, `AccountObserver`, bridged in
+  infrastructure) after a group's members changed, and before and after an
+  account is disabled, enabled again or deleted. Nothing in the files
+  follows: Samba's configuration is written again, and where someone may do
+  less now the share's open connections end: a member who left a group that
+  grants, one who joined a group that is denied; a disabled or deleted
+  account on every share it could use, as noted before the change, while
+  its rules and groups are still there. The change itself stands whatever
+  the Sharing context makes of it. When a group is deleted, its rules go
+  first, as a change of each share's rules.
+- **On disk every share is alike.** The package makes the system user and
+  group `zendiloos-files` (sysusers; no account of a person). A share's
+  folder is `root:zendiloos-files`, mode 2770, with one ACL set when it is
+  made: `group:zendiloos-files:rwx` and `default:group:zendiloos-files:rwx`,
+  mask `rwx`, which what is made in it inherits; its recycle bins' folder
+  `.recycle` alike, and sticky (3770), so only root, which Samba and the
+  file manager work as, renames or removes the bins in it. Whoever works on
+  the files as that group (NFS clients, apps) reads and writes what Samba,
+  the file manager or another app made. There are no entries per person or
+  group, so nothing has to follow rules, group members or accounts.
 - **Personal folders:** one dataset `<pool>/zendiloos.homes` on one pool,
   mounted at `/volume<N>/@homes` (root, 0711); each account given one has
   `@homes/<name>` (its own, 0700) and a ZFS `userquota`. Samba offers them
@@ -688,131 +708,110 @@ TLS is rustls with ring and the system's certificate authorities
   A folder of the name that belongs to another UID (an earlier account of
   the same name) is moved aside (`<name>.previous-<uid>`) and a fresh one
   made, so the new account is never locked out of its own folder.
-- Changed rules apply to the share's directory at once and to existing
-  files in a job (a walk), except the users' recycle bins. Access is taken
-  away from the whole tree before any is given, so a revocation holds even
-  if adding fails; the job may run for hours. The job applies the rules
-  the database has when it gets to run, never those of the change that
-  started it: zendiloosd runs one such job per share at a time, each reads
-  the rules once it is its turn, so the last job always gives the last
-  rules, whatever order the jobs ran in. While one is under way, a change
-  of that share's rules is refused ("try again once that has ended";
-  changes of an app's access and rollbacks too): it would change the
-  folder under the walk, which gives it the rules it read.
-- **Owed access.** A share's files end up with its rules whatever stops a
-  walk. Whatever they have to follow (its rules, the members of a group it
-  names, an account disabled, enabled again or deleted, a snapshot rolled
-  back) marks the share in the database first, in the same step as the
-  change (`shares.access_owed`, a generation each mark raises); a change in
-  the Identity context marks it again once made, as a walk may have read
-  the directory in between. Only a walk that read the rules after the
-  latest mark and ended without errors settles it (`access_given`). One
-  with errors (an entry it could not change, folders nested too deeply,
-  the files agent stopping or its deadline passing, zendiloosd stopping)
-  settles nothing. A share that still owes its files
-  their rules is walked again: when zendiloosd starts, after each walk and
-  every five minutes, unless a walk of it is queued or under way or its
-  volume is not mounted. After a failed walk the next waits five minutes,
-  twice as long after each further failure, up to a day, so a share that
-  keeps failing is not walked through again and again; a change of its
-  rules walks it at once. The update that brought this marked every share
-  once, so that every share's files got exactly its rules. Verified with
-  the ACLs on disk in the test VM (`just vm-permissions-test`).
-- **Rolling back** a share to a snapshot (5) brings back the ACLs, owners
-  and recycle bins its files had then. It is refused while a walk goes
-  through the share. Under the same lock as the rollback, the share's
-  folder gets the rules recorded now and its recycle bins are made again,
-  before anybody else could make one of them, and a walk gives the files
-  the rules, owed until it ended without errors.
-- **Owners:** the kernel asks a file's owner entry (`user::`) before any
-  named one, and lets the owner change mode and ACL; a named entry cannot
-  take an owner's rights away. So in a share only those who may write own
-  anything: when the rules are applied to the tree, what an account
-  zendiloOS manages (UIDs 2000 to 59999, people and apps, accounts gone
-  since among them) owns passes to root (its group stays) unless the
-  account may write, by its own rule or, without one, by a group's, and is
-  not disabled; the files agent reads who may write from the accounts and
-  groups as they are when the walk runs. That takes in its recycle bin with
-  what is in it, which stays private, now root's alone: what passes to root
-  from there keeps only its owner's entry, as its former owner may have
-  opened it to the owning group (everyone's `zendiloos-users`), to others or
-  to named people. It is not given back when the account may write again
-  (an administrator can; a new bin is made). Files of other UIDs (system accounts, the users containers run as)
-  keep their owners. Over SMB, Samba's `read only` and `write list` hold
-  besides.
-- The files agent walks the tree itself, depth first, by descriptor
-  (`O_NOFOLLOW`, only the folders on the
-  way down open, each read as it goes, never held whole: a folder of
-  millions of entries takes no more memory than a small one), and changes
-  each ACL through its descriptor
-  (`system.posix_acl_*` via `/proc/self/fd`, the edits of `setfacl -x/-m`
-  with the mask recomputed), so a folder swapped for a link meanwhile
-  changes nothing. A walk replaces what the rules decide, whatever it was
-  told to remove: on every entry it changes, the named entries of the IDs
-  zendiloOS hands out (2000 to 59999: people, apps and groups, those
-  deleted since among them; and the group `zendiloos-users`, every
-  account's primary group, whose named entry would let every account
-  through, those denied too) that the rules do not grant go, and the owning
-  group (`group::`) and others (`other::`) get nothing, as on the share's
-  folder, whose default entries new files inherit; entries of other IDs
-  (system accounts, the users containers run as, set by hand) stay. So
-  whatever a walk that failed or stopped halfway left, the next makes
-  good. Links, other file systems, what is neither folder nor
-  file are left alone, and so are the entries of the recycle bins
-  (`.recycle` at the share's top) with what is in them, whose owners alone
-  change. The bins are told by where they are, never by a mode: everything
-  else in the share is the share's and gets its rules, a folder only its
-  owner may enter too. Taking away leaves a folder whose named entries all
-  go (a share given to another group, an account disabled, someone denied)
-  at 0700; taken for a private one then, it would get nothing, nor would
-  anything below it, in that walk or any later one. Walks of an earlier
-  release did so; the update that changed it marked every share owed once
-  more, so that such folders get their rules again. An entry that
-  cannot be changed, or a folder nested deeper than 256 to look into,
-  does not stop the others, however many there are: the walk goes on to
-  the end and fails then, counting them and naming one of each (a writer
-  could otherwise plant folders too deep to keep every walk from the rest
-  of the share). The folder at the limit itself gets the rules and is
-  handed over; only what is below it is not looked into.
-  One change per share runs at a time; a change of a share's folder waits
-  15 seconds at most for one going through its files, then is refused
-  ("try again"), while other shares are not held up. Something not a
-  folder in `.recycle`'s place is moved aside (`.recycle.not-a-folder-…`).
+- **The update to share-level access** walks each share made before it
+  once (migration `0043_share_level_access`; `shares.permissions_migrated_at`
+  is when its files got the one ACL, at creation for a share made since).
+  Shares made before had their rules written into every file as entries
+  per person and group. The walk sets the share's folder and `.recycle` as
+  above (owner, group, mode and ACL, the named entries of people and their
+  groups gone there too), then gives every folder and file below the
+  group's entry (folders `rwx` and the default entry, files `rw` and `x`
+  only where somebody may execute them already) and takes the named
+  entries of the IDs zendiloOS hands out to people and their groups (2000
+  to 59999, those deleted since among them, and `zendiloos-users`, every
+  account's primary group). The apps' accounts and groups (`app-<id>`, see
+  4.9) and IDs zendiloOS does not hand out (system accounts, the owner's
+  own user, the users containers run as) keep their entries, so installed
+  apps keep working; owners stay as they are. The files agent walks by
+  descriptor, depth first (`O_NOFOLLOW`, only the folders on the way down
+  open, each read as it goes, never held whole: a folder of millions of
+  entries takes no more memory than a small one), and changes each ACL
+  through its descriptor (`system.posix_acl_*` via `/proc/self/fd`, the
+  edits of `setfacl -x/-m` with the mask recomputed), so a folder swapped
+  for a link meanwhile changes nothing; links, other file systems and what
+  is neither folder nor file are left alone. An entry that cannot be
+  changed, or a folder nested deeper than 256, does not stop the others:
+  the walk goes on to the end and fails then, counting them and naming one
+  of each. Each walk is a job (`sharing.migrate_permissions`, the share's
+  name as its target, its output how many entries it went through), one at
+  a time on the whole NAS and one share after another, when zendiloosd
+  starts and every five minutes; a share whose walk failed or was cut off,
+  or whose volume was not mounted, stays owed and is walked later.
+  Meanwhile its rules hold and may change, as Samba and the file manager
+  do not depend on the files; NFS clients and apps reach what the walk got
+  to. A rollback or the deletion of the share waits for its walk ("try
+  again once that has ended"). Verified in the test VM from data with
+  named ACLs (`just vm-permissions-test`).
+- **Rolling back** a share to a snapshot (5) brings back its files as they
+  were then; the rules hold as recorded now, and the share's folder gets
+  what every share's has again. A snapshot from before the share's walk
+  brings back the entries per person of then: the share owes its walk
+  again, which starts at once (the answer's `job`). A walk records the
+  second after it ended, so a snapshot taken while it went counts as
+  older.
 - **Recycle bin:** Samba's `vfs_recycle` moves files deleted over SMB to
   `.recycle/<user>/<folders>/<name>` in the share (`Copy #N of <name>` if
-  taken), hidden but not vetoed, so users can restore from it. Each user's
-  bin is private (0700). The agent creates `.recycle` itself with the
-  share's ACL: created by Samba, it would get the private mode, every other
-  user's bin could not be created, and Samba deletes files for good when it
-  cannot move them. The file manager deletes into the same bins; inside a
-  bin, deleting is for good, at any depth. It also restores from the
-  user's own bin, any entry at any depth: back to where it was deleted
-  from (`keeptree` keeps the folders), without the `Copy #N of ` of a
-  second deletion, of the entry or of a folder on its way (what is inside a
-  folder deleted twice goes back into that folder), folders that are gone
-  made again, and a taken name gets a free one beside it; emptying the
-  bin deletes `.recycle/<user>` for good.
-- **File manager: the kernel checks, not our code.** `zendiloosd` cannot
-  read shares itself. Every operation goes to the files agent, which runs
-  it on a new thread that first takes on the signed-in user's credentials
-  (`setgroups`, `setresgid`, `setresuid` as raw system calls, which on
-  Linux change only the calling thread; the thread then has no
-  capabilities left, which the agent checks) and ends with the operation.
-  Only managed users qualify (UID 2000 to 59999, primary group
-  `zendiloos-users`), never root or system accounts. On a removable drive
-  the thread instead keeps root's access to files and nothing else
-  (`CAP_DAC_OVERRIDE` and `CAP_DAC_READ_SEARCH` effective, every other
-  capability dropped): a drive formatted elsewhere has owners nobody here
-  has, and only an administrator's request names one; its root is opened
-  only while a file system of its own is mounted there, never the tmpfs
-  beneath. A copy or move between a drive and a folder on a volume runs on
-  two threads, each with its side's rights: one walks the source as a copy
-  does and sends what it finds in order, files already opened (at most 32
-  pieces on their way), the other makes the copy from them, so what lands
-  in a folder on a volume belongs to the person and takes the folder's
-  inherited ACL exactly as an upload does, and only what the person may
-  read there reaches a drive; a move removes the source once the copy is
-  complete and written out, and only what was copied (see Moves below).
+  taken), hidden but not vetoed, so they can be restored from it. One bin
+  per share: the folder of each user says who deleted what, and everyone
+  who may use the share sees all of it, as they could see the files before
+  (over SMB with hidden files shown, in the file manager by showing hidden
+  entries); whoever may write the share may move things out of it. The
+  agent makes `.recycle` with the share's folder (above), and moves
+  something not a folder in its place aside (`.recycle.not-a-folder-…`).
+  The file manager deletes into the same bins (the user's folder there
+  made 0770, the share's group's); inside a bin, deleting is for good, at
+  any depth. Its recycle bin view gathers the person's own folder of each
+  share's bin, and restores from it, any entry at any depth: back to where
+  it was deleted from (`keeptree` keeps the folders), without the `Copy #N
+  of ` of a second deletion, of the entry or of a folder on its way (what
+  is inside a folder deleted twice goes back into that folder), folders
+  that are gone made again, and a taken name gets a free one beside it;
+  emptying the bin deletes `.recycle/<user>` for good. In the personal
+  folders each user's bin stays their own (0700). **Open:** Samba's recycle
+  module makes the bins' folders by path, as root; the bins are root's in
+  a sticky folder, but whoever may write the share's top (an NFS client,
+  an app) could rename `.recycle` and put a link in its place, and Samba
+  would then make empty folders, root's, where the link leads. Leaving the
+  module out, or moving the bins out of the writers' reach, would close it.
+- **File manager: zendiloosd checks, the files agent stays beneath the
+  root.** `zendiloosd` cannot read shares itself. Every operation goes to
+  the files agent, which runs it on a new thread with the rights of its
+  place, which end with the operation:
+  - in a personal folder the signed-in user's credentials (`setgroups`,
+    `setresgid`, `setresuid` as raw system calls, which on Linux change
+    only the calling thread; the thread then has no capabilities left,
+    which the agent checks): the kernel decides, as over SMB;
+  - on a share root's access to files (`CAP_DAC_OVERRIDE`,
+    `CAP_DAC_READ_SEARCH`) and `CAP_CHOWN`, every other capability dropped,
+    once `zendiloosd` has checked the share's rule for that operation, from
+    the database: a denial (or no rule) keeps the person out of the share
+    altogether, reading allows what only reads (folders, search,
+    properties, downloads, archives, snapshots), and only reading and
+    writing allows a change (uploads, new folders, renames, copies and
+    moves into it, deletions, restores, copies back from a snapshot); a
+    reader's folders are listed as not writable. What it makes there takes
+    the owner of the folder it is made in and the group `zendiloos-files`
+    (through the new entry's descriptor, after its times are set), as
+    Samba's does; only the folders an administrator's project binds are the
+    administrator's, whose account its containers run as (a database
+    refuses a data folder of another owner);
+  - on a removable drive root's access to files and nothing else
+    (`CAP_DAC_OVERRIDE` and `CAP_DAC_READ_SEARCH` effective): a drive
+    formatted elsewhere has owners nobody here has, and only an
+    administrator's request names one; its root is opened only while a file
+    system of its own is mounted there, never the tmpfs beneath.
+
+  Only managed users are named (UID 2000 to 59999, primary group
+  `zendiloos-users`), never root or system accounts. A copy or move
+  between places of different rights (a drive or the personal folder and a
+  share) runs on two threads, each with its side's rights: one walks the
+  source as a copy does and sends what it finds in order, files already
+  opened (at most 32 pieces on their way), the other makes the copy from
+  them, so what lands in a share takes its folder's owner and group, what
+  lands in the personal folder belongs to the person, and only what the
+  person may read there reaches a drive; a move removes the source once the
+  copy is complete and written out, and only what was copied (see Moves
+  below).
   Paths are resolved
   relative to the share's root with
   `openat2(RESOLVE_BENEATH | RESOLVE_NO_XDEV | RESOLVE_NO_MAGICLINKS)`, so
@@ -837,8 +836,10 @@ TLS is rustls with ring and the system's certificate authorities
   only what it made, taken by the descriptor it made it through (a link
   only while a link has the name); folders are emptied in batches, never
   read whole. Copies leave uploads under way out (a half-written file
-  that nothing would ever remove there). New files belong to the user and inherit the
-  share's ACLs, exactly as over SMB. Copies, moves into another place and
+  that nothing would ever remove there). New files in a share take the
+  folder's owner, the group `zendiloos-files` and the share's inherited
+  ACL, exactly as over SMB; in the personal folder they are the user's.
+  Copies, moves into another place and
   deletions run as jobs; a rename is a quick request. Verified end to end
   in the test VM (`just vm-sharing-test`).
 - **Moves into another place** (another share, the personal folder, a
@@ -889,10 +890,10 @@ TLS is rustls with ring and the system's certificate authorities
   everything below it on the NAS (`GET /files/shares/{id}/search`, and
   `/files/removable/{drive}/search`, with `path`, `text`, `hidden` and in
   a snapshot `snapshot`): names containing the text, whatever the case.
-  The files agent walks as the person, like the other walks: by
-  descriptor, name by name, never following a link, never onto another
-  file system, no deeper than 256 folders, each folder checked to be the
-  one looked at before it is entered; what the person may not read is
+  The files agent walks with the rights of the place (above), like the
+  other walks: by descriptor, name by name, never following a link, never
+  onto another file system, no deeper than 256 folders, each folder checked
+  to be the one looked at before it is entered; what it may not read is
   passed by. Names starting with `.` only when hidden entries are shown,
   the recycle bins only when searched from inside one, uploads under way
   never, and a name that is not UTF-8 is neither found nor entered (it
@@ -906,7 +907,7 @@ TLS is rustls with ring and the system's certificate authorities
   on a volume the time it was created in zendiloOS otherwise) and last
   changed, its owner's account, a file's size; for a folder its files,
   folders and hidden entries below it and what the files hold, counted by
-  the files agent as the person may see them, walking as the search does.
+  the files agent walking as the search does.
   Hidden entries (a leading `.`) are counted, not entered, so the recycle
   bins are not counted through; uploads under way are not counted. At
   most ten million entries within half a minute, saying so when it
@@ -925,11 +926,11 @@ TLS is rustls with ring and the system's certificate authorities
   (its rules, each added and changed in a dialog of its own).
 - **Folders as archives.** A folder downloads as a tar archive (POSIX
   pax: long names whole, links as links), which Windows, macOS and Linux
-  open without extra software. The files agent first plans it as the
-  user: every entry and its size, so the archive's exact length is the
+  open without extra software. The files agent first plans it with the
+  rights of the place: every entry and its size, so the archive's exact length is the
   `Content-Length`, and anything that cannot be read refuses the download
-  instead of leaving files out silently. It then writes the archive as
-  the user into a pipe whose reading end goes to `zendiloosd` like a
+  instead of leaving files out silently. It then writes the archive the
+  same way into a pipe whose reading end goes to `zendiloosd` like a
   downloaded file, following the plan to the byte (a file that grew is
   cut, one that shrank padded); should writing fail midway, the download
   ends short of its length and the browser reports it as failed. At the
@@ -995,25 +996,47 @@ TLS is rustls with ring and the system's certificate authorities
   most 50, in the database with the account and the share). Only those in
   shares the account may use are shown; the others are kept, should
   access come back.
-- Alternative: the file manager runs with broad rights and checks ACLs
-  itself. Simpler, but every gap in the checks becomes a data leak, and new
-  files belong to the service account.
-- NFS (v3 and v4, `sec=sys`) trusts the client's UID. Exports are therefore
-  restricted to the computers each rule names, and the interface states
-  the risk. A rule names an IP address or network, a host name or a
-  pattern with `*` and `?` as `exportfs` reads them (`*.example.com`;
-  lowercase letters, digits, `-` and `.` only, checked by `zendiloosd` and
-  again by the agent, so nothing reaches the exports file that it would
-  read as a separator or an option), and says how: `rw` or `ro`; whose
-  identity the requests keep, `root_squash` (root becomes the anonymous
-  user; the default, and what every rule had before there was a choice),
-  `all_squash` (everyone does) or `no_root_squash` (root stays root: the
-  interface warns that the client's root is then root in the folder);
-  `sync` or `async` (writes answered before they are on disk); `secure`
-  or `insecure` (ports above 1024, which any user of the client may open,
-  for clients such as macOS's Finder). The line the agent writes per
-  client is `<host>(rw|ro,sync|async,no_subtree_check,<squash>,[insecure,]sec=sys)`.
-  **[Later]** Kerberos.
+- **What share-level access gives up.** For shares, zendiloOS no longer
+  lets the kernel decide what a person may do: a gap in zendiloosd's
+  checks, or in the files agent's confinement beneath a share's root, would
+  give someone more than their rule. "The kernel checks, not our code"
+  still holds for the personal folders. It was given up for shares
+  because the entries per file only ever protected NFS: Samba and the file
+  manager check the rules themselves anyway, and NFS with `sec=sys`
+  believes whatever user a client claims to be, so a person's rule over NFS
+  was never a boundary. Keeping every file's ACL in step with the rules,
+  the groups' members and the accounts took a walk through whole shares
+  after every change (for rules, members, disabled, enabled and deleted
+  accounts, rollbacks), with owners handed over to root, revocations owed
+  until a walk had ended without errors, and backlogs that could take
+  hours; that machinery was the source of most of what went wrong. What
+  protects instead: the rules, checked for every operation in zendiloosd
+  from the database before the files agent hears of it (API tests cover
+  each role), and the same rules in Samba's sections; the files agent's
+  confinement beneath the share's root (`openat2` with `RESOLVE_BENEATH`,
+  names walked by descriptor, never following a link, never onto another
+  file system), on threads that keep root's access to files and
+  `CAP_CHOWN` and nothing else; and NFS limited to the computers an
+  administrator names. The alternative was to keep per-file ACLs and the
+  file manager acting as the user, with the walks above.
+- **NFS is per computer, not per person.** NFS (v3 and v4, `sec=sys`)
+  believes whatever user a client claims to be, so a rule names computers:
+  an IP address or network, a host name or a pattern with `*` and `?` as
+  `exportfs` reads them (`*.example.com`; lowercase letters, digits, `-`
+  and `.` only, checked by `zendiloosd` and again by the agent, so nothing
+  reaches the exports file that it would read as a separator or an
+  option), and says how: `rw` or `ro`; `sync` or `async` (writes answered
+  before they are on disk); `secure` or `insecure` (ports above 1024, which
+  any user of the client may open, for clients such as macOS's Finder).
+  Every request is squashed to `zendiloos-files` (`all_squash`, with the
+  user's and group's IDs, which the agent reads itself): whoever is on a
+  named client has the share's read, or read and write, access, whatever
+  user they claim to be, root too, as `sec=sys` gave in effect before; the
+  interface says so. The line the agent writes per client is
+  `<host>(rw|ro,sync|async,no_subtree_check,all_squash,anonuid=<uid>,anongid=<gid>,[insecure,]sec=sys)`.
+  Rules from before, which chose whose identity the requests keep
+  (`root_squash`, `no_root_squash`, `all_squash`), are all squashed since
+  the update (migration `0043`). **[Later]** Kerberos.
 - **Creating and deleting a share keep its record and its dataset in
   step.** A share that cannot be applied after it was stored goes again,
   record and dataset. Deleting hides the share first (it is offered no
@@ -1164,7 +1187,8 @@ TLS is rustls with ring and the system's certificate authorities
 - A closed set of operations; no "run this command", no paths from the API
   that the agent does not check again against fixed roots.
 - Operations that walk whole trees or disks (copying, moving and deleting
-  trees, permissions of a whole share, preparing and destroying pools,
+  trees, the one walk of a share to share-level access, preparing and
+  destroying pools,
   fetching and running apps and projects, moving Docker's data) have two
   places of their own; quick ones have four. A move within one place (a
   folder on a volume, the personal folder, a drive) is a rename and quick,
@@ -1172,7 +1196,7 @@ TLS is rustls with ring and the system's certificate authorities
   copying; only moves into another place are long. One user's large copies
   never keep others from listing, downloading or uploading. Each user has one
   long place at a time (a second copy waits behind the first, not in a
-  place of everybody's), changes of whole shares' permissions have two of
+  place of everybody's), the walks to share-level access have two of
   their own, backups and restores of Docker's volumes (hours in units of
   their own) two more, counting the volumes' data one, and a folder
   download read at less than a mebibyte in five minutes is given up. The
@@ -1186,7 +1210,7 @@ TLS is rustls with ring and the system's certificate authorities
   asked to stop; what has started is seen through (`KillMode=mixed`: the
   programs it runs are not stopped with it, `TimeoutStopSec=2h`). zendiloosd waits two minutes for a quick system request
   and two hours for a long one, ten minutes and a day for files requests
-  (copies, moves, permissions of a whole share), so once begun, a change is
+  (copies, moves, the walk of a share), so once begun, a change is
   seen through and its outcome reported.
 - Every change to a pool, scrubs included, requires its `zendiloos:volume`
   property: pools the owner made stay untouched.
@@ -1196,15 +1220,14 @@ TLS is rustls with ring and the system's certificate authorities
   an existing Debian, any process running as `www-data` can reach the API
   socket and claim an address in `X-Real-IP`, passing by the per-address
   throttle.
-- Recycle bins: when a share's permissions are applied, the files agent
-  makes each writer's `.recycle/<user>` (directly or through a group):
-  the user's own, mode 0700, without ACL entries. `.recycle` is sticky
-  (1770 with the share's ACL): every writer makes their bin there, but
-  only its owner may rename or remove it. Something of that name
-  another writer made first is moved aside (`.<user>.not-theirs-…`), so
-  it never receives the user's deletions; Samba itself does not check who
-  owns a bin. The file manager also refuses a bin that is not the user's
-  own and private, and empties a bin without removing it.
+- Recycle bins: a share's `.recycle` is made with the share's folder,
+  root's and the group `zendiloos-files`', sticky (3770 with the share's
+  ACL); Samba and the file manager make each user's folder in it as root,
+  so whoever reaches the files as that group (an NFS client, an app) may
+  neither rename nor remove a bin. Something not a folder in
+  `.recycle`'s place is moved aside. In a personal folder the file manager
+  refuses a bin that is not the user's own and private, and empties a bin
+  without removing it.
 - Making a disk blink (5, enclosure) reads and never writes:
   `read_burst` takes only a whole disk the agent finds itself, as for
   SMART (a validated kernel name, its entry in `/sys/class/block` that is
@@ -1438,9 +1461,11 @@ share at every deployment; `env_file`, `extends`, `include`, read when it
 is saved). Each must be confirmed, then and on every change;
 the audit log records `risks_accepted`. The folders inside the project's
 folder its binds mount (`./config`) are made, as far as they are missing,
-through the file manager with the administrator's permissions when the
-file is saved: Docker would make them as root, and a container run as
-the administrator could not write to them. Deploying (pull, then
+through the file manager when the file is saved, as the administrator's
+own (the one exception to the rule that what is made in a share takes
+its folder's owner, 4.4): Docker would make them as root, and a container
+run as the administrator could not own them (a database refuses a data
+folder of another owner). Deploying (pull, then
 `up --detach --remove-orphans`) and removing (`down`; images, data and the
 folder stay) are jobs. A redeploy pulls only when asked ("pull the newest
 images"; containers no longer in the file are removed either way).
@@ -1741,8 +1766,11 @@ in three steps of the install dialog:
    generated ones are made then. `POST /apps/catalog/{source}/{app}/compose`
    fills the template in: `APP_DATA` is the project's folder, written
    relative (`./config`); `SHARE_<ID>` the picked folder's path on the
-   machine; `PUID`/`PGID` the administrator's UID and primary GID and `TZ`
-   the time zone, both from the system agent (`HostFacts`, which also says
+   machine; `PUID` the administrator's UID, `PGID` the GID of
+   `zendiloos-files` (the group whose access every share's folder gives,
+   4.4, so the containers read and write the share folders they mount
+   through the share's one ACL) and `TZ` the time zone, both from the
+   system agent (`HostFacts`, which also says
    which of the app's devices the machine has; the lines of the others are
    commented out, so the app still runs without a GPU or a Zigbee stick).
    Every value is filled in where Compose would interpolate it, in the
@@ -1766,19 +1794,31 @@ project in the Docker app. A newer version of the app in its catalog
 changes nothing: the images are updated with the Docker app's image
 updates, the file by the administrator.
 
+**Shares and apps.** A container sees only the folders its Compose file
+mounts, which the administrator confirmed (above); what it may do there
+is a matter of file access alone, as for anything on the machine: new
+installs run in the group `zendiloos-files`, and the shares' one ACL does
+the rest. A share's rules (4.4) are the people's, for Samba and the file
+manager; they do not reach into containers.
+
 **Apps installed the earlier way** each got a dataset of their own
 (`<pool>/zendiloos.apps/<id>` at `/volume<N>/@apps/<id>`), an account
-`app-<id>` with access to the shares picked, kept by the Sharing context
-(`share_app_access`), and a Compose file the agent checked against the
+`app-<id>` with access to the shares picked, and a Compose file the agent
+checked against the
 policy and keeps, normalized, readable by root only
-(`/etc/zendiloos/apps/<id>.json`). They keep running: they are started
+(`/etc/zendiloos/apps/<id>.json`). The access they were given stays in
+their entries on the shares' files, which the update to share-level
+access leaves alone (4.4), so they keep working; the Sharing context keeps
+the record of it (`share_app_access`) as information only: a share an
+app uses is not deleted (`share_used_by_apps`), and the record goes with
+the app. They keep running: they are started
 from that file (the agent walks each folder they mount again first),
 stopped, their logs read, and removed; nothing installs, tries again or
 updates an app so any more, and the agent has no steps left for it (no
 preparing, checking, pulling or making folders). One whose installation
 did not finish is *failed*, to be removed. Removing takes
 the containers, images and kept file, destroys the dataset with the data,
-then takes the account's share access and finally the account.
+then forgets the account's share access and finally takes the account.
 
 **Folders in shares are pinned**, for the apps installed the earlier way
 as for administrators' projects. A share's root is a dataset's mount
@@ -2048,7 +2088,7 @@ the interface and the agent deal with a single tool chain (`zpool`, `zfs`).
 | Pool | one zpool with one vdev: single disk, mirror (2 or more disks), RAIDZ1 (3+), RAIDZ2 (4+), RAIDZ3 (5+); `ashift=12`; members referenced by `/dev/disk/by-id/<disk>-part1` |
 | Volume | the pool's root dataset, mounted at **`/volume<N>`** (the lowest free number). One pool is one volume |
 | Mounting | `mountpoint=legacy` and a systemd mount unit per volume (`volume1.mount`, after `zfs-import.target`): mounts happen in the host's namespace rather than the hardened agent's, and the boot order is explicit |
-| Dataset defaults | `compression=lz4`, `atime=off`, `xattr=sa`, `acltype=posixacl` (for Samba ACLs), `dnodesize=auto`, `setuid=off`, `devices=off`; `normalization=formD`, `utf8only=on` (fixed at creation) |
+| Dataset defaults | `compression=lz4`, `atime=off`, `xattr=sa`, `acltype=posixacl` (for the shares' one ACL), `dnodesize=auto`, `setuid=off`, `devices=off`; `normalization=formD`, `utf8only=on` (fixed at creation) |
 | Share | a child dataset of the volume, mounted at `/volume<N>/<share>` by its own unit (`volume1-photos.mount`); created with `setuid=off` and `devices=off` also on pools made before those were defaults. Per share, stored in the database and set at every change and at startup: a quota on its own data (`refquota`, snapshots not counted, at least 1 GiB, never below what it holds), compression (`lz4`, `zstd` or off) and record size (16 KiB, 128 KiB, 1 MiB); what it holds comes live from ZFS |
 | Snapshots | per share (child dataset), by hand or on schedules (hourly, daily, weekly, monthly, each keeping 1 to 100). Named after their UTC time, `zdl-YYYY-MM-DD_HH.MM.SS`, the form Samba's `vfs_shadow_copy2` reads, so Windows offers every snapshot as "Previous Versions" (`shadow:snapdir = .zfs/snapshot`); the schedules a snapshot was taken for and a note are ZFS user properties (`zendiloos:schedule`, `zendiloos:note`), the schedules themselves live in the database. `zendiloosd` looks every five minutes: a schedule that never took one, or missed its time while the machine was off, takes one at once; when several are due, one snapshot counts for all of them. Each schedule keeps its newest; a snapshot goes only when every schedule it was taken for lets it go, never one taken by hand or of a removed schedule. A failing schedule becomes one notification until it works again. The agent takes and destroys snapshots only of a share dataset on a pool zendiloos created, and the label's shape rules out ZFS's ranges and lists. The file manager looks into a snapshot as it was: the files agent opens `.zfs/snapshot/<label>` of the mounted share as a root of its own (the label's shape checked; opening it for reading makes ZFS mount it, which `RESOLVE_NO_XDEV` from the share would refuse), read only, and refuses every change in it; folders list, files download and preview, folders download as archives from it, and entries are copied back into the share, into the folder they were in and beside a name that is taken, so nothing is replaced (a job). A share can be rolled back to one of its snapshots (`zfs rollback -r`, the agent only on its own share datasets): what changed since is lost and so are the later snapshots, which the interface lists, so the share's name must be typed to confirm; the files get the permissions recorded now again, not those of the snapshot (4.4) |
 | Monitoring | `zpool status` (health, resilver and scrub progress, errors per device) every minute, SMART of disks holding data every six hours; changes become notifications (degraded or recovered pool, finished resilver or scrub, volume 80 or 90 % full, a disk's SMART getting worse); scrub monthly (second Sunday) by the cron job of `zfsutils-linux`, and on demand; a running scrub can be stopped (`zpool scrub -s`), a resilver cannot; while a scan runs, its speed and the time left are estimated as `zpool status` does (bytes issued in the current pass over its time minus pauses); the package depends on a cron daemon, which Debian's cloud image lacks. The concerns, when there are any, are listed above the Pools and Disks pages under one verdict, the worst first: pool unavailable or degraded, unrepairable files, device errors, volume 80 or 90 % full, a disk's SMART verdict, no redundancy, no check for 40 days; SMART verdicts are the monitor's last, so asking reads no disk; a disk can test itself (short or long SMART self-test, `smartctl --test`), its report shows the progress and the drive's own estimate of how long each test takes, and a running test can be stopped; a disk that sleeps, reports no SMART or cannot test itself is refused rather than woken. Self-tests also run on a schedule: one plan per kind (the long test weekly or monthly), the disks by serial number or all that can, starting from a local hour (the host's time zone, read with `jiff`) within four hours, so a NAS switched on late still tests the same night; the long test goes first, a disk already testing is left alone, a sleeping one is woken because the plan asked for it, and a failed test reaches the owner through the monitor's SMART notifications |
