@@ -217,7 +217,7 @@ vm 'rm -rf /tmp/zdl-half && mkdir -p /tmp/zdl-half/DEBIAN \
     && chmod 0755 /tmp/zdl-half/DEBIAN/postinst \
     && dpkg-deb --root-owner-group --build /tmp/zdl-half /tmp/zdl-half-done.deb >/dev/null'
 vm 'sudo dpkg -i /tmp/zdl-half-done.deb >/dev/null 2>&1' && fail "zdl-half-done was configured although it may not"
-[[ -n $(vm 'dpkg --audit') ]] || fail "dpkg lists nothing half done"
+[[ -n $(vm 'sudo dpkg --audit') ]] || fail "dpkg lists nothing half done"
 wait_for "a check to start" "[[ \$(status POST /system/updates/check) == 202 ]]" 900
 wait_for "the check" "call GET /system/updates | jq -e '.phase == \"idle\" and .interrupted'" 900
 vm 'sudo touch /run/zdl-half-done-may'
@@ -225,7 +225,8 @@ vm 'sudo touch /run/zdl-half-done-may'
 wait_for "finishing" "call GET /system/updates | jq -e '.run.finishes and .run.state != \"running\"'" 1800
 run=$(call GET /system/updates | jq .run)
 jq -e '.state == "succeeded"' <<<"$run" >/dev/null || fail "finishing: $run"
-[[ -z $(vm 'dpkg --audit') ]] || fail "dpkg still lists: $(vm 'dpkg --audit')"
+# Root only: dpkg checks its lock first and says nothing to others.
+[[ -z $(vm 'sudo dpkg --audit') ]] || fail "dpkg still lists: $(vm 'sudo dpkg --audit')"
 call GET /system/updates | jq -e '.interrupted == false' >/dev/null || fail "the page still offers to finish"
 vm 'sudo dpkg --purge zdl-half-done >/dev/null && sudo rm -f /run/zdl-half-done-may'
 
