@@ -2093,7 +2093,7 @@ confirmation would, is taken by nginx at once (`nginx -t`, reload, under the
 lock the agent changes the web server with); when nginx does not take it,
 that is told (`certificate_not_taken`, an error, also when issued by hand)
 and the job fails, rather than calling it renewed. The certificate is then
-recorded as not served (`served`, migration 0046, with why as its last
+recorded as not served (`served`, migration 0045, with why as its last
 error), and each daily look has nginx take it again, told as renewed once it
 does, rather than leaving the one before until the next renewal.
 
