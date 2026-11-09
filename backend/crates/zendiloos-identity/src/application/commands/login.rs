@@ -62,6 +62,16 @@ impl Login {
                 return Err(IdentityError::InvalidCredentials);
             }
         };
+        // Answered as a wrong password, and counted as one: a disabled
+        // account must not tell that the password was right. The log says
+        // what it was. Decided on the account as read before the password
+        // was checked, as a wrong password is, so it takes the same time; the
+        // account read again below catches one disabled meanwhile.
+        if checked.disabled {
+            attempt.failed(request).await?;
+            c.audit(audit(Outcome::Denied).by(&checked.actor()).reason("disabled")).await?;
+            return Err(IdentityError::InvalidCredentials);
+        }
 
         // From here one with changes to accounts: the password was checked
         // against the hash read before, outside, as Argon2 takes a while. A
@@ -78,9 +88,7 @@ impl Login {
             return Err(IdentityError::InvalidCredentials);
         };
 
-        // Answered as a wrong password, and counted as one: a disabled
-        // account must not tell that the password was right. The log says
-        // what it was.
+        // Disabled while the password was checked: answered as above.
         if account.disabled {
             attempt.failed(request).await?;
             let entry = audit(Outcome::Denied).by(&account.actor());

@@ -1058,8 +1058,10 @@ TLS is rustls with ring and the system's certificate authorities
   names cost as much time as wrong passwords, so response times do not
   reveal which accounts exist. A disabled account is answered as a wrong
   password (`invalid_credentials`, in the same time, and counted as a
-  failure), so a sign-in does not tell that its password was right; the
-  audit log records it as denied for being disabled.
+  failure), so a sign-in does not tell that its password was right: it is
+  decided on the account as read before the password check, with no more
+  reads of the database than a wrong password takes. The audit log records
+  it as denied for being disabled.
 - Sessions: 256-bit random token in a cookie (`HttpOnly`, `SameSite=Strict`,
   `Path=/`; with secure cookies also `Secure` and the `__Host-` prefix). The
   cookie has no `Max-Age` and ends with the browser session. The database

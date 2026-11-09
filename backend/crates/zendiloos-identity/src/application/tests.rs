@@ -316,6 +316,31 @@ async fn disabled_accounts_cannot_log_in_and_do_not_tell_the_password_was_right(
     assert!(t.sessions.all().is_empty());
 }
 
+/// A disabled account with the right password costs what a wrong password
+/// costs: the same Argon2 run and the same reads of the database, so the
+/// time the answer takes does not tell that the password was right.
+#[tokio::test]
+async fn a_disabled_account_takes_the_time_of_a_wrong_password() {
+    let t = TestIdentity::new();
+    let alice = t.add_account("alice", PASSWORD, Role::User);
+    t.accounts.update(alice.id, |a| a.disabled = true);
+    let reads = |password: &'static str, address: u8| {
+        let t = &t;
+        async move {
+            let before = t.accounts.reads();
+            let refused =
+                password_login(&t.use_cases.login, login_input("alice", password), &from(address)).await;
+            assert!(matches!(refused, Err(IdentityError::InvalidCredentials)), "{refused:?}");
+            t.accounts.reads() - before
+        }
+    };
+    let wrong = reads("wrong password", 1).await;
+    let right = reads(PASSWORD, 2).await;
+    assert_eq!(right, wrong, "reads for the right password of a disabled account, and for a wrong one");
+    let logged: Vec<_> = t.audit.entries().iter().map(|e| (e.outcome, e.reason)).collect();
+    assert_eq!(logged, [(Outcome::Failure, Some("wrong_password")), (Outcome::Denied, Some("disabled"))]);
+}
+
 #[tokio::test]
 async fn sign_ins_to_a_disabled_account_count_as_failed_ones() {
     let t = TestIdentity::new();
