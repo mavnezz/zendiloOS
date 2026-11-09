@@ -1045,6 +1045,8 @@ pub struct TestContainers {
     pub projects: Arc<MemoryProjects>,
     pub storage: Arc<MemoryStorage>,
     pub jobs: Arc<MemoryJobs>,
+    /// The jobs as the containers start them, over `jobs`.
+    pub job_service: Jobs,
     pub data: Arc<FakeDockerData>,
     pub archiver: Arc<FakeArchiver>,
     pub backups: Arc<MemoryBackups>,
@@ -1061,6 +1063,7 @@ impl TestContainers {
         let archiver = Arc::new(FakeArchiver::default());
         let backups = Arc::new(MemoryBackups::default());
         let notifications = Arc::new(zendiloos_notify::testing::MemoryNotifications::default());
+        let job_service = Jobs::new(jobs.clone(), clock.clone());
         let containers = Containers::new(ContainersPorts {
             engine: engine.clone(),
             projects: projects.clone(),
@@ -1071,11 +1074,22 @@ impl TestContainers {
             archiver: archiver.clone(),
             backups: backups.clone(),
             backup_shares: Arc::new(FakeBackupShares),
-            jobs: Jobs::new(jobs.clone(), clock.clone()),
+            jobs: job_service.clone(),
             notifier: zendiloos_notify::Notifier::new(notifications.clone(), clock.clone()),
             audit,
             clock,
         });
-        Self { containers, engine, projects, storage, jobs, data, archiver, backups, notifications }
+        Self {
+            containers,
+            engine,
+            projects,
+            storage,
+            jobs,
+            job_service,
+            data,
+            archiver,
+            backups,
+            notifications,
+        }
     }
 }

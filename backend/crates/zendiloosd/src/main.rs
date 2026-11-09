@@ -144,6 +144,9 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         zendiloos_kernel::VERSION,
     )
     .with_current_notes(installed_notes(&config.updates.notes));
+    // An update starts only while no job runs, and no job starts while it
+    // is started or installs (docs/architecture.md, 4.10).
+    jobs.hold_while(Arc::new(updates.clone()));
     let system = SystemUseCases::new(SystemPorts {
         info: Arc::new(HostSystemInfo),
         metrics: Arc::new(metrics),

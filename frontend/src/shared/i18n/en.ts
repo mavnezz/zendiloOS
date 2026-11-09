@@ -2913,6 +2913,8 @@ const en = {
     not_checked: 'Look for updates first.',
     nothing_to_update: 'There is nothing to update.',
     update_busy: 'An update or a look for updates is going on already.',
+    update_running:
+      'The system is being updated. Background tasks start once the update is done; scheduled ones run then by themselves.',
     password_locked: 'The password of this account cannot be changed here; ask an administrator.',
     delivery_failed: 'The message did not go out',
     change_pending: 'Another change waits for confirmation.',

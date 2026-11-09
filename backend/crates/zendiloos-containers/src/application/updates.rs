@@ -177,6 +177,10 @@ impl Containers {
     /// With the machine's local weekday (0 is Monday) and minute of the
     /// day: updates when the schedule says so.
     pub async fn scheduled(&self, weekday: usize, minute: u16) -> Result<Option<Job>, ContainersError> {
+        if let Some(why) = self.ports.jobs.held().await {
+            tracing::info!(why, "containers: no image updates while the system is updated");
+            return Ok(None);
+        }
         let settings = self.ports.updates.settings().await?;
         match settings.schedule {
             Some(schedule) if settings.check && schedule.due(weekday, minute) => {

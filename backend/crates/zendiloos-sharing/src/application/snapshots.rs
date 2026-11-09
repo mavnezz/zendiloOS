@@ -161,8 +161,12 @@ impl SharingUseCases {
 
     /// Takes the snapshots that are due and lets go of those the schedules
     /// no longer keep; call every few minutes. A failure is reported once
-    /// per share as a notification, until a snapshot works again.
+    /// per share as a notification, until a snapshot works again. While an
+    /// update of the system installs, what is due waits for the next call.
     pub async fn take_due_snapshots(&self) {
+        if let Some(why) = self.ports.jobs.held().await {
+            return tracing::info!(why, "snapshots: what is due waits until the update is done");
+        }
         let request = RequestContext::default();
         let (shares, all) = match (self.ports.shares.list().await, self.ports.host.snapshots(&request).await)
         {

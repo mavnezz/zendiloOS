@@ -2029,11 +2029,21 @@ binary as `run-packages <id> <task>` outside the sandbox; the runner records
 each step in `/var/lib/zendiloos-packages/run.json`, which the agent reads
 back. A run outlives a restart of the agent and of zendiloosd, which matters
 when it installs zendiloOS: the package's maintainer scripts restart both,
-and the page follows the run from its record once zendiloosd is back. An
-update does not start while background jobs run (`jobs_running`, the
-detail names them, recorded as denied; asked again once the release has
-come): a stopping agent first sees its running operations through, and
-the upgrade would wait for that, for hours maybe. The
+and the page follows the run from its record once zendiloosd is back.
+
+**An update and long work exclude each other**, by refusal, never by
+waiting in a queue: an update (and finishing one) does not start while
+background jobs run (`jobs_running`, the detail names them, recorded as
+denied; asked again once the release has come): a stopping agent first
+sees its running operations through, and the upgrade would wait for that,
+for hours maybe. And from the moment an update is decided until its run
+on the NAS ended, no job starts (`Jobs` asks the update before it records
+one: backups, restores, deploys and image updates, copies, pool changes,
+a snapshot's restore, every kind) nor does a scrub: they are refused with
+`update_running` (409). A job asked to start counts as running from that
+moment, so of a job and an update that start together one sees the
+other. Schedules that come due meanwhile do not fail: backups, image
+updates and snapshots stay due and run once the update is done. The
 record of the latest run is replaced by the next one; an update's goes to
 `update.json` as well, which only the next update replaces, so a check or
 a plugin installed right after an update leaves how it went for the page

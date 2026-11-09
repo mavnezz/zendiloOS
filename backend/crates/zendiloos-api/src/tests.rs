@@ -2310,6 +2310,32 @@ async fn plans_explain_why_a_disk_cannot_be_used() {
 }
 
 #[tokio::test]
+async fn no_job_nor_scrub_starts_while_an_update_installs() {
+    struct Installing;
+    #[async_trait::async_trait]
+    impl zendiloos_kernel::WorkHold for Installing {
+        async fn holding(&self) -> Option<String> {
+            Some("system.update".into())
+        }
+    }
+
+    let h = Harness::new();
+    h.jobs.hold_while(Arc::new(Installing));
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let scrub = h.send(empty(with_csrf(post("/api/v1/storage/pools/tank/scrub"), &admin))).await;
+    assert_problem(&scrub, StatusCode::CONFLICT, "update_running");
+    assert_eq!(scrub.body["detail"], "system.update");
+    let destroy = h
+        .send(json(
+            with_csrf(post("/api/v1/storage/pools/tank/destroy"), &admin),
+            json!({ "confirm": "tank" }),
+        ))
+        .await;
+    assert_problem(&destroy, StatusCode::CONFLICT, "update_running");
+    assert!(h.storage.calls().is_empty(), "nothing ran: {:?}", h.storage.calls());
+}
+
+#[tokio::test]
 async fn pools_are_destroyed_replaced_and_scrubbed_by_admins_only() {
     let h = Harness::new();
     let admin = h.sign_in("alice", Role::Admin).await;

@@ -7,11 +7,11 @@
 
 use std::collections::BTreeMap;
 use std::future::Future;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use async_trait::async_trait;
 use tokio::sync::broadcast;
-use zendiloos_kernel::{Actor, Clock, PortError, RunningWork, Timestamp};
+use zendiloos_kernel::{Actor, Clock, PortError, RunningWork, Timestamp, WorkHeld, WorkHold};
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
@@ -223,20 +223,29 @@ struct Inner {
     repository: Arc<dyn JobRepository>,
     clock: Arc<dyn Clock>,
     events: broadcast::Sender<Job>,
-    /// The jobs this process runs now, as kind and target.
-    running: Mutex<BTreeMap<JobId, (String, Option<String>)>>,
+    /// The jobs this process runs now, as kind and target, from the moment
+    /// they are asked to start, in that order.
+    running: Mutex<Running>,
+    /// What keeps new jobs from starting, once set ([`Jobs::hold_while`]).
+    hold: OnceLock<Arc<dyn WorkHold>>,
 }
 
-/// Takes a job off [`Inner::running`] once its work ended, also when the
-/// work panicked.
+#[derive(Default)]
+struct Running {
+    next: u64,
+    jobs: BTreeMap<u64, (String, Option<String>)>,
+}
+
+/// Takes a job off [`Inner::running`] once its work ended, or it did not
+/// start, also when the work panicked.
 struct Ended {
     jobs: Jobs,
-    id: JobId,
+    turn: u64,
 }
 
 impl Drop for Ended {
     fn drop(&mut self) {
-        self.jobs.inner.running.lock().unwrap_or_else(PoisonError::into_inner).remove(&self.id);
+        self.jobs.inner.running.lock().unwrap_or_else(PoisonError::into_inner).jobs.remove(&self.turn);
     }
 }
 
@@ -327,7 +336,31 @@ impl Progress {
 impl Jobs {
     pub fn new(repository: Arc<dyn JobRepository>, clock: Arc<dyn Clock>) -> Self {
         let (events, _) = broadcast::channel(64);
-        Self { inner: Arc::new(Inner { repository, clock, events, running: Mutex::new(BTreeMap::new()) }) }
+        Self {
+            inner: Arc::new(Inner {
+                repository,
+                clock,
+                events,
+                running: Mutex::default(),
+                hold: OnceLock::new(),
+            }),
+        }
+    }
+
+    /// No job starts while `hold` holds new work back (an update of the
+    /// system installing): [`Jobs::start`] refuses with [`WorkHeld`]. Set
+    /// once, after both are made; a later call changes nothing.
+    pub fn hold_while(&self, hold: Arc<dyn WorkHold>) {
+        let _ = self.inner.hold.set(hold);
+    }
+
+    /// What holds new jobs back now, if anything: a schedule that comes due
+    /// meanwhile waits rather than be refused.
+    pub async fn held(&self) -> Option<String> {
+        match self.inner.hold.get() {
+            Some(hold) => hold.holding().await,
+            None => None,
+        }
     }
 
     /// Marks jobs of a previous run as interrupted. Call once at startup.
@@ -336,7 +369,9 @@ impl Jobs {
     }
 
     /// Records a job and runs `work` in the background. Returns the job as
-    /// recorded; its outcome arrives through [`Jobs::subscribe`].
+    /// recorded; its outcome arrives through [`Jobs::subscribe`]. Refused,
+    /// with [`WorkHeld`] as the error's source, while something holds new
+    /// work back ([`Jobs::hold_while`]).
     pub async fn start<F, Fut>(
         &self,
         kind: &str,
@@ -348,6 +383,19 @@ impl Jobs {
         F: FnOnce(Progress) -> Fut + Send + 'static,
         Fut: Future<Output = Result<(), JobError>> + Send + 'static,
     {
+        // Counted as running before the hold is asked: an update starting
+        // meanwhile sees it, or this one sees the update.
+        let turn = {
+            let mut running = self.inner.running.lock().unwrap_or_else(PoisonError::into_inner);
+            running.next += 1;
+            let turn = running.next;
+            running.jobs.insert(turn, (kind.to_owned(), target.clone()));
+            turn
+        };
+        let ended = Ended { jobs: self.clone(), turn };
+        if let Some(why) = self.held().await {
+            return Err(PortError::new("background work", WorkHeld(why)));
+        }
         let job = self
             .inner
             .repository
@@ -360,12 +408,6 @@ impl Jobs {
             })
             .await?;
         let _ = self.inner.events.send(job.clone());
-        self.inner
-            .running
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(job.id, (job.kind.clone(), job.target.clone()));
-        let ended = Ended { jobs: self.clone(), id: job.id };
         let progress = Progress::new(self.clone(), job.clone());
         let jobs = self.clone();
         tokio::spawn(async move {
@@ -418,7 +460,7 @@ impl Jobs {
 
     /// The jobs this process runs now, oldest first, as kind and target.
     pub fn running(&self) -> Vec<(String, Option<String>)> {
-        self.inner.running.lock().unwrap_or_else(PoisonError::into_inner).values().cloned().collect()
+        self.inner.running.lock().unwrap_or_else(PoisonError::into_inner).jobs.values().cloned().collect()
     }
 }
 
@@ -639,6 +681,68 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         panic!("still listed as running");
+    }
+
+    /// Holds new work back while `held` is set; tells when it was asked.
+    #[derive(Default)]
+    struct Gate {
+        held: Mutex<Option<String>>,
+        asked: tokio::sync::Notify,
+        go: tokio::sync::Notify,
+        wait: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait]
+    impl WorkHold for Gate {
+        async fn holding(&self) -> Option<String> {
+            if self.wait.load(std::sync::atomic::Ordering::SeqCst) {
+                self.asked.notify_one();
+                self.go.notified().await;
+            }
+            self.held.lock().unwrap().clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn no_job_starts_while_an_update_holds_new_work_back() {
+        let (jobs, repository) = jobs();
+        assert_eq!(jobs.held().await, None, "nothing holds without a hold");
+        let gate = Arc::new(Gate::default());
+        jobs.hold_while(gate.clone());
+        *gate.held.lock().unwrap() = Some("system.update".into());
+
+        let refused =
+            jobs.start("containers.volume_backup", Some("db".into()), None, |_| async { Ok(()) }).await;
+        let error = refused.unwrap_err();
+        let why = std::error::Error::source(&error).and_then(|source| source.downcast_ref::<WorkHeld>());
+        assert_eq!(why, Some(&WorkHeld("system.update".into())));
+        assert!(repository.all().is_empty(), "nothing recorded");
+        assert!(jobs.running().is_empty());
+        assert_eq!(jobs.held().await.as_deref(), Some("system.update"));
+
+        *gate.held.lock().unwrap() = None;
+        jobs.start("storage.scrub", Some("tank".into()), None, |_| std::future::pending()).await.unwrap();
+        assert_eq!(repository.all().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_job_counts_as_running_while_it_asks_whether_it_may_start() {
+        let (jobs, _) = jobs();
+        let gate = Arc::new(Gate::default());
+        gate.wait.store(true, std::sync::atomic::Ordering::SeqCst);
+        jobs.hold_while(gate.clone());
+        let starting = {
+            let jobs = jobs.clone();
+            tokio::spawn(async move {
+                jobs.start("files.copy", Some("photos".into()), None, |_| std::future::pending()).await
+            })
+        };
+        gate.asked.notified().await;
+        // An update deciding now sees it.
+        assert_eq!(RunningWork::running(&jobs).await, ["files.copy photos"]);
+        gate.go.notify_one();
+        starting.await.unwrap().unwrap();
+        assert_eq!(RunningWork::running(&jobs).await, ["files.copy photos"]);
     }
 
     #[tokio::test]

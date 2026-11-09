@@ -25,6 +25,21 @@ impl RunningWork for NoWork {
     }
 }
 
+/// What keeps new background work from starting: an update of the system
+/// while it installs. Jobs ask it before they start, and are refused with
+/// [`WorkHeld`] meanwhile; the update starts only while no job runs.
+#[async_trait]
+pub trait WorkHold: Send + Sync {
+    /// What holds new work back now, named for a person to read (e.g.
+    /// `system.update`), if anything.
+    async fn holding(&self) -> Option<String>;
+}
+
+/// Why background work did not start: what holds it back, named.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{0} goes on: nothing else starts until it is done")]
+pub struct WorkHeld(pub String);
+
 /// Several kinds of background work, as one.
 #[derive(Clone, Default)]
 pub struct AllWork(pub Vec<Arc<dyn RunningWork>>);

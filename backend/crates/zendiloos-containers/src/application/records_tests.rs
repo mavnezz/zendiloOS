@@ -151,6 +151,38 @@ async fn a_plan_whose_volume_is_gone_pauses_and_runs_again_only_once_resumed() {
     assert!(!saved.plan.paused);
 }
 
+/// Holds new work back while set, as an update of the system installing.
+#[derive(Default)]
+struct Updating(Mutex<bool>);
+
+#[async_trait]
+impl zendiloos_kernel::WorkHold for Updating {
+    async fn holding(&self) -> Option<String> {
+        self.0.lock().unwrap().then(|| "system.update".to_owned())
+    }
+}
+
+#[tokio::test]
+async fn a_backup_due_while_the_system_is_updated_runs_once_the_update_is_done() {
+    let (t, _, clock) = setup();
+    let updating = Arc::new(Updating::default());
+    t.job_service.hold_while(updating.clone());
+    t.engine.volumes.lock().unwrap().push(crate::testing::volume("db", None));
+    t.containers.set_backup_plan("db", nightly(7), &alice(), &context()).await.unwrap();
+
+    *updating.0.lock().unwrap() = true;
+    *clock.0.lock().unwrap() = Timestamp::from_unix_seconds(MIDNIGHT + 2 * HOUR + 60);
+    assert!(t.containers.run_due_backups().await.is_empty(), "it waits");
+    assert!(t.notifications.all().is_empty(), "no failure told");
+    let by_hand = t.containers.back_up_now("db", &alice(), &context()).await;
+    assert!(matches!(by_hand, Err(ContainersError::Port(_))), "refused by hand: {by_hand:?}");
+    assert!(t.jobs.all().is_empty());
+
+    *updating.0.lock().unwrap() = false;
+    *clock.0.lock().unwrap() = Timestamp::from_unix_seconds(MIDNIGHT + 2 * HOUR + 1800);
+    assert_eq!(t.containers.run_due_backups().await.len(), 1, "due still, once the update is done");
+}
+
 #[tokio::test]
 async fn a_backup_is_removed_by_hand_its_files_and_its_record() {
     let (t, audit, _) = setup();

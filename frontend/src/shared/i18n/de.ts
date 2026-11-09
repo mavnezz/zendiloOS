@@ -2964,6 +2964,8 @@ const de: Messages = {
     not_checked: 'Suchen Sie zuerst nach Updates.',
     nothing_to_update: 'Es gibt nichts zu aktualisieren.',
     update_busy: 'Es läuft bereits ein Update oder eine Suche nach Updates.',
+    update_running:
+      'Das System wird gerade aktualisiert. Aufgaben im Hintergrund starten, sobald das Update fertig ist; geplante laufen dann von selbst.',
     password_locked:
       'Das Passwort dieses Kontos lässt sich hier nicht ändern; wenden Sie sich an einen Administrator.',
     not_testing: 'Die Platte testet sich gerade nicht.',

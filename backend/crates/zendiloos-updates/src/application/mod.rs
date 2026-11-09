@@ -5,7 +5,9 @@ pub mod ports;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use zendiloos_kernel::{Actor, AuditEntry, AuditLog, Clock, Outcome, PortError, RequestContext, RunningWork};
+use zendiloos_kernel::{
+    Actor, AuditEntry, AuditLog, Clock, Outcome, PortError, RequestContext, RunningWork, WorkHold,
+};
 use zendiloos_notify::{Level, NewNotification, Notifier};
 
 use self::ports::{HostError, HostPackages, ReleaseSource, UpdateStore};
@@ -88,6 +90,27 @@ pub struct Updates {
     /// the other: what was found for one channel is never kept once
     /// another is set.
     saving: Arc<tokio::sync::Mutex<()>>,
+    /// An update or finishing one is decided and being started: new work
+    /// is held back from then on ([`WorkHold`]), and once its run is on
+    /// the NAS, for as long as that runs.
+    starting: Arc<Mutex<bool>>,
+}
+
+/// Holds new work back while it lives, from before an update looks at what
+/// runs until its run is on the NAS (or did not start).
+struct Starting(Arc<Mutex<bool>>);
+
+impl Starting {
+    fn new(flag: &Arc<Mutex<bool>>) -> Self {
+        *flag.lock().unwrap_or_else(PoisonError::into_inner) = true;
+        Self(Arc::clone(flag))
+    }
+}
+
+impl Drop for Starting {
+    fn drop(&mut self) {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = false;
+    }
 }
 
 impl Updates {
@@ -100,6 +123,7 @@ impl Updates {
             phase: Arc::new(Mutex::new(Phase::Idle)),
             busy: Arc::new(tokio::sync::Mutex::new(())),
             saving: Arc::new(tokio::sync::Mutex::new(())),
+            starting: Arc::new(Mutex::new(false)),
         }
     }
 
@@ -296,6 +320,9 @@ impl Updates {
     /// copy, a share's permissions, a pool's change), for hours maybe.
     pub async fn apply(&self, actor: &Actor, request: &RequestContext) -> Result<(), UpdatesError> {
         let busy = Arc::clone(&self.busy).try_lock_owned().map_err(|_| UpdatesError::Busy)?;
+        // Held before looking: a job asked to start meanwhile is seen here
+        // or sees the hold.
+        let starting = Starting::new(&self.starting);
         let running = self.ports.work.running().await;
         if !running.is_empty() {
             self.audit("system.update", Outcome::Denied, actor, request, "").await;
@@ -339,6 +366,7 @@ impl Updates {
                 Ok(id) => {
                     tracing::info!(run = id, release = target, "updates: the update runs");
                     this.set_phase(Phase::Idle);
+                    this.until_recorded(&id, starting).await;
                 }
                 Err(error) => {
                     tracing::warn!(%error, "updates: the update could not start");
@@ -357,6 +385,7 @@ impl Updates {
     /// is configured.
     pub async fn finish(&self, actor: &Actor, request: &RequestContext) -> Result<(), UpdatesError> {
         let _busy = self.busy.try_lock().map_err(|_| UpdatesError::Busy)?;
+        let starting = Starting::new(&self.starting);
         let running = self.ports.work.running().await;
         if !running.is_empty() {
             self.audit("system.update_finish", Outcome::Denied, actor, request, "").await;
@@ -372,7 +401,22 @@ impl Updates {
         self.audit("system.update_finish", outcome, actor, request, "").await;
         let id = started?;
         tracing::info!(run = id, "updates: finishing the update that was cut off");
+        let this = self.clone();
+        tokio::spawn(async move { this.until_recorded(&id, starting).await });
         Ok(())
+    }
+
+    /// Keeps `starting` until the run `id` is on the NAS's record (a moment
+    /// after systemd started it, a minute at most), which holds new work
+    /// back from then on while it runs.
+    async fn until_recorded(&self, id: &str, starting: Starting) {
+        for _ in 0..300 {
+            match self.ports.host.latest(&RequestContext::default()).await {
+                Ok(Some(run)) if run.id == id => break,
+                _ => tokio::time::sleep(Duration::from_millis(200)).await,
+            }
+        }
+        drop(starting);
     }
 
     pub async fn settings(&self) -> Result<UpdateSettings, UpdatesError> {
@@ -505,6 +549,29 @@ impl Updates {
 /// run while it is that update.
 fn updated<'a>(latest: Option<&'a UpdateRun>, update: Option<&'a UpdateRun>) -> Option<&'a UpdateRun> {
     update.or(latest.filter(|run| run.installs))
+}
+
+/// While an update is started or installs, no new job starts: the
+/// package's upgrade restarts the agents, which see their operations
+/// through first, and zendiloosd, which cuts its own jobs off; Debian's
+/// updates may restart Docker and Samba under them.
+#[async_trait::async_trait]
+impl WorkHold for Updates {
+    async fn holding(&self) -> Option<String> {
+        if *self.starting.lock().unwrap_or_else(PoisonError::into_inner) {
+            return Some("system.update".to_owned());
+        }
+        match self.ports.host.latest(&RequestContext::default()).await {
+            Ok(Some(run)) if run.installs && run.state == RunState::Running => {
+                Some("system.update".to_owned())
+            }
+            Ok(_) => None,
+            Err(error) => {
+                tracing::warn!(%error, "updates: cannot tell whether an update installs");
+                None
+            }
+        }
+    }
 }
 
 /// An update under way is background work: reboots wait for it.
@@ -764,6 +831,91 @@ mod tests {
 
         s.work.0.lock().unwrap().clear();
         s.updates.apply(&alice(), &request).await.unwrap();
+    }
+
+    /// GitHub as [`FakeReleases`], whose download waits until `go` once it
+    /// began.
+    struct SlowDownload {
+        releases: Arc<FakeReleases>,
+        began: tokio::sync::Notify,
+        go: tokio::sync::Notify,
+    }
+
+    #[async_trait]
+    impl ReleaseSource for SlowDownload {
+        async fn releases(&self) -> Result<Vec<Release>, String> {
+            self.releases.releases().await
+        }
+
+        async fn download(&self, release: &Release) -> Result<(), String> {
+            self.began.notify_one();
+            self.go.notified().await;
+            self.releases.download(release).await
+        }
+    }
+
+    #[tokio::test]
+    async fn new_work_waits_from_the_decision_to_update_until_the_update_installed() {
+        let s = setup();
+        let request = RequestContext::default();
+        let releases = Arc::new(SlowDownload {
+            releases: s.releases.clone(),
+            began: tokio::sync::Notify::new(),
+            go: tokio::sync::Notify::new(),
+        });
+        let updates =
+            Updates::new(UpdatesPorts { releases: releases.clone(), ..s.updates.ports.clone() }, "0.1.0");
+        assert_eq!(WorkHold::holding(&updates).await, None, "nothing holds");
+
+        updates.check(None, &request).await.unwrap();
+        updates.apply(&alice(), &request).await.unwrap();
+        releases.began.notified().await;
+        assert_eq!(
+            WorkHold::holding(&updates).await.as_deref(),
+            Some("system.update"),
+            "while the release comes"
+        );
+        releases.go.notify_one();
+        for _ in 0..200 {
+            if WorkHold::holding(&updates).await.is_none() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(*s.host.started.lock().unwrap(), [Some("0.2.0".to_owned())]);
+        assert_eq!(WorkHold::holding(&updates).await, None, "the fake run ended at once");
+
+        // A run that installs holds new work back until it ends, finishing
+        // an update too; a check does not.
+        let run = |id: &str, installs: bool, finishes: bool, state: RunState| UpdateRun {
+            id: id.into(),
+            installs,
+            finishes,
+            state,
+            step: "debian".into(),
+            started_at: Timestamp::from_unix_seconds(100),
+            finished_at: None,
+            error: None,
+            zendiloos: None,
+            report: None,
+        };
+        s.host.record(run("run7", true, false, RunState::Running));
+        assert_eq!(WorkHold::holding(&updates).await.as_deref(), Some("system.update"));
+        s.host.record(run("finish1", true, true, RunState::Running));
+        assert_eq!(WorkHold::holding(&updates).await.as_deref(), Some("system.update"));
+        s.host.record(run("check9", false, false, RunState::Running));
+        assert_eq!(WorkHold::holding(&updates).await, None);
+    }
+
+    #[tokio::test]
+    async fn an_update_refused_for_running_work_holds_nothing_back() {
+        let s = setup();
+        let request = RequestContext::default();
+        s.updates.check(None, &request).await.unwrap();
+        *s.work.0.lock().unwrap() = vec!["containers.volume_backup db".into()];
+        assert!(matches!(s.updates.apply(&alice(), &request).await, Err(UpdatesError::JobsRunning(_))));
+        assert!(matches!(s.updates.finish(&alice(), &request).await, Err(UpdatesError::JobsRunning(_))));
+        assert_eq!(WorkHold::holding(&s.updates).await, None);
     }
 
     #[tokio::test]

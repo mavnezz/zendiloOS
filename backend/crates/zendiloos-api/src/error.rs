@@ -8,6 +8,7 @@ use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 use utoipa::ToSchema;
 use zendiloos_identity::application::IdentityError;
+use zendiloos_kernel::WorkHeld;
 
 /// Error body as defined by RFC 9457 (`application/problem+json`).
 #[derive(Debug, Serialize, ToSchema)]
@@ -173,10 +174,15 @@ impl IntoResponse for ApiError {
             ApiError::LastAdmin => (StatusCode::CONFLICT, "last_admin", None),
             ApiError::OwnAccount => (StatusCode::CONFLICT, "own_account", None),
             ApiError::Rejected { status, code, detail } => (status, code, detail),
-            ApiError::Internal(error) => {
-                tracing::error!(error = %error_chain(error.as_ref()), "request failed");
-                (StatusCode::INTERNAL_SERVER_ERROR, "internal", None)
-            }
+            // A job refused while an update installs, wherever it was to
+            // start: what holds it back is said.
+            ApiError::Internal(error) => match held_back(error.as_ref()) {
+                Some(held) => (StatusCode::CONFLICT, "update_running", Some(held.0.clone())),
+                None => {
+                    tracing::error!(error = %error_chain(error.as_ref()), "request failed");
+                    (StatusCode::INTERNAL_SERVER_ERROR, "internal", None)
+                }
+            },
         };
         let problem = Problem {
             kind: "about:blank".to_owned(),
@@ -192,6 +198,18 @@ impl IntoResponse for ApiError {
         }
         response
     }
+}
+
+/// What holds new work back, if `error` or one of its causes says so.
+fn held_back<'a>(error: &'a (dyn Error + 'static)) -> Option<&'a WorkHeld> {
+    let mut cause = Some(error);
+    while let Some(error) = cause {
+        if let Some(held) = error.downcast_ref::<WorkHeld>() {
+            return Some(held);
+        }
+        cause = error.source();
+    }
+    None
 }
 
 /// `outer: inner: innermost`, so the log shows the root cause.
