@@ -1,6 +1,8 @@
 # Build environment of the zendiloos Debian package (`just deb`). git reads
 # the commits a development build's notes list (scripts/release-notes.sh).
-FROM debian:trixie
+# Pinned by digest, as tags can be moved. A newer one:
+# `docker buildx imagetools inspect debian:trixie`, its index digest here.
+FROM debian:trixie@sha256:9c6e381421d0f48d1b8133e573f33c185ee16cbf505eda9c4a8a4791b25ea8a6
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \

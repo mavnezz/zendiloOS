@@ -17,7 +17,7 @@ Versions follow Debian's order (`scripts/release-version.sh`):
 | --- | --- |
 | tag `v1.2.0` | `1.2.0` |
 | tag `v1.2.0-rc.1` | `1.2.0~rc.1` (before `1.2.0`) |
-| commit on `main` after `v1.2.0` | `1.2.0+dev.<UTC time>.g<commit>` |
+| commit on `main` after `v1.2.0` | `1.2.0+dev.<the commit's UTC time>.g<commit>` |
 
 A NAS takes only a version newer than its own, so an administrator moving
 from Test or Development back to Stable stays on the version installed until
@@ -64,8 +64,8 @@ hand (`apt install ./zendiloos_….deb`).
 1. A pull request adds the release's entry to `debian/changelog` and sets
    the same version in `backend/Cargo.toml` (`[workspace.package]`, with
    `-` where Debian writes `~`); `just check` fails while the two differ.
-   Without the entry a tag build only changes the version on the entry's
-   first line and keeps the previous entry's text.
+   A tag whose version is not the newest entry's fails the package build,
+   so a release candidate needs an entry of its own too.
 2. On its merge commit in `main`:
 
    ```sh
@@ -73,7 +73,8 @@ hand (`apt install ./zendiloos_….deb`).
    git push origin v1.2.0-rc.1
    ```
 
-   Tags `v*` cannot be moved or deleted, so check the version first.
+   Tags `v*` cannot be moved or deleted, so check the version first. A tag
+   on a commit that `main` does not contain is not released.
 
 CI checks, builds the package with the tag's version, signs `SHA256SUMS`
 and creates the GitHub release (a pre-release for a tag with a `-`), with
@@ -81,7 +82,10 @@ notes generated from the pull requests. They are what the NAS shows as the
 release notes, so replace them with notes written for people:
 `gh release edit v1.2.0-rc.1 --notes-file notes.md`. Pushes to `main` replace the
 release `dev`; its notes list the changes since the last release tag (the
-newest 50 commit subjects).
+newest 50 commit subjects). A run of `main` is never cancelled halfway, so
+`dev` is not left deleted; one that `main` has moved past publishes
+nothing, and the version counts from the commit's time, so a re-run of an
+older commit never looks newer.
 
 ## What is new in the installed version
 

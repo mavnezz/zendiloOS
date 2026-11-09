@@ -3,6 +3,8 @@
 # as scripts/install-tools.sh pins them, so a green check on a workstation
 # means a green CI.
 # Actions are pinned to commit SHAs; tags can be moved, commits cannot.
+# No job keeps the token in the checkout's git configuration: the release
+# job hands it to gh alone.
 #
 # A push to main or of a tag `v*` also publishes a release
 # (docs/releases.md): a tag `v1.2.3` a stable one, `v1.2.3-rc.1` a test one,
@@ -18,9 +20,13 @@ on:
 permissions:
   contents: read
 
+# A newer push to a pull request cancels the run before it. On main and
+# for tags a run is never cut off, or a development build could be deleted
+# and not yet published again; a newer push waits instead, and an older run
+# finding main moved on publishes nothing (Release source, below).
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   check:
@@ -28,6 +34,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # The toolchain and its components as rust-toolchain.toml names them.
       - name: Rust
@@ -97,15 +105,28 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: just
         run: |
           scripts/install-tools.sh just
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
+      # A tag must name the version debian/changelog's newest entry has,
+      # which the crates have too (just version-check): the package, its
+      # notes and what zendiloOS reports then agree.
       - name: Version
         id: version
-        run: echo "version=$(scripts/release-version.sh)" >> "$GITHUB_OUTPUT"
+        run: |
+          version=$(scripts/release-version.sh)
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            entry=$(sed -n '1s/^zendiloos (\([^)]*\)).*/\1/p' debian/changelog)
+            if [ "$version" != "$entry" ]; then
+              echo "::error::The tag $GITHUB_REF_NAME is $version, debian/changelog's newest entry $entry (docs/releases.md)"
+              exit 1
+            fi
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: just deb
         run: ZENDILOOS_VERSION='${{ steps.version.outputs.version }}' just deb
@@ -132,6 +153,24 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
+
+      # Only what main holds is released: a tag on a commit main does not
+      # contain is refused, and a run of main that main has moved past (a
+      # re-run, or one a newer push waited behind) publishes nothing, so the
+      # development build never goes back to older code.
+      - name: Release source
+        run: |
+          git fetch --quiet --no-tags origin main
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            if ! git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD; then
+              echo "::error::$GITHUB_REF_NAME is not on main (docs/releases.md)"
+              exit 1
+            fi
+          elif [ "$(git rev-parse FETCH_HEAD)" != "$GITHUB_SHA" ]; then
+            echo "::notice::main is at $(git rev-parse --short FETCH_HEAD) now; this run publishes nothing"
+            echo "SKIP_RELEASE=1" >> "$GITHUB_ENV"
+          fi
 
       # xorriso builds the ISO, minisign signs the checksums.
       - name: Tools
@@ -149,6 +188,7 @@ jobs:
       # stable), all (and every development build) or off. It is only the
       # way in: afterwards the NAS updates itself.
       - name: Installation ISO
+        if: env.SKIP_RELEASE != '1'
         env:
           ISO: ${{ vars.ZENDILOOS_ISO || 'stable' }}
         run: |
@@ -167,6 +207,7 @@ jobs:
           mv dist/zendiloos-*-amd64-netinst.iso dist/zendiloos-amd64-netinst.iso
 
       - name: Sign
+        if: env.SKIP_RELEASE != '1'
         env:
           MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
           MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
