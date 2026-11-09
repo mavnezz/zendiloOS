@@ -5,8 +5,10 @@
 #   1. the password policy: a rule set by an administrator refuses a
 #      password, common passwords are always refused
 #   2. a group denied a share keeps its members out, over SMB and in the
-#      file system, even a member with a rule of their own; members who
-#      join and leave the group follow
+#      file manager, even a member with a rule of their own: Samba lists
+#      the group as invalid users, and the share's folder names nobody;
+#      members who join and leave the group follow on their next
+#      connection, without a job going through the share's files
 #   3. personal folders: on a pool, given to one account with a quota,
 #      reachable over SMB as the share home and in the file manager by that
 #      account only
@@ -76,7 +78,25 @@ smb() { # share account password command…
 }
 smb_ok() { local out; out=$(smb "$@"); ! grep -q NT_STATUS <<<"$out" || fail "SMB to $1 as $2: $out"; }
 smb_refused() { local out; out=$(smb "$@"); grep -q NT_STATUS <<<"$out" || fail "SMB to $1 as $2 connected: $out"; }
-acl_of() { vm "sudo getfacl -cp '$1' 2>/dev/null"; }
+# Whether a new connection works, without failing the test.
+smb_connects() { local out; out=$(smb "$@"); ! grep -q NT_STATUS <<<"$out"; }
+acl_of() { vm "sudo getfacl -cpE '$1' 2>/dev/null"; }
+# The share's folder names nobody but the group zendiloos-files: the rules
+# are Samba's and zendiloosd's, not the files'.
+nobody_named() {
+    local named
+    named=$(acl_of "$1" | grep -E '^(default:)?(user|group):[^:]+:' | grep -vE '^(default:)?group:zendiloos-files:' || true)
+    [[ -z $named ]] || fail "$1 names $(tr '\n' ' ' <<<"$named")"
+}
+# The newest job's ID; 0 without any.
+last_job() { call GET '/jobs?limit=1' | jq '.[0].id // 0'; }
+# No job since job $1 worked on the files of share $2.
+no_walk() {
+    local jobs
+    jobs=$(call GET '/jobs?limit=200' | jq -c --argjson after "$1" --arg share "$2" \
+        '[.[] | select(.id > $after and (.target == $share or .kind == "sharing.apply_access")) | {id, kind, target}]')
+    [[ $jobs == '[]' ]] || fail "jobs worked on the files of $2: $jobs"
+}
 
 carl_secret='pictures 4 the album'
 dora_secret='stories 9 for reading'
@@ -131,21 +151,31 @@ share=$(call POST /shares "$(jq -n --arg pool "$pool" --argjson carl "$carl" --a
     '{name:"albums",pool:$pool,access:[{kind:"account",id:$carl,access:"read_write"},{kind:"group",id:$guests,access:"read_write"}]}')" \
     | jq -er .id) || fail "albums"
 smb_ok albums dora "$dora_secret" 'ls'
-jobs=$(call PUT "/shares/access/group/$guests" "{\"rules\":[{\"share_id\":$share,\"rule\":\"deny\"}]}")
-for job in $(jq -r '.jobs[].id' <<<"$jobs"); do job_succeeded "$job"; done
+since=$(last_job)
+[[ $(status PUT "/shares/access/group/$guests" "{\"rules\":[{\"share_id\":$share,\"rule\":\"deny\"}]}") == 204 ]] \
+    || fail "cannot deny guests: $(cat "$work/body")"
 smb_refused albums dora "$dora_secret" 'ls'
 smb_ok albums carl "$carl_secret" 'ls'
-acl_of "/volume$volume/albums" | grep -qx 'user:dora:---' || fail "no entry keeps dora out: $(acl_of "/volume$volume/albums")"
+section=$(vm "sudo testparm -s --section-name=albums 2>/dev/null")
+grep -qE '^\s*invalid users = (.* )?@guests( |$)' <<<"$section" || fail "Samba does not keep guests out: $section"
+nobody_named "/volume$volume/albums"
 sign_in dora dora "$dora_secret"
 call_as dora GET /files/shares | jq -e 'all(.name != "albums")' >/dev/null || fail "dora still sees albums"
 
 echo "   carl joins the denied group, then leaves it"
-call PATCH "/groups/$guests" "{\"members\":[$dora,$carl]}" >/dev/null
-wait_for "carl's entry" "acl_of /volume$volume/albums | grep -qx 'user:carl:---'"
+joined=$(call PATCH "/groups/$guests" "{\"members\":[$dora,$carl]}")
+jq -e --argjson carl "$carl" '(.members | any(. == $carl)) and (has("pending_shares") | not)' <<<"$joined" >/dev/null \
+    || fail "carl did not join guests: $joined"
+# Samba reads the change within moments; each connection is checked anew.
+wait_for "SMB to refuse carl" "! smb_connects albums carl \"\$carl_secret\" ls" 20
 smb_refused albums carl "$carl_secret" 'ls'
-call PATCH "/groups/$guests" "{\"members\":[$dora]}" >/dev/null
-wait_for "carl's own rule back" "acl_of /volume$volume/albums | grep -qx 'user:carl:rwx'"
+left=$(call PATCH "/groups/$guests" "{\"members\":[$dora]}")
+jq -e --argjson carl "$carl" '(.members | any(. == $carl) | not) and (has("pending_shares") | not)' <<<"$left" >/dev/null \
+    || fail "carl did not leave guests: $left"
+wait_for "carl's own rule back" "smb_connects albums carl \"\$carl_secret\" ls" 20
 smb_ok albums carl "$carl_secret" 'ls'
+no_walk "$since" albums
+nobody_named "/volume$volume/albums"
 
 say "3. Personal folders"
 call PUT /homes "{\"pool\":\"$pool\"}" | jq -e --arg pool "$pool" '.location.pool == $pool' >/dev/null \

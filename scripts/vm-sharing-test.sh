@@ -5,15 +5,20 @@
 #   1. a pool and two accounts, anna and ben, and a share "photos" where
 #      anna may write and ben may only read
 #   2. over SMB anna writes, ben reads and cannot write; others cannot
-#      connect; the share's directory carries the matching ACLs
-#   3. the share is exported read-only over NFS to the VM itself
+#      connect; the share's folder is root:zendiloos-files with the one
+#      static ACL of that group, and what is written takes the owner of the
+#      folder it lands in and the group zendiloos-files
+#   3. the share is exported read-only over NFS to the VM itself, everyone
+#      there squashed to zendiloos-files
 #   4. the file manager, signed in as anna and ben, sees what SMB sees:
-#      files from either side, owners, ACLs, refusals; nobody else sees
-#      the share, and neither `..` nor a symbolic link leads out of it
-#   5. ben loses access: the change reaches existing files in a job and
-#      SMB refuses him
-#   6. deleting over SMB moves files to each writer's own recycle bin;
-#      turned to read only again, ben owns nothing in the share any more
+#      files from either side, owners, refusals; nobody else sees the
+#      share, and neither `..` nor a symbolic link leads out of it
+#   5. ben loses access: at once, without a job; SMB and the file manager
+#      refuse him
+#   6. deleting over SMB moves files to the share's recycle bin, a folder
+#      for each person who deleted, which everyone with access sees;
+#      turned to read only again, ben reads what he wrote but changes
+#      nothing
 #   7. the share and the pool are deleted again
 #   8. Windows (WS-Discovery) and macOS (Bonjour) can find the NAS
 #
@@ -90,6 +95,30 @@ smb() { # account password command…
 smb_ok() { local out; out=$(smb "$@"); ! grep -q NT_STATUS <<<"$out" || fail "SMB as $1: $out"; }
 smb_denied() { local out; out=$(smb "$@"); grep -q NT_STATUS_ACCESS_DENIED <<<"$out" || fail "SMB as $1 was allowed: $out"; }
 smb_refused() { local out; out=$(smb "$@"); grep -q NT_STATUS <<<"$out" || fail "SMB as $1 connected: $out"; }
+smb_fails() { local out; out=$(smb "$@"); grep -q NT_STATUS <<<"$out" || fail "SMB as $1 did $3: $out"; }
+
+owner_of() { vm "sudo stat -c '%U:%G' '$1'"; }
+# What lands in a folder takes the folder's owner and the group zendiloos-files.
+owned_as_parent() {
+    local want
+    want="$(vm "sudo stat -c '%U' '$(dirname "$1")'"):zendiloos-files"
+    [[ $(owner_of "$1") == "$want" ]] || fail "$1 is $(owner_of "$1"), not $want"
+}
+# The newest job's ID; 0 without any.
+last_job() { call GET '/jobs?limit=1' | jq '.[0].id // 0'; }
+# No job since job $1 worked on the files of the share: rule changes apply
+# at once, to the share as a whole.
+no_walk() {
+    local jobs
+    jobs=$(call GET '/jobs?limit=200' | jq -c --argjson after "$1" \
+        '[.[] | select(.id > $after and (.target == "photos" or .kind == "sharing.apply_access")) | {id, kind, target}]')
+    [[ $jobs == '[]' ]] || fail "jobs worked on the files: $jobs"
+}
+# Each client of the export of $path as `exportfs -v` shows it,
+# client(options), whether on the path's line or the next.
+exported() { vm "sudo exportfs -v" | awk -v p="$path" '$1 == p { if (NF > 1) print $2; else { getline; print $1 } }'; }
+# The options of client $1, between commas.
+export_options() { printf ',%s,' "$(exported | grep -F "$1(" | sed 's/^[^(]*(//; s/)$//')"; }
 
 say "Clients in the VM"
 vm "command -v smbclient >/dev/null && command -v avahi-browse >/dev/null \
@@ -137,10 +166,18 @@ dataset="$pool/photos"
 props=$(vm "sudo zfs get -H -p -o value refquota,compression,recordsize $dataset" | tr '\n' ' ')
 [[ $props == "2147483648 zstd 1048576 " ]] || fail "the dataset has $props"
 call GET /shares | jq -e '.[] | select(.name == "photos") | .used_bytes >= 0' >/dev/null || fail "no usage"
-# Each writer's recycle bin is made with the share, private, before anybody
-# else could take its name.
-[[ $(vm "sudo stat -c '%U %a' $path/.recycle/anna") == "anna 700" ]] || fail "anna's bin: $(vm "sudo ls -la $path/.recycle")"
-vm "sudo test ! -e $path/.recycle/ben" || fail "a reader got a bin"
+# Every share's folder is alike: root:zendiloos-files, 2770, the group's
+# entry and its default entry, nobody named; its one recycle bin is made
+# with it, the share's too.
+[[ $(vm "sudo stat -c '%U:%G %a' $path") == 'root:zendiloos-files 2770' ]] \
+    || fail "the share's folder is $(vm "sudo stat -c '%U:%G %a' $path")"
+acl=$(vm "sudo getfacl -cpE $path")
+for entry in group:zendiloos-files:rwx default:group:zendiloos-files:rwx; do
+    grep -qx "$entry" <<<"$acl" || fail "the share's folder lacks $entry: $acl"
+done
+named=$(grep -E '^(default:)?(user|group):[^:]+:' <<<"$acl" | grep -v 'group:zendiloos-files:' || true)
+[[ -z $named ]] || fail "the folder names somebody: $named"
+[[ $(owner_of "$path/.recycle") == root:zendiloos-files ]] || fail "the recycle bin: $(vm "sudo ls -la $path")"
 
 say "2. SMB with the share's permissions"
 vm "echo 'hello from anna' > /tmp/hello.txt"
@@ -151,41 +188,65 @@ smb_denied ben 'second secret phrase' 'put hello.txt ben.txt'
 smb_refused admin "$password" 'ls'
 # The description is the comment, without what Samba would expand.
 vm "testparm -s 2>/dev/null | grep -qx '\s*comment = Family photos, 100 ours'" || fail "the share has no comment"
-acl=$(vm "sudo getfacl -p $path")
-grep -q '^user:anna:rwx' <<<"$acl" && grep -q '^user:ben:r-x' <<<"$acl" || fail "ACLs do not match: $acl"
-[[ $(vm "sudo stat -c '%U' $path/hello.txt") == anna ]] || fail "the file does not belong to anna"
+# The rules are not in the files: Samba writes as root, and what it writes
+# takes the owner of the folder it lands in and the group zendiloos-files.
+acl=$(vm "sudo getfacl -cpE $path $path/hello.txt")
+! grep -qE '^(default:)?(user|group):(anna|ben):' <<<"$acl" || fail "the files name anna or ben: $acl"
+for made in hello.txt album album/inner.txt; do owned_as_parent "$path/$made"; done
 
-say "3. NFS, read-only to the VM itself, root squashed"
-# Root is squashed; anna's UID is the same on this "client".
-nfs=$(vm "sudo mkdir -p /mnt/nfstest && sudo mount -t nfs -o vers=4 127.0.0.1:$path /mnt/nfstest && sudo -u anna ls /mnt/nfstest; (sudo -u anna touch /mnt/nfstest/x 2>/dev/null && echo WRITABLE || true); (sudo ls /mnt/nfstest >/dev/null 2>&1 && echo ROOT-READS || true); sudo umount /mnt/nfstest")
+say "3. NFS, read-only to the VM itself, everyone squashed to zendiloos-files"
+# Whoever the client claims to be, root and anna alike, is zendiloos-files
+# on the NAS: they read what the group may read, and write nothing here.
+nfs=$(vm "sudo mkdir -p /mnt/nfstest && sudo mount -t nfs -o vers=4 127.0.0.1:$path /mnt/nfstest && sudo -u anna ls /mnt/nfstest; (sudo -u anna touch /mnt/nfstest/x 2>/dev/null && echo WRITABLE || true); (sudo touch /mnt/nfstest/y 2>/dev/null && echo WRITABLE || true); (sudo cat /mnt/nfstest/hello.txt 2>/dev/null || true); sudo umount /mnt/nfstest")
 echo "$nfs" | sed 's/^/   /'
 grep -q hello.txt <<<"$nfs" || fail "NFS shows no files"
 ! grep -q WRITABLE <<<"$nfs" || fail "the read-only export is writable"
-! grep -q ROOT-READS <<<"$nfs" || fail "root is not squashed"
+grep -q 'hello from anna' <<<"$nfs" || fail "root, squashed to zendiloos-files, cannot read hello.txt"
+files_uid=$(vm "id -u zendiloos-files")
+files_gid=$(vm "getent group zendiloos-files | cut -d: -f3")
+options=$(export_options 127.0.0.1)
+for option in ro all_squash "anonuid=$files_uid" "anongid=$files_gid" sec=sys; do
+    [[ $options == *",$option,"* ]] || fail "the export lacks $option: $options"
+done
 
 say "3b. On the NAS only: off the network, files and rules kept"
-call PATCH "/shares/$share_id" '{"shared":false}' | jq -e '.share.shared == false' >/dev/null || fail "cannot stop sharing"
+call PATCH "/shares/$share_id" '{"shared":false}' | jq -e '.shared == false and (has("job") | not)' >/dev/null \
+    || fail "cannot stop sharing"
 vm "! testparm -s 2>/dev/null | grep -qx '\[photos\]'" || fail "Samba still offers the folder"
 vm "! sudo exportfs -v | grep -qF '$path'" || fail "NFS still exports the folder"
 smb_refused anna 'first secret phrase' 'ls'
 vm "sudo test -f $path/hello.txt" || fail "the files went with the sharing"
 [[ $(call GET /files/volumes | jq -r --argjson id "$share_id" '[.[].folders[]? | select(.id == $id)][0].shared') == false ]] \
     || fail "the explorer does not see it unshared: $(call GET /files/volumes)"
-call PATCH "/shares/$share_id" '{"shared":true}' | jq -e '.share.shared == true' >/dev/null || fail "cannot share again"
+call PATCH "/shares/$share_id" '{"shared":true}' | jq -e '.shared == true' >/dev/null || fail "cannot share again"
 vm "testparm -s 2>/dev/null | grep -qx '\[photos\]'" || fail "Samba does not offer it again"
 vm "sudo exportfs -v | grep -qF '$path'" || fail "NFS does not export it again"
-acl=$(vm "sudo getfacl -p $path")
-grep -q '^user:ben:r-x' <<<"$acl" || fail "the rules went with the sharing: $acl"
+call GET /shares | jq -e --argjson id "$share_id" --argjson ben "$ben" \
+    '.[] | select(.id == $id) | .access | any(.kind == "account" and .id == $ben and .access == "read")' >/dev/null \
+    || fail "the rules went with the sharing: $(call GET /shares)"
 smb_ok anna 'first secret phrase' 'ls'
+smb_ok ben 'second secret phrase' 'ls'
 
 say "3c. NFS rules with their options"
-rules='[{"network":"127.0.0.1","write":false},{"network":"*.example.com","write":true,"squash":"all","async":true,"insecure":true},{"network":"10.9.8.0/24","write":true,"squash":"none"}]'
-call PATCH "/shares/$share_id" "{\"nfs\":$rules}" | jq -e '.share.nfs | length == 3' >/dev/null || fail "cannot set NFS rules"
-exports=$(vm "sudo exportfs -v")
-grep -A1 -F '*.example.com' <<<"$exports" | tr -d '\n' | grep -q 'async' && grep -A1 -F '*.example.com' <<<"$exports" | tr -d '\n' | grep -q 'insecure' \
-    && grep -A1 -F '*.example.com' <<<"$exports" | tr -d '\n' | grep -q 'all_squash' || fail "the options did not reach the export: $exports"
-grep -A1 '10.9.8.0/24' <<<"$exports" | tr -d '\n' | grep -q 'no_root_squash' || fail "no_root_squash missing: $exports"
-grep -A1 '127.0.0.1' <<<"$exports" | tr -d '\n' | grep -q 'root_squash' || fail "the default rule changed: $exports"
+# Every client squashed to zendiloos-files; there is no squash to choose.
+rules='[{"network":"127.0.0.1","write":false},{"network":"*.example.com","write":true,"async":true,"insecure":true},{"network":"10.9.8.0/24","write":true}]'
+call PATCH "/shares/$share_id" "{\"nfs\":$rules}" | jq -e '.nfs | length == 3' >/dev/null || fail "cannot set NFS rules"
+squashed=(all_squash "anonuid=$files_uid" "anongid=$files_gid" sec=sys)
+for client in '*.example.com' 10.9.8.0/24 127.0.0.1; do
+    want=("${squashed[@]}")
+    case $client in
+        '*.example.com') want+=(rw async insecure) ;;
+        10.9.8.0/24) want+=(rw sync) ;;
+        127.0.0.1) want+=(ro sync) ;;
+    esac
+    options=$(export_options "$client")
+    for option in "${want[@]}"; do
+        [[ $options == *",$option,"* ]] || fail "the export to $client lacks $option: $options"
+    done
+    [[ $options != *,no_root_squash,* ]] || fail "the export to $client keeps root: $options"
+done
+[[ $(status_as admin PATCH "/shares/$share_id" -H 'Content-Type: application/json' -d '{"nfs":[{"network":"10.9.8.0/24","write":true,"squash":"none"}]}') == 422 ]] \
+    || fail "a rule with a squash was taken: $(cat "$work/body")"
 [[ $(status_as admin PATCH "/shares/$share_id" -H 'Content-Type: application/json' -d '{"nfs":[{"network":"bad host!","write":false}]}') == 422 ]] \
     || fail "a client that is no host was taken"
 call PATCH "/shares/$share_id" '{"nfs":[{"network":"127.0.0.1","write":false}]}' >/dev/null
@@ -212,9 +273,18 @@ echo 'written in the browser' >"$work/web.txt"
 code=$(status_as anna POST "$files/upload?path=album&name=from-web.txt" \
     -H 'Content-Type: application/octet-stream' --data-binary "@$work/web.txt")
 [[ $code == 201 ]] || fail "anna's upload: $code $(cat "$work/body")"
-[[ $(vm "sudo stat -c '%U' $path/album/from-web.txt") == anna ]] || fail "the upload does not belong to anna"
-acl=$(vm "sudo getfacl -p $path/album/from-web.txt")
-grep -q '^user:ben:r' <<<"$acl" || fail "the upload did not inherit the ACL: $acl"
+# Uploads, as what Samba writes, take the folder's owner and the group
+# zendiloos-files, and the group's entry from the folder: in a folder anna
+# owns from before, they are hers.
+owned_as_parent "$path/album/from-web.txt"
+acl=$(vm "sudo getfacl -cpE $path/album/from-web.txt")
+grep -q '^group:zendiloos-files:rw' <<<"$acl" || fail "the upload did not inherit the group's entry: $acl"
+vm "sudo mkdir $path/anna-own && sudo chown anna $path/anna-own"
+code=$(status_as anna POST "$files/upload?path=anna-own&name=hers.txt" \
+    -H 'Content-Type: application/octet-stream' --data-binary "@$work/web.txt")
+[[ $code == 201 ]] || fail "anna's upload to her folder: $code $(cat "$work/body")"
+[[ $(owner_of "$path/anna-own/hers.txt") == anna:zendiloos-files ]] || fail "the upload to anna's folder is $(owner_of "$path/anna-own/hers.txt")"
+vm "sudo rm -r $path/anna-own"
 smb_ok ben "$ben_pw" 'get album/from-web.txt from-web.txt'
 vm "grep -q 'written in the browser' /tmp/from-web.txt" || fail "SMB shows ben something else"
 
@@ -266,14 +336,16 @@ mkdir -p "$work/unpacked" && tar -xf "$work/album.tar" -C "$work/unpacked" || fa
 
 job_succeeded "$(call_as anna POST "$files/transfer" '{"mode":"copy","paths":["album"],"target_share":'"$share_id"',"target_path":""}' | jq -r .id)"
 vm "sudo test -f '$path/album (2)/from-web.txt'" || fail "the copy is missing"
-[[ $(vm "sudo stat -c '%U' '$path/album (2)/inner.txt'") == anna ]] || fail "the copy does not belong to anna"
+owned_as_parent "$path/album (2)"
+owned_as_parent "$path/album (2)/inner.txt"
 call_as anna POST "$files/rename" '{"path":"album (2)","name":"copy"}' | jq -e '.path == "copy"' >/dev/null || fail "rename"
+owner=$(owner_of "$path/copy/from-web.txt")
 job_succeeded "$(call_as anna POST "$files/delete" '{"paths":["copy"]}' | jq -r .id)"
 vm "sudo test -f $path/.recycle/anna/copy/from-web.txt" || fail "the deleted folder is not in anna's recycle bin"
 restored=$(call_as anna POST "$files/restore" '{"paths":[".recycle/anna/copy"]}')
 [[ $(jq -r '.paths[0]' <<<"$restored") == copy ]] || fail "restore: $restored"
 vm "sudo test -f $path/copy/from-web.txt && sudo test ! -e $path/.recycle/anna/copy" || fail "the folder is not back"
-[[ $(vm "sudo stat -c '%U' $path/copy/from-web.txt") == anna ]] || fail "the restored file changed owner"
+[[ $(owner_of "$path/copy/from-web.txt") == "$owner" ]] || fail "the restored file changed owner: $(owner_of "$path/copy/from-web.txt")"
 job_succeeded "$(call_as anna POST "$files/delete" '{"paths":["copy"]}' | jq -r .id)"
 smb_ok anna "$anna_pw" 'ls album/from-web.txt'
 
@@ -285,58 +357,53 @@ jq -e --argjson f "$want_files" --argjson d "$want_folders" '.files == $f and .f
     <<<"$facts" >/dev/null || fail "the counts: $facts (find: $want_files files, $want_folders folders)"
 
 say "5. ben loses access"
-# A link at the share's top that leads out of it: changing access must not
-# follow it (setfacl follows links given as arguments).
-# The probe is beside the share on its volume, where the files agent may
-# write; elsewhere a followed link would only make the job fail.
-probe="$(dirname "$path")/acl-probe"
-vm "sudo mkdir -p $probe && sudo ln -sfn $probe $path/outside"
+# At once and for the share as a whole: the answer is the share, and no
+# job goes through its files.
+since=$(last_job)
 update=$(call PATCH "/shares/$share_id" "{\"access\":[{\"kind\":\"account\",\"id\":$anna,\"access\":\"read_write\"}]}")
-job_succeeded "$(jq -er .job.id <<<"$update")"
-# Recycle bins keep their own permissions; each is private anyway.
-[[ $(vm "sudo find $path -path $path/.recycle/'*' -prune -o -print0 | sudo xargs -0 getfacl -p 2>/dev/null | grep -c 'user:ben' || true") == 0 ]] \
-    || fail "ben's ACL entries remain"
+jq -e --argjson id "$share_id" '.id == $id and (.access | length == 1) and (has("job") | not)' <<<"$update" >/dev/null \
+    || fail "the change: $update"
 smb_refused ben "$ben_pw" 'ls'
-[[ $(vm "sudo getfacl -p $probe | grep -c 'user:anna' || true") == 0 ]] \
-    || fail "changing access followed a link out of the share"
-vm "sudo rm $path/outside && sudo rmdir $probe"
 [[ $(status_as ben GET "$files/folder") == 404 ]] || fail "ben can still list the share"
+no_walk "$since"
 
-say "6. Each writer's own recycle bin"
+say "6. The share's recycle bin"
 smb_ok anna "$anna_pw" 'del hello.txt'
-vm "sudo test -f $path/.recycle/anna/hello.txt" || fail "the file is not in anna's recycle bin"
-# A second writer: Samba purges files it cannot move to their bin.
+vm "sudo test -f $path/.recycle/anna/hello.txt" || fail "the file is not in the recycle bin, in anna's folder"
+# A second writer.
 update=$(call PATCH "/shares/$share_id" "{\"access\":[{\"kind\":\"account\",\"id\":$anna,\"access\":\"read_write\"},{\"kind\":\"account\",\"id\":$ben,\"access\":\"read_write\"}]}")
-job_succeeded "$(jq -er .job.id <<<"$update")"
+jq -e '.access | length == 2' <<<"$update" >/dev/null || fail "the change: $update"
 vm "echo 'from ben' > /tmp/ben.txt"
 smb_ok ben "$ben_pw" 'put ben.txt; del ben.txt'
 # Office lock files and temporary files do not fill the bins.
 vm "echo lock > '/tmp/~\$report.docx'"
 smb_ok ben "$ben_pw" 'put ~$report.docx; del ~$report.docx'
 vm "sudo test ! -e '$path/.recycle/ben/~\$report.docx'" || fail "a lock file went to the recycle bin"
-vm "sudo test -f $path/.recycle/ben/ben.txt" || fail "ben's file is not in his recycle bin"
-smb_denied ben "$ben_pw" 'ls .recycle/anna/*'
+vm "sudo test -f $path/.recycle/ben/ben.txt" || fail "ben's file is not in the recycle bin, in his folder"
+# The bin is the share's: everyone with access sees what anybody deleted.
+out=$(smb ben "$ben_pw" 'ls .recycle/anna/*')
+grep -q hello.txt <<<"$out" || fail "ben does not see what anna deleted: $out"
 
-say "6b. Read only again: what ben owns is no longer his"
-# The kernel lets an owner write whatever a named entry says, and chmod;
-# so a reader owns nothing in the share.
+say "6b. Read only again: ben reads what he wrote, but changes nothing"
 vm "echo 'ben wrote this' > /tmp/ben-own.txt"
 smb_ok ben "$ben_pw" 'put ben-own.txt'
-[[ $(vm "sudo stat -c '%U' $path/ben-own.txt") == ben ]] || fail "ben's upload is not his"
+owned_as_parent "$path/ben-own.txt"
+since=$(last_job)
 update=$(call PATCH "/shares/$share_id" "{\"access\":[{\"kind\":\"account\",\"id\":$anna,\"access\":\"read_write\"},{\"kind\":\"account\",\"id\":$ben,\"access\":\"read\"}]}")
-job_succeeded "$(jq -er .job.id <<<"$update")"
-[[ $(vm "sudo stat -c '%U' $path/ben-own.txt") == root ]] || fail "a reader still owns his file"
-[[ $(vm "sudo stat -c '%U' $path/.recycle/ben") == root ]] || fail "a reader still owns his bin"
-vm "sudo -u ben cat $path/ben-own.txt" >/dev/null || fail "ben cannot read his file any more"
-vm "! sudo -u ben sh -c 'echo more >> $path/ben-own.txt' 2>/dev/null" || fail "a reader wrote his own file"
-vm "! sudo -u ben chmod 666 $path/ben-own.txt 2>/dev/null" || fail "a reader changed his file's mode"
-# Writing again: through his named entry, the file stays root's; a new bin.
+jq -e '(has("job") | not)' <<<"$update" >/dev/null || fail "the change: $update"
+smb_ok ben "$ben_pw" 'get ben-own.txt ben-back.txt'
+vm "grep -q 'ben wrote this' /tmp/ben-back.txt" || fail "ben read something else"
+smb_denied ben "$ben_pw" 'put ben-own.txt'
+smb_fails ben "$ben_pw" 'del ben-own.txt'
+[[ $(status_as ben POST "$files/delete" -H 'Content-Type: application/json' -d '{"paths":["ben-own.txt"]}') == 403 ]] \
+    || fail "ben, a reader, could delete his file in the file manager"
+vm "sudo test -f $path/ben-own.txt" || fail "a reader's file went"
+# Writing again, he deletes it, into the bin.
 update=$(call PATCH "/shares/$share_id" "{\"access\":[{\"kind\":\"account\",\"id\":$anna,\"access\":\"read_write\"},{\"kind\":\"account\",\"id\":$ben,\"access\":\"read_write\"}]}")
-job_succeeded "$(jq -er .job.id <<<"$update")"
-vm "sudo -u ben sh -c 'echo more >> $path/ben-own.txt'" || fail "a writer cannot write the file"
-[[ $(vm "sudo stat -c '%U' $path/.recycle/ben") == ben ]] || fail "ben got no bin of his own again"
+jq -e '(has("job") | not)' <<<"$update" >/dev/null || fail "the change: $update"
 smb_ok ben "$ben_pw" 'del ben-own.txt'
-vm "sudo test -f $path/.recycle/ben/ben-own.txt" || fail "ben's deletion is not in his new bin"
+vm "sudo test -f $path/.recycle/ben/ben-own.txt" || fail "ben's deletion is not in the recycle bin"
+no_walk "$since"
 
 say "Snapshots are Previous Versions"
 snapshot=$(call POST "/shares/$share_id/snapshots" '{"note":"from the test"}' | jq -er .label) || fail "no snapshot"
@@ -356,7 +423,7 @@ call_as anna GET "$files/folder?path=album&snapshot=$snapshot" | jq -e '.entries
     || fail "download from the snapshot"
 job_succeeded "$(call_as anna POST "$files/snapshots/$snapshot/restore" '{"paths":["album/from-web.txt"]}' | jq -r .id)"
 [[ $(vm "sudo cat $path/album/from-web.txt") == 'written in the browser' ]] || fail "the file is not back"
-[[ $(vm "sudo stat -c '%U' $path/album/from-web.txt") == anna ]] || fail "the copied-back file does not belong to anna"
+owned_as_parent "$path/album/from-web.txt"
 # Rolling back: what changed since is gone, so are later snapshots.
 later=$(call POST "/shares/$share_id/snapshots" '{"note":"later"}' | jq -er .label) || fail "no later snapshot"
 vm "sudo touch $path/after-the-snapshot.txt"
@@ -364,6 +431,9 @@ vm "sudo touch $path/after-the-snapshot.txt"
     || fail "a rollback without the right name"
 rolled=$(call POST "/shares/$share_id/snapshots/$snapshot/rollback" '{"confirm":"photos"}')
 [[ $(jq -r '.destroyed | join(",")' <<<"$rolled") == "$later" ]] || fail "rollback: $rolled"
+# A snapshot from after the share's migration brings back no old
+# permissions: nothing to walk.
+jq -e '.job == null' <<<"$rolled" >/dev/null || fail "the rollback started a job: $rolled"
 vm "sudo test ! -e $path/after-the-snapshot.txt" || fail "the rollback kept a later file"
 vm "! sudo zfs list -H -t snapshot -o name | grep -qF '@$later'" || fail "the later snapshot is still there"
 [[ $(status_as admin POST "/shares/$share_id/snapshots/$snapshot/delete") == 204 ]] || fail "cannot delete the snapshot"
@@ -382,4 +452,4 @@ vm "systemctl is-active --quiet avahi-daemon" || fail "avahi-daemon (Bonjour for
 # the match, and pipefail would count that as failure.
 wait_for "Samba's Bonjour announcement" "vm 'avahi-browse -tpr _smb._tcp' | grep -c '^=.*;445;'" 30
 
-say "Passed: SMB, NFS, file manager, ACLs, permission changes, recycle bins, discovery"
+say "Passed: SMB, NFS, file manager, the shares' folders and owners, permission changes, the recycle bin, discovery"

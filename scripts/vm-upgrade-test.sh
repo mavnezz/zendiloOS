@@ -9,8 +9,11 @@
 #   2. installs NEW over it
 #   3. checks that all of it is still there and works: sign-in with the old
 #      passwords (web and SMB), the files with their checksums and owners,
-#      the share's ACLs, a copy of the database from before the migration,
-#      and the endpoints the new version added
+#      the share given share-level permissions once, by a job
+#      sharing.migrate_permissions of its own (its folder
+#      root:zendiloos-files, mode 2770 and the static ACL; the group's
+#      entry on the files, nobody's own), a copy of the database from
+#      before the migration, and the endpoints the new version added
 #
 # Usage:
 #   just deb-at 142ab01                       # the old package, here M4
@@ -75,11 +78,17 @@ job_succeeded() {
 
 smb() { vm "cd /tmp && smbclient //localhost/photos -U 'anna%$anna_pw' -c '$*' 2>&1" || true; }
 
-# Everything that must survive, as text to compare before and after.
+# Everything that must survive, as text to compare before and after: the
+# files' contents and owners. The share's own folder and the files' ACLs
+# change with the update (checked on their own after it).
 snapshot() {
     # The share is closed to the VM's own user: everything as root.
-    vm "sudo sh -c 'cd $path && sha256sum from-smb.bin album/uploaded.txt && stat -c \"%n %U %a\" . from-smb.bin album album/uploaded.txt && getfacl -p .'" 2>&1
+    vm "sudo sh -c 'cd $path && sha256sum from-smb.bin album/uploaded.txt && stat -c \"%n %U:%G\" from-smb.bin album album/uploaded.txt'" 2>&1
 }
+
+# The newest job sharing.migrate_permissions of share $1, if there is one.
+migration() { call GET '/jobs?limit=200' | jq -c --arg share "$1" \
+    '[.[] | select(.kind == "sharing.migrate_permissions" and .target == $share)][0] // empty'; }
 
 say "0. A fresh VM"
 vm "! dpkg -s zendiloos >/dev/null 2>&1" || fail "zendiloos is installed; this needs a fresh VM"
@@ -128,8 +137,26 @@ call GET /shares | jq -e --arg path "$path" '.[] | select(.name == "photos" and 
     || fail "the share is gone"
 call GET /storage/pools | jq -e '.[] | select(.name == "tank" and .state == "online" and .mount_point == "/volume1")' \
     >/dev/null || fail "the pool is not online at /volume1"
+# Each share once, one after the other, as zendiloosd starts.
+for name in $(call GET /shares | jq -r '.[].name'); do
+    wait_for "the migration of $name" "migration $name | jq -e .id" 600
+    job_succeeded "$(migration "$name" | jq -r .id)"
+done
 snapshot >"$work/after"
-diff -u "$work/before" "$work/after" || fail "files, owners or ACLs changed"
+diff -u "$work/before" "$work/after" || fail "files or owners changed"
+[[ $(vm "sudo stat -c '%U:%G %a' $path") == 'root:zendiloos-files 2770' ]] \
+    || fail "the share's folder is $(vm "sudo stat -c '%U:%G %a' $path")"
+acl=$(vm "sudo getfacl -cpE $path")
+for entry in group:zendiloos-files:rwx default:group:zendiloos-files:rwx mask::rwx; do
+    grep -qx "$entry" <<<"$acl" || fail "the share's folder lacks $entry: $acl"
+done
+named=$(grep -E '^(default:)?(user|group):[^:]+:' <<<"$acl" | grep -vE '^(default:)?group:zendiloos-files:' || true)
+[[ -z $named ]] || fail "the share's folder still names $(tr '\n' ' ' <<<"$named")"
+for entry in from-smb.bin album album/uploaded.txt; do
+    acl=$(vm "sudo getfacl -cpE '$path/$entry'")
+    grep -q '^group:zendiloos-files:rw' <<<"$acl" || fail "$entry lacks the group's entry: $acl"
+    ! grep -qE '^(default:)?user:anna:' <<<"$acl" || fail "$entry still names anna: $acl"
+done
 out=$(smb 'get from-smb.bin /tmp/back.bin'); ! grep -q NT_STATUS <<<"$out" || fail "SMB with the old password: $out"
 vm "cmp -s /tmp/from-smb.bin /tmp/back.bin" || fail "the file read over SMB differs"
 sign_in anna anna "$anna_pw"
@@ -144,4 +171,4 @@ done
 call GET /notifications | jq -e 'has("read_up_to")' >/dev/null || fail "notifications in the old form"
 vm "testparm -s 2>/dev/null | grep -q 'comment = Family photos'" || fail "the share's description is not its comment"
 
-say "Passed: accounts, pool, share, files, ACLs and passwords survive the upgrade"
+say "Passed: accounts, pool, share, files and passwords survive the upgrade, and the share has share-level permissions"

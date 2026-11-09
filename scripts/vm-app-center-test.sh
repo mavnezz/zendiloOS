@@ -7,8 +7,9 @@
 #      the values stand in the file itself
 #   2. the file is written into a folder of a share and deployed as a
 #      project of one's own: the file and the data folder are the
-#      administrator's, the container runs as the administrator and sees
-#      the folder
+#      administrator's, the container runs as the administrator in the
+#      group zendiloos-files (which every share's folder lets read and
+#      write) and sees the folder
 #   3. the App Center finds the project again, with the web address, which
 #      answers; the name is not handed out twice
 #   4. the file is changed in the Docker app (another port) and deployed
@@ -119,7 +120,9 @@ vm "sudo mkdir -p /volume$volume/$media/Music && echo tune | sudo tee /volume$vo
 filled=$(call POST "/apps/catalog/$source_id/lidarr/compose" \
     "$(jq -n --arg m "$media/Music" --argjson p "$port" '{shares:{data:$m},ports:{web:$p}}')" | jq -er .compose) \
     || fail "cannot fill the template: $(call POST "/apps/catalog/$source_id/lidarr/compose" '{}')"
-uid=$(vm "id -u $user") gid=$(vm "id -g $user")
+# The app runs as the administrator, in the group of the shares' files.
+uid=$(vm "id -u $user") gid=$(vm "getent group zendiloos-files | cut -d: -f3")
+[[ $gid =~ ^[0-9]+$ ]] || fail "no group zendiloos-files: $gid"
 for line in "$port:8686" "./config:/config" "/volume$volume/$media/Music:/data" "PUID: \"$uid\"" "PGID: \"$gid\""; do
     grep -qF -- "$line" <<<"$filled" || fail "the filled file lacks $line: $filled"
 done
@@ -138,8 +141,9 @@ for entry in compose.yaml config; do
 done
 container=$(vm "sudo docker ps -q --filter label=com.docker.compose.project=$project")
 [[ -n $container ]] || fail "no container runs"
-vm "sudo docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' $container" | grep -qx "PUID=$uid" \
-    || fail "the container does not run as the administrator"
+environment=$(vm "sudo docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' $container")
+grep -qx "PUID=$uid" <<<"$environment" || fail "the container does not run as the administrator: $environment"
+grep -qx "PGID=$gid" <<<"$environment" || fail "the container does not run in the group zendiloos-files: $environment"
 [[ $(vm "sudo docker exec $container cat /data/song.txt") == tune ]] || fail "the share's folder is not mounted"
 [[ $(vm "sudo docker exec $container stat -c %u /config") == "$uid" ]] || fail "/config is not the administrator's"
 call GET "/docker/projects/$project" \
