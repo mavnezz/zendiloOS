@@ -1456,10 +1456,19 @@ cases with the administrator's permissions, so it is backed up and
 snapshotted with the share; relative paths start there. Before a file is
 deployed, `docker compose config` reads it (from stdin, in that folder; a
 `.env` there does not count), and what reaches beyond the containers is
-named: `privileged`, the Docker socket, folders outside the volumes, the
-host's network, PID, IPC or user namespace, devices, extra capabilities,
-no seccomp or AppArmor, settings not known as harmless, and what takes in
-files whoever may write the share can change (`build`, built from the
+named: `privileged`, the Docker socket, folders outside the volumes and
+those zendiloOS keeps on a volume for itself (`@docker`, Docker's data,
+where the containers' settings are root at their next start; `@homes`;
+`@apps`; anything else starting with `@` or `.`, as no share's name
+does), also as named volumes that bind them (`o: bind` or `rbind`), the
+host's network (also joined as a network named `host`), PID, IPC or user
+namespace, devices (also a disk's partition a named volume mounts with
+`type` and `device`), extra capabilities, no seccomp or AppArmor,
+settings not known as harmless (named volumes of another driver, of
+another file system than memory or another machine's share, or made
+outside the project; networks that are not a bridge of the project's own:
+made outside it, of another driver, with driver options), and what takes
+in files whoever may write the share can change (`build`, built from the
 share at every deployment; `env_file`, `extends`, `include`, read when it
 is saved). Each must be confirmed, then and on every change;
 the audit log records `risks_accepted`. The folders inside the project's

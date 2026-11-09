@@ -13,7 +13,9 @@ pub use backups::{
     DEFAULT_KEEP, FAILURES_KEPT, InvalidBackupPlan, MAX_KEEP, OwedStart, UtcOffsets, WrittenBackup,
     backup_stem, beyond, is_share_folder, stale_failures,
 };
-pub use compose::{ComposeModel, ComposeService, Risk, ServiceMount, file_reads, risks};
+pub use compose::{
+    ComposeModel, ComposeNetwork, ComposeService, ComposeVolume, Risk, ServiceMount, file_reads, risks,
+};
 pub use details::{
     AttachedNetwork, ContainerDetails, ContainerProcess, DeviceMapping, Healthcheck, PROJECT_PINS,
     Privileges, ResourceLimits, command_words, host_paths,

@@ -21,6 +21,10 @@ pub struct ComposeService {
     pub devices: Vec<String>,
     pub cap_add: Vec<String>,
     pub security_opt: Vec<String>,
+    /// The named volumes it mounts, by their keys in the file.
+    pub volumes: Vec<String>,
+    /// The networks it joins, by their keys in the file.
+    pub networks: Vec<String>,
     /// Every key the service sets, to name those not known as harmless.
     pub keys: Vec<String>,
 }
@@ -33,10 +37,56 @@ pub struct ServiceMount {
     pub target: String,
 }
 
+/// A named volume of the file (`volumes:` at its top). Docker's local
+/// driver mounts what its `driver_opts` say: a folder of the machine with
+/// `o: bind`, a disk or another file system with `type` and `device`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ComposeVolume {
+    /// What the services call it.
+    pub key: String,
+    /// `None` for Docker's own, `local`.
+    pub driver: Option<String>,
+    /// Made outside the project: the file does not say what it mounts.
+    pub external: bool,
+    /// Of `driver_opts`: the file system's `type`, the options `o` and
+    /// the `device`.
+    pub kind: Option<String>,
+    pub options: Option<String>,
+    pub device: Option<String>,
+}
+
+impl ComposeVolume {
+    /// The folder or file of the machine it binds: its `device`, when `o`
+    /// has `bind` or `rbind`, which mount it as a bind mount does.
+    pub fn bound(&self) -> Option<&str> {
+        let options = self.options.as_deref().unwrap_or_default();
+        let binds = options.split(',').any(|option| matches!(option.trim(), "bind" | "rbind"));
+        if binds { self.device.as_deref() } else { None }
+    }
+}
+
+/// A network of the file (`networks:` at its top).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ComposeNetwork {
+    /// What the services call it.
+    pub key: String,
+    /// Its name in Docker: `<project>_<key>` unless the file names it.
+    pub name: String,
+    /// `None` for Docker's own, `bridge`.
+    pub driver: Option<String>,
+    /// Made outside the project: the file does not say what it is.
+    pub external: bool,
+    /// The names of its `driver_opts`, which can make a bridge something
+    /// else (another interface, routed addresses).
+    pub options: Vec<String>,
+}
+
 /// A Compose file as Compose read it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ComposeModel {
     pub services: Vec<ComposeService>,
+    pub volumes: Vec<ComposeVolume>,
+    pub networks: Vec<ComposeNetwork>,
 }
 
 /// Something a service may do that reaches beyond its container.
@@ -51,7 +101,8 @@ pub enum Risk {
         service: String,
         path: String,
     },
-    /// A folder of the system, not of a volume.
+    /// A folder of the system, or one zendiloOS keeps for itself on a
+    /// volume (`@docker`, `@homes`, `@apps`): no share's.
     SystemPath {
         service: String,
         path: String,
@@ -65,6 +116,8 @@ pub enum Risk {
         service: String,
         namespace: &'static str,
     },
+    /// Devices given to the container, or mounted for it as a named
+    /// volume's file system (a partition of a disk).
     Devices {
         service: String,
         devices: Vec<String>,
@@ -140,11 +193,77 @@ impl Risk {
     }
 }
 
-/// Whether `path` lies on a volume: `/volume<N>/…`.
+/// Whether `path` lies on a volume, `/volume<N>/…`, outside the folders
+/// zendiloOS keeps there for itself: Docker's data (`@docker`, where the
+/// containers' settings are, root at their next start), the personal
+/// folders (`@homes`), the apps installed the earlier way (`@apps`), and
+/// whatever else starts with `@` or `.` (ZFS's `.zfs`), as no share's name
+/// does. A path through `..` may lead anywhere.
 fn on_a_volume(path: &str) -> bool {
     path.strip_prefix("/volume").and_then(|rest| rest.split_once('/')).is_some_and(|(number, rest)| {
-        !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()) && !rest.is_empty()
+        !number.is_empty()
+            && number.bytes().all(|b| b.is_ascii_digit())
+            && !rest.is_empty()
+            && !rest.starts_with(['@', '.'])
+            && !rest.split('/').any(|name| name == "..")
     })
+}
+
+/// File systems a named volume may mount without reaching into the
+/// machine: memory, and shares of other machines over the network.
+const HARMLESS_FILE_SYSTEMS: &[&str] = &["tmpfs", "nfs", "nfs4", "cifs", "smb3"];
+
+/// What mounting the named `volume` lets `service` reach beyond a volume
+/// of Docker's own; a bind is among the service's binds already.
+fn volume_risk(service: &str, volume: &ComposeVolume) -> Option<Risk> {
+    let unusual = |what: String| {
+        let setting = format!("volume {}: {what}", volume.key);
+        Some(Risk::Unusual { service: service.to_owned(), setting })
+    };
+    if volume.external {
+        return unusual("external".into());
+    }
+    if let Some(driver) = volume.driver.as_deref().filter(|driver| *driver != "local") {
+        return unusual(format!("driver {driver}"));
+    }
+    let kind = volume.kind.as_deref();
+    if volume.bound().is_some() || kind.is_some_and(|kind| HARMLESS_FILE_SYSTEMS.contains(&kind)) {
+        return None;
+    }
+    // The local driver mounts the device as that file system: a partition
+    // of a disk of the machine, the system's too.
+    if let Some(device) = volume.device.as_deref().filter(|device| device.starts_with('/')) {
+        return Some(Risk::Devices { service: service.to_owned(), devices: vec![device.to_owned()] });
+    }
+    // Another kind (`overlay`, whose options name folders of the machine).
+    kind.and_then(|kind| unusual(format!("type {kind}")))
+}
+
+/// What joining `network` lets `service` do beyond a bridge of its
+/// project's own.
+fn network_risk(service: &str, network: &ComposeNetwork) -> Option<Risk> {
+    // Compose makes the network's name the container's network mode: one
+    // called `host` is the machine's network, as `network_mode: host` is.
+    if network.name == "host" || network.driver.as_deref() == Some("host") {
+        return Some(Risk::HostNetwork { service: service.to_owned() });
+    }
+    let unusual = |what: String| {
+        Some(Risk::Unusual { service: service.to_owned(), setting: format!("network {what}") })
+    };
+    if network.external {
+        // Docker's own bridge, or no network at all.
+        return match network.name.as_str() {
+            "bridge" | "none" => None,
+            name => unusual(format!("{name}: external")),
+        };
+    }
+    if let Some(driver) = network.driver.as_deref().filter(|driver| *driver != "bridge") {
+        return unusual(format!("{}: driver {driver}", network.key));
+    }
+    if !network.options.is_empty() {
+        return unusual(format!("{}: driver_opts {}", network.key, network.options.join(", ")));
+    }
+    None
 }
 
 /// Settings of a service that take in files, from the share the project
@@ -318,6 +437,16 @@ pub fn risks(model: &ComposeModel) -> Vec<Risk> {
         if service.network_mode.as_deref() == Some("host") {
             found.push(Risk::HostNetwork { service: name() });
         }
+        let named = service.volumes.iter().filter_map(|key| model.volumes.iter().find(|v| v.key == *key));
+        let joined = service.networks.iter().filter_map(|key| model.networks.iter().find(|n| n.key == *key));
+        let beyond = named
+            .filter_map(|volume| volume_risk(&service.name, volume))
+            .chain(joined.filter_map(|network| network_risk(&service.name, network)));
+        for risk in beyond {
+            if !found.contains(&risk) {
+                found.push(risk);
+            }
+        }
         for (mode, namespace) in
             [(&service.pid, "pid"), (&service.ipc, "ipc"), (&service.userns_mode, "userns")]
         {
@@ -417,6 +546,7 @@ volumes:
                 keys: vec!["image".into(), "build".into()],
                 ..ComposeService::default()
             }],
+            ..ComposeModel::default()
         };
         assert_eq!(risks(&model), [Risk::FromShare { service: "app".into(), setting: "build".into() }]);
     }
@@ -430,6 +560,7 @@ volumes:
                 binds: vec!["/volume1/docker/teslamate/import".into()],
                 ..ComposeService::default()
             }],
+            ..ComposeModel::default()
         };
         assert!(risks(&model).is_empty());
     }
@@ -467,6 +598,7 @@ volumes:
                     ..ComposeService::default()
                 },
             ],
+            ..ComposeModel::default()
         };
 
         let named: Vec<_> =
@@ -506,6 +638,7 @@ volumes:
                     ..ComposeService::default()
                 },
             ],
+            ..ComposeModel::default()
         };
 
         let kinds: Vec<_> = risks(&model).iter().map(|r| (r.service().to_owned(), r.kind())).collect();
@@ -523,6 +656,133 @@ volumes:
                 ("homeassistant".to_owned(), "capabilities"),
                 ("homeassistant".to_owned(), "unconfined"),
             ]
+        );
+    }
+
+    #[test]
+    fn the_folders_zendiloos_keeps_on_a_volume_are_no_shares() {
+        let binds = [
+            "/volume1/@docker",
+            "/volume1/@docker/containers",
+            "/volume2/@homes",
+            "/volume1/@apps/jellyfin",
+            "/volume1/.zfs/snapshot",
+            "/volume1/docker/../@docker",
+            "/volume1/docker/app/data",
+            "/volume1/media",
+        ];
+        let model = ComposeModel {
+            services: vec![ComposeService {
+                name: "app".into(),
+                binds: binds.iter().map(|b| (*b).to_owned()).collect(),
+                ..ComposeService::default()
+            }],
+            ..ComposeModel::default()
+        };
+
+        let named: Vec<_> = risks(&model).iter().filter_map(Risk::detail).collect();
+
+        assert_eq!(named, &binds[..6], "the shares' folders ask nothing");
+    }
+
+    #[test]
+    fn what_named_volumes_mount_is_named() {
+        let volume =
+            |key: &str, kind: Option<&str>, options: Option<&str>, device: Option<&str>| ComposeVolume {
+                key: key.into(),
+                kind: kind.map(Into::into),
+                options: options.map(Into::into),
+                device: device.map(Into::into),
+                ..ComposeVolume::default()
+            };
+        let volumes = vec![
+            volume("plain", None, None, None),
+            volume("disk", Some("ext4"), None, Some("/dev/sda2")),
+            volume(
+                "layers",
+                Some("overlay"),
+                Some("lowerdir=/,upperdir=/tmp/u,workdir=/tmp/w"),
+                Some("overlay"),
+            ),
+            volume("cache", Some("tmpfs"), Some("size=100m"), Some("tmpfs")),
+            volume("music", Some("nfs"), Some("addr=10.0.0.2,ro"), Some(":/export/music")),
+            volume("root", Some("none"), Some("rbind"), Some("/")),
+            ComposeVolume { key: "plugin".into(), driver: Some("rclone".into()), ..ComposeVolume::default() },
+            ComposeVolume { key: "elsewhere".into(), external: true, ..ComposeVolume::default() },
+        ];
+        let keys: Vec<String> = volumes.iter().map(|v| v.key.clone()).collect();
+        let model = ComposeModel {
+            services: vec![ComposeService { name: "app".into(), volumes: keys, ..ComposeService::default() }],
+            volumes,
+            ..ComposeModel::default()
+        };
+
+        let named: Vec<_> = risks(&model).iter().map(|r| (r.kind(), r.detail())).collect();
+
+        assert_eq!(
+            named,
+            [
+                ("devices", Some("/dev/sda2".to_owned())),
+                ("unusual", Some("volume layers: type overlay".to_owned())),
+                ("unusual", Some("volume plugin: driver rclone".to_owned())),
+                ("unusual", Some("volume elsewhere: external".to_owned())),
+            ],
+            "memory, a share of another machine and a bind (among the binds) ask nothing here"
+        );
+        let bound = |options: &str| volume("v", Some("none"), Some(options), Some("/srv")).bound().is_some();
+        assert!(bound("bind") && bound("rbind") && bound("ro, rbind") && !bound("rbindx") && !bound("ro"));
+    }
+
+    #[test]
+    fn networks_other_than_a_bridge_of_the_project_are_named() {
+        let network = |key: &str, name: &str| ComposeNetwork {
+            key: key.into(),
+            name: name.into(),
+            ..ComposeNetwork::default()
+        };
+        let networks = vec![
+            network("default", "app_default"),
+            ComposeNetwork { external: true, ..network("machine", "host") },
+            ComposeNetwork { driver: Some("host".into()), ..network("own", "app_own") },
+            ComposeNetwork { external: true, ..network("proxy", "proxy") },
+            ComposeNetwork { external: true, ..network("docker", "bridge") },
+            ComposeNetwork { driver: Some("macvlan".into()), ..network("lan", "app_lan") },
+            ComposeNetwork {
+                options: vec!["com.docker.network.bridge.name".into()],
+                ..network("br", "app_br")
+            },
+        ];
+        let service = |name: &str, keys: &[&str]| ComposeService {
+            name: name.into(),
+            networks: keys.iter().map(|k| (*k).to_owned()).collect(),
+            ..ComposeService::default()
+        };
+        let model = ComposeModel {
+            services: vec![
+                service("plain", &["default", "docker"]),
+                service("hosted", &["machine", "own"]),
+                service("other", &["proxy", "lan", "br"]),
+            ],
+            networks,
+            ..ComposeModel::default()
+        };
+
+        let named: Vec<_> =
+            risks(&model).iter().map(|r| (r.service().to_owned(), r.kind(), r.detail())).collect();
+
+        assert_eq!(
+            named,
+            [
+                ("hosted".to_owned(), "host_network", None),
+                ("other".to_owned(), "unusual", Some("network proxy: external".to_owned())),
+                ("other".to_owned(), "unusual", Some("network lan: driver macvlan".to_owned())),
+                (
+                    "other".to_owned(),
+                    "unusual",
+                    Some("network br: driver_opts com.docker.network.bridge.name".to_owned())
+                ),
+            ],
+            "the host's network once; the project's bridge and Docker's ask nothing"
         );
     }
 }

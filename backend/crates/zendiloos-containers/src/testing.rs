@@ -343,6 +343,7 @@ impl DockerEngine for FakeEngine {
             .collect();
         Ok(ComposeModel {
             services: vec![ComposeService { name: "app".into(), mounts, ..ComposeService::default() }],
+            ..ComposeModel::default()
         })
     }
 
@@ -457,6 +458,7 @@ impl DockerEngine for FakeEngine {
                     binds,
                     ..ComposeService::default()
                 }],
+                ..ComposeModel::default()
             },
             config: format!(
                 r#"{{"name":"{project}","services":{{"app":{{"image":"{image}","privileged":{privileged}}}}}}}"#

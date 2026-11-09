@@ -742,7 +742,7 @@ const de: Messages = {
       kinds: {
         privileged: 'privilegiert, alle Geräte und Rechte',
         docker_socket: 'Zugriff auf Docker selbst, gleichbedeutend mit root',
-        system_path: 'bindet einen Systemordner ein',
+        system_path: 'bindet einen Ordner des Systems ein, keinen einer Freigabe',
         host_network: 'nutzt das Netzwerk des NAS direkt',
         host_namespace: 'teilt Prozesse, Speicher oder Benutzer mit dem NAS',
         devices: 'greift auf Geräte zu',

@@ -727,7 +727,7 @@ const en = {
       kinds: {
         privileged: 'privileged, every device and capability',
         docker_socket: 'access to Docker itself, as good as root',
-        system_path: 'mounts a folder of the system',
+        system_path: 'mounts a folder of the system, not of a share',
         host_network: 'uses the NAS’s network directly',
         host_namespace: 'shares processes, memory or users with the NAS',
         devices: 'uses devices',

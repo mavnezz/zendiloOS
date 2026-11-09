@@ -11,10 +11,10 @@ use zendiloos_containers::application::ports::{
     CheckedCompose, DockerEngine, EngineError, Lines, ProjectAction, TerminalInput, TerminalSession,
 };
 use zendiloos_containers::domain::{
-    AttachedNetwork, ComposeListing, ComposeModel, ComposeService, Container, ContainerAction,
-    ContainerDetails, ContainerProcess, ContainerState, ContainerUsage, DeviceMapping, DiskUsage,
-    Healthcheck, Image, Mount, Network, Privileges, ProjectName, PublishedPort, ResourceLimits, ServiceMount,
-    UsageSample, Volume, VolumeSize,
+    AttachedNetwork, ComposeListing, ComposeModel, ComposeNetwork, ComposeService, ComposeVolume, Container,
+    ContainerAction, ContainerDetails, ContainerProcess, ContainerState, ContainerUsage, DeviceMapping,
+    DiskUsage, Healthcheck, Image, Mount, Network, Privileges, ProjectName, PublishedPort, ResourceLimits,
+    ServiceMount, UsageSample, Volume, VolumeSize,
 };
 use zendiloos_kernel::{PortError, RequestContext, Timestamp};
 
@@ -572,21 +572,66 @@ fn texts(value: &Value) -> Vec<String> {
     value.as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect()
 }
 
-fn compose_model(text: &str) -> Result<ComposeModel, EngineError> {
-    let value: Value = serde_json::from_str(text).map_err(|e| unreadable("Compose file", e))?;
-    let services = value["services"].as_object().cloned().unwrap_or_default();
-    // Binds in disguise, by name: a named volume of the local driver with
-    // `o: bind` mounts its `device`; a secret or config from a file is bound.
-    let named_binds: BTreeMap<String, String> = value["volumes"]
+/// Whether Compose says a volume or network is made outside the project:
+/// `true`, or the older `{name: …}`.
+fn external(entry: &Value) -> bool {
+    match entry.get("external") {
+        Some(Value::Bool(external)) => *external,
+        Some(Value::Object(_)) => true,
+        _ => false,
+    }
+}
+
+fn compose_volumes(value: &Value) -> Vec<ComposeVolume> {
+    let option = |volume: &Value, key: &str| volume.pointer(&format!("/driver_opts/{key}")).map(texted);
+    value["volumes"]
         .as_object()
         .into_iter()
         .flatten()
-        .filter_map(|(name, volume)| {
-            let options = volume.get("driver_opts")?;
-            let binds = options.get("o")?.as_str()?.split(',').any(|o| o.trim() == "bind");
-            binds.then(|| Some((name.clone(), options.get("device")?.as_str()?.to_owned())))?
+        .map(|(key, volume)| ComposeVolume {
+            key: key.clone(),
+            driver: volume.get("driver").and_then(Value::as_str).map(str::to_owned),
+            external: external(volume),
+            kind: option(volume, "type"),
+            options: option(volume, "o"),
+            device: option(volume, "device"),
         })
-        .collect();
+        .collect()
+}
+
+fn compose_networks(value: &Value) -> Vec<ComposeNetwork> {
+    value["networks"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(key, network)| ComposeNetwork {
+            key: key.clone(),
+            name: network.get("name").and_then(Value::as_str).unwrap_or(key).to_owned(),
+            driver: network.get("driver").and_then(Value::as_str).map(str::to_owned),
+            external: external(network),
+            options: network
+                .get("driver_opts")
+                .and_then(Value::as_object)
+                .map(|options| options.keys().cloned().collect())
+                .unwrap_or_default(),
+        })
+        .collect()
+}
+
+/// A string as it is, anything else as JSON: options may be numbers.
+fn texted(value: &Value) -> String {
+    value.as_str().map_or_else(|| value.to_string(), str::to_owned)
+}
+
+fn compose_model(text: &str) -> Result<ComposeModel, EngineError> {
+    let value: Value = serde_json::from_str(text).map_err(|e| unreadable("Compose file", e))?;
+    let services = value["services"].as_object().cloned().unwrap_or_default();
+    let (volumes, networks) = (compose_volumes(&value), compose_networks(&value));
+    // Binds in disguise, by name: a named volume of the local driver with
+    // `o: bind` or `rbind` mounts its `device`; a secret or config from a
+    // file is bound.
+    let named_binds: BTreeMap<String, String> =
+        volumes.iter().filter_map(|volume| Some((volume.key.clone(), volume.bound()?.to_owned()))).collect();
     let files = |kind: &str| -> BTreeMap<String, String> {
         value[kind]
             .as_object()
@@ -640,10 +685,26 @@ fn compose_model(text: &str) -> Result<ComposeModel, EngineError> {
                     devices: service["devices"].as_array().into_iter().flatten().filter_map(source).collect(),
                     cap_add: texts(&service["cap_add"]),
                     security_opt: texts(&service["security_opt"]),
+                    volumes: service["volumes"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter(|volume| volume.get("type").and_then(Value::as_str) == Some("volume"))
+                        .filter_map(|volume| volume.get("source").and_then(Value::as_str).map(str::to_owned))
+                        .collect(),
+                    networks: match service.get("networks").and_then(Value::as_object) {
+                        Some(networks) => networks.keys().cloned().collect(),
+                        // Compose puts a service without either on the
+                        // project's default network.
+                        None if mode("network_mode").is_none() => vec!["default".to_owned()],
+                        None => Vec::new(),
+                    },
                     keys: service.as_object().map(|s| s.keys().cloned().collect()).unwrap_or_default(),
                 }
             })
             .collect(),
+        volumes,
+        networks,
     })
 }
 
@@ -1351,6 +1412,46 @@ mod tests {
             "secrets":{"shadow":{"file":"/etc/shadow"}},"configs":{"site":{"file":"/volume1/docker/web/site.conf"}}}"#;
         let model = compose_model(config).unwrap();
         assert_eq!(model.services[0].binds, ["/", "/etc/shadow", "/volume1/docker/web/site.conf"]);
+    }
+
+    /// As `docker compose config --format json` prints them: what named
+    /// volumes and networks give a container of the machine is named.
+    #[test]
+    fn named_volumes_and_networks_that_reach_the_machine_are_named() {
+        let named = |config: &str| -> Vec<(&'static str, Option<String>)> {
+            let model = compose_model(config).unwrap();
+            zendiloos_containers::domain::risks(&model).iter().map(|r| (r.kind(), r.detail())).collect()
+        };
+        let rbind = r#"{"name":"p","services":{"app":{"image":"alpine:3","restart":"unless-stopped",
+            "volumes":[{"type":"volume","source":"host","target":"/host","volume":{}}]}},
+            "volumes":{"host":{"name":"p_host","driver_opts":{"type":"none","o":"rbind","device":"/"}}}}"#;
+        assert_eq!(named(rbind), [("system_path", Some("/".to_owned()))], "rbind binds as bind does");
+
+        let disk = r#"{"name":"p","services":{"app":{"image":"alpine:3",
+            "volumes":[{"type":"volume","source":"disk","target":"/disk","volume":{}}]}},
+            "volumes":{"disk":{"name":"p_disk","driver_opts":{"type":"ext4","device":"/dev/sda2"}}}}"#;
+        assert_eq!(named(disk), [("devices", Some("/dev/sda2".to_owned()))]);
+
+        for folder in ["/volume1/@docker", "/volume1/@docker/containers", "/volume1/@homes", "/volume1/@apps"]
+        {
+            let config = format!(
+                r#"{{"name":"p","services":{{"app":{{"image":"alpine:3",
+                "volumes":[{{"type":"bind","source":"{folder}","target":"/x","bind":{{"create_host_path":true}}}}]}}}}}}"#
+            );
+            assert_eq!(named(&config), [("system_path", Some(folder.to_owned()))], "{folder}");
+        }
+
+        let host = r#"{"name":"p","services":{"app":{"image":"alpine:3","networks":{"default":null}}},
+            "networks":{"default":{"name":"host","external":true}}}"#;
+        assert_eq!(named(host), [("host_network", None)], "the machine's network by its name");
+        let unlisted = r#"{"name":"p","services":{"app":{"image":"alpine:3"}},
+            "networks":{"default":{"name":"lan","driver":"macvlan","driver_opts":{"parent":"eth0"}}}}"#;
+        assert_eq!(named(unlisted), [("unusual", Some("network default: driver macvlan".to_owned()))]);
+
+        let plain = r#"{"name":"p","services":{"app":{"image":"alpine:3","networks":{"default":null},
+            "volumes":[{"type":"volume","source":"data","target":"/data"}]}},
+            "networks":{"default":{"name":"p_default","ipam":{}}},"volumes":{"data":{"name":"p_data"}}}"#;
+        assert_eq!(named(plain), [], "a project's own volume and bridge");
     }
 
     #[test]
