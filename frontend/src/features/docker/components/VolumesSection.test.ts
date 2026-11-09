@@ -131,6 +131,11 @@ beforeEach(() => {
     { id: 1, name: 'backups', access: 'read_write', home: false },
     { id: 2, name: 'media', access: 'read', home: false },
   ])
+  on('GET', '/api/v1/docker/backup-shares/1/readers', {
+    accounts: ['alice', 'bob'],
+    groups: ['family'],
+    nfs: ['192.168.1.0/24'],
+  })
 })
 
 describe('the volumes page', () => {
@@ -192,10 +197,21 @@ describe('the volumes page', () => {
     const wrapper = await open()
     await choose(wrapper, 1, 'plan')
     expect(page()).toContain(t('docker.volumes.plan.title', { name: 'cache' }))
+    // Another plan takes three already: a new one starts at another hour.
+    expect(document.querySelector<HTMLSelectElement>('#backup-hour')?.value).not.toBe('3')
     expect(button(t('docker.volumes.plan.save')).disabled).toBe(true)
     await type('#backup-folder', 'media/x')
     expect(button(t('docker.volumes.plan.save')).disabled).toBe(true)
+    expect(page()).not.toContain(t('docker.volumes.plan.readable'))
     await type('#backup-folder', 'backups/docker/volumes')
+    // Whoever may read the folder reads the volume's contents: said, with who.
+    expect(page()).toContain(t('docker.volumes.plan.readable'))
+    expect(page()).toContain(
+      t('docker.volumes.plan.readers', {
+        names: `alice, bob, ${t('docker.volumes.plan.group', { name: 'family' })}`,
+      }),
+    )
+    expect(page()).toContain(t('docker.volumes.plan.nfs', { networks: '192.168.1.0/24' }))
     await type('#backup-frequency', 'monthly')
     await type('#backup-day', '31')
     await type('#backup-hour', '2')

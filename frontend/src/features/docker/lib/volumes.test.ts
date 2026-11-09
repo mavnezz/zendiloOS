@@ -9,6 +9,8 @@ import {
   matches,
   pickerPath,
   planTarget,
+  quietHour,
+  readersText,
   scheduleText,
   volumeJob,
 } from './volumes'
@@ -94,5 +96,27 @@ describe('volumes', () => {
     expect(pickerPath({ share_id: 2, folder: '' }, shares)).toBe('media')
     expect(pickerPath({ share_id: 9, folder: 'x' }, shares)).toBe('')
     expect(defaultPlan()).toMatchObject({ frequency: 'daily', hour: 3, keep: 7, stop: true })
+    expect(defaultPlan(4).hour).toBe(4)
+  })
+
+  it('spreads new plans over the night, the same hour for the same volume', () => {
+    const at = (...hours: number[]) => hours.map((hour) => ({ hour }))
+    expect(quietHour('db', at(1, 2, 3, 4))).toBe(5)
+    expect(quietHour('db', at(1, 1, 2, 3, 4, 5))).not.toBe(1)
+    expect(quietHour('db', [])).toBe(quietHour('db', []))
+    const first = new Set(
+      ['a', 'b', 'c', 'db', 'cache', 'media'].map((name) => quietHour(name, [])),
+    )
+    expect(first.size).toBeGreaterThan(1)
+    for (const hour of first) expect([1, 2, 3, 4, 5]).toContain(hour)
+    // Taken a little everywhere: the least taken.
+    expect(quietHour('db', at(1, 2, 3, 3, 4, 4, 5, 5))).toBe(1)
+  })
+
+  it('names who may read a backups’ share', () => {
+    expect(readersText({ accounts: ['alice'], groups: ['family'] }, t)).toBe(
+      `alice, ${t('docker.volumes.plan.group', { name: 'family' })}`,
+    )
+    expect(readersText({ accounts: [], groups: [] }, t)).toBe('')
   })
 })

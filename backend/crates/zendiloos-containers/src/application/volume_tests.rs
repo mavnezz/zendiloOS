@@ -139,6 +139,19 @@ async fn only_unused_volumes_are_removed_and_their_plans_with_them() {
 }
 
 #[tokio::test]
+async fn who_may_read_a_backups_share_is_told_to_those_who_may_put_backups_there() {
+    let (t, _, _) = setup();
+    let readers = t.containers.backup_readers(1, &alice()).await.unwrap();
+    assert_eq!(
+        (readers.accounts, readers.groups, readers.nfs),
+        (vec!["alice".to_owned()], vec!["family".to_owned()], vec!["192.168.1.0/24".to_owned()])
+    );
+    let bob = Actor { account_id: 2, name: "bob".into() };
+    assert!(matches!(t.containers.backup_readers(1, &bob).await, Err(ContainersError::Denied)));
+    assert!(matches!(t.containers.backup_readers(9, &alice()).await, Err(ContainersError::Denied)));
+}
+
+#[tokio::test]
 async fn plans_are_checked_before_they_are_kept() {
     let (t, audit, _) = setup();
     let refused = t.containers.set_backup_plan("nfs_media", nightly(7, true), &alice(), &context()).await;

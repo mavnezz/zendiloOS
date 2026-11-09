@@ -751,6 +751,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/docker/backup-shares/{id}/readers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Who may read the share `id` (one the administrator may write), and
+         *     with it every backup put there. Needs `containers.manage`.
+         */
+        get: operations["backup_readers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/docker/backups/{id}/restore": {
         parameters: {
             query?: never;
@@ -3910,6 +3930,18 @@ export interface components {
              * @description For weekly plans: 0 is Monday.
              */
             weekday?: number | null;
+        };
+        /**
+         * @description Who may read a share backups may go to: they read all of a backed-up
+         *     volume's contents.
+         */
+        BackupReadersView: {
+            /** @description Accounts its rules let read, by name. */
+            accounts: string[];
+            /** @description Groups its rules let read, by name. */
+            groups: string[];
+            /** @description Hosts and networks it is exported to over NFS. */
+            nfs: string[];
         };
         /** @enum {string} */
         BackupState: "running" | "succeeded" | "failed";
@@ -8821,6 +8853,36 @@ export interface operations {
             };
             /** @description `acme_not_installed`, or `refused`: an HTTP challenge without plain HTTP on port 80 */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    backup_readers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupReadersView"];
+                };
+            };
+            /** @description `forbidden`; `share_denied`: a share the administrator may not write */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

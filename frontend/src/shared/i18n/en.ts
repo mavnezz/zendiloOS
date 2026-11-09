@@ -962,6 +962,12 @@ const en = {
         folder: 'Folder',
         browse: 'Browse',
         noFolder: 'Choose a folder of a shared folder you may write.',
+        readable:
+          'Everyone who may read this shared folder can read all of the volume’s contents in its backups, also what the containers keep to themselves: database files, keys, .env files.',
+        readers: 'Who may read it: {names}.',
+        noReaders: 'No account or group has a rule for it.',
+        group: 'group {name}',
+        nfs: 'Over NFS: {networks}.',
         frequency: 'How often',
         frequencies: { daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly' },
         weekday: 'Weekday',

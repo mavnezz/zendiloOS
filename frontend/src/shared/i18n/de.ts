@@ -978,6 +978,12 @@ const de: Messages = {
         hint: 'Jede Sicherung ist ein Archiv im gewählten Ordner, in einem Ordner mit dem Namen des Volumes, daneben ein kleines Manifest.',
         folder: 'Ordner',
         browse: 'Durchsuchen',
+        readable:
+          'Wer diesen freigegebenen Ordner lesen darf, kann den ganzen Inhalt des Volumes in seinen Sicherungen lesen, auch was die Container für sich behalten: Datenbankdateien, Schlüssel, .env-Dateien.',
+        readers: 'Lesen dürfen ihn: {names}.',
+        noReaders: 'Kein Konto und keine Gruppe hat eine Regel für ihn.',
+        group: 'Gruppe {name}',
+        nfs: 'Über NFS: {networks}.',
         noFolder:
           'Wählen Sie einen Ordner in einem freigegebenen Ordner, in den Sie schreiben dürfen.',
         frequency: 'Wie oft',

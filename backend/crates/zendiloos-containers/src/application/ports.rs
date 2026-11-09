@@ -370,12 +370,24 @@ pub struct SharePlace {
     pub share: String,
 }
 
+/// Who may read a share, and with it every backup in it: the accounts and
+/// groups its rules let read, and the NFS clients it is exported to.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ShareReaders {
+    pub accounts: Vec<String>,
+    pub groups: Vec<String>,
+    pub nfs: Vec<String>,
+}
+
 /// The shares backups go to, by their ID: backups run on a schedule, with
 /// nobody signed in.
 #[async_trait]
 pub trait BackupShares: Send + Sync {
     /// `None` once the share is gone.
     async fn locate(&self, share_id: i64) -> Result<Option<SharePlace>, PortError>;
+
+    /// `None` if there is no such share.
+    async fn readers(&self, share_id: i64) -> Result<Option<ShareReaders>, PortError>;
 }
 
 /// Where a long step reports how far it is, in percent, and what is worth

@@ -32,6 +32,34 @@ pub(super) fn routes() -> OpenApiRouter<ApiState> {
         .routes(routes!(backup_plan, set_backup_plan, delete_backup_plan))
         .routes(routes!(list_backups, back_up_now))
         .routes(routes!(restore_backup))
+        .routes(routes!(backup_readers))
+}
+
+/// Who may read a share backups may go to: they read all of a backed-up
+/// volume's contents.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct BackupReadersView {
+    /// Accounts its rules let read, by name.
+    pub accounts: Vec<String>,
+    /// Groups its rules let read, by name.
+    pub groups: Vec<String>,
+    /// Hosts and networks it is exported to over NFS.
+    pub nfs: Vec<String>,
+}
+
+/// Who may read the share `id` (one the administrator may write), and
+/// with it every backup put there. Needs `containers.manage`.
+#[utoipa::path(get, path = "/docker/backup-shares/{id}/readers", tag = "docker", security(("session" = [])), params(("id" = i64, Path)),
+    responses((status = OK, body = BackupReadersView),
+        (status = FORBIDDEN, body = Problem, description = "`forbidden`; `share_denied`: a share the administrator may not write")))]
+async fn backup_readers(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Path(id): Path<i64>,
+) -> Result<Json<BackupReadersView>, ApiError> {
+    manage(&auth)?;
+    let readers = state.containers.backup_readers(id, &auth.0.actor()).await?;
+    Ok(Json(BackupReadersView { accounts: readers.accounts, groups: readers.groups, nfs: readers.nfs }))
 }
 
 #[derive(Debug, Serialize, ToSchema)]

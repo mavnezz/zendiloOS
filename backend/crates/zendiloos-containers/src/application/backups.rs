@@ -16,7 +16,7 @@ use zendiloos_jobs::{Job, Progress};
 use zendiloos_kernel::{Actor, AuditEntry, Outcome, RequestContext, Timestamp};
 use zendiloos_notify::{Level, NewNotification};
 
-use super::ports::{EngineError, NewBackup, SharePlace, Steps};
+use super::ports::{EngineError, NewBackup, SharePlace, ShareReaders, Steps};
 use super::{Containers, ContainersError, job_error};
 use crate::domain::{
     Backup, BackupPlan, BackupSchedule, BackupTarget, WrittenBackup, backup_stem, beyond, is_volume_name,
@@ -111,6 +111,21 @@ impl Containers {
         let now = self.now();
         let next_at = plan.schedule.next(now, &|at| self.ports.clock.utc_offset(at));
         PlanView { plan, next_at }
+    }
+
+    /// Who may read share `share_id`, a share `actor` may put backups in:
+    /// whoever may read a backup's folder reads all of the volume's
+    /// contents, files the containers keep to themselves included.
+    pub async fn backup_readers(
+        &self,
+        share_id: i64,
+        actor: &Actor,
+    ) -> Result<ShareReaders, ContainersError> {
+        let places = self.ports.storage.places(actor).await?;
+        if !places.iter().any(|place| place.share_id == share_id) {
+            return Err(ContainersError::Denied);
+        }
+        self.ports.backup_shares.readers(share_id).await?.ok_or(ContainersError::NotFound)
     }
 
     pub async fn backup_plan(&self, volume: &str) -> Result<Option<PlanView>, ContainersError> {

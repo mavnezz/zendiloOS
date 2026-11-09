@@ -456,6 +456,20 @@ export function usePruneVolumes() {
   })
 }
 
+/** Who may read share `id`, and with it every backup put there. */
+export function useBackupReaders(id: Ref<number | null>) {
+  return useQuery({
+    queryKey: ['docker', 'backup-readers', id],
+    queryFn: () =>
+      unwrap(
+        api.GET('/api/v1/docker/backup-shares/{id}/readers', {
+          params: { path: { id: id.value ?? 0 } },
+        }),
+      ),
+    enabled: computed(() => id.value !== null),
+  })
+}
+
 /** Makes or replaces a volume's backup plan. */
 export function saveBackupPlan(name: string, body: BackupPlanRequest) {
   return unwrap(

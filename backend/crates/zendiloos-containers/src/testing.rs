@@ -11,8 +11,9 @@ use zendiloos_kernel::{Actor, AuditLog, Clock, PortError, RequestContext, Timest
 
 use crate::application::ports::{
     BackupRepository, BackupShares, CheckedCompose, DataPlace, DockerData, DockerEngine, EngineError, Lines,
-    NewBackup, ProjectAction, ProjectPlace, ProjectRepository, ProjectStorage, Registries, SharePlace, Steps,
-    StorageError, TerminalInput, TerminalSession, UpdateSettingsRepository, VolumeArchiver,
+    NewBackup, ProjectAction, ProjectPlace, ProjectRepository, ProjectStorage, Registries, SharePlace,
+    ShareReaders, Steps, StorageError, TerminalInput, TerminalSession, UpdateSettingsRepository,
+    VolumeArchiver,
 };
 use crate::application::{Containers, ContainersPorts};
 use crate::domain::{
@@ -693,13 +694,22 @@ impl DockerData for FakeDockerData {
     }
 }
 
-/// Share 1 is `docker` on volume 1; no other.
+/// Share 1 is `docker` on volume 1, which alice and the group `family`
+/// may read, and the network 192.168.1.0/24 over NFS; no other.
 pub struct FakeBackupShares;
 
 #[async_trait]
 impl BackupShares for FakeBackupShares {
     async fn locate(&self, share_id: i64) -> Result<Option<SharePlace>, PortError> {
         Ok((share_id == 1).then(|| SharePlace { volume: 1, share: "docker".into() }))
+    }
+
+    async fn readers(&self, share_id: i64) -> Result<Option<ShareReaders>, PortError> {
+        Ok((share_id == 1).then(|| ShareReaders {
+            accounts: vec!["alice".into()],
+            groups: vec!["family".into()],
+            nfs: vec!["192.168.1.0/24".into()],
+        }))
     }
 }
 
