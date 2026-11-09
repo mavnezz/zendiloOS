@@ -1540,7 +1540,18 @@ unpinned. It keeps the result as
 `/etc/zendiloos/projects/<project>.json` and runs Compose on that file with
 an empty `.env`; `down` removes it again. A project made before this was
 kept runs once its file is saved again. A project made elsewhere whose
-Compose file lies in a share is not deployed here, for the same reason.
+Compose file lies in a share is not deployed here, for the same reason,
+nor one that binds a folder or file in a share (below the share's root,
+also as a named volume, a secret or a config): it runs from its own
+files, by those paths, so Docker would follow a link someone put in a
+folder's place. Before `up` or `pull` of such a project (a redeploy, an
+image update) the agent reads what Compose makes of its files and
+refuses; it is made a project of zendiloOS's (its file saved here, which
+pins what it binds) or binds the share as a whole. Its containers are
+still started, stopped and restarted: that changes nothing of how they
+were made, and Docker restarts them by itself anyway. Asking for a
+confirmation instead would not make them run pinned, and a scheduled
+update has nobody to ask.
 A share a project lives in or mounts something of is not deleted
 (`share_used_by_projects`; zendiloosd from the confirmed configurations,
 the agent again from the kept files, which then offers the share again).

@@ -234,6 +234,43 @@ pub(crate) fn binds_a_folder(options: &str) -> bool {
     options.split(',').any(|option| matches!(option.trim(), "bind" | "rbind"))
 }
 
+/// What `normalized` binds that a deployment here would pin or refuse:
+/// a folder or file below the root of a share or volume (`/volume1/media/
+/// Films`), which whoever may write there could swap for a link Docker
+/// follows, and a path the kernel would not take as it reads. A project
+/// made elsewhere runs from its own files, by those paths.
+pub(crate) fn needing_pins(normalized: &Value) -> Vec<String> {
+    let services = normalized.get("services").and_then(Value::as_object).into_iter().flat_map(|s| s.values());
+    let binds = services
+        .flat_map(|service| service.get("volumes").and_then(Value::as_array).into_iter().flatten())
+        .filter(|volume| volume.get("type").and_then(Value::as_str) == Some("bind"))
+        .filter_map(|volume| volume.get("source").and_then(Value::as_str));
+    let volumes = normalized.get("volumes").and_then(Value::as_object).into_iter().flat_map(|v| v.values());
+    let bound = volumes.filter_map(|volume| {
+        let options = volume.get("driver_opts")?;
+        options.get("o")?.as_str().filter(|o| binds_a_folder(o))?;
+        options.get("device")?.as_str()
+    });
+    let files = ["secrets", "configs"]
+        .into_iter()
+        .flat_map(|kind| normalized.get(kind).and_then(Value::as_object).into_iter().flat_map(|v| v.values()))
+        .filter_map(|entry| entry.get("file").and_then(Value::as_str));
+    let mut found: Vec<String> = Vec::new();
+    for source in binds.chain(bound).chain(files) {
+        let path = Path::new(source);
+        let odd = !path.is_absolute() || path.components().any(|part| part == Component::ParentDir);
+        let beneath = source
+            .strip_prefix("/volume")
+            .and_then(|rest| rest.split_once('/'))
+            .filter(|(number, _)| !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()))
+            .is_some_and(|(_, rest)| rest.split('/').filter(|name| !name.is_empty()).count() > 1);
+        if (odd || beneath) && !found.iter().any(|f| f == source) {
+            found.push(source.to_owned());
+        }
+    }
+    found
+}
+
 /// A pin's name: from what it pins, so that a bind whose source changed gets
 /// another pin and Docker Compose, seeing another source, makes its
 /// container again instead of keeping it on what it had mounted.
@@ -478,6 +515,39 @@ mod tests {
             pinned(json!({ "services": { "web": { "volumes": [bind("/srv/../volume1/media/x")] } } }))
                 .unwrap_err();
         assert!(error.to_string().contains("cannot be pinned"), "{error}");
+    }
+
+    #[test]
+    fn what_a_project_made_elsewhere_would_mount_unpinned_is_found() {
+        let normalized = json!({
+            "services": {
+                "web": { "volumes": [
+                    bind("/volume1/media"),
+                    bind("/volume1/media/Films"),
+                    bind("/etc/localtime"),
+                    { "type": "volume", "source": "data", "target": "/data" },
+                ] },
+                "db": { "volumes": [bind("/volume1/media/Films"), bind("/srv/../volume2/x/y")] },
+            },
+            "volumes": {
+                "data": {},
+                "music": { "driver_opts": { "type": "none", "o": "rbind", "device": "/volume1/media/Music" } },
+                "root": { "driver_opts": { "type": "none", "o": "bind", "device": "/" } },
+                "nfs": { "driver_opts": { "type": "nfs", "o": "addr=10.0.0.2", "device": ":/volume1/a/b" } },
+            },
+            "secrets": { "token": { "file": "/volume1/docker/app/token" } },
+        });
+
+        assert_eq!(
+            needing_pins(&normalized),
+            [
+                "/volume1/media/Films",
+                "/srv/../volume2/x/y",
+                "/volume1/media/Music",
+                "/volume1/docker/app/token"
+            ],
+            "a share's root, the system's folders and another machine's export are left as they are"
+        );
     }
 
     #[test]
