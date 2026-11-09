@@ -3007,7 +3007,7 @@ dependencies = [
 
 [[package]]
 name = "zendiloos-agent"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -3033,7 +3033,7 @@ dependencies = [
 
 [[package]]
 name = "zendiloos-agent-proto"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "rustix",
@@ -3046,7 +3046,7 @@ dependencies = [
 
 [[package]]
 name = "zendiloos-api"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -3080,7 +3080,7 @@ dependencies = [
 
 [[package]]
 name = "zendiloos-apps"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "thiserror",
@@ -3092,7 +3092,7 @@ dependencies = [
 
 [[package]]
 name = "zendiloos-architecture"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde_json",
  "syn 2.0.119",
@@ -3111,7 +3111,7 @@ dependencies = [
 
 [[package]]
 name = "zendiloos-certificates"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "thiserror",
@@ -3124,7 +3124,7 @@ dependencies = [
 
 [[package]]
 name = "zendiloos-containers"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "thiserror",
@@ -3137,7 +3137,7 @@ dependencies = [
 
 [[package]]
 name = "zendiloos-exec"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "rustix",
  "thiserror",
@@ -3146,7 +3146,7 @@ dependencies = [
 
 [[package]]
 name = "zendiloos-fileops"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "rustix",
  "tar",
@@ -3157,7 +3157,7 @@ dependencies = [
 
 [[package]]
 name = "zendiloos-firewall"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "thiserror",
@@ -3169,7 +3169,7 @@ dependencies = [
 
 [[package]]
 name = "zendiloos-identity"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "thiserror",
@@ -3180,7 +3180,7 @@ dependencies = [
 
 [[package]]
 name = "zendiloos-infra"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "argon2",
  "async-trait",
@@ -3229,7 +3229,7 @@ dependencies = [
 
 [[package]]
 name = "zendiloos-jobs"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "tokio",
@@ -3239,7 +3239,7 @@ dependencies = [
 
 [[package]]
 name = "zendiloos-kernel"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "thiserror",
@@ -3247,7 +3247,7 @@ dependencies = [
 
 [[package]]
 name = "zendiloos-logging"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "tracing",
@@ -3256,7 +3256,7 @@ dependencies = [
 
 [[package]]
 name = "zendiloos-network"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "thiserror",
@@ -3267,7 +3267,7 @@ dependencies = [
 
 [[package]]
 name = "zendiloos-notify"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "thiserror",
@@ -3278,7 +3278,7 @@ dependencies = [
 
 [[package]]
 name = "zendiloos-sharing"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "thiserror",
@@ -3291,7 +3291,7 @@ dependencies = [
 
 [[package]]
 name = "zendiloos-sim"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "jiff",
@@ -3307,7 +3307,7 @@ dependencies = [
 
 [[package]]
 name = "zendiloos-storage"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "thiserror",
@@ -3320,7 +3320,7 @@ dependencies = [
 
 [[package]]
 name = "zendiloos-system"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "thiserror",
@@ -3330,7 +3330,7 @@ dependencies = [
 
 [[package]]
 name = "zendiloos-updates"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "thiserror",
@@ -3342,7 +3342,7 @@ dependencies = [
 
 [[package]]
 name = "zendiloosd"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "axum",

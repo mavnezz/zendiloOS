@@ -1,3 +1,33 @@
+zendiloos (0.3.0) unstable; urgency=medium
+
+  * Access to a share is the share's as a whole: Samba, the file manager
+    and NFS enforce its rules, and every share's files carry one ACL, for
+    the group zendiloos-files. Changes of rules, groups and accounts take
+    effect at once, without going through the files. Shares made with
+    0.2.0 are converted once, in the background, one at a time.
+  * NFS clients are named per host or network, read only or read and
+    write, and every request is squashed to zendiloos-files.
+  * Deleting over SMB or NFS in a share is final; the snapshots keep
+    earlier states, and the file manager keeps its recycle bin.
+  * Docker volumes are listed with their containers, backed up on a
+    schedule into a shared folder and restored, under their own name or
+    into another volume. Backups of deleted volumes stay restorable from
+    a Backups page, and backups can be imported from a folder.
+  * Disks show where they sit: an enclosure schematic, known NAS models,
+    Locate and an inventory.
+  * The update page is called Updates and shows what is new in the
+    installed version. The storage overview page is gone; its concerns
+    are listed above Pools and Disks.
+  * A solid colour as background; administrators are asked once for a
+    star on GitHub.
+  * Firewall changes are confirmed from the browser that made them;
+    two-factor attempts are limited per account; certificates are
+    replaced in one checked step.
+  * Moves between volumes remove only what was copied and written out.
+  * Fixes and hardening throughout.
+
+ -- zendiloOS <julian@stuch.info>  Mon, 09 Nov 2026 14:32:05 +0000
+
 zendiloos (0.2.0) unstable; urgency=medium
 
   * A file explorer replaces the Shares app: folders on a volume with their
