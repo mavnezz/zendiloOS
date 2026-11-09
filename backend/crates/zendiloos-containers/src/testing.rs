@@ -692,16 +692,28 @@ impl Registries for FakeRegistries {
 }
 
 #[derive(Default)]
-pub struct MemoryUpdateSettings(Mutex<Option<UpdateSettings>>);
+pub struct MemoryUpdateSettings {
+    settings: Mutex<Option<UpdateSettings>>,
+    pub since: Mutex<Option<Timestamp>>,
+}
 
 #[async_trait]
 impl UpdateSettingsRepository for MemoryUpdateSettings {
     async fn settings(&self) -> Result<UpdateSettings, PortError> {
-        Ok(self.0.lock().unwrap().unwrap_or_default())
+        Ok(self.settings.lock().unwrap().unwrap_or_default())
     }
 
     async fn save(&self, settings: &UpdateSettings) -> Result<(), PortError> {
-        *self.0.lock().unwrap() = Some(*settings);
+        *self.settings.lock().unwrap() = Some(*settings);
+        Ok(())
+    }
+
+    async fn schedule_since(&self) -> Result<Option<Timestamp>, PortError> {
+        Ok(*self.since.lock().unwrap())
+    }
+
+    async fn schedule_ran(&self, at: Timestamp) -> Result<(), PortError> {
+        *self.since.lock().unwrap() = Some(at);
         Ok(())
     }
 }
@@ -1047,6 +1059,7 @@ pub struct TestContainers {
     pub jobs: Arc<MemoryJobs>,
     /// The jobs as the containers start them, over `jobs`.
     pub job_service: Jobs,
+    pub updates: Arc<MemoryUpdateSettings>,
     pub data: Arc<FakeDockerData>,
     pub archiver: Arc<FakeArchiver>,
     pub backups: Arc<MemoryBackups>,
@@ -1064,12 +1077,13 @@ impl TestContainers {
         let backups = Arc::new(MemoryBackups::default());
         let notifications = Arc::new(zendiloos_notify::testing::MemoryNotifications::default());
         let job_service = Jobs::new(jobs.clone(), clock.clone());
+        let updates = Arc::new(MemoryUpdateSettings::default());
         let containers = Containers::new(ContainersPorts {
             engine: engine.clone(),
             projects: projects.clone(),
             storage: storage.clone(),
             registries: Arc::new(FakeRegistries),
-            updates: Arc::new(MemoryUpdateSettings::default()),
+            updates: updates.clone(),
             data: data.clone(),
             archiver: archiver.clone(),
             backups: backups.clone(),
@@ -1086,6 +1100,7 @@ impl TestContainers {
             storage,
             jobs,
             job_service,
+            updates,
             data,
             archiver,
             backups,

@@ -1613,7 +1613,13 @@ registries for the digest under each tag the containers run, with a
 `HEAD` of the manifest (anonymous tokens where a registry wants one; no
 pull counted), and compares it with the image's digests. On a schedule
 (days of the week and a time, the machine's local time) or by hand,
-projects with a newer image are pulled and brought up again; containers
+projects with a newer image are pulled and brought up again. The schedule
+is due as a backup plan is, with the same calendar (daylight saving time
+included): once its latest time lies after it was set or last ran
+(`docker_update_settings.schedule_since`), so a minute missed (the NAS
+off, asleep or busy, its clock changed) is made up once at the next
+look, a clock that was ahead counts from when it is right, and one set
+before that was kept counts from the first look; containers
 outside a project are only pulled for, apps of catalogs left to the App
 Center, images pinned by digest never looked at. A container with a newer
 image says so in the list, which also says how many can be updated; one

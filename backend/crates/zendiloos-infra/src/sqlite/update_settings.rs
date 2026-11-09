@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use zendiloos_containers::application::ports::UpdateSettingsRepository;
 use zendiloos_containers::domain::{UpdateSchedule, UpdateSettings};
-use zendiloos_kernel::PortError;
+use zendiloos_kernel::{PortError, Timestamp};
 
 use super::Database;
 
@@ -60,6 +60,23 @@ impl UpdateSettingsRepository for SqliteUpdateSettings {
         .map_err(db_error)?;
         Ok(())
     }
+
+    async fn schedule_since(&self) -> Result<Option<Timestamp>, PortError> {
+        let since = sqlx::query_scalar!("SELECT schedule_since FROM docker_update_settings WHERE id = 1")
+            .fetch_optional(self.db.pool())
+            .await
+            .map_err(db_error)?;
+        Ok(since.flatten().map(Timestamp::from_unix_seconds))
+    }
+
+    async fn schedule_ran(&self, at: Timestamp) -> Result<(), PortError> {
+        let seconds = at.unix_seconds();
+        sqlx::query!("UPDATE docker_update_settings SET schedule_since = ? WHERE id = 1", seconds)
+            .execute(self.db.pool())
+            .await
+            .map_err(db_error)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -81,8 +98,15 @@ mod tests {
         };
         settings.save(&weekly).await.unwrap();
         assert_eq!(settings.settings().await.unwrap(), weekly);
+        assert_eq!(settings.schedule_since().await.unwrap(), None, "never noted");
+        settings.schedule_ran(Timestamp::from_unix_seconds(1_793_577_600)).await.unwrap();
+        assert_eq!(
+            settings.schedule_since().await.unwrap(),
+            Some(Timestamp::from_unix_seconds(1_793_577_600))
+        );
         let off = UpdateSettings { check: false, schedule: None };
         settings.save(&off).await.unwrap();
         assert_eq!(settings.settings().await.unwrap(), off);
+        assert!(settings.schedule_since().await.unwrap().is_some(), "kept beside the settings");
     }
 }

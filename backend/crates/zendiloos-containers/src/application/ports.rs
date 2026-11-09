@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use async_trait::async_trait;
-use zendiloos_kernel::{Actor, PortError, RequestContext};
+use zendiloos_kernel::{Actor, PortError, RequestContext, Timestamp};
 
 use crate::domain::{
     Backup, BackupFile, BackupPlan, ComposeListing, ComposeModel, Container, ContainerAction,
@@ -336,6 +336,12 @@ pub trait UpdateSettingsRepository: Send + Sync {
     async fn settings(&self) -> Result<UpdateSettings, PortError>;
 
     async fn save(&self, settings: &UpdateSettings) -> Result<(), PortError>;
+
+    /// When the schedule was set or last ran: it is due from then. None
+    /// for one never noted.
+    async fn schedule_since(&self) -> Result<Option<Timestamp>, PortError>;
+
+    async fn schedule_ran(&self, at: Timestamp) -> Result<(), PortError>;
 }
 
 /// A pool Docker's data is on or could go to.
