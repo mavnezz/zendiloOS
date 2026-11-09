@@ -160,12 +160,14 @@ install_package() {
     [[ -n $deb && -f $deb ]] || { echo "no package; run 'just deb'" >&2; exit 1; }
     say "Installing $(basename "$deb")"
     scp -q "${scp_opts[@]}" "$deb" debian@127.0.0.1:/tmp/
-    # ZFS comes from contrib and is built for the running kernel.
+    # ZFS comes from contrib and DKMS builds it for each kernel: the
+    # headers' metapackage, as the ISO installs it, so that a kernel a
+    # Debian update brings gets its headers, and ZFS, too.
     ssh "${ssh_opts[@]}" debian@127.0.0.1 "set -e
         sudo sed -i 's/^Components: main\$/Components: main contrib/' /etc/apt/sources.list.d/debian.sources
         echo 'zfs-dkms zfs-dkms/note-incompatible-licenses note' | sudo debconf-set-selections
         sudo apt-get update -qq
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq linux-headers-\$(uname -r)
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq linux-headers-\$(uname -r) linux-headers-cloud-amd64
         # --reinstall: a build of the same version replaces the installed one.
         sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --reinstall /tmp/$(basename "$deb")"
     say "Installed: https://127.0.0.1:$https_port/"

@@ -168,9 +168,9 @@ call GET '/logs/audit' | jq -e '[.. | strings | select(test("container_terminal"
     || fail "no audit entry for the terminal"
 
 say "3. A network; newer images"
-[[ $(status POST /docker/networks '{"name":"ztest_net","subnet":"172.31.250.0/24","gateway":"172.31.250.1"}') == 201 ]] \
+[[ $(status POST /docker/networks '{"name":"ztest_net","subnet":"10.231.250.0/24","gateway":"10.231.250.1"}') == 201 ]] \
     || fail "network: $(cat "$work/last")"
-[[ $(vm "sudo docker network inspect -f '{{(index .IPAM.Config 0).Subnet}}' ztest_net") == 172.31.250.0/24 ]] || fail "subnet"
+[[ $(vm "sudo docker network inspect -f '{{(index .IPAM.Config 0).Subnet}}' ztest_net") == 10.231.250.0/24 ]] || fail "subnet"
 [[ $(status DELETE /docker/networks/ztest_net) == 204 ]] || fail "network removal"
 [[ $(status DELETE /docker/networks/bridge) == 409 ]] || fail "Docker's own network went"
 call POST /docker/updates/check | jq -e '.images[] | select(.reference == "alpine:3.20")' >/dev/null \
