@@ -133,7 +133,7 @@ mod tests {
 
     #[tokio::test]
     async fn refuses_while_background_work_runs() {
-        let running = vec!["sharing.apply_access photos".to_owned(), "storage.scrub tank".to_owned()];
+        let running = vec!["sharing.migrate_permissions photos".to_owned(), "storage.scrub tank".to_owned()];
         let recorder = Arc::new(Recorder { running, ..Recorder::default() });
 
         let result =
@@ -141,7 +141,7 @@ mod tests {
 
         match result {
             Err(PowerError::JobsRunning(named)) => {
-                assert_eq!(named, "sharing.apply_access photos, storage.scrub tank");
+                assert_eq!(named, "sharing.migrate_permissions photos, storage.scrub tank");
             }
             other => panic!("not refused: {other:?}"),
         }

@@ -41,8 +41,8 @@ impl UsableShares for FilesForApps {
     }
 }
 
-/// [`AppShares`] through the Sharing context's use cases: the apps'
-/// access is kept and written there, beside the people's.
+/// [`AppShares`] through the Sharing context's use cases: what an app
+/// installed the earlier way was given is recorded there, as information.
 #[derive(Clone)]
 pub struct SharingForApps {
     sharing: SharingUseCases,

@@ -4,7 +4,7 @@ use async_trait::async_trait;
 
 /// What runs in the background now (jobs: copies, permission changes,
 /// changes of pools, installs; an update of the system), each named for a
-/// person to read, e.g. `sharing.apply_access photos`.
+/// person to read, e.g. `sharing.migrate_permissions photos`.
 ///
 /// Updates of zendiloOS and reboots ask it first: an agent seeing a long
 /// operation through would keep a package upgrade waiting, and a reboot

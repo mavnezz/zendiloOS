@@ -853,7 +853,7 @@ async fn no_reboot_nor_update_while_a_job_runs() {
     let (finish, finished) = tokio::sync::oneshot::channel::<()>();
     let job = h
         .jobs
-        .start("sharing.apply_access", Some("photos".into()), None, |_| async move {
+        .start("sharing.migrate_permissions", Some("photos".into()), None, |_| async move {
             let _ = finished.await;
             Ok(())
         })
@@ -863,13 +863,13 @@ async fn no_reboot_nor_update_while_a_job_runs() {
     let reboot =
         h.send(json(with_csrf(post("/api/v1/system/power"), &session), json!({ "action": "reboot" }))).await;
     assert_problem(&reboot, StatusCode::CONFLICT, "jobs_running");
-    assert_eq!(reboot.body["detail"], "sharing.apply_access photos");
+    assert_eq!(reboot.body["detail"], "sharing.migrate_permissions photos");
     assert!(h.power.0.lock().unwrap().is_empty());
     let entry = h.identity.audit.entries().last().cloned().unwrap();
     assert_eq!((entry.action, entry.outcome), ("system.reboot", Outcome::Denied));
     let update = h.send(empty(with_csrf(post("/api/v1/system/updates/apply"), &session))).await;
     assert_problem(&update, StatusCode::CONFLICT, "jobs_running");
-    assert_eq!(update.body["detail"], "sharing.apply_access photos");
+    assert_eq!(update.body["detail"], "sharing.migrate_permissions photos");
 
     finish.send(()).unwrap();
     job_done(&h, job.id.get()).await;
