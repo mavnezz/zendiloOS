@@ -57,6 +57,20 @@ fn setup() -> Setup {
     setup_with(FakeAcmeHost::installed())
 }
 
+/// zendiloosd started again: what it keeps in memory is gone, the host
+/// and the database stay.
+fn restarted(s: &Setup) -> Certificates {
+    Certificates::new(CertificatesPorts {
+        repository: s.repository.clone(),
+        host: s.host.clone(),
+        listening: s.ports.clone(),
+        jobs: s.jobs.clone(),
+        notifier: Notifier::new(s.notifications.clone(), Arc::new(FixedClock)),
+        audit: s.audit.clone(),
+        clock: Arc::new(FixedClock),
+    })
+}
+
 fn now() -> Timestamp {
     FixedClock.now()
 }
@@ -386,7 +400,7 @@ async fn web_settings_not_confirmed_go_back() {
     let context = RequestContext::default();
     let web = WebServer { http_port: Some(8081), https_port: 443, certificate_id: None };
     s.certificates.apply_web_server(web, &alice(), &context).await.unwrap();
-    assert_eq!(s.host.applied(), Some(web));
+    assert_eq!(s.host.in_force(), web);
     s.host.roll_back();
     let settings = s.certificates.web_server(&context).await.unwrap();
     assert_eq!((settings.current, settings.pending), (WebServer::default(), None));
@@ -478,6 +492,33 @@ async fn two_confirmations_at_once_leave_the_database_as_the_host_keeps_it() {
     assert!(first.is_ok() != second.is_ok(), "one gets through: {first:?}, {second:?}");
     assert_eq!(s.host.calls().iter().filter(|call| *call == "confirm").count(), 1);
     assert_eq!(s.repository.web_server().await.unwrap(), moved, "the host keeps it");
+}
+
+/// zendiloosd saved the settings it was confirming and stopped before the
+/// host heard of it: the host went back to the settings before. Started
+/// again, it puts those saved in force, once the host has no change
+/// waiting any more.
+#[tokio::test]
+async fn settings_saved_while_confirming_are_in_force_again_after_a_restart() {
+    let s = setup();
+    let context = RequestContext::default();
+    let moved = WebServer { http_port: Some(8081), https_port: 8444, certificate_id: None };
+    s.certificates.apply_web_server(moved, &alice(), &context).await.unwrap();
+    // Saved, then gone before the host was told; the host waits still.
+    s.repository.save_web_server(&moved).await.unwrap();
+    let restarted = restarted(&s);
+    let waiting = restarted.bring_web_server_in_step(&context).await.unwrap();
+    assert!(matches!(waiting, InStep::WaitUntil(_)), "{waiting:?}");
+    // Nobody confirmed it: it went back.
+    s.host.roll_back();
+    assert_eq!(s.host.in_force(), WebServer::default());
+    s.host.forget_calls();
+
+    assert_eq!(restarted.bring_web_server_in_step(&context).await.unwrap(), InStep::Done);
+    assert_eq!(s.host.in_force(), moved);
+    assert_eq!(s.host.calls(), ["keep Some(8081) 8444 None"]);
+    let settings = restarted.web_server(&context).await.unwrap();
+    assert_eq!((settings.current, settings.pending), (moved, None));
 }
 
 /// An account's key at the authority goes with it.

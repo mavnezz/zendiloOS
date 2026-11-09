@@ -2108,7 +2108,12 @@ saves the settings as it confirms them (first, and takes them back if the
 agent cannot keep the change), so the database never holds settings that
 went back; applying and confirming take turns under a lock of their own, so
 of two confirmations sent at once one gets through and the other takes
-nothing back.
+nothing back. Had zendiloosd stopped between saving the settings and the
+agent hearing of the confirmation, the host went back to the ones before:
+at its start zendiloosd waits until no change waits on the host and puts the
+settings saved in force again, for good (they were confirmed from the
+browser at their address; `ApplyWebServer` without a time to confirm in,
+which leaves nginx alone while the files say them already).
 
 ### 4.12 Firewall
 

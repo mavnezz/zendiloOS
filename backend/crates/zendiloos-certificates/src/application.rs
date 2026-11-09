@@ -119,6 +119,9 @@ pub trait AcmeHost: Send + Sync {
         context: &RequestContext,
     ) -> Result<(), HostError>;
     async fn confirm_web(&self, context: &RequestContext) -> Result<(), HostError>;
+    /// Puts settings confirmed before in force for good, at once; nothing
+    /// changes while they are. Refused (`Conflict`) while a change waits.
+    async fn keep_web(&self, web: &WebServer, context: &RequestContext) -> Result<(), HostError>;
     /// The certificate the web interface shows (or a change waiting would)
     /// was renewed: nginx takes the new one.
     async fn reload_certificate(&self, context: &RequestContext) -> Result<(), HostError>;
@@ -177,6 +180,16 @@ pub const OUTPUT_KEPT: usize = 200;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AcmePlugin {
     pub installed: bool,
+}
+
+/// What came of [`Certificates::bring_web_server_in_step`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InStep {
+    /// The host serves the web interface as the database says.
+    Done,
+    /// A change waits on the host, which it goes back from by itself at
+    /// this time unless confirmed: try again then.
+    WaitUntil(Timestamp),
 }
 
 /// The web server's settings, and a change waiting for confirmation.
@@ -748,6 +761,27 @@ impl Certificates {
         }
         *self.pending.lock().unwrap_or_else(PoisonError::into_inner) = None;
         Ok(())
+    }
+}
+
+impl Certificates {
+    /// At start: the host serves the web interface as the database says.
+    /// Settings are saved as they are confirmed, just before the host is
+    /// told to keep them; had zendiloosd stopped in between, the host went
+    /// back to the ones before, by itself. Those saved were confirmed from
+    /// the browser at their address: they are put in force again, for good.
+    /// A change waiting on the host is left to be confirmed or to go back.
+    pub async fn bring_web_server_in_step(
+        &self,
+        context: &RequestContext,
+    ) -> Result<InStep, CertificatesError> {
+        let _web = self.web.lock().await;
+        if let Some(until) = self.ports.host.web_state(context).await?.pending_until {
+            return Ok(InStep::WaitUntil(until));
+        }
+        let web = self.ports.repository.web_server().await?;
+        self.ports.host.keep_web(&web, context).await?;
+        Ok(InStep::Done)
     }
 }
 
