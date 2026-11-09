@@ -27,7 +27,7 @@ use rustix::fs::{
 use rustix::io::Errno;
 use zendiloos_agent_proto::{SharePath, is_file_name};
 
-use super::copied;
+use super::copied::{self, Stays};
 use super::{
     Copied, FileError, MAX_DEPTH, MAX_NUMBERED, NewEntries, ShareRoot, c_name, clash, device,
     existing_folder, identity, kind, nested, numbered, open_beneath_flags, open_link, remove_entry,
@@ -106,12 +106,15 @@ fn send(
                 return Err(FileError::Invalid("folders are nested too deeply"));
             }
             let folder = open_beneath_flags(source, name, OFlags::RDONLY | OFlags::DIRECTORY)?;
-            let opened = fstat(&folder)?;
+            let (opened, settled) = copied.settled(folder.as_fd(), fstat(&folder)?)?;
             if device(&opened) != file_system {
                 return Ok(()); // mounted on meanwhile
             }
             put(out, Piece::Folder(name.to_owned()))?;
             let index = copied.folder(name, &opened);
+            if !settled {
+                copied.stays(index, Stays::Itself);
+            }
             for entry in Dir::read_from(&folder)? {
                 let entry = entry?;
                 let child = entry.file_name();
@@ -126,11 +129,14 @@ fn send(
             let file = open_beneath_flags(source, name, OFlags::RDONLY | OFlags::NONBLOCK)?;
             // Before the target reads it: whatever changes it from now on,
             // the move sees.
-            let opened = fstat(&file)?;
+            let (opened, settled) = copied.settled(file.as_fd(), fstat(&file)?)?;
             if kind(&opened) != FileType::RegularFile {
                 return Ok(()); // something else in its place meanwhile
             }
-            copied.file(name, &opened);
+            let index = copied.file(name, &opened);
+            if !settled {
+                copied.stays(index, Stays::All);
+            }
             put(out, Piece::File { name: name.to_owned(), file, times: timestamps(&opened) })?;
         }
         FileType::Symlink => {

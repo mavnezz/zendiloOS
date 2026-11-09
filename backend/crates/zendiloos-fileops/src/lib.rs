@@ -444,7 +444,7 @@ fn copy_into(
                 return Err(FileError::Invalid("folders are nested too deeply"));
             }
             let from = open_beneath_flags(source, name, OFlags::RDONLY | OFlags::DIRECTORY)?;
-            let opened = fstat(&from)?;
+            let (opened, settled) = copied.settled(from.as_fd(), fstat(&from)?)?;
             if device(&opened) != file_system {
                 return Ok(()); // mounted on meanwhile
             }
@@ -487,6 +487,9 @@ fn copy_into(
                 }
             };
             let folder = copied.folder(name, &opened);
+            if !settled {
+                copied.stays(folder, Stays::Itself);
+            }
             let filled = (|| {
                 // Read as it goes: what is copied lands in another folder.
                 for entry in Dir::read_from(&from)? {
@@ -527,7 +530,7 @@ fn copy_into(
         FileType::RegularFile => {
             let from = File::from(open_beneath_flags(source, name, OFlags::RDONLY | OFlags::NONBLOCK)?);
             // Before reading: whatever changes it from now on, the move sees.
-            let opened = fstat(&from)?;
+            let (opened, settled) = copied.settled(from.as_fd(), fstat(&from)?)?;
             if kind(&opened) != FileType::RegularFile {
                 return Ok(()); // something else in its place meanwhile
             }
@@ -544,7 +547,7 @@ fn copy_into(
                         return Err(FileError::Exists);
                     }
                     let file = copied.file(name, &opened);
-                    if !same {
+                    if !same || !settled {
                         copied.stays(file, Stays::All);
                     }
                     return Ok(());
@@ -567,7 +570,10 @@ fn copy_into(
                 let _ = remove_entry(target, target_name, device(&made), 0, Some(identity(&made)));
                 return Err(nested(error));
             }
-            copied.file(name, &opened);
+            let file = copied.file(name, &opened);
+            if !settled {
+                copied.stays(file, Stays::All);
+            }
         }
         FileType::Symlink => {
             let Some((opened, link)) = open_link(source, name)? else { return Ok(()) };

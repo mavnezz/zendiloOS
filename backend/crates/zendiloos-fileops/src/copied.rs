@@ -30,6 +30,13 @@
 //! it read it again. On those ([`Copied::on_fat`]) an entry is told by its
 //! name, kind, size and modification time alone.
 //!
+//! Times move in steps: a clock tick on most file systems, two seconds on
+//! FAT. A change in the same step as the one before it leaves the times as
+//! they were, so an entry changed within a step before the copy looked at
+//! it is looked at again once the step is over ([`Copied::settled`]):
+//! whatever changes it after that moves its times. One that keeps changing
+//! stays.
+//!
 //! A move tried again after it left part of its source finds its earlier
 //! copy in the target: it goes on into a folder of the name there, adding
 //! what is missing. A file the target has under the same name already
@@ -44,6 +51,7 @@ use std::ffi::CStr;
 use std::fs::File;
 use std::io::Read;
 use std::os::fd::{AsFd, BorrowedFd};
+use std::time::{Duration, SystemTime};
 
 use rustix::fs::{AtFlags, FileType, OFlags, Stat, fstat, statat, unlinkat};
 use rustix::io::Errno;
@@ -63,6 +71,15 @@ pub const MAX_MOVED_NAME_BYTES: usize = 16 * 1024 * 1024;
 /// `statfs` types (`f_type`) of file systems without inode numbers of their
 /// own: FAT (`MSDOS_SUPER_MAGIC`, also vfat) and exFAT.
 const FAT_TYPES: [i64; 2] = [0x4d44, 0x2011_bab0];
+
+/// The longest step of a file system's times, a clock tick of the kernel
+/// (ZFS, ext4 before multigrain times) with room to spare.
+const TIME_STEP: Duration = Duration::from_millis(50);
+/// FAT keeps modification times in steps of two seconds.
+const FAT_TIME_STEP: Duration = Duration::from_millis(2050);
+/// How often an entry changed within a step is looked at again before it
+/// stays as one that keeps changing.
+const SETTLE_LOOKS: u32 = 3;
 
 /// A time as `fstat` tells it, to the nanosecond.
 type Time = (i64, u32);
@@ -94,7 +111,11 @@ enum What {
 pub(crate) enum Stays {
     /// Nothing: it goes if it is still what was copied.
     No,
-    /// It and everything of it: the target has another under its name.
+    /// A folder that kept changing while it was copied: what in it is
+    /// still as copied goes, the folder stays.
+    Itself,
+    /// It and everything of it: the target has another under its name, or
+    /// a file kept changing.
     All,
 }
 
@@ -185,6 +206,19 @@ pub(crate) fn is_fat(f_type: i64) -> bool {
 #[allow(clippy::useless_conversion)]
 pub(crate) fn is_fat_at(directory: BorrowedFd<'_>) -> bool {
     rustix::fs::fstatfs(directory).is_ok_and(|fs| is_fat(i64::from(fs.f_type)))
+}
+
+/// How long after `now` a change to an entry last changed at `time` could
+/// still leave its times as they are, on a file system whose times move in
+/// steps of `step`; none once it could not. A time far ahead (a camera's
+/// clock set wrong) is one no change gets now.
+fn unsettled_for(time: Time, step: Duration, now: SystemTime) -> Option<Duration> {
+    let time = Duration::new(u64::try_from(time.0).ok()?, time.1);
+    let now = now.duration_since(SystemTime::UNIX_EPOCH).ok()?;
+    if time > now + step {
+        return None;
+    }
+    (time + step).checked_sub(now).filter(|left| !left.is_zero())
 }
 
 /// Whether `a` and `b` hold the same bytes, read from where each is now.
@@ -308,6 +342,39 @@ impl Copied {
         let (device, inode) = identity(stat);
         self.entries.push(Entry { name: (start, length), device, inode, what, stays: Stays::No });
         Some(self.entries.len() - 1)
+    }
+
+    /// `stat` of the entry opened as `entry` for a move, as it is once a
+    /// change to it moves its times: if it changed within a step of its
+    /// file system's times before, it is looked at again once the step is
+    /// over. Also whether it settled; one that kept changing stays
+    /// ([`Copied::stays`]). A plain copy looks once.
+    pub(crate) fn settled(&self, entry: BorrowedFd<'_>, stat: Stat) -> Result<(Stat, bool), FileError> {
+        self.settle_with(stat, || Ok(fstat(entry)?), SystemTime::now, std::thread::sleep)
+    }
+
+    /// [`Copied::settled`], looking at the entry with `look`, at the time
+    /// `now` tells, waiting with `wait`.
+    fn settle_with(
+        &self,
+        mut stat: Stat,
+        mut look: impl FnMut() -> Result<Stat, FileError>,
+        now: impl Fn() -> SystemTime,
+        wait: impl Fn(Duration),
+    ) -> Result<(Stat, bool), FileError> {
+        if self.state != State::On {
+            return Ok((stat, true));
+        }
+        let step = if self.fat { FAT_TIME_STEP } else { TIME_STEP };
+        for _ in 0..SETTLE_LOOKS {
+            let Some(left) = unsettled_for(self.changed(&stat), step, now()) else {
+                return Ok((stat, true));
+            };
+            wait(left);
+            stat = look()?;
+        }
+        let settled = unsettled_for(self.changed(&stat), step, now()).is_none();
+        Ok((stat, settled))
     }
 
     /// A folder copied, `stat` from the descriptor it was read through,
@@ -482,7 +549,7 @@ impl Removal<'_> {
                     return self.keep_all(index);
                 }
                 // Before what is in it goes, which changes it too.
-                let unchanged = self.copied.changed(&opened) == then;
+                let unchanged = self.copied.changed(&opened) == then && entry.stays == Stays::No;
                 let mut child = index + 1;
                 while child < self.copied.after(index) {
                     self.remove(inner.as_fd(), child);
@@ -570,6 +637,10 @@ impl ShareRoot {
 mod tests {
     use super::*;
 
+    fn at(seconds: u64, millis: u64) -> SystemTime {
+        SystemTime::UNIX_EPOCH + Duration::from_secs(seconds) + Duration::from_millis(millis)
+    }
+
     #[test]
     fn fat_and_exfat_are_told_by_their_statfs_type() {
         // MSDOS_SUPER_MAGIC (vfat and msdos), EXFAT_SUPER_MAGIC.
@@ -578,6 +649,24 @@ mod tests {
         for other in [0xef53, 0x0102_1994, 0x2fc1_2fc1, 0x7366_746e] {
             assert!(!is_fat(other), "{other:#x}");
         }
+    }
+
+    #[test]
+    fn an_entry_changed_within_a_step_of_its_times_is_looked_at_again_after_it() {
+        let step = Duration::from_millis(50);
+        // Changed 10 ms ago: another change now could get the same time.
+        assert_eq!(unsettled_for((1000, 0), step, at(1000, 10)), Some(Duration::from_millis(40)));
+        // A step ago or longer: any change from now on moves its times.
+        assert_eq!(unsettled_for((1000, 0), step, at(1000, 50)), None);
+        assert_eq!(unsettled_for((900, 0), step, at(1000, 0)), None);
+        // A little ahead (a coarse clock, rounding): waited out as well.
+        assert_eq!(unsettled_for((1000, 20_000_000), step, at(1000, 0)), Some(Duration::from_millis(70)));
+        // Far ahead or before 1970: a clock set wrong, no change now gets it.
+        assert_eq!(unsettled_for((5000, 0), step, at(1000, 0)), None);
+        assert_eq!(unsettled_for((-5, 0), step, at(1000, 0)), None);
+        // FAT's two seconds.
+        let fat = unsettled_for((1000, 0), FAT_TIME_STEP, at(1001, 0));
+        assert_eq!(fat, Some(Duration::from_millis(1050)));
     }
 
     #[test]
@@ -597,5 +686,55 @@ mod tests {
         // Another device is another entry anywhere.
         again.st_dev = stat.st_dev.wrapping_add(1);
         assert!(!fat.is(recorded, &again));
+    }
+
+    /// Looks at an entry with the times `changes` gives it (milliseconds),
+    /// one look after another, on a clock that starts at 1000 s and moves
+    /// only by the waits; says how it ended and how long it waited.
+    fn settle(copied: &Copied, changes: &[i64]) -> (bool, Duration) {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("a"), "a").unwrap();
+        let mut stat = rustix::fs::stat(directory.path().join("a")).unwrap();
+        let at_time = |stat: &mut Stat, millis: i64| {
+            let (seconds, nanos) = (millis / 1000, (millis % 1000) * 1_000_000);
+            (stat.st_ctime, stat.st_mtime) = (seconds, seconds);
+            (stat.st_ctime_nsec, stat.st_mtime_nsec) = (nanos as _, nanos as _);
+        };
+        at_time(&mut stat, changes[0]);
+        let looks = std::cell::Cell::new(0);
+        let now = std::cell::Cell::new(at(1000, 0));
+        let waited = std::cell::Cell::new(Duration::ZERO);
+        let (_, settled) = copied
+            .settle_with(
+                stat,
+                || {
+                    looks.set(looks.get() + 1);
+                    let mut again = stat;
+                    at_time(&mut again, changes[looks.get().min(changes.len() - 1)]);
+                    Ok(again)
+                },
+                || now.get(),
+                |wait| {
+                    now.set(now.get() + wait);
+                    waited.set(waited.get() + wait);
+                },
+            )
+            .unwrap();
+        (settled, waited.get())
+    }
+
+    #[test]
+    fn an_entry_that_keeps_changing_while_it_is_looked_at_stays() {
+        let (fat, other) = (Copied::recording().on_fat(true), Copied::recording());
+        // Changed long before: looked at once.
+        assert_eq!(settle(&other, &[900_000]), (true, Duration::ZERO));
+        // Changed as it is looked at, then no more: once more, after the step.
+        assert_eq!(settle(&other, &[1_000_000, 1_000_000]), (true, TIME_STEP));
+        assert_eq!(settle(&fat, &[1_000_000, 1_000_000]), (true, FAT_TIME_STEP));
+        // Changed again whenever it is looked at: it stays.
+        let (settled, waited) = settle(&other, &[1_000_000, 1_000_050, 1_000_100, 1_000_150]);
+        assert_eq!((settled, waited), (false, TIME_STEP * SETTLE_LOOKS));
+        // A plain copy looks once.
+        assert_eq!(settle(&Copied::off(), &[1_000_000]), (true, Duration::ZERO));
     }
 }
