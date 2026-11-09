@@ -16,7 +16,7 @@ use tokio::task::JoinHandle;
 use zendiloos_agent_proto::{AgentTransport, ConsoleSetupCode, Request, Response, UnixTransport};
 use zendiloos_api::{ApiState, UseCases};
 use zendiloos_apps::application::{Catalogs, Docker, InstallPorts, Installs, TemplatePorts, Templates};
-use zendiloos_certificates::application::{Certificates, CertificatesPorts, InStep};
+use zendiloos_certificates::application::{Certificates, CertificatesError, CertificatesPorts, InStep};
 use zendiloos_containers::application::{Containers, ContainersPorts};
 use zendiloos_firewall::application::{Firewall, FirewallPorts};
 use zendiloos_identity::application::commands::{PendingSetup, PurgeExpiredSessions};
@@ -671,7 +671,8 @@ fn spawn_certificate_renewal(certificates: Certificates) -> JoinHandle<()> {
 
 /// Waits out a change waiting on the host (it goes back by itself, as
 /// nobody can confirm it now), and tries again for a few minutes while the
-/// agent does not answer.
+/// agent does not answer. What the agent refuses, or nginx, stays refused:
+/// that is logged.
 async fn bring_web_server_in_step(certificates: &Certificates) {
     let context = RequestContext::default();
     let mut failures = 0;
@@ -682,6 +683,10 @@ async fn bring_web_server_in_step(certificates: &Certificates) {
                 let left = until.unix_seconds().saturating_sub(SystemClock.now().unix_seconds());
                 let wait = u64::try_from(left).unwrap_or(0).clamp(1, 120) + 2;
                 tokio::time::sleep(Duration::from_secs(wait)).await;
+            }
+            Err(error @ (CertificatesError::Refused(_) | CertificatesError::HostFailed(_))) => {
+                tracing::warn!(%error, "certificates: the host does not take the web server's settings saved");
+                return;
             }
             Err(error) if failures < 20 => {
                 failures += 1;
