@@ -70,6 +70,7 @@ fn file(written: WrittenFile) -> BackupFile {
         bytes: written.bytes,
         device: written.device,
         inode: written.inode,
+        modified: Some(written.modified),
     }
 }
 
@@ -112,7 +113,7 @@ impl VolumeArchiver for AgentVolumeArchiver {
         written: &WrittenBackup,
         steps: &dyn Steps,
         context: &RequestContext,
-    ) -> Result<(), EngineError> {
+    ) -> Result<Option<String>, EngineError> {
         let request = Request::RestoreVolume {
             volume: VolumeName::parse(volume).map_err(refused)?,
             share: share(place)?,
@@ -122,7 +123,7 @@ impl VolumeArchiver for AgentVolumeArchiver {
             entries: written.entries,
         };
         match self.ask(request, steps, context).await? {
-            Response::Done => Ok(()),
+            Response::VolumeRestored { left_over } => Ok(left_over),
             other => Err(unexpected(other).into()),
         }
     }
@@ -133,11 +134,14 @@ impl VolumeArchiver for AgentVolumeArchiver {
         file: &BackupFile,
         context: &RequestContext,
     ) -> Result<bool, EngineError> {
+        // Not by its device: a ZFS dataset gets another one as it is
+        // mounted again.
         let request = Request::RemoveVolumeBackup {
             share: share(place)?,
             path: path(&file.path)?,
-            device: file.device,
             inode: file.inode,
+            bytes: file.bytes,
+            modified: file.modified,
         };
         match self.ask(request, &zendiloos_containers::application::ports::NoSteps, context).await? {
             Response::BackupRemoved { removed } => Ok(removed),
@@ -178,7 +182,8 @@ mod tests {
 
     /// A backup recorded as written to `archive` with `sha256`.
     fn written(archive: &str, sha256: &str) -> WrittenBackup {
-        let file = |path: &str| BackupFile { path: path.into(), bytes: 1, device: 1, inode: 1 };
+        let file =
+            |path: &str| BackupFile { path: path.into(), bytes: 1, device: 1, inode: 1, modified: None };
         WrittenBackup {
             archive: file(archive),
             manifest: file("m.json"),
@@ -229,8 +234,13 @@ mod tests {
         refused(backup("db", SharePlace { volume: 1, share: "Not A Share".into() }, "", "x1").await);
         refused(backup("db", place(), "../up", "x1").await);
         refused(backup("db", place(), "", "a/b").await);
-        refused(archiver.restore("db", &place(), &written("a.tar.zst", "short"), &heard, &context).await);
-        let odd = BackupFile { path: "../x".into(), bytes: 0, device: 0, inode: 0 };
+        refused(
+            archiver
+                .restore("db", &place(), &written("a.tar.zst", "short"), &heard, &context)
+                .await
+                .map(drop),
+        );
+        let odd = BackupFile { path: "../x".into(), bytes: 0, device: 0, inode: 0, modified: None };
         assert!(matches!(archiver.remove(&place(), &odd, &context).await, Err(EngineError::Refused(_))));
         assert!(agent.asked().is_empty(), "nothing odd was sent");
     }
@@ -257,7 +267,7 @@ mod tests {
         let odd = answering(Response::BackupRemoved { removed: true });
         assert!(odd.restore("db", &place(), &written("a", &digest), &heard, &context).await.is_err());
         let odd = answering(Response::Done);
-        let file = BackupFile { path: "a".into(), bytes: 0, device: 0, inode: 0 };
+        let file = BackupFile { path: "a".into(), bytes: 0, device: 0, inode: 0, modified: None };
         assert!(odd.remove(&place(), &file, &context).await.is_err());
         let odd = answering(Response::Done);
         assert!(odd.end_work("db", &context).await.is_err());

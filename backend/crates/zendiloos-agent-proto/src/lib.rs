@@ -424,13 +424,16 @@ pub enum Request {
     EndVolumeWork {
         volume: VolumeName,
     },
-    /// Deletes a file a backup wrote, if `path` still is that file (device
-    /// and inode); never anything else. Answers [`Response::BackupRemoved`].
+    /// Deletes a file a backup wrote, if `path` still is that file: its
+    /// inode, size and time of writing (if recorded), on the share's file
+    /// system as it is mounted now; never anything else. Answers
+    /// [`Response::BackupRemoved`].
     RemoveVolumeBackup {
         share: ShareLocation,
         path: SharePath,
-        device: u64,
         inode: u64,
+        bytes: u64,
+        modified: Option<i64>,
     },
     /// `docker compose config` of `compose` as if it were in `directory`:
     /// the file as Compose understands it, as JSON, or refused with why
@@ -1124,6 +1127,12 @@ pub enum Response {
     /// and was stopped.
     VolumeWorkEnded {
         stopped: bool,
+    },
+    /// A volume was restored; `left_over`: its old contents could not all be
+    /// removed and lie in this folder beside its data, until the next
+    /// restore of it or the agent's next start removes them.
+    VolumeRestored {
+        left_over: Option<String>,
     },
     Snapshots {
         /// `zfs list -H -p -t snapshot -o name,creation,used,referenced,`
@@ -2338,8 +2347,9 @@ mod tests {
                 share: ShareName::parse("backups").unwrap(),
             },
             path: SharePath::parse("docker/x/x-20261108-030000.tar.zst").unwrap(),
-            device: 41,
             inode: 7,
+            bytes: 1234,
+            modified: Some(1_762_570_800_000_000_000),
         };
         assert_eq!((remove.name(), remove.is_long()), ("remove_volume_backup", false));
         assert!(Request::DockerVolumeSizes {}.is_long() && !Request::DockerVolumes {}.is_long());

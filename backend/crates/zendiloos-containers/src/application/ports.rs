@@ -378,9 +378,14 @@ pub trait BackupShares: Send + Sync {
     async fn locate(&self, share_id: i64) -> Result<Option<SharePlace>, PortError>;
 }
 
-/// Where a long step reports how far it is, in percent.
+/// Where a long step reports how far it is, in percent, and what is worth
+/// a line of its own.
 pub trait Steps: Send + Sync {
     fn step(&self, step: &str, percent: Option<u8>);
+
+    fn note(&self, line: &str) {
+        let _ = line;
+    }
 }
 
 /// Steps nobody follows.
@@ -409,7 +414,8 @@ pub trait VolumeArchiver: Send + Sync {
 
     /// Replaces the volume's contents with the archive `written` names in
     /// the share, if it is still the one written: its SHA-256, no more data
-    /// and entries than it held.
+    /// and entries than it held. The folder beside the data the old
+    /// contents are partly left in, if they could not all be removed.
     async fn restore(
         &self,
         volume: &str,
@@ -417,7 +423,7 @@ pub trait VolumeArchiver: Send + Sync {
         written: &WrittenBackup,
         steps: &dyn Steps,
         context: &RequestContext,
-    ) -> Result<(), EngineError>;
+    ) -> Result<Option<String>, EngineError>;
 
     /// Removes a file a backup wrote if it still is that file; whether it
     /// did.

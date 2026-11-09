@@ -46,10 +46,12 @@ impl Host {
 echo "docker $*" >> {log}
 case "$*" in
   "info --format {{{{.DockerRootDir}}}}") echo {docker_root} ;;
-  "volume ls --quiet") printf 'db\nnfs\n' ;;
-  "volume inspect "*)
-    echo '[{{"Name":"db","Driver":"local","Options":null,"Mountpoint":"{docker_root}/volumes/db/_data","Labels":{{"com.docker.compose.project":"tesla"}},"CreatedAt":"2026-11-01T10:00:00Z"}},'
-    echo ' {{"Name":"nfs","Driver":"local","Options":{{"type":"nfs"}},"Mountpoint":"{docker_root}/volumes/nfs/_data","Labels":null}}]' ;;
+  "volume ls --quiet") printf 'db\nnfs\n'; [ -f {root}/gone ] && echo gone ;;
+  "volume inspect gone") echo 'Error response from daemon: get gone: no such volume' >&2; exit 1 ;;
+  "volume inspect db") echo '[{{db}}]' ;;
+  "volume inspect nfs") echo '[{{nfs}}]' ;;
+  "volume inspect "*gone*) echo '[{{db}},{{nfs}}]'; echo 'Error response from daemon: get gone: no such volume' >&2; exit 1 ;;
+  "volume inspect "*) echo '[{{db}},{{nfs}}]' ;;
   "ps --quiet --no-trunc --filter volume=db") [ -f {root}/running ] && echo d853eed323e7 ;;
   "volume prune --all --force") echo 'Total reclaimed space: 1.2MB' ;;
   "volume rm busy") echo 'Error response from daemon: remove busy: volume is in use' >&2; exit 1 ;;
@@ -60,6 +62,15 @@ exit 0
             docker_root = docker_root.display(),
             root = root.display(),
         );
+        let db = format!(
+            r#"{{"Name":"db","Driver":"local","Options":null,"Mountpoint":"{}/volumes/db/_data","Labels":{{"com.docker.compose.project":"tesla"}},"CreatedAt":"2026-11-01T10:00:00Z"}}"#,
+            docker_root.display()
+        );
+        let nfs = format!(
+            r#"{{"Name":"nfs","Driver":"local","Options":{{"type":"nfs"}},"Mountpoint":"{}/volumes/nfs/_data","Labels":null}}"#,
+            docker_root.display()
+        );
+        let script = script.replace("{db}", &db).replace("{nfs}", &nfs);
         fs::write(&docker, script).unwrap();
         fs::set_permissions(&docker, fs::Permissions::from_mode(0o755)).unwrap();
         // Records what the unit was to be, then runs its command here.
@@ -78,6 +89,7 @@ exit 0
 echo "systemctl $*" >> {log}
 case "$1" in
   show) shift 3; for unit in "$@"; do if [ -f {root}/units/$unit ]; then echo active; else echo inactive; fi; done ;;
+  list-units) for unit in $(ls {root}/units); do echo "$unit loaded active running a volume's work"; done ;;
   stop) rm -f {root}/units/$2 ;;
 esac
 exit 0
@@ -235,7 +247,10 @@ async fn a_volume_is_backed_up_into_the_share_and_restored_from_it() {
     let data = host.root.join("docker/volumes/db/_data");
     fs::write(data.join("PG_VERSION"), "18\n").unwrap();
     fs::write(data.join("later"), "x").unwrap();
-    assert_eq!(host.agent.execute(&restore(&archive, &sha256)).await, Response::Done);
+    assert_eq!(
+        host.agent.execute(&restore(&archive, &sha256)).await,
+        Response::VolumeRestored { left_over: None }
+    );
     assert_eq!(fs::read_to_string(data.join("PG_VERSION")).unwrap(), "17\n");
     assert!(!data.join("later").exists());
     let unit = host.calls().into_iter().filter(|call| call.starts_with("systemd-run")).nth(1).unwrap();
@@ -276,14 +291,88 @@ async fn a_volume_is_backed_up_into_the_share_and_restored_from_it() {
     let remove = |file: &WrittenFile| Request::RemoveVolumeBackup {
         share: share(),
         path: file.path.clone(),
-        device: file.device,
         inode: file.inode,
+        bytes: file.bytes,
+        modified: Some(file.modified),
     };
     assert_eq!(host.agent.execute(&remove(&archive)).await, Response::BackupRemoved { removed: true });
     assert_eq!(host.agent.execute(&remove(&archive)).await, Response::BackupRemoved { removed: false });
     let other = WrittenFile { inode: manifest.inode + 1, ..manifest.clone() };
     assert_eq!(host.agent.execute(&remove(&other)).await, Response::BackupRemoved { removed: false });
     assert!(host.root.join("volume1/backups").join(manifest.path.as_str()).exists());
+}
+
+/// A ZFS dataset's device number is handed out as it is mounted: after a
+/// reboot the same archive has another one. Retention finds it by its
+/// inode, size and time of writing on the share as it is mounted now.
+#[tokio::test]
+async fn retention_removes_an_archive_whatever_device_its_share_was_mounted_with() {
+    let host = Host::new(false);
+    let Response::VolumeBackedUp { archive, .. } = host.agent.execute(&backup("db")).await else { panic!() };
+    // As recorded before the share was mounted again.
+    let recorded = WrittenFile { device: archive.device + 1, ..archive.clone() };
+    let remove = Request::RemoveVolumeBackup {
+        share: share(),
+        path: recorded.path.clone(),
+        inode: recorded.inode,
+        bytes: recorded.bytes,
+        modified: Some(recorded.modified),
+    };
+    assert_eq!(host.agent.execute(&remove).await, Response::BackupRemoved { removed: true });
+    assert!(!host.root.join("volume1/backups").join(archive.path.as_str()).exists());
+}
+
+/// What a restore cut off left beside the data (its unit stopped or
+/// killed, the machine off) goes before the next restore of the volume,
+/// and as the agent starts.
+#[tokio::test]
+async fn what_a_restore_cut_off_left_beside_the_data_goes() {
+    let host = Host::new(false);
+    let Response::VolumeBackedUp { archive, sha256, .. } = host.agent.execute(&backup("db")).await else {
+        panic!()
+    };
+    let left = host.root.join("docker/volumes/db/_data.zendiloos-restore-0123456789abcdef");
+    fs::create_dir(&left).unwrap();
+    fs::write(left.join("big"), vec![0u8; 1 << 20]).unwrap();
+    assert!(matches!(host.agent.execute(&restore(&archive, &sha256)).await, Response::VolumeRestored { .. }));
+    assert!(!left.exists(), "removed before the restore");
+
+    // As the agent starts: the units nobody waits for stop, then a sweep.
+    fs::create_dir(&left).unwrap();
+    fs::write(left.join("big"), "x").unwrap();
+    fs::write(host.root.join("units/zendiloos-volume-backup-db.service"), "").unwrap();
+    host.agent.recover().await;
+    let started = Instant::now();
+    while left.exists() {
+        assert!(started.elapsed() < Duration::from_secs(20), "never swept: {:?}", host.calls());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let calls = host.calls();
+    assert!(calls.contains(&"systemctl stop zendiloos-volume-backup-db.service".to_owned()), "{calls:?}");
+    assert!(calls.iter().any(|call| call.contains("--unit=zendiloos-volume-sweep.service")), "{calls:?}");
+    // Meanwhile, backups wait for the sweep, then run.
+    assert!(matches!(
+        host.agent.execute(&backup("db")).await,
+        Response::Error { .. } | Response::VolumeBackedUp { .. }
+    ));
+}
+
+/// A volume removed between the listing and the inspection is left out of
+/// the list, which does not fail.
+#[tokio::test]
+async fn volumes_that_go_while_they_are_listed_are_left_out() {
+    let host = Host::new(false);
+    fs::write(host.root.join("gone"), "").unwrap();
+    let Response::DockerOutput { text } = host.agent.execute(&Request::DockerVolumes {}).await else {
+        panic!()
+    };
+    let listed: Vec<serde_json::Value> = serde_json::from_str(&text).unwrap();
+    let names: Vec<&str> = listed.iter().filter_map(|v| v["Name"].as_str()).collect();
+    assert_eq!(names, ["db", "nfs"]);
+    let Response::VolumeSizes { sizes } = host.agent.execute(&Request::DockerVolumeSizes {}).await else {
+        panic!()
+    };
+    assert_eq!(sizes.len(), 1);
 }
 
 #[tokio::test]
@@ -382,14 +471,17 @@ async fn backups_leave_the_long_places_to_other_requests() {
     fs::write(host.root.join("slow"), "").unwrap();
     let (socket, _root) = host.serve();
 
-    let backups: Vec<_> = ["db-20261108-030000", "db-20261108-030001"]
+    // Into folders of their own, as backups of two volumes are: one unit
+    // of a volume runs at a time, which the fake systemd-run here does not
+    // see to.
+    let backups: Vec<_> = [("docker", "db-20261108-030000"), ("elsewhere", "db-20261108-030001")]
         .into_iter()
-        .map(|stem| {
+        .map(|(folder, stem)| {
             let client = UnixTransport::new(&socket, Duration::from_secs(60));
             let request = Request::BackUpVolume {
                 volume: volume("db"),
                 share: share(),
-                folder: SharePath::parse("docker").unwrap(),
+                folder: SharePath::parse(folder).unwrap(),
                 name: BackupStem::parse(stem).unwrap(),
             };
             tokio::spawn(async move { client.call(request, None).await })

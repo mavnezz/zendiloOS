@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, volume, share_id, started_at, finished_at, state, error,\n                    archive_path, archive_bytes, archive_device, archive_inode,\n                    manifest_path, manifest_bytes, manifest_device, manifest_inode,\n                    sha256, data_bytes, entries, manifest, started_by\n             FROM docker_backups WHERE id = ?",
+  "query": "SELECT id, volume, share_id, started_at, finished_at, state, error,\n                    archive_path, archive_bytes, archive_device, archive_inode, archive_modified,\n                    manifest_path, manifest_bytes, manifest_device, manifest_inode, manifest_modified,\n                    sha256, data_bytes, entries, manifest, started_by\n             FROM docker_backups WHERE state = 'running' ORDER BY id",
   "describe": {
     "columns": [
       {
@@ -125,8 +125,19 @@
         }
       },
       {
-        "name": "manifest_path",
+        "name": "archive_modified",
         "ordinal": 11,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "docker_backups",
+            "name": "archive_modified"
+          }
+        }
+      },
+      {
+        "name": "manifest_path",
+        "ordinal": 12,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -137,7 +148,7 @@
       },
       {
         "name": "manifest_bytes",
-        "ordinal": 12,
+        "ordinal": 13,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -148,7 +159,7 @@
       },
       {
         "name": "manifest_device",
-        "ordinal": 13,
+        "ordinal": 14,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -159,7 +170,7 @@
       },
       {
         "name": "manifest_inode",
-        "ordinal": 14,
+        "ordinal": 15,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -169,8 +180,19 @@
         }
       },
       {
+        "name": "manifest_modified",
+        "ordinal": 16,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "docker_backups",
+            "name": "manifest_modified"
+          }
+        }
+      },
+      {
         "name": "sha256",
-        "ordinal": 15,
+        "ordinal": 17,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -181,7 +203,7 @@
       },
       {
         "name": "data_bytes",
-        "ordinal": 16,
+        "ordinal": 18,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -192,7 +214,7 @@
       },
       {
         "name": "entries",
-        "ordinal": 17,
+        "ordinal": 19,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -203,7 +225,7 @@
       },
       {
         "name": "manifest",
-        "ordinal": 18,
+        "ordinal": 20,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -214,7 +236,7 @@
       },
       {
         "name": "started_by",
-        "ordinal": 19,
+        "ordinal": 21,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -225,7 +247,7 @@
       }
     ],
     "parameters": {
-      "Right": 1
+      "Right": 0
     },
     "nullable": [
       false,
@@ -247,8 +269,10 @@
       true,
       true,
       true,
+      true,
+      true,
       true
     ]
   },
-  "hash": "d4f92fd9198a8db9a1f0c356a32bd5c3fba05b6bbc6edff876cf9606b1a7a6a5"
+  "hash": "6721b80c3ba6c4843dfb9ef4654529e74ec1cb8c8bbac6419ea18bbd6d035185"
 }

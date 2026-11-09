@@ -487,31 +487,51 @@ fn bytes_changed_after_the_check_are_extracted_no_further_than_the_backup_held()
 /// descriptors.
 #[test]
 fn a_tree_changed_after_the_check_leaves_nothing_in_dockers_folder() {
-    let limit = rustix::process::getrlimit(rustix::process::Resource::Nofile);
-    rustix::process::setrlimit(
-        rustix::process::Resource::Nofile,
-        rustix::process::Rlimit { current: Some(1024), maximum: limit.maximum },
-    )
-    .unwrap();
-    let place = Place::new();
-    let done = recorded(&place);
-    let archive = place.path("share").join(done.archive.path.as_str());
-    // A file 1024 folders deep, and some data beside.
-    let swapped = replacement(64 << 20, MAX_DEPTH, 1 << 20);
+    with_descriptors("a_tree_changed_after_the_check_leaves_nothing_in_dockers_folder", 1024, || {
+        let place = Place::new();
+        let done = recorded(&place);
+        let archive = place.path("share").join(done.archive.path.as_str());
+        // A file 1024 folders deep, and some data beside.
+        let swapped = replacement(64 << 20, MAX_DEPTH, 1 << 20);
 
-    let mut rewritten = false;
-    let result = restore(&place.restore_of(&done), &mut |step, percent| {
-        if step == "verifying" && percent == 100 && !rewritten {
-            rewrite_in_place(&archive, &swapped);
-            rewritten = true;
-        }
+        let mut rewritten = false;
+        let result = restore(&place.restore_of(&done), &mut |step, percent| {
+            if step == "verifying" && percent == 100 && !rewritten {
+                rewrite_in_place(&archive, &swapped);
+                rewritten = true;
+            }
+        });
+
+        assert!(matches!(&result, Err(ArchiveError::Refused(_))), "{result:?}");
+        let left: Vec<(PathBuf, u64)> =
+            place.fresh_folders().into_iter().map(|p| (p.clone(), size_below(&p))).collect();
+        assert!(left.is_empty(), "left in Docker's folder after the refusal: {left:?}");
     });
-    rustix::process::setrlimit(rustix::process::Resource::Nofile, limit).unwrap();
+}
 
-    assert!(matches!(&result, Err(ArchiveError::Refused(_))), "{result:?}");
-    let left: Vec<(PathBuf, u64)> =
-        place.fresh_folders().into_iter().map(|p| (p.clone(), size_below(&p))).collect();
-    assert!(left.is_empty(), "left in Docker's folder after the refusal: {left:?}");
+/// A deep tree extracted from an archive that changed after its check is
+/// removed whole, even with a unit's soft limit of descriptors.
+#[test]
+fn a_deep_tree_extracted_before_a_refusal_is_removed_whole() {
+    with_descriptors("a_deep_tree_extracted_before_a_refusal_is_removed_whole", 1024, || {
+        let place = Place::new();
+        let done = recorded(&place);
+        let archive = place.path("share").join(done.archive.path.as_str());
+        // Within what the backup held: a file 1024 folders deep, then data
+        // that makes the hash differ.
+        let swapped = replacement(0, MAX_DEPTH, 1 << 20);
+
+        let mut rewritten = false;
+        let result = restore(&place.restore_of(&done), &mut |step, percent| {
+            if step == "verifying" && percent == 100 && !rewritten {
+                rewrite_in_place(&archive, &swapped);
+                rewritten = true;
+            }
+        });
+
+        assert!(matches!(&result, Err(ArchiveError::Refused(why)) if why.contains("changed")), "{result:?}");
+        assert!(place.fresh_folders().is_empty(), "removed whole");
+    });
 }
 
 /// A share as zendiloOS sets it lets its writers write what is made in it:
@@ -659,9 +679,14 @@ fn only_the_file_a_backup_wrote_is_removed() {
     let remove = |file: &WrittenFile| RemoveJob {
         share: place.path("share"),
         path: file.path.clone(),
-        device: file.device,
         inode: file.inode,
+        bytes: file.bytes,
+        modified: Some(file.modified),
     };
+    // Its size or time of writing not as recorded: another file, it stays.
+    let other_size = RemoveJob { bytes: done.archive.bytes + 1, ..remove(&done.archive) };
+    let other_time = RemoveJob { modified: Some(done.archive.modified + 1), ..remove(&done.archive) };
+    assert!(!remove_backup(&other_size).unwrap() && !remove_backup(&other_time).unwrap());
     // Swapped for another file of that name: it stays.
     let archive = place.path("share").join(done.archive.path.as_str());
     fs::rename(&archive, place.path("share/moved")).unwrap();
@@ -672,13 +697,208 @@ fn only_the_file_a_backup_wrote_is_removed() {
     assert!(remove_backup(&remove(&done.archive)).unwrap());
     assert!(!archive.exists());
     assert!(!remove_backup(&remove(&done.archive)).unwrap(), "gone already");
-    assert!(remove_backup(&remove(&done.manifest)).unwrap());
+    // Recorded before the time of writing was: inode and size.
+    assert!(remove_backup(&RemoveJob { modified: None, ..remove(&done.manifest) }).unwrap());
     let elsewhere = RemoveJob { path: SharePath::parse("nowhere/x").unwrap(), ..remove(&done.manifest) };
     assert!(!remove_backup(&elsewhere).unwrap());
     // Never through a link to a folder.
     symlink(place.path("share/backups"), place.path("share/link")).unwrap();
     let through = RemoveJob { path: SharePath::parse("link/docker/x").unwrap(), ..remove(&done.manifest) };
     assert!(matches!(remove_backup(&through), Err(ArchiveError::Refused(_))));
+}
+
+/// Runs the test `name` with at most `limit` descriptors open, as a unit or
+/// the agent has under systemd's soft limit: in a process of its own, as
+/// the limit is the process's and other tests run beside it. There, `work`
+/// is the test.
+fn with_descriptors(name: &str, limit: u64, work: impl FnOnce()) {
+    use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
+    if std::env::var_os("ZENDILOOS_FEW_DESCRIPTORS").is_some() {
+        let before = getrlimit(Resource::Nofile);
+        setrlimit(Resource::Nofile, Rlimit { current: Some(limit), maximum: before.maximum }).unwrap();
+        return work();
+    }
+    let test = format!("{}::{name}", module_path!().split_once("::").map_or("", |(_, path)| path));
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([test.as_str(), "--exact", "--test-threads=1"])
+        .env("ZENDILOOS_FEW_DESCRIPTORS", "1")
+        .status()
+        .unwrap();
+    assert!(status.success(), "{test} with {limit} descriptors: {status}");
+}
+
+/// What a container may make in its volume: 3000 folders, a byte in each.
+/// Counted whole with a descriptor or two, while the agent opens files
+/// for its other requests.
+#[test]
+fn counting_a_wide_volume_holds_few_descriptors_and_counts_it_whole() {
+    with_descriptors("counting_a_wide_volume_holds_few_descriptors_and_counts_it_whole", 1024, || {
+        let place = Place::new();
+        for n in 0..3000 {
+            let folder = place.path(&format!("source/f{n:04}"));
+            fs::create_dir(&folder).unwrap();
+            fs::write(folder.join("x"), "x").unwrap();
+        }
+        let source = open_folder(&place.path("source"), OFlags::RDONLY).unwrap();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let probe = {
+            let (stop, path) = (stop.clone(), place.path("source/f0000/x"));
+            std::thread::spawn(move || {
+                let mut refused = 0u32;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    if let Err(error) = File::open(&path)
+                        && error.raw_os_error() == Some(Errno::MFILE.raw_os_error())
+                    {
+                        refused += 1;
+                    }
+                }
+                refused
+            })
+        };
+        let counted = count(&source, u64::MAX, None);
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        let refused = probe.join().unwrap();
+        assert_eq!((counted.bytes, counted.complete), (3000, true), "{counted:?}");
+        assert_eq!(refused, 0, "other work ran out of descriptors while counting");
+    });
+}
+
+/// A folder the count cannot look into makes it incomplete, not smaller.
+#[test]
+fn a_folder_that_cannot_be_read_makes_the_count_incomplete() {
+    if rustix::process::geteuid().is_root() {
+        eprintln!("root reads every folder; skipped");
+        return;
+    }
+    let place = Place::new();
+    fs::create_dir(place.path("source/closed")).unwrap();
+    fs::write(place.path("source/closed/x"), "x").unwrap();
+    fs::set_permissions(place.path("source/closed"), fs::Permissions::from_mode(0o000)).unwrap();
+    let source = open_folder(&place.path("source"), OFlags::RDONLY).unwrap();
+    let counted = count(&source, u64::MAX, None);
+    fs::set_permissions(place.path("source/closed"), fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(!counted.complete, "{counted:?}");
+}
+
+/// A tree deeper than a unit may hold descriptors goes whole: down by
+/// name, up again by `..`.
+#[test]
+fn a_tree_deeper_than_the_descriptors_allow_is_removed_whole() {
+    with_descriptors("a_tree_deeper_than_the_descriptors_allow_is_removed_whole", 64, || {
+        let place = Place::new();
+        let deep = place.path("docker/volumes/db/deep");
+        let mut path = deep.clone();
+        for level in 0..1500 {
+            path.push("d");
+            if level % 100 == 0 {
+                fs::create_dir_all(&path).unwrap();
+                fs::write(path.join("file"), "x").unwrap();
+            }
+        }
+        fs::create_dir_all(&path).unwrap();
+        let volume = open_folder(&place.path("docker/volumes/db"), OFlags::PATH).unwrap();
+        let device = identity(&fstat(&volume).unwrap()).0;
+
+        assert_eq!(remove_tree(volume.as_fd(), c"deep", device), Ok(()));
+        assert!(!deep.exists());
+        assert!(place.data().exists(), "nothing beside it");
+    });
+}
+
+/// What earlier restores left beside the data (a unit stopped or killed
+/// before it removed its fresh folder) goes before the next extracts, and
+/// nothing else there.
+#[test]
+fn what_earlier_restores_left_beside_the_data_goes_first() {
+    let place = Place::new();
+    fs::write(place.path("source/a"), "a").unwrap();
+    let done = back_up(&place.job(), 0, &mut quiet).unwrap();
+    let left = place.path("docker/volumes/db/_data.zendiloos-restore-0123456789abcdef");
+    fs::create_dir_all(left.join("deep/er")).unwrap();
+    fs::write(left.join("deep/er/big"), vec![0u8; 1 << 20]).unwrap();
+    fs::create_dir(place.path("docker/volumes/db/_data.kept")).unwrap();
+
+    let extracted = extract_volume(&place.restore_of(&done), &mut quietly).unwrap();
+
+    assert_eq!(extracted.swept, 1);
+    assert!(!left.exists());
+    assert!(place.path("docker/volumes/db/_data.kept").exists(), "not a name a restore makes");
+    let swapped = swap(&SwapJob {
+        volume_dir: place.path("docker/volumes/db"),
+        fresh: extracted.fresh,
+        discard: false,
+    })
+    .unwrap();
+    assert_eq!(swapped.left_over, None);
+    assert_eq!(fs::read_to_string(place.data().join("a")).unwrap(), "a");
+}
+
+/// As the agent starts, what restores left beside every volume's data
+/// goes, but for volumes whose work still runs.
+#[test]
+fn the_sweep_removes_what_restores_left_beside_every_volume_but_busy_ones() {
+    let place = Place::new();
+    let volumes = place.path("docker/volumes");
+    for volume in ["db", "cache", "busy"] {
+        let left = volumes.join(volume).join("_data.zendiloos-restore-00000000000000ff");
+        fs::create_dir_all(left.join("inner")).unwrap();
+        fs::write(left.join("inner/x"), "x").unwrap();
+    }
+    fs::write(volumes.join("metadata.db"), "Docker's own").unwrap();
+
+    let swept = sweep(&SweepJob { volumes: volumes.clone(), busy: vec!["busy".into()] }).unwrap();
+
+    assert_eq!((swept.removed, swept.left.len()), (2, 0));
+    assert!(!volumes.join("db/_data.zendiloos-restore-00000000000000ff").exists());
+    assert!(volumes.join("busy/_data.zendiloos-restore-00000000000000ff").exists());
+    assert!(volumes.join("metadata.db").exists());
+}
+
+/// The hidden files earlier backups left in their folder (a unit stopped
+/// while it wrote) go when the next backup there starts; nothing else.
+#[test]
+fn hidden_files_earlier_backups_left_go_and_nothing_else() {
+    let place = Place::new();
+    fs::write(place.path("source/a"), "a").unwrap();
+    let folder = place.path("share/backups/docker/db");
+    fs::create_dir_all(&folder).unwrap();
+    for name in
+        [".db-20261101-030000.tar.zst.partial-0123456789abcdef", ".notes", "plain.partial-0123456789abcdef"]
+    {
+        fs::write(folder.join(name), "x").unwrap();
+    }
+    fs::create_dir(folder.join(".db.json.partial-fedcba9876543210")).unwrap();
+
+    back_up(&place.job(), 0, &mut quiet).unwrap();
+
+    let mut names: Vec<String> = fs::read_dir(&folder)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        [
+            ".db.json.partial-fedcba9876543210",
+            ".notes",
+            "db-20261108-030000.json",
+            "db-20261108-030000.tar.zst",
+            "plain.partial-0123456789abcdef"
+        ]
+    );
+}
+
+/// The old contents stay until the swap: a backup larger than what is free
+/// beside them is not extracted at all.
+#[test]
+fn a_restore_needs_room_for_the_backup_beside_the_data() {
+    let place = Place::new();
+    fs::write(place.path("source/a"), "a").unwrap();
+    let done = back_up(&place.job(), 0, &mut quiet).unwrap();
+    let huge = RestoreJob { data_bytes: u64::MAX / 4, ..place.restore_of(&done) };
+    let refused = extract_volume(&huge, &mut quietly);
+    assert!(matches!(&refused, Err(ArchiveError::Refused(why)) if why.contains("free space")), "{refused:?}");
+    assert!(place.fresh_folders().is_empty());
 }
 
 #[test]
@@ -719,8 +939,13 @@ fn units_take_their_jobs_as_hex_and_say_what_came_of_them() {
     assert!(text.contains(r#""step":"verifying""#) && text.contains(r#"{"done":"#), "{text}");
 
     let mut out = Vec::new();
-    let remove =
-        RemoveJob { share: place.path("share"), path: done.manifest.path.clone(), device: 0, inode: 0 };
+    let remove = RemoveJob {
+        share: place.path("share"),
+        path: done.manifest.path.clone(),
+        inode: 0,
+        bytes: 0,
+        modified: None,
+    };
     assert!(run_volume_job(VolumeJob::RemoveBackup, &encode(&remove), 0, &mut out));
     assert_eq!(String::from_utf8(out).unwrap().trim(), r#"{"done":false}"#);
 

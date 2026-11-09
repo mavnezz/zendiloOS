@@ -364,6 +364,39 @@ async fn a_backup_is_restored_under_its_own_name_with_its_users_stopped_meanwhil
     assert!(t.engine.calls().contains(&"volume create kuma_data com.docker.compose.project".to_owned()));
 }
 
+/// A restore under the volume's own name that fails leaves no empty volume
+/// it made behind; old contents it could not remove are told on the job.
+#[tokio::test]
+async fn a_failed_restore_removes_the_volume_it_made_and_leftovers_are_told() {
+    let (t, _, _) = setup();
+    let id = backed_up(&t, "orphan").await;
+    t.engine.volumes.lock().unwrap().retain(|v| v.name != "orphan");
+    *t.archiver.fail.lock().unwrap() = Some("its SHA-256 differs".into());
+
+    let job =
+        t.containers.restore_backup(id, RestoreTarget::OwnName, false, &alice(), &context()).await.unwrap();
+    assert_eq!(finished(&t, job.id).await.state, JobState::Failed);
+
+    let calls = t.engine.calls();
+    assert!(calls.iter().any(|c| c.starts_with("volume create orphan")), "{calls:?}");
+    assert!(calls.contains(&"volume rm orphan".to_owned()), "{calls:?}");
+    assert!(!t.engine.volumes.lock().unwrap().iter().any(|v| v.name == "orphan"));
+
+    // Restored, with old contents left beside the data.
+    *t.archiver.left_over.lock().unwrap() = Some("_data.zendiloos-restore-0123456789abcdef".into());
+    let job = t
+        .containers
+        .restore_backup(id, RestoreTarget::Existing("stack_db".into()), false, &alice(), &context())
+        .await
+        .unwrap();
+    let job = finished(&t, job.id).await;
+    assert_eq!(job.state, JobState::Succeeded);
+    assert!(
+        job.output.iter().any(|line| line.contains("_data.zendiloos-restore-0123456789abcdef")),
+        "{job:?}"
+    );
+}
+
 #[tokio::test]
 async fn a_backup_is_restored_into_another_volume_and_only_one_that_succeeded() {
     let (t, _, _) = setup();
@@ -482,7 +515,7 @@ impl super::ports::VolumeArchiver for GatedArchiver {
         written: &crate::domain::WrittenBackup,
         steps: &dyn super::ports::Steps,
         context: &RequestContext,
-    ) -> Result<(), super::ports::EngineError> {
+    ) -> Result<Option<String>, super::ports::EngineError> {
         self.inner.restore(volume, place, written, steps, context).await
     }
 

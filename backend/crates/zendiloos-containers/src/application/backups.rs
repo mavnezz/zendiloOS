@@ -100,6 +100,10 @@ impl Steps for JobSteps {
             }
         });
     }
+
+    fn note(&self, line: &str) {
+        self.progress.line(line);
+    }
 }
 
 impl Containers {
@@ -455,6 +459,7 @@ impl Containers {
             .start("containers.volume_restore", Some(name.clone()), Some(actor), move |progress| async move {
                 let steps = JobSteps::new(progress);
                 this.turn(&name, &steps).await;
+                let mut made = false;
                 let ready = async {
                     // Started meanwhile, by hand or by Docker: not stopped
                     // unless asked to.
@@ -472,6 +477,7 @@ impl Containers {
                     if existing.is_none() {
                         steps.step("creating", None);
                         this.ports.engine.create_volume(&name, &backup.labels, &context).await?;
+                        made = true;
                     }
                     this.stop_users(&name, &steps, &context).await?;
                     Ok(())
@@ -488,11 +494,27 @@ impl Containers {
                     Err(error) => Err((error, true)),
                 };
                 let ended = restored.as_ref().err().is_none_or(|(_, ended)| *ended);
+                // A volume made for it and left empty goes again, once the
+                // agent's work on it surely ended.
+                if made
+                    && restored.is_err()
+                    && ended
+                    && let Err(error) = this.ports.engine.remove_volume(&name, &context).await
+                {
+                    tracing::warn!(%error, volume = name, "backups: the volume made to restore into stays");
+                }
+                if let Ok(Some(left)) = &restored {
+                    tracing::warn!(volume = name, left, "backups: restored; old contents are partly left");
+                    steps.note(&format!(
+                        "The old contents of {name} are partly left beside its data in {left}; \
+                         they are removed before its next restore, or when the agent starts again."
+                    ));
+                }
                 let started_again = this.finish(&name, ended, &steps, &context).await;
                 let done = match (restored, started_again) {
                     (Err((error, _)), _) => Err(error),
-                    (Ok(()), Err(error)) => Err(ContainersError::Failed(format!("restored; {error}"))),
-                    (Ok(()), Ok(())) => Ok(()),
+                    (Ok(_), Err(error)) => Err(ContainersError::Failed(format!("restored; {error}"))),
+                    (Ok(_), Ok(())) => Ok(()),
                 };
                 let done = this.audited("containers.volume_restore", &audited, &who, &context, done).await;
                 done.map_err(|error| job_error(&error))

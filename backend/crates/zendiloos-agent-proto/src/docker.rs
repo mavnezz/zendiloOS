@@ -189,6 +189,10 @@ pub struct WrittenFile {
     pub bytes: u64,
     pub device: u64,
     pub inode: u64,
+    /// When it was written, in nanoseconds since 1970: with its inode and
+    /// size, which file it is (the device number of a ZFS dataset changes
+    /// from one mount to the next).
+    pub modified: i64,
 }
 
 /// What one volume's data takes up, as counted in Docker's data root;

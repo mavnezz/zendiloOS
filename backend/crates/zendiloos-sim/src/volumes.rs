@@ -45,7 +45,8 @@ fn share_folder(files: Option<&Path>, share: &ShareLocation) -> Option<PathBuf> 
 
 fn written(path: &SharePath, file: &Path) -> std::io::Result<WrittenFile> {
     let meta = std::fs::metadata(file)?;
-    Ok(WrittenFile { path: path.clone(), bytes: meta.len(), device: meta.dev(), inode: meta.ino() })
+    let modified = meta.mtime().saturating_mul(1_000_000_000).saturating_add(meta.mtime_nsec());
+    Ok(WrittenFile { path: path.clone(), bytes: meta.len(), device: meta.dev(), inode: meta.ino(), modified })
 }
 
 /// Answers the requests about volumes; `used` tells which volumes
@@ -150,12 +151,19 @@ pub(crate) fn handle(
                     }
                 }
                 None => (
-                    WrittenFile { path: archive_path, bytes: content.len() as u64, device: 1, inode: now },
+                    WrittenFile {
+                        path: archive_path,
+                        bytes: content.len() as u64,
+                        device: 1,
+                        inode: now,
+                        modified: 0,
+                    },
                     WrittenFile {
                         path: manifest_path,
                         bytes: manifest_json.len() as u64,
                         device: 1,
                         inode: now + 1,
+                        modified: 0,
                     },
                 ),
             };
@@ -198,14 +206,14 @@ pub(crate) fn handle(
                     });
                 }
             }
-            Some(Response::Done)
+            Some(Response::VolumeRestored { left_over: None })
         }
-        Request::RemoveVolumeBackup { share, path, device, inode } => {
+        Request::RemoveVolumeBackup { share, path, inode, bytes, .. } => {
             let removed = match share_folder(files, share) {
                 Some(root) => {
                     let file = root.join(path.as_str());
                     let same = std::fs::symlink_metadata(&file)
-                        .is_ok_and(|m| m.is_file() && m.dev() == *device && m.ino() == *inode);
+                        .is_ok_and(|m| m.is_file() && m.ino() == *inode && m.len() == *bytes);
                     same && std::fs::remove_file(&file).is_ok()
                 }
                 None => true,
@@ -292,15 +300,19 @@ mod tests {
         assert!(matches!(busy, Response::Error { code: ErrorCode::Conflict, .. }), "{busy:?}");
         let web = ContainerId::parse("stack-web-1").unwrap();
         call(Request::ControlContainer { container: web, action: ContainerAction::Stop }).await.unwrap();
-        assert_eq!(call(restore(sha256.clone())).await.unwrap(), Response::Done);
+        assert_eq!(
+            call(restore(sha256.clone())).await.unwrap(),
+            Response::VolumeRestored { left_over: None }
+        );
         let wrong = call(restore(ArchiveDigest::parse(&"0".repeat(64)).unwrap())).await.unwrap();
         assert!(matches!(wrong, Response::Error { code: ErrorCode::Forbidden, .. }), "{wrong:?}");
 
         let remove = |file: &WrittenFile| Request::RemoveVolumeBackup {
             share: share.clone(),
             path: file.path.clone(),
-            device: file.device,
             inode: file.inode,
+            bytes: file.bytes,
+            modified: Some(file.modified),
         };
         assert_eq!(call(remove(&manifest)).await.unwrap(), Response::BackupRemoved { removed: true });
         assert_eq!(call(remove(&manifest)).await.unwrap(), Response::BackupRemoved { removed: false });
@@ -337,8 +349,9 @@ mod tests {
             data_bytes: 37 << 20,
             entries: None,
         };
-        assert_eq!(agent.call(restore, None).await.unwrap(), Response::Done);
-        let remove = Request::RemoveVolumeBackup { share, path: archive.path, device: 1, inode: 1 };
+        assert_eq!(agent.call(restore, None).await.unwrap(), Response::VolumeRestored { left_over: None });
+        let remove =
+            Request::RemoveVolumeBackup { share, path: archive.path, inode: 1, bytes: 1, modified: None };
         assert_eq!(agent.call(remove, None).await.unwrap(), Response::BackupRemoved { removed: true });
     }
 }

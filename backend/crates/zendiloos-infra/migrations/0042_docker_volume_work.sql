@@ -22,3 +22,10 @@ ALTER TABLE docker_backups DROP COLUMN stopped;
 -- The entries of a run's archive: restoring extracts no more than it held.
 -- NULL for runs recorded before entries were counted.
 ALTER TABLE docker_backups ADD COLUMN entries INTEGER;
+
+-- When the archive and the manifest were written (nanoseconds since 1970):
+-- with inode and size, which files they are. Their device is not, as a ZFS
+-- dataset gets another one each time it is mounted. NULL for runs recorded
+-- before.
+ALTER TABLE docker_backups ADD COLUMN archive_modified INTEGER;
+ALTER TABLE docker_backups ADD COLUMN manifest_modified INTEGER;

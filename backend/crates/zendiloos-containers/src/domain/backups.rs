@@ -206,13 +206,17 @@ impl BackupPlan {
 }
 
 /// A file a backup wrote into its share: its path there, and which file it
-/// is, so that only that file is ever removed.
+/// is (its inode, size and time of writing; the device of a ZFS dataset
+/// changes from one mount to the next), so that only that file is ever
+/// removed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackupFile {
     pub path: String,
     pub bytes: u64,
     pub device: u64,
     pub inode: u64,
+    /// Nanoseconds since 1970; unknown for files recorded before it was.
+    pub modified: Option<i64>,
 }
 
 /// What a backup that succeeded wrote, and of what.
@@ -430,6 +434,7 @@ mod tests {
             bytes: 1,
             device: 1,
             inode: id as u64,
+            modified: None,
         };
         BackupOutcome::Succeeded(WrittenBackup {
             archive: file.clone(),

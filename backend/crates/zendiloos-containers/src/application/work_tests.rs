@@ -108,7 +108,7 @@ impl VolumeArchiver for HeldArchiver {
         written: &WrittenBackup,
         steps: &dyn Steps,
         context: &RequestContext,
-    ) -> Result<(), EngineError> {
+    ) -> Result<Option<String>, EngineError> {
         if self.restores_hang {
             std::future::pending::<()>().await;
         }
@@ -453,7 +453,7 @@ impl VolumeArchiver for SlowArchiver {
         written: &WrittenBackup,
         steps: &dyn Steps,
         context: &RequestContext,
-    ) -> Result<(), EngineError> {
+    ) -> Result<Option<String>, EngineError> {
         self.inner.restore(volume, place, written, steps, context).await
     }
 

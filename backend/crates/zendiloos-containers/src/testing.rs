@@ -715,6 +715,8 @@ pub struct FakeArchiver {
     pub files: Mutex<Vec<u64>>,
     /// The agent cannot be reached: ending work fails.
     pub unanswering: std::sync::atomic::AtomicBool,
+    /// What the next restore says it left beside the data.
+    pub left_over: Mutex<Option<String>>,
 }
 
 impl FakeArchiver {
@@ -747,6 +749,7 @@ impl VolumeArchiver for FakeArchiver {
             bytes: 100,
             device: 7,
             inode,
+            modified: Some(1_762_570_800_000_000_000),
         };
         Ok(WrittenBackup {
             archive: file(format!("{stem}.tar.zst"), inode),
@@ -767,13 +770,13 @@ impl VolumeArchiver for FakeArchiver {
         written: &WrittenBackup,
         _: &dyn Steps,
         _: &RequestContext,
-    ) -> Result<(), EngineError> {
+    ) -> Result<Option<String>, EngineError> {
         let (archive, sha256) = (&written.archive.path, &written.sha256);
         let short = &sha256[..4.min(sha256.len())];
         self.calls.lock().unwrap().push(format!("restore {volume} from {}/{archive} {short}", place.share));
         match self.fail.lock().unwrap().take() {
             Some(reason) => Err(EngineError::Refused(reason)),
-            None => Ok(()),
+            None => Ok(self.left_over.lock().unwrap().take()),
         }
     }
 
