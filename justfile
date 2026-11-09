@@ -218,7 +218,7 @@ vm-ssh-test:
 vm-security-test:
     scripts/vm-security-test.sh
 
-# Two-factor sign-in in the second VM: setup, codes, recovery codes, other address, reset
+# Two-factor sign-in in the second VM: setup, codes, recovery codes, other address, the codes' limit and clearing it, reset
 vm-two-factor-test:
     scripts/vm-two-factor-test.sh
 

@@ -11,13 +11,20 @@
 #   5. the second step from another address is refused, the sign-in stays
 #      open where the password came from
 #   6. SMB keeps working with the password alone
-#   7. turning it off asks for the password and a code; an administrator's
+#   7. with the account lock off, wrong codes from the app reach the
+#      account's limit (ten an hour, those of the steps before counted): the
+#      app's code is answered 429, a recovery code still signs in; once an
+#      administrator clears the account's failed sign-ins, the app's code
+#      signs in again, and the audit log has identity.failed_sign_ins_clear
+#   8. turning it off asks for the password and a code; an administrator's
 #      reset turns it off as well, and the password alone signs in again
 #
 # Needs the VM running with the package installed and set up; account and
 # password as for vm-storage-test.sh. Creates the account `tfatest` and
 # deletes it again. Waits for the next 30-second step where a fresh code is
-# needed, so it takes about three minutes.
+# needed, so it takes about four minutes. The limit of codes goes by the
+# account's name and is cleared in step 7; should a run stop before that,
+# restart zendiloosd before the next within the hour.
 set -euo pipefail
 
 # The second VM unless told otherwise: the first holds a LAN test.
@@ -198,7 +205,45 @@ say "6. SMB with the password alone"
 vm "command -v smbclient >/dev/null || sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq smbclient >/dev/null"
 vm "smbclient -L //localhost -U '$name%$secret' >/dev/null 2>&1" || fail "SMB refuses the password"
 
-say "7. Turning it off, and an administrator's reset"
+say "7. Others' wrong codes leave the recovery codes; an administrator clears them"
+# The account lock off: only the account's limit of codes from the app,
+# whatever the lock, holds them back.
+expect 200 admin PUT /security/settings "$(jq '.account_lock = null
+    | .auto_block = (.auto_block // {}) + {failures: 100, window_minutes: 1}' "$work/settings")"
+wrong=0
+limited=no
+for _ in 1 2 3 4; do
+    [[ $(login tenth "$secret") == 202 ]] || fail "the password alone: $(cat "$work/body")"
+    jq -r .token "$work/body" >"$work/token"
+    for _ in 1 2 3; do
+        got=$(second tenth 000000)
+        case $got in
+            # Wrong; the third of a sign-in ends it.
+            422 | 401) wrong=$((wrong + 1)) ;;
+            429) limited=yes; break 2 ;;
+            *) fail "a wrong code: $got $(cat "$work/body")" ;;
+        esac
+    done
+done
+[[ $limited == yes ]] || fail "$wrong wrong codes, and the account takes more"
+(( wrong <= 10 )) || fail "$wrong wrong codes before the limit"
+[[ $(jq -r .code "$work/body") == too_many_attempts ]] || fail "at the limit: $(cat "$work/body")"
+# The sign-in refused at the limit still waits: the app's code is refused
+# too, a recovery code is not.
+[[ $(second tenth "$(totp "$key")") == 429 ]] || fail "the app's code at the limit: $(cat "$work/body")"
+[[ $(second tenth "${recovery[4]}") == 200 ]] || fail "a recovery code at the limit: $(cat "$work/body")"
+expect 204 admin DELETE "/accounts/$account/failed-sign-ins"
+expect 200 admin GET "/logs/audit?action=identity.failed_sign_ins_clear&limit=1"
+jq -e --arg n "$name" '.entries[0].target == $n' "$work/body" >/dev/null \
+    || fail "no audit entry for clearing the failed sign-ins: $(cat "$work/body")"
+next_step
+[[ $(login eleventh "$secret") == 202 ]] || fail "the password alone: $(cat "$work/body")"
+jq -r .token "$work/body" >"$work/token"
+[[ $(second eleventh "$(totp "$key")") == 200 ]] || fail "the app's code once cleared: $(cat "$work/body")"
+expect 200 admin PUT /security/settings "$(jq '.account_lock = {failures: 100, window_minutes: 1}
+    | .auto_block = (.auto_block // {}) + {failures: 100, window_minutes: 1}' "$work/settings")"
+
+say "8. Turning it off, and an administrator's reset"
 next_step
 expect 422 user POST /auth/two-factor/disable "$(jq -n --arg c "$(totp "$key")" '{password: "not the password", code: $c}')"
 next_step
