@@ -1248,7 +1248,13 @@ TLS is rustls with ring and the system's certificate authorities
   programs it runs are not stopped with it, `TimeoutStopSec=2h`). zendiloosd waits two minutes for a quick system request
   and two hours for a long one, ten minutes and a day for files requests
   (copies, moves, the walk of a share), so once begun, a change is
-  seen through and its outcome reported.
+  seen through and its outcome reported. Docker's work (fetching images,
+  making containers, a deploy) has one budget of 30 minutes per request,
+  a deploy's pull and its containers together (`DOCKER_WORK`), and 20
+  minutes more at most for the units that pin its folders; zendiloosd
+  waits twice their sum
+  (`DOCKER_PATIENCE`, 100 minutes), so the agent's half for a turn and the
+  work both fit before it gives up.
 - Every change to a pool, scrubs included, requires its `zendiloos:volume`
   property: pools the owner made stay untouched.
 - Known limits: with `erasable = "unused"`, a compromised `zendiloosd` could

@@ -41,10 +41,10 @@ pub use apps::{
 pub use client::{AgentTransport, Report, TransportError, UnixTransport};
 pub use descriptor::{MessageReader, read_message_with_file, write_message_with_file};
 pub use docker::{
-    ArchiveDigest, BackupStem, ComposeText, ContainerAction, ContainerId, ExecCommand, FoundBackup, ImageId,
-    ImageReference, InvalidDockerName, NetworkName, ProjectAction, ProjectConfig, ProjectDirectory,
-    ProjectName, RefusedBackupFile, ShareLocation, Subnet, TerminalSize, VolumeLabels, VolumeName,
-    VolumeSize, WrittenFile,
+    ArchiveDigest, BackupStem, ComposeText, ContainerAction, ContainerId, DOCKER_AROUND, DOCKER_PATIENCE,
+    DOCKER_WORK, ExecCommand, FoundBackup, ImageId, ImageReference, InvalidDockerName, NetworkName,
+    ProjectAction, ProjectConfig, ProjectDirectory, ProjectName, RefusedBackupFile, ShareLocation, Subnet,
+    TerminalSize, VolumeLabels, VolumeName, VolumeSize, WrittenFile,
 };
 pub use files::{
     CountStop, DirectoryEntry, EntryFacts, EntryKind, FileLocation, FileRoot, FoundEntry, HOMES_DIRECTORY,

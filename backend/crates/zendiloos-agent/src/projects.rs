@@ -17,10 +17,10 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Component, Path, PathBuf};
-use std::time::Duration;
 
 use serde_json::{Value, json};
-use zendiloos_agent_proto::{AppFolder, ProjectConfig, ProjectName, Response};
+use tokio::time::Instant;
+use zendiloos_agent_proto::{AppFolder, DOCKER_WORK, ProjectConfig, ProjectName, Response};
 use zendiloos_exec::{Limits, Program, Surroundings};
 
 use crate::app_shares::{self, Found, Owner, Pin};
@@ -28,8 +28,8 @@ use crate::apps::{DOCKER_ENVIRONMENT, EXTENSION};
 use crate::operations::OperationError;
 use crate::pools::HostPaths;
 
-/// Pulling images and starting containers.
-const LONG: Limits = Limits { timeout: Duration::from_secs(30 * 60), max_stdout: 1024 * 1024 };
+/// What Compose writes, kept at most.
+const MAX_STDOUT: usize = 1024 * 1024;
 
 #[derive(Debug)]
 pub(crate) struct Projects {
@@ -51,7 +51,8 @@ impl Projects {
     }
 
     /// Pins the binds of `config`, keeps it, and brings the project up from
-    /// it; with `pull`, its images are fetched first.
+    /// it; with `pull`, its images are fetched first. Pulling and bringing
+    /// up share one budget, [`DOCKER_WORK`].
     pub(crate) async fn deploy(
         &self,
         project: &ProjectName,
@@ -59,6 +60,7 @@ impl Projects {
         pull: bool,
     ) -> Result<Response, OperationError> {
         let _serial = crate::waiting::lock(&self.serial).await?;
+        let until = Instant::now() + DOCKER_WORK;
         let owner = Owner::Project(project);
         let mut normalized: Value = serde_json::from_str(config.as_str())
             .map_err(|_| OperationError::Refused("the project cannot be read".into()))?;
@@ -82,9 +84,9 @@ impl Projects {
         // Not quiet: what Compose writes goes to whoever deploys, line by
         // line, as it pulls and makes containers.
         if pull {
-            self.compose(project, &["pull"]).await?;
+            self.compose(project, &["pull"], until).await?;
         }
-        self.compose(project, &["up", "--detach", "--remove-orphans"]).await
+        self.compose(project, &["up", "--detach", "--remove-orphans"], until).await
     }
 
     /// Takes the project's containers and networks down and removes what
@@ -92,7 +94,7 @@ impl Projects {
     pub(crate) async fn down(&self, project: &ProjectName) -> Result<Response, OperationError> {
         let _serial = crate::waiting::lock(&self.serial).await?;
         let owner = Owner::Project(project);
-        self.compose(project, &["down", "--remove-orphans"]).await?;
+        self.compose(project, &["down", "--remove-orphans"], Instant::now() + DOCKER_WORK).await?;
         app_shares::remove_unit(&self.systemctl, &self.paths, owner).await?;
         let kept = owner.kept(&self.paths);
         match fs::remove_file(&kept) {
@@ -102,9 +104,22 @@ impl Projects {
         }
     }
 
-    /// `docker compose` on the kept file, nothing else read; what it writes
-    /// is reported line by line ([`crate::progress::line`]).
-    async fn compose(&self, project: &ProjectName, args: &[&str]) -> Result<Response, OperationError> {
+    /// `docker compose` on the kept file, nothing else read, given up at
+    /// `until`; what it writes is reported line by line
+    /// ([`crate::progress::line`]).
+    async fn compose(
+        &self,
+        project: &ProjectName,
+        args: &[&str],
+        until: Instant,
+    ) -> Result<Response, OperationError> {
+        let timeout = until.saturating_duration_since(Instant::now());
+        if timeout.is_zero() {
+            return Err(OperationError::Failed(format!(
+                "Docker Compose did not finish within {} minutes",
+                DOCKER_WORK.as_secs() / 60
+            )));
+        }
         let path = Owner::Project(project).kept(&self.paths).to_string_lossy().into_owned();
         let mut all =
             vec!["compose", "--file", &path, "--env-file", "/dev/null", "--project-name", project.as_str()];
@@ -113,8 +128,9 @@ impl Projects {
             variables: DOCKER_ENVIRONMENT.iter().map(|(n, v)| ((*n).to_owned(), (*v).to_owned())).collect(),
             directory: None,
         };
+        let limits = Limits { timeout, max_stdout: MAX_STDOUT };
         let output =
-            zendiloos_exec::run_lines(&self.docker, &all, &surroundings, LONG, &mut crate::progress::line)
+            zendiloos_exec::run_lines(&self.docker, &all, &surroundings, limits, &mut crate::progress::line)
                 .await?;
         if output.status.success() {
             return Ok(Response::Done);
@@ -557,6 +573,32 @@ mod tests {
             assert!(locate(outside, &volumes).unwrap().is_none(), "{outside}");
         }
         assert!(locate("/volume1/docker/a/../b", &volumes).is_err(), "no way out with ..");
+    }
+
+    #[tokio::test]
+    async fn pull_and_up_share_one_budget() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let folder = tempfile::tempdir().unwrap();
+        let log = folder.path().join("calls.log");
+        let docker = folder.path().join("docker");
+        fs::write(&docker, format!("#!/bin/sh\necho \"$*\" >> {}\nsleep 5\n", log.display())).unwrap();
+        fs::set_permissions(&docker, fs::Permissions::from_mode(0o755)).unwrap();
+        let paths = HostPaths { projects: folder.path().join("projects"), ..HostPaths::default() };
+        let projects =
+            Projects::new(Program::new(&docker).unwrap(), Program::new("/bin/true").unwrap(), paths);
+        let project = ProjectName::parse("web").unwrap();
+
+        // A pull that takes the budget up: given up when it is spent, and
+        // nothing is left to bring the containers up with.
+        let began = std::time::Instant::now();
+        let until = Instant::now() + std::time::Duration::from_millis(300);
+        assert!(projects.compose(&project, &["pull"], until).await.is_err());
+        assert!(began.elapsed() < std::time::Duration::from_secs(4), "not waited for");
+        let up = projects.compose(&project, &["up", "--detach"], until).await.unwrap_err();
+        assert!(up.to_string().contains("did not finish within 30 minutes"), "{up}");
+        let calls = fs::read_to_string(&log).unwrap();
+        assert_eq!(calls.lines().filter(|call| call.ends_with(" up --detach")).count(), 0, "{calls}");
     }
 
     #[test]
