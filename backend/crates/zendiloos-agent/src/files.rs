@@ -700,7 +700,12 @@ mod tests {
         let (beside, _) =
             across(side("photos", "album"), side("music", "album"), Taken::Beside).await.unwrap();
         assert_eq!(beside.as_str(), "album (2)");
-        let refused = across(side("photos", "album"), side("music", "album"), Taken::Refuse).await;
+        // A move goes on into a folder of the name, its earlier copy, but
+        // not on top of a file.
+        let (into, _) = across(side("photos", "album"), side("music", "album"), Taken::Refuse).await.unwrap();
+        assert_eq!(into.as_str(), "album");
+        std::fs::write(directory.path().join("volume1/music/taken"), "a file").unwrap();
+        let refused = across(side("photos", "album"), side("music", "taken"), Taken::Refuse).await;
         assert!(matches!(refused, Err(OperationError::File(FileError::Exists))), "{refused:?}");
         let missing = across(side("photos", "gone"), side("music", "gone"), Taken::Beside).await;
         assert!(matches!(missing, Err(OperationError::File(FileError::NotFound))), "{missing:?}");

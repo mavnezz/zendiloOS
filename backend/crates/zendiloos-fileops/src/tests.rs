@@ -756,8 +756,9 @@ fn trees_go_across_piece_by_piece_and_keep_their_times() {
         copy_through(&photos, &path("album/a.jpg"), &music, &path("a.jpg"), Taken::Beside, false).unwrap();
     assert_eq!((file, v.read("music", "a.jpg")), (path("a.jpg"), "a".to_owned()));
 
-    // A move: refused where the name is taken, then the source goes.
-    let refused = copy_through(&photos, &path("album"), &music, &path("album"), Taken::Refuse, true);
+    // A move: refused where a file has the name, then the source goes.
+    v.write("music", "taken", "a file");
+    let refused = copy_through(&photos, &path("album"), &music, &path("taken"), Taken::Refuse, true);
     assert!(matches!(refused, Err(FileError::Exists)), "{refused:?}");
     let (moved, copied) =
         copy_through(&photos, &path("album"), &music, &path("moved"), Taken::Refuse, true).unwrap();
@@ -775,11 +776,12 @@ fn a_move_across_removes_only_what_was_sent() {
     let (photos, music) = (v.share("photos"), v.share("music"));
     let (_, copied) =
         copy_through(&photos, &path("album"), &music, &path("album"), Taken::Refuse, true).unwrap();
-    // Swapped for another folder meanwhile: that one stays.
+    // Swapped for another folder meanwhile: that one stays, and the folder
+    // copied with all of it is counted, as nothing of it was moved.
     fs::rename(v.share_path("photos").join("album"), v.share_path("photos").join("old")).unwrap();
     v.write("photos", "album/other.jpg", "other");
     let removed = photos.remove_copied(&path("album"), &copied);
-    let kept = Kept { count: 1, example: Some(path("album")), too_many: false };
+    let kept = Kept { count: 2, example: Some(path("album")), too_many: false };
     assert!(matches!(&removed, Err(FileError::PartlyMoved(left)) if *left == kept), "{removed:?}");
     assert_eq!(v.read("photos", "album/other.jpg"), "other");
     assert_eq!(v.read("photos", "old/a.jpg"), "a", "nothing is removed under another name");
@@ -815,7 +817,7 @@ fn a_copy_that_stops_halfway_leaves_nothing_behind() {
     // Nothing that is copied (a pipe, say): nothing is made.
     let (out, pieces) = std::sync::mpsc::sync_channel(PIECES_IN_FLIGHT);
     out.send(Piece::Done).unwrap();
-    assert_eq!(music.receive_entry(&path("y"), &pieces, Taken::Beside).unwrap(), path("y"));
+    assert_eq!(music.receive_entry(&path("y"), &pieces, Taken::Beside).unwrap().path, path("y"));
     assert!(!v.exists("music", "y"));
 }
 
@@ -826,8 +828,8 @@ fn the_side_that_failed_first_says_why() {
     let both = settle(Err(FileError::NotFound), Err(FileError::Invalid("the copy's source stopped")));
     assert!(matches!(both, Err(FileError::NotFound)));
     assert!(matches!(settle(Ok(Copied::off()), Err(FileError::Exists)), Err(FileError::Exists)));
-    assert!(matches!(settle(Err(FileError::Denied), Ok(path("a"))), Err(FileError::Denied)));
-    assert_eq!(settle(Ok(Copied::off()), Ok(path("a"))).unwrap().0, path("a"));
+    assert!(matches!(settle(Err(FileError::Denied), Ok(Received::at(path("a")))), Err(FileError::Denied)));
+    assert_eq!(settle(Ok(Copied::off()), Ok(Received::at(path("a")))).unwrap().0, path("a"));
 }
 
 #[test]
@@ -866,11 +868,16 @@ fn on_two_file_systems() -> Option<[(tempfile::TempDir, ShareRoot, PathBuf); 2]>
 /// What `copy_new` copies of `from` in `source` to `to` in `target`,
 /// recorded as for a move.
 fn copied_for_move(source: &ShareRoot, from: &str, target: &ShareRoot, to: &str) -> Copied {
+    recorded(source, from, target, to, Copied::recording())
+}
+
+/// What `copy_new` copies of `from` in `source` to `to` in `target`,
+/// recorded in `copied`.
+fn recorded(source: &ShareRoot, from: &str, target: &ShareRoot, to: &str, mut copied: Copied) -> Copied {
     let (from, to) = (path(from), path(to));
     let (from_parent, from_name) = source.parent(&from).unwrap();
     let (to_parent, to_name) = target.parent(&to).unwrap();
     let (from_name, to_name) = (c_name(from_name).unwrap(), c_name(to_name).unwrap());
-    let mut copied = Copied::recording();
     copy_new(
         from_parent.as_fd(),
         &from_name,
@@ -1372,4 +1379,166 @@ fn a_shares_recycle_bin_is_everyones_who_may_use_it() {
     let home = v.share("photos");
     v.write("photos", "b.txt", "y");
     assert!(matches!(home.remove(&path("b.txt"), Some("anna")), Err(FileError::Invalid(_))));
+}
+
+/// Gives `paths` a modification time long ago, as a camera's card has, so
+/// that a move does not wait out FAT's two-second step for them.
+fn long_ago(paths: &[PathBuf]) {
+    let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+    for path in paths {
+        File::open(path).unwrap().set_modified(old).unwrap();
+    }
+}
+
+/// FAT and exFAT number an entry anew whenever the kernel forgot it and
+/// reads it again, which a big move off a memory card makes it do. Told by
+/// their numbers, nothing of it goes, and all of it is counted; told by
+/// name, size and modification time, as on FAT, what was copied goes and
+/// only what changed stays. FAT is not here: the numbers are changed by
+/// hand (`number_anew`), as the kernel would.
+#[test]
+fn a_move_off_fat_tells_entries_by_name_size_and_time_not_by_number() {
+    let v = Volumes::new();
+    for name in ["album/a.jpg", "album/b.jpg", "album/deep/c.jpg"] {
+        v.write("photos", name, name);
+    }
+    let album = v.share_path("photos").join("album");
+    let names = ["a.jpg", "b.jpg", "deep/c.jpg", "deep", "."];
+    long_ago(&names.map(|name| album.join(name)));
+    let (photos, music) = (v.share("photos"), v.share("music"));
+
+    let mut by_number = copied_for_move(&photos, "album", &music, "first");
+    by_number.number_anew();
+    let removed = photos.remove_copied(&path("album"), &by_number);
+    let kept = Kept { count: 5, example: Some(path("album")), too_many: false };
+    assert!(matches!(&removed, Err(FileError::PartlyMoved(left)) if *left == kept), "{removed:?}");
+    assert_eq!(v.read("photos", "album/deep/c.jpg"), "album/deep/c.jpg", "nothing went");
+
+    let mut on_fat = recorded(&photos, "album", &music, "second", Copied::recording().on_fat(true));
+    on_fat.number_anew();
+    // Written to after it was copied: it stays, whatever its number.
+    fs::write(album.join("b.jpg"), "changed").unwrap();
+    let removed = photos.remove_copied(&path("album"), &on_fat);
+
+    assert!(!album.join("a.jpg").exists() && !album.join("deep").exists(), "what was copied went");
+    assert_eq!(v.read("photos", "album/b.jpg"), "changed");
+    assert_eq!(v.read("music", "second/deep/c.jpg"), "album/deep/c.jpg");
+    // The file, and the folder that holds it.
+    let kept = Kept { count: 2, example: Some(path("album/b.jpg")), too_many: false };
+    assert!(matches!(&removed, Err(FileError::PartlyMoved(left)) if *left == kept), "{removed:?}");
+}
+
+/// FAT and exFAT are told by their `statfs` type; anything else keeps its
+/// inode numbers.
+#[test]
+fn only_a_source_on_fat_is_told_without_numbers() {
+    let v = Volumes::new();
+    let photos = rustix::fs::open(v.share_path("photos"), OFlags::PATH | OFlags::DIRECTORY, Mode::empty());
+    assert!(!copied::is_fat_at(photos.unwrap().as_fd()));
+}
+
+/// A move that left its source whole, as one off FAT did when the kernel
+/// numbered its entries anew, is tried again: it goes on into its earlier
+/// copy, takes what is the same there for moved and adds what is missing.
+/// A file the target has another of under the name stays in the source,
+/// and the target's is not touched. Once that is put right, the move is
+/// done; either way it goes across.
+#[test]
+fn a_move_tried_again_goes_on_into_its_earlier_copy() {
+    let v = Volumes::new();
+    // Across credentials on one file system; by `move_entry` between two.
+    let mut places =
+        vec![(true, v.share("photos"), v.share_path("photos"), v.share("music"), v.share_path("music"))];
+    let mut temporary = Vec::new();
+    if let Some([(a, photos, photos_dir), (b, music, music_dir)]) = on_two_file_systems() {
+        temporary.extend([a, b]);
+        places.push((false, photos, photos_dir, music, music_dir));
+    }
+    for (across, source, source_dir, target, target_dir) in places {
+        let move_album = || {
+            if across {
+                let copy =
+                    copy_through(&source, &path("album"), &target, &path("album"), Taken::Refuse, true);
+                let (moved, copied) = copy.unwrap();
+                assert_eq!(moved, path("album"));
+                source.remove_copied(&path("album"), &copied)
+            } else {
+                source.move_entry(&path("album"), &target, &path("album"), false)
+            }
+        };
+        let (album, copy) = (source_dir.join("album"), target_dir.join("album"));
+        fs::create_dir_all(album.join("deep")).unwrap();
+        fs::create_dir_all(copy.join("deep")).unwrap();
+        for (name, mine, theirs) in
+            [("a.jpg", "a", Some("a")), ("b.jpg", "b", Some("other")), ("deep/c.jpg", "c", None)]
+        {
+            fs::write(album.join(name), mine).unwrap();
+            if let Some(theirs) = theirs {
+                fs::write(copy.join(name), theirs).unwrap();
+            }
+        }
+        symlink("a.jpg", album.join("link")).unwrap();
+        symlink("a.jpg", copy.join("link")).unwrap();
+
+        let moved = move_album();
+
+        assert_eq!(fs::read_to_string(album.join("b.jpg")).unwrap(), "b", "across: {across}");
+        assert_eq!(fs::read_to_string(copy.join("b.jpg")).unwrap(), "other", "across: {across}");
+        assert_eq!(fs::read_to_string(copy.join("deep/c.jpg")).unwrap(), "c", "across: {across}");
+        assert!(!album.join("a.jpg").exists() && !album.join("deep").exists(), "across: {across}");
+        assert!(!album.join("link").exists(), "the same link went, across: {across}");
+        let kept = Kept { count: 2, example: Some(path("album/b.jpg")), too_many: false };
+        assert!(matches!(&moved, Err(FileError::PartlyMoved(left)) if *left == kept), "{across}: {moved:?}");
+
+        // The target's b.jpg is the source's now: the move is done.
+        fs::write(copy.join("b.jpg"), "b").unwrap();
+        move_album().unwrap();
+        assert!(!album.exists(), "across: {across}");
+        assert_eq!(fs::read_to_string(copy.join("a.jpg")).unwrap(), "a", "across: {across}");
+        fs::remove_dir_all(&copy).unwrap();
+    }
+}
+
+/// What the target has under a name that is no folder, file or link like
+/// the source's stays in the source with all of it, and a file there that
+/// differs keeps a moved file from going on top of it: nothing is replaced.
+#[test]
+fn a_move_gone_on_into_its_copy_replaces_nothing() {
+    let v = Volumes::new();
+    v.write("photos", "album/deep/c.jpg", "c");
+    v.write("photos", "album/d.jpg", "d");
+    v.write("music", "album/deep", "a file where the source has a folder");
+    v.write("music", "album/d.jpg", "theirs");
+    symlink("d.jpg", v.share_path("photos").join("album/link")).unwrap();
+    symlink("elsewhere", v.share_path("music").join("album/link")).unwrap();
+    let (photos, music) = (v.share("photos"), v.share("music"));
+    for across in [true, false] {
+        let copied = if across {
+            copy_through(&photos, &path("album"), &music, &path("album"), Taken::Refuse, true).unwrap().1
+        } else {
+            copied_for_move(&photos, "album", &music, "album")
+        };
+        let removed = photos.remove_copied(&path("album"), &copied);
+        // deep and c.jpg, d.jpg, the link, and the folder that holds them.
+        let left = matches!(&removed, Err(FileError::PartlyMoved(Kept { count: 5, too_many: false, .. })));
+        assert!(left, "across: {across}, {removed:?}");
+        assert_eq!(v.read("photos", "album/deep/c.jpg"), "c");
+        assert_eq!(v.read("music", "album/deep"), "a file where the source has a folder");
+        assert_eq!(v.read("music", "album/d.jpg"), "theirs");
+        assert_eq!(fs::read_link(v.share_path("music").join("album/link")).unwrap(), Path::new("elsewhere"));
+    }
+    // At the top, a file of another name is a name taken.
+    v.write("photos", "solo.txt", "mine");
+    v.write("music", "solo.txt", "theirs");
+    let refused = copy_through(&photos, &path("solo.txt"), &music, &path("solo.txt"), Taken::Refuse, true);
+    assert!(matches!(refused, Err(FileError::Exists)), "{refused:?}");
+    v.write("music", "solo.txt", "mine");
+    let (_, copied) =
+        copy_through(&photos, &path("solo.txt"), &music, &path("solo.txt"), Taken::Refuse, true).unwrap();
+    photos.remove_copied(&path("solo.txt"), &copied).unwrap();
+    assert!(!v.exists("photos", "solo.txt"), "the same file at the top: moved");
+    // A plain copy still goes beside a folder of the name.
+    let (beside, _) =
+        copy_through(&photos, &path("album"), &music, &path("album"), Taken::Beside, false).unwrap();
+    assert_eq!(beside, path("album (2)"));
 }
