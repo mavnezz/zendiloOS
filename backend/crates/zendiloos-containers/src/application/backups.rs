@@ -1,10 +1,12 @@
 //! Volumes backed up on a schedule or by hand, and restored (docs/
-//! architecture.md, 4.9). A run is a job: the containers that use the
-//! volume stopped if the plan says so, the archive written into the share
-//! by the privileged agent, the containers started again whatever came of
-//! it, the run recorded, the oldest archives beyond the plan's number
-//! removed (only those recorded, each by its identity), a failure told as
-//! a notification. A restore checks the archive against its record and
+//! architecture.md, 4.9). A run is a job: it claims its volume, waits for
+//! its turn (one backup or restore at a time on the NAS, see `work`), stops
+//! the containers that use the volume if the plan says so, has the
+//! privileged agent write the archive into the share, starts the
+//! containers again whatever came of it once nothing else holds them, is
+//! recorded, removes the oldest archives beyond the plan's number (only
+//! those recorded, each by its identity) and tells a failure as a
+//! notification. A restore checks the archive against its record and
 //! replaces the volume's contents, the containers that use it stopped
 //! meanwhile only when asked to.
 
@@ -14,12 +16,18 @@ use zendiloos_jobs::{Job, Progress};
 use zendiloos_kernel::{Actor, AuditEntry, Outcome, RequestContext, Timestamp};
 use zendiloos_notify::{Level, NewNotification};
 
-use super::ports::{NewBackup, SharePlace, Steps};
+use super::ports::{EngineError, NewBackup, SharePlace, ShareReaders, Steps};
 use super::{Containers, ContainersError, job_error};
 use crate::domain::{
     Backup, BackupPlan, BackupSchedule, BackupTarget, WrittenBackup, backup_stem, beyond, is_volume_name,
     stale_failures, users,
 };
+
+/// Whether the agent's answer says its work ended: any answer does, a
+/// lost connection does not.
+fn answered<T>(outcome: &Result<T, EngineError>) -> bool {
+    !matches!(outcome, Err(EngineError::Port(_)))
+}
 
 /// A plan and when it runs next.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,26 +100,32 @@ impl Steps for JobSteps {
             }
         });
     }
+
+    fn note(&self, line: &str) {
+        self.progress.line(line);
+    }
 }
 
 impl Containers {
     pub(super) fn plan_view(&self, plan: BackupPlan) -> PlanView {
         let now = self.now();
-        let next_at = plan.schedule.next(now, self.ports.clock.utc_offset(now));
+        let next_at = plan.schedule.next(now, &|at| self.ports.clock.utc_offset(at));
         PlanView { plan, next_at }
     }
 
-    /// Marks `volume` as being worked on; refused if it is already.
-    pub(super) fn claim(&self, volume: &str) -> Result<(), ContainersError> {
-        let mut busy = self.busy.lock().unwrap_or_else(PoisonError::into_inner);
-        if !busy.insert(volume.to_owned()) {
-            return Err(ContainersError::VolumeBusy(volume.to_owned()));
+    /// Who may read share `share_id`, a share `actor` may put backups in:
+    /// whoever may read a backup's folder reads all of the volume's
+    /// contents, files the containers keep to themselves included.
+    pub async fn backup_readers(
+        &self,
+        share_id: i64,
+        actor: &Actor,
+    ) -> Result<ShareReaders, ContainersError> {
+        let places = self.ports.storage.places(actor).await?;
+        if !places.iter().any(|place| place.share_id == share_id) {
+            return Err(ContainersError::Denied);
         }
-        Ok(())
-    }
-
-    pub(super) fn release(&self, volume: &str) {
-        self.busy.lock().unwrap_or_else(PoisonError::into_inner).remove(volume);
+        self.ports.backup_shares.readers(share_id).await?.ok_or(ContainersError::NotFound)
     }
 
     pub async fn backup_plan(&self, volume: &str) -> Result<Option<PlanView>, ContainersError> {
@@ -187,10 +201,11 @@ impl Containers {
 
     /// Starts the backups whose time has come; run every minute. A plan
     /// counts as run once it was started, whatever comes of it: the next
-    /// comes at its time.
+    /// comes at its time. A plan noted while the clock was ahead counts from
+    /// now on, once the clock was put right.
     pub async fn run_due_backups(&self) -> Vec<Job> {
         let now = self.now();
-        let offset = self.ports.clock.utc_offset(now);
+        let offsets = |at| self.ports.clock.utc_offset(at);
         let plans = match self.ports.backups.plans().await {
             Ok(plans) => plans,
             Err(error) => {
@@ -199,7 +214,21 @@ impl Containers {
             }
         };
         let mut jobs = Vec::new();
-        for plan in plans.into_iter().filter(|plan| plan.is_due(now, offset)) {
+        let mut due = Vec::new();
+        for plan in plans {
+            if plan.noted_ahead(now) {
+                tracing::info!(
+                    volume = plan.volume,
+                    "backups: the plan was noted ahead of the clock; due from now"
+                );
+                if let Err(error) = self.ports.backups.ran(&plan.volume, now).await {
+                    tracing::warn!(%error, volume = plan.volume, "backups: cannot note the plan anew");
+                }
+            } else if plan.is_due(now, &offsets) {
+                due.push(plan);
+            }
+        }
+        for plan in due {
             if let Err(error) = self.ports.backups.ran(&plan.volume, now).await {
                 tracing::warn!(%error, volume = plan.volume, "backups: cannot note the run; not started");
                 continue;
@@ -229,7 +258,7 @@ impl Containers {
         actor: Option<&Actor>,
         context: &RequestContext,
     ) -> Result<Job, ContainersError> {
-        self.claim(&plan.volume)?;
+        self.claim(&plan.volume, plan.stop_containers, context).await?;
         let this = self.clone();
         let (who, context) = (actor.cloned(), context.clone());
         let volume = plan.volume.clone();
@@ -237,18 +266,20 @@ impl Containers {
             .ports
             .jobs
             .start("containers.volume_backup", Some(volume.clone()), actor, move |progress| async move {
-                let done = this.run_backup(&plan, who.as_ref(), &context, &JobSteps::new(progress)).await;
-                this.release(&plan.volume);
+                let steps = JobSteps::new(progress);
+                this.turn(&plan.volume, &steps).await;
+                let done = this.run_backup(&plan, who.as_ref(), &context, &steps).await;
                 done.map_err(|error| job_error(&error))
             })
             .await;
         if started.is_err() {
-            self.release(&volume);
+            self.unclaim(&volume);
         }
         Ok(started?)
     }
 
-    /// One run, recorded, audited and told if it failed.
+    /// One run, once its turn came: recorded, audited and told if it
+    /// failed; its claim ends with it.
     async fn run_backup(
         &self,
         plan: &BackupPlan,
@@ -266,12 +297,13 @@ impl Containers {
         let id = match self.ports.backups.start(&new).await {
             Ok(id) => id,
             Err(error) => {
+                self.unclaim(&plan.volume);
                 let error = ContainersError::from(error);
                 self.told_failure(&plan.volume, &error.to_string()).await;
                 return Err(error);
             }
         };
-        let (written, restarted) = self.backup_steps(plan, id, started_at, context, steps).await;
+        let (written, restarted) = self.backup_steps(plan, started_at, context, steps).await;
         let outcome: Result<&WrittenBackup, String> = written.as_ref().map_err(ToString::to_string);
         let finished = outcome.as_ref().map(|written| *written).map_err(String::as_str);
         if let Err(error) = self.ports.backups.finish(id, self.now(), finished).await {
@@ -292,15 +324,30 @@ impl Containers {
         } else {
             self.retain(plan, context).await;
         }
+        self.forget_stale_failures(&plan.volume).await;
         done
     }
 
-    /// Stops what the plan says, backs up, starts again: what was written,
-    /// and whether everything stopped runs again.
+    /// Forgets the failed runs of `volume` beyond the newest ten: after
+    /// every run, also while a plan keeps failing.
+    async fn forget_stale_failures(&self, volume: &str) {
+        let backups = match self.ports.backups.backups(Some(volume)).await {
+            Ok(backups) => backups,
+            Err(error) => return tracing::warn!(%error, "backups: cannot read the runs to forget"),
+        };
+        for stale in stale_failures(&backups) {
+            if let Err(error) = self.ports.backups.forget(stale.id).await {
+                tracing::warn!(%error, "backups: cannot forget an old failure");
+            }
+        }
+    }
+
+    /// Stops what the plan says, backs up, starts again once nothing else
+    /// holds them: what was written, and whether everything stopped runs
+    /// again.
     async fn backup_steps(
         &self,
         plan: &BackupPlan,
-        id: i64,
         started_at: Timestamp,
         context: &RequestContext,
         steps: &dyn Steps,
@@ -319,25 +366,18 @@ impl Containers {
                 self.ports.backup_shares.locate(plan.target.share_id).await?.ok_or_else(|| {
                     ContainersError::Failed("the share the backups go to is gone".to_owned())
                 })?;
-            let running: Vec<String> = if plan.stop_containers {
-                let containers = self.ports.engine.containers(context).await?;
-                users(&plan.volume, &containers).into_iter().filter(|u| u.running).map(|u| u.name).collect()
-            } else {
-                Vec::new()
-            };
-            Ok((place, running))
+            Ok(place)
         }
         .await;
-        let (place, running) = match ready {
-            Ok(ready) => ready,
-            Err(error) => return (Err(error), Ok(())),
+        let place = match ready {
+            Ok(place) => place,
+            Err(error) => return (Err(error), self.finish(&plan.volume, true, steps, context).await),
         };
-        let stopped = match self.stop_containers(Some(id), &running, steps, context).await {
-            Ok(stopped) => stopped,
-            Err((error, stopped)) => {
-                return (Err(error), self.start_again(id, &stopped, steps, context).await);
-            }
-        };
+        if plan.stop_containers
+            && let Err(error) = self.stop_users(&plan.volume, steps, context).await
+        {
+            return (Err(error), self.finish(&plan.volume, true, steps, context).await);
+        }
         steps.step("backing_up", Some(0));
         let offset = self.ports.clock.utc_offset(started_at);
         let stem = backup_stem(&plan.volume, started_at, offset);
@@ -345,92 +385,13 @@ impl Containers {
             .ports
             .archiver
             .back_up(&plan.volume, &place, &plan.target.folder, &stem, steps, context)
-            .await
-            .map_err(Into::into);
-        (written, self.start_again(id, &stopped, steps, context).await)
-    }
-
-    /// Stops the containers `running`, noting them with the run of a
-    /// backup first, so that they are started again even after a restart;
-    /// those stopped.
-    async fn stop_containers(
-        &self,
-        run: Option<i64>,
-        running: &[String],
-        steps: &dyn Steps,
-        context: &RequestContext,
-    ) -> Result<Vec<String>, (ContainersError, Vec<String>)> {
-        if running.is_empty() {
-            return Ok(Vec::new());
-        }
-        if let Some(id) = run
-            && let Err(error) = self.ports.backups.stopped(id, running).await
-        {
-            return Err((error.into(), Vec::new()));
-        }
-        steps.step("stopping", None);
-        let mut stopped = Vec::new();
-        for name in running {
-            let container = self.find_container(name, context).await.map_err(|e| (e, stopped.clone()))?;
-            match self
-                .ports
-                .engine
-                .control_container(&container.id, crate::domain::ContainerAction::Stop, context)
-                .await
-            {
-                Ok(()) => stopped.push(name.clone()),
-                Err(error) => return Err((error.into(), stopped)),
-            }
-        }
-        Ok(stopped)
-    }
-
-    /// Starts `stopped` again, each tried even if one fails.
-    async fn start_again(
-        &self,
-        id: i64,
-        stopped: &[String],
-        steps: &dyn Steps,
-        context: &RequestContext,
-    ) -> Result<(), ContainersError> {
-        if stopped.is_empty() {
-            return Ok(());
-        }
-        steps.step("starting", None);
-        let failed = self.start_containers(stopped, context).await;
-        if let Err(error) = self.ports.backups.stopped(id, &[]).await {
-            tracing::warn!(%error, "backups: cannot note that the containers run again");
-        }
-        if failed.is_empty() {
-            Ok(())
-        } else {
-            Err(ContainersError::Failed(format!("could not start again: {}", failed.join(", "))))
-        }
-    }
-
-    /// Starts each container named; those that would not start.
-    async fn start_containers(&self, names: &[String], context: &RequestContext) -> Vec<String> {
-        let mut failed = Vec::new();
-        for name in names {
-            let started = match self.find_container(name, context).await {
-                Ok(container) => self
-                    .ports
-                    .engine
-                    .control_container(&container.id, crate::domain::ContainerAction::Start, context)
-                    .await
-                    .map_err(ContainersError::from),
-                Err(error) => Err(error),
-            };
-            if let Err(error) = started {
-                tracing::warn!(%error, container = name, "backups: cannot start the container again");
-                failed.push(name.clone());
-            }
-        }
-        failed
+            .await;
+        let ended = answered(&written);
+        (written.map_err(Into::into), self.finish(&plan.volume, ended, steps, context).await)
     }
 
     /// Removes the archives beyond the plan's number: only those recorded,
-    /// each by the identity it had when written; and forgets old failures.
+    /// each by the identity it had when written.
     async fn retain(&self, plan: &BackupPlan, context: &RequestContext) {
         let backups = match self.ports.backups.backups(Some(&plan.volume)).await {
             Ok(backups) => backups,
@@ -463,11 +424,6 @@ impl Containers {
                 Err(error) => {
                     tracing::warn!(%error, path = written.archive.path, "backups: an old archive stays")
                 }
-            }
-        }
-        for stale in stale_failures(&backups) {
-            if let Err(error) = self.ports.backups.forget(stale.id).await {
-                tracing::warn!(%error, "backups: cannot forget an old failure");
             }
         }
     }
@@ -531,7 +487,7 @@ impl Containers {
             .locate(backup.share_id)
             .await?
             .ok_or_else(|| ContainersError::Refused("the share the backup lies in is gone".into()))?;
-        self.claim(&name)?;
+        self.claim(&name, true, context).await?;
         let this = self.clone();
         let (who, context) = (actor.clone(), context.clone());
         let audited = format!("{name} ← {}", written.archive.path);
@@ -541,76 +497,93 @@ impl Containers {
             .jobs
             .start("containers.volume_restore", Some(name.clone()), Some(actor), move |progress| async move {
                 let steps = JobSteps::new(progress);
-                let done = async {
+                this.turn(&name, &steps).await;
+                let mut made = false;
+                let ready = async {
+                    // Started meanwhile, by hand or by Docker: not stopped
+                    // unless asked to.
+                    if !stop_containers {
+                        let containers = this.ports.engine.containers(&context).await?;
+                        let running: Vec<String> = users(&name, &containers)
+                            .into_iter()
+                            .filter(|u| u.running)
+                            .map(|u| u.name)
+                            .collect();
+                        if !running.is_empty() {
+                            return Err(ContainersError::VolumeInUse(running));
+                        }
+                    }
                     if existing.is_none() {
                         steps.step("creating", None);
                         this.ports.engine.create_volume(&name, &backup.labels, &context).await?;
+                        made = true;
                     }
-                    let stopped = match this.stop_containers(None, &running, &steps, &context).await {
-                        Ok(stopped) => stopped,
-                        Err((error, stopped)) => {
-                            this.start_containers(&stopped, &context).await;
-                            return Err(error);
-                        }
-                    };
-                    steps.step("restoring", Some(0));
-                    let restored = this
-                        .ports
-                        .archiver
-                        .restore(&name, &place, &written.archive.path, &written.sha256, &steps, &context)
-                        .await
-                        .map_err(ContainersError::from);
-                    if !stopped.is_empty() {
-                        steps.step("starting", None);
-                    }
-                    let failed = this.start_containers(&stopped, &context).await;
-                    restored?;
-                    if failed.is_empty() {
-                        Ok(())
-                    } else {
-                        Err(ContainersError::Failed(format!(
-                            "restored; could not start again: {}",
-                            failed.join(", ")
-                        )))
-                    }
+                    this.stop_users(&name, &steps, &context).await?;
+                    Ok(())
                 }
                 .await;
-                this.release(&name);
+                let restored = match ready {
+                    Ok(()) => {
+                        steps.step("restoring", Some(0));
+                        let restored =
+                            this.ports.archiver.restore(&name, &place, &written, &steps, &context).await;
+                        let ended = answered(&restored);
+                        restored.map_err(|error| (error.into(), ended))
+                    }
+                    Err(error) => Err((error, true)),
+                };
+                let ended = restored.as_ref().err().is_none_or(|(_, ended)| *ended);
+                // A volume made for it and left empty goes again, once the
+                // agent's work on it surely ended.
+                if made
+                    && restored.is_err()
+                    && ended
+                    && let Err(error) = this.ports.engine.remove_volume(&name, &context).await
+                {
+                    tracing::warn!(%error, volume = name, "backups: the volume made to restore into stays");
+                }
+                if let Ok(Some(left)) = &restored {
+                    tracing::warn!(volume = name, left, "backups: restored; old contents are partly left");
+                    steps.note(&format!(
+                        "The old contents of {name} are partly left beside its data in {left}; \
+                         they are removed before its next restore, or when the agent starts again."
+                    ));
+                }
+                let started_again = this.finish(&name, ended, &steps, &context).await;
+                let done = match (restored, started_again) {
+                    (Err((error, _)), _) => Err(error),
+                    (Ok(_), Err(error)) => Err(ContainersError::Failed(format!("restored; {error}"))),
+                    (Ok(_), Ok(())) => Ok(()),
+                };
                 let done = this.audited("containers.volume_restore", &audited, &who, &context, done).await;
                 done.map_err(|error| job_error(&error))
             })
             .await;
         if started.is_err() {
-            self.release(&volume);
+            self.unclaim(&volume);
         }
         Ok(started?)
     }
 
-    /// After a restart: runs that were under way failed, and the containers
-    /// they had stopped are started again. Call once at startup; how many
-    /// runs were cut off.
+    /// After a restart: runs that were under way failed and are told, and
+    /// the containers backups and restores had stopped are started again
+    /// once the agent said nothing works on their volumes any more (Docker
+    /// may not be up yet: then every minute until they run). Call once at
+    /// startup; how many runs were cut off.
     pub async fn recover_backups(&self) -> usize {
         let interrupted = match self.ports.backups.interrupted(self.now()).await {
             Ok(interrupted) => interrupted,
             Err(error) => {
                 tracing::warn!(%error, "backups: cannot look at the runs cut off");
-                return 0;
+                Vec::new()
             }
         };
-        let context = RequestContext::default();
         for run in &interrupted {
-            let failed = self.start_containers(&run.stopped, &context).await;
-            if !failed.is_empty() {
-                tracing::warn!(
-                    volume = run.volume,
-                    ?failed,
-                    "backups: containers stopped for a run stay stopped"
-                );
-            }
-            if let Err(error) = self.ports.backups.stopped(run.id, &[]).await {
-                tracing::warn!(%error, "backups: cannot note that the containers run again");
-            }
             self.told_failure(&run.volume, "zendiloosd stopped while it ran").await;
+        }
+        let started = self.start_owed_containers().await;
+        if started > 0 {
+            tracing::info!(started, "backups: containers stopped before a restart run again");
         }
         interrupted.len()
     }

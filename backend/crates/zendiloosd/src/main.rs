@@ -303,8 +303,9 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         audit: audit.clone(),
         clock: Arc::new(SystemClock),
     });
-    // Backups cut off when zendiloosd stopped: failed, and what they had
-    // stopped runs again.
+    // Backups cut off when zendiloosd stopped: failed, and what backups and
+    // restores had stopped runs again once the agent said their work ended
+    // (should Docker not be up yet, the minute's look tries again).
     let cut_off = containers.clone();
     tokio::spawn(async move {
         let interrupted = cut_off.recover_backups().await;
@@ -699,6 +700,11 @@ fn spawn_image_updates(containers: Containers) -> JoinHandle<()> {
             // was off) on the first look.
             for job in containers.run_due_backups().await {
                 tracing::info!(job = job.id.get(), "containers: backing up a volume on schedule");
+            }
+            // Containers a backup or restore stopped whose start failed.
+            let started = containers.start_owed_containers().await;
+            if started > 0 {
+                tracing::info!(started, "containers: stopped for a backup or restore, running again");
             }
             match containers.run_schedule().await {
                 Ok(Some(job)) => {

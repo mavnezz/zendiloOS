@@ -2,8 +2,10 @@
 //! recorded, and how many archives are kept.
 //!
 //! A plan runs daily, weekly on a weekday or monthly on a day, from a local
-//! hour of the host (its time zone, daylight saving time included). A run
-//! is due once the latest of those times lies after the plan was made,
+//! hour of the host (its time zone, daylight saving time included: each
+//! date's hour with the offset of that date, the first time the clock
+//! shows it where it shows it twice, the hour after where it skips it). A
+//! run is due once the latest of those times lies after the plan was made,
 //! changed or last ran: a NAS that was off at that hour backs up as soon
 //! as it is on again, once, and then keeps to its hour. A day of the month
 //! a month has not (the 31st in April) is its last day.
@@ -42,16 +44,28 @@ pub struct BackupSchedule {
     pub hour: u8,
 }
 
+/// How far the host's clock is ahead of UTC at a moment, in seconds.
+pub type UtcOffsets<'a> = &'a dyn Fn(Timestamp) -> i32;
+
 /// `at` in the host's local time, as calendar fields.
 fn local(at: Timestamp, offset: i32) -> UtcTime {
     Timestamp::from_unix_seconds(at.unix_seconds() + i64::from(offset)).utc()
 }
 
+/// The days since 1 January 1970 of a date.
+fn day_number(time: UtcTime) -> i64 {
+    let midnight = UtcTime { hour: 0, minute: 0, second: 0, ..time };
+    midnight.timestamp().map_or(0, Timestamp::unix_seconds).div_euclid(DAY)
+}
+
+/// The date `days` after 1 January 1970.
+fn date(days: i64) -> UtcTime {
+    Timestamp::from_unix_seconds(days * DAY).utc()
+}
+
 /// 0 is Monday: 1 January 1970 was a Thursday.
 fn weekday(time: UtcTime) -> i64 {
-    let midnight = UtcTime { hour: 0, minute: 0, second: 0, ..time };
-    let days = midnight.timestamp().map_or(0, Timestamp::unix_seconds).div_euclid(DAY);
-    (days + 3).rem_euclid(7)
+    (day_number(time) + 3).rem_euclid(7)
 }
 
 fn days_in(year: i64, month: u8) -> u8 {
@@ -72,54 +86,76 @@ fn month_beside(year: i64, month: u8, later: bool) -> (i64, u8) {
 }
 
 impl BackupSchedule {
-    /// `hour` local time on a date, as a moment.
-    fn on(&self, year: i64, month: u8, day: u8, offset: i32) -> Timestamp {
+    /// `hour` local time on a date, as a moment, with the offset the clock
+    /// has then: where it shows that hour twice (summer time ends), the
+    /// first; where it skips it (summer time begins), the hour after.
+    fn on(&self, year: i64, month: u8, day: u8, offsets: UtcOffsets<'_>) -> Timestamp {
         let day = day.min(days_in(year, month));
         let local = UtcTime { year, month, day, hour: self.hour.min(23), minute: 0, second: 0 };
         let seconds = local.timestamp().map_or(0, Timestamp::unix_seconds);
-        Timestamp::from_unix_seconds(seconds - i64::from(offset))
+        // The offsets before and after any change near that hour: none is
+        // more than fourteen hours from UTC.
+        let around = |shift: i64| offsets(Timestamp::from_unix_seconds(seconds + shift));
+        let (before, after) = (around(-15 * 3600), around(15 * 3600));
+        let at = |offset: i32| seconds - i64::from(offset);
+        let shown = [before, after]
+            .into_iter()
+            .filter(|offset| offsets(Timestamp::from_unix_seconds(at(*offset))) == *offset);
+        Timestamp::from_unix_seconds(shown.map(at).min().unwrap_or_else(|| at(before)))
+    }
+
+    /// `hour` on the local date `days` after 1 January 1970.
+    fn on_day(&self, days: i64, offsets: UtcOffsets<'_>) -> Timestamp {
+        let date = date(days);
+        self.on(date.year, date.month, date.day, offsets)
     }
 
     /// The latest time of the schedule at or before `now`.
-    pub fn latest(&self, now: Timestamp, offset: i32) -> Timestamp {
-        let today = local(now, offset);
-        let back = |at: Timestamp, days: i64| Timestamp::from_unix_seconds(at.unix_seconds() - days * DAY);
-        let earlier_or = |at: Timestamp, days: i64| if at > now { back(at, days) } else { at };
+    pub fn latest(&self, now: Timestamp, offsets: UtcOffsets<'_>) -> Timestamp {
+        let today = local(now, offsets(now));
+        let days = day_number(today);
         match self.frequency {
-            BackupFrequency::Daily => earlier_or(self.on(today.year, today.month, today.day, offset), 1),
+            BackupFrequency::Daily => {
+                let this = self.on_day(days, offsets);
+                if this <= now { this } else { self.on_day(days - 1, offsets) }
+            }
             BackupFrequency::Weekly { weekday: wanted } => {
                 let since = (weekday(today) - i64::from(wanted)).rem_euclid(7);
-                earlier_or(back(self.on(today.year, today.month, today.day, offset), since), 7)
+                let this = self.on_day(days - since, offsets);
+                if this <= now { this } else { self.on_day(days - since - 7, offsets) }
             }
             BackupFrequency::Monthly { day } => {
-                let this = self.on(today.year, today.month, day, offset);
+                let this = self.on(today.year, today.month, day, offsets);
                 if this <= now {
                     return this;
                 }
                 let (year, month) = month_beside(today.year, today.month, false);
-                self.on(year, month, day, offset)
+                self.on(year, month, day, offsets)
             }
         }
     }
 
     /// The first time of the schedule after `now`.
-    pub fn next(&self, now: Timestamp, offset: i32) -> Timestamp {
-        let today = local(now, offset);
-        let ahead = |at: Timestamp, days: i64| Timestamp::from_unix_seconds(at.unix_seconds() + days * DAY);
-        let later_or = |at: Timestamp, days: i64| if at <= now { ahead(at, days) } else { at };
+    pub fn next(&self, now: Timestamp, offsets: UtcOffsets<'_>) -> Timestamp {
+        let today = local(now, offsets(now));
+        let days = day_number(today);
         match self.frequency {
-            BackupFrequency::Daily => later_or(self.on(today.year, today.month, today.day, offset), 1),
+            BackupFrequency::Daily => {
+                let this = self.on_day(days, offsets);
+                if this > now { this } else { self.on_day(days + 1, offsets) }
+            }
             BackupFrequency::Weekly { weekday: wanted } => {
                 let until = (i64::from(wanted) - weekday(today)).rem_euclid(7);
-                later_or(ahead(self.on(today.year, today.month, today.day, offset), until), 7)
+                let this = self.on_day(days + until, offsets);
+                if this > now { this } else { self.on_day(days + until + 7, offsets) }
             }
             BackupFrequency::Monthly { day } => {
-                let this = self.on(today.year, today.month, day, offset);
+                let this = self.on(today.year, today.month, day, offsets);
                 if this > now {
                     return this;
                 }
                 let (year, month) = month_beside(today.year, today.month, true);
-                self.on(year, month, day, offset)
+                self.on(year, month, day, offsets)
             }
         }
     }
@@ -198,21 +234,32 @@ impl BackupPlan {
         Ok(self)
     }
 
-    /// Whether it should back up at `now`, with the host `offset` seconds
+    /// Whether it should back up at `now`, with the host's clock `offsets`
     /// ahead of UTC.
-    pub fn is_due(&self, now: Timestamp, offset: i32) -> bool {
-        self.schedule.latest(now, offset) > self.since
+    pub fn is_due(&self, now: Timestamp, offsets: UtcOffsets<'_>) -> bool {
+        self.schedule.latest(now, offsets) > self.since
+    }
+
+    /// Whether it was noted as made or run later than `now`: the clock was
+    /// ahead then and is put right since. Due from now on, then, or it
+    /// would not run for as long as the clock was ahead.
+    pub fn noted_ahead(&self, now: Timestamp) -> bool {
+        self.since > now
     }
 }
 
 /// A file a backup wrote into its share: its path there, and which file it
-/// is, so that only that file is ever removed.
+/// is (its inode, size and time of writing; the device of a ZFS dataset
+/// changes from one mount to the next), so that only that file is ever
+/// removed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackupFile {
     pub path: String,
     pub bytes: u64,
     pub device: u64,
     pub inode: u64,
+    /// Nanoseconds since 1970; unknown for files recorded before it was.
+    pub modified: Option<i64>,
 }
 
 /// What a backup that succeeded wrote, and of what.
@@ -223,6 +270,9 @@ pub struct WrittenBackup {
     pub sha256: String,
     /// What the volume's files held.
     pub data_bytes: u64,
+    /// The archive's entries; unknown for backups recorded before they
+    /// were counted.
+    pub entries: Option<u64>,
     /// The manifest as written beside the archive.
     pub manifest_json: String,
 }
@@ -246,10 +296,17 @@ pub struct Backup {
     /// As the manifest says: what a volume made again from it gets.
     pub driver: String,
     pub labels: BTreeMap<String, String>,
-    /// Containers stopped for it and not yet started again.
-    pub stopped: Vec<String>,
     /// Who started it; none for the schedule.
     pub by: Option<String>,
+}
+
+/// A container a backup or restore of `volume` stopped, not started again
+/// since: started once nothing holds it any more, also after a restart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwedStart {
+    pub container: String,
+    pub volume: String,
+    pub since: Timestamp,
 }
 
 impl Backup {
@@ -262,18 +319,20 @@ impl Backup {
 }
 
 /// The archives retention removes: those of runs that succeeded beyond the
-/// newest `keep`.
+/// newest `keep`. Newest as recorded, not by their clock: a run while the
+/// clock was ahead never outlives the one just written.
 pub fn beyond(backups: &[Backup], keep: u32) -> Vec<&Backup> {
     let mut kept: Vec<&Backup> = backups.iter().filter(|b| b.written().is_some()).collect();
-    kept.sort_by(|a, b| b.started_at.cmp(&a.started_at).then(b.id.cmp(&a.id)));
+    kept.sort_by_key(|b| std::cmp::Reverse(b.id));
     kept.into_iter().skip(keep as usize).collect()
 }
 
-/// Failed runs beyond the newest [`FAILURES_KEPT`], to be forgotten.
+/// Failed runs beyond the newest [`FAILURES_KEPT`] as recorded, to be
+/// forgotten.
 pub fn stale_failures(backups: &[Backup]) -> Vec<&Backup> {
     let mut failed: Vec<&Backup> =
         backups.iter().filter(|b| matches!(b.outcome, BackupOutcome::Failed(_))).collect();
-    failed.sort_by(|a, b| b.started_at.cmp(&a.started_at).then(b.id.cmp(&a.id)));
+    failed.sort_by_key(|b| std::cmp::Reverse(b.id));
     failed.into_iter().skip(FAILURES_KEPT).collect()
 }
 
@@ -314,27 +373,27 @@ mod tests {
     #[test]
     fn a_daily_plan_runs_at_its_hour_and_catches_up_once() {
         let nightly = plan(BackupFrequency::Daily, 3, -HOUR);
-        assert_eq!(nightly.schedule.latest(at(2 * HOUR), 0), at(3 * HOUR - DAY));
-        assert!(!nightly.is_due(at(2 * HOUR + 59 * 60), 0), "made after the last one");
-        assert!(nightly.is_due(at(3 * HOUR), 0));
+        assert_eq!(nightly.schedule.latest(at(2 * HOUR), &|_| 0), at(3 * HOUR - DAY));
+        assert!(!nightly.is_due(at(2 * HOUR + 59 * 60), &|_| 0), "made after the last one");
+        assert!(nightly.is_due(at(3 * HOUR), &|_| 0));
         // Off all night, on at ten: due once, then at three again.
-        assert!(nightly.is_due(at(10 * HOUR), 0));
+        assert!(nightly.is_due(at(10 * HOUR), &|_| 0));
         let ran = BackupPlan { since: at(10 * HOUR), ..nightly };
-        assert!(!ran.is_due(at(23 * HOUR), 0));
-        assert!(ran.is_due(at(DAY + 3 * HOUR), 0));
-        assert_eq!(ran.schedule.next(at(10 * HOUR), 0), at(DAY + 3 * HOUR));
-        assert_eq!(ran.schedule.next(at(2 * HOUR), 0), at(3 * HOUR));
-        assert_eq!(ran.schedule.next(at(3 * HOUR), 0), at(DAY + 3 * HOUR), "after, not at");
+        assert!(!ran.is_due(at(23 * HOUR), &|_| 0));
+        assert!(ran.is_due(at(DAY + 3 * HOUR), &|_| 0));
+        assert_eq!(ran.schedule.next(at(10 * HOUR), &|_| 0), at(DAY + 3 * HOUR));
+        assert_eq!(ran.schedule.next(at(2 * HOUR), &|_| 0), at(3 * HOUR));
+        assert_eq!(ran.schedule.next(at(3 * HOUR), &|_| 0), at(DAY + 3 * HOUR), "after, not at");
     }
 
     #[test]
     fn the_hour_is_the_hosts_local_one() {
         let nightly = schedule(BackupFrequency::Daily, 3);
         // Three in Berlin in winter is two UTC.
-        assert_eq!(nightly.latest(at(2 * HOUR), 3600), at(2 * HOUR));
-        assert_eq!(nightly.next(at(HOUR), 3600), at(2 * HOUR));
+        assert_eq!(nightly.latest(at(2 * HOUR), &|_| 3600), at(2 * HOUR));
+        assert_eq!(nightly.next(at(HOUR), &|_| 3600), at(2 * HOUR));
         // Three in New York (UTC-5) is eight UTC, still the 4th there at one UTC.
-        assert_eq!(nightly.latest(at(HOUR), -5 * 3600), at(8 * HOUR - DAY));
+        assert_eq!(nightly.latest(at(HOUR), &|_| -5 * 3600), at(8 * HOUR - DAY));
     }
 
     #[test]
@@ -342,35 +401,35 @@ mod tests {
         // Monday at four; the 5th is a Thursday.
         let monday = schedule(BackupFrequency::Weekly { weekday: 0 }, 4);
         let last_monday = at(-3 * DAY + 4 * HOUR);
-        assert_eq!(monday.latest(at(12 * HOUR), 0), last_monday);
-        assert_eq!(monday.next(at(12 * HOUR), 0), at(4 * DAY + 4 * HOUR));
+        assert_eq!(monday.latest(at(12 * HOUR), &|_| 0), last_monday);
+        assert_eq!(monday.next(at(12 * HOUR), &|_| 0), at(4 * DAY + 4 * HOUR));
         // On the Monday itself: before four the one a week earlier.
-        assert_eq!(monday.latest(at(-3 * DAY + 3 * HOUR), 0), at(-10 * DAY + 4 * HOUR));
-        assert_eq!(monday.next(at(-3 * DAY + 3 * HOUR), 0), last_monday);
+        assert_eq!(monday.latest(at(-3 * DAY + 3 * HOUR), &|_| 0), at(-10 * DAY + 4 * HOUR));
+        assert_eq!(monday.next(at(-3 * DAY + 3 * HOUR), &|_| 0), last_monday);
         let thursday = schedule(BackupFrequency::Weekly { weekday: 3 }, 1);
-        assert_eq!(thursday.latest(at(2 * HOUR), 0), at(HOUR));
-        assert_eq!(thursday.next(at(2 * HOUR), 0), at(7 * DAY + HOUR));
+        assert_eq!(thursday.latest(at(2 * HOUR), &|_| 0), at(HOUR));
+        assert_eq!(thursday.next(at(2 * HOUR), &|_| 0), at(7 * DAY + HOUR));
     }
 
     #[test]
     fn a_monthly_plan_runs_on_its_day_or_the_months_last() {
         let first = schedule(BackupFrequency::Monthly { day: 1 }, 2);
         // 2026-11-01 02:00 UTC is four days before the 5th.
-        assert_eq!(first.latest(at(0), 0), at(-4 * DAY + 2 * HOUR));
-        assert_eq!(first.next(at(0), 0), at(26 * DAY + 2 * HOUR), "1 December");
+        assert_eq!(first.latest(at(0), &|_| 0), at(-4 * DAY + 2 * HOUR));
+        assert_eq!(first.next(at(0), &|_| 0), at(26 * DAY + 2 * HOUR), "1 December");
         let date = |year, month, day, hour| {
             UtcTime { year, month, day, hour, minute: 0, second: 0 }.timestamp().unwrap()
         };
         let last = schedule(BackupFrequency::Monthly { day: 31 }, 2);
-        assert_eq!(last.latest(at(0), 0), date(2026, 10, 31, 2));
-        assert_eq!(last.next(at(0), 0), date(2026, 11, 30, 2), "November has thirty days");
+        assert_eq!(last.latest(at(0), &|_| 0), date(2026, 10, 31, 2));
+        assert_eq!(last.next(at(0), &|_| 0), date(2026, 11, 30, 2), "November has thirty days");
         let february = date(2027, 2, 15, 0);
-        assert_eq!(last.latest(february, 0), date(2027, 1, 31, 2));
-        assert_eq!(last.next(february, 0), date(2027, 2, 28, 2));
+        assert_eq!(last.latest(february, &|_| 0), date(2027, 1, 31, 2));
+        assert_eq!(last.next(february, &|_| 0), date(2027, 2, 28, 2));
         // Over the year's end, both ways.
         let new_year = date(2027, 1, 1, 0);
-        assert_eq!(first.latest(new_year, 0), date(2026, 12, 1, 2));
-        assert_eq!(last.next(date(2026, 12, 31, 3), 0), date(2027, 1, 31, 2));
+        assert_eq!(first.latest(new_year, &|_| 0), date(2026, 12, 1, 2));
+        assert_eq!(last.next(date(2026, 12, 31, 3), &|_| 0), date(2027, 1, 31, 2));
     }
 
     #[test]
@@ -410,7 +469,6 @@ mod tests {
             outcome,
             driver: "local".into(),
             labels: BTreeMap::new(),
-            stopped: vec![],
             by: None,
         }
     }
@@ -421,12 +479,14 @@ mod tests {
             bytes: 1,
             device: 1,
             inode: id as u64,
+            modified: None,
         };
         BackupOutcome::Succeeded(WrittenBackup {
             archive: file.clone(),
             manifest: file,
             sha256: "ab".repeat(32),
             data_bytes: 1,
+            entries: Some(1),
             manifest_json: "{}".into(),
         })
     }

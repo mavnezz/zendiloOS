@@ -8,7 +8,7 @@ pub use registry::HttpsRegistries;
 use async_trait::async_trait;
 use tokio::io::AsyncWriteExt;
 use zendiloos_containers::application::ports::{
-    BackupShares, ProjectPlace, ProjectStorage, SharePlace, StorageError,
+    BackupShares, ProjectPlace, ProjectStorage, SharePlace, ShareReaders, StorageError,
 };
 use zendiloos_kernel::{Actor, PortError, RequestContext};
 use zendiloos_sharing::application::{FilesError, FilesUseCases, SharingUseCases};
@@ -167,6 +167,16 @@ impl BackupShares for SharesForBackups {
             .find(|share| share.id.get() == share_id)
             .map(|share| SharePlace { volume: share.volume, share: share.name.to_string() }))
     }
+
+    async fn readers(&self, share_id: i64) -> Result<Option<ShareReaders>, PortError> {
+        let readers =
+            self.sharing.readers(share_id).await.map_err(|e| PortError::new("shares", e.to_string()))?;
+        Ok(readers.map(|readers| ShareReaders {
+            accounts: readers.accounts,
+            groups: readers.groups,
+            nfs: readers.nfs,
+        }))
+    }
 }
 
 #[cfg(test)]
@@ -225,6 +235,12 @@ mod tests {
         let place = backups.locate(docker).await.unwrap().unwrap();
         assert_eq!((place.volume, place.share.as_str()), (1, "docker"));
         assert_eq!(backups.locate(99).await.unwrap(), None);
+        let readers = backups.readers(docker).await.unwrap().unwrap();
+        assert_eq!(
+            (readers.accounts, readers.groups, readers.nfs),
+            (vec!["alice".to_owned()], vec![], vec![])
+        );
+        assert_eq!(backups.readers(99).await.unwrap(), None);
     }
 
     async fn both() -> (SharesForProjects, SharesForBackups, Arc<Files>, i64, i64) {

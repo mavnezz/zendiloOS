@@ -95,6 +95,10 @@ DeviceAllow=/dev/zfs rw
 # pipe) must not take the machine's memory.
 MemoryHigh=768M
 MemoryMax=1G
+# Copies and walks hold a descriptor or two per level of a tree; counting
+# volumes holds one or two in all. systemd's soft limit of 1024 would run
+# out under a few deep trees at once.
+LimitNOFILE=65536
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes

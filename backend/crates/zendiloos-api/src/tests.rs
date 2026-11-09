@@ -1702,6 +1702,7 @@ fn openapi_documents_every_route() {
             "/api/v1/certificates/plugin/install",
             "/api/v1/certificates/{id}",
             "/api/v1/certificates/{id}/issue",
+            "/api/v1/docker/backup-shares/{id}/readers",
             "/api/v1/docker/backups/{id}/restore",
             "/api/v1/docker/compose/check",
             "/api/v1/docker/containers",

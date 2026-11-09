@@ -13,15 +13,40 @@ import { FolderPicker, useShareList } from '@/shared/ui/folder-picker'
 import { Input } from '@/shared/ui/input'
 import { Label } from '@/shared/ui/label'
 
-import { deleteBackupPlan, saveBackupPlan, useRefreshDocker } from '../api'
-import { defaultPlan, hourText, pickerPath, planTarget } from '../lib/volumes'
+import {
+  deleteBackupPlan,
+  saveBackupPlan,
+  useBackupReaders,
+  useRefreshDocker,
+  useVolumes,
+} from '../api'
+import {
+  defaultPlan,
+  hourText,
+  pickerPath,
+  planTarget,
+  quietHour,
+  readersText,
+} from '../lib/volumes'
 
 const props = defineProps<{ volume: DockerVolume | null }>()
 const open = defineModel<boolean>('open', { default: false })
 
 const { t } = useI18n()
 const { data: shares } = useShareList()
+const { data: volumes } = useVolumes()
 const refresh = useRefreshDocker()
+
+/** A new plan's hour: the night's hour the other plans take least. */
+function newPlan(volume: string) {
+  const others = (volumes.value ?? []).filter((other) => other.name !== volume)
+  return defaultPlan(
+    quietHour(
+      volume,
+      others.flatMap((other) => (other.plan ? [other.plan] : [])),
+    ),
+  )
+}
 
 const FREQUENCIES: PlanFrequency[] = ['daily', 'weekly', 'monthly']
 const HOURS = Array.from({ length: 24 }, (_, hour) => hour)
@@ -50,7 +75,7 @@ watch(
           keep: plan.keep,
           stop: plan.stop_containers,
         }
-      : defaultPlan()
+      : newPlan(props.volume.name)
     folder.value = plan ? pickerPath(plan, shares.value ?? []) : ''
   },
   { immediate: true },
@@ -58,6 +83,8 @@ watch(
 
 const writable = computed(() => (shares.value ?? []).filter((share) => share.writable))
 const target = computed(() => planTarget(folder.value, writable.value))
+const { data: readers } = useBackupReaders(computed(() => target.value?.share_id ?? null))
+const readersLine = computed(() => (readers.value ? readersText(readers.value, t) : ''))
 const keepValid = computed(
   () => Number.isInteger(draft.value.keep) && draft.value.keep >= 1 && draft.value.keep <= 365,
 )
@@ -132,6 +159,23 @@ const select = 'h-9 rounded-md border bg-background px-2 text-sm'
         <p :class="folder.trim() !== '' && !target ? 'text-xs text-destructive' : hint">
           {{ t('docker.volumes.plan.noFolder') }}
         </p>
+        <div
+          v-if="target"
+          role="note"
+          class="grid gap-1 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs"
+        >
+          <p>{{ t('docker.volumes.plan.readable') }}</p>
+          <p v-if="readers" class="text-muted-foreground">
+            {{
+              readersLine
+                ? t('docker.volumes.plan.readers', { names: readersLine })
+                : t('docker.volumes.plan.noReaders')
+            }}
+            <template v-if="readers.nfs.length">
+              {{ t('docker.volumes.plan.nfs', { networks: readers.nfs.join(', ') }) }}</template
+            >
+          </p>
+        </div>
       </div>
 
       <div class="flex flex-wrap items-end gap-3">

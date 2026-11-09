@@ -965,6 +965,7 @@ const de: Messages = {
         6: 'Sonntags',
       },
       steps: {
+        waiting: 'Wartet auf eine andere Sicherung oder Wiederherstellung',
         stopping: 'Die Container werden gestoppt',
         backing_up: 'Wird gesichert',
         starting: 'Die Container werden wieder gestartet',
@@ -977,6 +978,12 @@ const de: Messages = {
         hint: 'Jede Sicherung ist ein Archiv im gewählten Ordner, in einem Ordner mit dem Namen des Volumes, daneben ein kleines Manifest.',
         folder: 'Ordner',
         browse: 'Durchsuchen',
+        readable:
+          'Wer diesen freigegebenen Ordner lesen darf, kann den ganzen Inhalt des Volumes in seinen Sicherungen lesen, auch was die Container für sich behalten: Datenbankdateien, Schlüssel, .env-Dateien.',
+        readers: 'Lesen dürfen ihn: {names}.',
+        noReaders: 'Kein Konto und keine Gruppe hat eine Regel für ihn.',
+        group: 'Gruppe {name}',
+        nfs: 'Über NFS: {networks}.',
         noFolder:
           'Wählen Sie einen Ordner in einem freigegebenen Ordner, in den Sie schreiben dürfen.',
         frequency: 'Wie oft',
@@ -2930,6 +2937,8 @@ const de: Messages = {
     volume_in_use: 'Laufende Container nutzen das Volume',
     volume_busy:
       'Das Volume wird gerade gesichert oder wiederhergestellt; versuchen Sie es danach erneut.',
+    containers_held:
+      'Eine Sicherung oder Wiederherstellung eines Volumes hält diese Container angehalten, bis sie fertig ist; versuchen Sie es danach erneut',
     source_exists: 'Dieser Katalog ist schon da.',
     official_source: 'Der Community-Katalog ist fest eingebaut.',
     not_a_catalog: 'Das ist kein App-Katalog',

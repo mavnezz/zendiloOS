@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM docker_owed_starts WHERE container = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "9439d07f533c32ad2749d84408a4641d914a945c3a0e5362bbea565c11971b82"
+}

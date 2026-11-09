@@ -70,6 +70,16 @@ async fn volumes_are_listed_with_their_users_sizes_and_plans() {
     assert_eq!(shown.body["hour"], 3);
     let none = h.send(empty(with_cookie(get("/api/v1/docker/volumes/orphan/backup-plan"), &admin))).await;
     assert_problem(&none, StatusCode::NOT_FOUND, "not_found");
+
+    // Who reads the backups' share, and with it the volumes' contents.
+    let readers = h.send(empty(with_cookie(get("/api/v1/docker/backup-shares/1/readers"), &admin))).await;
+    assert_eq!(readers.status, StatusCode::OK, "{:?}", readers.body);
+    assert_eq!(
+        readers.body,
+        json!({ "accounts": ["alice"], "groups": ["family"], "nfs": ["192.168.1.0/24"] })
+    );
+    let other = h.send(empty(with_cookie(get("/api/v1/docker/backup-shares/9/readers"), &admin))).await;
+    assert_problem(&other, StatusCode::FORBIDDEN, "share_denied");
 }
 
 #[tokio::test]

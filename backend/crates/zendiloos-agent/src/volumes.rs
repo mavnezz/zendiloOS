@@ -7,11 +7,27 @@
 //! volume inspect`, against `docker info`), the share is mounted, no running
 //! container uses a volume being restored. The work then runs in a
 //! transient unit (`systemd-run`), this binary as `backup-volume`,
-//! `restore-volume` or `remove-volume-backup` ([`crate::volume_archive`]),
-//! outside the agent's sandbox, which can write neither shares nor Docker's
-//! data, in one of its own: no network, no devices, the whole system read
-//! only except the share (backups) or the volume's folder (restores), and
-//! only the capabilities that work needs.
+//! `restore-volume`, `swap-volume` or `remove-volume-backup`
+//! ([`crate::volume_archive`]), outside the agent's sandbox, which can write
+//! neither shares nor Docker's data, in one of its own: no network, no
+//! devices, the whole system read only except the share (backups) or the
+//! volume's folder (restores), and only the capabilities that work needs.
+//!
+//! Each unit has a name of its own (`zendiloos-volume-<work>-<volume>`), so
+//! systemd refuses a second one for the same volume, and a time it may run
+//! for that ends before the agent stops waiting. The agent answers only once
+//! its unit ended: should the client hang up, the agent be asked to stop or
+//! the time run out, it stops the unit and waits for it first. A restore is
+//! two units: the first extracts beside the data, then the agent looks for
+//! running containers once more, and only if none uses the volume does the
+//! second swap the data in.
+//!
+//! What a unit stopped or killed (by its time, its memory) leaves goes: a
+//! restore's unit first removes the fresh folders earlier restores of its
+//! volume left, a backup's the hidden files earlier backups left in its
+//! folder, and as the agent starts, it stops the units nobody waits for any
+//! more and has a unit remove what restores left beside every volume's
+//! data.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -24,27 +40,45 @@ use serde_json::Value;
 use zendiloos_agent_proto::{
     ArchiveDigest, BackupStem, Response, ShareLocation, SharePath, VolumeLabels, VolumeName, VolumeSize,
 };
-use zendiloos_exec::{Limits, Program, Surroundings};
+use zendiloos_exec::{ExecError, Limits, Program, Surroundings};
 
 use crate::docker::{complaint, surroundings};
 use crate::operations::OperationError;
 use crate::pools::HostPaths;
 use crate::volume_archive::{
-    BackupDone, BackupJob, RemoveJob, RestoreDone, RestoreJob, UnitLine, VolumeJob, encode,
+    BackupDone, BackupJob, Extracted, RemoveJob, RestoreJob, SwapJob, Swapped, SweepJob, Swept, UnitLine,
+    VolumeJob, encode,
 };
 
 const QUICK: Limits = Limits { timeout: Duration::from_secs(60), max_stdout: 16 * 1024 * 1024 };
 /// Removing many volumes, or large ones, takes a while.
 const LONG: Limits = Limits { timeout: Duration::from_secs(30 * 60), max_stdout: 1024 * 1024 };
-/// A backup or a restore of a large volume; the client waits a little longer.
-const UNIT: Limits = Limits { timeout: Duration::from_secs(6 * 3600), max_stdout: 1024 * 1024 };
+/// What a backup or a restore of a large volume may take in all, its
+/// units' time included; zendiloosd waits a little longer.
+const WORK_FOR: Duration = Duration::from_secs(6 * 3600);
+/// What a unit leaves of that, to be stopped and answered: it may run
+/// until then.
+const STOP_MARGIN: Duration = Duration::from_secs(10 * 60);
+/// What a restore's extraction leaves to the swap after it.
+const SWAP_RESERVE: Duration = Duration::from_secs(30 * 60);
+/// Removing a backup's file.
+const REMOVE_FOR: Duration = Duration::from_secs(30 * 60);
+/// A unit asked to stop is killed after this.
+const STOP_TIMEOUT: &str = "--property=TimeoutStopSec=60";
+/// `systemctl stop`, which waits for the unit to end.
+const STOPPING: Limits = Limits { timeout: Duration::from_secs(3 * 60), max_stdout: 64 * 1024 };
 /// Counting every volume's data stops after this…
 const COUNT_FOR: Duration = Duration::from_secs(20);
 /// …or after this many entries in one volume.
 const MAX_COUNTED: u64 = 1_000_000;
 
-/// What every unit's sandbox has.
-const SANDBOX: [&str; 19] = [
+/// What every unit's sandbox has. A descriptor or two for each level of
+/// the deepest folders a backup reads, and then some. Not
+/// `RestrictSUIDSGID`: to enforce it, systemd blocks `openat2()`, whose
+/// arguments seccomp cannot inspect, and `openat2()` is what keeps every
+/// unit's paths beneath their folders (a restore must give set-ID bits
+/// back anyway).
+const SANDBOX: [&str; 23] = [
     "--property=NoNewPrivileges=yes",
     "--property=ProtectSystem=strict",
     "--property=ProtectHome=yes",
@@ -63,8 +97,14 @@ const SANDBOX: [&str; 19] = [
     "--property=MemoryDenyWriteExecute=yes",
     "--property=RestrictAddressFamilies=AF_UNIX",
     "--property=SystemCallArchitectures=native",
+    "--property=SystemCallFilter=@system-service",
+    "--property=ProtectProc=invisible",
+    "--property=PrivateIPC=yes",
+    "--property=LimitNOFILE=65536",
     "--property=MemoryMax=1G",
 ];
+/// Removing what restores left, as the agent starts.
+const SWEEP_FOR: Duration = Duration::from_secs(40 * 60);
 /// A backup reads everything in the volume and writes the share, whoever
 /// owns what is there.
 const BACKUP_CAPABILITIES: &str = "CAP_DAC_READ_SEARCH CAP_DAC_OVERRIDE";
@@ -107,16 +147,96 @@ fn step_name(step: &str) -> &'static str {
     }
 }
 
-#[derive(Debug)]
+/// The unit `work` of `volume` runs in: one at a time, as systemd refuses a
+/// second unit of a name.
+fn unit_name(work: VolumeJob, volume: &VolumeName) -> String {
+    format!("zendiloos-volume-{}-{}.service", work.word(), volume.as_str())
+}
+
+/// Every unit that works on `volume`'s data.
+fn units_of(volume: &VolumeName) -> [String; 3] {
+    [VolumeJob::BackUp, VolumeJob::Restore, VolumeJob::Swap].map(|work| unit_name(work, volume))
+}
+
+/// A unit to run: what it is, where it may write, with which
+/// capabilities, until when.
+struct Unit<'a> {
+    work: VolumeJob,
+    name: String,
+    writable: &'a Path,
+    capabilities: &'a str,
+    description: String,
+    until: Instant,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct Volumes {
     docker: Program,
     systemd_run: Program,
+    systemctl: Program,
     paths: HostPaths,
+    /// Held while the agent cleans up after a start: backups and restores
+    /// wait for it.
+    starting: std::sync::Arc<tokio::sync::RwLock<()>>,
 }
 
 impl Volumes {
-    pub(crate) fn new(docker: Program, systemd_run: Program, paths: HostPaths) -> Self {
-        Self { docker, systemd_run, paths }
+    pub(crate) fn new(docker: Program, systemd_run: Program, systemctl: Program, paths: HostPaths) -> Self {
+        Self { docker, systemd_run, systemctl, paths, starting: std::sync::Arc::default() }
+    }
+
+    /// As the agent starts: the volumes' units still running belong to a
+    /// client that is gone (the agent restarted under them), so they are
+    /// stopped, and then a unit removes what restores left beside every
+    /// volume's data. In the background; backups and restores wait for it.
+    pub(crate) async fn recover(&self) {
+        let ready = self.starting.clone().write_owned().await;
+        let this = self.clone();
+        tokio::spawn(async move {
+            let _ready = ready;
+            if let Err(error) = this.clean_up().await {
+                tracing::warn!(%error, "cannot clean up after backups and restores of volumes");
+            }
+        });
+    }
+
+    async fn clean_up(&self) -> Result<(), OperationError> {
+        let args = ["list-units", "--all", "--plain", "--no-legend", "--full", "zendiloos-volume-*"];
+        let listed =
+            zendiloos_exec::run_with(&self.systemctl, args, None, &Surroundings::default(), QUICK).await?;
+        let listed = String::from_utf8_lossy(&listed.stdout).into_owned();
+        for line in listed.lines() {
+            let mut words = line.split_whitespace();
+            let (Some(name), _, Some(active)) = (words.next(), words.next(), words.next()) else { continue };
+            if name.starts_with("zendiloos-volume-") && !matches!(active, "inactive" | "failed") {
+                tracing::warn!(unit = name, "a volume's unit nobody waits for any more is stopped");
+                self.stop_unit(name).await;
+            }
+        }
+        let Ok(root) = self.data_root().await else {
+            tracing::info!("Docker does not answer: what restores left is removed later");
+            return Ok(());
+        };
+        let volumes = root.join("volumes");
+        if !volumes.is_dir() {
+            return Ok(());
+        }
+        let unit = Unit {
+            work: VolumeJob::Sweep,
+            name: "zendiloos-volume-sweep.service".to_owned(),
+            writable: &volumes,
+            capabilities: RESTORE_CAPABILITIES,
+            description: "remove what restores of volumes left".to_owned(),
+            until: Instant::now() + SWEEP_FOR,
+        };
+        let swept: Swept = self.unit(unit, &SweepJob { volumes: volumes.clone(), busy: Vec::new() }).await?;
+        if swept.removed > 0 {
+            tracing::info!(removed = swept.removed, "what restores of volumes left is removed");
+        }
+        if !swept.left.is_empty() {
+            tracing::warn!(left = ?swept.left, "what restores of volumes left cannot all be removed");
+        }
+        Ok(())
     }
 
     /// What `docker` printed, if it succeeded.
@@ -128,15 +248,38 @@ impl Volumes {
         String::from_utf8(output.stdout).map_err(|_| OperationError::NotUtf8)
     }
 
-    /// `docker volume inspect` of every volume: a JSON array.
+    /// `docker volume inspect` of every volume: a JSON array. A volume
+    /// removed between the listing and the inspection is left out.
     async fn inspected(&self) -> Result<String, OperationError> {
         let names = self.printed(&["volume", "ls", "--quiet"], QUICK).await?;
         let names: Vec<&str> = names.split_whitespace().collect();
         if names.is_empty() {
             return Ok("[]".to_owned());
         }
-        let args: Vec<&str> = ["volume", "inspect"].into_iter().chain(names).collect();
-        self.printed(&args, QUICK).await
+        let args: Vec<&str> = ["volume", "inspect"].into_iter().chain(names.iter().copied()).collect();
+        if let Ok(all) = self.printed(&args, QUICK).await {
+            return Ok(all);
+        }
+        // One of them is gone, or Docker failed: each alone then.
+        let mut found: Vec<Value> = Vec::new();
+        for name in names {
+            let output = zendiloos_exec::run_with(
+                &self.docker,
+                ["volume", "inspect", name],
+                None,
+                &surroundings(),
+                QUICK,
+            )
+            .await?;
+            if output.status.success() {
+                let values: Vec<Value> = serde_json::from_slice(&output.stdout)
+                    .map_err(|e| OperationError::Failed(format!("Docker inspects {name} unreadably: {e}")))?;
+                found.extend(values);
+            } else if !complaint(&output).to_lowercase().contains("no such volume") {
+                return Err(OperationError::Failed(format!("Docker: {}", complaint(&output))));
+            }
+        }
+        Ok(Value::from(found).to_string())
     }
 
     pub(crate) async fn list(&self) -> Result<Response, OperationError> {
@@ -264,35 +407,162 @@ impl Volumes {
         Ok(root)
     }
 
-    /// Runs `job` in a transient unit that may write `writable` only, with
-    /// `capabilities`; what it did, as it says.
+    /// The units of `names` that run (starting, running or stopping).
+    async fn running(&self, names: &[String]) -> Result<Vec<String>, OperationError> {
+        // One unit per call: given several, systemctl separates their values
+        // by an empty line, which a list of states would read as one more.
+        let mut running = Vec::new();
+        for name in names {
+            let args = ["show", "--property=ActiveState", "--value", name.as_str()];
+            let output =
+                zendiloos_exec::run_with(&self.systemctl, &args, None, &Surroundings::default(), QUICK)
+                    .await?;
+            if !output.status.success() {
+                return Err(OperationError::Failed(format!(
+                    "systemd does not say whether the volume's work runs: {}",
+                    output.stderr.trim()
+                )));
+            }
+            let state = String::from_utf8(output.stdout).map_err(|_| OperationError::NotUtf8)?;
+            if !matches!(state.trim(), "inactive" | "failed" | "") {
+                running.push(name.clone());
+            }
+        }
+        Ok(running)
+    }
+
+    /// Refused while a backup, restore or swap of `volume` still runs:
+    /// one zendiloosd gave up on, or one a restart of the agent left.
+    async fn not_busy(&self, volume: &VolumeName) -> Result<(), OperationError> {
+        let running = self.running(&units_of(volume)).await?;
+        if running.is_empty() {
+            return Ok(());
+        }
+        Err(OperationError::Busy(format!(
+            "a backup or restore of the volume {} still runs ({})",
+            volume.as_str(),
+            running.join(", ")
+        )))
+    }
+
+    /// Stops the unit `name` and waits until it ended; a unit that is not
+    /// there is no matter.
+    async fn stop_unit(&self, name: &str) {
+        let stopped = zendiloos_exec::run_with(
+            &self.systemctl,
+            ["stop", name],
+            None,
+            &Surroundings::default(),
+            STOPPING,
+        )
+        .await;
+        match stopped {
+            Ok(output) if output.status.success() => {
+                tracing::info!(unit = name, "a volume's unit was stopped")
+            }
+            Ok(output) => tracing::warn!(
+                unit = name,
+                complaint = %output.stderr.trim(),
+                "cannot stop a volume's unit"
+            ),
+            Err(error) => tracing::warn!(unit = name, %error, "cannot stop a volume's unit"),
+        }
+    }
+
+    /// Stops whatever still works on `volume`'s data and answers once
+    /// nothing does.
+    pub(crate) async fn end_work(&self, volume: &VolumeName) -> Result<Response, OperationError> {
+        let _ready = crate::waiting::wait(self.starting.read()).await?;
+        let names = units_of(volume);
+        let running = self.running(&names).await?;
+        for name in &running {
+            self.stop_unit(name).await;
+        }
+        let still = self.running(&names).await?;
+        if !still.is_empty() {
+            return Err(OperationError::Failed(format!("{} still runs", still.join(", "))));
+        }
+        Ok(Response::VolumeWorkEnded { stopped: !running.is_empty() })
+    }
+
+    /// Refused while a running container uses `volume`.
+    async fn none_running(&self, volume: &VolumeName) -> Result<(), OperationError> {
+        let filter = format!("volume={}", volume.as_str());
+        let running = self.printed(&["ps", "--quiet", "--no-trunc", "--filter", &filter], QUICK).await?;
+        if running.trim().is_empty() {
+            return Ok(());
+        }
+        Err(OperationError::Busy(format!(
+            "running containers use the volume {}: stop them first",
+            volume.as_str()
+        )))
+    }
+
+    /// Runs `job` in the transient unit `unit` says; what it did, as it
+    /// says. The unit ends before the agent answers: should the client hang
+    /// up, the agent be asked to stop, or the time run out, it is stopped
+    /// and waited for first.
     async fn unit<T: DeserializeOwned>(
         &self,
-        kind: VolumeJob,
+        unit: Unit<'_>,
         job: &impl Serialize,
-        writable: &Path,
-        capabilities: &str,
-        description: String,
     ) -> Result<T, OperationError> {
-        let agent = self.paths.agent.to_string_lossy().into_owned();
-        let description = format!("--description=zendiloOS: {description}");
-        let writable = format!("--property=ReadWritePaths={}", writable.display());
-        let capabilities = format!("--property=CapabilityBoundingSet={capabilities}");
-        let hex = encode(job);
-        let mut args = vec!["--wait", "--pipe", "--collect", "--quiet", description.as_str()];
-        args.extend(SANDBOX);
-        args.extend([writable.as_str(), capabilities.as_str(), agent.as_str(), kind.command(), hex.as_str()]);
-        let mut said: Option<UnitLine> = None;
-        let mut heard = |line: &str| match serde_json::from_str::<UnitLine>(line) {
-            Ok(UnitLine::Progress { step, percent }) => {
-                crate::progress::step(step_name(&step), Some(percent))
-            }
-            Ok(other) => said = Some(other),
-            Err(_) => tracing::debug!(line, "a volume unit wrote"),
+        let left = unit.until.saturating_duration_since(Instant::now());
+        let Some(runs_for) = left.checked_sub(STOP_MARGIN).filter(|time| *time >= Duration::from_secs(60))
+        else {
+            return Err(OperationError::Failed("no time is left for the work".into()));
         };
-        let output =
-            zendiloos_exec::run_lines(&self.systemd_run, &args, &Surroundings::default(), UNIT, &mut heard)
-                .await?;
+        let agent = self.paths.agent.to_string_lossy().into_owned();
+        let name = format!("--unit={}", unit.name);
+        let description = format!("--description=zendiloOS: {}", unit.description);
+        let writable = format!("--property=ReadWritePaths={}", unit.writable.display());
+        let capabilities = format!("--property=CapabilityBoundingSet={}", unit.capabilities);
+        let runtime = format!("--property=RuntimeMaxSec={}", runs_for.as_secs());
+        let hex = encode(job);
+        let mut args = vec![name.as_str(), "--wait", "--pipe", "--collect", "--quiet", description.as_str()];
+        args.extend(SANDBOX);
+        args.extend([
+            writable.as_str(),
+            capabilities.as_str(),
+            runtime.as_str(),
+            STOP_TIMEOUT,
+            agent.as_str(),
+            unit.work.command(),
+            hex.as_str(),
+        ]);
+        let mut said: Option<UnitLine> = None;
+        let ran = {
+            let mut heard = |line: &str| match serde_json::from_str::<UnitLine>(line) {
+                Ok(UnitLine::Progress { step, percent }) => {
+                    crate::progress::step(step_name(&step), Some(percent))
+                }
+                Ok(other) => said = Some(other),
+                Err(_) => tracing::debug!(line, "a volume unit wrote"),
+            };
+            let limits = Limits { timeout: left, max_stdout: 1024 * 1024 };
+            let surroundings = Surroundings::default();
+            let running =
+                zendiloos_exec::run_lines(&self.systemd_run, &args, &surroundings, limits, &mut heard);
+            tokio::select! {
+                ran = running => Some(ran),
+                () = crate::waiting::given_up() => None,
+            }
+        };
+        let output = match ran {
+            Some(Ok(output)) => output,
+            Some(Err(ExecError::Timeout { .. })) => {
+                self.stop_unit(&unit.name).await;
+                return Err(OperationError::Failed(format!("{} took too long and was stopped", unit.name)));
+            }
+            Some(Err(error)) => return Err(error.into()),
+            None => {
+                self.stop_unit(&unit.name).await;
+                return Err(OperationError::Failed(format!(
+                    "{} was stopped: zendiloosd gave up waiting, or the agent stops",
+                    unit.name
+                )));
+            }
+        };
         match said {
             Some(UnitLine::Done(value)) if output.status.success() => serde_json::from_value(value)
                 .map_err(|e| OperationError::Failed(format!("the unit's answer cannot be read: {e}"))),
@@ -313,7 +583,9 @@ impl Volumes {
         folder: &SharePath,
         name: &BackupStem,
     ) -> Result<Response, OperationError> {
+        let _ready = crate::waiting::wait(self.starting.read()).await?;
         let local = self.inspect(volume).await?;
+        self.not_busy(volume).await?;
         let share_root = self.share_root(share)?;
         let job = BackupJob {
             source: local.data,
@@ -325,14 +597,21 @@ impl Volumes {
             labels: local.labels,
             created: local.created,
         };
-        let description = format!("back up the volume {}", volume.as_str());
-        let done: BackupDone =
-            self.unit(VolumeJob::BackUp, &job, &share_root, BACKUP_CAPABILITIES, description).await?;
+        let unit = Unit {
+            work: VolumeJob::BackUp,
+            name: unit_name(VolumeJob::BackUp, volume),
+            writable: &share_root,
+            capabilities: BACKUP_CAPABILITIES,
+            description: format!("back up the volume {}", volume.as_str()),
+            until: Instant::now() + WORK_FOR,
+        };
+        let done: BackupDone = self.unit(unit, &job).await?;
         Ok(Response::VolumeBackedUp {
             archive: done.archive,
             manifest: done.manifest,
             sha256: done.sha256,
             data_bytes: done.data_bytes,
+            entries: done.entries,
             manifest_json: done.manifest_json,
         })
     }
@@ -343,16 +622,13 @@ impl Volumes {
         share: &ShareLocation,
         archive: &SharePath,
         sha256: &ArchiveDigest,
+        (data_bytes, entries): (u64, Option<u64>),
     ) -> Result<Response, OperationError> {
+        let until = Instant::now() + WORK_FOR;
+        let _ready = crate::waiting::wait(self.starting.read()).await?;
         let local = self.inspect(volume).await?;
-        let filter = format!("volume={}", volume.as_str());
-        let running = self.printed(&["ps", "--quiet", "--no-trunc", "--filter", &filter], QUICK).await?;
-        if !running.trim().is_empty() {
-            return Err(OperationError::Busy(format!(
-                "running containers use the volume {}: stop them first",
-                volume.as_str()
-            )));
-        }
+        self.not_busy(volume).await?;
+        self.none_running(volume).await?;
         let share_root = self.share_root(share)?;
         let volume_dir = local.data.parent().map(Path::to_owned).unwrap_or_default();
         let job = RestoreJob {
@@ -360,32 +636,80 @@ impl Volumes {
             share: share_root,
             archive: archive.clone(),
             sha256: sha256.clone(),
+            data_bytes,
+            entries,
         };
-        let description = format!("restore the volume {}", volume.as_str());
-        let done: RestoreDone =
-            self.unit(VolumeJob::Restore, &job, &volume_dir, RESTORE_CAPABILITIES, description).await?;
-        if let Some(left) = done.left_over {
+        let unit = |work: VolumeJob, description: String, until: Instant| Unit {
+            work,
+            name: unit_name(work, volume),
+            writable: &volume_dir,
+            capabilities: RESTORE_CAPABILITIES,
+            description,
+            until,
+        };
+        let extract = unit(
+            VolumeJob::Restore,
+            format!("restore the volume {}", volume.as_str()),
+            until.checked_sub(SWAP_RESERVE).unwrap_or(until),
+        );
+        let extracted: Extracted = self.unit(extract, &job).await?;
+        if extracted.swept > 0 {
+            tracing::info!(
+                volume = volume.as_str(),
+                swept = extracted.swept,
+                "what earlier restores left is removed"
+            );
+        }
+        if crate::waiting::is_given_up() {
+            return Err(OperationError::Failed(
+                "not swapped in: zendiloosd gave up waiting, or the agent stops; the old contents stay"
+                    .into(),
+            ));
+        }
+        // Right before the swap: a container started meanwhile keeps the old
+        // contents, and what was extracted goes.
+        let started = self.none_running(volume).await.err();
+        let swap =
+            SwapJob { volume_dir: volume_dir.clone(), fresh: extracted.fresh, discard: started.is_some() };
+        let description = if swap.discard {
+            format!("discard what was extracted for the volume {}", volume.as_str())
+        } else {
+            format!("swap the restored data of the volume {} in", volume.as_str())
+        };
+        let swapped: Swapped = self.unit(unit(VolumeJob::Swap, description, until), &swap).await?;
+        if let Some(started) = started {
+            return Err(started);
+        }
+        if let Some(left) = &swapped.left_over {
             tracing::warn!(
                 volume = volume.as_str(),
                 left,
                 "restored; the old contents are partly left beside the data"
             );
         }
-        Ok(Response::Done)
+        Ok(Response::VolumeRestored { left_over: swapped.left_over })
     }
 
     pub(crate) async fn remove_backup(
         &self,
         share: &ShareLocation,
         path: &SharePath,
-        device: u64,
-        inode: u64,
+        (inode, bytes, modified): (u64, u64, Option<i64>),
     ) -> Result<Response, OperationError> {
         let share_root = self.share_root(share)?;
-        let job = RemoveJob { share: share_root.clone(), path: path.clone(), device, inode };
-        let description = format!("remove a backup in {}", share.share.as_str());
-        let removed: bool =
-            self.unit(VolumeJob::RemoveBackup, &job, &share_root, BACKUP_CAPABILITIES, description).await?;
+        let job = RemoveJob { share: share_root.clone(), path: path.clone(), inode, bytes, modified };
+        let mut random = [0u8; 8];
+        rustix::rand::getrandom(&mut random, rustix::rand::GetRandomFlags::empty())
+            .map_err(|e| OperationError::Failed(format!("no random name: {e}")))?;
+        let unit = Unit {
+            work: VolumeJob::RemoveBackup,
+            name: format!("zendiloos-volume-remove-{:016x}.service", u64::from_le_bytes(random)),
+            writable: &share_root,
+            capabilities: BACKUP_CAPABILITIES,
+            description: format!("remove a backup in {}", share.share.as_str()),
+            until: Instant::now() + REMOVE_FOR,
+        };
+        let removed: bool = self.unit(unit, &job).await?;
         Ok(Response::BackupRemoved { removed })
     }
 }
@@ -425,5 +749,14 @@ mod tests {
         assert!(!plain(Path::new("/volume1/my docker")) && !plain(Path::new("relative")));
         assert_eq!(step_name("verifying"), "verifying");
         assert_eq!(step_name("anything"), "working");
+        let db = VolumeName::parse("tesla_db").unwrap();
+        assert_eq!(
+            units_of(&db),
+            [
+                "zendiloos-volume-backup-tesla_db.service",
+                "zendiloos-volume-restore-tesla_db.service",
+                "zendiloos-volume-swap-tesla_db.service"
+            ]
+        );
     }
 }

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE docker_backups SET finished_at = ?, state = 'succeeded', error = NULL,\n                         archive_path = ?, archive_bytes = ?, archive_device = ?, archive_inode = ?,\n                         archive_modified = ?,\n                         manifest_path = ?, manifest_bytes = ?, manifest_device = ?, manifest_inode = ?,\n                         manifest_modified = ?,\n                         sha256 = ?, data_bytes = ?, entries = ?, manifest = ?\n                     WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 16
+    },
+    "nullable": []
+  },
+  "hash": "50b97827f03fbdfd446449cca3be2e8a58a6b0ca5ceae33bdeddb07c25c806d9"
+}

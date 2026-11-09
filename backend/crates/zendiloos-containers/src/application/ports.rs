@@ -7,8 +7,8 @@ use zendiloos_kernel::{Actor, PortError, RequestContext};
 
 use crate::domain::{
     Backup, BackupFile, BackupPlan, ComposeListing, ComposeModel, Container, ContainerAction,
-    ContainerDetails, ContainerProcess, DiskUsage, Image, Network, OwnProject, ProjectName, RegistryImage,
-    UpdateSettings, UsageSample, Volume, VolumeSize, WrittenBackup,
+    ContainerDetails, ContainerProcess, DiskUsage, Image, Network, OwedStart, OwnProject, ProjectName,
+    RegistryImage, UpdateSettings, UsageSample, Volume, VolumeSize, WrittenBackup,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -370,17 +370,34 @@ pub struct SharePlace {
     pub share: String,
 }
 
+/// Who may read a share, and with it every backup in it: the accounts and
+/// groups its rules let read, and the NFS clients it is exported to.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ShareReaders {
+    pub accounts: Vec<String>,
+    pub groups: Vec<String>,
+    pub nfs: Vec<String>,
+}
+
 /// The shares backups go to, by their ID: backups run on a schedule, with
 /// nobody signed in.
 #[async_trait]
 pub trait BackupShares: Send + Sync {
     /// `None` once the share is gone.
     async fn locate(&self, share_id: i64) -> Result<Option<SharePlace>, PortError>;
+
+    /// `None` if there is no such share.
+    async fn readers(&self, share_id: i64) -> Result<Option<ShareReaders>, PortError>;
 }
 
-/// Where a long step reports how far it is, in percent.
+/// Where a long step reports how far it is, in percent, and what is worth
+/// a line of its own.
 pub trait Steps: Send + Sync {
     fn step(&self, step: &str, percent: Option<u8>);
+
+    fn note(&self, line: &str) {
+        let _ = line;
+    }
 }
 
 /// Steps nobody follows.
@@ -391,7 +408,8 @@ impl Steps for NoSteps {
 }
 
 /// Volumes backed up into shares and restored from them, through the
-/// privileged agent; each can take hours.
+/// privileged agent; each can take hours. The agent answers once the work
+/// ended; when no answer came, [`VolumeArchiver::end_work`] makes sure.
 #[async_trait]
 pub trait VolumeArchiver: Send + Sync {
     /// Writes `<folder>/<volume>/<stem>.tar.zst` and `<stem>.json` into the
@@ -406,17 +424,18 @@ pub trait VolumeArchiver: Send + Sync {
         context: &RequestContext,
     ) -> Result<WrittenBackup, EngineError>;
 
-    /// Replaces the volume's contents with the archive at `archive` in the
-    /// share, if its SHA-256 is `sha256`.
+    /// Replaces the volume's contents with the archive `written` names in
+    /// the share, if it is still the one written: its SHA-256, no more data
+    /// and entries than it held. The folder beside the data the old
+    /// contents are partly left in, if they could not all be removed.
     async fn restore(
         &self,
         volume: &str,
         place: &SharePlace,
-        archive: &str,
-        sha256: &str,
+        written: &WrittenBackup,
         steps: &dyn Steps,
         context: &RequestContext,
-    ) -> Result<(), EngineError>;
+    ) -> Result<Option<String>, EngineError>;
 
     /// Removes a file a backup wrote if it still is that file; whether it
     /// did.
@@ -426,6 +445,11 @@ pub trait VolumeArchiver: Send + Sync {
         file: &BackupFile,
         context: &RequestContext,
     ) -> Result<bool, EngineError>;
+
+    /// Stops what a backup or restore of `volume` may have left running and
+    /// answers once nothing works on it any more: whether something still
+    /// did.
+    async fn end_work(&self, volume: &str, context: &RequestContext) -> Result<bool, EngineError>;
 }
 
 /// A run of a backup as it starts.
@@ -454,9 +478,6 @@ pub trait BackupRepository: Send + Sync {
 
     async fn start(&self, backup: &NewBackup) -> Result<i64, PortError>;
 
-    /// The containers stopped for the run, not yet started again.
-    async fn stopped(&self, id: i64, containers: &[String]) -> Result<(), PortError>;
-
     /// How the run ended: succeeded with what it wrote, or failed.
     async fn finish(
         &self,
@@ -474,4 +495,19 @@ pub trait BackupRepository: Send + Sync {
 
     /// Runs still running from before a restart, now failed; as they were.
     async fn interrupted(&self, at: zendiloos_kernel::Timestamp) -> Result<Vec<Backup>, PortError>;
+
+    /// The containers backups and restores stopped and nothing started
+    /// since, with the volume each was stopped for.
+    async fn owed_starts(&self) -> Result<Vec<OwedStart>, PortError>;
+
+    /// Notes `container`, stopped for `volume`, before it is stopped.
+    async fn owe_start(
+        &self,
+        container: &str,
+        volume: &str,
+        at: zendiloos_kernel::Timestamp,
+    ) -> Result<(), PortError>;
+
+    /// `container` started again, or is gone: owed nothing any more.
+    async fn started(&self, container: &str) -> Result<(), PortError>;
 }

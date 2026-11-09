@@ -49,13 +49,35 @@ impl Place {
         }
     }
 
+    /// A restore of `archive`, recorded with `sha256` and as much data as a
+    /// gibibyte.
     fn restore_job(&self, archive: &str, sha256: &str) -> RestoreJob {
         RestoreJob {
             volume_dir: self.path("docker/volumes/db"),
             share: self.path("share"),
             archive: SharePath::parse(archive).unwrap(),
             sha256: ArchiveDigest::parse(sha256).unwrap(),
+            data_bytes: 1 << 30,
+            entries: None,
         }
+    }
+
+    /// A restore of the backup `done`, as it was recorded.
+    fn restore_of(&self, done: &BackupDone) -> RestoreJob {
+        RestoreJob {
+            data_bytes: done.data_bytes,
+            entries: Some(done.entries),
+            ..self.restore_job(done.archive.path.as_str(), done.sha256.as_str())
+        }
+    }
+
+    /// The fresh folders a restore left beside the data.
+    fn fresh_folders(&self) -> Vec<PathBuf> {
+        fs::read_dir(self.path("docker/volumes/db"))
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.file_name().unwrap().to_string_lossy().starts_with(FRESH_PREFIX))
+            .collect()
     }
 
     /// What is in Docker's folder of the volume besides `_data`: nothing
@@ -70,9 +92,12 @@ impl Place {
         names
     }
 
-    /// Puts `bytes` into the share as `name`, and its SHA-256.
+    /// Puts `bytes` into the share as `name`, writable by its owner only,
+    /// and its SHA-256.
     fn archive(&self, name: &str, bytes: &[u8]) -> String {
-        fs::write(self.path("share").join(name), bytes).unwrap();
+        let path = self.path("share").join(name);
+        fs::write(&path, bytes).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
         sha256(bytes)
     }
 }
@@ -144,11 +169,16 @@ fn a_volume_is_backed_up_and_restored_as_it_was() {
     let meta = fs::metadata(&archive).unwrap();
     assert_eq!((done.archive.device, done.archive.inode), (meta.dev(), meta.ino()));
     // Made as any new file: the folder's inherited ACL applies (here the
-    // umask, as the folder has none).
-    assert_eq!(meta.mode() & 0o7777, 0o666 & !current_umask());
+    // umask, as the folder has none); then only its owner may write it.
+    assert_eq!(meta.mode() & 0o7777, 0o666 & !current_umask() & 0o755);
+    let manifest_mode = fs::metadata(folder.join("db-20261108-030000.json")).unwrap().mode();
+    assert_eq!(manifest_mode & 0o022, 0);
     assert_eq!(told.last(), Some(&100));
     assert_eq!(done.skipped, 1, "the pipe");
     assert_eq!(done.data_bytes, 300_000 + 11 + 5);
+    // ., pgdata, pgdata/base, pgdata/base/1, config.yml, config.again,
+    // pgdata/outside, current, the long folder and the file in it.
+    assert_eq!(done.entries, 10);
 
     let manifest: Manifest =
         serde_json::from_str(&fs::read_to_string(folder.join("db-20261108-030000.json")).unwrap()).unwrap();
@@ -158,6 +188,7 @@ fn a_volume_is_backed_up_and_restored_as_it_was() {
     assert_eq!((manifest.size_bytes, manifest.sha256.as_str()), (done.data_bytes, done.sha256.as_str()));
     assert_eq!(manifest.archive, "db-20261108-030000.tar.zst");
     assert_eq!(manifest.backed_up_at, 1_793_847_600);
+    assert_eq!(manifest.zendiloos_version, crate::VERSION);
     assert_eq!(serde_json::from_str::<Manifest>(&done.manifest_json).unwrap(), manifest);
     let entries = listed(&archive);
     assert_eq!(entries.first().map(String::as_str), Some("./"));
@@ -173,10 +204,10 @@ fn a_volume_is_backed_up_and_restored_as_it_was() {
 
     // The volume holds other things now; restoring brings back the backup.
     fs::write(place.data().join("newer"), "changed since").unwrap();
-    let job = place.restore_job(done.archive.path.as_str(), done.sha256.as_str());
+    let job = place.restore_of(&done);
     let mut steps = Vec::new();
     let restored = restore(&job, &mut |step, percent| steps.push((step, percent))).unwrap();
-    assert!(restored.entries >= 9, "{restored:?}");
+    assert_eq!(restored.entries, done.entries, "{restored:?}");
     assert_eq!(restored.left_over, None);
     assert!(steps.contains(&("verifying", 100)) && steps.contains(&("restoring", 100)), "{steps:?}");
 
@@ -337,14 +368,297 @@ fn an_archive_changed_while_it_is_read_is_not_swapped_in() {
         &SharePath::parse("x.tar.zst").unwrap(),
     )
     .unwrap();
-    assert!(extract(&mut file, root.as_fd(), size, &digest, &mut quiet).is_ok());
+    let bounds = Bounds::of(1 << 20, None);
+    assert!(extract(&mut file, root.as_fd(), size, &digest, bounds, &mut quiet).is_ok());
     // As if the file's bytes were others by the time they were extracted.
-    let other = extract(&mut file, root.as_fd(), size, &"0".repeat(64), &mut quiet);
+    let other = extract(&mut file, root.as_fd(), size, &"0".repeat(64), bounds, &mut quiet);
     assert!(matches!(&other, Err(ArchiveError::Refused(why)) if why.contains("changed")), "{other:?}");
     let garbage = place.archive("garbage.tar.zst", b"not an archive at all");
     let refused = restore(&place.restore_job("garbage.tar.zst", &garbage), &mut quietly);
     assert!(matches!(refused, Err(ArchiveError::Refused(_))), "{refused:?}");
     assert!(place.beside_the_data().is_empty());
+}
+
+/// Bytes zstd cannot shrink.
+fn noise(length: usize, mut seed: u64) -> Vec<u8> {
+    let mut out = Vec::with_capacity(length);
+    while out.len() < length {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        out.extend_from_slice(&seed.to_le_bytes());
+    }
+    out.truncate(length);
+    out
+}
+
+/// What someone who may write the archive puts into its inode once it was
+/// checked: `zeros` bytes of zeros in a few KiB, a file `deep` folders
+/// deep, and `noise_after` bytes nobody can compress.
+fn replacement(zeros: u64, deep: usize, noise_after: usize) -> Vec<u8> {
+    let (uid, gid) = (rustix::process::getuid().as_raw(), rustix::process::getgid().as_raw());
+    let encoder = zstd::stream::write::Encoder::new(Vec::new(), 19).unwrap();
+    let mut builder = tar::Builder::new(encoder);
+    let header = |kind: tar::EntryType, size: u64| {
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(kind);
+        header.set_mode(0o644);
+        header.set_uid(u64::from(uid));
+        header.set_gid(u64::from(gid));
+        header.set_size(size);
+        header
+    };
+    if zeros > 0 {
+        let mut h = header(tar::EntryType::Regular, zeros);
+        builder.append_data(&mut h, "bomb", io::repeat(0).take(zeros)).unwrap();
+    }
+    if deep > 0 {
+        let path = vec!["d"; deep].join("/");
+        let mut h = header(tar::EntryType::Regular, 1);
+        builder.append_data(&mut h, &path, &b"x"[..]).unwrap();
+    }
+    if noise_after > 0 {
+        let bytes = noise(noise_after, 0x9e37_79b9_7f4a_7c15);
+        let mut h = header(tar::EntryType::Regular, bytes.len() as u64);
+        builder.append_data(&mut h, "padding", bytes.as_slice()).unwrap();
+    }
+    builder.into_inner().unwrap().finish().unwrap()
+}
+
+/// Overwrites `path` in place: the same inode.
+fn rewrite_in_place(path: &Path, bytes: &[u8]) {
+    let mut file = fs::OpenOptions::new().write(true).truncate(true).open(path).unwrap();
+    file.write_all(bytes).unwrap();
+    file.sync_all().unwrap();
+}
+
+/// What the files below `path` hold.
+fn size_below(path: &Path) -> u64 {
+    let Ok(meta) = fs::symlink_metadata(path) else { return 0 };
+    if !meta.is_dir() {
+        return meta.len();
+    }
+    fs::read_dir(path).map(|it| it.flatten().map(|e| size_below(&e.path())).sum()).unwrap_or(0)
+}
+
+/// A backup of a volume holding 4 MiB that nobody can compress.
+fn recorded(place: &Place) -> BackupDone {
+    fs::write(place.path("source/table"), noise(4 << 20, 7)).unwrap();
+    back_up(&place.job(), 0, &mut |_| {}).unwrap()
+}
+
+/// Root (or here, its owner) could still change a recorded archive after it
+/// was checked: what is extracted stops at what the backup held, long
+/// before the second hash refuses it.
+#[test]
+fn bytes_changed_after_the_check_are_extracted_no_further_than_the_backup_held() {
+    let place = Place::new();
+    let done = recorded(&place);
+    let archive = place.path("share").join(done.archive.path.as_str());
+    // 256 MiB of zeros in a few KiB, then padding nobody can compress.
+    let swapped = replacement(256 << 20, 0, 1 << 20);
+    assert!(swapped.len() < (2 << 20), "the replacement is small: {}", swapped.len());
+
+    let mut rewritten = false;
+    let mut largest = 0u64;
+    let result = restore(&place.restore_of(&done), &mut |step, percent| {
+        if step == "verifying" && percent == 100 && !rewritten {
+            rewrite_in_place(&archive, &swapped);
+            rewritten = true;
+        }
+        if step == "restoring" {
+            for fresh in place.fresh_folders() {
+                largest = largest.max(size_below(&fresh));
+            }
+        }
+    });
+
+    assert!(rewritten);
+    assert!(
+        matches!(&result, Err(ArchiveError::Refused(why)) if why.contains("changed")),
+        "refused: {result:?}"
+    );
+    assert!(largest <= 2 * done.data_bytes, "{largest} bytes extracted of a backup of {}", done.data_bytes);
+    assert!(place.fresh_folders().is_empty(), "and removed again");
+}
+
+/// A deep tree in an archive changed after the check is refused, and
+/// nothing of it stays in Docker's folder, even with a unit's soft limit of
+/// descriptors.
+#[test]
+fn a_tree_changed_after_the_check_leaves_nothing_in_dockers_folder() {
+    with_descriptors("a_tree_changed_after_the_check_leaves_nothing_in_dockers_folder", 1024, || {
+        let place = Place::new();
+        let done = recorded(&place);
+        let archive = place.path("share").join(done.archive.path.as_str());
+        // A file 1024 folders deep, and some data beside.
+        let swapped = replacement(64 << 20, MAX_DEPTH, 1 << 20);
+
+        let mut rewritten = false;
+        let result = restore(&place.restore_of(&done), &mut |step, percent| {
+            if step == "verifying" && percent == 100 && !rewritten {
+                rewrite_in_place(&archive, &swapped);
+                rewritten = true;
+            }
+        });
+
+        assert!(matches!(&result, Err(ArchiveError::Refused(_))), "{result:?}");
+        let left: Vec<(PathBuf, u64)> =
+            place.fresh_folders().into_iter().map(|p| (p.clone(), size_below(&p))).collect();
+        assert!(left.is_empty(), "left in Docker's folder after the refusal: {left:?}");
+    });
+}
+
+/// A deep tree extracted from an archive that changed after its check is
+/// removed whole, even with a unit's soft limit of descriptors.
+#[test]
+fn a_deep_tree_extracted_before_a_refusal_is_removed_whole() {
+    with_descriptors("a_deep_tree_extracted_before_a_refusal_is_removed_whole", 1024, || {
+        let place = Place::new();
+        let done = recorded(&place);
+        let archive = place.path("share").join(done.archive.path.as_str());
+        // Within what the backup held: a file 1024 folders deep, then data
+        // that makes the hash differ.
+        let swapped = replacement(0, MAX_DEPTH, 1 << 20);
+
+        let mut rewritten = false;
+        let result = restore(&place.restore_of(&done), &mut |step, percent| {
+            if step == "verifying" && percent == 100 && !rewritten {
+                rewrite_in_place(&archive, &swapped);
+                rewritten = true;
+            }
+        });
+
+        assert!(matches!(&result, Err(ArchiveError::Refused(why)) if why.contains("changed")), "{result:?}");
+        assert!(place.fresh_folders().is_empty(), "removed whole");
+    });
+}
+
+/// A share as zendiloOS sets it lets its writers write what is made in it:
+/// the archive and its manifest are made writable by root only all the
+/// same, readable as the share says.
+#[test]
+fn a_writer_of_the_share_may_not_write_the_archive() {
+    use crate::acl::{self, Acl, Who};
+    let place = Place::new();
+    fs::write(place.path("source/a"), "a").unwrap();
+    // A writer (UID 65534 here) rwx, also by default for what is made in it.
+    let mut rules = Acl::from_mode(0o770);
+    rules.set(Who::User(65534), 7);
+    rules.fix_mask();
+    let share = place.path("share");
+    if rustix::fs::setxattr(&share, acl::DEFAULT, &rules.to_bytes(), XattrFlags::empty()).is_err() {
+        eprintln!("no POSIX ACLs here; skipped");
+        return;
+    }
+    let done = back_up(&place.job(), 0, &mut |_| {}).unwrap();
+    for file in [&done.archive, &done.manifest] {
+        let path = share.join(file.path.as_str());
+        let mut value = vec![0u8; 4096];
+        let length = rustix::fs::getxattr(&path, acl::ACCESS, &mut value[..]).unwrap();
+        let access = Acl::parse(&value[..length]).unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode();
+        let writer = access.named(Who::User(65534)).unwrap_or(0);
+        // The mode's group bits are the ACL's mask: no write left in it.
+        assert!(writer & 4 != 0, "the writer may still read it: {writer:o}");
+        assert!(
+            !(writer & 2 != 0 && mode & 0o020 != 0),
+            "a writer of the share may write {} (mode {:o}, entry {writer:o})",
+            file.path.as_str(),
+            mode & 0o7777
+        );
+    }
+}
+
+/// An archive others than root may write could have been changed between
+/// its check and its extraction: it is not restored at all.
+#[test]
+fn an_archive_others_may_write_is_not_restored() {
+    let place = Place::new();
+    fs::write(place.path("source/a"), "a").unwrap();
+    let done = back_up(&place.job(), 0, &mut quiet).unwrap();
+    fs::write(place.data().join("kept"), "old").unwrap();
+    let archive = place.path("share").join(done.archive.path.as_str());
+    fs::set_permissions(&archive, fs::Permissions::from_mode(0o664)).unwrap();
+
+    let refused = restore(&place.restore_of(&done), &mut quietly);
+
+    assert!(
+        matches!(&refused, Err(ArchiveError::Refused(why)) if why.contains("written by others")),
+        "{refused:?}"
+    );
+    assert_eq!(fs::read_to_string(place.data().join("kept")).unwrap(), "old");
+    fs::set_permissions(&archive, fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(restore(&place.restore_of(&done), &mut quietly).is_ok());
+}
+
+/// An archive and its manifest are renamed into place together: should the
+/// manifest not follow, the archive goes again, and nothing hidden stays.
+#[test]
+fn an_archive_is_never_left_without_its_manifest() {
+    let place = Place::new();
+    let folder = open_folder(&place.path("share"), OFlags::PATH).unwrap();
+    let archive = write_partial(folder.as_fd(), "db-1.tar.zst", |mut file| {
+        file.write_all(b"archive").map_err(|e| failed("archive", e))
+    })
+    .unwrap();
+    let manifest = write_partial(folder.as_fd(), "db-1.json", |mut file| {
+        file.write_all(b"{}").map_err(|e| failed("manifest", e))
+    })
+    .unwrap();
+    // Someone took the manifest's name meanwhile.
+    fs::write(place.path("share/db-1.json"), "someone else's").unwrap();
+
+    assert!(put_in_place(folder.as_fd(), &archive, &manifest).is_err());
+
+    let mut names: Vec<String> = fs::read_dir(place.path("share"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["db-1.json"], "only the other file stays");
+    assert_eq!(fs::read_to_string(place.path("share/db-1.json")).unwrap(), "someone else's");
+}
+
+/// A file with two names whose first name was left out (replaced while it
+/// was read) is written whole under its second, never as a link to a name
+/// the archive does not hold.
+#[test]
+fn a_file_whose_first_name_was_left_out_is_written_whole_under_its_second() {
+    let place = Place::new();
+    let source = place.path("source");
+    fs::write(source.join("a"), "data").unwrap();
+    fs::hard_link(source.join("a"), source.join("b")).unwrap();
+    let folder = open_folder(&source, OFlags::RDONLY).unwrap();
+    let mut told = |_: u8| {};
+    let mut writer = Writer {
+        builder: tar::Builder::new(Vec::new()),
+        device: identity(&fstat(&folder).unwrap()).0,
+        links: HashMap::new(),
+        progress: Progress::new(4, &mut told),
+        bytes: 0,
+        entries: 0,
+        skipped: 0,
+    };
+    // `a` as it was looked at before it was replaced: another file now.
+    let mut stale = statat(&folder, "a", AtFlags::SYMLINK_NOFOLLOW).unwrap();
+    stale.st_ino += 1;
+    writer.regular(folder.as_fd(), c"a", &stale, PathBuf::from("a")).unwrap();
+    let b = statat(&folder, "b", AtFlags::SYMLINK_NOFOLLOW).unwrap();
+    writer.regular(folder.as_fd(), c"b", &b, PathBuf::from("b")).unwrap();
+    assert_eq!((writer.skipped, writer.entries), (1, 1));
+
+    let bytes = writer.builder.into_inner().unwrap();
+    let mut archive = tar::Archive::new(bytes.as_slice());
+    let entries: Vec<(String, tar::EntryType, u64)> = archive
+        .entries()
+        .unwrap()
+        .map(|e| {
+            let e = e.unwrap();
+            (shown(&e.path_bytes()), e.header().entry_type(), e.header().size().unwrap())
+        })
+        .collect();
+    assert_eq!(entries, [("b".to_owned(), tar::EntryType::Regular, 4)]);
 }
 
 #[test]
@@ -365,9 +679,14 @@ fn only_the_file_a_backup_wrote_is_removed() {
     let remove = |file: &WrittenFile| RemoveJob {
         share: place.path("share"),
         path: file.path.clone(),
-        device: file.device,
         inode: file.inode,
+        bytes: file.bytes,
+        modified: Some(file.modified),
     };
+    // Its size or time of writing not as recorded: another file, it stays.
+    let other_size = RemoveJob { bytes: done.archive.bytes + 1, ..remove(&done.archive) };
+    let other_time = RemoveJob { modified: Some(done.archive.modified + 1), ..remove(&done.archive) };
+    assert!(!remove_backup(&other_size).unwrap() && !remove_backup(&other_time).unwrap());
     // Swapped for another file of that name: it stays.
     let archive = place.path("share").join(done.archive.path.as_str());
     fs::rename(&archive, place.path("share/moved")).unwrap();
@@ -378,13 +697,208 @@ fn only_the_file_a_backup_wrote_is_removed() {
     assert!(remove_backup(&remove(&done.archive)).unwrap());
     assert!(!archive.exists());
     assert!(!remove_backup(&remove(&done.archive)).unwrap(), "gone already");
-    assert!(remove_backup(&remove(&done.manifest)).unwrap());
+    // Recorded before the time of writing was: inode and size.
+    assert!(remove_backup(&RemoveJob { modified: None, ..remove(&done.manifest) }).unwrap());
     let elsewhere = RemoveJob { path: SharePath::parse("nowhere/x").unwrap(), ..remove(&done.manifest) };
     assert!(!remove_backup(&elsewhere).unwrap());
     // Never through a link to a folder.
     symlink(place.path("share/backups"), place.path("share/link")).unwrap();
     let through = RemoveJob { path: SharePath::parse("link/docker/x").unwrap(), ..remove(&done.manifest) };
     assert!(matches!(remove_backup(&through), Err(ArchiveError::Refused(_))));
+}
+
+/// Runs the test `name` with at most `limit` descriptors open, as a unit or
+/// the agent has under systemd's soft limit: in a process of its own, as
+/// the limit is the process's and other tests run beside it. There, `work`
+/// is the test.
+fn with_descriptors(name: &str, limit: u64, work: impl FnOnce()) {
+    use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
+    if std::env::var_os("ZENDILOOS_FEW_DESCRIPTORS").is_some() {
+        let before = getrlimit(Resource::Nofile);
+        setrlimit(Resource::Nofile, Rlimit { current: Some(limit), maximum: before.maximum }).unwrap();
+        return work();
+    }
+    let test = format!("{}::{name}", module_path!().split_once("::").map_or("", |(_, path)| path));
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([test.as_str(), "--exact", "--test-threads=1"])
+        .env("ZENDILOOS_FEW_DESCRIPTORS", "1")
+        .status()
+        .unwrap();
+    assert!(status.success(), "{test} with {limit} descriptors: {status}");
+}
+
+/// What a container may make in its volume: 3000 folders, a byte in each.
+/// Counted whole with a descriptor or two, while the agent opens files
+/// for its other requests.
+#[test]
+fn counting_a_wide_volume_holds_few_descriptors_and_counts_it_whole() {
+    with_descriptors("counting_a_wide_volume_holds_few_descriptors_and_counts_it_whole", 1024, || {
+        let place = Place::new();
+        for n in 0..3000 {
+            let folder = place.path(&format!("source/f{n:04}"));
+            fs::create_dir(&folder).unwrap();
+            fs::write(folder.join("x"), "x").unwrap();
+        }
+        let source = open_folder(&place.path("source"), OFlags::RDONLY).unwrap();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let probe = {
+            let (stop, path) = (stop.clone(), place.path("source/f0000/x"));
+            std::thread::spawn(move || {
+                let mut refused = 0u32;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    if let Err(error) = File::open(&path)
+                        && error.raw_os_error() == Some(Errno::MFILE.raw_os_error())
+                    {
+                        refused += 1;
+                    }
+                }
+                refused
+            })
+        };
+        let counted = count(&source, u64::MAX, None);
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        let refused = probe.join().unwrap();
+        assert_eq!((counted.bytes, counted.complete), (3000, true), "{counted:?}");
+        assert_eq!(refused, 0, "other work ran out of descriptors while counting");
+    });
+}
+
+/// A folder the count cannot look into makes it incomplete, not smaller.
+#[test]
+fn a_folder_that_cannot_be_read_makes_the_count_incomplete() {
+    if rustix::process::geteuid().is_root() {
+        eprintln!("root reads every folder; skipped");
+        return;
+    }
+    let place = Place::new();
+    fs::create_dir(place.path("source/closed")).unwrap();
+    fs::write(place.path("source/closed/x"), "x").unwrap();
+    fs::set_permissions(place.path("source/closed"), fs::Permissions::from_mode(0o000)).unwrap();
+    let source = open_folder(&place.path("source"), OFlags::RDONLY).unwrap();
+    let counted = count(&source, u64::MAX, None);
+    fs::set_permissions(place.path("source/closed"), fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(!counted.complete, "{counted:?}");
+}
+
+/// A tree deeper than a unit may hold descriptors goes whole: down by
+/// name, up again by `..`.
+#[test]
+fn a_tree_deeper_than_the_descriptors_allow_is_removed_whole() {
+    with_descriptors("a_tree_deeper_than_the_descriptors_allow_is_removed_whole", 64, || {
+        let place = Place::new();
+        let deep = place.path("docker/volumes/db/deep");
+        let mut path = deep.clone();
+        for level in 0..1500 {
+            path.push("d");
+            if level % 100 == 0 {
+                fs::create_dir_all(&path).unwrap();
+                fs::write(path.join("file"), "x").unwrap();
+            }
+        }
+        fs::create_dir_all(&path).unwrap();
+        let volume = open_folder(&place.path("docker/volumes/db"), OFlags::PATH).unwrap();
+        let device = identity(&fstat(&volume).unwrap()).0;
+
+        assert_eq!(remove_tree(volume.as_fd(), c"deep", device), Ok(()));
+        assert!(!deep.exists());
+        assert!(place.data().exists(), "nothing beside it");
+    });
+}
+
+/// What earlier restores left beside the data (a unit stopped or killed
+/// before it removed its fresh folder) goes before the next extracts, and
+/// nothing else there.
+#[test]
+fn what_earlier_restores_left_beside_the_data_goes_first() {
+    let place = Place::new();
+    fs::write(place.path("source/a"), "a").unwrap();
+    let done = back_up(&place.job(), 0, &mut quiet).unwrap();
+    let left = place.path("docker/volumes/db/_data.zendiloos-restore-0123456789abcdef");
+    fs::create_dir_all(left.join("deep/er")).unwrap();
+    fs::write(left.join("deep/er/big"), vec![0u8; 1 << 20]).unwrap();
+    fs::create_dir(place.path("docker/volumes/db/_data.kept")).unwrap();
+
+    let extracted = extract_volume(&place.restore_of(&done), &mut quietly).unwrap();
+
+    assert_eq!(extracted.swept, 1);
+    assert!(!left.exists());
+    assert!(place.path("docker/volumes/db/_data.kept").exists(), "not a name a restore makes");
+    let swapped = swap(&SwapJob {
+        volume_dir: place.path("docker/volumes/db"),
+        fresh: extracted.fresh,
+        discard: false,
+    })
+    .unwrap();
+    assert_eq!(swapped.left_over, None);
+    assert_eq!(fs::read_to_string(place.data().join("a")).unwrap(), "a");
+}
+
+/// As the agent starts, what restores left beside every volume's data
+/// goes, but for volumes whose work still runs.
+#[test]
+fn the_sweep_removes_what_restores_left_beside_every_volume_but_busy_ones() {
+    let place = Place::new();
+    let volumes = place.path("docker/volumes");
+    for volume in ["db", "cache", "busy"] {
+        let left = volumes.join(volume).join("_data.zendiloos-restore-00000000000000ff");
+        fs::create_dir_all(left.join("inner")).unwrap();
+        fs::write(left.join("inner/x"), "x").unwrap();
+    }
+    fs::write(volumes.join("metadata.db"), "Docker's own").unwrap();
+
+    let swept = sweep(&SweepJob { volumes: volumes.clone(), busy: vec!["busy".into()] }).unwrap();
+
+    assert_eq!((swept.removed, swept.left.len()), (2, 0));
+    assert!(!volumes.join("db/_data.zendiloos-restore-00000000000000ff").exists());
+    assert!(volumes.join("busy/_data.zendiloos-restore-00000000000000ff").exists());
+    assert!(volumes.join("metadata.db").exists());
+}
+
+/// The hidden files earlier backups left in their folder (a unit stopped
+/// while it wrote) go when the next backup there starts; nothing else.
+#[test]
+fn hidden_files_earlier_backups_left_go_and_nothing_else() {
+    let place = Place::new();
+    fs::write(place.path("source/a"), "a").unwrap();
+    let folder = place.path("share/backups/docker/db");
+    fs::create_dir_all(&folder).unwrap();
+    for name in
+        [".db-20261101-030000.tar.zst.partial-0123456789abcdef", ".notes", "plain.partial-0123456789abcdef"]
+    {
+        fs::write(folder.join(name), "x").unwrap();
+    }
+    fs::create_dir(folder.join(".db.json.partial-fedcba9876543210")).unwrap();
+
+    back_up(&place.job(), 0, &mut quiet).unwrap();
+
+    let mut names: Vec<String> = fs::read_dir(&folder)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        [
+            ".db.json.partial-fedcba9876543210",
+            ".notes",
+            "db-20261108-030000.json",
+            "db-20261108-030000.tar.zst",
+            "plain.partial-0123456789abcdef"
+        ]
+    );
+}
+
+/// The old contents stay until the swap: a backup larger than what is free
+/// beside them is not extracted at all.
+#[test]
+fn a_restore_needs_room_for_the_backup_beside_the_data() {
+    let place = Place::new();
+    fs::write(place.path("source/a"), "a").unwrap();
+    let done = back_up(&place.job(), 0, &mut quiet).unwrap();
+    let huge = RestoreJob { data_bytes: u64::MAX / 4, ..place.restore_of(&done) };
+    let refused = extract_volume(&huge, &mut quietly);
+    assert!(matches!(&refused, Err(ArchiveError::Refused(why)) if why.contains("free space")), "{refused:?}");
+    assert!(place.fresh_folders().is_empty());
 }
 
 #[test]
@@ -419,14 +933,19 @@ fn units_take_their_jobs_as_hex_and_say_what_came_of_them() {
     let done: BackupDone = serde_json::from_value(value.clone()).unwrap();
 
     let mut out = Vec::new();
-    let restore = place.restore_job(done.archive.path.as_str(), done.sha256.as_str());
+    let restore = place.restore_of(&done);
     assert!(run_volume_job(VolumeJob::Restore, &encode(&restore), 0, &mut out));
     let text = String::from_utf8(out).unwrap();
     assert!(text.contains(r#""step":"verifying""#) && text.contains(r#"{"done":"#), "{text}");
 
     let mut out = Vec::new();
-    let remove =
-        RemoveJob { share: place.path("share"), path: done.manifest.path.clone(), device: 0, inode: 0 };
+    let remove = RemoveJob {
+        share: place.path("share"),
+        path: done.manifest.path.clone(),
+        inode: 0,
+        bytes: 0,
+        modified: None,
+    };
     assert!(run_volume_job(VolumeJob::RemoveBackup, &encode(&remove), 0, &mut out));
     assert_eq!(String::from_utf8(out).unwrap().trim(), r#"{"done":false}"#);
 

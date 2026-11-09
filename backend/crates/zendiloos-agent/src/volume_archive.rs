@@ -10,18 +10,25 @@
 //! archive (GNU headers: numeric owners, modes, times, symbolic and hard
 //! links, extended attributes as pax records), compressed with zstd, into
 //! the share, with a small manifest beside it. Both are made under hidden
-//! names and renamed when complete, created so that the folder's inherited
-//! ACL applies to them as to any new file.
+//! names, created so that the folder's inherited ACL applies to them as to
+//! any new file, and then made writable by root only (the group's and
+//! others' write permission goes, and with it the ACL mask's), so reading
+//! and removing them still follow that ACL. Only once both are complete are
+//! they renamed into place, the archive first; should the manifest not
+//! follow, the archive goes again.
 //!
 //! Restoring runs as root from a share that users may write. So the
 //! archive is opened beneath the share's root without following a link,
-//! and its SHA-256 is checked against the one recorded before anything is
-//! extracted; it is extracted into a fresh folder beside the volume's data,
+//! must be writable by root only, and its SHA-256 is checked against the
+//! one recorded before anything is extracted; it is extracted into a fresh
+//! folder beside the volume's data, no more of it than was backed up,
 //! each entry beneath it (no absolute paths, no `..`, every folder on the
 //! way opened with `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS`, no device
-//! nodes), while the same bytes are hashed again; only if they still match
-//! does the fresh folder take the data's place, swapped in one rename
-//! (`RENAME_EXCHANGE`). Anything else leaves the old contents as they were.
+//! nodes), while the same bytes are hashed again (`restore-volume`). Only
+//! if they still match, and the system agent finds no running container on
+//! the volume after that, does the fresh folder take the data's place,
+//! swapped in one rename (`RENAME_EXCHANGE`) by a unit of its own
+//! (`swap-volume`). Anything else leaves the old contents as they were.
 
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::{CStr, CString, OsStr};
@@ -61,6 +68,9 @@ const RESTORED_XATTRS: [&str; 4] =
 const XATTR_RECORD: &str = "SCHILY.xattr.";
 /// Where a manifest says which format it has.
 const MANIFEST_FORMAT: u32 = 1;
+/// Files with several names whose first name a backup keeps, to write the
+/// others as links; beyond, they are written whole.
+const MAX_LINKS: usize = 1 << 20;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ArchiveError {
@@ -112,6 +122,8 @@ pub(crate) struct BackupDone {
     pub sha256: ArchiveDigest,
     /// What the files in the volume hold.
     pub data_bytes: u64,
+    /// Entries in the archive: folders, files, links.
+    pub entries: u64,
     pub manifest_json: String,
     /// Entries left out: sockets, pipes, devices.
     pub skipped: u64,
@@ -147,14 +159,47 @@ pub(crate) struct RestoreJob {
     pub share: PathBuf,
     pub archive: SharePath,
     pub sha256: ArchiveDigest,
+    /// What the backup's files held, and its entries if recorded: no more
+    /// is extracted.
+    pub data_bytes: u64,
+    pub entries: Option<u64>,
+}
+
+/// What a restore's first unit made: the archive extracted into `fresh`,
+/// a folder beside the data, for the second to swap in.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Extracted {
+    pub entries: u64,
+    pub fresh: String,
+    /// Folders earlier restores of the volume left beside the data, removed
+    /// first.
+    pub swept: u64,
+}
+
+/// What the system agent asks of the unit that swaps a restore's fresh
+/// folder in for the data, or, with `discard`, removes it instead.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SwapJob {
+    pub volume_dir: PathBuf,
+    pub fresh: String,
+    pub discard: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct RestoreDone {
-    pub entries: u64,
-    /// The old contents could not all be removed after the swap: they are
-    /// left in this folder beside the data.
+pub(crate) struct Swapped {
+    /// The old contents (or, discarding, what was extracted) could not all
+    /// be removed: they are left in this folder beside the data.
     pub left_over: Option<String>,
+}
+
+/// What a restore's fresh folder is called: `_data.zendiloos-restore-`
+/// and 16 hex digits.
+const FRESH_PREFIX: &str = "_data.zendiloos-restore-";
+
+fn is_fresh_name(name: &[u8]) -> bool {
+    name.strip_prefix(FRESH_PREFIX.as_bytes())
+        .is_some_and(|hex| hex.len() == 16 && hex.iter().all(u8::is_ascii_hexdigit))
 }
 
 /// What the system agent asks of the unit that removes a backup's file.
@@ -163,8 +208,28 @@ pub(crate) struct RestoreDone {
 pub(crate) struct RemoveJob {
     pub share: PathBuf,
     pub path: SharePath,
-    pub device: u64,
     pub inode: u64,
+    pub bytes: u64,
+    /// Nanoseconds since 1970; unknown for files recorded before.
+    pub modified: Option<i64>,
+}
+
+/// What the system agent asks of the unit that removes what restores left
+/// beside the volumes' data, when it starts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SweepJob {
+    /// `<data root>/volumes`.
+    pub volumes: PathBuf,
+    /// Volumes to leave alone: work on them runs.
+    pub busy: Vec<String>,
+}
+
+/// What a sweep removed, and what it could not.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Swept {
+    pub removed: u64,
+    pub left: Vec<String>,
 }
 
 // Stat field types differ between architectures.
@@ -175,6 +240,14 @@ fn identity(stat: &Stat) -> (u64, u64) {
 
 fn kind(stat: &Stat) -> FileType {
     FileType::from_raw_mode(stat.st_mode)
+}
+
+/// When a file was last written, in nanoseconds since 1970.
+#[allow(clippy::useless_conversion, clippy::unnecessary_fallible_conversions)]
+fn modified(stat: &Stat) -> i64 {
+    i64::from(stat.st_mtime)
+        .saturating_mul(1_000_000_000)
+        .saturating_add(i64::try_from(stat.st_mtime_nsec).unwrap_or(0))
 }
 
 fn c_name(bytes: &[u8]) -> Result<CString, ArchiveError> {
@@ -228,17 +301,25 @@ fn make_folders(share: BorrowedFd<'_>, path: &SharePath) -> Result<OwnedFd, Arch
     Ok(folder)
 }
 
+/// A file written under a hidden name of its own until it is complete:
+/// `.<name>.partial-<16 hex digits>`.
+struct Partial {
+    file: File,
+    hidden: String,
+    name: String,
+}
+
 /// A hidden file of its own in `folder`, for what becomes `name` once
 /// complete: mode 0666, which the folder's inherited ACL narrows.
-fn create_partial(folder: BorrowedFd<'_>, name: &str) -> Result<(OwnedFd, String), ArchiveError> {
+fn create_partial(folder: BorrowedFd<'_>, name: &str) -> Result<Partial, ArchiveError> {
     for _ in 0..8 {
         let mut random = [0u8; 8];
         rustix::rand::getrandom(&mut random, rustix::rand::GetRandomFlags::empty())
             .map_err(|e| failed("no random name", e))?;
-        let partial = format!(".{name}.partial-{:016x}", u64::from_le_bytes(random));
+        let hidden = format!(".{name}.partial-{:016x}", u64::from_le_bytes(random));
         let flags = OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-        match openat(folder, partial.as_str(), flags, Mode::from_raw_mode(0o666)) {
-            Ok(file) => return Ok((file, partial)),
+        match openat(folder, hidden.as_str(), flags, Mode::from_raw_mode(0o666)) {
+            Ok(file) => return Ok(Partial { file: File::from(file), hidden, name: name.to_owned() }),
             Err(Errno::EXIST) => continue,
             Err(error) => return Err(failed(name, error)),
         }
@@ -246,37 +327,141 @@ fn create_partial(folder: BorrowedFd<'_>, name: &str) -> Result<(OwnedFd, String
     Err(ArchiveError::Failed(format!("no free name for {name}")))
 }
 
-/// Writes `content` into a new file `name` of `folder`, under a hidden name
-/// first; refused if `name` exists.
-fn write_new(
+/// Takes away the group's and others' write permission from `file`, and
+/// with the group's the ACL mask's, so that only its owner, root, may
+/// change it; who may read it is as the folder's ACL made it.
+fn protect(file: &File, what: &str) -> Result<(), ArchiveError> {
+    let stat = fstat(file).map_err(|e| failed(what, e))?;
+    fchmod(file, Mode::from_raw_mode(stat.st_mode & 0o755))
+        .map_err(|e| failed(format!("{what}: its mode"), e))
+}
+
+/// Removes `partial`'s hidden name: only that of this run; whoever may
+/// write the folder could have swapped it, which removes no more than a
+/// name.
+fn discard(folder: BorrowedFd<'_>, partial: &Partial) {
+    let _ = unlinkat(folder, partial.hidden.as_str(), AtFlags::empty());
+}
+
+/// Writes `content` into a new hidden file for `name` in `folder`, written
+/// out and made writable by root only; refused if `name` exists.
+fn write_partial(
     folder: BorrowedFd<'_>,
     name: &str,
     content: impl FnOnce(&File) -> Result<(), ArchiveError>,
-) -> Result<(u64, u64, u64), ArchiveError> {
+) -> Result<Partial, ArchiveError> {
     if statat(folder, name, AtFlags::SYMLINK_NOFOLLOW).is_ok() {
         return Err(refused(format!("{name} exists already")));
     }
-    let (file, partial) = create_partial(folder, name)?;
-    let file = File::from(file);
-    let done = content(&file)
-        .and_then(|()| fsync(&file).map_err(|e| failed(name, e)))
-        .and_then(|()| {
-            renameat_with(folder, partial.as_str(), folder, name, RenameFlags::NOREPLACE)
-                .map_err(|e| failed(name, e))
-        })
-        .and_then(|()| fstat(&file).map_err(|e| failed(name, e)));
+    let partial = create_partial(folder, name)?;
+    let done = content(&partial.file)
+        .and_then(|()| protect(&partial.file, name))
+        .and_then(|()| fsync(&partial.file).map_err(|e| failed(name, e)));
     match done {
-        Ok(stat) => {
-            let (device, inode) = identity(&stat);
-            Ok((u64::try_from(stat.st_size).unwrap_or(0), device, inode))
-        }
+        Ok(()) => Ok(partial),
         Err(error) => {
-            // Only the hidden name of this run: whoever may write the
-            // folder could have swapped it, which removes no more than a name.
-            let _ = unlinkat(folder, partial.as_str(), AtFlags::empty());
+            discard(folder, &partial);
             Err(error)
         }
     }
+}
+
+/// A file as written: its size and identity.
+struct Placed {
+    bytes: u64,
+    device: u64,
+    inode: u64,
+    modified: i64,
+}
+
+/// The size and identity of a file written.
+fn written_file(partial: &Partial) -> Result<Placed, ArchiveError> {
+    let stat = fstat(&partial.file).map_err(|e| failed(&partial.name, e))?;
+    let (device, inode) = identity(&stat);
+    Ok(Placed { bytes: u64::try_from(stat.st_size).unwrap_or(0), device, inode, modified: modified(&stat) })
+}
+
+/// The names in `folder` (which may be opened as a path only) that `keep`
+/// says.
+fn names_in(folder: BorrowedFd<'_>, keep: impl Fn(&[u8]) -> bool) -> Result<Vec<CString>, Errno> {
+    let listed = openat(folder, c".", WALKED, Mode::empty())?;
+    Ok(Dir::read_from(&listed)?
+        .flatten()
+        .map(|entry| entry.file_name().to_owned())
+        .filter(|name| name.as_bytes() != b"." && name.as_bytes() != b".." && keep(name.as_bytes()))
+        .collect())
+}
+
+/// Whether `name` is one [`create_partial`] makes.
+fn is_partial_name(name: &[u8]) -> bool {
+    name.starts_with(b".")
+        && name.len().checked_sub(16).is_some_and(|at| {
+            name[..at].ends_with(b".partial-") && name[at..].iter().all(u8::is_ascii_hexdigit)
+        })
+}
+
+/// Removes the hidden files earlier backups left in `folder` (a unit
+/// stopped, or killed by its time or memory, while it wrote): regular files
+/// of this account named as [`create_partial`] names them, nothing else.
+/// How many went.
+fn sweep_partials(folder: BorrowedFd<'_>) -> u64 {
+    let Ok(left) = names_in(folder, is_partial_name) else { return 0 };
+    let me = rustix::process::geteuid().as_raw();
+    let mut removed = 0;
+    for name in left {
+        if let Ok(stat) = statat(folder, &name, AtFlags::SYMLINK_NOFOLLOW)
+            && kind(&stat) == FileType::RegularFile
+            && stat.st_uid == me
+            && unlinkat(folder, &name, AtFlags::empty()).is_ok()
+        {
+            removed += 1;
+        }
+    }
+    removed
+}
+
+/// Removes `name` from `folder` if it still is the file `id` (device and
+/// inode); never another.
+fn remove_if(folder: BorrowedFd<'_>, name: &str, id: (u64, u64)) {
+    if let Ok(stat) = statat(folder, name, AtFlags::SYMLINK_NOFOLLOW)
+        && kind(&stat) == FileType::RegularFile
+        && identity(&stat) == id
+    {
+        let _ = unlinkat(folder, name, AtFlags::empty());
+    }
+}
+
+/// Renames a complete archive and its manifest into place together: the
+/// archive first, then the manifest; should the manifest not follow, the
+/// archive goes again, by its identity, so that no archive is left without
+/// its manifest. Their sizes and identities.
+fn put_in_place(
+    folder: BorrowedFd<'_>,
+    archive: &Partial,
+    manifest: &Partial,
+) -> Result<(Placed, Placed), ArchiveError> {
+    let placed = (|| {
+        let archive_file = written_file(archive)?;
+        let manifest_file = written_file(manifest)?;
+        renameat_with(folder, archive.hidden.as_str(), folder, archive.name.as_str(), RenameFlags::NOREPLACE)
+            .map_err(|e| failed(&archive.name, e))?;
+        if let Err(error) = renameat_with(
+            folder,
+            manifest.hidden.as_str(),
+            folder,
+            manifest.name.as_str(),
+            RenameFlags::NOREPLACE,
+        ) {
+            remove_if(folder, &archive.name, (archive_file.device, archive_file.inode));
+            return Err(failed(&manifest.name, error));
+        }
+        Ok((archive_file, manifest_file))
+    })();
+    if placed.is_err() {
+        discard(folder, archive);
+        discard(folder, manifest);
+    }
+    placed
 }
 
 /// Bytes through, hashed and counted.
@@ -384,42 +569,123 @@ pub(crate) struct Counted {
     pub complete: bool,
 }
 
+/// The folders on the way down a walk, each with the folders in it still to
+/// visit, by name: the walk holds the descriptor of the folder it is in
+/// only, however deep it goes, and goes up again by `..`, which must be the
+/// folder it came from.
+struct Level {
+    /// Its name in the folder above, where it is to be removed.
+    name: CString,
+    id: (u64, u64),
+    pending: Vec<CString>,
+}
+
+/// Folders a walk notes at once in one folder before it goes into them;
+/// it lists the folder again for the rest.
+const NOTED: usize = 256;
+/// What the names of the folders still to count may take up.
+const MAX_NOTED_BYTES: usize = 64 * 1024 * 1024;
+
+const WALKED: OFlags = OFlags::RDONLY.union(OFlags::DIRECTORY).union(OFlags::NOFOLLOW).union(OFlags::CLOEXEC);
+
+/// `..` of `current`, if it is the folder `id`.
+fn up(current: &OwnedFd, id: (u64, u64)) -> Result<OwnedFd, Errno> {
+    let up = openat(current, c"..", WALKED, Mode::empty())?;
+    if identity(&fstat(&up)?) != id {
+        // Moved meanwhile: the walk is not where it was.
+        return Err(Errno::AGAIN);
+    }
+    Ok(up)
+}
+
 /// Counts what the files below `folder` hold, without following a link or
-/// entering another file system: at most `max_entries`, until `until`.
+/// entering another file system: at most `max_entries`, until `until`. A
+/// file with several names counts once. Incomplete where it stopped at a
+/// bound or could not look into a folder. It holds a descriptor or two,
+/// however wide or deep the folders are.
 pub(crate) fn count(folder: &OwnedFd, max_entries: u64, until: Option<Instant>) -> Counted {
     let mut counted = Counted { complete: true, ..Counted::default() };
-    let device = fstat(folder).map(|s| identity(&s).0).unwrap_or(0);
+    let (Ok(top), Ok(stat)) = (folder.try_clone(), fstat(folder)) else { return Counted::default() };
+    let device = identity(&stat).0;
     let mut linked = std::collections::HashSet::new();
-    let Ok(top) = folder.try_clone() else { return Counted::default() };
-    let mut stack = vec![(top, 0usize)];
-    while let Some((directory, depth)) = stack.pop() {
-        let Ok(entries) = Dir::read_from(&directory) else { continue };
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            if name == c"." || name == c".." {
-                continue;
-            }
-            counted.entries += 1;
-            if counted.entries > max_entries || until.is_some_and(|until| Instant::now() > until) {
-                counted.complete = false;
-                return counted;
-            }
-            let Ok(stat) = statat(&directory, name, AtFlags::SYMLINK_NOFOLLOW) else { continue };
-            match kind(&stat) {
-                FileType::RegularFile if stat.st_nlink < 2 || linked.insert(identity(&stat)) => {
-                    counted.bytes += u64::try_from(stat.st_size).unwrap_or(0);
-                }
-                FileType::Directory if identity(&stat).0 == device && depth < MAX_DEPTH => {
-                    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-                    if let Ok(inner) = openat(&directory, name, flags, Mode::empty()) {
-                        stack.push((inner, depth + 1));
+    let mut noted_bytes = 0usize;
+    let mut path: Vec<Level> = Vec::new();
+    let (mut current, mut id) = (top, identity(&stat));
+    loop {
+        // What is in `current`: files counted, folders noted.
+        let mut pending = Vec::new();
+        match Dir::read_from(&current) {
+            Ok(entries) => {
+                for entry in entries {
+                    let Ok(entry) = entry else {
+                        counted.complete = false;
+                        break;
+                    };
+                    let name = entry.file_name();
+                    if name == c"." || name == c".." {
+                        continue;
+                    }
+                    counted.entries += 1;
+                    if counted.entries > max_entries || until.is_some_and(|until| Instant::now() > until) {
+                        counted.complete = false;
+                        return counted;
+                    }
+                    let stat = match statat(&current, name, AtFlags::SYMLINK_NOFOLLOW) {
+                        Ok(stat) => stat,
+                        // Gone since the folder was read.
+                        Err(Errno::NOENT) => continue,
+                        Err(_) => {
+                            counted.complete = false;
+                            continue;
+                        }
+                    };
+                    match kind(&stat) {
+                        FileType::RegularFile if stat.st_nlink < 2 || linked.insert(identity(&stat)) => {
+                            counted.bytes += u64::try_from(stat.st_size).unwrap_or(0);
+                        }
+                        FileType::Directory if identity(&stat).0 == device => {
+                            noted_bytes += name.to_bytes().len();
+                            if path.len() >= MAX_DEPTH || noted_bytes > MAX_NOTED_BYTES {
+                                counted.complete = false;
+                            } else {
+                                pending.push(name.to_owned());
+                            }
+                        }
+                        _ => {}
                     }
                 }
-                _ => {}
+            }
+            Err(_) => counted.complete = false,
+        }
+        path.push(Level { name: CString::default(), id, pending });
+        // The next folder: the deepest noted one, going up as far as need be.
+        loop {
+            let Some(level) = path.last_mut() else { return counted };
+            if let Some(next) = level.pending.pop() {
+                noted_bytes -= next.to_bytes().len().min(noted_bytes);
+                match openat(&current, &next, WALKED, Mode::empty())
+                    .and_then(|inner| Ok((fstat(&inner)?, inner)))
+                {
+                    Ok((stat, inner)) if identity(&stat).0 == device => {
+                        (current, id) = (inner, identity(&stat));
+                        break;
+                    }
+                    Ok(_) | Err(Errno::NOENT) => {}
+                    Err(_) => counted.complete = false,
+                }
+                continue;
+            }
+            path.pop();
+            let Some(above) = path.last() else { return counted };
+            match up(&current, above.id) {
+                Ok(fd) => current = fd,
+                Err(_) => {
+                    counted.complete = false;
+                    return counted;
+                }
             }
         }
     }
-    counted
 }
 
 /// The header of an entry, with what `stat` says of it.
@@ -447,10 +713,11 @@ fn archive_path(parts: &[Vec<u8>]) -> PathBuf {
 struct Writer<'p, W: Write> {
     builder: tar::Builder<W>,
     device: u64,
-    /// Files with more than one name: their first path.
+    /// Files with more than one name: the first path in the archive.
     links: HashMap<(u64, u64), PathBuf>,
     progress: Progress<'p>,
     bytes: u64,
+    entries: u64,
     skipped: u64,
 }
 
@@ -481,18 +748,17 @@ impl<W: Write> Writer<'_, W> {
             path.push("");
         }
         self.builder.append_data(&mut header, &path, io::empty()).map_err(|e| failed(path.display(), e))?;
-        let mut names = Vec::new();
+        self.entries += 1;
+        // As the folder lists them: one name at a time, so a folder of
+        // millions of files needs no more memory than one.
         for entry in Dir::read_from(folder).map_err(|e| failed(path.display(), e))? {
             let entry = entry.map_err(|e| failed(path.display(), e))?;
             let name = entry.file_name();
-            if name != c"." && name != c".." {
-                names.push(name.to_owned());
+            if name == c"." || name == c".." {
+                continue;
             }
-        }
-        names.sort();
-        for name in names {
             parts.push(name.to_bytes().to_vec());
-            let done = self.entry(folder.as_fd(), &name, parts);
+            let done = self.entry(folder.as_fd(), name, parts);
             parts.pop();
             done?;
         }
@@ -523,45 +789,14 @@ impl<W: Write> Writer<'_, W> {
                     .map_err(|e| failed(what(), e))?;
                 self.folder(&inner, parts)
             }
-            FileType::RegularFile => {
-                let id = identity(&stat);
-                if stat.st_nlink > 1 {
-                    if let Some(first) = self.links.get(&id) {
-                        let mut header = header(&stat, tar::EntryType::Link, 0);
-                        let first = first.clone();
-                        return self
-                            .builder
-                            .append_link(&mut header, &path, &first)
-                            .map_err(|e| failed(what(), e));
-                    }
-                    self.links.insert(id, path.clone());
-                }
-                let file = openat(folder, name, flags | OFlags::NONBLOCK, Mode::empty())
-                    .map_err(|e| failed(what(), e))?;
-                let opened = fstat(&file).map_err(|e| failed(what(), e))?;
-                if kind(&opened) != FileType::RegularFile || identity(&opened) != id {
-                    // Replaced since it was looked at: what is there now
-                    // comes in the next backup.
-                    self.skipped += 1;
-                    return Ok(());
-                }
-                self.attributes(file.as_fd())?;
-                let size = u64::try_from(opened.st_size).unwrap_or(0);
-                let mut header = header(&opened, tar::EntryType::Regular, size);
-                // Exactly `size` bytes: a file that grew meanwhile is cut,
-                // one that shrank padded with zeros.
-                let content = Told { inner: File::from(file).take(size), progress: &mut self.progress }
-                    .chain(io::repeat(0))
-                    .take(size);
-                self.builder.append_data(&mut header, &path, content).map_err(|e| failed(what(), e))?;
-                self.bytes += size;
-                Ok(())
-            }
+            FileType::RegularFile => self.regular(folder, name, &stat, path),
             FileType::Symlink => {
                 let target = readlinkat(folder, name, Vec::new()).map_err(|e| failed(what(), e))?;
                 let mut header = header(&stat, tar::EntryType::Symlink, 0);
                 let target = PathBuf::from(OsStr::from_bytes(target.as_bytes()));
-                self.builder.append_link(&mut header, &path, &target).map_err(|e| failed(what(), e))
+                self.builder.append_link(&mut header, &path, &target).map_err(|e| failed(what(), e))?;
+                self.entries += 1;
+                Ok(())
             }
             // Sockets, pipes and devices are no data.
             _ => {
@@ -570,16 +805,71 @@ impl<W: Write> Writer<'_, W> {
             }
         }
     }
+
+    /// The regular file `name` of `folder`, as `stat` found it: a link to
+    /// the path it was first written under, if it has several names and one
+    /// is in the archive already; otherwise its contents.
+    fn regular(
+        &mut self,
+        folder: BorrowedFd<'_>,
+        name: &CStr,
+        stat: &Stat,
+        path: PathBuf,
+    ) -> Result<(), ArchiveError> {
+        let what = || path.display().to_string();
+        let id = identity(stat);
+        if stat.st_nlink > 1
+            && let Some(first) = self.links.get(&id)
+        {
+            let mut header = header(stat, tar::EntryType::Link, 0);
+            let first = first.clone();
+            self.builder.append_link(&mut header, &path, &first).map_err(|e| failed(what(), e))?;
+            self.entries += 1;
+            return Ok(());
+        }
+        let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK;
+        let file = openat(folder, name, flags, Mode::empty()).map_err(|e| failed(what(), e))?;
+        let opened = fstat(&file).map_err(|e| failed(what(), e))?;
+        if kind(&opened) != FileType::RegularFile || identity(&opened) != id {
+            // Replaced since it was looked at: what is there now comes in
+            // the next backup.
+            self.skipped += 1;
+            return Ok(());
+        }
+        self.attributes(file.as_fd())?;
+        let size = u64::try_from(opened.st_size).unwrap_or(0);
+        let mut header = header(&opened, tar::EntryType::Regular, size);
+        // Exactly `size` bytes: a file that grew meanwhile is cut, one that
+        // shrank padded with zeros.
+        let content = Told { inner: File::from(file).take(size), progress: &mut self.progress }
+            .chain(io::repeat(0))
+            .take(size);
+        self.builder.append_data(&mut header, &path, content).map_err(|e| failed(what(), e))?;
+        self.bytes += size;
+        self.entries += 1;
+        // Its other names link to this one, now that it is in the archive.
+        if opened.st_nlink > 1 && self.links.len() < MAX_LINKS {
+            self.links.insert(id, path);
+        }
+        Ok(())
+    }
 }
 
-/// Writes the archive of `source` into `out`; its SHA-256, its length, what
-/// the files held and what was left out.
+/// What [`write_archive`] wrote.
+struct ArchiveWritten {
+    sha256: String,
+    data_bytes: u64,
+    entries: u64,
+    skipped: u64,
+}
+
+/// Writes the archive of `source` into `out`.
 fn write_archive(
     source: &OwnedFd,
     out: &File,
     total: u64,
     report: &mut dyn FnMut(u8),
-) -> Result<(String, u64, u64, u64), ArchiveError> {
+) -> Result<ArchiveWritten, ArchiveError> {
     let hashing = Hashing::new(BufWriter::with_capacity(1024 * 1024, out));
     let encoder = zstd::stream::write::Encoder::new(hashing, LEVEL).map_err(|e| failed("zstd", e))?;
     let device = fstat(source).map(|s| identity(&s).0).map_err(|e| failed("the volume", e))?;
@@ -589,16 +879,17 @@ fn write_archive(
         links: HashMap::new(),
         progress: Progress::new(total, report),
         bytes: 0,
+        entries: 0,
         skipped: 0,
     };
     writer.folder(source, &mut Vec::new())?;
     // Files that shrank or went meanwhile: done all the same.
     writer.progress.add(writer.progress.total.saturating_sub(writer.progress.done));
-    let (bytes, skipped) = (writer.bytes, writer.skipped);
+    let (data_bytes, entries, skipped) = (writer.bytes, writer.entries, writer.skipped);
     let encoder = writer.builder.into_inner().map_err(|e| failed("the archive", e))?;
     let mut hashing = encoder.finish().map_err(|e| failed("zstd", e))?;
     hashing.flush().map_err(|e| failed("the archive", e))?;
-    Ok((hashing.digest(), hashing.bytes, bytes, skipped))
+    Ok(ArchiveWritten { sha256: hashing.digest(), data_bytes, entries, skipped })
 }
 
 /// Backs up one volume as `job` says; `report` hears how far it got.
@@ -612,6 +903,10 @@ pub(crate) fn back_up(
     let folder =
         job.folder.join(job.volume.as_str()).map_err(|_| refused("the folder's path is too long"))?;
     let target = make_folders(share.as_fd(), &folder)?;
+    let swept = sweep_partials(target.as_fd());
+    if swept > 0 {
+        tracing::info!(swept, "hidden files earlier backups left are removed");
+    }
     let total = count(&source, u64::MAX, None).bytes;
     let archive_name = format!("{}.tar.zst", job.name.as_str());
     let manifest_name = format!("{}.json", job.name.as_str());
@@ -619,48 +914,55 @@ pub(crate) fn back_up(
         return Err(refused(format!("{manifest_name} exists already")));
     }
     let mut written = None;
-    let (archive_bytes, archive_device, archive_inode) = write_new(target.as_fd(), &archive_name, |file| {
+    let archive = write_partial(target.as_fd(), &archive_name, |file| {
         written = Some(write_archive(&source, file, total, report)?);
         Ok(())
     })?;
-    let (sha256, _, data_bytes, skipped) =
-        written.ok_or_else(|| ArchiveError::Failed("nothing written".into()))?;
+    let Some(written) = written else {
+        discard(target.as_fd(), &archive);
+        return Err(ArchiveError::Failed("nothing written".into()));
+    };
     let manifest = Manifest {
         format: MANIFEST_FORMAT,
         volume: job.volume.as_str().to_owned(),
         driver: job.driver.clone(),
         labels: job.labels.clone(),
-        size_bytes: data_bytes,
+        size_bytes: written.data_bytes,
         created: job.created.clone(),
         backed_up_at: now,
-        zendiloos_version: env!("CARGO_PKG_VERSION").to_owned(),
+        zendiloos_version: crate::VERSION.to_owned(),
         archive: archive_name.clone(),
-        sha256: sha256.clone(),
+        sha256: written.sha256.clone(),
     };
     let manifest_json =
         serde_json::to_string_pretty(&manifest).map_err(|e| failed("the manifest", e))? + "\n";
-    let (manifest_bytes, manifest_device, manifest_inode) =
-        write_new(target.as_fd(), &manifest_name, |mut file| {
-            file.write_all(manifest_json.as_bytes()).map_err(|e| failed(&manifest_name, e))
-        })?;
-    let path = |name: &str| folder.join(name).map_err(|_| refused("the folder's path is too long"));
+    let manifest = match write_partial(target.as_fd(), &manifest_name, |mut file| {
+        file.write_all(manifest_json.as_bytes()).map_err(|e| failed(&manifest_name, e))
+    }) {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            discard(target.as_fd(), &archive);
+            return Err(error);
+        }
+    };
+    let (archive_file, manifest_file) = put_in_place(target.as_fd(), &archive, &manifest)?;
+    let file = |name: &str, placed: Placed| {
+        Ok::<_, ArchiveError>(WrittenFile {
+            path: folder.join(name).map_err(|_| refused("the folder's path is too long"))?,
+            bytes: placed.bytes,
+            device: placed.device,
+            inode: placed.inode,
+            modified: placed.modified,
+        })
+    };
     Ok(BackupDone {
-        archive: WrittenFile {
-            path: path(&archive_name)?,
-            bytes: archive_bytes,
-            device: archive_device,
-            inode: archive_inode,
-        },
-        manifest: WrittenFile {
-            path: path(&manifest_name)?,
-            bytes: manifest_bytes,
-            device: manifest_device,
-            inode: manifest_inode,
-        },
-        sha256: ArchiveDigest::parse(&sha256).map_err(|e| failed("the digest", e))?,
-        data_bytes,
+        archive: file(&archive_name, archive_file)?,
+        manifest: file(&manifest_name, manifest_file)?,
+        sha256: ArchiveDigest::parse(&written.sha256).map_err(|e| failed("the digest", e))?,
+        data_bytes: written.data_bytes,
+        entries: written.entries,
         manifest_json,
-        skipped,
+        skipped: written.skipped,
     })
 }
 
@@ -678,6 +980,17 @@ fn open_archive(share: BorrowedFd<'_>, path: &SharePath) -> Result<(File, u64), 
     let stat = fstat(&file).map_err(|e| failed(path.as_str(), e))?;
     if kind(&stat) != FileType::RegularFile {
         return Err(refused(format!("{} is no file", path.as_str())));
+    }
+    // Others could change it between the checks and the extraction. The
+    // group's bits are the ACL mask where it has one: without write in
+    // them, no entry of its ACL may write either.
+    if stat.st_uid != rustix::process::geteuid().as_raw() || stat.st_mode & 0o022 != 0 {
+        return Err(refused(format!(
+            "{} may be written by others than zendiloOS (mode {:o}), so it could have been changed; \
+             it is not restored",
+            path.as_str(),
+            stat.st_mode & 0o7777
+        )));
     }
     Ok((File::from(file), u64::try_from(stat.st_size).unwrap_or(0)))
 }
@@ -780,16 +1093,59 @@ impl Meta {
     }
 }
 
-/// Extracts an archive beneath one fresh folder.
-struct Extractor<'a> {
-    root: BorrowedFd<'a>,
-    /// Folders and what they bring, applied once their contents are in.
-    folders: Vec<(Vec<Vec<u8>>, Meta)>,
-    top: Option<Meta>,
+/// How much of an archive is extracted at most: what its backup held and a
+/// little more, so that an archive changed after its check cannot fill the
+/// pool before the second hash finds out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Bounds {
+    bytes: u64,
     entries: u64,
 }
 
+impl Bounds {
+    fn of(data_bytes: u64, entries: Option<u64>) -> Self {
+        Self {
+            bytes: data_bytes.saturating_add(data_bytes / 64).saturating_add(1 << 20),
+            entries: entries
+                .map_or(u64::MAX, |entries| entries.saturating_add(entries / 64).saturating_add(64)),
+        }
+    }
+}
+
+/// Extracts an archive beneath one fresh folder.
+struct Extractor<'a> {
+    root: BorrowedFd<'a>,
+    /// The folders the entries are in now, the outermost first, each in the
+    /// one before, with what it brings (nothing yet for one the archive has
+    /// not listed): applied once the entries left it, when nothing more
+    /// goes into it. As deep as the folders go, never as many as there are.
+    open: Vec<(Vec<u8>, Option<Meta>)>,
+    top: Option<Meta>,
+    entries: u64,
+    bytes: u64,
+    bounds: Bounds,
+}
+
 impl Extractor<'_> {
+    /// Leaves the open folders `parents` is not in, the deepest first,
+    /// applying what each brings, and enters those of `parents` not open
+    /// yet.
+    fn enter(&mut self, parents: &[Vec<u8>]) -> Result<(), ArchiveError> {
+        let kept = self.open.iter().zip(parents).take_while(|((name, _), parent)| name == *parent).count();
+        while self.open.len() > kept {
+            let path = self.open.iter().map(|(name, _)| name.as_slice()).collect::<Vec<_>>().join(&b'/');
+            if let Some((_, Some(meta))) = self.open.pop() {
+                let what = shown(&path);
+                let flags = OFlags::RDONLY | OFlags::DIRECTORY;
+                let folder = beneath(self.root, &path, flags).map_err(|e| link_on_the_way(&what, e))?;
+                meta.apply(folder.as_fd(), &what)?;
+            }
+        }
+        let open = self.open.len();
+        self.open.extend(parents[open..].iter().map(|name| (name.clone(), None)));
+        Ok(())
+    }
+
     /// The folder an entry of `names` lies in, made as far as it is
     /// missing (an archive need not list every folder).
     fn parent(&self, names: &[Vec<u8>], what: &str) -> Result<OwnedFd, ArchiveError> {
@@ -819,6 +1175,12 @@ impl Extractor<'_> {
         let meta = Meta::of(entry, &what)?;
         let kind = entry.header().entry_type();
         self.entries += 1;
+        if self.entries > self.bounds.entries {
+            return Err(refused(
+                "the archive changed after it was checked: it holds more entries than were backed up; \
+                 nothing was restored",
+            ));
+        }
         let Some(last) = names.last().cloned() else {
             return match kind {
                 tar::EntryType::Directory => {
@@ -829,6 +1191,7 @@ impl Extractor<'_> {
             };
         };
         let name = c_name(&last)?;
+        self.enter(&names[..names.len() - 1])?;
         let parent = self.parent(&names, &what)?;
         match kind {
             tar::EntryType::Directory => {
@@ -843,10 +1206,18 @@ impl Extractor<'_> {
                     }
                     Err(error) => return Err(failed(&what, error)),
                 }
-                self.folders.push((names, meta));
+                self.open.push((last, Some(meta)));
                 Ok(())
             }
             tar::EntryType::Regular | tar::EntryType::Continuous => {
+                let size = entry.header().size().map_err(|e| refused(format!("{what}: {e}")))?;
+                self.bytes = self.bytes.saturating_add(size);
+                if self.bytes > self.bounds.bytes {
+                    return Err(refused(
+                        "the archive changed after it was checked: it holds more data than was backed up; \
+                         nothing was restored",
+                    ));
+                }
                 let flags =
                     OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC;
                 let file =
@@ -910,17 +1281,11 @@ impl Extractor<'_> {
         }
     }
 
-    /// The folders' owners, modes and times, the deepest first, the target
-    /// last: once nothing more goes into them.
+    /// The open folders' owners, modes and times, the deepest first, the
+    /// target last: once nothing more goes into them.
     fn finish(mut self) -> Result<u64, ArchiveError> {
-        self.folders.sort_by_key(|folder| std::cmp::Reverse(folder.0.len()));
+        self.enter(&[])?;
         let flags = OFlags::RDONLY | OFlags::DIRECTORY;
-        for (names, meta) in &self.folders {
-            let what = shown(&names.join(&b'/'));
-            let folder =
-                beneath(self.root, &names.join(&b'/'), flags).map_err(|e| link_on_the_way(&what, e))?;
-            meta.apply(folder.as_fd(), &what)?;
-        }
         if let Some(meta) = &self.top {
             let folder = beneath(self.root, b"", flags).map_err(|e| failed("the volume", e))?;
             meta.apply(folder.as_fd(), "the volume")?;
@@ -930,13 +1295,14 @@ impl Extractor<'_> {
 }
 
 /// Extracts the archive in `file` (from its start) beneath `root`, hashing
-/// what is read; refused unless the hash is `expected` and the file was
-/// read to its end at `size` bytes.
+/// what is read, no more than `bounds`; refused unless the hash is
+/// `expected` and the file was read to its end at `size` bytes.
 fn extract(
     file: &mut File,
     root: BorrowedFd<'_>,
     size: u64,
     expected: &str,
+    bounds: Bounds,
     report: &mut dyn FnMut(u8),
 ) -> Result<u64, ArchiveError> {
     file.seek(io::SeekFrom::Start(0)).map_err(|e| failed("the archive", e))?;
@@ -945,7 +1311,7 @@ fn extract(
     let decoder =
         zstd::stream::read::Decoder::new(hashing).map_err(|e| refused(format!("not a zstd archive: {e}")))?;
     let mut archive = tar::Archive::new(decoder);
-    let mut extractor = Extractor { root, folders: Vec::new(), top: None, entries: 0 };
+    let mut extractor = Extractor { root, open: Vec::new(), top: None, entries: 0, bytes: 0, bounds };
     for entry in archive.entries().map_err(|e| refused(format!("not a tar archive: {e}")))? {
         let mut entry = entry.map_err(|e| refused(format!("the archive cannot be read: {e}")))?;
         extractor.entry(&mut entry)?;
@@ -960,48 +1326,146 @@ fn extract(
 }
 
 /// Removes `name` from `folder` with everything in it, never following a
-/// link or entering another file system.
-fn remove_tree(folder: BorrowedFd<'_>, name: &CStr, device: u64, depth: usize) -> Result<(), Errno> {
+/// link or entering another file system. It holds a descriptor or two
+/// however deep the folders go: down by name, up again by `..`, which must
+/// be the folder it came from.
+fn remove_tree(folder: BorrowedFd<'_>, name: &CStr, device: u64) -> Result<(), Errno> {
     let stat = statat(folder, name, AtFlags::SYMLINK_NOFOLLOW)?;
     if kind(&stat) != FileType::Directory {
         return unlinkat(folder, name, AtFlags::empty());
     }
-    if identity(&stat).0 != device || depth > MAX_DEPTH {
+    if identity(&stat).0 != device {
         return Err(Errno::XDEV);
     }
-    let inner = openat(
-        folder,
-        name,
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )?;
+    let mut current = openat(folder, name, WALKED, Mode::empty())?;
+    if identity(&fstat(&current)?) != identity(&stat) {
+        return Err(Errno::AGAIN);
+    }
+    let mut path = vec![Level { name: name.to_owned(), id: identity(&stat), pending: Vec::new() }];
     loop {
-        let mut batch = Vec::new();
-        for entry in Dir::read_from(&inner)? {
-            let entry = entry?;
-            let child = entry.file_name();
-            if child != c"." && child != c".." {
-                batch.push(child.to_owned());
-            }
-            if batch.len() >= 4096 {
-                break;
+        let Some(level) = path.last_mut() else { return Ok(()) };
+        if level.pending.is_empty() {
+            // Files go at once; up to [`NOTED`] folders are noted to go into.
+            for entry in Dir::read_from(&current)? {
+                let entry = entry?;
+                let child = entry.file_name();
+                if child == c"." || child == c".." {
+                    continue;
+                }
+                let stat = match statat(&current, child, AtFlags::SYMLINK_NOFOLLOW) {
+                    Err(Errno::NOENT) => continue,
+                    other => other?,
+                };
+                if kind(&stat) != FileType::Directory {
+                    match unlinkat(&current, child, AtFlags::empty()) {
+                        Ok(()) | Err(Errno::NOENT) => continue,
+                        Err(error) => return Err(error),
+                    }
+                }
+                if identity(&stat).0 != device {
+                    return Err(Errno::XDEV);
+                }
+                level.pending.push(child.to_owned());
+                if level.pending.len() >= NOTED {
+                    break;
+                }
             }
         }
-        if batch.is_empty() {
-            break;
+        if let Some(next) = level.pending.pop() {
+            let inner = match openat(&current, &next, WALKED, Mode::empty()) {
+                Ok(inner) => inner,
+                Err(Errno::NOENT) => continue,
+                Err(error) => return Err(error),
+            };
+            let id = identity(&fstat(&inner)?);
+            if id.0 != device {
+                return Err(Errno::XDEV);
+            }
+            path.push(Level { name: next, id, pending: Vec::new() });
+            current = inner;
+            continue;
         }
-        for child in batch {
-            remove_tree(inner.as_fd(), &child, device, depth + 1)?;
+        // Empty now: it goes, and the walk goes back up.
+        let Some(done) = path.pop() else { return Ok(()) };
+        match path.last() {
+            None => {
+                drop(current);
+                return unlinkat(folder, &done.name, AtFlags::REMOVEDIR);
+            }
+            Some(above) => {
+                let fd = up(&current, above.id)?;
+                unlinkat(&fd, &done.name, AtFlags::REMOVEDIR)?;
+                current = fd;
+            }
         }
     }
-    unlinkat(folder, name, AtFlags::REMOVEDIR)
 }
 
-/// Restores a volume as `job` says; `report` hears each step and how far.
-pub(crate) fn restore(
+/// Removes what earlier restores of a volume left beside its data, in its
+/// folder `volume` on the file system `device`: fresh folders a unit
+/// stopped, or killed by its time or memory, never removed, and old
+/// contents that could not all be removed after a swap. Only while no work
+/// on the volume runs. How many went, and what could not.
+fn sweep_volume(volume: BorrowedFd<'_>, device: u64) -> (u64, Vec<String>) {
+    let Ok(left) = names_in(volume, is_fresh_name) else { return (0, Vec::new()) };
+    let (mut removed, mut kept) = (0, Vec::new());
+    for name in left {
+        match remove_tree(volume, &name, device) {
+            Ok(()) => removed += 1,
+            Err(error) => {
+                tracing::warn!(%error, name = %name.to_string_lossy(), "what a restore left cannot all be removed");
+                kept.push(name.to_string_lossy().into_owned());
+            }
+        }
+    }
+    (removed, kept)
+}
+
+/// Removes what restores left beside the data of every volume in
+/// `job.volumes` but those busy: done as the agent starts.
+pub(crate) fn sweep(job: &SweepJob) -> Result<Swept, ArchiveError> {
+    let volumes = open_folder(&job.volumes, OFlags::PATH)?;
+    let device = identity(&fstat(&volumes).map_err(|e| failed("the volumes", e))?).0;
+    let names = names_in(volumes.as_fd(), |name| !job.busy.iter().any(|busy| busy.as_bytes() == name))
+        .map_err(|e| failed("the volumes", e))?;
+    let mut swept = Swept { removed: 0, left: Vec::new() };
+    for name in names {
+        let Ok(volume) = beneath(volumes.as_fd(), name.as_bytes(), OFlags::PATH | OFlags::DIRECTORY) else {
+            continue;
+        };
+        if fstat(&volume).map(|stat| identity(&stat).0) != Ok(device) {
+            continue;
+        }
+        let (removed, left) = sweep_volume(volume.as_fd(), device);
+        swept.removed += removed;
+        swept.left.extend(left.into_iter().map(|left| format!("{}/{left}", name.to_string_lossy())));
+    }
+    Ok(swept)
+}
+
+/// The volume's folder in Docker's data root, and its file system.
+fn volume_folder(path: &Path) -> Result<(OwnedFd, u64), ArchiveError> {
+    let volume = open_folder(path, OFlags::PATH)?;
+    let device = identity(&fstat(&volume).map_err(|e| failed("the volume", e))?).0;
+    Ok((volume, device))
+}
+
+/// The folder `name` beside the data: on the volume's file system, no link.
+fn folder_beside(volume: BorrowedFd<'_>, name: &str, device: u64) -> Result<(), ArchiveError> {
+    let stat = statat(volume, name, AtFlags::SYMLINK_NOFOLLOW).map_err(|e| failed(name, e))?;
+    if kind(&stat) != FileType::Directory || identity(&stat).0 != device {
+        return Err(refused(format!("{name} is no folder of Docker's data root")));
+    }
+    Ok(())
+}
+
+/// Extracts the archive `job` names into a fresh folder beside the
+/// volume's data, for [`swap`] to swap in; `report` hears each step and how
+/// far. A failure removes what it made.
+pub(crate) fn extract_volume(
     job: &RestoreJob,
     report: &mut dyn FnMut(&'static str, u8),
-) -> Result<RestoreDone, ArchiveError> {
+) -> Result<Extracted, ArchiveError> {
     let share = open_folder(&job.share, OFlags::PATH)?;
     let (mut file, size) = open_archive(share.as_fd(), &job.archive)?;
     let digest = hash_file(&mut file, size, &mut |percent| report("verifying", percent))?;
@@ -1011,41 +1475,44 @@ pub(crate) fn restore(
             job.archive.as_str()
         )));
     }
-    let volume = open_folder(&job.volume_dir, OFlags::PATH)?;
-    let device = identity(&fstat(&volume).map_err(|e| failed("the volume", e))?).0;
-    let data =
-        statat(&volume, "_data", AtFlags::SYMLINK_NOFOLLOW).map_err(|e| failed("the volume's data", e))?;
-    if kind(&data) != FileType::Directory || identity(&data).0 != device {
-        return Err(refused("the volume's data is no folder of Docker's data root"));
+    let (volume, device) = volume_folder(&job.volume_dir)?;
+    folder_beside(volume.as_fd(), "_data", device)?;
+    let (swept, left) = sweep_volume(volume.as_fd(), device);
+    if !left.is_empty() {
+        return Err(ArchiveError::Failed(format!(
+            "what an earlier restore left beside the data cannot be removed: {}",
+            left.join(", ")
+        )));
+    }
+    // The old contents stay until the swap: the backup's data needs room
+    // beside them.
+    let space = rustix::fs::fstatvfs(&volume).map_err(|e| failed("the volume's file system", e))?;
+    let free = space.f_bavail.saturating_mul(space.f_frsize);
+    if free < job.data_bytes {
+        return Err(refused(format!(
+            "too little free space beside the volume's data: the backup holds {} bytes, {free} are free",
+            job.data_bytes
+        )));
     }
     let mut random = [0u8; 8];
     rustix::rand::getrandom(&mut random, rustix::rand::GetRandomFlags::empty())
         .map_err(|e| failed("no random name", e))?;
-    let fresh = CString::new(format!("_data.zendiloos-restore-{:016x}", u64::from_le_bytes(random)))
-        .map_err(|e| failed("a name", e))?;
-    mkdirat(&volume, fresh.as_c_str(), Mode::from_raw_mode(0o700))
+    let fresh = format!("{FRESH_PREFIX}{:016x}", u64::from_le_bytes(random));
+    let fresh_c = CString::new(fresh.as_str()).map_err(|e| failed("a name", e))?;
+    mkdirat(&volume, fresh_c.as_c_str(), Mode::from_raw_mode(0o700))
         .map_err(|e| failed("a fresh folder", e))?;
-    let extracted = beneath(volume.as_fd(), fresh.to_bytes(), OFlags::PATH | OFlags::DIRECTORY)
+    let extracted = beneath(volume.as_fd(), fresh.as_bytes(), OFlags::PATH | OFlags::DIRECTORY)
         .map_err(|e| failed("the fresh folder", e))
         .and_then(|root| {
-            extract(&mut file, root.as_fd(), size, &digest, &mut |percent| report("restoring", percent))
-        })
-        .and_then(|entries| {
-            renameat_with(&volume, "_data", &volume, fresh.as_c_str(), RenameFlags::EXCHANGE)
-                .map(|()| entries)
-                .map_err(|e| failed("swapping the data", e))
+            let bounds = Bounds::of(job.data_bytes, job.entries);
+            extract(&mut file, root.as_fd(), size, &digest, bounds, &mut |percent| {
+                report("restoring", percent)
+            })
         });
     match extracted {
-        Ok(entries) => {
-            // The old contents are under the fresh name now.
-            let left_over = remove_tree(volume.as_fd(), &fresh, device, 0).err().map(|error| {
-                tracing::warn!(%error, "the old contents of the volume could not all be removed");
-                fresh.to_string_lossy().into_owned()
-            });
-            Ok(RestoreDone { entries, left_over })
-        }
+        Ok(entries) => Ok(Extracted { entries, fresh, swept }),
         Err(error) => {
-            if let Err(cleanup) = remove_tree(volume.as_fd(), &fresh, device, 0) {
+            if let Err(cleanup) = remove_tree(volume.as_fd(), &fresh_c, device) {
                 tracing::warn!(%cleanup, "what was extracted could not all be removed");
             }
             Err(error)
@@ -1053,10 +1520,56 @@ pub(crate) fn restore(
     }
 }
 
+/// Swaps the fresh folder `job` names in for the volume's data, in one
+/// rename, and removes the old contents; with `discard`, removes the fresh
+/// folder instead.
+pub(crate) fn swap(job: &SwapJob) -> Result<Swapped, ArchiveError> {
+    if !is_fresh_name(job.fresh.as_bytes()) {
+        return Err(refused(format!("{} is no folder a restore made", job.fresh)));
+    }
+    let (volume, device) = volume_folder(&job.volume_dir)?;
+    folder_beside(volume.as_fd(), &job.fresh, device)?;
+    let fresh = CString::new(job.fresh.as_str()).map_err(|e| failed("a name", e))?;
+    if !job.discard {
+        folder_beside(volume.as_fd(), "_data", device)?;
+        renameat_with(&volume, "_data", &volume, fresh.as_c_str(), RenameFlags::EXCHANGE)
+            .map_err(|e| failed("swapping the data", e))?;
+    }
+    // The old contents are under the fresh name now, or what was extracted.
+    let left_over = remove_tree(volume.as_fd(), &fresh, device).err().map(|error| {
+        tracing::warn!(%error, "a folder beside the volume's data could not all be removed");
+        job.fresh.clone()
+    });
+    Ok(Swapped { left_over })
+}
+
+/// What a whole restore did: extracted, then swapped in.
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct RestoreDone {
+    pub entries: u64,
+    pub left_over: Option<String>,
+}
+
+/// Restores a volume as `job` says, both units' work in one.
+#[cfg(test)]
+pub(crate) fn restore(
+    job: &RestoreJob,
+    report: &mut dyn FnMut(&'static str, u8),
+) -> Result<RestoreDone, ArchiveError> {
+    let extracted = extract_volume(job, report)?;
+    let swap = SwapJob { volume_dir: job.volume_dir.clone(), fresh: extracted.fresh, discard: false };
+    let swapped = self::swap(&swap)?;
+    Ok(RestoreDone { entries: extracted.entries, left_over: swapped.left_over })
+}
+
 /// Removes a backup's file if it still is the one written; `false` if it
-/// is gone or another file now.
+/// is gone or another file now. Which file it is: its inode, size and time
+/// of writing, on the share's file system as it is mounted now (a ZFS
+/// dataset's device number changes from one mount to the next).
 pub(crate) fn remove_backup(job: &RemoveJob) -> Result<bool, ArchiveError> {
     let share = open_folder(&job.share, OFlags::PATH)?;
+    let device = identity(&fstat(&share).map_err(|e| failed("the share", e))?).0;
     let Some(name) = job.path.file_name() else { return Err(refused("no file named")) };
     let parent = job.path.parent().unwrap_or_default();
     let folder = match beneath(share.as_fd(), parent.as_str().as_bytes(), OFlags::PATH | OFlags::DIRECTORY) {
@@ -1069,7 +1582,11 @@ pub(crate) fn remove_backup(job: &RemoveJob) -> Result<bool, ArchiveError> {
         Err(Errno::NOENT) => return Ok(false),
         Err(error) => return Err(failed(job.path.as_str(), error)),
     };
-    if kind(&stat) != FileType::RegularFile || identity(&stat) != (job.device, job.inode) {
+    let same = kind(&stat) == FileType::RegularFile
+        && identity(&stat) == (device, job.inode)
+        && u64::try_from(stat.st_size) == Ok(job.bytes)
+        && job.modified.is_none_or(|time| modified(&stat) == time);
+    if !same {
         return Ok(false);
     }
     unlinkat(&folder, name, AtFlags::empty()).map_err(|e| failed(job.path.as_str(), e))?;
@@ -1105,8 +1622,14 @@ pub(crate) fn decode<T: serde::de::DeserializeOwned>(hex: &str) -> Result<T, Str
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VolumeJob {
     BackUp,
+    /// A restore's first part: the archive extracted beside the data.
     Restore,
+    /// Its second: swapped in.
+    Swap,
     RemoveBackup,
+    /// What restores left beside the volumes' data, removed as the agent
+    /// starts.
+    Sweep,
 }
 
 impl VolumeJob {
@@ -1115,7 +1638,20 @@ impl VolumeJob {
         match self {
             Self::BackUp => "backup-volume",
             Self::Restore => "restore-volume",
+            Self::Swap => "swap-volume",
             Self::RemoveBackup => "remove-volume-backup",
+            Self::Sweep => "sweep-volumes",
+        }
+    }
+
+    /// The word for it in its unit's name.
+    pub(crate) fn word(self) -> &'static str {
+        match self {
+            Self::BackUp => "backup",
+            Self::Restore => "restore",
+            Self::Swap => "swap",
+            Self::RemoveBackup => "remove",
+            Self::Sweep => "sweep",
         }
     }
 }
@@ -1137,12 +1673,19 @@ pub fn run_volume_job(kind: VolumeJob, hex: &str, now: i64, out: &mut dyn Write)
                     .and_then(|done| serde_json::to_value(done).map_err(|e| failed("the result", e)))
             }),
             VolumeJob::Restore => decode::<RestoreJob>(hex).map_err(ArchiveError::Refused).and_then(|job| {
-                restore(&job, &mut progress)
+                extract_volume(&job, &mut progress)
                     .and_then(|done| serde_json::to_value(done).map_err(|e| failed("the result", e)))
+            }),
+            VolumeJob::Swap => decode::<SwapJob>(hex).map_err(ArchiveError::Refused).and_then(|job| {
+                progress("restoring", 100);
+                swap(&job).and_then(|done| serde_json::to_value(done).map_err(|e| failed("the result", e)))
             }),
             VolumeJob::RemoveBackup => decode::<RemoveJob>(hex)
                 .map_err(ArchiveError::Refused)
                 .and_then(|job| remove_backup(&job).map(serde_json::Value::Bool)),
+            VolumeJob::Sweep => decode::<SweepJob>(hex).map_err(ArchiveError::Refused).and_then(|job| {
+                sweep(&job).and_then(|done| serde_json::to_value(done).map_err(|e| failed("the result", e)))
+            }),
         }
     };
     match outcome {

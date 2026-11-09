@@ -66,8 +66,25 @@ export function pickerPath(
   return plan.folder ? `${share}/${plan.folder}` : share
 }
 
-/** What a new plan starts as: nightly, seven kept, the containers stopped. */
-export function defaultPlan(): {
+/** The night's hours a new plan may start at. */
+const NIGHT_HOURS = [1, 2, 3, 4, 5]
+
+/**
+ * The night's hour the fewest of `plans` take, so that new plans spread
+ * over the night (backups run one at a time, the containers stopped
+ * meanwhile); among those as free, always the same one for `volume`.
+ */
+export function quietHour(volume: string, plans: readonly { hour: number }[]): number {
+  const taken = (hour: number) => plans.filter((plan) => plan.hour === hour).length
+  const fewest = Math.min(...NIGHT_HOURS.map(taken))
+  const free = NIGHT_HOURS.filter((hour) => taken(hour) === fewest)
+  let hash = 0
+  for (const char of volume) hash = (hash * 31 + char.charCodeAt(0)) >>> 0
+  return free[hash % free.length] ?? 3
+}
+
+/** What a new plan starts as: nightly at `hour`, seven kept, the containers stopped. */
+export function defaultPlan(hour = 3): {
   frequency: PlanFrequency
   weekday: number
   day: number
@@ -75,5 +92,16 @@ export function defaultPlan(): {
   keep: number
   stop: boolean
 } {
-  return { frequency: 'daily', weekday: 6, day: 1, hour: 3, keep: 7, stop: true }
+  return { frequency: 'daily', weekday: 6, day: 1, hour, keep: 7, stop: true }
+}
+
+/** Who may read a backups' share, in words: accounts, then groups. */
+export function readersText(
+  readers: { accounts: string[]; groups: string[] },
+  t: Translate,
+): string {
+  return [
+    ...readers.accounts,
+    ...readers.groups.map((group) => t('docker.volumes.plan.group', { name: group })),
+  ].join(', ')
 }

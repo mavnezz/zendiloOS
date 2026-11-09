@@ -122,6 +122,7 @@ impl Operations {
             volumes: Volumes::new(
                 Program::new(&tools.docker)?,
                 Program::new(&tools.systemd_run)?,
+                Program::new(&tools.systemctl)?,
                 paths.host.clone(),
             ),
             projects: Projects::new(
@@ -151,12 +152,16 @@ impl Operations {
     }
 
     /// Work left from before a restart: network, web server and firewall
-    /// changes nobody confirmed go back. Call once, before serving.
+    /// changes nobody confirmed go back; backups and restores of volumes
+    /// nobody waits for any more are stopped, and what restores left beside
+    /// the volumes' data goes (in the background: backups and restores wait
+    /// for it). Call once, before serving.
     pub async fn recover(&self) {
         if self.role == Role::System {
             self.network.restore_unconfirmed().await;
             self.web_server.restore_unconfirmed().await;
             self.firewall.restore_unconfirmed().await;
+            self.volumes.recover().await;
         }
     }
 
@@ -272,12 +277,13 @@ impl Operations {
             Request::BackUpVolume { volume, share, folder, name } => {
                 self.volumes.back_up(volume, share, folder, name).await
             }
-            Request::RestoreVolume { volume, share, archive, sha256 } => {
-                self.volumes.restore(volume, share, archive, sha256).await
+            Request::RestoreVolume { volume, share, archive, sha256, data_bytes, entries } => {
+                self.volumes.restore(volume, share, archive, sha256, (*data_bytes, *entries)).await
             }
-            Request::RemoveVolumeBackup { share, path, device, inode } => {
-                self.volumes.remove_backup(share, path, *device, *inode).await
+            Request::RemoveVolumeBackup { share, path, inode, bytes, modified } => {
+                self.volumes.remove_backup(share, path, (*inode, *bytes, *modified)).await
             }
+            Request::EndVolumeWork { volume } => self.volumes.end_work(volume).await,
             Request::CheckCompose { project, directory, compose } => {
                 self.docker.check_compose(project, directory, compose).await
             }

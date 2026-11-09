@@ -9,13 +9,15 @@ pub mod ports;
 mod projects;
 mod updates;
 mod volumes;
+mod work;
 
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod volume_tests;
+#[cfg(test)]
+mod work_tests;
 
-use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -99,6 +101,10 @@ pub enum ContainersError {
     /// A backup or restore of the volume is under way.
     #[error("a backup or restore of the volume {0} is under way")]
     VolumeBusy(String),
+    /// A backup or restore keeps these containers stopped, or works on
+    /// their volume, until it ends.
+    #[error("a backup or restore keeps these containers stopped until it ends: {}", .0.join(", "))]
+    Held(Vec<String>),
     #[error(transparent)]
     Port(#[from] PortError),
 }
@@ -132,9 +138,10 @@ impl From<StorageError> for ContainersError {
 
 fn job_error(error: &ContainersError) -> JobError {
     let code = match error {
-        ContainersError::Refused(_) | ContainersError::VolumeInUse(_) | ContainersError::VolumeBusy(_) => {
-            "refused"
-        }
+        ContainersError::Refused(_)
+        | ContainersError::VolumeInUse(_)
+        | ContainersError::VolumeBusy(_)
+        | ContainersError::Held(_) => "refused",
         ContainersError::Failed(_) => "agent_failed",
         _ => "internal",
     };
@@ -150,8 +157,8 @@ pub struct Containers {
     report: Arc<Mutex<Option<UpdateReport>>>,
     /// The terminals each account has open.
     terminals: Arc<container::OpenTerminals>,
-    /// The volumes being backed up or restored now.
-    busy: Arc<Mutex<BTreeSet<String>>>,
+    /// Backups and restores of volumes: their turns, and what they hold.
+    work: Arc<work::Work>,
 }
 
 impl Containers {
@@ -161,7 +168,7 @@ impl Containers {
             history: Arc::new(Mutex::new(UsageHistory::new(HISTORY))),
             report: Arc::new(Mutex::new(None)),
             terminals: Arc::default(),
-            busy: Arc::default(),
+            work: Arc::default(),
         }
     }
 

@@ -401,24 +401,39 @@ pub enum Request {
         name: BackupStem,
     },
     /// Replaces the contents of a local volume no running container uses
-    /// with the archive `archive` of the share, if its SHA-256 is `sha256`:
-    /// checked before anything is extracted, and again of what was
-    /// extracted. Extracted into a fresh folder beside the data, each entry
-    /// beneath it (no absolute paths, no `..`, no link followed, no
-    /// devices), then swapped in; a failure leaves the old contents.
+    /// with the archive `archive` of the share, if only root may write it
+    /// and its SHA-256 is `sha256`: checked before anything is extracted,
+    /// and again of what was extracted. Extracted into a fresh folder beside
+    /// the data by one unit, each entry beneath it (no absolute paths, no
+    /// `..`, no link followed, no devices), no more than the backup's
+    /// `data_bytes` and `entries` and a little; then, if still no running
+    /// container uses the volume, swapped in by another. A failure leaves
+    /// the old contents.
     RestoreVolume {
         volume: VolumeName,
         share: ShareLocation,
         archive: SharePath,
         sha256: ArchiveDigest,
+        data_bytes: u64,
+        /// Unknown for backups recorded before entries were counted.
+        entries: Option<u64>,
     },
-    /// Deletes a file a backup wrote, if `path` still is that file (device
-    /// and inode); never anything else. Answers [`Response::BackupRemoved`].
+    /// Stops what a backup or restore of `volume` left running (its units,
+    /// should their client have gone) and answers once nothing runs for it
+    /// any more. Answers [`Response::VolumeWorkEnded`].
+    EndVolumeWork {
+        volume: VolumeName,
+    },
+    /// Deletes a file a backup wrote, if `path` still is that file: its
+    /// inode, size and time of writing (if recorded), on the share's file
+    /// system as it is mounted now; never anything else. Answers
+    /// [`Response::BackupRemoved`].
     RemoveVolumeBackup {
         share: ShareLocation,
         path: SharePath,
-        device: u64,
         inode: u64,
+        bytes: u64,
+        modified: Option<i64>,
     },
     /// `docker compose config` of `compose` as if it were in `directory`:
     /// the file as Compose understands it, as JSON, or refused with why
@@ -841,6 +856,7 @@ impl Request {
             Request::BackUpVolume { .. } => "back_up_volume",
             Request::RestoreVolume { .. } => "restore_volume",
             Request::RemoveVolumeBackup { .. } => "remove_volume_backup",
+            Request::EndVolumeWork { .. } => "end_volume_work",
             Request::CheckCompose { .. } => "check_compose",
             Request::ControlProject { .. } => "control_project",
             Request::DeployProject { .. } => "deploy_project",
@@ -1092,18 +1108,31 @@ pub enum Response {
         sizes: Vec<VolumeSize>,
     },
     /// A volume was backed up: its archive and manifest, the archive's
-    /// SHA-256, what its data took up and the manifest as written.
+    /// SHA-256, what its data took up, its entries and the manifest as
+    /// written.
     VolumeBackedUp {
         archive: WrittenFile,
         manifest: WrittenFile,
         sha256: ArchiveDigest,
         data_bytes: u64,
+        entries: u64,
         manifest_json: String,
     },
     /// Whether the backup's file was removed: `false` if it was gone or is
     /// another file now, which stays.
     BackupRemoved {
         removed: bool,
+    },
+    /// Nothing runs any more for the volume; `stopped`: something still ran
+    /// and was stopped.
+    VolumeWorkEnded {
+        stopped: bool,
+    },
+    /// A volume was restored; `left_over`: its old contents could not all be
+    /// removed and lie in this folder beside its data, until the next
+    /// restore of it or the agent's next start removes them.
+    VolumeRestored {
+        left_over: Option<String>,
     },
     Snapshots {
         /// `zfs list -H -p -t snapshot -o name,creation,used,referenced,`
@@ -1355,6 +1384,7 @@ impl Request {
             | Request::PruneVolumes {}
             | Request::BackUpVolume { .. }
             | Request::RestoreVolume { .. }
+            | Request::EndVolumeWork { .. }
             | Request::ControlProject { .. }
             // The ACME server checks the names: up to minutes with DNS.
             | Request::IssueCertificate { .. } => true,
@@ -1390,6 +1420,25 @@ impl Request {
     /// blinking for minutes never keep the quick requests waiting.
     pub fn is_burst(&self) -> bool {
         matches!(self, Request::ReadBurst { .. })
+    }
+
+    /// A backup or restore of a volume, or what ends one: up to hours in
+    /// units of their own, in places of their own, so that the long places
+    /// stay free for deploys, pulls, drives and pools.
+    pub fn is_volume_work(&self) -> bool {
+        matches!(
+            self,
+            Request::BackUpVolume { .. }
+                | Request::RestoreVolume { .. }
+                | Request::RemoveVolumeBackup { .. }
+                | Request::EndVolumeWork { .. }
+        )
+    }
+
+    /// Counting what the volumes' data takes up: bounded, but seconds of
+    /// walking each time; one at a time, in a place of its own.
+    pub fn is_count(&self) -> bool {
+        matches!(self, Request::DockerVolumeSizes {})
     }
 
     pub fn role(&self) -> Role {
@@ -2279,13 +2328,14 @@ mod tests {
             "op": "restore_volume", "volume": "teslamate_db",
             "share": { "volume": 1, "share": "backups" },
             "archive": "docker/teslamate_db/teslamate_db-20261108-030000.tar.zst", "sha256": "ab".repeat(32),
+            "data_bytes": 4096, "entries": null,
         }))
         .unwrap();
         assert_eq!((restore.name(), restore.is_long()), ("restore_volume", true));
         for bad in [
-            json!({ "op": "restore_volume", "volume": "-x", "share": { "volume": 1, "share": "b" }, "archive": "a", "sha256": "ab".repeat(32) }),
-            json!({ "op": "restore_volume", "volume": "x", "share": { "volume": 1, "share": "b" }, "archive": "../a", "sha256": "ab".repeat(32) }),
-            json!({ "op": "restore_volume", "volume": "x", "share": { "volume": 1, "share": "b" }, "archive": "a", "sha256": "short" }),
+            json!({ "op": "restore_volume", "volume": "-x", "share": { "volume": 1, "share": "b" }, "archive": "a", "sha256": "ab".repeat(32), "data_bytes": 1, "entries": 1 }),
+            json!({ "op": "restore_volume", "volume": "x", "share": { "volume": 1, "share": "b" }, "archive": "../a", "sha256": "ab".repeat(32), "data_bytes": 1, "entries": 1 }),
+            json!({ "op": "restore_volume", "volume": "x", "share": { "volume": 1, "share": "b" }, "archive": "a", "sha256": "short", "data_bytes": 1, "entries": 1 }),
             json!({ "op": "back_up_volume", "volume": "x", "share": { "volume": 1, "share": "b" }, "folder": "", "name": "a/b" }),
             json!({ "op": "create_volume", "name": "x", "labels": { "a=b": "c" } }),
         ] {
@@ -2297,11 +2347,20 @@ mod tests {
                 share: ShareName::parse("backups").unwrap(),
             },
             path: SharePath::parse("docker/x/x-20261108-030000.tar.zst").unwrap(),
-            device: 41,
             inode: 7,
+            bytes: 1234,
+            modified: Some(1_762_570_800_000_000_000),
         };
         assert_eq!((remove.name(), remove.is_long()), ("remove_volume_backup", false));
         assert!(Request::DockerVolumeSizes {}.is_long() && !Request::DockerVolumes {}.is_long());
+        // Places of their own, never the long ones of deploys and pulls.
+        let end = Request::EndVolumeWork { volume: VolumeName::parse("x1").unwrap() };
+        assert_eq!((end.name(), end.is_long()), ("end_volume_work", true));
+        for work in [&backup, &restore, &remove, &end] {
+            assert!(work.is_volume_work() && !work.is_count(), "{work:?}");
+        }
+        assert!(Request::DockerVolumeSizes {}.is_count() && !Request::DockerVolumeSizes {}.is_volume_work());
+        assert!(!Request::PruneVolumes {}.is_volume_work() && !Request::DockerVolumes {}.is_count());
         let names = [
             Request::DockerVolumes {}.name(),
             Request::PruneVolumes {}.name(),

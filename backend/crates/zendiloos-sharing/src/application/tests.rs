@@ -457,6 +457,17 @@ async fn with_photos(s: &Setup) -> ShareId {
 }
 
 #[tokio::test]
+async fn who_may_read_a_share_is_told_by_name() {
+    let s = setup();
+    let id = with_photos(&s).await;
+    let readers = s.sharing.readers(id.get()).await.unwrap().unwrap();
+    assert_eq!(readers.accounts, ["bob"]);
+    assert_eq!(readers.groups, ["family"]);
+    assert_eq!(readers.nfs, ["192.168.1.0/24"]);
+    assert_eq!(s.sharing.readers(99).await.unwrap(), None);
+}
+
+#[tokio::test]
 async fn users_see_the_shares_their_rules_name() {
     let s = setup();
     let id = with_photos(&s).await;

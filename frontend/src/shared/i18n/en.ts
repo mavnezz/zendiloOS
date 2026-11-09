@@ -948,6 +948,7 @@ const en = {
         6: 'Sundays',
       },
       steps: {
+        waiting: 'Waiting for another backup or restore',
         stopping: 'Stopping the containers',
         backing_up: 'Backing up',
         starting: 'Starting the containers again',
@@ -961,6 +962,12 @@ const en = {
         folder: 'Folder',
         browse: 'Browse',
         noFolder: 'Choose a folder of a shared folder you may write.',
+        readable:
+          'Everyone who may read this shared folder can read all of the volume’s contents in its backups, also what the containers keep to themselves: database files, keys, .env files.',
+        readers: 'Who may read it: {names}.',
+        noReaders: 'No account or group has a rule for it.',
+        group: 'group {name}',
+        nfs: 'Over NFS: {networks}.',
         frequency: 'How often',
         frequencies: { daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly' },
         weekday: 'Weekday',
@@ -2874,6 +2881,8 @@ const en = {
     share_denied: 'You may not write in this shared folder.',
     volume_in_use: 'Running containers use the volume',
     volume_busy: 'A backup or restore of the volume is under way; try again once it has ended.',
+    containers_held:
+      'A backup or restore of a volume keeps these containers stopped until it has ended; try again then',
     source_exists: 'This catalog is there already.',
     official_source: 'The community catalog is built in.',
     not_a_catalog: 'This is no app catalog',

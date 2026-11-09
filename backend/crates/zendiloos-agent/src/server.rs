@@ -29,6 +29,11 @@ const MAX_CONCURRENT_WALKS: usize = 2;
 /// Disks read from at once to make them blink, beside everything else;
 /// more wait for their turn.
 const MAX_CONCURRENT_BURSTS: usize = 2;
+/// Backups and restores of volumes running at once, beside the long
+/// operations: each takes up to hours in a unit of its own. zendiloosd runs
+/// one at a time; the second place is for ending one or removing an old
+/// archive meanwhile.
+const MAX_CONCURRENT_VOLUME_WORK: usize = 2;
 
 /// Accepts connections from one account and answers one request each.
 #[derive(Debug, Clone)]
@@ -39,6 +44,9 @@ pub struct Server {
     long_permits: Arc<Semaphore>,
     walk_permits: Arc<Semaphore>,
     burst_permits: Arc<Semaphore>,
+    volume_permits: Arc<Semaphore>,
+    /// Counting the volumes' data, one at a time.
+    count_permit: Arc<Semaphore>,
     /// One long place per user at a time.
     users: Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<Semaphore>>>>,
     /// Set once the agent is asked to stop: what has not started yet does
@@ -55,6 +63,8 @@ impl Server {
             long_permits: Arc::new(Semaphore::new(MAX_CONCURRENT_LONG)),
             walk_permits: Arc::new(Semaphore::new(MAX_CONCURRENT_WALKS)),
             burst_permits: Arc::new(Semaphore::new(MAX_CONCURRENT_BURSTS)),
+            volume_permits: Arc::new(Semaphore::new(MAX_CONCURRENT_VOLUME_WORK)),
+            count_permit: Arc::new(Semaphore::new(1)),
             users: Arc::default(),
             stopping: Arc::new(watch::channel(false).0),
         }
@@ -126,6 +136,10 @@ impl Server {
             &self.walk_permits
         } else if envelope.request.is_burst() {
             &self.burst_permits
+        } else if envelope.request.is_volume_work() {
+            &self.volume_permits
+        } else if envelope.request.is_count() {
+            &self.count_permit
         } else if envelope.request.is_long() {
             &self.long_permits
         } else {
@@ -136,7 +150,8 @@ impl Server {
         // until the client closes it: it gave up (zendiloosd's own timeout)
         // and reported a failure. While the request waits for a place or a
         // lock, that ends the wait (see `waiting`); once it runs, it is
-        // seen through.
+        // seen through, except by work that stops when it hears so (a
+        // search, a volume's unit).
         let (gone_tx, gone) = watch::channel(false);
         let until = envelope.wait_ms.map(|ms| received + Duration::from_millis(ms) / 2);
         let turn = Turn::new(gone, self.stopping.subscribe(), until);

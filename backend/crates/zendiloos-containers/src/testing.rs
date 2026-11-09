@@ -11,16 +11,17 @@ use zendiloos_kernel::{Actor, AuditLog, Clock, PortError, RequestContext, Timest
 
 use crate::application::ports::{
     BackupRepository, BackupShares, CheckedCompose, DataPlace, DockerData, DockerEngine, EngineError, Lines,
-    NewBackup, ProjectAction, ProjectPlace, ProjectRepository, ProjectStorage, Registries, SharePlace, Steps,
-    StorageError, TerminalInput, TerminalSession, UpdateSettingsRepository, VolumeArchiver,
+    NewBackup, ProjectAction, ProjectPlace, ProjectRepository, ProjectStorage, Registries, SharePlace,
+    ShareReaders, Steps, StorageError, TerminalInput, TerminalSession, UpdateSettingsRepository,
+    VolumeArchiver,
 };
 use crate::application::{Containers, ContainersPorts};
 use crate::domain::{
     AttachedNetwork, Backup, BackupFile, BackupOutcome, BackupPlan, ComposeListing, ComposeModel,
     ComposeService, Container, ContainerAction, ContainerDetails, ContainerProcess, ContainerState,
-    ContainerUsage, DiskUsage, Image, Mount, Network, OwnProject, PROJECT_LABEL, Privileges, ProjectName,
-    PublishedPort, RegistryImage, ResourceLimits, ServiceMount, UpdateSettings, UsageSample, Volume,
-    VolumeSize, WrittenBackup,
+    ContainerUsage, DiskUsage, Image, Mount, Network, OwedStart, OwnProject, PROJECT_LABEL, Privileges,
+    ProjectName, PublishedPort, RegistryImage, ResourceLimits, ServiceMount, UpdateSettings, UsageSample,
+    Volume, VolumeSize, WrittenBackup,
 };
 
 /// A container of `project` (if any) from `image`.
@@ -112,6 +113,13 @@ pub struct FakeEngine {
     pub volumes: Mutex<Vec<Volume>>,
     /// Containers, by ID, that will not start.
     pub stubborn: Mutex<Vec<String>>,
+    /// How long a stop takes, the container running meanwhile: one that
+    /// ignores SIGTERM takes Docker's ten seconds.
+    pub stop_takes: Mutex<std::time::Duration>,
+    /// How long the next listing of the containers takes (Docker busy);
+    /// `listing_late` says one is under way.
+    pub next_listing_takes: Mutex<Option<std::time::Duration>>,
+    pub listing_late: std::sync::atomic::AtomicBool,
     pub listings: Mutex<Vec<ComposeListing>>,
     /// What Compose reads from a file containing `privileged: true`; plain
     /// otherwise; a file containing `broken` it cannot read.
@@ -139,6 +147,9 @@ impl Default for FakeEngine {
                 container("lonely", None, "alpine", false),
             ]),
             stubborn: Mutex::new(vec![]),
+            stop_takes: Mutex::new(std::time::Duration::ZERO),
+            next_listing_takes: Mutex::new(None),
+            listing_late: std::sync::atomic::AtomicBool::new(false),
             volumes: Mutex::new(vec![
                 volume("kuma_data", Some("kuma")),
                 volume("stack_db", Some("stack")),
@@ -181,6 +192,12 @@ impl FakeEngine {
 #[async_trait]
 impl DockerEngine for FakeEngine {
     async fn containers(&self, _: &RequestContext) -> Result<Vec<Container>, EngineError> {
+        let takes = self.next_listing_takes.lock().unwrap().take();
+        if let Some(takes) = takes {
+            self.listing_late.store(true, std::sync::atomic::Ordering::Relaxed);
+            tokio::time::sleep(takes).await;
+            self.listing_late.store(false, std::sync::atomic::Ordering::Relaxed);
+        }
         Ok(self.containers.lock().unwrap().clone())
     }
 
@@ -235,6 +252,10 @@ impl DockerEngine for FakeEngine {
         self.call(format!("{} {id}", action.as_str()));
         if action == ContainerAction::Start && self.stubborn.lock().unwrap().iter().any(|s| s == id) {
             return Err(EngineError::Failed("it exited at once".into()));
+        }
+        let takes = *self.stop_takes.lock().unwrap();
+        if action == ContainerAction::Stop && !takes.is_zero() {
+            tokio::time::sleep(takes).await;
         }
         let mut containers = self.containers.lock().unwrap();
         let container =
@@ -693,7 +714,8 @@ impl DockerData for FakeDockerData {
     }
 }
 
-/// Share 1 is `docker` on volume 1; no other.
+/// Share 1 is `docker` on volume 1, which alice and the group `family`
+/// may read, and the network 192.168.1.0/24 over NFS; no other.
 pub struct FakeBackupShares;
 
 #[async_trait]
@@ -701,17 +723,30 @@ impl BackupShares for FakeBackupShares {
     async fn locate(&self, share_id: i64) -> Result<Option<SharePlace>, PortError> {
         Ok((share_id == 1).then(|| SharePlace { volume: 1, share: "docker".into() }))
     }
+
+    async fn readers(&self, share_id: i64) -> Result<Option<ShareReaders>, PortError> {
+        Ok((share_id == 1).then(|| ShareReaders {
+            accounts: vec!["alice".into()],
+            groups: vec!["family".into()],
+            nfs: vec!["192.168.1.0/24".into()],
+        }))
+    }
 }
 
 /// Backups as the agent would make them, recorded as calls; `fail` makes
 /// the next one fail with its reason. Files removed are those of the
-/// archives written, by inode.
+/// archives written, by inode. Ending a volume's work says nothing ran,
+/// unless `unanswering`.
 #[derive(Default)]
 pub struct FakeArchiver {
     pub calls: Mutex<Vec<String>>,
     pub fail: Mutex<Option<String>>,
     /// Inodes of the files there are.
     pub files: Mutex<Vec<u64>>,
+    /// The agent cannot be reached: ending work fails.
+    pub unanswering: std::sync::atomic::AtomicBool,
+    /// What the next restore says it left beside the data.
+    pub left_over: Mutex<Option<String>>,
 }
 
 impl FakeArchiver {
@@ -744,12 +779,14 @@ impl VolumeArchiver for FakeArchiver {
             bytes: 100,
             device: 7,
             inode,
+            modified: Some(1_762_570_800_000_000_000),
         };
         Ok(WrittenBackup {
             archive: file(format!("{stem}.tar.zst"), inode),
             manifest: file(format!("{stem}.json"), inode + 1),
             sha256: "ab".repeat(32),
             data_bytes: 4096,
+            entries: Some(3),
             manifest_json: format!(
                 r#"{{"volume":"{volume}","driver":"local","labels":{{"com.docker.compose.project":"kuma"}}}}"#
             ),
@@ -760,16 +797,16 @@ impl VolumeArchiver for FakeArchiver {
         &self,
         volume: &str,
         place: &SharePlace,
-        archive: &str,
-        sha256: &str,
+        written: &WrittenBackup,
         _: &dyn Steps,
         _: &RequestContext,
-    ) -> Result<(), EngineError> {
+    ) -> Result<Option<String>, EngineError> {
+        let (archive, sha256) = (&written.archive.path, &written.sha256);
         let short = &sha256[..4.min(sha256.len())];
         self.calls.lock().unwrap().push(format!("restore {volume} from {}/{archive} {short}", place.share));
         match self.fail.lock().unwrap().take() {
             Some(reason) => Err(EngineError::Refused(reason)),
-            None => Ok(()),
+            None => Ok(self.left_over.lock().unwrap().take()),
         }
     }
 
@@ -785,13 +822,22 @@ impl VolumeArchiver for FakeArchiver {
         files.retain(|&inode| inode != file.inode);
         Ok(files.len() < before)
     }
+
+    async fn end_work(&self, volume: &str, _: &RequestContext) -> Result<bool, EngineError> {
+        self.calls.lock().unwrap().push(format!("end work on {volume}"));
+        if self.unanswering.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(EngineError::Port(PortError::new("agent", "not answering")));
+        }
+        Ok(false)
+    }
 }
 
-/// Plans and runs in memory.
+/// Plans, runs and the starts owed in memory.
 #[derive(Default)]
 pub struct MemoryBackups {
     pub plans: Mutex<Vec<BackupPlan>>,
     pub runs: Mutex<Vec<Backup>>,
+    pub owed: Mutex<Vec<OwedStart>>,
 }
 
 /// The labels a manifest of the fake archiver gives.
@@ -843,17 +889,9 @@ impl BackupRepository for MemoryBackups {
             outcome: BackupOutcome::Running,
             driver: "local".into(),
             labels: BTreeMap::new(),
-            stopped: vec![],
             by: backup.by.clone(),
         });
         Ok(id)
-    }
-
-    async fn stopped(&self, id: i64, containers: &[String]) -> Result<(), PortError> {
-        for run in self.runs.lock().unwrap().iter_mut().filter(|r| r.id == id) {
-            run.stopped = containers.to_vec();
-        }
-        Ok(())
     }
 
     async fn finish(
@@ -905,6 +943,23 @@ impl BackupRepository for MemoryBackups {
             run.finished_at = Some(at);
         }
         Ok(cut)
+    }
+
+    async fn owed_starts(&self) -> Result<Vec<OwedStart>, PortError> {
+        Ok(self.owed.lock().unwrap().clone())
+    }
+
+    async fn owe_start(&self, container: &str, volume: &str, at: Timestamp) -> Result<(), PortError> {
+        let mut owed = self.owed.lock().unwrap();
+        if !owed.iter().any(|o| o.container == container && o.volume == volume) {
+            owed.push(OwedStart { container: container.to_owned(), volume: volume.to_owned(), since: at });
+        }
+        Ok(())
+    }
+
+    async fn started(&self, container: &str) -> Result<(), PortError> {
+        self.owed.lock().unwrap().retain(|o| o.container != container);
+        Ok(())
     }
 }
 

@@ -64,7 +64,9 @@ impl Containers {
     }
 
     /// Checks, then updates every project with a newer image, in a job;
-    /// none if there is nothing to take. `actor`: none on a schedule.
+    /// none if there is nothing to take. `actor`: none on a schedule. A
+    /// project whose containers a backup or restore holds waits until it
+    /// ended.
     pub async fn apply_updates(
         &self,
         actor: Option<&Actor>,
@@ -106,11 +108,17 @@ impl Containers {
                 let steps = (projects.len() + pulls.len()).max(1) as f32;
                 let mut failed: Option<ContainersError> = None;
                 for (done, (name, how)) in projects.iter().enumerate() {
-                    progress.step(name, Some(done as f32 / steps)).await;
-                    let outcome = how.run(&this, name, true, &JobLines(progress.clone()), &context).await;
+                    let outcome = async {
+                        this.until_free(name, &progress, &context).await?;
+                        progress.step(name, Some(done as f32 / steps)).await;
+                        Ok::<_, ContainersError>(
+                            how.run(&this, name, true, &JobLines(progress.clone()), &context).await?,
+                        )
+                    }
+                    .await;
                     this.record_update(name, outcome.is_ok(), who.as_ref(), &context).await;
                     if let Err(error) = outcome {
-                        failed.get_or_insert(error.into());
+                        failed.get_or_insert(error);
                     }
                 }
                 for reference in &pulls {

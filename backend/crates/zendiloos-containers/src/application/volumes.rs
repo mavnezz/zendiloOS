@@ -67,10 +67,10 @@ impl Containers {
             return Err(ContainersError::Refused(format!("{} is used by {}", volume.name, users.join(", "))));
         }
         let done = async {
-            self.claim(&volume.name)?;
+            self.claim(&volume.name, false, context).await?;
             let removed =
                 self.ports.engine.remove_volume(&volume.name, context).await.map_err(ContainersError::from);
-            self.release(&volume.name);
+            self.unclaim(&volume.name);
             removed?;
             self.ports.backups.delete_plan(&volume.name).await?;
             Ok(())
@@ -79,12 +79,14 @@ impl Containers {
         self.audited("containers.volume_remove", &volume.name, actor, context, done).await
     }
 
-    /// Removes every volume no container uses, named ones too.
+    /// Removes every volume no container uses, named ones too; refused
+    /// while a volume is backed up or restored (or waits for its turn).
     pub async fn prune_volumes(
         &self,
         actor: &Actor,
         context: &RequestContext,
     ) -> Result<String, ContainersError> {
+        self.no_volume_work()?;
         let done = self.ports.engine.prune_volumes(context).await.map_err(Into::into);
         self.audited("containers.volume_prune", "unused volumes", actor, context, done).await
     }

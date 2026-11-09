@@ -47,10 +47,14 @@ enum Command {
     PowerOffDrive { disk: String },
     /// Back up a Docker volume into a share (a job of the system agent's, in a unit of its own)
     BackupVolume { job: String },
-    /// Restore a Docker volume from an archive in a share (likewise)
+    /// Extract an archive in a share beside a Docker volume's data, to restore it (likewise)
     RestoreVolume { job: String },
+    /// Swap what a restore extracted in for the volume's data (likewise)
+    SwapVolume { job: String },
     /// Remove a file a backup of a volume wrote (likewise)
     RemoveVolumeBackup { job: String },
+    /// Remove what restores left beside the volumes' data (likewise, as the agent starts)
+    SweepVolumes { job: String },
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -85,7 +89,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     let volume_job = match &cli.command {
         Some(Command::BackupVolume { job }) => Some((VolumeJob::BackUp, job)),
         Some(Command::RestoreVolume { job }) => Some((VolumeJob::Restore, job)),
+        Some(Command::SwapVolume { job }) => Some((VolumeJob::Swap, job)),
         Some(Command::RemoveVolumeBackup { job }) => Some((VolumeJob::RemoveBackup, job)),
+        Some(Command::SweepVolumes { job }) => Some((VolumeJob::Sweep, job)),
         _ => None,
     };
     if let Some((kind, job)) = volume_job {
@@ -123,7 +129,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             | Command::PowerOffDrive { .. }
             | Command::BackupVolume { .. }
             | Command::RestoreVolume { .. }
-            | Command::RemoveVolumeBackup { .. } => unreachable!("handled above"),
+            | Command::SwapVolume { .. }
+            | Command::RemoveVolumeBackup { .. }
+            | Command::SweepVolumes { .. } => unreachable!("handled above"),
         };
         outcome.map_err(|error| anyhow::anyhow!("{name}: {error}"))?;
         println!("{name}: folders of shares {done}");

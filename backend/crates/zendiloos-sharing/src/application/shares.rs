@@ -259,6 +259,15 @@ pub struct SharingUseCases {
     pub(super) walks: Arc<Walks>,
 }
 
+/// Who may read a share, by name.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ShareReaders {
+    pub accounts: Vec<String>,
+    pub groups: Vec<String>,
+    /// Hosts and networks it is exported to over NFS.
+    pub nfs: Vec<String>,
+}
+
 impl SharingUseCases {
     pub fn new(ports: SharingPorts) -> Self {
         Self {
@@ -271,6 +280,33 @@ impl SharingUseCases {
 
     pub async fn list(&self) -> Result<Vec<Share>, SharingError> {
         Ok(self.ports.shares.list().await?)
+    }
+
+    /// Who may read share `id`, by name: the accounts and groups its rules
+    /// let read (a disabled account may not), and the NFS clients it is
+    /// exported to while it is shared. `None` if there is no such share.
+    pub async fn readers(&self, id: i64) -> Result<Option<ShareReaders>, SharingError> {
+        let Some(share) = self.ports.shares.list().await?.into_iter().find(|share| share.id.get() == id)
+        else {
+            return Ok(None);
+        };
+        let names = self.ports.directory.names().await?;
+        let mut readers = ShareReaders::default();
+        for rule in share.access.iter().filter(|rule| rule.permission.grant().is_some()) {
+            match rule.subject {
+                Subject::Account(account) if !names.disabled.contains(&account) => {
+                    readers.accounts.extend(names.accounts.get(&account).cloned());
+                }
+                Subject::Group(group) => readers.groups.extend(names.groups.get(&group).cloned()),
+                Subject::Account(_) => {}
+            }
+        }
+        if share.shared {
+            readers.nfs = share.nfs.iter().map(|client| client.network.clone()).collect();
+        }
+        readers.accounts.sort();
+        readers.groups.sort();
+        Ok(Some(readers))
     }
 
     /// Writes the servers' configuration from the database, e.g. at startup

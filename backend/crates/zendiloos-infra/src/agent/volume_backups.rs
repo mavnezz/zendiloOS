@@ -70,6 +70,7 @@ fn file(written: WrittenFile) -> BackupFile {
         bytes: written.bytes,
         device: written.device,
         inode: written.inode,
+        modified: Some(written.modified),
     }
 }
 
@@ -91,12 +92,13 @@ impl VolumeArchiver for AgentVolumeArchiver {
             name: BackupStem::parse(stem).map_err(refused)?,
         };
         match self.ask(request, steps, context).await? {
-            Response::VolumeBackedUp { archive, manifest, sha256, data_bytes, manifest_json } => {
+            Response::VolumeBackedUp { archive, manifest, sha256, data_bytes, entries, manifest_json } => {
                 Ok(WrittenBackup {
                     archive: file(archive),
                     manifest: file(manifest),
                     sha256: sha256.as_str().to_owned(),
                     data_bytes,
+                    entries: Some(entries),
                     manifest_json,
                 })
             }
@@ -108,19 +110,20 @@ impl VolumeArchiver for AgentVolumeArchiver {
         &self,
         volume: &str,
         place: &SharePlace,
-        archive: &str,
-        sha256: &str,
+        written: &WrittenBackup,
         steps: &dyn Steps,
         context: &RequestContext,
-    ) -> Result<(), EngineError> {
+    ) -> Result<Option<String>, EngineError> {
         let request = Request::RestoreVolume {
             volume: VolumeName::parse(volume).map_err(refused)?,
             share: share(place)?,
-            archive: path(archive)?,
-            sha256: ArchiveDigest::parse(sha256).map_err(refused)?,
+            archive: path(&written.archive.path)?,
+            sha256: ArchiveDigest::parse(&written.sha256).map_err(refused)?,
+            data_bytes: written.data_bytes,
+            entries: written.entries,
         };
         match self.ask(request, steps, context).await? {
-            Response::Done => Ok(()),
+            Response::VolumeRestored { left_over } => Ok(left_over),
             other => Err(unexpected(other).into()),
         }
     }
@@ -131,14 +134,25 @@ impl VolumeArchiver for AgentVolumeArchiver {
         file: &BackupFile,
         context: &RequestContext,
     ) -> Result<bool, EngineError> {
+        // Not by its device: a ZFS dataset gets another one as it is
+        // mounted again.
         let request = Request::RemoveVolumeBackup {
             share: share(place)?,
             path: path(&file.path)?,
-            device: file.device,
             inode: file.inode,
+            bytes: file.bytes,
+            modified: file.modified,
         };
         match self.ask(request, &zendiloos_containers::application::ports::NoSteps, context).await? {
             Response::BackupRemoved { removed } => Ok(removed),
+            other => Err(unexpected(other).into()),
+        }
+    }
+
+    async fn end_work(&self, volume: &str, context: &RequestContext) -> Result<bool, EngineError> {
+        let request = Request::EndVolumeWork { volume: VolumeName::parse(volume).map_err(refused)? };
+        match self.ask(request, &zendiloos_containers::application::ports::NoSteps, context).await? {
+            Response::VolumeWorkEnded { stopped } => Ok(stopped),
             other => Err(unexpected(other).into()),
         }
     }
@@ -166,6 +180,20 @@ mod tests {
         SharePlace { volume: 1, share: "backups".into() }
     }
 
+    /// A backup recorded as written to `archive` with `sha256`.
+    fn written(archive: &str, sha256: &str) -> WrittenBackup {
+        let file =
+            |path: &str| BackupFile { path: path.into(), bytes: 1, device: 1, inode: 1, modified: None };
+        WrittenBackup {
+            archive: file(archive),
+            manifest: file("m.json"),
+            sha256: sha256.into(),
+            data_bytes: 1,
+            entries: None,
+            manifest_json: String::new(),
+        }
+    }
+
     #[tokio::test]
     async fn volumes_are_backed_up_restored_and_their_files_removed_through_the_agent() {
         let archiver = AgentVolumeArchiver::new(Arc::new(SimulatedAgent::new()));
@@ -179,15 +207,13 @@ mod tests {
         assert_eq!(written.manifest.path, "docker/stack_cache/stack_cache-20261108-030000.json");
         assert_eq!(written.sha256.len(), 64);
         assert!(written.manifest_json.contains("stack_cache"));
-        let restored = archiver
-            .restore("old_data", &place(), &written.archive.path, &written.sha256, &heard, &context)
-            .await;
+        let restored = archiver.restore("old_data", &place(), &written, &heard, &context).await;
         assert!(restored.is_ok(), "{restored:?}");
-        let busy = archiver
-            .restore("stack_cache", &place(), &written.archive.path, &written.sha256, &heard, &context)
-            .await;
+        let busy = archiver.restore("stack_cache", &place(), &written, &heard, &context).await;
         assert!(matches!(busy, Err(EngineError::Refused(_))), "a running container uses it: {busy:?}");
         assert!(archiver.remove(&place(), &written.archive, &context).await.unwrap());
+        assert!(!archiver.end_work("stack_cache", &context).await.unwrap(), "nothing runs");
+        assert!(matches!(archiver.end_work("-x", &context).await, Err(EngineError::Refused(_))));
     }
 
     #[tokio::test]
@@ -208,8 +234,13 @@ mod tests {
         refused(backup("db", SharePlace { volume: 1, share: "Not A Share".into() }, "", "x1").await);
         refused(backup("db", place(), "../up", "x1").await);
         refused(backup("db", place(), "", "a/b").await);
-        refused(archiver.restore("db", &place(), "a.tar.zst", "short", &heard, &context).await);
-        let odd = BackupFile { path: "../x".into(), bytes: 0, device: 0, inode: 0 };
+        refused(
+            archiver
+                .restore("db", &place(), &written("a.tar.zst", "short"), &heard, &context)
+                .await
+                .map(drop),
+        );
+        let odd = BackupFile { path: "../x".into(), bytes: 0, device: 0, inode: 0, modified: None };
         assert!(matches!(archiver.remove(&place(), &odd, &context).await, Err(EngineError::Refused(_))));
         assert!(agent.asked().is_empty(), "nothing odd was sent");
     }
@@ -223,7 +254,7 @@ mod tests {
         let digest = "ab".repeat(32);
         let refused =
             answering(Response::Error { code: ErrorCode::Forbidden, message: "SHA-256 differs".into() });
-        let result = refused.restore("db", &place(), "a.tar.zst", &digest, &heard, &context).await;
+        let result = refused.restore("db", &place(), &written("a.tar.zst", &digest), &heard, &context).await;
         assert!(matches!(result, Err(EngineError::Refused(_))));
         let failed = answering(Response::Error { code: ErrorCode::Failed, message: "no space".into() });
         let result = failed.back_up("db", &place(), "", "db-1", &heard, &context).await;
@@ -234,9 +265,13 @@ mod tests {
             Err(EngineError::Port(_))
         ));
         let odd = answering(Response::BackupRemoved { removed: true });
-        assert!(odd.restore("db", &place(), "a", &digest, &heard, &context).await.is_err());
+        assert!(odd.restore("db", &place(), &written("a", &digest), &heard, &context).await.is_err());
         let odd = answering(Response::Done);
-        let file = BackupFile { path: "a".into(), bytes: 0, device: 0, inode: 0 };
+        let file = BackupFile { path: "a".into(), bytes: 0, device: 0, inode: 0, modified: None };
         assert!(odd.remove(&place(), &file, &context).await.is_err());
+        let odd = answering(Response::Done);
+        assert!(odd.end_work("db", &context).await.is_err());
+        let ended = answering(Response::VolumeWorkEnded { stopped: true });
+        assert!(ended.end_work("db", &context).await.unwrap());
     }
 }

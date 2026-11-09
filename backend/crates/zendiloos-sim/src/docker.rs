@@ -537,7 +537,8 @@ impl SimDocker {
             | Request::CreateVolume { .. }
             | Request::BackUpVolume { .. }
             | Request::RestoreVolume { .. }
-            | Request::RemoveVolumeBackup { .. } => {
+            | Request::RemoveVolumeBackup { .. }
+            | Request::EndVolumeWork { .. } => {
                 // The web server's cache volume, while there is one: whether it runs.
                 let all = self.all(apps);
                 let used = |name: &str| {

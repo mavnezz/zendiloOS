@@ -31,6 +31,8 @@ impl Containers {
 
     /// Moves Docker's data to `pool`, in a job. Every container stops
     /// meanwhile; those that restart by themselves start again after.
+    /// Refused while a volume is backed up or restored (or waits for its
+    /// turn), and none is until the move ended.
     pub async fn move_data(
         &self,
         pool: &str,
@@ -48,6 +50,7 @@ impl Containers {
                 "{pool} has too little free space for Docker's data"
             )));
         }
+        self.begin_move()?;
         let this = self.clone();
         let (who, context) = (actor.clone(), context.clone());
         let target = format!("{} → {}", from.pool, to.pool);
@@ -57,10 +60,14 @@ impl Containers {
             .start("containers.data_move", Some(target.clone()), Some(actor), move |progress| async move {
                 progress.step("moving", None).await;
                 let done = this.ports.data.move_to(&from, &to, &context).await.map_err(Into::into);
+                this.end_move();
                 let done = this.audited("containers.data_move", &target, &who, &context, done).await;
                 done.map_err(|error| job_error(&error))
             })
-            .await?;
-        Ok(job)
+            .await;
+        if job.is_err() {
+            self.end_move();
+        }
+        Ok(job?)
     }
 }

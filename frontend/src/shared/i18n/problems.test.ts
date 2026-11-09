@@ -29,6 +29,7 @@ const CODES = [
   'firewall_failed',
   'volume_in_use',
   'volume_busy',
+  'containers_held',
 ]
 
 describe('problem messages', () => {

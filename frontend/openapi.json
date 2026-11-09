@@ -2435,6 +2435,52 @@
         ]
       }
     },
+    "/api/v1/docker/backup-shares/{id}/readers": {
+      "get": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "Who may read the share `id` (one the administrator may write), and\nwith it every backup put there. Needs `containers.manage`.",
+        "operationId": "backup_readers",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackupReadersView"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`; `share_denied`: a share the administrator may not write",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/docker/backups/{id}/restore": {
       "post": {
         "tags": [
@@ -12774,6 +12820,38 @@
             "format": "int32",
             "description": "For weekly plans: 0 is Monday.",
             "minimum": 0
+          }
+        }
+      },
+      "BackupReadersView": {
+        "type": "object",
+        "description": "Who may read a share backups may go to: they read all of a backed-up\nvolume's contents.",
+        "required": [
+          "accounts",
+          "groups",
+          "nfs"
+        ],
+        "properties": {
+          "accounts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Accounts its rules let read, by name."
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Groups its rules let read, by name."
+          },
+          "nfs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Hosts and networks it is exported to over NFS."
           }
         }
       },
