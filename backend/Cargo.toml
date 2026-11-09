@@ -72,6 +72,8 @@ listenfd = "1"
 # credentials, openat2 and descriptor passing.
 rustix = { version = "1.1", features = ["fs", "net", "thread", "process", "rand"] }
 serde = { version = "1", features = ["derive"] }
+# YAML as the catalog reads it, for the simulation's stand-in for Compose.
+serde-saphyr = { version = "2.1", default-features = false, features = ["deserialize"] }
 serde_json = "1"
 sha2 = "0.11"
 # Releases of zendiloOS are checked against their minisign signature.

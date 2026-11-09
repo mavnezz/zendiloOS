@@ -16,7 +16,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -150,6 +150,15 @@ fn pin_binds(
         if let Some(at) = by_source.get(source) {
             return Ok(Some(at.clone()));
         }
+        // What the kernel would make of it, a folder in a share among it,
+        // is not what it says: a relative path starts where Docker runs
+        // (`/`), and `..` may lead from the system into a volume.
+        let path = Path::new(source);
+        if !path.is_absolute() || path.components().any(|part| part == Component::ParentDir) {
+            return Err(OperationError::Refused(format!(
+                "{source} cannot be pinned: write it as a path from / without .."
+            )));
+        }
         let Some((share, folder)) = locate(source, volumes)? else { return Ok(None) };
         let (file, create) = match (volumes.find)(&share, &folder)? {
             Found::Folder => (false, false),
@@ -193,15 +202,13 @@ fn pin_binds(
         }
     }
     // A named volume that is a bind in disguise: the local driver with
-    // `o: bind` mounts its `device`.
+    // `o: bind` or `rbind` mounts its `device` as a bind mount does. Compose
+    // makes a relative device absolute only for `o: bind` itself.
     for volume in
         normalized.get_mut("volumes").and_then(Value::as_object_mut).into_iter().flat_map(|v| v.values_mut())
     {
         let Some(options) = volume.get_mut("driver_opts").and_then(Value::as_object_mut) else { continue };
-        let binds = options
-            .get("o")
-            .and_then(Value::as_str)
-            .is_some_and(|o| o.split(',').any(|o| o.trim() == "bind"));
+        let binds = options.get("o").and_then(Value::as_str).is_some_and(binds_a_folder);
         let Some(device) = options.get("device").and_then(Value::as_str).map(str::to_owned) else { continue };
         if binds && let Some(at) = pin(&device, false)? {
             options.insert("device".into(), Value::String(at));
@@ -219,6 +226,49 @@ fn pin_binds(
         }
     }
     Ok(pins)
+}
+
+/// Whether the local driver's mount options `o` make it a bind mount, as
+/// Docker reads them: `bind`, or `rbind` with what is mounted beneath.
+pub(crate) fn binds_a_folder(options: &str) -> bool {
+    options.split(',').any(|option| matches!(option.trim(), "bind" | "rbind"))
+}
+
+/// What `normalized` binds that a deployment here would pin or refuse:
+/// a folder or file below the root of a share or volume (`/volume1/media/
+/// Films`), which whoever may write there could swap for a link Docker
+/// follows, and a path the kernel would not take as it reads. A project
+/// made elsewhere runs from its own files, by those paths.
+pub(crate) fn needing_pins(normalized: &Value) -> Vec<String> {
+    let services = normalized.get("services").and_then(Value::as_object).into_iter().flat_map(|s| s.values());
+    let binds = services
+        .flat_map(|service| service.get("volumes").and_then(Value::as_array).into_iter().flatten())
+        .filter(|volume| volume.get("type").and_then(Value::as_str) == Some("bind"))
+        .filter_map(|volume| volume.get("source").and_then(Value::as_str));
+    let volumes = normalized.get("volumes").and_then(Value::as_object).into_iter().flat_map(|v| v.values());
+    let bound = volumes.filter_map(|volume| {
+        let options = volume.get("driver_opts")?;
+        options.get("o")?.as_str().filter(|o| binds_a_folder(o))?;
+        options.get("device")?.as_str()
+    });
+    let files = ["secrets", "configs"]
+        .into_iter()
+        .flat_map(|kind| normalized.get(kind).and_then(Value::as_object).into_iter().flat_map(|v| v.values()))
+        .filter_map(|entry| entry.get("file").and_then(Value::as_str));
+    let mut found: Vec<String> = Vec::new();
+    for source in binds.chain(bound).chain(files) {
+        let path = Path::new(source);
+        let odd = !path.is_absolute() || path.components().any(|part| part == Component::ParentDir);
+        let beneath = source
+            .strip_prefix("/volume")
+            .and_then(|rest| rest.split_once('/'))
+            .filter(|(number, _)| !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()))
+            .is_some_and(|(_, rest)| rest.split('/').filter(|name| !name.is_empty()).count() > 1);
+        if (odd || beneath) && !found.iter().any(|f| f == source) {
+            found.push(source.to_owned());
+        }
+    }
+    found
 }
 
 /// A pin's name: from what it pins, so that a bind whose source changed gets
@@ -424,6 +474,80 @@ mod tests {
         assert_eq!(normalized["volumes"]["nfs"]["driver_opts"]["device"], ":/export");
         assert_eq!(normalized["secrets"]["token"]["file"], pins[1].at.as_str());
         assert_eq!(normalized["configs"]["site"]["file"], pins[2].at.as_str());
+    }
+
+    #[test]
+    fn named_volumes_that_bind_recursively_are_pinned_as_binds_are() {
+        let volume =
+            |o: &str, device: &str| json!({ "driver_opts": { "type": "none", "o": o, "device": device } });
+        let (normalized, pins) = pinned(json!({
+            "services": { "web": { "image": "nginx" } },
+            "volumes": {
+                "data": volume("rbind", "/volume1/docker/app/data"),
+                "films": volume("ro, rbind", "/volume1/media/Films"),
+                "root": volume("rbind", "/"),
+            },
+        }))
+        .unwrap();
+        assert_eq!(pins.len(), 2, "{pins:?}");
+        assert_eq!(normalized["volumes"]["data"]["driver_opts"]["device"], pins[0].at.as_str());
+        assert_eq!(normalized["volumes"]["films"]["driver_opts"]["device"], pins[1].at.as_str());
+        assert_eq!(
+            normalized["volumes"]["root"]["driver_opts"]["device"], "/",
+            "outside the volumes: confirmed"
+        );
+        assert!(binds_a_folder("bind") && binds_a_folder("rbind,ro") && !binds_a_folder("rbinds"));
+    }
+
+    #[test]
+    fn what_reaches_a_volume_some_other_way_is_refused() {
+        // A relative device starts where Docker runs, `/`; `..` leads from
+        // the system into a share.
+        for device in ["volume1/media/Films", "/etc/../volume1/media/Films"] {
+            let named = json!({
+                "services": { "web": { "image": "nginx" } },
+                "volumes": { "v": { "driver_opts": { "type": "none", "o": "rbind", "device": device } } },
+            });
+            let error = pinned(named).unwrap_err();
+            assert!(error.to_string().contains("cannot be pinned"), "{device}: {error}");
+        }
+        let error =
+            pinned(json!({ "services": { "web": { "volumes": [bind("/srv/../volume1/media/x")] } } }))
+                .unwrap_err();
+        assert!(error.to_string().contains("cannot be pinned"), "{error}");
+    }
+
+    #[test]
+    fn what_a_project_made_elsewhere_would_mount_unpinned_is_found() {
+        let normalized = json!({
+            "services": {
+                "web": { "volumes": [
+                    bind("/volume1/media"),
+                    bind("/volume1/media/Films"),
+                    bind("/etc/localtime"),
+                    { "type": "volume", "source": "data", "target": "/data" },
+                ] },
+                "db": { "volumes": [bind("/volume1/media/Films"), bind("/srv/../volume2/x/y")] },
+            },
+            "volumes": {
+                "data": {},
+                "music": { "driver_opts": { "type": "none", "o": "rbind", "device": "/volume1/media/Music" } },
+                "root": { "driver_opts": { "type": "none", "o": "bind", "device": "/" } },
+                "nfs": { "driver_opts": { "type": "nfs", "o": "addr=10.0.0.2", "device": ":/volume1/a/b" } },
+            },
+            "secrets": { "token": { "file": "/volume1/docker/app/token" } },
+        });
+
+        assert_eq!(
+            needing_pins(&normalized),
+            [
+                "/volume1/media/Films",
+                "/srv/../volume2/x/y",
+                "/volume1/media/Music",
+                "/volume1/docker/app/token"
+            ],
+            "a share's root, the system's folders and another machine's export are left as they are"
+        );
     }
 
     #[test]

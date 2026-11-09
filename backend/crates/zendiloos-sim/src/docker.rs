@@ -434,24 +434,11 @@ impl SimDocker {
                 self.networks.retain(|(n, _, _)| n != name.as_str());
                 Some(Response::Done)
             }
-            Request::CheckCompose { compose, .. } => {
-                let text = compose.as_str();
-                if text.contains("broken") || !text.contains("services") {
-                    return Some(refused("Docker Compose: yaml: line 2: did not find expected key"));
+            Request::CheckCompose { project, directory, compose } => {
+                match crate::compose::normalized(project.as_str(), directory.as_str(), compose.as_str()) {
+                    Ok(normalized) => output(normalized.to_string()),
+                    Err(reason) => Some(refused(&format!("Docker Compose: {reason}"))),
                 }
-                let mut volumes =
-                    vec![json!({"type": "bind", "source": "/volume1/docker/app/data", "target": "/data"})];
-                if text.contains("docker.sock") {
-                    volumes.push(json!({"type": "bind", "source": "/var/run/docker.sock", "target": "/var/run/docker.sock"}));
-                }
-                let mut service = json!({"image": "nginx:1.27", "volumes": volumes});
-                if text.contains("privileged: true") {
-                    service["privileged"] = json!(true);
-                }
-                if text.contains("network_mode: host") {
-                    service["network_mode"] = json!("host");
-                }
-                output(json!({"name": "sim", "services": {"app": service}}).to_string())
             }
             Request::DeployProject { project, .. } => {
                 if apps.contains_key(project.as_str()) {

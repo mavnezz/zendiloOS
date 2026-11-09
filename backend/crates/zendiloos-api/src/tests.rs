@@ -492,6 +492,7 @@ impl Harness {
                 secrets: Arc::new(zendiloos_apps::testing::CountingSecrets::default()),
                 host: Arc::new(zendiloos_apps::testing::FakeTemplateHost),
                 filler: Arc::new(zendiloos_apps::testing::LineFiller),
+                policy: Arc::new(zendiloos_apps::testing::FakeTemplatePolicy),
                 projects: Arc::new(TemplateProjects(docker_test.containers.clone())),
             });
         let engine = docker_test.engine.clone();
@@ -998,12 +999,15 @@ async fn a_project_is_checked_shown_and_made_with_consent() {
             json!({ "name": "tesla", "share_id": 1, "folder": "docker/tesla", "compose": compose }),
         ))
         .await;
-    assert_eq!(check.body, json!({ "risks": [{ "service": "app", "kind": "privileged", "detail": null }] }));
+    assert_eq!(check.body["risks"], json!([{ "service": "app", "kind": "privileged", "detail": null }]));
+    let digest = check.body["digest"].as_str().unwrap();
 
-    let new = |accept: bool| json!({ "name": "tesla", "share_id": 1, "folder": "docker/tesla", "compose": compose, "start": true, "accept_risks": accept });
-    let refused = h.send(json(with_csrf(post("/api/v1/docker/projects"), &admin), new(false))).await;
+    let new = |accepted: Option<&str>| json!({ "name": "tesla", "share_id": 1, "folder": "docker/tesla", "compose": compose, "start": true, "accepted": accepted });
+    let refused = h.send(json(with_csrf(post("/api/v1/docker/projects"), &admin), new(None))).await;
     assert_problem(&refused, StatusCode::CONFLICT, "compose_risks");
-    let made = h.send(json(with_csrf(post("/api/v1/docker/projects"), &admin), new(true))).await;
+    let other = h.send(json(with_csrf(post("/api/v1/docker/projects"), &admin), new(Some("0123")))).await;
+    assert_problem(&other, StatusCode::CONFLICT, "compose_changed");
+    let made = h.send(json(with_csrf(post("/api/v1/docker/projects"), &admin), new(Some(digest)))).await;
     assert_eq!(made.status, StatusCode::CREATED, "{:?}", made.body);
     assert_eq!(made.body["job"]["kind"], "containers.project_deploy");
 
@@ -1026,7 +1030,7 @@ async fn a_project_is_checked_shown_and_made_with_consent() {
         (own.body["editable"].clone(), own.body["files"][0]["content"].clone()),
         (json!(true), json!(compose))
     );
-    let taken = h.send(json(with_csrf(post("/api/v1/docker/projects"), &admin), new(true))).await;
+    let taken = h.send(json(with_csrf(post("/api/v1/docker/projects"), &admin), new(Some(digest)))).await;
     assert_problem(&taken, StatusCode::CONFLICT, "project_exists");
 }
 
@@ -4052,13 +4056,24 @@ async fn administrators_make_projects_from_apps_of_a_catalog() {
     send(Method::POST, "/api/v1/apps/sources/refresh", None).await;
     let installed = send(Method::POST, "/api/v1/apps/docker/install", Some(json!({ "pool": "tank" }))).await;
     assert_problem(&installed, StatusCode::CONFLICT, "docker_installed");
-    let fill = |body: Value| send(Method::POST, "/api/v1/apps/catalog/1/jellyfin/compose", Some(body));
+    // Where the project goes: Compose reads the template there for the
+    // catalog's policy.
+    let place = |name: &str| json!({ "name": name, "share_id": 1, "folder": "docker/media" });
+    let fill = |body: Value| {
+        let mut body = body;
+        body.as_object_mut().unwrap().extend(place("media").as_object().unwrap().clone());
+        send(Method::POST, "/api/v1/apps/catalog/1/jellyfin/compose", Some(body))
+    };
 
     let reserved = fill(json!({ "ports": { "web": 445 } })).await;
     assert_problem(&reserved, StatusCode::UNPROCESSABLE_ENTITY, "invalid_app_value");
     assert_eq!(reserved.body["detail"], "ports.web: port 445 is used by zendiloOS");
-    let unknown = send(Method::POST, "/api/v1/apps/catalog/1/plex/compose", Some(json!({}))).await;
+    let unknown = send(Method::POST, "/api/v1/apps/catalog/1/plex/compose", Some(place("media"))).await;
     assert_eq!(unknown.status, StatusCode::NOT_FOUND);
+    let nameless = send(Method::POST, "/api/v1/apps/catalog/1/jellyfin/compose", Some(place(" "))).await;
+    assert_problem(&nameless, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
+    let nowhere = send(Method::POST, "/api/v1/apps/catalog/1/jellyfin/compose", Some(json!({}))).await;
+    assert_problem(&nowhere, StatusCode::UNPROCESSABLE_ENTITY, "invalid_body");
     let filled = fill(json!({ "ports": { "web": 8200 } })).await;
     assert_eq!(filled.status, StatusCode::OK, "{:?}", filled.body);
     let compose = filled.body["compose"].as_str().unwrap().to_owned();
@@ -4092,7 +4107,7 @@ async fn administrators_make_projects_from_apps_of_a_catalog() {
     let forbidden = h.send(empty(with_cookie(get("/api/v1/apps/projects"), &user))).await;
     assert_eq!(forbidden.status, StatusCode::FORBIDDEN);
     let refused =
-        h.send(json(with_csrf(post("/api/v1/apps/catalog/1/jellyfin/compose"), &user), json!({}))).await;
+        h.send(json(with_csrf(post("/api/v1/apps/catalog/1/jellyfin/compose"), &user), place("media"))).await;
     assert_eq!(refused.status, StatusCode::FORBIDDEN);
 }
 

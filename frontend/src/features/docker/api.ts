@@ -191,18 +191,19 @@ export function useChangeCompose() {
     mutationFn: ({
       name,
       compose,
-      accept,
+      accepted = null,
       pull = false,
     }: {
       name: string
       compose: string
-      accept: boolean
+      /** The check's digest, when its risks were accepted. */
+      accepted?: string | null
       pull?: boolean
     }) =>
       unwrap(
         api.PUT('/api/v1/docker/projects/{name}/compose', {
           params: { path: { name } },
-          body: { compose, accept_risks: accept, pull },
+          body: { compose, accepted, pull },
         }),
       ),
     onSettled: refresh,

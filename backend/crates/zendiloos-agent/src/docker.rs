@@ -410,6 +410,7 @@ impl Docker {
                     args.extend(["--project-directory", directory.as_str()]);
                 }
                 args.extend(["--project-name", name]);
+                self.refuse_unpinned(name, &args).await?;
                 if action == ProjectAction::Up {
                     args.extend(["up", "--detach", "--remove-orphans"]);
                 } else {
@@ -417,6 +418,31 @@ impl Docker {
                 }
                 self.reported(&args, LONG).await
             }
+        }
+    }
+
+    /// Refuses to bring up a project made elsewhere (`compose`, its files
+    /// and names) that binds a folder or file in a share: it runs from its
+    /// own files, so Docker would mount it by its path, through a link
+    /// whoever may write the share put in its place, as root. Pulling is
+    /// refused alike, so an image update stops before it fetches anything.
+    /// Starting, stopping and restarting its containers stay: they change
+    /// nothing of how they were made, and Docker restarts them by itself.
+    async fn refuse_unpinned(&self, name: &str, compose: &[&str]) -> Result<(), OperationError> {
+        let mut args = compose.to_vec();
+        args.extend(["config", "--format", "json"]);
+        let output = self.run(&args, None, QUICK).await?;
+        if !output.status.success() {
+            return Err(OperationError::Failed(format!("Docker Compose: {}", complaint(&output))));
+        }
+        let normalized: Value = serde_json::from_slice(&output.stdout)
+            .map_err(|e| OperationError::Failed(format!("Docker Compose wrote something unexpected: {e}")))?;
+        match crate::projects::needing_pins(&normalized).first() {
+            Some(source) => Err(OperationError::Refused(format!(
+                "{name} binds {source} by its path, where whoever may write the share could put a link: make \
+                 {name} a project of zendiloOS's, which pins what it binds, or bind the share as a whole"
+            ))),
+            None => Ok(()),
         }
     }
 

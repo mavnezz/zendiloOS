@@ -475,3 +475,27 @@ impl crate::application::ports::ComposeFiller for LineFiller {
         Ok(filled)
     }
 }
+
+/// The catalog's policy as Compose would read a template: `privileged`
+/// breaks it; a project without a name has no place.
+#[derive(Default)]
+pub struct FakeTemplatePolicy;
+
+#[async_trait]
+impl crate::application::ports::TemplatePolicy for FakeTemplatePolicy {
+    async fn problems(
+        &self,
+        app: &CatalogApp,
+        place: &crate::application::ports::TemplatePlace,
+        _: &zendiloos_kernel::Actor,
+        _: &zendiloos_kernel::RequestContext,
+    ) -> Result<Vec<String>, crate::application::ports::PolicyError> {
+        if place.project.trim().is_empty() {
+            return Err(crate::application::ports::PolicyError::Place("a project's name is needed".into()));
+        }
+        let privileged = app.compose.contains("privileged: true");
+        let problem =
+            "compose.yaml: services.app.privileged: privileged containers control the whole machine";
+        Ok(if privileged { vec![problem.to_owned()] } else { vec![] })
+    }
+}

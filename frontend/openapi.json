@@ -452,7 +452,7 @@
         "tags": [
           "apps"
         ],
-        "summary": "Fills in an app's Compose file, its template, with the values given and\nthe caller as the account its containers run as; the devices the machine\nlacks are left out. Nothing is made yet. Needs `containers.manage`.",
+        "summary": "Fills in an app's Compose file, its template, with the values given and\nthe caller as the account its containers run as; the devices the machine\nlacks are left out. Refused if the template, as Compose reads it with the\ncatalog's stand-in values in the project's folder, breaks its catalog's\npolicy. Nothing is made yet. Needs `containers.manage`.",
         "operationId": "fill_template",
         "parameters": [
           {
@@ -504,7 +504,7 @@
             }
           },
           "422": {
-            "description": "`invalid_app_value`: the field and why; `template_unfillable`",
+            "description": "`invalid_app_value`: the field and why; `template_unfillable`; `against_catalog_policy`: what it breaks; `invalid_input`: no place for the project",
             "content": {
               "application/json": {
                 "schema": {
@@ -3893,7 +3893,7 @@
             }
           },
           "409": {
-            "description": "`project_exists`; `refused`: Compose cannot read it; `compose_risks`: not accepted",
+            "description": "`project_exists`; `refused`: Compose cannot read it; `compose_risks`: not accepted; `compose_changed`: not what was accepted",
             "content": {
               "application/json": {
                 "schema": {
@@ -4159,7 +4159,7 @@
             }
           },
           "409": {
-            "description": "`app_project`, `not_own_project`; `refused`: Compose cannot read it; `compose_risks`",
+            "description": "`app_project`, `not_own_project`; `refused`: Compose cannot read it; `compose_risks`; `compose_changed`",
             "content": {
               "application/json": {
                 "schema": {
@@ -13656,8 +13656,12 @@
           "compose"
         ],
         "properties": {
-          "accept_risks": {
-            "type": "boolean"
+          "accepted": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "As for a new project: the `digest` of the check whose risks were\naccepted."
           },
           "compose": {
             "type": "string"
@@ -13702,9 +13706,14 @@
       "ComposeCheckResult": {
         "type": "object",
         "required": [
-          "risks"
+          "risks",
+          "digest"
         ],
         "properties": {
+          "digest": {
+            "type": "string",
+            "description": "Names what was checked: the file and what Compose made of it, with\nwhat it takes in. Given back as `accepted` once the risks were\nconfirmed, the project is made only if Compose makes the same of it\nthen."
+          },
           "risks": {
             "type": "array",
             "items": {
@@ -15811,7 +15820,20 @@
       },
       "FillTemplateRequest": {
         "type": "object",
+        "required": [
+          "name",
+          "share_id",
+          "folder"
+        ],
         "properties": {
+          "folder": {
+            "type": "string",
+            "description": "In the share: `docker/jellyfin`."
+          },
+          "name": {
+            "type": "string",
+            "description": "The project it becomes (`POST /docker/projects` with the same\nname, share and folder): Compose reads the template there for the\ncatalog's policy."
+          },
           "ports": {
             "type": "object",
             "description": "Port id → host port; missing ones get their default.",
@@ -15833,6 +15855,10 @@
             "propertyNames": {
               "type": "string"
             }
+          },
+          "share_id": {
+            "type": "integer",
+            "format": "int64"
           },
           "shares": {
             "type": "object",
@@ -17811,9 +17837,12 @@
           "compose"
         ],
         "properties": {
-          "accept_risks": {
-            "type": "boolean",
-            "description": "What the file lets containers do beyond themselves was shown and\naccepted."
+          "accepted": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What the file lets containers do beyond themselves was shown and\naccepted: the `digest` of that check (`/docker/compose/check`). It is\nmade only if Compose makes the same of the file now."
           },
           "compose": {
             "type": "string"

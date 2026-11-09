@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
+use zendiloos_apps::application::ports::TemplatePlace;
 use zendiloos_apps::application::{AppProjectView, AppsError, FillRequest, InstalledView, ListedApp};
 use zendiloos_apps::domain as apps;
 use zendiloos_identity::domain::Permission;
@@ -64,6 +65,10 @@ impl From<AppsError> for ApiError {
             AppsError::Template(detail) => {
                 rejected(StatusCode::UNPROCESSABLE_ENTITY, "template_unfillable", Some(detail))
             }
+            AppsError::AgainstPolicy(detail) => {
+                rejected(StatusCode::UNPROCESSABLE_ENTITY, "against_catalog_policy", Some(detail))
+            }
+            AppsError::InvalidPlace(detail) => ApiError::InvalidInput(detail),
             AppsError::Busy => rejected(StatusCode::CONFLICT, "app_busy", None),
             AppsError::ConfirmationMismatch => {
                 rejected(StatusCode::UNPROCESSABLE_ENTITY, "confirmation_mismatch", None)
@@ -431,6 +436,13 @@ async fn catalog_icon(
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FillTemplateRequest {
+    /// The project it becomes (`POST /docker/projects` with the same
+    /// name, share and folder): Compose reads the template there for the
+    /// catalog's policy.
+    pub name: String,
+    pub share_id: i64,
+    /// In the share: `docker/jellyfin`.
+    pub folder: String,
     /// Share id → the share picked for it: its name, or a folder in it
     /// (`media/Films`), which the app then mounts instead of the whole
     /// share. One the caller may use as the app does (read or write).
@@ -456,7 +468,9 @@ pub struct FilledTemplate {
 
 /// Fills in an app's Compose file, its template, with the values given and
 /// the caller as the account its containers run as; the devices the machine
-/// lacks are left out. Nothing is made yet. Needs `containers.manage`.
+/// lacks are left out. Refused if the template, as Compose reads it with the
+/// catalog's stand-in values in the project's folder, breaks its catalog's
+/// policy. Nothing is made yet. Needs `containers.manage`.
 #[utoipa::path(
     post,
     path = "/apps/catalog/{source}/{app}/compose",
@@ -467,7 +481,7 @@ pub struct FilledTemplate {
     responses(
         (status = OK, body = FilledTemplate),
         (status = NOT_FOUND, body = Problem, description = "`not_found`: no such app"),
-        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_app_value`: the field and why; `template_unfillable`"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_app_value`: the field and why; `template_unfillable`; `against_catalog_policy`: what it breaks; `invalid_input`: no place for the project"),
     )
 )]
 async fn fill_template(
@@ -478,8 +492,14 @@ async fn fill_template(
     ApiJson(request): ApiJson<FillTemplateRequest>,
 ) -> Result<Json<FilledTemplate>, ApiError> {
     auth.require(Permission::ContainersManage)?;
-    let request =
-        FillRequest { source, app, shares: request.shares, ports: request.ports, settings: request.settings };
+    let request = FillRequest {
+        source,
+        app,
+        place: TemplatePlace { project: request.name, share_id: request.share_id, folder: request.folder },
+        shares: request.shares,
+        ports: request.ports,
+        settings: request.settings,
+    };
     let compose = state.templates.fill(request, &auth.0.actor(), &client).await?;
     Ok(Json(FilledTemplate { compose }))
 }

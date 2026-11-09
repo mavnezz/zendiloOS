@@ -11,8 +11,8 @@ use std::sync::Arc;
 use zendiloos_kernel::{Actor, RequestContext};
 
 use super::ports::{
-    AppProjects, ComposeFiller, InstalledRepository, ListeningPorts, Secrets, TemplateHost, TemplateProject,
-    UsableShare, UsableShares,
+    AppProjects, ComposeFiller, InstalledRepository, ListeningPorts, Secrets, TemplateHost, TemplatePlace,
+    TemplatePolicy, TemplateProject, UsableShare, UsableShares,
 };
 use super::{AppsError, Catalogs};
 use crate::domain::{
@@ -25,6 +25,9 @@ use crate::domain::{
 pub struct FillRequest {
     pub source: i64,
     pub app: String,
+    /// The project it becomes, where Compose reads it for the catalog's
+    /// policy.
+    pub place: TemplatePlace,
     /// Share id → the share picked, or a folder in it (`media/Films`).
     pub shares: BTreeMap<String, String>,
     /// Port id → host port; missing ones get their default.
@@ -55,6 +58,7 @@ pub struct TemplatePorts {
     pub secrets: Arc<dyn Secrets>,
     pub host: Arc<dyn TemplateHost>,
     pub filler: Arc<dyn ComposeFiller>,
+    pub policy: Arc<dyn TemplatePolicy>,
     pub projects: Arc<dyn AppProjects>,
 }
 
@@ -80,7 +84,10 @@ impl Templates {
     /// The Compose file of `request.app` filled in for `actor`: their
     /// account runs the containers, the shares picked are ones they may
     /// use as the app needs, the ports are free, the devices the machine
-    /// lacks are left out. Nothing is made yet.
+    /// lacks are left out. Refused if the template breaks its catalog's
+    /// policy as Compose reads it: the index's checks see the file as
+    /// written only, and whatever else a catalog says of the app's
+    /// permissions, they are all the App Center shows. Nothing is made yet.
     pub async fn fill(
         &self,
         request: FillRequest,
@@ -149,6 +156,10 @@ impl Templates {
         let variables = template_variables(&app, &values, &paths, &facts);
         let filled =
             self.ports.filler.fill(&app.compose, &variables, &absent).map_err(AppsError::Template)?;
+        let problems = self.ports.policy.problems(&app, &request.place, actor, context).await?;
+        if !problems.is_empty() {
+            return Err(AppsError::AgainstPolicy(problems.join("\n")));
+        }
         let origin = if listed.source.official {
             "the community catalog".to_owned()
         } else {
@@ -198,7 +209,7 @@ mod tests {
     use zendiloos_kernel::{AuditEntry, AuditLog, Clock, PortError, Timestamp};
 
     use super::*;
-    use crate::application::ports::AppHostError;
+    use crate::application::ports::{AppHostError, PolicyError};
     use crate::domain::{
         Containers, HostFacts, OFFICIAL_INDEX, Permissions, SECRET_LENGTH, SecretAlphabet, Setting,
         SettingKind, Share, Web, WebScheme,
@@ -278,6 +289,35 @@ mod tests {
         }
     }
 
+    /// Finds `privileged` in a template against the policy; says where
+    /// each was looked at.
+    #[derive(Default)]
+    struct Policy(Mutex<Vec<String>>);
+
+    #[async_trait]
+    impl TemplatePolicy for Policy {
+        async fn problems(
+            &self,
+            app: &CatalogApp,
+            place: &TemplatePlace,
+            actor: &Actor,
+            _: &RequestContext,
+        ) -> Result<Vec<String>, PolicyError> {
+            let at =
+                format!("{} {} {}:{} {}", app.id, place.project, place.share_id, place.folder, actor.name);
+            self.0.lock().unwrap().push(at);
+            if place.folder.is_empty() {
+                return Err(PolicyError::Place("no folder".into()));
+            }
+            let privileged = app.compose.contains("privileged: true");
+            Ok(if privileged {
+                vec!["compose.yaml: services.x.privileged: not available".into()]
+            } else {
+                vec![]
+            })
+        }
+    }
+
     #[derive(Default)]
     struct Projects(Mutex<Vec<TemplateProject>>);
 
@@ -317,6 +357,11 @@ mod tests {
     }
 
     async fn setup(apps: Vec<CatalogApp>) -> (Templates, Arc<Host>, Arc<Projects>) {
+        let (templates, host, projects, _) = setup_with_policy(apps).await;
+        (templates, host, projects)
+    }
+
+    async fn setup_with_policy(apps: Vec<CatalogApp>) -> (Templates, Arc<Host>, Arc<Projects>, Arc<Policy>) {
         let reader = Arc::new(FakeReader::default());
         reader.serve(OFFICIAL_INDEX, apps);
         let catalogs =
@@ -324,6 +369,7 @@ mod tests {
         catalogs.refresh().await.unwrap();
         let host = Arc::new(Host::default());
         let projects = Arc::new(Projects::default());
+        let policy = Arc::new(Policy::default());
         let templates = Templates::new(TemplatePorts {
             catalogs,
             installed: Arc::new(MemoryInstalled::default()),
@@ -332,15 +378,17 @@ mod tests {
             secrets: Arc::new(CountingSecrets::default()),
             host: host.clone(),
             filler: Arc::new(Filler),
+            policy: policy.clone(),
             projects: projects.clone(),
         });
-        (templates, host, projects)
+        (templates, host, projects, policy)
     }
 
     fn request(shares: &[(&str, &str)]) -> FillRequest {
         FillRequest {
             source: 1,
             app: "jellyfin".into(),
+            place: TemplatePlace { project: "media".into(), share_id: 2, folder: "docker/media".into() },
             shares: shares.iter().map(|(id, picked)| ((*id).to_owned(), (*picked).to_owned())).collect(),
             ..FillRequest::default()
         }
@@ -393,6 +441,31 @@ mod tests {
         );
         let unknown = FillRequest { app: "plex".into(), ..request(&[]) };
         assert!(matches!(templates.fill(unknown, &alice(), &context).await, Err(AppsError::AppNotFound)));
+    }
+
+    #[tokio::test]
+    async fn a_template_against_its_catalogs_policy_is_not_filled_in() {
+        let mut privileged = jellyfin();
+        privileged.compose.push_str("    privileged: true\n");
+        let (templates, _, _, policy) = setup_with_policy(vec![privileged]).await;
+        let context = RequestContext::default();
+        let picked = request(&[("media", "media/Films"), ("cache", "docker")]);
+
+        let refused = templates.fill(picked.clone(), &alice(), &context).await;
+
+        let Err(AppsError::AgainstPolicy(problems)) = refused else { panic!("{refused:?}") };
+        assert_eq!(problems, "compose.yaml: services.x.privileged: not available");
+        assert_eq!(
+            *policy.0.lock().unwrap(),
+            ["jellyfin media 2:docker/media alice"],
+            "where it goes, for whom"
+        );
+        let nowhere = FillRequest { place: TemplatePlace::default(), ..picked };
+        let refused = templates.fill(nowhere, &alice(), &context).await;
+        assert!(
+            matches!(refused, Err(AppsError::InvalidPlace(ref reason)) if reason == "no folder"),
+            "{refused:?}"
+        );
     }
 
     #[tokio::test]

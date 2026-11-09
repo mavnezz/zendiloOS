@@ -742,7 +742,7 @@ const de: Messages = {
       kinds: {
         privileged: 'privilegiert, alle Geräte und Rechte',
         docker_socket: 'Zugriff auf Docker selbst, gleichbedeutend mit root',
-        system_path: 'bindet einen Systemordner ein',
+        system_path: 'bindet einen Ordner des Systems ein, keinen einer Freigabe',
         host_network: 'nutzt das Netzwerk des NAS direkt',
         host_namespace: 'teilt Prozesse, Speicher oder Benutzer mit dem NAS',
         devices: 'greift auf Geräte zu',
@@ -2973,6 +2973,8 @@ const de: Messages = {
     project_unconfirmed:
       'Dieses Projekt stammt aus der Zeit, bevor zendiloOS das Bestätigte aufbewahrt hat. Öffnen Sie seine Compose-Datei und speichern Sie sie einmal; danach läuft es so wie gespeichert, nicht aus der Datei in der Freigabe.',
     compose_risks: 'Die Compose-Datei braucht Ihre Bestätigung',
+    compose_changed:
+      'Die Compose-Datei oder eine Datei, die sie einliest, hat sich seit der Prüfung geändert. Prüfen Sie sie erneut, bevor sie bereitgestellt wird.',
     share_denied: 'In diesem freigegebenen Ordner dürfen Sie nicht schreiben.',
     volume_in_use: 'Laufende Container nutzen das Volume',
     volume_busy:
@@ -2990,6 +2992,8 @@ const de: Messages = {
     refused: 'Das System hat aus Sicherheitsgründen abgelehnt.',
     invalid_app_value: 'Ein Wert lässt sich nicht verwenden',
     template_unfillable: 'Die Compose-Datei der App lässt sich nicht ausfüllen',
+    against_catalog_policy:
+      'Die App verstößt gegen die Regeln ihres Katalogs, was immer sie über ihre Berechtigungen sagt; das App Center installiert sie nicht',
     app_busy: 'Die App ist beschäftigt oder nicht in dem Zustand dafür.',
     host_failed: 'Docker konnte es nicht ausführen',
     share_used_by_apps: 'Apps nutzen diese Freigabe; entfernen Sie sie zuerst',

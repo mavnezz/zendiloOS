@@ -80,6 +80,7 @@ impl From<ContainersError> for ApiError {
                         .join(", "),
                 ),
             ),
+            ContainersError::Changed => rejected(StatusCode::CONFLICT, "compose_changed", None),
             ContainersError::Denied => rejected(StatusCode::FORBIDDEN, "share_denied", None),
             ContainersError::Unconfirmed => rejected(StatusCode::CONFLICT, "project_unconfirmed", None),
             ContainersError::VolumeInUse(names) => {
@@ -913,6 +914,11 @@ pub struct ComposeCheckResult {
     /// To be confirmed before it runs; empty if nothing reaches beyond the
     /// containers.
     pub risks: Vec<ComposeRisk>,
+    /// Names what was checked: the file and what Compose made of it, with
+    /// what it takes in. Given back as `accepted` once the risks were
+    /// confirmed, the project is made only if Compose makes the same of it
+    /// then.
+    pub digest: String,
 }
 
 /// Reads a Compose file as Compose would and names what it lets
@@ -928,11 +934,14 @@ async fn check_compose(
 ) -> Result<Json<ComposeCheckResult>, ApiError> {
     manage(&auth)?;
     let place = request.share_id.map(|share| (share, request.folder.as_deref().unwrap_or_default()));
-    let risks = state
+    let checked = state
         .containers
         .check_compose(&request.name, place, &request.compose, &auth.0.actor(), &client)
         .await?;
-    Ok(Json(ComposeCheckResult { risks: risks.into_iter().map(Into::into).collect() }))
+    Ok(Json(ComposeCheckResult {
+        risks: checked.risks.into_iter().map(Into::into).collect(),
+        digest: checked.digest,
+    }))
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -1068,9 +1077,10 @@ pub struct NewDockerProject {
     #[serde(default)]
     pub start: bool,
     /// What the file lets containers do beyond themselves was shown and
-    /// accepted.
+    /// accepted: the `digest` of that check (`/docker/compose/check`). It is
+    /// made only if Compose makes the same of the file now.
     #[serde(default)]
-    pub accept_risks: bool,
+    pub accepted: Option<String>,
     /// The App Center filled the file in from this app of a catalog
     /// (`/apps/catalog/{source}/{app}/compose`); it finds the project again
     /// by it.
@@ -1088,7 +1098,7 @@ pub struct ProjectCreated {
 /// caller's permissions, and deploys it if asked. Needs `containers.manage`.
 #[utoipa::path(post, path = "/docker/projects", tag = "docker", security(("session" = [])), request_body = NewDockerProject,
     responses((status = CREATED, body = ProjectCreated), (status = FORBIDDEN, body = Problem, description = "`forbidden`, `csrf_rejected`, `share_denied`"),
-        (status = CONFLICT, body = Problem, description = "`project_exists`; `refused`: Compose cannot read it; `compose_risks`: not accepted"),
+        (status = CONFLICT, body = Problem, description = "`project_exists`; `refused`: Compose cannot read it; `compose_risks`: not accepted; `compose_changed`: not what was accepted"),
         (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_input`")))]
 async fn create_project(
     auth: Auth,
@@ -1103,7 +1113,7 @@ async fn create_project(
         folder: request.folder,
         compose: request.compose,
         start: request.start,
-        accept_risks: request.accept_risks,
+        accepted: request.accepted,
         template: request
             .template
             .map(|template| containers::ProjectTemplate { source: template.source_id, app: template.app }),
@@ -1218,8 +1228,10 @@ async fn project_compose(
 #[serde(deny_unknown_fields)]
 pub struct ComposeChange {
     pub compose: String,
+    /// As for a new project: the `digest` of the check whose risks were
+    /// accepted.
     #[serde(default)]
-    pub accept_risks: bool,
+    pub accepted: Option<String>,
     /// Pulls the newest images under the file's tags before the containers
     /// are made again; otherwise only missing images are pulled.
     #[serde(default)]
@@ -1231,7 +1243,7 @@ pub struct ComposeChange {
 #[utoipa::path(put, path = "/docker/projects/{name}/compose", tag = "docker", security(("session" = [])), params(("name" = String, Path)), request_body = ComposeChange,
     responses((status = ACCEPTED, body = Job), (status = FORBIDDEN, body = Problem, description = "`forbidden`, `csrf_rejected`, `share_denied`"),
         (status = NOT_FOUND, body = Problem, description = "`not_found`"),
-        (status = CONFLICT, body = Problem, description = "`app_project`, `not_own_project`; `refused`: Compose cannot read it; `compose_risks`")))]
+        (status = CONFLICT, body = Problem, description = "`app_project`, `not_own_project`; `refused`: Compose cannot read it; `compose_risks`; `compose_changed`")))]
 async fn change_compose(
     auth: Auth,
     State(state): State<ApiState>,
@@ -1242,7 +1254,14 @@ async fn change_compose(
     manage(&auth)?;
     let job = state
         .containers
-        .change_compose(&name, &request.compose, request.accept_risks, request.pull, &auth.0.actor(), &client)
+        .change_compose(
+            &name,
+            &request.compose,
+            request.accepted.as_deref(),
+            request.pull,
+            &auth.0.actor(),
+            &client,
+        )
         .await?;
     Ok((StatusCode::ACCEPTED, Json(job.into())))
 }

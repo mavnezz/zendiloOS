@@ -12,7 +12,9 @@ import InstallDialog from './InstallDialog.vue'
 const fillTemplate = vi.fn<(app: unknown, values: FillTemplateRequest) => Promise<string>>(() =>
   Promise.resolve('services:\n  immich: {}\n'),
 )
-const checkCompose = vi.fn<(body: unknown) => Promise<ComposeRisk[]>>(() => Promise.resolve([]))
+const checkCompose = vi.fn<(body: unknown) => Promise<{ risks: ComposeRisk[]; digest: string }>>(
+  () => Promise.resolve({ risks: [], digest: 'c0ffee' }),
+)
 const createProject = vi.fn((body: unknown) =>
   Promise.resolve({
     body,
@@ -213,7 +215,11 @@ describe('the install dialog', () => {
     await type('port-web', '2300')
     await press('Next')
 
+    // Filled in for where the project goes, where Compose reads it.
     expect(fillTemplate).toHaveBeenCalledWith(immich, {
+      name: 'photos',
+      share_id: 4,
+      folder: 'photos',
       ports: { web: 2300 },
       shares: { photos: 'family/2024' },
       settings: { ADMIN_EMAIL: 'me@example.org' },
@@ -232,7 +238,7 @@ describe('the install dialog', () => {
     expect(createProject).toHaveBeenCalledWith({
       ...place,
       compose,
-      accept_risks: false,
+      accepted: null,
       template: { source_id: 1, app: 'immich' },
     })
     expect(useJobsStore().running.map((job) => job.id)).toEqual([9])
@@ -296,7 +302,10 @@ describe('the install dialog', () => {
 
   it('asks before what reaches beyond the containers runs', async () => {
     await opened()
-    checkCompose.mockResolvedValueOnce([{ service: 'immich', kind: 'devices', detail: '/dev/dri' }])
+    checkCompose.mockResolvedValueOnce({
+      risks: [{ service: 'immich', kind: 'devices', detail: '/dev/dri' }],
+      digest: 'd1g35t',
+    })
     await toTheFile()
 
     await press('Install')
@@ -304,7 +313,8 @@ describe('the install dialog', () => {
     expect(document.body.textContent).toContain('Containers with access to the system')
     await press('Deploy anyway')
 
-    expect(createProject).toHaveBeenCalledWith(expect.objectContaining({ accept_risks: true }))
+    // The confirmation holds for what was checked, and nothing else.
+    expect(createProject).toHaveBeenCalledWith(expect.objectContaining({ accepted: 'd1g35t' }))
   })
 
   it('offers only shares the app may write to where it writes, and says what failed', async () => {

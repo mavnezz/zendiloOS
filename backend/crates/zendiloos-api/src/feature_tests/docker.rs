@@ -194,23 +194,36 @@ async fn an_own_projects_file_is_changed_with_consent_and_a_foreign_one_not() {
     let made = h
         .send(json(
             with_csrf(post("/api/v1/docker/projects"), &admin),
-            json!({ "name": "tesla", "share_id": 1, "folder": "docker/tesla", "compose": plain, "start": false, "accept_risks": false }),
+            json!({ "name": "tesla", "share_id": 1, "folder": "docker/tesla", "compose": plain, "start": false }),
         ))
         .await;
     assert_eq!(made.status, StatusCode::CREATED, "{:?}", made.body);
 
-    let change = |compose: &str, accept: bool| {
+    let change = |compose: &str, accepted: Option<&str>| {
         json(
             with_csrf(changing(Method::PUT, "/api/v1/docker/projects/tesla/compose"), &admin),
-            json!({ "compose": compose, "accept_risks": accept }),
+            json!({ "compose": compose, "accepted": accepted }),
         )
     };
-    let risky = h.send(change("services:\n  app:\n    privileged: true\n", false)).await;
+    let privileged = "services:\n  app:\n    privileged: true\n";
+    let risky = h.send(change(privileged, None)).await;
     assert_problem(&risky, StatusCode::CONFLICT, "compose_risks");
     assert_eq!(risky.body["detail"], "app: privileged");
-    let broken = h.send(change("broken: [", true)).await;
+    let check = h
+        .send(json(
+            with_csrf(post("/api/v1/docker/compose/check"), &admin),
+            json!({ "name": "tesla", "compose": privileged }),
+        ))
+        .await;
+    let digest = check.body["digest"].as_str().unwrap().to_owned();
+    let another =
+        h.send(change("services:\n  app:\n    privileged: true\n    image: x\n", Some(&digest))).await;
+    assert_problem(&another, StatusCode::CONFLICT, "compose_changed");
+    let broken = h.send(change("broken: [", Some(&digest))).await;
     assert_problem(&broken, StatusCode::CONFLICT, "refused");
-    let changed = h.send(change("services:\n  app:\n    image: nginx:1.27\n", false)).await;
+    let accepted = h.send(change(privileged, Some(&digest))).await;
+    assert_eq!(accepted.status, StatusCode::ACCEPTED, "{:?}", accepted.body);
+    let changed = h.send(change("services:\n  app:\n    image: nginx:1.27\n", None)).await;
     assert_eq!(changed.status, StatusCode::ACCEPTED, "{:?}", changed.body);
     let tesla = h.send(empty(with_cookie(get("/api/v1/docker/projects/tesla"), &admin))).await;
     let file = tesla.body["compose_file"].as_str().unwrap();
@@ -226,14 +239,14 @@ async fn an_own_projects_file_is_changed_with_consent_and_a_foreign_one_not() {
     let odd_name = h
         .send(json(
             with_csrf(post("/api/v1/docker/projects"), &admin),
-            json!({ "name": "Not A Name", "share_id": 1, "folder": "docker/x", "compose": plain, "start": false, "accept_risks": false }),
+            json!({ "name": "Not A Name", "share_id": 1, "folder": "docker/x", "compose": plain, "start": false }),
         ))
         .await;
     assert_problem(&odd_name, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
     let elsewhere = h
         .send(json(
             with_csrf(post("/api/v1/docker/projects"), &admin),
-            json!({ "name": "other", "share_id": 99, "folder": "docker/x", "compose": plain, "start": false, "accept_risks": false }),
+            json!({ "name": "other", "share_id": 99, "folder": "docker/x", "compose": plain, "start": false }),
         ))
         .await;
     assert_problem(&elsewhere, StatusCode::FORBIDDEN, "share_denied");
@@ -293,7 +306,7 @@ async fn everything_docker_is_refused_to_those_who_may_not_manage_containers() {
         (
             Method::POST,
             "/api/v1/docker/projects",
-            json!({ "name": "x", "share_id": 1, "folder": "x", "compose": "", "start": false, "accept_risks": false }),
+            json!({ "name": "x", "share_id": 1, "folder": "x", "compose": "", "start": false }),
         ),
         (Method::PUT, "/api/v1/docker/projects/stack/compose", json!({ "compose": "" })),
         (Method::PUT, "/api/v1/docker/updates/settings", json!({ "check": false, "schedule": null })),

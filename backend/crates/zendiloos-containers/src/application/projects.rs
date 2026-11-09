@@ -21,10 +21,21 @@ pub struct NewProject {
     pub compose: String,
     /// Deploys it right away.
     pub start: bool,
-    /// The administrator accepted what the file lets containers do.
-    pub accept_risks: bool,
+    /// The digest of the check whose risks the administrator saw and
+    /// accepted ([`ComposeRisks`]); it is made only if Compose makes the
+    /// same of the file now.
+    pub accepted: Option<String>,
     /// The App Center filled the file in from an app of a catalog.
     pub template: Option<ProjectTemplate>,
+}
+
+/// What a Compose file lets containers do beyond themselves, to be
+/// confirmed, and the digest naming what was checked: a confirmation holds
+/// for that and nothing else.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComposeRisks {
+    pub risks: Vec<Risk>,
+    pub digest: String,
 }
 
 /// A project's Compose files and whether they are edited here.
@@ -125,14 +136,12 @@ impl Containers {
     }
 
     /// What `compose` lets containers do, if Compose can read it, and what
-    /// Compose made of it, which is what will run; refused unless `accept`
-    /// while it reaches beyond the containers.
-    async fn checked(
+    /// Compose made of it, which is what will run.
+    async fn read_compose(
         &self,
         name: &ProjectName,
         directory: &str,
         compose: &str,
-        accept: bool,
         context: &RequestContext,
     ) -> Result<(Vec<Risk>, CheckedCompose), ContainersError> {
         let checked = self.ports.engine.check_compose(name, directory, compose, context).await?;
@@ -142,10 +151,29 @@ impl Containers {
                 found.push(read);
             }
         }
-        if !found.is_empty() && !accept {
-            return Err(ContainersError::Risky(found));
-        }
         Ok((found, checked))
+    }
+
+    /// As [`Self::read_compose`]; refused while it reaches beyond the
+    /// containers and nothing was `accepted`, and whenever `accepted` is not
+    /// the digest of a check that came to just this: between the check the
+    /// administrator confirmed and now, whoever may write the share could
+    /// have changed what the file takes in (`include`, `env_file`,
+    /// `extends`).
+    async fn checked(
+        &self,
+        name: &ProjectName,
+        directory: &str,
+        compose: &str,
+        accepted: Option<&str>,
+        context: &RequestContext,
+    ) -> Result<(Vec<Risk>, CheckedCompose), ContainersError> {
+        let (found, checked) = self.read_compose(name, directory, compose, context).await?;
+        match accepted {
+            Some(digest) if digest != checked.digest => Err(ContainersError::Changed),
+            None if !found.is_empty() => Err(ContainersError::Risky(found)),
+            _ => Ok((found, checked)),
+        }
     }
 
     /// Makes the folders in the project's own folder its binds mount, as
@@ -178,13 +206,30 @@ impl Containers {
         compose: &str,
         actor: &Actor,
         context: &RequestContext,
-    ) -> Result<Vec<Risk>, ContainersError> {
+    ) -> Result<ComposeRisks, ContainersError> {
         let name = ProjectName::parse(name.trim())?;
         let directory = match place {
             Some((share_id, place)) => self.ports.storage.directory(actor, share_id, &folder(place)?).await?,
             None => self.own(name.as_str(), context).await?.directory,
         };
-        Ok(self.checked(&name, &directory, compose, true, context).await?.0)
+        let (risks, checked) = self.read_compose(&name, &directory, compose, context).await?;
+        Ok(ComposeRisks { risks, digest: checked.digest })
+    }
+
+    /// What Compose makes of `compose` for a new project `name` in `place`
+    /// (share and folder), as `actor` would make it there: the whole
+    /// project normalized, as JSON. Nothing is written or run.
+    pub async fn normalize_compose(
+        &self,
+        name: &str,
+        place: (i64, &str),
+        compose: &str,
+        actor: &Actor,
+        context: &RequestContext,
+    ) -> Result<String, ContainersError> {
+        let name = ProjectName::parse(name.trim())?;
+        let directory = self.ports.storage.directory(actor, place.0, &folder(place.1)?).await?;
+        Ok(self.ports.engine.check_compose(&name, &directory, compose, context).await?.config)
     }
 
     async fn record(
@@ -221,7 +266,7 @@ impl Containers {
         let storage = &self.ports.storage;
         let directory = storage.directory(actor, new.share_id, &folder).await?;
         let (found, checked) =
-            self.checked(&name, &directory, &new.compose, new.accept_risks, context).await?;
+            self.checked(&name, &directory, &new.compose, new.accepted.as_deref(), context).await?;
         storage.write(actor, new.share_id, &folder, COMPOSE_FILE, &new.compose, context).await?;
         let config = checked.config.clone();
         let project = OwnProject {
@@ -286,19 +331,20 @@ impl Containers {
     }
 
     /// Writes a project's changed Compose file and deploys it again, with
-    /// the newest images under its tags if `pull`.
+    /// the newest images under its tags if `pull`. `accepted`: as for
+    /// [`NewProject`].
     pub async fn change_compose(
         &self,
         name: &str,
         compose: &str,
-        accept_risks: bool,
+        accepted: Option<&str>,
         pull: bool,
         actor: &Actor,
         context: &RequestContext,
     ) -> Result<Job, ContainersError> {
         let project = self.own(name, context).await?;
         let (found, checked) =
-            self.checked(&project.name, &project.directory, compose, accept_risks, context).await?;
+            self.checked(&project.name, &project.directory, compose, accepted, context).await?;
         let storage = &self.ports.storage;
         storage.write(actor, project.share_id, &project.folder, COMPOSE_FILE, compose, context).await?;
         self.make_bind_folders(&project, &checked, actor, context).await?;

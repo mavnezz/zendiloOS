@@ -727,7 +727,7 @@ const en = {
       kinds: {
         privileged: 'privileged, every device and capability',
         docker_socket: 'access to Docker itself, as good as root',
-        system_path: 'mounts a folder of the system',
+        system_path: 'mounts a folder of the system, not of a share',
         host_network: 'uses the NAS’s network directly',
         host_namespace: 'shares processes, memory or users with the NAS',
         devices: 'uses devices',
@@ -2917,6 +2917,8 @@ const en = {
     project_unconfirmed:
       'This project was made before zendiloOS kept what you confirmed. Open its Compose file and save it once; from then on it runs as saved, not from the file in the share.',
     compose_risks: 'The Compose file needs your confirmation',
+    compose_changed:
+      'The Compose file, or a file it takes in, has changed since it was checked. Check it again before it is deployed.',
     share_denied: 'You may not write in this shared folder.',
     volume_in_use: 'Running containers use the volume',
     volume_busy: 'A backup or restore of the volume is under way; try again once it has ended.',
@@ -2932,6 +2934,8 @@ const en = {
     refused: 'The system refused for safety reasons.',
     invalid_app_value: 'A value cannot be used',
     template_unfillable: "The app's Compose file cannot be filled in",
+    against_catalog_policy:
+      'The app breaks the rules of its catalog, whatever it says of its permissions; the App Center does not install it',
     app_busy: 'The app is busy or not in a state for this.',
     host_failed: 'Docker could not do it',
     share_used_by_apps: 'Apps use this share; remove them first',

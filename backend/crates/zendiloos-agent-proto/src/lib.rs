@@ -459,7 +459,8 @@ pub enum Request {
     /// Acts on a Compose project that is not an app of a catalog's (the App
     /// Center keeps those). `Up` and `Pull` take the files Compose reports,
     /// refused when they lie in a volume, where whoever may write the share
-    /// could change them; administrators' projects deploy with
+    /// could change them, or bind a folder or file in a share, which runs
+    /// unpinned by its path; administrators' projects deploy with
     /// [`Request::DeployProject`]. `Down` of an administrator's project also
     /// removes what deploying it kept.
     ControlProject {

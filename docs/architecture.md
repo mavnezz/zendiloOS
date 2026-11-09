@@ -1392,7 +1392,10 @@ published ports from variables, no Docker volumes, no `privileged`, no
 host namespaces; devices of the kinds the format lists (graphics, VPN,
 serial, cameras, sound, Coral TPUs), extra capabilities (`NET_ADMIN`,
 `SYS_NICE`), the host network and the Docker socket only as permissions
-the app declares. An app made into a project is then the administrator's
+the app declares. Reading an index checks the manifest and the Compose
+file as written; the policy proper, on what Compose makes of the file, is
+checked when its template is filled in (see *Installing*). An app made
+into a project is then the administrator's
 file: what it lets its containers do beyond themselves (those
 permissions among it) is confirmed like any project's, see *What runs is
 what was confirmed*. Generated secrets take the length and alphabet the
@@ -1456,13 +1459,30 @@ cases with the administrator's permissions, so it is backed up and
 snapshotted with the share; relative paths start there. Before a file is
 deployed, `docker compose config` reads it (from stdin, in that folder; a
 `.env` there does not count), and what reaches beyond the containers is
-named: `privileged`, the Docker socket, folders outside the volumes, the
-host's network, PID, IPC or user namespace, devices, extra capabilities,
-no seccomp or AppArmor, settings not known as harmless, and what takes in
-files whoever may write the share can change (`build`, built from the
+named: `privileged`, the Docker socket, folders outside the volumes and
+those zendiloOS keeps on a volume for itself (`@docker`, Docker's data,
+where the containers' settings are root at their next start; `@homes`;
+`@apps`; anything else starting with `@` or `.`, as no share's name
+does), also as named volumes that bind them (`o: bind` or `rbind`), the
+host's network (also joined as a network named `host`), PID, IPC or user
+namespace, devices (also a disk's partition a named volume mounts with
+`type` and `device`), extra capabilities, no seccomp or AppArmor,
+settings not known as harmless (named volumes of another driver, of
+another file system than memory or another machine's share, or made
+outside the project; networks that are not a bridge of the project's own:
+made outside it, of another driver, with driver options), and what takes
+in files whoever may write the share can change (`build`, built from the
 share at every deployment; `env_file`, `extends`, `include`, read when it
 is saved). Each must be confirmed, then and on every change;
-the audit log records `risks_accepted`. The folders inside the project's
+the audit log records `risks_accepted`. A confirmation holds for what was
+checked and nothing else: the check (`POST /docker/compose/check`) names
+it by a digest, SHA-256 of the file and of what Compose made of it with
+all it took in, the confirmation gives that back (`accepted`), and the
+project is made or changed only if Compose makes the same of the file
+then; otherwise it is refused (`compose_changed`) and checked again.
+Whoever may write the share could change an included file, an `env_file`
+or an extended one between the check and the save, and what was shown
+would no longer be what runs. The folders inside the project's
 folder its binds mount (`./config`) are made, as far as they are missing,
 through the file manager when the file is saved, as the administrator's
 own (the one exception to the rule that what is made in a share takes
@@ -1510,12 +1530,28 @@ links, mounted under `/run/zendiloos-project-shares/<project>/`, a unit per
 project before Docker at boot; a missing folder a bind may create is made
 there, as Docker would; each pin is named by a hash of what it pins, so a
 bind whose source changed gets another and its container is made again),
-and no bind into a volume lets Docker make a missing folder (a pool not
-mounted yet would get it on the system's disk). It keeps the result as
+named volumes that bind (`o: bind` or `rbind`), secrets and configs from
+files alike, and no bind into a volume lets Docker make a missing folder
+(a pool not mounted yet would get it on the system's disk). A source that
+is relative or goes through `..` is refused: the kernel would not take it
+as it reads (a relative device starts where Docker runs, at `/`; Compose
+makes it absolute only for `o: bind` itself), and it could reach a share
+unpinned. It keeps the result as
 `/etc/zendiloos/projects/<project>.json` and runs Compose on that file with
 an empty `.env`; `down` removes it again. A project made before this was
 kept runs once its file is saved again. A project made elsewhere whose
-Compose file lies in a share is not deployed here, for the same reason.
+Compose file lies in a share is not deployed here, for the same reason,
+nor one that binds a folder or file in a share (below the share's root,
+also as a named volume, a secret or a config): it runs from its own
+files, by those paths, so Docker would follow a link someone put in a
+folder's place. Before `up` or `pull` of such a project (a redeploy, an
+image update) the agent reads what Compose makes of its files and
+refuses; it is made a project of zendiloOS's (its file saved here, which
+pins what it binds) or binds the share as a whole. Its containers are
+still started, stopped and restarted: that changes nothing of how they
+were made, and Docker restarts them by itself anyway. Asking for a
+confirmation instead would not make them run pinned, and a scheduled
+update has nobody to ask.
 A share a project lives in or mounts something of is not deleted
 (`share_used_by_projects`; zendiloosd from the confirmed configurations,
 the agent again from the kept files, which then offers the share again).
@@ -1831,7 +1867,20 @@ in three steps of the install dialog:
    values of the YAML read with their places in the text, quoted so that
    it reads back as exactly that value and with `$` doubled; comments and
    the rest of the file stay as written, and the result is read again and
-   must hold the same document with the values in.
+   must hold the same document with the values in. The request names the
+   project too (name, share and folder, as in step 1), for the catalog's
+   policy: what the index's checks see is the file as written, and much
+   the policy forbids shows only once Compose has made one meaning of it
+   (a named volume that binds `/`, `${APP_DATA}/../..`, `privileged`). So
+   the template is filled in the same way with the catalog's stand-in
+   values (`Placement::stand_in`, as the catalog's validator fills it),
+   read by `docker compose config` in the project's folder
+   (`CheckCompose`), and checked with the catalog's `check_normalized` and
+   `check_variables`; an app that breaks the policy is refused
+   (`against_catalog_policy`, naming what), whatever its manifest says of
+   its permissions, which are all the App Center shows. The
+   administrator's values then take the stand-ins' places, so the file
+   they get differs from the one checked in those values alone.
 3. *The file*: shown in an editor, to read and change, then made a project
    with `POST /docker/projects` naming the app as its `template`: checked
    as Compose reads it, what reaches beyond the containers confirmed,

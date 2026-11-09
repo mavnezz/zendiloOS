@@ -182,7 +182,7 @@ number=$(call GET /storage/pools | jq -r --arg p "$pool" '.[] | select(.name == 
 backups="/volume$number/$share/docker-backups/$volume"
 compose=$'services:\n  db:\n    image: alpine:3.20\n    restart: unless-stopped\n    command: ["sleep", "infinity"]\n    volumes:\n      - data:/data\n      - extra:/extra\nvolumes:\n  data: {}\n  extra: {}\n'
 request=$(jq -n --arg name "$project" --argjson share "$share_id" --arg compose "$compose" \
-    '{name:$name,share_id:$share,folder:"compose",compose:$compose,start:true,accept_risks:true}')
+    '{name:$name,share_id:$share,folder:"compose",compose:$compose,start:true}')
 [[ $(status POST /docker/projects "$request") == 201 ]] || fail "create: $(cat "$work/last")"
 job_succeeded "$(jq -r .job.id "$work/last")"
 wait_for "the container" running 60

@@ -13,8 +13,12 @@
 #      is back
 #   4. the confirmed file binds another folder: the container is made again
 #      on another pin, and back
-#   5. after a reboot the pins are there before Docker starts the project
-#   6. removing the project removes what deploying it kept; the share's
+#   5. a named volume of the local driver with `o: rbind` onto a folder in
+#      the share mounts a pin too, also when the folder becomes a link; one
+#      whose device is relative (Compose leaves it so, Docker would take it
+#      from /) is named in the check, and deploying it is refused
+#   6. after a reboot the pins are there before Docker starts the project
+#   7. removing the project removes what deploying it kept; the share's
 #      data stays
 #
 # Needs the VM running with the package installed and set up, Docker's data
@@ -35,6 +39,7 @@ pins=/run/zendiloos-project-shares/$project
 unit=zendiloos-project-$project-shares.service
 kept=/etc/zendiloos/projects/$project.json
 container=$project-app-1
+music=${project}_music
 work=$(mktemp -d)
 
 say() { printf '\033[1m%s\033[0m\n' "$*"; }
@@ -95,6 +100,8 @@ remove_project() {
     if call GET "/docker/projects/$project" | jq -e .name >/dev/null 2>&1; then
         job_succeeded "$(call DELETE "/docker/projects/$project" | jq -r .id)"
     fi
+    # Going down leaves the named volume; it names a pin as its device.
+    vm "sudo docker volume rm -f $music" >/dev/null 2>&1 || true
 }
 
 cleanup() {
@@ -129,7 +136,7 @@ folder="/volume$volume/$share/docker/$project"
 vm "echo confirmed | sudo tee $folder/settings.conf >/dev/null"
 compose=$'services:\n  app:\n    image: alpine:3.20\n    restart: unless-stopped\n    command: ["sleep", "infinity"]\n    volumes:\n      - ./data:/data\n      - ./settings.conf:/settings.conf:ro\n'
 request=$(jq -n --arg name "$project" --argjson share "$share_id" --arg folder "docker/$project" --arg compose "$compose" \
-    '{name:$name,share_id:$share,folder:$folder,compose:$compose,start:true,accept_risks:false}')
+    '{name:$name,share_id:$share,folder:$folder,compose:$compose,start:true}')
 [[ $(status POST /docker/projects "$request") == 201 ]] || fail "create: $(cat "$work/last")"
 job_succeeded "$(jq -r .job.id "$work/last")"
 wait_for "the container" running 60
@@ -189,7 +196,39 @@ change "$compose"
     || fail "the share a project lives in went: $(cat "$work/last")"
 jq -e '.code == "share_used_by_projects"' "$work/last" >/dev/null || fail "the refusal: $(cat "$work/last")"
 
-say "5. A reboot: pinned before Docker starts the project"
+say "5. A named volume that binds recursively mounts a pin"
+vm "sudo mkdir -p $folder/music && echo tune | sudo tee $folder/music/song.txt >/dev/null"
+# The local driver mounts `device` as a bind mount does with `o: rbind`.
+named() {
+    printf '%s      - music:/music\nvolumes:\n  music:\n    driver_opts:\n      type: none\n      o: rbind\n      device: %s\n' \
+        "$compose" "$1"
+}
+change "$(named "$folder/music")"
+device=$(vm "sudo docker volume inspect -f '{{index .Options \"device\"}}' $music")
+[[ $device == "$pins"/* ]] || fail "the volume mounts $device, not a pin"
+[[ $(vm "sudo docker exec $container cat /music/song.txt") == tune ]] || fail "the pin is not the share's folder"
+vm "sudo mv $folder/music $folder/music.real && sudo ln -s / $folder/music"
+vm "sudo docker restart $container" >/dev/null
+wait_for "the container again" running 60
+[[ $(vm "sudo docker exec $container ls -1 /music") == song.txt ]] \
+    || fail "after Docker's own restart the volume shows: $(vm "sudo docker exec $container ls -1 /music")"
+vm "sudo rm $folder/music && sudo mv $folder/music.real $folder/music"
+# Relative, the device is not what it reads: Compose makes it absolute for
+# `o: bind` only, and Docker would take it from where it runs, /.
+relative=$(named "${folder#/}/music")
+check=$(call POST /docker/compose/check "$(jq -n --arg n "$project" --arg c "$relative" '{name:$n,compose:$c}')")
+jq -e --arg d "${folder#/}/music" '.risks | any(.kind == "system_path" and .detail == $d)' <<<"$check" >/dev/null \
+    || fail "the relative device is not named: $check"
+accepted=$(jq -n --arg c "$relative" --arg d "$(jq -r .digest <<<"$check")" '{compose:$c,accepted:$d}')
+[[ $(status PUT "/docker/projects/$project/compose" "$accepted") == 202 ]] || fail "change: $(cat "$work/last")"
+state=$(job_end "$(jq -r .id "$work/last")")
+[[ $state == failed*"cannot be pinned"* ]] || fail "a relative device was deployed: $state"
+[[ $(vm "sudo docker volume inspect -f '{{index .Options \"device\"}}' $music") == "$device" ]] \
+    || fail "the volume changed"
+change "$compose"
+vm "sudo docker volume rm $music" >/dev/null || fail "the volume is still used"
+
+say "6. A reboot: pinned before Docker starts the project"
 vm 'sudo systemctl reboot' || true
 sleep 15
 wait_for "SSH" "vm true" 300
@@ -201,7 +240,7 @@ pinned=$(vm "systemctl show -p ActiveEnterTimestampMonotonic --value $unit")
 docker=$(vm "systemctl show -p ActiveEnterTimestampMonotonic --value docker.service")
 (( pinned <= docker )) || fail "Docker started before the pins ($docker < $pinned)"
 
-say "6. The project goes, with what it kept"
+say "7. The project goes, with what it kept"
 remove_project
 vm "sudo test ! -e $kept" || fail "$kept stayed"
 vm "test ! -e $pins" || fail "the pins stayed"

@@ -45,7 +45,9 @@ case "$*" in
     read line
     echo "typed: $line" ;;
   "compose ls --all --format json")
-    echo '[{{"Name":"stack","ConfigFiles":"{foreign}"}},{{"Name":"kuma","ConfigFiles":"/etc/zendiloos/apps/kuma.json"}},{{"Name":"shared","ConfigFiles":"/volume1/docker/shared/compose.yaml"}}]' ;;
+    echo '[{{"Name":"stack","ConfigFiles":"{foreign}"}},{{"Name":"kuma","ConfigFiles":"/etc/zendiloos/apps/kuma.json"}},{{"Name":"shared","ConfigFiles":"/volume1/docker/shared/compose.yaml"}},{{"Name":"binding","ConfigFiles":"{foreign}"}}]' ;;
+  *"--project-name binding config --format json")
+    echo '{{"name":"binding","services":{{"web":{{"volumes":[{{"type":"bind","source":"/volume1/media","target":"/media"}},{{"type":"bind","source":"/volume1/media/Films","target":"/films"}}]}}}}}}' ;;
   *" config --format json")
     if grep -q broken; then echo 'yaml: line 2: mapping values are not allowed' >&2; exit 15; fi
     echo '{{"name":"tesla"}}' ;;
@@ -250,12 +252,13 @@ async fn foreign_projects_come_up_from_the_file_compose_reports() {
     let request = Request::ControlProject { project: project("stack"), action: ProjectAction::Up };
     assert_eq!(host.agent.execute(&request).await, Response::Done);
 
+    let calls = host.calls();
+    let compose =
+        format!("docker compose --file {foreign} --project-directory {directory} --project-name stack");
     assert_eq!(
-        host.calls().last().unwrap(),
-        &format!(
-            "docker compose --file {foreign} --project-directory {directory} --project-name stack \
-             up --detach --remove-orphans"
-        )
+        calls[calls.len() - 2..],
+        [format!("{compose} config --format json"), format!("{compose} up --detach --remove-orphans")],
+        "what it binds is read first, as it comes up"
     );
 }
 
@@ -315,6 +318,30 @@ async fn foreign_projects_with_their_file_in_a_share_are_not_deployed() {
         assert!(message.contains("lies in a share"), "{message}");
     }
     assert!(!host.calls().iter().any(|call| call.contains(" up ") || call.contains(" pull")));
+}
+
+#[tokio::test]
+async fn foreign_projects_binding_folders_in_a_share_are_not_deployed() {
+    let host = Host::new();
+
+    for action in [ProjectAction::Up, ProjectAction::Pull] {
+        let request = Request::ControlProject { project: project("binding"), action };
+        let Response::Error { code, message } = host.agent.execute(&request).await else {
+            panic!("{action:?} done")
+        };
+        assert_eq!(code, ErrorCode::Forbidden);
+        assert!(message.contains("binds /volume1/media/Films by its path"), "{message}");
+    }
+    let calls = host.calls();
+    assert!(
+        calls.iter().any(|call| call.ends_with("--project-name binding config --format json")),
+        "{calls:?}"
+    );
+    assert!(!calls.iter().any(|call| call.contains(" up ") || call.ends_with(" pull")), "{calls:?}");
+    // Its containers start and stop as before: that changes nothing of how
+    // they were made.
+    let start = Request::ControlProject { project: project("binding"), action: ProjectAction::Start };
+    assert!(matches!(host.agent.execute(&start).await, Response::Done), "started");
 }
 
 fn config(text: &str) -> ProjectConfig {

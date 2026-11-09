@@ -36,7 +36,7 @@ use ports::{
     BackupRepository, BackupShares, DockerData, DockerEngine, EngineError, ProjectRepository, ProjectStorage,
     Registries, StorageError, UpdateSettingsRepository, VolumeArchiver,
 };
-pub use projects::{ComposeSource, NewProject};
+pub use projects::{ComposeRisks, ComposeSource, NewProject};
 pub use records::{BackupGroup, Imported};
 pub use volumes::VolumeView;
 
@@ -91,6 +91,10 @@ pub enum ContainersError {
     /// again with the risks accepted.
     #[error("the Compose file needs confirmation")]
     Risky(Vec<Risk>),
+    /// What was confirmed is not what Compose makes of the file now: the
+    /// file, or one it takes in from the share, changed since its check.
+    #[error("the Compose file or what it takes in changed since it was checked; check it again")]
+    Changed,
     #[error("the share does not exist or cannot be written")]
     Denied,
     /// Made before zendiloOS kept what was confirmed: deployed from the

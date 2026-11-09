@@ -11,8 +11,8 @@ import { job } from '@/shared/testing/fixtures'
 import ProjectEditor from './ProjectEditor.vue'
 
 let risks: ComposeRisk[] = []
-const check = vi.fn<(body: unknown) => Promise<{ risks: ComposeRisk[] }>>(() =>
-  Promise.resolve({ risks }),
+const check = vi.fn<(body: unknown) => Promise<{ risks: ComposeRisk[]; digest: string }>>(() =>
+  Promise.resolve({ risks, digest: 'c0ffee' }),
 )
 /** What making the project answers: the deploying job, if it starts. */
 let created: { job: Job | null } = { job: null }
@@ -67,7 +67,7 @@ describe('the project editor', () => {
     expect(create.mock.calls[0]?.[0]).toMatchObject({
       name: 'tesla',
       start: true,
-      accept_risks: false,
+      accepted: null,
     })
     expect(wrapper.emitted('done')).toEqual([['tesla']])
     wrapper.unmount()
@@ -87,7 +87,7 @@ describe('the project editor', () => {
     )!
     confirm.click()
     await flushPromises()
-    expect(create.mock.calls[0]?.[0]).toMatchObject({ accept_risks: true })
+    expect(create.mock.calls[0]?.[0]).toMatchObject({ accepted: 'c0ffee' })
     wrapper.unmount()
   })
 
@@ -133,7 +133,7 @@ describe('the project editor', () => {
     await save()
     await flushPromises()
     expect(change.mock.calls[0]![0]).toEqual(
-      expect.objectContaining({ name: 'tesla', pull: false }),
+      expect.objectContaining({ name: 'tesla', pull: false, accepted: null }),
     )
     await wrapper.find('input[type=checkbox]').setValue(true)
     await save()
