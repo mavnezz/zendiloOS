@@ -88,7 +88,7 @@ exit 0
             r#"#!/bin/sh
 echo "systemctl $*" >> {log}
 case "$1" in
-  show) shift 3; for unit in "$@"; do if [ -f {root}/units/$unit ]; then echo active; else echo inactive; fi; done ;;
+  show) shift 3; first=1; for unit in "$@"; do [ $first = 1 ] || echo; first=0; if [ -f {root}/units/$unit ]; then echo active; else echo inactive; fi; done ;;
   list-units) for unit in $(ls {root}/units); do echo "$unit loaded active running a volume's work"; done ;;
   stop) rm -f {root}/units/$2 ;;
 esac

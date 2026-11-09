@@ -409,27 +409,26 @@ impl Volumes {
 
     /// The units of `names` that run (starting, running or stopping).
     async fn running(&self, names: &[String]) -> Result<Vec<String>, OperationError> {
-        let mut args = vec!["show", "--property=ActiveState", "--value"];
-        args.extend(names.iter().map(String::as_str));
-        let output =
-            zendiloos_exec::run_with(&self.systemctl, &args, None, &Surroundings::default(), QUICK).await?;
-        if !output.status.success() {
-            return Err(OperationError::Failed(format!(
-                "systemd does not say whether the volume's work runs: {}",
-                output.stderr.trim()
-            )));
+        // One unit per call: given several, systemctl separates their values
+        // by an empty line, which a list of states would read as one more.
+        let mut running = Vec::new();
+        for name in names {
+            let args = ["show", "--property=ActiveState", "--value", name.as_str()];
+            let output =
+                zendiloos_exec::run_with(&self.systemctl, &args, None, &Surroundings::default(), QUICK)
+                    .await?;
+            if !output.status.success() {
+                return Err(OperationError::Failed(format!(
+                    "systemd does not say whether the volume's work runs: {}",
+                    output.stderr.trim()
+                )));
+            }
+            let state = String::from_utf8(output.stdout).map_err(|_| OperationError::NotUtf8)?;
+            if !matches!(state.trim(), "inactive" | "failed" | "") {
+                running.push(name.clone());
+            }
         }
-        let states = String::from_utf8(output.stdout).map_err(|_| OperationError::NotUtf8)?;
-        let states: Vec<&str> = states.lines().map(str::trim).collect();
-        if states.len() != names.len() {
-            return Err(OperationError::Failed("systemd answered for other units than asked".into()));
-        }
-        Ok(names
-            .iter()
-            .zip(states)
-            .filter(|(_, state)| !matches!(*state, "inactive" | "failed" | ""))
-            .map(|(name, _)| name.clone())
-            .collect())
+        Ok(running)
     }
 
     /// Refused while a backup, restore or swap of `volume` still runs:
