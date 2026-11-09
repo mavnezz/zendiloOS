@@ -1626,7 +1626,11 @@ entries a volume and twenty seconds in all; a count cut short, or one that
 could not look into a folder, says "at least". It holds a descriptor or
 two however wide or deep the folders are: it goes down by name and back up
 by `..`, which must be the folder it came from, and keeps only the names
-still to count. Counting has a place of its own in the agent, one at a
+still to count. What it remembers is bounded, not the volume: the folders
+still to count up to 64 MiB (each reckoned at its name and 64 bytes
+beside), and up to a million files with several names (under 40 bytes
+each), to count each once; a count out of room counts less and says "at
+least", never more. Counting has a place of its own in the agent, one at a
 time. `docker system df -v` would walk every volume without bounds, and
 cannot print JSON. A volume no container uses is removed (`docker volume
 rm`, without `--force`; its backup plan goes with it, its backups stay,

@@ -596,8 +596,21 @@ struct Level {
 /// Folders a walk notes at once in one folder before it goes into them;
 /// it lists the folder again for the rest.
 const NOTED: usize = 256;
-/// What the names of the folders still to count may take up.
+/// What the folders still to count may take up in memory, their names and
+/// what each costs beside (`NOTE_COST`: the name's allocation, its place in
+/// the list and the list's slack).
 const MAX_NOTED_BYTES: usize = 64 * 1024 * 1024;
+const NOTE_COST: usize = 64;
+
+/// What a count may keep in memory: the folders it noted to count, the
+/// files with several names it remembers.
+#[derive(Debug, Clone, Copy)]
+struct Room {
+    noted_bytes: usize,
+    linked: usize,
+}
+
+const COUNT_ROOM: Room = Room { noted_bytes: MAX_NOTED_BYTES, linked: MAX_LINKS };
 
 const WALKED: OFlags = OFlags::RDONLY.union(OFlags::DIRECTORY).union(OFlags::NOFOLLOW).union(OFlags::CLOEXEC);
 
@@ -614,14 +627,21 @@ fn up(current: &OwnedFd, id: (u64, u64)) -> Result<OwnedFd, Errno> {
 /// Counts what the files below `folder` hold, without following a link or
 /// entering another file system: at most `max_entries`, until `until`. A
 /// file with several names counts once. Incomplete where it stopped at a
-/// bound or could not look into a folder. It holds a descriptor or two,
-/// however wide or deep the folders are.
+/// bound, could not look into a folder or had no room to remember what it
+/// must (then it counts less, never more). It holds a descriptor or two,
+/// however wide or deep the folders are, and no more memory than
+/// [`COUNT_ROOM`] says.
 pub(crate) fn count(folder: &OwnedFd, max_entries: u64, until: Option<Instant>) -> Counted {
+    count_in(folder, max_entries, until, COUNT_ROOM)
+}
+
+fn count_in(folder: &OwnedFd, max_entries: u64, until: Option<Instant>, room: Room) -> Counted {
     let mut counted = Counted { complete: true, ..Counted::default() };
     let (Ok(top), Ok(stat)) = (folder.try_clone(), fstat(folder)) else { return Counted::default() };
     let device = identity(&stat).0;
     let mut linked = std::collections::HashSet::new();
     let mut noted_bytes = 0usize;
+    let cost = |name: &CStr| name.to_bytes().len() + NOTE_COST;
     let mut path: Vec<Level> = Vec::new();
     let (mut current, mut id) = (top, identity(&stat));
     loop {
@@ -653,14 +673,28 @@ pub(crate) fn count(folder: &OwnedFd, max_entries: u64, until: Option<Instant>) 
                         }
                     };
                     match kind(&stat) {
-                        FileType::RegularFile if stat.st_nlink < 2 || linked.insert(identity(&stat)) => {
-                            counted.bytes += u64::try_from(stat.st_size).unwrap_or(0);
+                        FileType::RegularFile => {
+                            let file = identity(&stat);
+                            let first = if stat.st_nlink < 2 {
+                                true
+                            } else if linked.len() < room.linked {
+                                linked.insert(file)
+                            } else {
+                                // No room to remember it: unless it was
+                                // counted already, it is left out, and the
+                                // count says "at least".
+                                counted.complete &= linked.contains(&file);
+                                false
+                            };
+                            if first {
+                                counted.bytes += u64::try_from(stat.st_size).unwrap_or(0);
+                            }
                         }
                         FileType::Directory if identity(&stat).0 == device => {
-                            noted_bytes += name.to_bytes().len();
-                            if path.len() >= MAX_DEPTH || noted_bytes > MAX_NOTED_BYTES {
+                            if path.len() >= MAX_DEPTH || noted_bytes + cost(name) > room.noted_bytes {
                                 counted.complete = false;
                             } else {
+                                noted_bytes += cost(name);
                                 pending.push(name.to_owned());
                             }
                         }
@@ -675,7 +709,7 @@ pub(crate) fn count(folder: &OwnedFd, max_entries: u64, until: Option<Instant>) 
         loop {
             let Some(level) = path.last_mut() else { return counted };
             if let Some(next) = level.pending.pop() {
-                noted_bytes -= next.to_bytes().len().min(noted_bytes);
+                noted_bytes = noted_bytes.saturating_sub(cost(&next));
                 match openat(&current, &next, WALKED, Mode::empty())
                     .and_then(|inner| Ok((fstat(&inner)?, inner)))
                 {

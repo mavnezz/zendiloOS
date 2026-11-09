@@ -963,6 +963,40 @@ fn counting_stays_on_the_file_system_and_within_its_bounds() {
     assert!(!late.complete);
 }
 
+/// A count that has no room left to note the folders still to count, or to
+/// remember the files with several names it counted, says "at least": it
+/// counts less, never more, and never calls that complete.
+#[test]
+fn a_count_without_room_for_what_it_must_remember_says_at_least() {
+    let place = Place::new();
+    let source = place.path("source");
+    for n in 0..40 {
+        fs::create_dir(source.join(format!("f{n:02}"))).unwrap();
+        fs::write(source.join(format!("f{n:02}/x")), "x").unwrap();
+    }
+    fs::create_dir(source.join("linked")).unwrap();
+    for n in 0..4 {
+        let file = source.join(format!("linked/{n}"));
+        fs::write(&file, [0u8; 100]).unwrap();
+        fs::hard_link(&file, source.join(format!("linked/{n}-again"))).unwrap();
+    }
+    let source = open_folder(&source, OFlags::RDONLY).unwrap();
+    let all = count(&source, u64::MAX, None);
+    assert_eq!((all.bytes, all.complete), (40 + 400, true), "{all:?}");
+
+    // Room to note ten folders at once: the top folder lists forty-one.
+    let narrow = Room { noted_bytes: 10 * (3 + NOTE_COST), linked: MAX_LINKS };
+    let counted = count_in(&source, u64::MAX, None, narrow);
+    assert!(!counted.complete && counted.bytes < all.bytes, "{counted:?}");
+    // Room to remember two of the four files with two names each.
+    let forgetful = Room { noted_bytes: MAX_NOTED_BYTES, linked: 2 };
+    let counted = count_in(&source, u64::MAX, None, forgetful);
+    assert_eq!((counted.bytes, counted.complete), (40 + 200, false), "{counted:?}");
+    // As many as there are: complete again.
+    let enough = Room { noted_bytes: 41 * (6 + NOTE_COST), linked: 4 };
+    assert_eq!(count_in(&source, u64::MAX, None, enough), all);
+}
+
 /// The backups in a plan's folder are found again: archive and manifest
 /// pairs writable by root only, hashed as their manifests say; anything
 /// else is refused with why, and what is recorded already passed over.
