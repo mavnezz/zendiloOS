@@ -5,7 +5,8 @@
 #   scripts/vm.sh start     boot in the background (console in dev/vm/console.log)
 #   scripts/vm.sh install [deb]  install a package; the newest dist/zendiloos_*.deb by default
 #   scripts/vm.sh ssh [cmd] log in as the image's user `debian`
-#   scripts/vm.sh removable-attach <image> <id> [ro]  plug a raw disk image in as a removable drive
+#   scripts/vm.sh removable-attach <image> <id> [ro|rw] [serial]  plug a raw disk image in as a removable
+#                           drive, with the serial number ZDL-RM-<id> or the one given
 #   scripts/vm.sh removable-detach <id>          pull it out again, unannounced
 #   scripts/vm.sh stop      power off
 #   scripts/vm.sh destroy   delete the VM's disks (keeps the downloaded image)
@@ -183,13 +184,15 @@ monitor() {
 # kernel has no USB at all, so it comes over SCSI with the removable bit,
 # which is what the kernel tells USB sticks by.
 removable_attach() {
-    local image=$1 id=$2 readonly=${3:-}
-    [[ -f $image && $id =~ ^[a-z0-9]+$ && ( -z $readonly || $readonly == ro ) ]] \
-        || { echo "usage: removable-attach <image> <id> [ro]" >&2; exit 1; }
+    local image=$1 id=$2 readonly=${3:-} serial=${4:-ZDL-RM-$2}
+    [[ -f $image && $id =~ ^[a-z0-9]+$ && ( -z $readonly || $readonly == ro || $readonly == rw ) \
+        && $serial =~ ^[A-Za-z0-9_-]+$ ]] \
+        || { echo "usage: removable-attach <image> <id> [ro|rw] [serial]" >&2; exit 1; }
+    [[ $readonly == rw ]] && readonly=
     local out
     out=$(monitor "drive_add 0 if=none,id=$id,file=$(realpath "$image"),format=raw${readonly:+,readonly=on}")
     [[ $out == *OK* ]] || { echo "drive_add: $out" >&2; exit 1; }
-    out=$(monitor "device_add scsi-hd,bus=scsi.0,drive=$id,id=$id-stick,removable=on,serial=ZDL-RM-$id")
+    out=$(monitor "device_add scsi-hd,bus=scsi.0,drive=$id,id=$id-stick,removable=on,serial=$serial")
     [[ -z $out ]] || { echo "device_add: $out" >&2; exit 1; }
 }
 
@@ -219,7 +222,7 @@ case ${1:-} in
     start) start ;;
     install) install_package "${2:-}" ;;
     ssh) shift; exec ssh "${ssh_opts[@]}" debian@127.0.0.1 "$@" ;;
-    removable-attach) removable_attach "${2:-}" "${3:-}" "${4:-}" ;;
+    removable-attach) removable_attach "${2:-}" "${3:-}" "${4:-}" "${5:-}" ;;
     removable-detach) removable_detach "${2:?usage: removable-detach <id>}" ;;
     stop) stop ;;
     destroy) destroy ;;
