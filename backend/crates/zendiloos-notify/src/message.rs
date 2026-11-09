@@ -180,9 +180,9 @@ pub fn message(notification: &Notification, host: &str, language: Language) -> M
         }
         "updates_failed" if german => (
             "Update fehlgeschlagen".to_owned(),
-            "Unter Einstellungen → Aktualisieren & Wiederherstellen steht, woran es lag.".to_owned(),
+            "Unter Systemsteuerung → Updates steht, woran es lag.".to_owned(),
         ),
-        "updates_failed" => ("Update failed".to_owned(), "Settings → Update & restore says why.".to_owned()),
+        "updates_failed" => ("Update failed".to_owned(), "Control panel → Updates says why.".to_owned()),
         "certificate_renewed" if german => (
             format!("Zertifikat für {} erneuert", param("name")),
             "Let's Encrypt hat das Zertifikat erneuert; zeigt die Weboberfläche es, nutzt sie es schon."
@@ -495,6 +495,8 @@ mod tests {
         let failed = notification("updates_failed", &[("error", "apt")]);
         assert_eq!(message(&failed, "nas", Language::English).title, "[nas] Update failed");
         assert_eq!(message(&failed, "nas", Language::German).title, "[nas] Update fehlgeschlagen");
+        assert_eq!(body("updates_failed", &[], Language::English), "Control panel → Updates says why.");
+        assert!(body("updates_failed", &[], Language::German).contains("Systemsteuerung → Updates"));
         assert_eq!(
             message(&notification("updates_installed", &current), "nas", Language::German).title,
             "[nas] Updates installiert"
