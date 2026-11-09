@@ -7,6 +7,15 @@ all-features = true
 [advisories]
 # Security advisories fail the check; unmaintained crates are reported.
 yanked = "deny"
+ignore = [
+    # SQLite before 3.54 can return stale page-cache bytes when it opens a
+    # database together with a crafted -wal file of another page size.
+    # zendiloosd opens only its own database in /var/lib/zendiloos (0700,
+    # the service's alone), so no less trusted party writes the files it
+    # opens. The fixed libsqlite3-sys 0.39 needs an sqlx newer than 0.9.0,
+    # which allows < 0.38; drop this once sqlx takes it.
+    { id = "RUSTSEC-2026-0459", reason = "only our own database is opened; fixed libsqlite3-sys needs a newer sqlx" },
+]
 
 [licenses]
 # Permissive licenses compatible with zendiloos's Apache-2.0. Anything else
