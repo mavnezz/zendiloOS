@@ -1301,6 +1301,15 @@ fn inheriting(root: ShareRoot) -> (ShareRoot, u32, u32) {
     (root.with_new_entries(NewEntries::Inherit { group: gid }), uid, gid)
 }
 
+/// The process's umask, which the kernel applies to what is made in a
+/// folder without a default ACL; read, as setting it would race the other
+/// tests.
+fn umask() -> u32 {
+    let status = fs::read_to_string("/proc/self/status").unwrap();
+    let mask = status.lines().find_map(|line| line.strip_prefix("Umask:")).unwrap();
+    u32::from_str_radix(mask.trim(), 8).unwrap()
+}
+
 fn owners_of(path: &Path) -> (u32, u32) {
     use std::os::unix::fs::MetadataExt;
     let meta = fs::symlink_metadata(path).unwrap();
@@ -1351,7 +1360,9 @@ fn a_shares_recycle_bin_is_everyones_who_may_use_it() {
     photos.remove(&path("album/a.jpg"), Some("anna")).unwrap();
 
     let bin = v.share_path("photos").join(".recycle/anna/album");
-    assert_eq!(fs::metadata(&bin).unwrap().permissions().mode() & 0o070, 0o070, "the group's too");
+    // On a share the folder's default ACL gives the group all; here, with
+    // none, the umask takes what it takes.
+    assert_eq!(fs::metadata(&bin).unwrap().permissions().mode() & 0o070, 0o070 & !umask(), "the group's too");
     assert_eq!(fs::read_to_string(bin.join("a.jpg")).unwrap(), "x");
     // In a personal folder a bin that is not the user's alone refuses.
     let home = v.share("photos");
