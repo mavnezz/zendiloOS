@@ -7,7 +7,8 @@
 //! outside the sandbox. The runner records each step in
 //! `/var/lib/zendiloos-packages/run.json`, which the agent reads back; a run
 //! outlives a restart of the agent or of zendiloosd, which matters when it
-//! installs zendiloOS itself.
+//! installs zendiloOS itself. An update's record goes to `update.json` as
+//! well, where the runs after it (a check, a plugin installed) leave it.
 //!
 //! A release of zendiloOS is installed only after the runner copied its
 //! package, `SHA256SUMS` and `SHA256SUMS.minisig` out of the folder
@@ -42,6 +43,8 @@ use crate::pools::HostPaths;
 /// The unit a run of apt goes in.
 const UNIT: &str = "zendiloos-packages.service";
 const STATE_FILE: &str = "run.json";
+/// The last update's record, also once other runs came after it.
+const UPDATE_FILE: &str = "update.json";
 const LIMITS: Limits = Limits { timeout: Duration::from_secs(30), max_stdout: 64 * 1024 };
 /// Lines of apt's output kept for a failure.
 const TAIL: usize = 15;
@@ -113,20 +116,45 @@ impl Packages {
     }
 
     pub(crate) async fn state(&self) -> Result<Response, OperationError> {
-        let path = self.paths.packages.join(STATE_FILE);
-        let mut run: PackageRun = match fs::read_to_string(&path) {
-            Ok(text) => serde_json::from_str(&text)
-                .map_err(|_| OperationError::Refused(format!("{} cannot be read", path.display())))?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Response::Packages { run: None });
-            }
-            Err(error) => return Err(OperationError::Read(path, error)),
-        };
-        if run.state == PackageRunState::Running && !self.active().await {
+        let mut run = self.recorded(STATE_FILE)?;
+        // Unreadable, it takes nothing from the latest run's record, which
+        // the plugins' installs follow too.
+        let mut update = self.recorded(UPDATE_FILE).unwrap_or_else(|error| {
+            tracing::warn!(%error, "packages: the last update's record cannot be read");
+            None
+        });
+        let unseen = |run: &mut PackageRun| {
             run.state = PackageRunState::Failed;
             run.error = Some("the run stopped before it finished (was the NAS restarted?)".into());
+        };
+        let going =
+            |run: &Option<PackageRun>| run.as_ref().is_some_and(|run| run.state == PackageRunState::Running);
+        let active = (going(&run) || going(&update)) && self.active().await;
+        let latest = run.as_ref().map(|run| run.id.clone());
+        if let Some(run) = run.as_mut().filter(|run| run.state == PackageRunState::Running && !active) {
+            unseen(run);
         }
-        Ok(Response::Packages { run: Some(run) })
+        // An update cut off before another run started is not that run.
+        if let Some(update) = update
+            .as_mut()
+            .filter(|update| update.state == PackageRunState::Running)
+            .filter(|update| !active || latest.as_deref() != Some(update.id.as_str()))
+        {
+            unseen(update);
+        }
+        Ok(Response::Packages { run, update: update.map(Box::new) })
+    }
+
+    /// A run as the runner recorded it in `file`, if it did.
+    fn recorded(&self, file: &str) -> Result<Option<PackageRun>, OperationError> {
+        let path = self.paths.packages.join(file);
+        match fs::read_to_string(&path) {
+            Ok(text) => serde_json::from_str(&text)
+                .map(Some)
+                .map_err(|_| OperationError::Refused(format!("{} cannot be read", path.display()))),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(OperationError::Read(path, error)),
+        }
     }
 
     /// Whether a run of apt goes on now.
@@ -553,24 +581,33 @@ fn debian(program: &str, args: &[&str]) -> Result<(), String> {
     Err(format!("{name}{} failed ({}):\n{tail}", action.unwrap_or_default(), output.status))
 }
 
-/// Writes the run's state, readable by everyone, replacing the last.
+/// Writes the run's state, readable by everyone, replacing the last; an
+/// update's also as the last update's.
 fn record(folder: &Path, run: &PackageRun) -> Result<(), String> {
     match fs::DirBuilder::new().mode(0o755).create(folder) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
         Err(error) => return Err(format!("{}: {error}", folder.display())),
     }
-    let path = folder.join(STATE_FILE);
-    let temporary = folder.join(format!("{STATE_FILE}.new"));
     let text = serde_json::to_string_pretty(run).map_err(|e| e.to_string())?;
-    let written = (|| {
-        let mut file =
-            fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o644).open(&temporary)?;
-        file.write_all(text.as_bytes())?;
-        file.sync_all()?;
-        fs::rename(&temporary, &path)
-    })();
-    written.map_err(|e| format!("{}: {e}", path.display()))
+    let files: &[&str] = if run.task.updates() { &[STATE_FILE, UPDATE_FILE] } else { &[STATE_FILE] };
+    for name in files {
+        let path = folder.join(name);
+        let temporary = folder.join(format!("{name}.new"));
+        let written = (|| {
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o644)
+                .open(&temporary)?;
+            file.write_all(text.as_bytes())?;
+            file.sync_all()?;
+            fs::rename(&temporary, &path)
+        })();
+        written.map_err(|e| format!("{}: {e}", path.display()))?;
+    }
+    Ok(())
 }
 
 fn now() -> i64 {
@@ -987,18 +1024,73 @@ mod tests {
     async fn a_run_that_stopped_unseen_is_reported_as_failed() {
         let root = tempfile::tempdir().unwrap();
         let packages = packages(root.path());
-        assert_eq!(packages.state().await.unwrap(), Response::Packages { run: None });
+        assert_eq!(packages.state().await.unwrap(), Response::Packages { run: None, update: None });
 
         record(&root.path().join("state"), &run(PackageTask::Update)).unwrap();
         fs::write(root.path().join("active"), "").unwrap();
-        let Response::Packages { run: Some(going) } = packages.state().await.unwrap() else { panic!() };
-        assert_eq!(going.state, PackageRunState::Running);
+        let Response::Packages { run: Some(going), update: Some(update) } = packages.state().await.unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!((going.state, update.state), (PackageRunState::Running, PackageRunState::Running));
         fs::remove_file(root.path().join("active")).unwrap();
-        let Response::Packages { run: Some(stopped) } = packages.state().await.unwrap() else { panic!() };
-        assert_eq!(stopped.state, PackageRunState::Failed);
+        let Response::Packages { run: Some(stopped), update: Some(update) } = packages.state().await.unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!((stopped.state, update.state), (PackageRunState::Failed, PackageRunState::Failed));
         assert!(stopped.error.unwrap().contains("restarted"));
 
         fs::write(root.path().join("state").join(STATE_FILE), "{").unwrap();
         assert!(packages.state().await.unwrap_err().to_string().contains("cannot be read"));
+    }
+
+    #[tokio::test]
+    async fn an_update_is_still_told_after_a_plugin_was_installed() {
+        let root = tempfile::tempdir().unwrap();
+        let packages = packages(root.path());
+        let state = root.path().join("state");
+        let mut update = run(PackageTask::Update);
+        update.id = "aa01".into();
+        update.state = PackageRunState::Failed;
+        update.error = Some("dpkg was interrupted".into());
+        record(&state, &update).unwrap();
+
+        // Right after it, Docker is installed, and a check follows.
+        let mut docker = run(PackageTask::InstallDocker);
+        docker.id = "aa02".into();
+        record(&state, &docker).unwrap();
+        fs::write(root.path().join("active"), "").unwrap();
+        let Response::Packages { run: Some(latest), update: Some(kept) } = packages.state().await.unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!((latest.id.as_str(), latest.state), ("aa02", PackageRunState::Running));
+        assert_eq!(*kept, update, "the update's record is kept as it was");
+        let mut check = run(PackageTask::Check);
+        check.id = "aa03".into();
+        check.state = PackageRunState::Succeeded;
+        record(&state, &check).unwrap();
+        let Response::Packages { update: Some(kept), .. } = packages.state().await.unwrap() else { panic!() };
+        assert_eq!(kept.id, "aa01");
+
+        // An update cut off unseen, then another run: not the one going on.
+        let mut cut_off = run(PackageTask::Update);
+        cut_off.id = "aa04".into();
+        record(&state, &cut_off).unwrap();
+        record(&state, &docker).unwrap();
+        let Response::Packages { run: Some(latest), update: Some(kept) } = packages.state().await.unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(latest.state, PackageRunState::Running, "Docker's install goes on");
+        assert_eq!((kept.id.as_str(), kept.state), ("aa04", PackageRunState::Failed));
+
+        // A broken record of the update keeps nobody from following a run.
+        fs::write(state.join(UPDATE_FILE), "{").unwrap();
+        let Response::Packages { run: Some(latest), update: None } = packages.state().await.unwrap() else {
+            panic!()
+        };
+        assert_eq!(latest.id, "aa02");
     }
 }

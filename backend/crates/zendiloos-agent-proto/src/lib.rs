@@ -251,8 +251,8 @@ pub enum Request {
         #[serde(default)]
         release: Option<ReleaseInstall>,
     },
-    /// The latest run of apt: [`Response::Packages`]. A run whose unit is
-    /// gone without finishing counts as failed.
+    /// The latest run of apt, and the last update: [`Response::Packages`].
+    /// A run whose unit is gone without finishing counts as failed.
     PackagesState {},
     /// Puts Docker's data on a pool zendiloos created: the dataset
     /// `<pool>/zendiloos.docker`, mounted at `/volume<N>/@docker`, as
@@ -1067,6 +1067,11 @@ pub enum Response {
     },
     Packages {
         run: Option<PackageRun>,
+        /// The last run of an update ([`PackageTask::updates`]), kept apart:
+        /// the runs after it (a check, a plugin installed) do not replace
+        /// it. The same as `run` until another came.
+        #[serde(default)]
+        update: Option<Box<PackageRun>>,
     },
     Apps {
         /// `docker compose ls --all --format json`: every Compose project,

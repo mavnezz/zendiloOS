@@ -2021,9 +2021,12 @@ update does not start while background jobs run (`jobs_running`, the
 detail names them, recorded as denied; asked again once the release has
 come): a stopping agent first sees its running operations through, and
 the upgrade would wait for that, for hours maybe. The
-record is one file, which the next check replaces: so before a check or an
-update starts, zendiloosd says how the last update went (once) and keeps
-that run in its database, where the page still finds it. Tasks
+record of the latest run is replaced by the next one; an update's goes to
+`update.json` as well, which only the next update replaces, so a check or
+a plugin installed right after an update leaves how it went for the page
+and for its notification, which zendiloosd sends once and keeps in its
+database too (for a NAS whose last update a runner without that record
+made). Tasks
 are fixed: install Docker (`docker.io`, `docker-compose`) and the ACME
 client (`acme.sh`), the App Center's plugins; check (lists fetched, then
 `apt-get --simulate upgrade` parsed into packages, security updates marked

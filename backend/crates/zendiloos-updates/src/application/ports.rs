@@ -46,6 +46,10 @@ pub trait HostPackages: Send + Sync {
 
     /// The latest run of apt, if any.
     async fn latest(&self, context: &RequestContext) -> Result<Option<UpdateRun>, HostError>;
+
+    /// The last run that updated, as the NAS keeps it apart: the runs
+    /// after it (a check, a plugin installed) do not replace it.
+    async fn last_update(&self, context: &RequestContext) -> Result<Option<UpdateRun>, HostError>;
 }
 
 /// Settings, the last check and what was said already.
@@ -59,7 +63,8 @@ pub trait UpdateStore: Send + Sync {
     async fn said(&self, topic: &str) -> Result<Option<String>, PortError>;
     async fn save_said(&self, topic: &str, key: &str) -> Result<(), PortError>;
     /// The last update run that installed, kept once it finished: the NAS
-    /// keeps one record, which the next check replaces.
+    /// keeps its own record of it too, but one from before that record was
+    /// kept apart is here only.
     async fn last_run(&self) -> Result<Option<UpdateRun>, PortError>;
     async fn save_last_run(&self, run: &UpdateRun) -> Result<(), PortError>;
 }

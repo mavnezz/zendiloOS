@@ -121,8 +121,8 @@ impl Updates {
 
     pub async fn overview(&self, request: &RequestContext) -> Result<UpdateOverview, UpdatesError> {
         let settings = self.ports.store.settings().await?;
-        let latest = self.ports.host.latest(request).await?;
-        let run = self.last_update(latest).await?;
+        let (latest, update) = self.runs(request).await?;
+        let run = self.shown(latest, update).await?;
         let mut check = self.ports.store.last_check().await?;
         if let Some(check) = &mut check {
             self.forget_installed(check, run.as_ref(), settings.channel);
@@ -137,17 +137,33 @@ impl Updates {
         })
     }
 
-    /// The last update that installed: the NAS's record while it is one,
-    /// otherwise as it was kept before a check replaced that record.
-    async fn last_update(&self, latest: Option<UpdateRun>) -> Result<Option<UpdateRun>, UpdatesError> {
-        match latest {
-            Some(run) if run.installs || run.state == RunState::Running => Ok(Some(run)),
+    /// The NAS's latest run of apt, whatever it did, and its last update.
+    async fn runs(
+        &self,
+        request: &RequestContext,
+    ) -> Result<(Option<UpdateRun>, Option<UpdateRun>), UpdatesError> {
+        let latest = self.ports.host.latest(request).await?;
+        let update = self.ports.host.last_update(request).await?;
+        Ok((latest, update))
+    }
+
+    /// The run the page shows: one going on, else the last update, as the
+    /// NAS keeps it or, from before it kept its own, as kept here.
+    async fn shown(
+        &self,
+        latest: Option<UpdateRun>,
+        update: Option<UpdateRun>,
+    ) -> Result<Option<UpdateRun>, UpdatesError> {
+        match (latest, update) {
+            (Some(run), _) if run.state == RunState::Running => Ok(Some(run)),
+            (_, Some(update)) => Ok(Some(update)),
+            (Some(run), None) if run.installs => Ok(Some(run)),
             _ => Ok(self.ports.store.last_run().await?),
         }
     }
 
-    /// Says how a finished update went, once, and keeps it: before a check
-    /// or another update replaces the NAS's record of it, and on each tick.
+    /// Says how a finished update went, once, and keeps it: when a check or
+    /// another update starts, and on each tick.
     async fn remember(&self, run: Option<&UpdateRun>) -> Result<(), UpdatesError> {
         if let Some(run) = run
             && run.installs
@@ -215,12 +231,11 @@ impl Updates {
         actor: Option<&Actor>,
         request: &RequestContext,
     ) -> Result<CheckResult, UpdatesError> {
-        let latest = self.ports.host.latest(request).await?;
+        let (latest, update) = self.runs(request).await?;
         if latest.as_ref().is_some_and(|run| run.state == RunState::Running) {
             return Err(UpdatesError::Busy);
         }
-        // The check replaces the NAS's record of the last run.
-        self.remember(latest.as_ref()).await?;
+        self.remember(updated(latest.as_ref(), update.as_ref())).await?;
         self.set_phase(Phase::Checking);
         let result = self.look(request).await;
         self.set_phase(Phase::Idle);
@@ -284,14 +299,14 @@ impl Updates {
             self.audit("system.update", Outcome::Denied, actor, request, "").await;
             return Err(UpdatesError::JobsRunning(running.join(", ")));
         }
-        let latest = self.ports.host.latest(request).await?;
+        let (latest, update) = self.runs(request).await?;
         if latest.as_ref().is_some_and(|run| run.state == RunState::Running) {
             return Err(UpdatesError::Busy);
         }
         // This run replaces the NAS's record of the last one.
-        self.remember(latest.as_ref()).await?;
+        self.remember(updated(latest.as_ref(), update.as_ref())).await?;
         let mut check = self.ports.store.last_check().await?.ok_or(UpdatesError::NotChecked)?;
-        let run = self.last_update(latest).await?;
+        let run = self.shown(latest, update).await?;
         // The agent installs only what the channel takes, and is told it.
         let channel = self.ports.store.settings().await?.channel;
         self.forget_installed(&mut check, run.as_ref(), channel);
@@ -363,8 +378,8 @@ impl Updates {
     /// looks for updates when a day passed without.
     pub async fn tick(&self) -> Result<(), UpdatesError> {
         let request = RequestContext::default();
-        let latest = self.ports.host.latest(&request).await?;
-        self.remember(latest.as_ref()).await?;
+        let (latest, update) = self.runs(&request).await?;
+        self.remember(updated(latest.as_ref(), update.as_ref())).await?;
         let settings = self.ports.store.settings().await?;
         let last = self.ports.store.last_check().await?.map(|check| check.checked_at);
         let due =
@@ -453,6 +468,13 @@ impl Updates {
             tracing::error!(%error, "cannot write the audit log");
         }
     }
+}
+
+/// The last update on the NAS: its own record of it, or, on a NAS whose
+/// last update a runner made before it kept that record apart, the latest
+/// run while it is that update.
+fn updated<'a>(latest: Option<&'a UpdateRun>, update: Option<&'a UpdateRun>) -> Option<&'a UpdateRun> {
+    update.or(latest.filter(|run| run.installs))
 }
 
 /// An update under way is background work: reboots wait for it.
@@ -585,6 +607,10 @@ mod tests {
         async fn latest(&self, context: &RequestContext) -> Result<Option<UpdateRun>, HostError> {
             self.host.latest(context).await
         }
+
+        async fn last_update(&self, context: &RequestContext) -> Result<Option<UpdateRun>, HostError> {
+            self.host.last_update(context).await
+        }
     }
 
     #[tokio::test]
@@ -710,7 +736,7 @@ mod tests {
     async fn an_update_under_way_is_background_work() {
         let s = setup();
         assert!(RunningWork::running(&s.updates).await.is_empty(), "nothing goes on");
-        *s.host.run.lock().unwrap() = Some(UpdateRun {
+        s.host.record(UpdateRun {
             id: "run1".into(),
             installs: true,
             state: RunState::Running,
@@ -749,6 +775,8 @@ mod tests {
         assert!(s.host.started.lock().unwrap().is_empty(), "the run did not start");
     }
 
+    /// A runner from before the last update's record was kept apart (the
+    /// one that installed this version): a check replaces its only record.
     #[tokio::test]
     async fn a_check_right_after_an_update_does_not_swallow_how_it_went() {
         let s = setup();
@@ -775,6 +803,35 @@ mod tests {
         assert_eq!((run.id.as_str(), run.state), ("run9", RunState::Failed));
         s.updates.tick().await.unwrap();
         assert_eq!(s.said.all().iter().filter(|n| n.code == "updates_failed").count(), 1, "and said once");
+    }
+
+    #[tokio::test]
+    async fn a_plugin_installed_right_after_an_update_leaves_how_the_update_went() {
+        let s = setup();
+        let request = RequestContext::default();
+        let run = |id: &str, installs: bool, state: RunState, error: Option<&str>| UpdateRun {
+            id: id.into(),
+            installs,
+            state,
+            step: "debian".into(),
+            started_at: Timestamp::from_unix_seconds(100),
+            finished_at: Some(Timestamp::from_unix_seconds(150)),
+            error: error.map(str::to_owned),
+            zendiloos: None,
+            report: None,
+        };
+        s.host.record(run("run9", true, RunState::Failed, Some("dpkg was interrupted")));
+        // Before the next tick, Docker is installed: a run of its own.
+        s.host.record(run("dock1", false, RunState::Succeeded, None));
+
+        s.updates.tick().await.unwrap();
+        let failed: Vec<_> = s.said.all().into_iter().filter(|n| n.code == "updates_failed").collect();
+        assert_eq!(failed.len(), 1, "how the update went is said");
+        assert_eq!(failed[0].params["error"], "dpkg was interrupted");
+        let shown = s.updates.overview(&request).await.unwrap().run.expect("the update is shown");
+        assert_eq!((shown.id.as_str(), shown.state), ("run9", RunState::Failed));
+        s.updates.tick().await.unwrap();
+        assert_eq!(s.said.all().iter().filter(|n| n.code == "updates_failed").count(), 1, "once");
     }
 
     #[tokio::test]

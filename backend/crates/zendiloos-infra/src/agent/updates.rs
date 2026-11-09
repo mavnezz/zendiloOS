@@ -42,11 +42,33 @@ impl AgentUpdates {
         }
     }
 
-    async fn run(&self, context: &RequestContext) -> Result<Option<PackageRun>, HostError> {
+    /// The latest run, and the last update's.
+    async fn runs(
+        &self,
+        context: &RequestContext,
+    ) -> Result<(Option<PackageRun>, Option<Box<PackageRun>>), HostError> {
         match call(self.transport.as_ref(), Request::PackagesState {}, context).await? {
-            Response::Packages { run } => Ok(run),
+            Response::Packages { run, update } => Ok((run, update)),
             other => Err(unexpected(other).into()),
         }
+    }
+}
+
+fn update_run(run: PackageRun) -> UpdateRun {
+    UpdateRun {
+        id: run.id,
+        installs: run.task.updates(),
+        state: match run.state {
+            PackageRunState::Running => RunState::Running,
+            PackageRunState::Succeeded => RunState::Succeeded,
+            PackageRunState::Failed => RunState::Failed,
+        },
+        step: run.step,
+        started_at: Timestamp::from_unix_seconds(run.started_at),
+        finished_at: run.finished_at.map(Timestamp::from_unix_seconds),
+        error: run.error,
+        zendiloos: run.release,
+        report: run.report.map(report),
     }
 }
 
@@ -70,7 +92,7 @@ impl HostPackages for AgentUpdates {
         let deadline = tokio::time::Instant::now() + CHECK_TIME;
         loop {
             tokio::time::sleep(POLL).await;
-            match self.run(context).await? {
+            match self.runs(context).await?.0 {
                 Some(run) if run.id == id && run.state == PackageRunState::Succeeded => {
                     return run
                         .report
@@ -108,21 +130,11 @@ impl HostPackages for AgentUpdates {
     }
 
     async fn latest(&self, context: &RequestContext) -> Result<Option<UpdateRun>, HostError> {
-        Ok(self.run(context).await?.map(|run| UpdateRun {
-            id: run.id,
-            installs: run.task == PackageTask::Update,
-            state: match run.state {
-                PackageRunState::Running => RunState::Running,
-                PackageRunState::Succeeded => RunState::Succeeded,
-                PackageRunState::Failed => RunState::Failed,
-            },
-            step: run.step,
-            started_at: Timestamp::from_unix_seconds(run.started_at),
-            finished_at: run.finished_at.map(Timestamp::from_unix_seconds),
-            error: run.error,
-            zendiloos: run.release,
-            report: run.report.map(report),
-        }))
+        Ok(self.runs(context).await?.0.map(update_run))
+    }
+
+    async fn last_update(&self, context: &RequestContext) -> Result<Option<UpdateRun>, HostError> {
+        Ok(self.runs(context).await?.1.map(|run| update_run(*run)))
     }
 }
 
@@ -147,6 +159,15 @@ mod tests {
         assert!(matches!(busy, Err(HostError::Refused(_))), "{busy:?}");
         let run = updates.latest(&context).await.unwrap().unwrap();
         assert_eq!((run.id.as_str(), run.installs, run.state), (id.as_str(), true, RunState::Running));
+        assert_eq!(updates.last_update(&context).await.unwrap().map(|run| run.id), Some(id.clone()));
+
+        // A check after it is the latest run; the update stays the last one.
+        tokio::time::sleep(Duration::from_millis(4100)).await;
+        updates.check(&context).await.unwrap();
+        let latest = updates.latest(&context).await.unwrap().unwrap();
+        assert!(!latest.installs && latest.id != id);
+        let update = updates.last_update(&context).await.unwrap().unwrap();
+        assert_eq!((update.id, update.state), (id, RunState::Succeeded));
     }
 
     #[tokio::test]

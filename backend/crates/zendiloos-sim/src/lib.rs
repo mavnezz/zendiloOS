@@ -139,6 +139,8 @@ struct SimPackages {
     /// Kept while Docker is installed, with share contents.
     marker: Option<PathBuf>,
     run: Option<(PackageRun, std::time::Instant)>,
+    /// The last update, kept apart as the runner keeps it.
+    update: Option<(PackageRun, std::time::Instant)>,
     runs: u64,
     /// Debian has updates for the simulated system, until one is installed.
     pending: bool,
@@ -149,7 +151,15 @@ struct SimPackages {
 impl SimPackages {
     /// The latest run as it stands now: a step a second or two.
     fn current(&self) -> Option<PackageRun> {
-        let (run, started) = self.run.as_ref()?;
+        self.run.as_ref().map(|run| self.as_now(run))
+    }
+
+    /// The last update as it stands now.
+    fn last_update(&self) -> Option<PackageRun> {
+        self.update.as_ref().map(|run| self.as_now(run))
+    }
+
+    fn as_now(&self, (run, started): &(PackageRun, std::time::Instant)) -> PackageRun {
         let mut run = run.clone();
         let steps: &[(u64, &str)] = match run.task {
             PackageTask::InstallDocker | PackageTask::InstallAcme => &[(0, "lists"), (1, "install"), (3, "")],
@@ -175,7 +185,7 @@ impl SimPackages {
                 run.step = (*step).to_owned();
             }
         }
-        Some(run)
+        run
     }
 
     /// What apt would say: a security update, another one and a new kernel
@@ -315,6 +325,7 @@ impl SimulatedAgent {
                 acme: false,
                 marker: None,
                 run: None,
+                update: None,
                 runs: 0,
                 pending: true,
                 updated: false,
@@ -641,7 +652,11 @@ impl AgentTransport for SimulatedAgent {
                     release: release.as_ref().map(|release| release.package.version().to_owned()),
                     report: None,
                 };
-                packages.run = Some((run, std::time::Instant::now()));
+                let now = std::time::Instant::now();
+                if task.updates() {
+                    packages.update = Some((run.clone(), now));
+                }
+                packages.run = Some((run, now));
                 Response::PackagesStarted { id }
             }
             Request::PackagesState {} => {
@@ -667,7 +682,8 @@ impl AgentTransport for SimulatedAgent {
                 }) {
                     packages.acme = true;
                 }
-                Response::Packages { run }
+                let update = packages.last_update().map(Box::new);
+                Response::Packages { run, update }
             }
             Request::EnableDocker { .. }
                 if !self.packages.lock().unwrap_or_else(PoisonError::into_inner).docker =>
@@ -1599,7 +1615,7 @@ mod tests {
         let busy =
             agent.call(Request::StartPackages { task: PackageTask::Update, release: None }, None).await;
         refused(&busy.unwrap(), ErrorCode::Forbidden);
-        let Response::Packages { run: Some(run) } =
+        let Response::Packages { run: Some(run), .. } =
             agent.call(Request::PackagesState {}, None).await.unwrap()
         else {
             panic!()

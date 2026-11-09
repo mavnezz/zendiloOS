@@ -48,7 +48,10 @@ impl ReleaseSource for FakeReleases {
 /// apt on a NAS with `packages` to upgrade; an update finishes at once.
 pub struct FakeHost {
     pub packages: Mutex<Vec<PackageUpdate>>,
+    /// The latest run, and the last that installed ([`FakeHost::record`]
+    /// keeps both as the runner does).
     pub run: Mutex<Option<UpdateRun>>,
+    pub update: Mutex<Option<UpdateRun>>,
     /// The release of each update started, and the channel it was for.
     pub started: Mutex<Vec<Option<String>>>,
     pub channels: Mutex<Vec<Channel>>,
@@ -65,6 +68,7 @@ impl Default for FakeHost {
         Self {
             packages: Mutex::new(vec![package("openssl", true), package("tzdata", false)]),
             run: Mutex::default(),
+            update: Mutex::default(),
             started: Mutex::default(),
             channels: Mutex::default(),
         }
@@ -72,6 +76,15 @@ impl Default for FakeHost {
 }
 
 impl FakeHost {
+    /// Records a run as the NAS's runner does: as the latest, and one that
+    /// installs as the last update too.
+    pub fn record(&self, run: UpdateRun) {
+        if run.installs {
+            *self.update.lock().unwrap() = Some(run.clone());
+        }
+        *self.run.lock().unwrap() = Some(run);
+    }
+
     fn report(&self) -> HostReport {
         HostReport {
             packages: self.packages.lock().unwrap().clone(),
@@ -84,10 +97,10 @@ impl FakeHost {
 
 #[async_trait]
 impl HostPackages for FakeHost {
-    /// As on the NAS, a check is a run too: its record replaces the last.
+    /// As on the NAS, a check is a run too: its record replaces the latest.
     async fn check(&self, _: &RequestContext) -> Result<HostReport, HostError> {
         let report = self.report();
-        *self.run.lock().unwrap() = Some(UpdateRun {
+        self.record(UpdateRun {
             id: format!("check{}", self.started.lock().unwrap().len()),
             installs: false,
             state: RunState::Succeeded,
@@ -111,7 +124,7 @@ impl HostPackages for FakeHost {
         self.channels.lock().unwrap().push(channel);
         self.packages.lock().unwrap().clear();
         let id = format!("run{}", self.started.lock().unwrap().len());
-        *self.run.lock().unwrap() = Some(UpdateRun {
+        self.record(UpdateRun {
             id: id.clone(),
             installs: true,
             state: RunState::Succeeded,
@@ -127,6 +140,10 @@ impl HostPackages for FakeHost {
 
     async fn latest(&self, _: &RequestContext) -> Result<Option<UpdateRun>, HostError> {
         Ok(self.run.lock().unwrap().clone())
+    }
+
+    async fn last_update(&self, _: &RequestContext) -> Result<Option<UpdateRun>, HostError> {
+        Ok(self.update.lock().unwrap().clone())
     }
 }
 

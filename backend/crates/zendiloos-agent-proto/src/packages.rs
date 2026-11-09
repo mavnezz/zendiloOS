@@ -37,6 +37,12 @@ impl PackageTask {
     pub fn parse(name: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|task| task.as_str() == name)
     }
+
+    /// Whether it updates the system: the runner keeps the record of the
+    /// last such run apart, which the runs after it do not replace.
+    pub fn updates(self) -> bool {
+        self == Self::Update
+    }
 }
 
 /// Which builds of zendiloOS a NAS takes, its update channel; each takes

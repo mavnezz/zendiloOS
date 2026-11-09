@@ -135,7 +135,7 @@ impl AcmeHost for AgentAcme {
         loop {
             tokio::time::sleep(PACKAGES_POLL).await;
             let run = match call(self.transport(), Request::PackagesState {}, context).await? {
-                Response::Packages { run } => run,
+                Response::Packages { run, .. } => run,
                 other => return Err(unexpected(other).into()),
             };
             match run {
