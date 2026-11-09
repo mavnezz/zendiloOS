@@ -765,7 +765,7 @@ async fn accounts_keep_a_description_and_an_email_address() {
     let refused = t.use_cases.update_account.execute(&admin, bob.id, changes, &from(1)).await;
     assert!(matches!(refused, Err(IdentityError::InvalidEmail(_))), "{refused:?}");
     let changes = AccountChanges { description: Some(None), email: Some(None), ..Default::default() };
-    let (bob, _) = t.use_cases.update_account.execute(&admin, bob.id, changes, &from(1)).await.unwrap();
+    let bob = t.use_cases.update_account.execute(&admin, bob.id, changes, &from(1)).await.unwrap();
     assert_eq!((bob.description, bob.email), (None, None));
 }
 
@@ -829,23 +829,21 @@ async fn disabling_an_account_ends_its_sessions_and_smb_access() {
     let admin = signed_in(&t, "alice", Role::Admin).await;
     let bob = signed_in(&t, "bob", Role::User).await;
     let changes = AccountChanges { disabled: Some(true), ..AccountChanges::default() };
-    *t.account_observer.following.lock().unwrap() = vec!["photos".to_owned()];
+    *t.account_observer.noted.lock().unwrap() = vec!["photos".to_owned()];
 
-    let (updated, following) =
+    let updated =
         t.use_cases.update_account.execute(&admin, bob.account.id, changes, &from(1)).await.unwrap();
 
     assert!(updated.disabled);
     assert_eq!(t.system.calls(), ["set_enabled bob false"]);
     assert!(t.sessions.all().iter().all(|s| s.account_id != bob.account.id));
-    // Others (the shares' files, over NFS) keep it out too, and say what
-    // follows in the background.
+    // Others (the shares) note what it can use first, and end it after.
     let id = bob.account.id.get();
     assert_eq!(
         *t.account_observer.events.lock().unwrap(),
         [format!("disabling {id}"), format!("disabled {id} [photos]")]
     );
-    assert_eq!(following, ["photos"]);
-    assert_eq!(t.audit.entries().last().unwrap().target.as_deref(), Some("bob (pending: photos)"));
+    assert_eq!(t.audit.entries().last().unwrap().target.as_deref(), Some("bob"));
 
     let enable = AccountChanges { disabled: Some(false), ..AccountChanges::default() };
     t.use_cases.update_account.execute(&admin, bob.account.id, enable, &from(1)).await.unwrap();
@@ -894,7 +892,7 @@ async fn admins_cannot_lock_themselves_out() {
     let disable = AccountChanges { disabled: Some(true), ..AccountChanges::default() };
     assert!(matches!(update(disable).await, Err(IdentityError::OwnAccount)));
     let rename = AccountChanges { full_name: Some(Some("Alice A.".to_owned())), ..AccountChanges::default() };
-    assert_eq!(update(rename).await.unwrap().0.full_name.as_deref(), Some("Alice A."));
+    assert_eq!(update(rename).await.unwrap().full_name.as_deref(), Some("Alice A."));
 
     let delete = t.use_cases.delete_account.execute(&admin, id, &from(1)).await;
     assert!(matches!(delete, Err(IdentityError::OwnAccount)));
@@ -973,7 +971,7 @@ async fn groups_are_linux_groups_with_the_same_members() {
     assert_eq!(family.members, [admin.account.id, bob.id], "sorted, without duplicates");
 
     let changes = GroupChanges { members: Some(vec![bob.id]), description: Some(None) };
-    let (family, _) = t.use_cases.update_group.execute(&admin, family.id, changes, &from(1)).await.unwrap();
+    let family = t.use_cases.update_group.execute(&admin, family.id, changes, &from(1)).await.unwrap();
     assert_eq!(family.members, [bob.id]);
     assert_eq!(family.description, None);
 
@@ -1000,11 +998,10 @@ async fn others_hear_of_new_members_and_of_a_group_before_it_goes() {
 
     let same = GroupChanges { members: Some(vec![bob.id]), description: None };
     t.use_cases.update_group.execute(&admin, kids.id, same, &from(1)).await.unwrap();
-    *t.group_observer.following.lock().unwrap() = vec!["photos".to_owned()];
     let more = GroupChanges { members: Some(vec![bob.id, admin.account.id]), description: None };
-    let (_, following) = t.use_cases.update_group.execute(&admin, kids.id, more, &from(1)).await.unwrap();
-    assert_eq!(following, ["photos"], "what follows in the background is named");
-    assert_eq!(t.audit.entries().last().unwrap().target.as_deref(), Some("kids (pending: photos)"));
+    let changed = t.use_cases.update_group.execute(&admin, kids.id, more, &from(1)).await.unwrap();
+    assert_eq!(changed.members.len(), 2);
+    assert_eq!(t.audit.entries().last().unwrap().target.as_deref(), Some("kids"));
 
     t.group_observer.refuse.store(true, std::sync::atomic::Ordering::Relaxed);
     let refused = t.use_cases.delete_group.execute(&admin, kids.id, &from(1)).await;
@@ -1013,22 +1010,17 @@ async fn others_hear_of_new_members_and_of_a_group_before_it_goes() {
     t.group_observer.refuse.store(false, std::sync::atomic::Ordering::Relaxed);
     t.use_cases.delete_group.execute(&admin, kids.id, &from(1)).await.unwrap();
 
-    let (id, bob, alice) = (kids.id.get(), bob.id.get(), admin.account.id.get());
+    let (id, bob) = (kids.id.get(), bob.id.get());
     let events = t.group_observer.events.lock().unwrap().clone();
-    let (first, second) = (alice.min(bob), alice.max(bob));
     assert_eq!(
         events,
-        [
-            format!("changing {id} [{first},{second}]"),
-            format!("members {id} [{bob}] [photos]"),
-            format!("deleting {id}")
-        ],
-        "told before the change, then after it with what it was told would follow"
+        [format!("members {id} [{bob}]"), format!("deleting {id}")],
+        "told after a change of members, with those of before; before the group goes"
     );
 }
 
 #[tokio::test]
-async fn members_stay_as_they_were_while_others_cannot_note_what_follows() {
+async fn a_change_of_members_stands_whatever_others_make_of_it() {
     let t = TestIdentity::new();
     let admin = signed_in(&t, "alice", Role::Admin).await;
     let bob = t.add_account("bob", PASSWORD, Role::User);
@@ -1037,10 +1029,10 @@ async fn members_stay_as_they_were_while_others_cannot_note_what_follows() {
     t.group_observer.refuse.store(true, std::sync::atomic::Ordering::Relaxed);
 
     let changes = GroupChanges { members: Some(vec![bob.id]), description: None };
-    assert!(t.use_cases.update_group.execute(&admin, kids.id, changes, &from(1)).await.is_err());
+    t.use_cases.update_group.execute(&admin, kids.id, changes, &from(1)).await.unwrap();
 
-    assert!(t.groups.all()[0].members.is_empty());
-    assert_eq!(t.system.calls(), ["create_group kids"], "the Linux group's members are as they were");
+    assert_eq!(t.groups.all()[0].members, [bob.id]);
+    assert_eq!(t.system.calls(), ["create_group kids", "set_group_members kids [bob]"]);
 }
 
 #[tokio::test]

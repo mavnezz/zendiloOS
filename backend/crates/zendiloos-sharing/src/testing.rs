@@ -11,8 +11,8 @@ use crate::application::ports::{
 };
 use crate::domain::{
     Access, CountStop, Entry, EntryFacts, EntryKind, FileLocation, FilePath, Found, FoundEntry, Frequency,
-    Listing, NewShare, Permission, Principal, SearchStop, Share, ShareId, ShareName, ShareSettings,
-    ShareUsage, SharingConfig, Snapshot, SnapshotSchedule,
+    Listing, NewShare, SearchStop, Share, ShareId, ShareName, ShareSettings, ShareUsage, SharingConfig,
+    Snapshot, SnapshotSchedule,
 };
 use zendiloos_kernel::Timestamp;
 
@@ -74,15 +74,16 @@ pub struct Shares(
     Mutex<std::collections::HashSet<ShareId>>,
     /// Uploads under way, with when they began.
     pub Mutex<Vec<(ports::PendingUpload, Timestamp)>>,
-    /// The latest mark of what each share's files owe, and the latest
-    /// settled.
-    pub Mutex<std::collections::HashMap<ShareId, (u64, u64)>>,
+    /// When each share's files were given share-level access; a share
+    /// missing here owes its walk.
+    pub Mutex<std::collections::HashMap<ShareId, Timestamp>>,
 );
 
 impl Shares {
-    /// Whether the share's files owe it its rules.
-    pub fn owes(&self, share: ShareId) -> bool {
-        self.8.lock().unwrap().get(&share).is_some_and(|(owed, given)| given < owed)
+    /// Whether the share's files still wait for their walk to share-level
+    /// access.
+    pub fn owes_walk(&self, share: ShareId) -> bool {
+        !self.8.lock().unwrap().contains_key(&share)
     }
 }
 
@@ -150,6 +151,8 @@ impl ShareRepository for Shares {
             updated_at: new.created_at,
         };
         shares.push(share.clone());
+        // A new share's files have share-level access from the start.
+        self.8.lock().unwrap().insert(share.id, new.created_at);
         Ok(Some(share))
     }
 
@@ -168,33 +171,25 @@ impl ShareRepository for Shares {
         Ok(())
     }
 
-    async fn owe_access(&self, shares: &[ShareId]) -> Result<(), PortError> {
-        let known: Vec<ShareId> = self.0.lock().unwrap().iter().map(|s| s.id).collect();
-        let mut owed = self.8.lock().unwrap();
-        for id in shares.iter().filter(|id| known.contains(id)) {
-            owed.entry(*id).or_default().0 += 1;
-        }
-        Ok(())
+    async fn migrations_owed(&self) -> Result<Vec<ShareId>, PortError> {
+        let shares = self.list().await?;
+        let migrated = self.8.lock().unwrap();
+        let mut owed: Vec<Share> =
+            shares.into_iter().filter(|share| !migrated.contains_key(&share.id)).collect();
+        owed.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(owed.into_iter().map(|share| share.id).collect())
     }
 
-    async fn access_owed(&self) -> Result<Vec<(ShareId, u64)>, PortError> {
-        let hidden = self.6.lock().unwrap();
-        let mut owed: Vec<(ShareId, u64)> = self
-            .8
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|(id, (owed, given))| given < owed && !hidden.contains(id))
-            .map(|(id, (owed, _))| (*id, *owed))
-            .collect();
-        owed.sort();
-        Ok(owed)
+    async fn migrated_at(&self, share: ShareId) -> Result<Option<Timestamp>, PortError> {
+        Ok(self.8.lock().unwrap().get(&share).copied())
     }
 
-    async fn access_settled(&self, share: ShareId, mark: u64) -> Result<(), PortError> {
-        if let Some((_, given)) = self.8.lock().unwrap().get_mut(&share) {
-            *given = (*given).max(mark);
-        }
+    async fn set_migrated(&self, share: ShareId, at: Option<Timestamp>) -> Result<(), PortError> {
+        let mut migrated = self.8.lock().unwrap();
+        match at {
+            Some(at) => migrated.insert(share, at),
+            None => migrated.remove(&share),
+        };
         Ok(())
     }
 
@@ -281,7 +276,8 @@ impl ShareRepository for Shares {
 pub struct Host {
     pub calls: Mutex<Vec<String>>,
     pub configs: Mutex<Vec<SharingConfig>>,
-    pub refuse_access: std::sync::atomic::AtomicBool,
+    /// Preparing a share's folder is refused, as when it is not mounted.
+    pub refuse_prepare: std::sync::atomic::AtomicBool,
     /// Snapshots as the host has them; taking and destroying change them.
     pub snapshots: Mutex<Vec<Snapshot>>,
     /// Taking snapshots fails, e.g. because the pool is gone.
@@ -298,28 +294,20 @@ pub struct Host {
     /// The agent refuses to destroy a dataset before doing anything, as
     /// when a project mounts something of it.
     pub deny_destroy: std::sync::atomic::AtomicBool,
-    /// Changes of whole trees wait in the agent until `let_walks_on`
-    /// lets one on, as behind a long walk of another share.
+    /// Walks to share-level access wait in the agent until `let_walks_on`
+    /// lets one on, as a long walk would.
     pub hold_walks: std::sync::atomic::AtomicBool,
-    /// How many changes of whole trees are waiting or have waited.
+    /// How many walks are waiting or have waited.
     pub walks_held: std::sync::atomic::AtomicUsize,
     pub let_walks_on: tokio::sync::Notify,
-    /// Changes of whole trees fail after the folder, as when more than 100
-    /// entries could not be changed or the agent stopped; recorded as
-    /// `failed access …`.
+    /// Walks fail, as when an entry could not be changed or the agent
+    /// stopped; recorded as `failed migrate …`.
     pub fail_walks: std::sync::atomic::AtomicBool,
 }
 
 impl Host {
     pub fn calls(&self) -> Vec<String> {
         self.calls.lock().unwrap().clone()
-    }
-}
-
-fn shown(principal: &Principal) -> String {
-    match principal {
-        Principal::User(user) => user.clone(),
-        Principal::Group(group) => format!("@{group}"),
     }
 }
 
@@ -353,7 +341,12 @@ impl ShareHost for Host {
         Ok(())
     }
 
-    async fn apply(&self, config: &SharingConfig, _: &RequestContext) -> Result<(), HostError> {
+    async fn apply(
+        &self,
+        config: &SharingConfig,
+        close: &[ShareName],
+        _: &RequestContext,
+    ) -> Result<(), HostError> {
         if self.refuse_apply.load(std::sync::atomic::Ordering::Relaxed) {
             return Err(HostError::Refused("smbd did not restart".into()));
         }
@@ -363,7 +356,12 @@ impl ShareHost for Host {
         {
             return Err(HostError::Refused("testparm: no".into()));
         }
-        self.calls.lock().unwrap().push(format!("apply {}", config.smb.len()));
+        let mut calls = self.calls.lock().unwrap();
+        calls.push(format!("apply {}", config.smb.len()));
+        if !close.is_empty() {
+            let close: Vec<&str> = close.iter().map(ShareName::as_str).collect();
+            calls.push(format!("close {}", close.join(",")));
+        }
         self.configs.lock().unwrap().push(config.clone());
         Ok(())
     }
@@ -485,45 +483,39 @@ impl ShareHost for Host {
         Ok(())
     }
 
-    async fn set_access(
+    async fn prepare_share(
         &self,
         volume: u16,
         name: &ShareName,
-        access: &[(Principal, Permission)],
-        removed: &[Principal],
-        recursive: bool,
         _: &RequestContext,
     ) -> Result<(), HostError> {
-        if self.refuse_access.load(std::sync::atomic::Ordering::Relaxed) {
+        if self.refuse_prepare.load(std::sync::atomic::Ordering::Relaxed) {
             return Err(HostError::Refused("share is not mounted".into()));
         }
-        let access: Vec<String> = access
-            .iter()
-            .map(|(p, a)| {
-                let level = match a {
-                    Permission::Deny => "-",
-                    Permission::Read => "r",
-                    Permission::ReadWrite => "rw",
-                };
-                format!("{}:{level}", shown(p))
-            })
-            .collect();
-        let removed: Vec<String> = removed.iter().map(shown).collect();
-        if recursive && self.hold_walks.load(std::sync::atomic::Ordering::Relaxed) {
+        self.calls.lock().unwrap().push(format!("prepare {volume} {name}"));
+        Ok(())
+    }
+
+    async fn migrate_share(
+        &self,
+        volume: u16,
+        name: &ShareName,
+        lines: &(dyn for<'line> Fn(&'line str) + Send + Sync),
+        _: &RequestContext,
+    ) -> Result<(), HostError> {
+        if self.hold_walks.load(std::sync::atomic::Ordering::Relaxed) {
             self.walks_held.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             self.let_walks_on.notified().await;
         }
-        let failing = recursive && self.fail_walks.load(std::sync::atomic::Ordering::Relaxed);
-        self.calls.lock().unwrap().push(format!(
-            "{}access {volume} {name} [{}] -[{}]{}",
-            if failing { "failed " } else { "" },
-            access.join(","),
-            removed.join(","),
-            if recursive { " recursive" } else { "" }
-        ));
+        let failing = self.fail_walks.load(std::sync::atomic::Ordering::Relaxed);
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("{}migrate {volume} {name}", if failing { "failed " } else { "" }));
         if failing {
-            return Err(HostError::Port(PortError::new("files agent", "the change stopped")));
+            return Err(HostError::Port(PortError::new("files agent", "the walk stopped")));
         }
+        lines("3 entries");
         Ok(())
     }
 }
@@ -659,9 +651,11 @@ impl FileHost for Files {
         &self,
         user: &str,
         at: &FileLocation,
+        own: bool,
         _: &RequestContext,
     ) -> Result<(), FileHostError> {
-        self.record(format!("mkdir {user} {}", place(at)), at)
+        let mkdir = if own { "mkdir-own" } else { "mkdir" };
+        self.record(format!("{mkdir} {user} {}", place(at)), at)
     }
 
     async fn move_entry(

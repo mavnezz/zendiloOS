@@ -914,12 +914,25 @@ impl ShareRoot {
     }
 
     pub fn make_directory(&self, path: &SharePath) -> Result<(), FileError> {
+        self.make_directory_for(path, None)
+    }
+
+    /// As [`Self::make_directory`]; in a root whose entries take their
+    /// folder's owner ([`NewEntries::Inherit`]), with `owner` the folder is
+    /// that UID's instead (and the group's).
+    pub fn make_directory_for(&self, path: &SharePath, owner: Option<u32>) -> Result<(), FileError> {
         let (parent, name) = self.parent(path)?;
         mkdirat(&parent, name, Mode::from_raw_mode(0o777))?;
-        if self.new_entries != NewEntries::Maker {
+        if let NewEntries::Inherit { group } = self.new_entries {
             // A link put in its place meanwhile is not followed.
             let made = open_beneath_flags(parent.as_fd(), &c_name(name)?, OFlags::PATH | OFlags::DIRECTORY)?;
-            self.new_entries.adopt(parent.as_fd(), made.as_fd())?;
+            match owner {
+                Some(owner) => {
+                    let (owner, group) = (Some(Uid::from_raw(owner)), Some(Gid::from_raw(group)));
+                    chownat(&made, c"", owner, group, AtFlags::EMPTY_PATH)?;
+                }
+                None => self.new_entries.adopt(parent.as_fd(), made.as_fd())?,
+            }
         }
         Ok(())
     }

@@ -204,9 +204,11 @@ impl FileHost for AgentFiles {
         &self,
         user_name: &str,
         at: &FileLocation,
+        own: bool,
         context: &RequestContext,
     ) -> Result<(), FileHostError> {
-        self.done(Request::MakeDirectory { user: user(user_name)?, location: location(at)? }, context).await
+        let request = Request::MakeDirectory { user: user(user_name)?, location: location(at)?, own };
+        self.done(request, context).await
     }
 
     async fn move_entry(

@@ -1476,7 +1476,12 @@ mod tests {
             snapshot: None,
         };
         let anna = || UserName::parse("anna").unwrap();
-        done(agent.call(Request::MakeDirectory { user: anna(), location: at("album") }, None).await.unwrap());
+        done(
+            agent
+                .call(Request::MakeDirectory { user: anna(), location: at("album"), own: false }, None)
+                .await
+                .unwrap(),
+        );
         std::fs::write(root.path().join("volume1/docs/album/a.txt"), "hello").unwrap();
         let copied =
             agent.call(Request::CopyEntry { user: anna(), from: at("album"), to: at("copy") }, None).await;
@@ -1529,8 +1534,10 @@ mod tests {
         let none =
             agent.call(Request::ListDirectory { user: anna(), location: in_a_snapshot }, None).await.unwrap();
         refused(&none, ErrorCode::NotFound);
-        let taken =
-            agent.call(Request::MakeDirectory { user: anna(), location: at("album") }, None).await.unwrap();
+        let taken = agent
+            .call(Request::MakeDirectory { user: anna(), location: at("album"), own: false }, None)
+            .await
+            .unwrap();
         refused(&taken, ErrorCode::Conflict);
 
         // Without a directory for files, nothing is kept.

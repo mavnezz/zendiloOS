@@ -440,10 +440,11 @@ impl Files {
                 let (file, name) = run(acting, move || share.create_upload(&path)).await?;
                 Ok((Response::Upload { name }, Some(file)))
             }
-            Request::MakeDirectory { user, location } => {
+            Request::MakeDirectory { user, location, own } => {
                 let identity = self.identity(user)?;
                 let (share, path) = (self.writable(location, user)?, location.path.clone());
-                run(Acting::at(location, &identity), move || share.make_directory(&path)).await?;
+                let owner = own.then_some(identity.uid);
+                run(Acting::at(location, &identity), move || share.make_directory_for(&path, owner)).await?;
                 Ok((Response::Done, None))
             }
             Request::MoveEntry { user, from, to, replace } => {
@@ -615,7 +616,7 @@ mod tests {
         // The empty folder of a drive not mounted: nothing lands on the tmpfs.
         for request in [
             Request::ListDirectory { user: anna.clone(), location: drive("1A2B-3C4D", "") },
-            Request::MakeDirectory { user: anna.clone(), location: drive("1A2B-3C4D", "new") },
+            Request::MakeDirectory { user: anna.clone(), location: drive("1A2B-3C4D", "new"), own: false },
             Request::CreateUpload { user: anna.clone(), location: drive("1A2B-3C4D", "") },
         ] {
             let refused = files.execute(&request).await;
@@ -773,7 +774,10 @@ mod tests {
         let song = files.execute(&Request::EntryFacts { user: anna.clone(), location: at("song.mp3") }).await;
         let Ok((Response::Facts { facts: song }, None)) = song else { panic!("{song:?}") };
         assert_eq!((song.folder, song.bytes), (false, 4));
-        files.execute(&Request::MakeDirectory { user: anna.clone(), location: at("new") }).await.unwrap();
+        files
+            .execute(&Request::MakeDirectory { user: anna.clone(), location: at("new"), own: false })
+            .await
+            .unwrap();
         let copied = files
             .execute(&Request::CopyEntry { user: anna.clone(), from: at("song.mp3"), to: at("new/song.mp3") })
             .await;
@@ -877,7 +881,7 @@ mod tests {
         let snapshot = zendiloos_agent_proto::SnapshotLabel::parse("zdl-2026-11-05_19.40.01").unwrap();
         let frozen = FileLocation { snapshot: Some(snapshot), ..location };
         for request in [
-            Request::MakeDirectory { user: user("anna"), location: frozen.clone() },
+            Request::MakeDirectory { user: user("anna"), location: frozen.clone(), own: false },
             Request::RemoveEntry { user: user("anna"), location: frozen.clone(), recycle: false },
             Request::CreateUpload { user: user("anna"), location: frozen.clone() },
         ] {

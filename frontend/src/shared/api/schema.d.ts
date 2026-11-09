@@ -38,9 +38,9 @@ export interface paths {
         head?: never;
         /**
          * Changes another account's full name, role or whether it is enabled.
-         *     Disabling ends its sessions and SMB access, and keeps it out of the
-         *     shares' files as if denied (NFS): the files of the shares it could use
-         *     follow in the background.
+         *     Disabling ends its sessions and its SMB access: Samba has it disabled
+         *     and denies it by name on every share, and the open connections of the
+         *     shares it could use end.
          */
         patch: operations["update_account"];
         trace?: never;
@@ -2049,8 +2049,9 @@ export interface paths {
         options?: never;
         head?: never;
         /**
-         * Changes a group's description or members. The change stands at once;
-         *     the files of the shares it touches follow in the background.
+         * Changes a group's description or members. The change stands at once:
+         *     Samba follows a group's members itself on the next connection, and the
+         *     open connections end of shares where a member may do less now.
          */
         patch: operations["update_group"];
         trace?: never;
@@ -2685,8 +2686,8 @@ export interface paths {
         get: operations["subject_access"];
         /**
          * Sets an account's or group's rules on several shares at once. Each
-         *     share that changes gets its permissions at once and its existing files
-         *     in a job. Needs `shares.manage`.
+         *     share that changes holds its new rules at once (see `PATCH
+         *     /shares/{id}`). Needs `shares.manage`.
          */
         put: operations["set_subject_access"];
         post?: never;
@@ -2710,8 +2711,10 @@ export interface paths {
         options?: never;
         head?: never;
         /**
-         * Changes a share. New permissions apply to the share at once and to its
-         *     existing files in a job. Needs `shares.manage`.
+         * Changes a share. New rules hold for the share as a whole at once, over
+         *     SMB and in the file manager; where they take access away from anyone,
+         *     the share's open SMB connections end. No file changes. Needs
+         *     `shares.manage`.
          */
         patch: operations["update_share"];
         trace?: never;
@@ -2812,10 +2815,9 @@ export interface paths {
         put?: never;
         /**
          * Returns the share to a snapshot: everything changed since is lost, and
-         *     so are the snapshots taken after it. The share's folder gets the
-         *     permissions recorded now at once, its files in a job. Needs
-         *     `shares.manage` and the share's name as confirmation; refused while
-         *     permissions are being applied to its files.
+         *     so are the snapshots taken after it. The share's rules hold as recorded
+         *     now. Needs `shares.manage` and the share's name as confirmation; refused
+         *     while the share's one-time walk to share-level access is under way.
          */
         post: operations["rollback_snapshot"];
         delete?: never;
@@ -5558,7 +5560,12 @@ export interface components {
             /** @description 1 to 32 characters. */
             label: string;
         };
-        /** @description A host or network that may mount the share over NFS, and how. */
+        /**
+         * @description A host or network that may mount the share over NFS, and how. Whoever
+         *     is on that client has the share's read, or read and write, access,
+         *     whatever user they claim to be: every request is squashed to the group
+         *     `zendiloos-files`.
+         */
         NfsRule: {
             /** @description Writes answered before they are on disk; off if not given. */
             async?: boolean;
@@ -5569,16 +5576,8 @@ export interface components {
              *     (`nas.local`) or a pattern with `*` and `?` (`*.example.com`).
              */
             network: string;
-            /** @description Whose identity the client's requests keep; `root` if not given. */
-            squash?: components["schemas"]["NfsSquashKind"];
             write: boolean;
         };
-        /**
-         * @description Whose identity an NFS client's requests keep: `none` (root stays root),
-         *     `root` (root becomes the anonymous user), `all` (everyone does).
-         * @enum {string}
-         */
-        NfsSquashKind: "none" | "root" | "all";
         /**
          * @description Something an administrator should know, as a code with parameters for
          *     the interface to word, e.g. `pool_trouble` with `pool` and `state`.
@@ -6434,10 +6433,6 @@ export interface components {
             /** @description Newest first. */
             snapshots: components["schemas"]["ShareSnapshot"][];
         };
-        ShareUpdate: {
-            job?: components["schemas"]["Job"] | null;
-            share: components["schemas"]["Share"];
-        };
         /** @description What a slot holds. */
         SlotBinding: {
             kind: components["schemas"]["BindingKind"];
@@ -6594,10 +6589,6 @@ export interface components {
              */
             used_bytes: number;
             verdict?: components["schemas"]["Severity"] | null;
-        };
-        SubjectAccessUpdate: {
-            /** @description One per share that changed: its existing files follow. */
-            jobs: components["schemas"]["Job"][];
         };
         /** @enum {string} */
         SubjectKind: "account" | "group";
@@ -6864,29 +6855,6 @@ export interface components {
              *     Refused off while Macs back up to it (`refused`).
              */
             shared?: boolean | null;
-        };
-        /**
-         * @description An account as changed, and the shares whose files follow the change in
-         *     the background.
-         */
-        UpdatedAccount: components["schemas"]["Account"] & {
-            /**
-             * @description Names of the shares whose files are given their permissions anew
-             *     in the background, e.g. after the account was disabled.
-             */
-            pending_shares: string[];
-        };
-        /**
-         * @description A group as changed, and the shares whose files follow the change in the
-         *     background.
-         */
-        UpdatedGroup: components["schemas"]["Group"] & {
-            /**
-             * @description Names of the shares whose files are given their permissions anew in
-             *     the background: where the group is denied, or where it may write
-             *     and someone left it.
-             */
-            pending_shares: string[];
         };
         UpdatesOverview: {
             /**
@@ -7200,7 +7168,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["UpdatedAccount"];
+                    "application/json": components["schemas"]["Account"];
                 };
             };
             /** @description `forbidden`, `csrf_rejected` */
@@ -12242,7 +12210,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["UpdatedGroup"];
+                    "application/json": components["schemas"]["Group"];
                 };
             };
             /** @description `not_found` */
@@ -13705,13 +13673,12 @@ export interface operations {
             };
         };
         responses: {
-            200: {
+            /** @description Set. */
+            204: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "application/json": components["schemas"]["SubjectAccessUpdate"];
-                };
+                content?: never;
             };
             /** @description `not_found`: a share */
             404: {
@@ -13753,7 +13720,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ShareUpdate"];
+                    "application/json": components["schemas"]["Share"];
                 };
             };
             /** @description `not_found` */
@@ -13765,7 +13732,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description `refused`: rules being applied to the files, or off the network while Macs back up to it */
+            /** @description `refused`: off the network while Macs back up to it */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -13817,7 +13784,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description `share_used_by_apps`, `share_used_by_projects`: the detail names them */
+            /** @description `share_used_by_apps`, `share_used_by_projects`: the detail names them; `refused`: its one-time walk to share-level access is under way */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -14025,7 +13992,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description `refused`: permissions being applied to the files */
+            /** @description `refused`: the share's walk to share-level access is under way */
             409: {
                 headers: {
                     [name: string]: unknown;

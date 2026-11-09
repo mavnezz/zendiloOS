@@ -145,17 +145,31 @@ pub(crate) mod scripted {
     use std::sync::Mutex;
 
     use async_trait::async_trait;
-    use zendiloos_agent_proto::{AgentTransport, ErrorCode, Request, RequestId, Response, TransportError};
+    use zendiloos_agent_proto::{
+        AgentTransport, ErrorCode, Report, Request, RequestId, Response, TransportError,
+    };
 
     #[derive(Default)]
     pub(crate) struct Scripted {
         answers: Mutex<VecDeque<Response>>,
         asked: Mutex<Vec<Request>>,
+        /// What the agent reports before its answer: lines of output.
+        notes: Mutex<Vec<Response>>,
     }
 
     impl Scripted {
         pub(crate) fn answering(answers: impl IntoIterator<Item = Response>) -> Self {
-            Self { answers: Mutex::new(answers.into_iter().collect()), asked: Mutex::default() }
+            Self {
+                answers: Mutex::new(answers.into_iter().collect()),
+                asked: Mutex::default(),
+                notes: Mutex::default(),
+            }
+        }
+
+        /// Reports `notes` ([`Response::Output`] and [`Response::Progress`])
+        /// before it answers `answer`.
+        pub(crate) fn reporting(notes: Vec<Response>, answer: Response) -> Self {
+            Self { notes: Mutex::new(notes), ..Self::answering([answer]) }
         }
 
         /// An error of the agent, with its code, then `Done`.
@@ -184,6 +198,23 @@ pub(crate) mod scripted {
         async fn call(&self, request: Request, _: Option<RequestId>) -> Result<Response, TransportError> {
             self.asked.lock().unwrap().push(request);
             Ok(self.answers.lock().unwrap().pop_front().unwrap_or(Response::Done))
+        }
+
+        async fn call_reporting(
+            &self,
+            request: Request,
+            request_id: Option<RequestId>,
+            report: &dyn Report,
+        ) -> Result<Response, TransportError> {
+            let notes = std::mem::take(&mut *self.notes.lock().unwrap());
+            for note in notes {
+                match note {
+                    Response::Output { line } => report.line(&line),
+                    Response::Progress { step, percent } => report.step(&step, percent),
+                    _ => {}
+                }
+            }
+            self.call(request, request_id).await
         }
     }
 

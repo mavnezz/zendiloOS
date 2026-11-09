@@ -123,9 +123,8 @@ pub struct AccessRule {
 ///
 /// A denial wins, whether for the account or one of its groups; then the
 /// account's own rule, more specific than its groups'; then the broadest
-/// grant of its groups. This is what the share's POSIX ACL says too: a
-/// named user entry comes before the group entries, and denied members of
-/// groups get one of their own.
+/// grant of its groups. The file manager decides with it; Samba's sections
+/// say the same (`invalid users` wins over `valid users` and `write list`).
 pub fn effective(rules: &[AccessRule], account: i64, groups: &[i64]) -> Option<Access> {
     let applies = |rule: &&AccessRule| match rule.subject {
         Subject::Account(id) => id == account,
@@ -200,42 +199,17 @@ pub fn nfs_host(value: &str) -> Result<String, InvalidNfsHost> {
     }
 }
 
-/// Whose identity an NFS client's requests keep.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum NfsSquash {
-    /// Every user as the client says, root too: the client's root is root
-    /// on the folder.
-    None,
-    /// Root becomes the anonymous user; the others stay who they are.
-    #[default]
-    Root,
-    /// Everyone becomes the anonymous user.
-    All,
-}
-
-impl NfsSquash {
-    pub const ALL: [NfsSquash; 3] = [Self::None, Self::Root, Self::All];
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::Root => "root",
-            Self::All => "all",
-        }
-    }
-
-    pub fn parse(value: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|s| s.as_str() == value)
-    }
-}
-
-/// A host or network that may mount a share over NFS, and how.
+/// A host or network that may mount a share over NFS, and how. NFS with
+/// `sec=sys` believes whatever user a client says it acts for, so access
+/// over NFS is the client's, not a person's: whoever is on a client a rule
+/// names has the share's read, or read and write, access, whoever they
+/// claim to be. Every request is squashed to the group `zendiloos-files`,
+/// whose access every share's folder gives.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NfsClient {
     /// Normalized by [`nfs_host`].
     pub network: String,
     pub write: bool,
-    pub squash: NfsSquash,
     /// Answers writes before they are on disk: faster, but what a crash
     /// catches is lost although the client was told it was written.
     pub asynchronous: bool,
@@ -244,10 +218,10 @@ pub struct NfsClient {
 }
 
 impl NfsClient {
-    /// A client as zendiloOS has always exported to: root squashed,
-    /// writes on disk before they are answered, privileged ports only.
+    /// A client with writes on disk before they are answered, from
+    /// privileged ports only.
     pub fn new(network: impl Into<String>, write: bool) -> Self {
-        Self { network: network.into(), write, squash: NfsSquash::Root, asynchronous: false, insecure: false }
+        Self { network: network.into(), write, asynchronous: false, insecure: false }
     }
 }
 
@@ -354,9 +328,9 @@ pub struct ShareUsage {
     pub available_bytes: u64,
 }
 
-/// A folder directly on a volume: its own dataset, with its permissions,
-/// which hold in the file manager and for apps as everywhere. Shared, it is
-/// also offered on the network, over SMB and, with clients, NFS; not
+/// A folder directly on a volume: its own dataset, with its rules, which
+/// hold for the folder as a whole, in the file manager as over SMB. Shared,
+/// it is also offered on the network, over SMB and, with clients, NFS; not
 /// shared, it is used on the NAS only. Deeper folders are plain folders and
 /// never shared on their own.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -403,9 +377,10 @@ pub struct NewShare {
     pub created_at: Timestamp,
 }
 
-/// Access the account of an installed app has to a share: given when the
-/// app was installed with the share, and written into the share's
-/// permissions beside the people's (never into Samba's).
+/// Access the account of an app installed the earlier way was given to a
+/// share, as recorded then. Its entries on the share's files stay as they
+/// were written then, so the app keeps working; the record keeps the share
+/// from being deleted while the app uses it, and goes with the app.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppAccess {
     pub share: ShareId,
@@ -545,10 +520,8 @@ mod tests {
         ] {
             assert!(nfs_host(bad).is_err(), "{bad:?}");
         }
-        assert_eq!(NfsSquash::parse("all"), Some(NfsSquash::All));
-        assert_eq!(NfsSquash::parse("everyone"), None);
         let client = NfsClient::new("10.0.0.5", true);
-        assert_eq!((client.squash, client.asynchronous, client.insecure), (NfsSquash::Root, false, false));
+        assert_eq!((client.asynchronous, client.insecure), (false, false));
     }
 
     #[test]

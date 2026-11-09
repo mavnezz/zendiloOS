@@ -257,7 +257,7 @@ mod tests {
             facts,
             HostFacts {
                 uid: 2000,
-                gid: 1500,
+                gid: 995,
                 time_zone: "Europe/Berlin".into(),
                 devices: vec!["/dev/dri".into()]
             }

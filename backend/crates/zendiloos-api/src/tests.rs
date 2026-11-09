@@ -2080,12 +2080,11 @@ async fn admins_update_reset_and_delete_other_accounts_only() {
         })
     };
 
-    *h.identity.account_observer.following.lock().unwrap() = vec!["photos".to_owned()];
     let updated =
         send(Method::PATCH, format!("/api/v1/accounts/{bob}"), Some(json!({ "disabled": true }))).await;
     assert_eq!(updated.status, StatusCode::OK, "{:?}", updated.body);
     assert_eq!(updated.body["disabled"], true);
-    assert_eq!(updated.body["pending_shares"], json!(["photos"]), "its files follow in the background");
+    assert_eq!(updated.body.get("pending_shares"), None, "nothing follows in the background");
 
     let own = send(Method::PATCH, format!("/api/v1/accounts/{alice}"), Some(json!({ "role": "user" }))).await;
     assert_problem(&own, StatusCode::CONFLICT, "own_account");
@@ -2113,12 +2112,11 @@ async fn admins_manage_groups() {
     let id = created.body["id"].as_i64().unwrap();
 
     let uri = format!("/api/v1/groups/{id}");
-    *h.identity.group_observer.following.lock().unwrap() = vec!["photos".to_owned()];
     let changes = json!({ "members": [], "description": "" });
     let updated = h.send(json(with_csrf(changing(Method::PATCH, &uri), &admin), changes)).await;
     assert_eq!(updated.body["members"], json!([]));
     assert_eq!(updated.body["description"], Value::Null);
-    assert_eq!(updated.body["pending_shares"], json!(["photos"]), "the shares that follow in the background");
+    assert_eq!(updated.body.get("pending_shares"), None, "nothing follows in the background");
 
     let listed = h.send(empty(with_cookie(get("/api/v1/groups"), &admin))).await;
     assert_eq!(listed.body.as_array().unwrap().len(), 1);
@@ -2654,8 +2652,7 @@ async fn a_group_can_be_denied_a_share_and_its_members_see_it() {
         json!({ "rules": [{ "share_id": photos, "rule": "deny" }] }),
     )
     .await;
-    assert_eq!(denied.status, StatusCode::OK, "{:?}", denied.body);
-    assert_eq!(denied.body["jobs"][0]["kind"], "sharing.apply_access");
+    assert_eq!(denied.status, StatusCode::NO_CONTENT, "{:?}", denied.body);
 
     let seen = h.send(empty(with_cookie(get(&format!("/api/v1/shares/access/account/{bob}")), &admin))).await;
     assert_eq!(seen.status, StatusCode::OK);
@@ -2665,7 +2662,7 @@ async fn a_group_can_be_denied_a_share_and_its_members_see_it() {
         "the group's denial wins over bob's own rule"
     );
     let calls = h.share_host.calls();
-    assert!(calls.contains(&"access 1 photos [bob:-] -[]".to_owned()), "{calls:?}");
+    assert!(calls.ends_with(&["apply 1".to_owned(), "close photos".to_owned()]), "bob is out: {calls:?}");
 
     let unknown = h.send(empty(with_cookie(get("/api/v1/shares/access/group/999"), &admin))).await;
     assert_problem(&unknown, StatusCode::UNPROCESSABLE_ENTITY, "unknown_subject");
@@ -2678,7 +2675,7 @@ async fn a_group_can_be_denied_a_share_and_its_members_see_it() {
     let cleared =
         put(format!("/api/v1/shares/access/group/{kids}"), json!({ "rules": [{ "share_id": photos }] }))
             .await;
-    assert_eq!(cleared.status, StatusCode::OK);
+    assert_eq!(cleared.status, StatusCode::NO_CONTENT);
     let seen = h.send(empty(with_cookie(get(&format!("/api/v1/shares/access/account/{bob}")), &admin))).await;
     assert_eq!(seen.body[0]["effective"], "read_write");
 }
@@ -2770,7 +2767,7 @@ async fn folders_on_a_volume_go_on_and_off_the_network_and_show_in_the_file_mana
     let shared =
         h.send(json(with_csrf(changing(Method::PATCH, &uri), &admin), json!({ "shared": true }))).await;
     assert_eq!(shared.status, StatusCode::OK, "{:?}", shared.body);
-    assert_eq!((&shared.body["share"]["shared"], &shared.body["job"]), (&json!(true), &Value::Null));
+    assert_eq!((&shared.body["shared"], shared.body.get("job")), (&json!(true), None));
 }
 
 #[tokio::test]
@@ -2798,8 +2795,13 @@ async fn admins_create_change_and_delete_shares() {
     let changes = json!({ "access": [{ "kind": "account", "id": bob, "access": "read" }] });
     let updated = h.send(json(with_csrf(changing(Method::PATCH, &uri), &admin), changes)).await;
     assert_eq!(updated.status, StatusCode::OK, "{:?}", updated.body);
-    assert_eq!(updated.body["share"]["access"][0]["access"], "read");
-    assert_eq!(updated.body["job"]["kind"], "sharing.apply_access");
+    assert_eq!(updated.body["access"][0]["access"], "read");
+    assert_eq!(updated.body.get("job"), None, "no file changes: no job");
+    let calls = h.share_host.calls();
+    assert!(
+        calls.ends_with(&["apply 1".to_owned(), "close photos".to_owned()]),
+        "bob writes no more: {calls:?}"
+    );
 
     let listed = h.send(empty(with_cookie(get("/api/v1/shares"), &admin))).await;
     assert_eq!(listed.body.as_array().unwrap().len(), 1);
@@ -2823,7 +2825,7 @@ async fn nfs_rules_keep_their_host_names_and_options() {
         "pool": "tank",
         "nfs": [
             { "network": "192.168.1.0/24", "write": false },
-            { "network": "*.Example.com", "write": true, "squash": "all", "async": true, "insecure": true },
+            { "network": "*.Example.com", "write": true, "async": true, "insecure": true },
         ],
     });
     let created = h.send(json(with_csrf(post("/api/v1/shares"), &admin), body)).await;
@@ -2831,20 +2833,19 @@ async fn nfs_rules_keep_their_host_names_and_options() {
     let nfs = &created.body["nfs"];
     assert_eq!(
         nfs[0],
-        json!({ "network": "192.168.1.0/24", "write": false, "squash": "root", "async": false, "insecure": false }),
+        json!({ "network": "192.168.1.0/24", "write": false, "async": false, "insecure": false }),
         "what was not given stays as it always was"
     );
-    assert_eq!(
-        nfs[1],
-        json!({ "network": "*.example.com", "write": true, "squash": "all", "async": true, "insecure": true })
-    );
-    let unknown = h
+    assert_eq!(nfs[1], json!({ "network": "*.example.com", "write": true, "async": true, "insecure": true }));
+    // Whose identity a client's requests keep is no choice any more: every
+    // one is squashed to zendiloos-files.
+    let squash = h
         .send(json(
             with_csrf(post("/api/v1/shares"), &admin),
-            json!({ "name": "x", "pool": "tank", "nfs": [{ "network": "nas.lan", "write": true, "squash": "some" }] }),
+            json!({ "name": "x", "pool": "tank", "nfs": [{ "network": "nas.lan", "write": true, "squash": "none" }] }),
         ))
         .await;
-    assert_eq!(unknown.status, StatusCode::UNPROCESSABLE_ENTITY, "{:?}", unknown.body);
+    assert_eq!(squash.status, StatusCode::UNPROCESSABLE_ENTITY, "{:?}", squash.body);
 }
 
 #[tokio::test]
@@ -2986,6 +2987,88 @@ async fn a_search_looks_below_a_folder_the_user_may_see() {
             "search alice removable:1A2B-3C4D: song",
         ]
     );
+}
+
+/// Access to a share is the share's as a whole, decided by zendiloosd for
+/// every operation of the file manager: the files agent then works there
+/// with root's access to files, which would allow anything.
+#[tokio::test]
+async fn the_file_manager_holds_each_account_to_its_rule_on_the_share() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let (bob, carol, dora, erin) = (
+        h.sign_in("bob", Role::User).await,
+        h.sign_in("carol", Role::User).await,
+        h.sign_in("dora", Role::User).await,
+        h.sign_in("erin", Role::User).await,
+    );
+    let id_of = |name: &str| {
+        h.identity.accounts.all().into_iter().find(|a| a.name.as_str() == name).unwrap().id.get()
+    };
+    let rules = json!([
+        { "kind": "account", "id": id_of("bob"), "access": "read_write" },
+        { "kind": "account", "id": id_of("carol"), "access": "read" },
+        { "kind": "account", "id": id_of("dora"), "access": "deny" },
+    ]);
+    let created = h
+        .send(json(
+            with_csrf(post("/api/v1/shares"), &admin),
+            json!({ "name": "photos", "pool": "tank", "access": rules }),
+        ))
+        .await;
+    let share = created.body["id"].as_i64().unwrap();
+    let files = format!("/api/v1/files/shares/{share}");
+    let listing = |session: &Session| h.send(empty(with_cookie(get(&format!("{files}/folder")), session)));
+
+    // A writer: listed writable, and changes go through.
+    let writer = listing(&bob).await;
+    assert_eq!((writer.status, &writer.body["writable"]), (StatusCode::OK, &json!(true)));
+    let made =
+        h.send(json(with_csrf(post(&format!("{files}/folders")), &bob), json!({ "path": "2025" }))).await;
+    assert_eq!(made.status, StatusCode::CREATED, "{:?}", made.body);
+
+    // A reader: reads, is listed not writable, and every change is refused
+    // before the files agent hears of it.
+    let reader = listing(&carol).await;
+    assert_eq!((reader.status, &reader.body["writable"]), (StatusCode::OK, &json!(false)));
+    let download =
+        h.send(empty(with_cookie(get(&format!("{files}/download?path=2024/a.jpg")), &carol))).await;
+    assert_eq!(download.status, StatusCode::OK);
+    let before = h.file_host.calls().len();
+    let changes = [
+        ("folders", json!({ "path": "2026" })),
+        ("rename", json!({ "path": "2024/a.jpg", "name": "b.jpg" })),
+        ("delete", json!({ "paths": ["2024/a.jpg"] })),
+        ("restore", json!({ "paths": [".recycle/carol/a.jpg"] })),
+        (
+            "transfer",
+            json!({ "mode": "move", "paths": ["2024/a.jpg"], "target_share": share, "target_path": "x" }),
+        ),
+        (
+            "transfer",
+            json!({ "mode": "copy", "paths": ["2024/a.jpg"], "target_share": share, "target_path": "x" }),
+        ),
+    ];
+    for (action, body) in &changes {
+        let refused = h.send(json(with_csrf(post(&format!("{files}/{action}")), &carol), body.clone())).await;
+        assert_problem(&refused, StatusCode::FORBIDDEN, "permission_denied");
+    }
+    let upload = with_csrf(post(&format!("{files}/upload?path=2024&name=c.jpg")), &carol)
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .body(Body::from("bytes"))
+        .unwrap();
+    assert_problem(&h.send(upload).await, StatusCode::FORBIDDEN, "permission_denied");
+    assert_eq!(h.file_host.calls().len(), before, "nothing reached the files agent");
+
+    // Denied, or without a rule: the share is not there for them at all.
+    for session in [&dora, &erin] {
+        assert_problem(&listing(session).await, StatusCode::NOT_FOUND, "not_found");
+        let download =
+            h.send(empty(with_cookie(get(&format!("{files}/download?path=2024/a.jpg")), session))).await;
+        assert_problem(&download, StatusCode::NOT_FOUND, "not_found");
+        let mine = h.send(empty(with_cookie(get("/api/v1/files/shares"), session))).await;
+        assert_eq!(mine.body, json!([]));
+    }
 }
 
 #[tokio::test]
@@ -3387,7 +3470,8 @@ async fn administrators_take_schedule_and_delete_snapshots_of_a_share() {
     );
     assert_problem(&h.send(empty(with_cookie(get(&base), &bob))).await, StatusCode::FORBIDDEN, "forbidden");
 
-    // Rolled back, the files get the permissions of now again, in a job.
+    // Rolled back, the rules of now hold; the share had share-level access
+    // then too, so nothing walks it.
     let rolled = h
         .send(json(
             with_csrf(post(&format!("{base}/{label}/rollback")), &admin),
@@ -3396,7 +3480,7 @@ async fn administrators_take_schedule_and_delete_snapshots_of_a_share() {
         .await;
     assert_eq!(rolled.status, StatusCode::OK, "{:?}", rolled.body);
     assert_eq!(rolled.body["destroyed"], json!([]));
-    assert_eq!(rolled.body["job"]["kind"], "sharing.apply_access");
+    assert_eq!(rolled.body["job"], Value::Null);
 
     let missing =
         h.send(empty(with_csrf(post(&format!("{base}/zdl-2020-01-01_00.00.00/delete")), &admin))).await;
@@ -3479,7 +3563,7 @@ async fn shares_have_a_quota_compression_and_record_size_and_show_their_usage() 
     let none =
         json!({ "settings": { "quota_bytes": null, "compression": "lz4", "record_size_bytes": 131_072 } });
     let changed = h.send(json(with_csrf(changing(Method::PATCH, &path), &admin), none.clone())).await;
-    assert_eq!(changed.body["share"]["settings"], none["settings"], "{:?}", changed.body);
+    assert_eq!(changed.body["settings"], none["settings"], "{:?}", changed.body);
 }
 
 #[tokio::test]

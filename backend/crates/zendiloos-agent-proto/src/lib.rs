@@ -757,6 +757,12 @@ pub enum Request {
     MakeDirectory {
         user: UserName,
         location: FileLocation,
+        /// On a share, the folder is `user`'s, not its parent folder's
+        /// owner's: a folder an administrator's project binds, which its
+        /// containers, running as that administrator, may need to own (a
+        /// database refuses a data folder of another owner).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        own: bool,
     },
     /// Renames or moves; between shares by copying, writing the copy out and
     /// removing what was copied, unchanged since. `conflict` if `to`

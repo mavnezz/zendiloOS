@@ -164,7 +164,7 @@
         "tags": [
           "accounts"
         ],
-        "summary": "Changes another account's full name, role or whether it is enabled.\nDisabling ends its sessions and SMB access, and keeps it out of the\nshares' files as if denied (NFS): the files of the shares it could use\nfollow in the background.",
+        "summary": "Changes another account's full name, role or whether it is enabled.\nDisabling ends its sessions and its SMB access: Samba has it disabled\nand denies it by name on every share, and the open connections of the\nshares it could use end.",
         "operationId": "update_account",
         "parameters": [
           {
@@ -192,7 +192,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/UpdatedAccount"
+                  "$ref": "#/components/schemas/Account"
                 }
               }
             }
@@ -7255,7 +7255,7 @@
         "tags": [
           "accounts"
         ],
-        "summary": "Changes a group's description or members. The change stands at once;\nthe files of the shares it touches follow in the background.",
+        "summary": "Changes a group's description or members. The change stands at once:\nSamba follows a group's members itself on the next connection, and the\nopen connections end of shares where a member may do less now.",
         "operationId": "update_group",
         "parameters": [
           {
@@ -7283,7 +7283,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/UpdatedGroup"
+                  "$ref": "#/components/schemas/Group"
                 }
               }
             }
@@ -9275,7 +9275,7 @@
         "tags": [
           "shares"
         ],
-        "summary": "Sets an account's or group's rules on several shares at once. Each\nshare that changes gets its permissions at once and its existing files\nin a job. Needs `shares.manage`.",
+        "summary": "Sets an account's or group's rules on several shares at once. Each\nshare that changes holds its new rules at once (see `PATCH\n/shares/{id}`). Needs `shares.manage`.",
         "operationId": "set_subject_access",
         "parameters": [
           {
@@ -9307,14 +9307,8 @@
           "required": true
         },
         "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SubjectAccessUpdate"
-                }
-              }
-            }
+          "204": {
+            "description": "Set."
           },
           "404": {
             "description": "`not_found`: a share",
@@ -9349,7 +9343,7 @@
         "tags": [
           "shares"
         ],
-        "summary": "Changes a share. New permissions apply to the share at once and to its\nexisting files in a job. Needs `shares.manage`.",
+        "summary": "Changes a share. New rules hold for the share as a whole at once, over\nSMB and in the file manager; where they take access away from anyone,\nthe share's open SMB connections end. No file changes. Needs\n`shares.manage`.",
         "operationId": "update_share",
         "parameters": [
           {
@@ -9377,7 +9371,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ShareUpdate"
+                  "$ref": "#/components/schemas/Share"
                 }
               }
             }
@@ -9393,7 +9387,7 @@
             }
           },
           "409": {
-            "description": "`refused`: rules being applied to the files, or off the network while Macs back up to it",
+            "description": "`refused`: off the network while Macs back up to it",
             "content": {
               "application/json": {
                 "schema": {
@@ -9469,7 +9463,7 @@
             }
           },
           "409": {
-            "description": "`share_used_by_apps`, `share_used_by_projects`: the detail names them",
+            "description": "`share_used_by_apps`, `share_used_by_projects`: the detail names them; `refused`: its one-time walk to share-level access is under way",
             "content": {
               "application/json": {
                 "schema": {
@@ -9741,7 +9735,7 @@
         "tags": [
           "shares"
         ],
-        "summary": "Returns the share to a snapshot: everything changed since is lost, and\nso are the snapshots taken after it. The share's folder gets the\npermissions recorded now at once, its files in a job. Needs\n`shares.manage` and the share's name as confirmation; refused while\npermissions are being applied to its files.",
+        "summary": "Returns the share to a snapshot: everything changed since is lost, and\nso are the snapshots taken after it. The share's rules hold as recorded\nnow. Needs `shares.manage` and the share's name as confirmation; refused\nwhile the share's one-time walk to share-level access is under way.",
         "operationId": "rollback_snapshot",
         "parameters": [
           {
@@ -9793,7 +9787,7 @@
             }
           },
           "409": {
-            "description": "`refused`: permissions being applied to the files",
+            "description": "`refused`: the share's walk to share-level access is under way",
             "content": {
               "application/json": {
                 "schema": {
@@ -17673,7 +17667,7 @@
       },
       "NfsRule": {
         "type": "object",
-        "description": "A host or network that may mount the share over NFS, and how.",
+        "description": "A host or network that may mount the share over NFS, and how. Whoever\nis on that client has the share's read, or read and write, access,\nwhatever user they claim to be: every request is squashed to the group\n`zendiloos-files`.",
         "required": [
           "network",
           "write"
@@ -17691,24 +17685,11 @@
             "type": "string",
             "description": "An IP address or CIDR network (`192.168.1.0/24`), a host name\n(`nas.local`) or a pattern with `*` and `?` (`*.example.com`)."
           },
-          "squash": {
-            "$ref": "#/components/schemas/NfsSquashKind",
-            "description": "Whose identity the client's requests keep; `root` if not given."
-          },
           "write": {
             "type": "boolean"
           }
         },
         "additionalProperties": false
-      },
-      "NfsSquashKind": {
-        "type": "string",
-        "description": "Whose identity an NFS client's requests keep: `none` (root stays root),\n`root` (root becomes the anonymous user), `all` (everyone does).",
-        "enum": [
-          "none",
-          "root",
-          "all"
-        ]
       },
       "Notification": {
         "type": "object",
@@ -19252,7 +19233,7 @@
             "oneOf": [
               {
                 "$ref": "#/components/schemas/Job",
-                "description": "Gives the files the permissions recorded now, instead of those the\nsnapshot brought back; absent if it could not be started yet (it\nis started later)."
+                "description": "Only for a snapshot from before the share's one-time walk to\nshare-level access (`sharing.migrate_permissions`): the walk again,\nas the snapshot brought back the entries per person of then.\nAbsent otherwise, or if it could not be started yet (it is started\nlater)."
               },
               {
                 "type": "null"
@@ -20047,28 +20028,6 @@
           }
         }
       },
-      "ShareUpdate": {
-        "type": "object",
-        "required": [
-          "share"
-        ],
-        "properties": {
-          "job": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/Job",
-                "description": "Applies changed permissions to existing files, if they changed."
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "share": {
-            "$ref": "#/components/schemas/Share"
-          }
-        }
-      },
       "SlotBinding": {
         "type": "object",
         "description": "What a slot holds.",
@@ -20570,21 +20529,6 @@
                 "type": "null"
               }
             ]
-          }
-        }
-      },
-      "SubjectAccessUpdate": {
-        "type": "object",
-        "required": [
-          "jobs"
-        ],
-        "properties": {
-          "jobs": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/Job"
-            },
-            "description": "One per share that changed: its existing files follow."
           }
         }
       },
@@ -21397,52 +21341,6 @@
           }
         },
         "additionalProperties": false
-      },
-      "UpdatedAccount": {
-        "allOf": [
-          {
-            "$ref": "#/components/schemas/Account"
-          },
-          {
-            "type": "object",
-            "required": [
-              "pending_shares"
-            ],
-            "properties": {
-              "pending_shares": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                },
-                "description": "Names of the shares whose files are given their permissions anew\nin the background, e.g. after the account was disabled."
-              }
-            }
-          }
-        ],
-        "description": "An account as changed, and the shares whose files follow the change in\nthe background."
-      },
-      "UpdatedGroup": {
-        "allOf": [
-          {
-            "$ref": "#/components/schemas/Group"
-          },
-          {
-            "type": "object",
-            "required": [
-              "pending_shares"
-            ],
-            "properties": {
-              "pending_shares": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                },
-                "description": "Names of the shares whose files are given their permissions anew in\nthe background: where the group is denied, or where it may write\nand someone left it."
-              }
-            }
-          }
-        ],
-        "description": "A group as changed, and the shares whose files follow the change in the\nbackground."
       },
       "UpdatesOverview": {
         "type": "object",

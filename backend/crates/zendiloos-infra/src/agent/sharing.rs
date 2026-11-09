@@ -9,16 +9,16 @@ use zendiloos_agent_proto::{
 use zendiloos_kernel::{PortError, RequestContext, Timestamp};
 use zendiloos_sharing::application::ports::{HostError, ShareHost, Volume, Volumes};
 use zendiloos_sharing::domain::{
-    Compression, Frequency, NfsSquash, Permission, Principal, RecordSize, ShareName, ShareSettings,
-    ShareUsage, SharingConfig, SmbEncryption, SmbProtocol, SmbSigning, Snapshot, is_label,
+    Compression, Frequency, Permission, Principal, RecordSize, ShareName, ShareSettings, ShareUsage,
+    SharingConfig, SmbEncryption, SmbProtocol, SmbSigning, Snapshot, is_label,
 };
 use zendiloos_storage::application::ports::ZfsSource;
 
-use super::{WHAT, agent_error, call_raw, unexpected};
+use super::{WHAT, agent_error, call_raw, call_raw_reporting, unexpected};
 use crate::agent::AgentStorage;
 
 /// [`ShareHost`] through the agents: datasets and server configuration
-/// through the system agent, directory permissions through the files agent.
+/// through the system agent, the shares' folders through the files agent.
 pub struct AgentSharing {
     system: Arc<dyn AgentTransport>,
     files: Arc<dyn AgentTransport>,
@@ -150,6 +150,18 @@ pub fn parse_usage(text: &str) -> Vec<ShareUsage> {
         .collect()
 }
 
+/// The lines the files agent reports as a walk goes, to `lines`; its steps
+/// are not used.
+struct Lines<'a>(&'a (dyn for<'line> Fn(&'line str) + Send + Sync));
+
+impl proto::Report for Lines<'_> {
+    fn step(&self, _: &str, _: Option<u8>) {}
+
+    fn line(&self, line: &str) {
+        (self.0)(line);
+    }
+}
+
 #[async_trait]
 impl ShareHost for AgentSharing {
     async fn set_properties(
@@ -274,7 +286,12 @@ impl ShareHost for AgentSharing {
         change(self.system.as_ref(), request, context).await
     }
 
-    async fn apply(&self, config: &SharingConfig, context: &RequestContext) -> Result<(), HostError> {
+    async fn apply(
+        &self,
+        config: &SharingConfig,
+        close: &[ShareName],
+        context: &RequestContext,
+    ) -> Result<(), HostError> {
         let smb = config
             .smb
             .iter()
@@ -299,15 +316,9 @@ impl ShareHost for AgentSharing {
                     .iter()
                     .map(|c| {
                         let network = proto::NfsHost::parse(&c.network).map_err(|_| invalid("network"))?;
-                        let squash = match c.squash {
-                            NfsSquash::None => proto::NfsSquash::None,
-                            NfsSquash::Root => proto::NfsSquash::Root,
-                            NfsSquash::All => proto::NfsSquash::All,
-                        };
                         Ok(NfsClient {
                             network,
                             write: c.write,
-                            squash,
                             asynchronous: c.asynchronous,
                             insecure: c.insecure,
                         })
@@ -364,7 +375,9 @@ impl ShareHost for AgentSharing {
             }),
             None => None,
         };
-        change(self.system.as_ref(), Request::ApplySharing { smb, nfs, services, homes }, context).await
+        let close = close.iter().map(share).collect::<Result<_, _>>()?;
+        change(self.system.as_ref(), Request::ApplySharing { smb, nfs, services, homes, close }, context)
+            .await
     }
 
     async fn prepare_homes(
@@ -395,23 +408,31 @@ impl ShareHost for AgentSharing {
         change(self.system.as_ref(), quota, context).await
     }
 
-    async fn set_access(
+    async fn prepare_share(
         &self,
         number: u16,
         name: &ShareName,
-        rules: &[(Principal, Permission)],
-        removed: &[Principal],
-        recursive: bool,
         context: &RequestContext,
     ) -> Result<(), HostError> {
-        let request = Request::SetShareAccess {
-            volume: volume(number)?,
-            name: share(name)?,
-            access: access(rules)?,
-            removed: removed.iter().map(principal).collect::<Result<_, _>>()?,
-            recursive,
-        };
+        let request = Request::PrepareShare { volume: volume(number)?, name: share(name)? };
         change(self.files.as_ref(), request, context).await
+    }
+
+    async fn migrate_share(
+        &self,
+        number: u16,
+        name: &ShareName,
+        lines: &(dyn for<'line> Fn(&'line str) + Send + Sync),
+        context: &RequestContext,
+    ) -> Result<(), HostError> {
+        let request = Request::MigrateShare { volume: volume(number)?, name: share(name)? };
+        let report = Lines(lines);
+        match call_raw_reporting(self.files.as_ref(), request, &report, context).await? {
+            Response::Done => Ok(()),
+            Response::Error { code: ErrorCode::Forbidden, message } => Err(HostError::Refused(message)),
+            Response::Error { code, message } => Err(agent_error(code, &message).into()),
+            other => Err(unexpected(other).into()),
+        }
     }
 }
 
@@ -573,9 +594,10 @@ mod tests {
                 veto_files: Some("/*.tmp/".into()),
                 ..FileServices::default()
             };
-            sharing.apply(&config(services), &context).await.unwrap();
+            sharing.apply(&config(services), &[photos()], &context).await.unwrap();
         }
-        let Request::ApplySharing { smb, nfs, services, homes } = &system.asked()[2] else { panic!() };
+        let Request::ApplySharing { smb, nfs, services, homes, close } = &system.asked()[2] else { panic!() };
+        assert_eq!(close.iter().map(proto::ShareName::as_str).collect::<Vec<_>>(), ["photos"]);
         assert_eq!(smb[0].access.len(), 3);
         assert_eq!(nfs[0].clients.len(), 1);
         assert_eq!(services.smb_min_protocol, proto::SmbProtocol::Smb3);
@@ -585,7 +607,7 @@ mod tests {
             nfs: vec![NfsSpec { name: photos(), volume: 1, clients: vec![Client::new("x y", false)] }],
             ..SharingConfig::default()
         };
-        assert!(matches!(sharing.apply(&odd_network, &context).await, Err(HostError::Port(_))));
+        assert!(matches!(sharing.apply(&odd_network, &[], &context).await, Err(HostError::Port(_))));
         let odd_user = SharingConfig {
             smb: vec![SmbSpec {
                 name: photos(),
@@ -597,7 +619,7 @@ mod tests {
             }],
             ..SharingConfig::default()
         };
-        assert!(matches!(sharing.apply(&odd_user, &context).await, Err(HostError::Port(_))));
+        assert!(matches!(sharing.apply(&odd_user, &[], &context).await, Err(HostError::Port(_))));
         let odd_group = SharingConfig {
             smb: vec![SmbSpec {
                 name: photos(),
@@ -609,17 +631,17 @@ mod tests {
             }],
             ..SharingConfig::default()
         };
-        assert!(matches!(sharing.apply(&odd_group, &context).await, Err(HostError::Port(_))));
+        assert!(matches!(sharing.apply(&odd_group, &[], &context).await, Err(HostError::Port(_))));
         let odd_veto = SharingConfig {
             services: FileServices { veto_files: Some("*.tmp".into()), ..FileServices::default() },
             ..SharingConfig::default()
         };
-        assert!(matches!(sharing.apply(&odd_veto, &context).await, Err(HostError::Port(_))));
+        assert!(matches!(sharing.apply(&odd_veto, &[], &context).await, Err(HostError::Port(_))));
         let odd_home = SharingConfig {
             homes: Some(HomesSpec { volume: 1, users: vec!["not a name".into()] }),
             ..SharingConfig::default()
         };
-        assert!(matches!(sharing.apply(&odd_home, &context).await, Err(HostError::Port(_))));
+        assert!(matches!(sharing.apply(&odd_home, &[], &context).await, Err(HostError::Port(_))));
         assert_eq!(system.asked().len(), 3, "nothing odd was sent");
     }
 
@@ -629,16 +651,40 @@ mod tests {
         let sharing = host(&system, &files);
         let context = RequestContext::default();
         sharing.set_home("tank", 1, "anna", Some(1 << 30), &context).await.unwrap();
-        let rules = [(Principal::User("anna".into()), Permission::ReadWrite)];
-        let removed = [Principal::Group("family".into())];
-        sharing.set_access(1, &photos(), &rules, &removed, true, &context).await.unwrap();
+        sharing.prepare_share(1, &photos(), &context).await.unwrap();
+        let lines = std::sync::Mutex::new(Vec::new());
+        let note = |line: &str| lines.lock().unwrap().push(line.to_owned());
+        sharing.migrate_share(1, &photos(), &note, &context).await.unwrap();
         assert!(matches!(&system.only(), Request::SetHomeQuota { quota_bytes: Some(_), .. }));
         let asked = files.asked();
         assert!(matches!(&asked[0], Request::MakeHome { user, .. } if user.as_str() == "anna"));
-        assert!(
-            matches!(&asked[1], Request::SetShareAccess { recursive: true, removed, .. } if removed.len() == 1)
-        );
+        assert!(matches!(&asked[1], Request::PrepareShare { name, .. } if name.as_str() == "photos"));
+        assert!(matches!(&asked[2], Request::MigrateShare { name, .. } if name.as_str() == "photos"));
         assert!(sharing.set_home("tank", 1, "not a name", None, &context).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_walk_tells_how_far_it_got_and_a_refusal_is_one() {
+        let context = RequestContext::default();
+        let files = Arc::new(Scripted::reporting(
+            vec![Response::Output { line: "10000 entries".into() }],
+            Response::Done,
+        ));
+        let sharing = host(&Arc::new(Scripted::default()), &files);
+        let lines = std::sync::Mutex::new(Vec::new());
+        let note = |line: &str| lines.lock().unwrap().push(line.to_owned());
+        sharing.migrate_share(1, &photos(), &note, &context).await.unwrap();
+        assert_eq!(*lines.lock().unwrap(), ["10000 entries"]);
+
+        let busy = Arc::new(Scripted::refusing(ErrorCode::Forbidden, "share photos is not mounted"));
+        let refused = host(&busy, &busy).migrate_share(1, &photos(), &note, &context).await;
+        assert!(
+            matches!(refused, Err(HostError::Refused(ref why)) if why.contains("not mounted")),
+            "{refused:?}"
+        );
+        let failed = Arc::new(Scripted::refusing(ErrorCode::Failed, "3 entries could not be changed"));
+        let failed = host(&failed, &failed).migrate_share(1, &photos(), &note, &context).await;
+        assert!(matches!(failed, Err(HostError::Port(_))), "{failed:?}");
     }
 
     #[tokio::test]

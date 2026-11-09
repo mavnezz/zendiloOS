@@ -1,9 +1,13 @@
-//! The file manager: share contents as the signed-in user.
+//! The file manager: share contents as the signed-in user may use them.
 //!
-//! Every operation runs on the host with the user's own credentials, so
-//! what is allowed is decided where it is decided for SMB and NFS: by the
-//! file system's permissions. The checks here keep users out of shares that
-//! are not theirs and refuse early what the share's rules forbid anyway.
+//! Access to a share is the share's as a whole (docs/architecture.md, 4.4),
+//! and decided here, against the rules in the database, for every
+//! operation: a denial (or no rule) keeps the user out altogether, reading
+//! allows what only reads, and only reading and writing allows a change.
+//! The files agent then works on the share with root's access to files,
+//! confined beneath its root, as Samba does: it gets only what was allowed
+//! here. In the personal folder the files agent acts as its user, the only
+//! one who may enter it.
 //!
 //! Removable drives are places too ([`PlaceId::Removable`]), for
 //! administrators only: the caller lets only someone who manages storage
@@ -339,7 +343,9 @@ impl FilesUseCases {
         Ok(usable.place)
     }
 
-    /// A folder of the share, or of its snapshot `snapshot`.
+    /// A folder of the share, or of its snapshot `snapshot`; writable only
+    /// for someone who may change the share (the files agent works there
+    /// with root's access, which could write anything).
     pub async fn list(
         &self,
         actor: &Actor,
@@ -348,8 +354,11 @@ impl FilesUseCases {
         snapshot: Option<&str>,
         context: &RequestContext,
     ) -> Result<Listing, FilesError> {
-        let share = self.share(actor, id, context).await?.place;
-        Ok(self.ports.files.list(&actor.name, &at_snapshot(&share, path, snapshot)?, context).await?)
+        let usable = self.share(actor, id, context).await?;
+        let at = at_snapshot(&usable.place, path, snapshot)?;
+        let mut listing = self.ports.files.list(&actor.name, &at, context).await?;
+        listing.writable &= usable.access == Access::ReadWrite;
+        Ok(listing)
     }
 
     /// What is called like `text` (containing it, whatever the case) in the
@@ -624,6 +633,8 @@ impl FilesUseCases {
         Ok(removed)
     }
 
+    /// A new folder; in a share it takes the owner of the folder it is
+    /// made in, as everything made there.
     pub async fn make_directory(
         &self,
         actor: &Actor,
@@ -631,11 +642,36 @@ impl FilesUseCases {
         path: FilePath,
         context: &RequestContext,
     ) -> Result<(), FilesError> {
+        self.new_directory(actor, id.into(), path, false, context).await
+    }
+
+    /// A new folder that is the account's own, also in a share: a folder an
+    /// administrator's project binds, which its containers, running as the
+    /// administrator, may need to own (a database refuses a data folder of
+    /// another owner).
+    pub async fn make_own_directory(
+        &self,
+        actor: &Actor,
+        id: impl Into<PlaceId>,
+        path: FilePath,
+        context: &RequestContext,
+    ) -> Result<(), FilesError> {
+        self.new_directory(actor, id.into(), path, true, context).await
+    }
+
+    async fn new_directory(
+        &self,
+        actor: &Actor,
+        id: PlaceId,
+        path: FilePath,
+        own: bool,
+        context: &RequestContext,
+    ) -> Result<(), FilesError> {
         if !path.name().is_some_and(is_new_file_name) {
             return Err(FilesError::InvalidName);
         }
         let share = self.writable_share(actor, id, context).await?;
-        Ok(self.ports.files.make_directory(&actor.name, &at(&share, path), context).await?)
+        Ok(self.ports.files.make_directory(&actor.name, &at(&share, path), own, context).await?)
     }
 
     /// Gives `path` the name `name` in the same folder.

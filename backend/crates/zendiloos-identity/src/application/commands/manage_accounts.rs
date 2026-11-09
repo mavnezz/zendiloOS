@@ -7,7 +7,6 @@ use std::sync::Arc;
 
 use zendiloos_kernel::{AuditEntry, Outcome, RequestContext, Secret};
 
-use super::manage_groups::{join, pending};
 use crate::application::context::Context;
 use crate::application::ports::AccessChange;
 use crate::application::{AuthContext, IdentityError};
@@ -115,15 +114,13 @@ impl UpdateAccount {
         Self { context }
     }
 
-    /// Returns the account and what follows its being disabled or enabled
-    /// in the background, named; the audit names it too.
     pub async fn execute(
         &self,
         auth: &AuthContext,
         id: AccountId,
         changes: AccountChanges,
         request: &RequestContext,
-    ) -> Result<(Account, Vec<String>), IdentityError> {
+    ) -> Result<Account, IdentityError> {
         let c = &self.context;
         Context::require(auth, Permission::UsersManage)?;
         let full_name = changes.full_name.map(|name| text::full_name(name.as_deref())).transpose()?;
@@ -153,10 +150,10 @@ impl UpdateAccount {
         } else {
             AccessChange::Enabled
         });
-        let mut following = Vec::new();
+        let mut noted = Vec::new();
         if let Some(change) = change {
-            // Others note what has to follow first, as for groups' members.
-            following = c.ports.account_observer.access_changing(id, change).await?;
+            // Others note what they end afterwards, while it is still there.
+            noted = c.ports.account_observer.access_changing(id, change).await?;
             c.ports.system.set_enabled(&account.name, !disabled, request).await?;
             if disabled {
                 c.ports.sessions.delete_all(id).await?;
@@ -180,19 +177,15 @@ impl UpdateAccount {
         account.disabled = disabled;
         account.updated_at = now;
         c.ports.accounts.update(&account).await?;
-        if let Some(change) = change {
-            let actor = auth.actor();
-            match c.ports.account_observer.access_changed(id, change, &following, &actor, request).await {
-                Ok(more) => join(&mut following, more),
-                Err(error) => {
-                    tracing::warn!(%error, account = account.name.as_str(), "others follow the account later");
-                }
-            }
+        if let Some(change) = change
+            && let Err(error) = c.ports.account_observer.access_changed(id, change, &noted, request).await
+        {
+            tracing::warn!(%error, account = account.name.as_str(), "others did not follow the account");
         }
 
         let entry = AuditEntry::new(now, AuditAction::AccountUpdate.as_str(), Outcome::Success, request);
-        c.audit(entry.by(&auth.actor()).target(pending(account.name.as_str(), &following))).await?;
-        Ok((account, following))
+        c.audit(entry.by(&auth.actor()).target(account.name.as_str())).await?;
+        Ok(account)
     }
 }
 
@@ -270,27 +263,21 @@ impl DeleteAccount {
         if enabled_admin && !c.another_enabled_admin(id).await? {
             return Err(IdentityError::LastAdmin);
         }
-        // Its ID stays in entries and on files: others note where first.
-        let mut following = c.ports.account_observer.access_changing(id, AccessChange::Deleted).await?;
+        // Others note what it can use first, while its rules and groups are
+        // still there.
+        let noted = c.ports.account_observer.access_changing(id, AccessChange::Deleted).await?;
         c.ports.system.delete_user(&account.name, request).await?;
         c.ports.two_factor.delete(id).await?;
         c.ports.accounts.delete(id).await?;
         c.end_sign_ins_of(id);
-        let actor = auth.actor();
-        match c
-            .ports
-            .account_observer
-            .access_changed(id, AccessChange::Deleted, &following, &actor, request)
-            .await
+        if let Err(error) =
+            c.ports.account_observer.access_changed(id, AccessChange::Deleted, &noted, request).await
         {
-            Ok(more) => join(&mut following, more),
-            Err(error) => {
-                tracing::warn!(%error, account = account.name.as_str(), "others follow the deletion later");
-            }
+            tracing::warn!(%error, account = account.name.as_str(), "others did not follow the deletion");
         }
 
         let entry = AuditEntry::new(now, AuditAction::AccountDelete.as_str(), Outcome::Success, request);
-        c.audit(entry.by(&auth.actor()).target(pending(account.name.as_str(), &following))).await?;
+        c.audit(entry.by(&auth.actor()).target(account.name.as_str())).await?;
         Ok(())
     }
 }
