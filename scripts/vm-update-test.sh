@@ -3,8 +3,9 @@
 #
 #   1. a check through the API: apt's lists fetched in a unit of its own,
 #      what Debian would upgrade reported (GitHub is asked too)
-#   2. Debian's updates installed through the API, if there are any, and
-#      the ZFS module checked for the newest kernel
+#   2. Debian's updates installed through the API, if there are any (a scrub
+#      tried meanwhile is refused with update_running), and the ZFS module
+#      checked for the newest kernel
 #   3. zendiloOS updates itself to a newer release, signed with a test key:
 #      the runner copies the files out of the download folder, checks the
 #      signature, that it was made for this version, the channel, the
@@ -138,6 +139,24 @@ echo "  Debian: $count packages ($(jq '[.packages[] | select(.security)] | lengt
 say "2. Debian's updates through the API"
 if (( count > 0 )) && jq -e '.release == null' <<<"$overview" >/dev/null; then
     [[ $(status POST /system/updates/apply) == 202 ]] || fail "apply not started"
+    # While it installs no job starts, nor a scrub: refused, not queued.
+    pool=$(call GET /storage/pools | jq -r '[.[] | select(.volume != null)][0].name // empty')
+    if [[ -n $pool ]]; then
+        tried=
+        for _ in $(seq 1 120); do
+            if call GET /system/updates | jq -e '.phase == "downloading" or .run.state == "running"' >/dev/null; then
+                tried=$(call POST "/storage/pools/$pool/scrub")
+                break
+            fi
+            sleep 1
+        done
+        if [[ -n $tried ]]; then
+            jq -e '.code == "update_running"' <<<"$tried" >/dev/null || fail "a scrub started while updating: $tried"
+            echo "  a scrub of $pool was refused while the update installed"
+        else
+            echo "  the update was over before a scrub could be tried"
+        fi
+    fi
     wait_for "the update" "call GET /system/updates | jq -e '.run != null and .run.state != \"running\"'" 1800
     run=$(call GET /system/updates | jq .run)
     jq -e '.state == "succeeded" and .zfs_ready' <<<"$run" >/dev/null || fail "the update: $run"
