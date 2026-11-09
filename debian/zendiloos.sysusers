@@ -3,5 +3,11 @@ u zendiloos - "zendiloOS management service" /var/lib/zendiloos
 # Primary group of every account's Linux user; the agent changes only
 # users in this group (docs/architecture.md, 4.2).
 g zendiloos-users -
+# The shares' files: every share's folder lets this group read and write
+# (one ACL, inherited), Samba gives what it writes this group, NFS clients
+# are squashed to this user and group, and apps run in the group. Access
+# to a share is decided by its rules in Samba and zendiloosd, never by
+# entries per person (docs/architecture.md, 4.4). No account of a person.
+u zendiloos-files - "zendiloOS files on shares" / /usr/sbin/nologin
 # acme.sh runs as this account, never as root (docs/architecture.md, 4.11).
 u zendiloos-acme - "zendiloOS ACME client (acme.sh)" /var/lib/zendiloos-acme
