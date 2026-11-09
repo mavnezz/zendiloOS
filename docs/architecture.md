@@ -2055,7 +2055,9 @@ a snapshot's restore, every kind) nor does a scrub: they are refused with
 `update_running` (409). A job asked to start counts as running from that
 moment, so of a job and an update that start together one sees the
 other. Schedules that come due meanwhile do not fail: backups, image
-updates and snapshots stay due and run once the update is done. The
+updates and snapshots stay due and run once the update is done, a
+certificate's renewal the next day, a share's walk to share-level access
+five minutes later. The
 record of the latest run is replaced by the next one; an update's goes to
 `update.json` as well, which only the next update replaces, so a check or
 a plugin installed right after an update leaves how it went for the page

@@ -74,6 +74,10 @@ impl SharingUseCases {
     /// how many shares were walked without errors.
     pub async fn migrate_permissions(&self, request: &RequestContext) -> Result<usize, SharingError> {
         let Ok(_run) = self.migrations.run.try_lock() else { return Ok(0) };
+        // While the system is updated no job starts: the walks wait.
+        if self.ports.jobs.held().await.is_some() {
+            return Ok(0);
+        }
         let owed = self.ports.shares.migrations_owed().await?;
         if owed.is_empty() {
             return Ok(0);
