@@ -47,8 +47,12 @@ pub trait CertificateRepository: Send + Sync {
     ) -> Result<Certificate, PortError>;
     async fn update_certificate(&self, id: i64, certificate: &NewCertificate) -> Result<bool, PortError>;
     async fn delete_certificate(&self, id: i64) -> Result<bool, PortError>;
-    /// Records a try to issue or renew it.
+    /// Records a try to issue or renew it; one that issued it is served.
     async fn record_attempt(&self, id: i64, attempt: &Attempt) -> Result<bool, PortError>;
+    /// Records whether nginx took the pair last issued: `Err` with why not,
+    /// kept as the last error; `Ok` takes that error back, if nothing was
+    /// tried since.
+    async fn record_served(&self, id: i64, served: Result<(), String>) -> Result<bool, PortError>;
 
     async fn web_server(&self) -> Result<WebServer, PortError>;
     async fn save_web_server(&self, web: &WebServer) -> Result<(), PortError>;
@@ -601,9 +605,63 @@ impl Certificates {
         Ok(job)
     }
 
+    /// Whether the web interface shows certificate `id`, or a change waiting
+    /// would.
+    async fn shown(&self, id: i64) -> bool {
+        let shown = self.ports.repository.web_server().await.ok().and_then(|w| w.certificate_id);
+        let waiting =
+            self.pending.lock().unwrap_or_else(PoisonError::into_inner).and_then(|w| w.certificate_id);
+        shown == Some(id) || waiting == Some(id)
+    }
+
+    /// Has nginx take certificate `id`, renewed, if the web interface shows
+    /// it; whether it did.
+    async fn take(&self, id: i64, context: &RequestContext) -> Result<bool, HostError> {
+        if !self.shown(id).await {
+            return Ok(false);
+        }
+        self.ports.host.reload_certificate(context).await.map(|()| true)
+    }
+
+    /// nginx did not take the pair issued for certificate `id`: recorded as
+    /// not served, and told.
+    async fn not_taken(&self, id: i64, name: &str, error: &HostError) {
+        tracing::error!(%error, name, "certificates: nginx did not take the renewed certificate");
+        let reason = format!("the web interface did not take the new certificate: {error}");
+        if let Err(error) = self.ports.repository.record_served(id, Err(reason)).await {
+            tracing::error!(%error, "certificates: cannot record that nginx did not take the certificate");
+        }
+        let told = NewNotification::new(Level::Error, "certificate_not_taken")
+            .with("name", name)
+            .with("reason", error.to_string());
+        self.ports.notifier.notify(told).await;
+    }
+
+    /// A certificate renewed that nginx did not take: it takes it now, if
+    /// the web interface still shows it (one shown later is taken when the
+    /// settings are applied, which reloads nginx).
+    async fn serve(&self, certificate: &Certificate, context: &RequestContext) {
+        let name = certificate.common_name();
+        match self.take(certificate.id, context).await {
+            Ok(taken) => {
+                if let Err(error) = self.ports.repository.record_served(certificate.id, Ok(())).await {
+                    tracing::error!(%error, name, "certificates: cannot record that nginx took the certificate");
+                    return;
+                }
+                if taken {
+                    tracing::info!(name, "certificates: nginx took the renewed certificate");
+                    let told = NewNotification::new(Level::Success, "certificate_renewed").with("name", name);
+                    self.ports.notifier.notify(told).await;
+                }
+            }
+            Err(error) => self.not_taken(certificate.id, name, &error).await,
+        }
+    }
+
     /// Records what came of an issuance, has nginx take a renewed
     /// certificate it shows (or a change waiting would), and tells of
-    /// renewals: one nginx did not take is told as that.
+    /// renewals: one nginx did not take is recorded as not served and told
+    /// as that, and the daily look has nginx take it later.
     async fn issued(
         &self,
         certificate: &Certificate,
@@ -625,23 +683,8 @@ impl Certificates {
         }
         match outcome {
             Ok(_) => {
-                let shown = self.ports.repository.web_server().await.ok().and_then(|w| w.certificate_id);
-                let waiting = self
-                    .pending
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .and_then(|w| w.certificate_id);
-                let reloaded = if shown == Some(certificate.id) || waiting == Some(certificate.id) {
-                    self.ports.host.reload_certificate(context).await
-                } else {
-                    Ok(())
-                };
-                if let Err(error) = reloaded {
-                    tracing::error!(%error, "certificates: nginx did not take the renewed certificate");
-                    let told = NewNotification::new(Level::Error, "certificate_not_taken")
-                        .with("name", name)
-                        .with("reason", error.to_string());
-                    self.ports.notifier.notify(told).await;
+                if let Err(error) = self.take(certificate.id, context).await {
+                    self.not_taken(certificate.id, name, &error).await;
                     return Err(JobError::new(
                         "agent_failed",
                         Some(format!("the web interface did not take the new certificate: {error}")),
@@ -665,7 +708,8 @@ impl Certificates {
         }
     }
 
-    /// The daily look: certificates due are renewed, each in a job.
+    /// The daily look: certificates renewed that nginx did not take it
+    /// takes now; certificates due are renewed, each in a job.
     pub async fn renew_due(&self) -> Result<Vec<Job>, CertificatesError> {
         let context = RequestContext::default();
         if !self.ports.host.installed(&context).await? {
@@ -676,7 +720,13 @@ impl Certificates {
         for certificate in self.ports.repository.certificates().await? {
             let issuing =
                 self.issuing.lock().unwrap_or_else(PoisonError::into_inner).contains(&certificate.id);
-            if !certificate.renewal_due(now) || issuing {
+            if issuing {
+                continue;
+            }
+            if !certificate.served {
+                self.serve(&certificate, &context).await;
+            }
+            if !certificate.renewal_due(now) {
                 continue;
             }
             match self.issue(certificate.id, None, &context).await {

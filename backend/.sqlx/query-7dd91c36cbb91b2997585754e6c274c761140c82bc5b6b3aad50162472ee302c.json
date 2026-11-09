@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE certificates SET served = 0, last_error = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "7dd91c36cbb91b2997585754e6c274c761140c82bc5b6b3aad50162472ee302c"
+}

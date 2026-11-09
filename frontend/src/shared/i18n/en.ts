@@ -2432,7 +2432,7 @@ const en = {
     },
     certificate_not_taken: {
       title: 'New certificate for {name} not taken',
-      body: '{reason} The web interface still shows the one before. Issue it again in the ACME client (App Center).',
+      body: '{reason} The web interface still shows the one before; it takes the new one at the daily look for renewals, or issue it again in the ACME client (App Center).',
     },
     docker_backup_failed: {
       title: 'No backup of the volume {volume}',

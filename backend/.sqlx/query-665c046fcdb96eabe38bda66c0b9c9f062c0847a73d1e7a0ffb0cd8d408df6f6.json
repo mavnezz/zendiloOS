@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, domains, key_type, account_id, challenge_id, auto_renew AS \"auto_renew: bool\",\n                      created_at, issued_at, not_after, last_attempt_at, last_error, last_output\n               FROM certificates ORDER BY id",
+  "query": "SELECT id, domains, key_type, account_id, challenge_id, auto_renew AS \"auto_renew: bool\",\n                      created_at, issued_at, not_after, last_attempt_at, last_error, last_output,\n                      served AS \"served: bool\"\n               FROM certificates ORDER BY id",
   "describe": {
     "columns": [
       {
@@ -134,6 +134,17 @@
             "name": "last_output"
           }
         }
+      },
+      {
+        "name": "served: bool",
+        "ordinal": 12,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "certificates",
+            "name": "served"
+          }
+        }
       }
     ],
     "parameters": {
@@ -151,8 +162,9 @@
       true,
       true,
       true,
+      false,
       false
     ]
   },
-  "hash": "0a96977ae34d2aef7aa6f3692a85a60fc68a48da1f4c43bc6dcd663095ed52c4"
+  "hash": "665c046fcdb96eabe38bda66c0b9c9f062c0847a73d1e7a0ffb0cd8d408df6f6"
 }

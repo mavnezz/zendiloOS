@@ -2477,7 +2477,7 @@ const de: Messages = {
     },
     certificate_not_taken: {
       title: 'Neues Zertifikat für {name} nicht übernommen',
-      body: '{reason} Die Weboberfläche zeigt weiter das bisherige. Im ACME-Client (App Center) lässt es sich erneut ausstellen.',
+      body: '{reason} Die Weboberfläche zeigt weiter das bisherige; sie übernimmt das neue bei der täglichen Prüfung auf Erneuerungen, oder es lässt sich im ACME-Client (App Center) erneut ausstellen.',
     },
     docker_backup_failed: {
       title: 'Keine Sicherung des Volumes {volume}',

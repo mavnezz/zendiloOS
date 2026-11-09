@@ -462,6 +462,55 @@ async fn a_renewal_nginx_does_not_take_is_told_as_that() {
     assert_eq!(told[0].params["reason"], "nginx: [emerg] cannot load certificate");
 }
 
+/// A renewal nginx did not take is no renewal done: it is recorded as not
+/// served, with why, and the daily look has nginx take it, rather than
+/// leaving the one before until the next renewal two months on.
+#[tokio::test]
+async fn a_renewal_nginx_did_not_take_is_recorded_and_taken_at_the_next_look() {
+    let s = setup();
+    let made = certificate(&s, true, &["nas.example.org"]).await;
+    due(&s, made.id).await;
+    let shown = WebServer { certificate_id: Some(made.id), ..WebServer::default() };
+    s.repository.save_web_server(&shown).await.unwrap();
+    s.host.fail_reload_with(Some("nginx: [emerg] cannot load certificate"));
+    let jobs = s.certificates.renew_due().await.unwrap();
+    assert_eq!(finished(&s.jobs, jobs[0].clone()).await.state, JobState::Failed);
+    let kept = stored(&s, made.id).await;
+    assert!(!kept.served, "{kept:?}");
+    assert!(kept.last_error.as_deref().is_some_and(|e| e.contains("cannot load certificate")), "{kept:?}");
+    assert!(!kept.renewal_due(now()), "issued: not issued again");
+
+    // The next look: nginx still does not take it, and that is told again.
+    s.host.forget_calls();
+    assert!(s.certificates.renew_due().await.unwrap().is_empty());
+    assert_eq!(s.host.calls(), ["reload"]);
+    assert!(!stored(&s, made.id).await.served);
+    // Then it does.
+    s.host.fail_reload_with(None);
+    s.host.forget_calls();
+    assert!(s.certificates.renew_due().await.unwrap().is_empty());
+    assert_eq!(s.host.calls(), ["reload"]);
+    let kept = stored(&s, made.id).await;
+    assert!(kept.served && kept.last_error.is_none(), "{kept:?}");
+    let told: Vec<String> = s.notifications.all().into_iter().map(|n| n.code).collect();
+    assert_eq!(told, ["certificate_not_taken", "certificate_not_taken", "certificate_renewed"]);
+    // Nothing owed any more.
+    s.host.forget_calls();
+    s.certificates.renew_due().await.unwrap();
+    assert!(s.host.calls().is_empty());
+
+    // Not shown any more: there is nothing for nginx to take.
+    s.host.fail_reload_with(Some("nginx: [emerg] cannot load certificate"));
+    let job = s.certificates.issue(made.id, Some(&alice()), &RequestContext::default()).await.unwrap();
+    finished(&s.jobs, job).await;
+    assert!(!stored(&s, made.id).await.served);
+    s.repository.save_web_server(&WebServer::default()).await.unwrap();
+    s.host.forget_calls();
+    s.certificates.renew_due().await.unwrap();
+    assert!(s.host.calls().is_empty());
+    assert!(stored(&s, made.id).await.served);
+}
+
 /// Confirming saves the settings first, and takes them back if the host
 /// cannot keep the change.
 #[tokio::test]

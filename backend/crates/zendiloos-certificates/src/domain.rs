@@ -376,6 +376,10 @@ pub struct Certificate {
     pub last_error: Option<String>,
     /// What acme.sh wrote the last time.
     pub last_output: Vec<String>,
+    /// Whether nginx took the pair last issued, where the web interface
+    /// shows it (or a change waiting would); `false`: its reload failed and
+    /// nginx serves the one before, until the daily look has it take it.
+    pub served: bool,
 }
 
 /// A certificate is renewed this long before it expires: Let's Encrypt's
@@ -613,6 +617,7 @@ mod tests {
             last_attempt_at: None,
             last_error: None,
             last_output: Vec::new(),
+            served: true,
         }
     }
 

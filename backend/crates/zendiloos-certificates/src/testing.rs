@@ -136,6 +136,7 @@ impl CertificateRepository for MemoryCertificates {
             last_attempt_at: None,
             last_error: None,
             last_output: Vec::new(),
+            served: true,
         };
         stored.certificates.push(made.clone());
         Ok(made)
@@ -169,8 +170,21 @@ impl CertificateRepository for MemoryCertificates {
                 found.issued_at = Some(attempt.at);
                 found.not_after = Some(*not_after);
                 found.last_error = None;
+                found.served = true;
             }
             Err(reason) => found.last_error = Some(reason.clone()),
+        }
+        Ok(true)
+    }
+
+    async fn record_served(&self, id: i64, served: Result<(), String>) -> Result<bool, PortError> {
+        let mut stored = self.stored.lock().unwrap();
+        let Some(found) = stored.certificates.iter_mut().find(|c| c.id == id) else { return Ok(false) };
+        found.served = served.is_ok();
+        match served {
+            Ok(()) if found.last_attempt_at == found.issued_at => found.last_error = None,
+            Ok(()) => {}
+            Err(reason) => found.last_error = Some(reason),
         }
         Ok(true)
     }
