@@ -853,12 +853,24 @@ TLS is rustls with ring and the system's certificate authorities
   and inode alone do not tell an entry: ext4 gives a new entry the number
   of one just removed, and ZFS reuses object numbers too; what is put in a
   copied entry's place has a change time of its own, and a link its own
-  target. Before anything is
+  target. FAT and exFAT have no inode numbers: the kernel numbers an entry
+  anew whenever it forgot it and reads it again, which a big move off a
+  card makes it do, and shows the modification time as the change time
+  then; a source on them (`statfs` type) is told by name, kind, size and
+  modification time alone. Times move in steps (a clock tick, two seconds
+  on FAT), so an entry that changed within a step before the copy looked
+  at it is looked at again once the step passed; one that keeps changing
+  stays. Before anything is
   removed, the target's file system is written out (`syncfs` on the
-  target's root, on the target's side); if that fails, the source stays
+  target's root, on the target's side, through a descriptor opened before
+  the copy: the kernel tells a write-back error only to descriptors opened
+  before it, and one opened after somebody else was told of it misses
+  it); if that fails, the source stays
   and the move says so: a drive pulled out after "done" would otherwise
   lose both. Removing then walks the record, never the folders: what is
-  missing by then is passed by; what changed since (another entry under
+  missing by then is passed by, but for the moved entry itself, which,
+  renamed or removed meanwhile, was not moved and is counted with all of
+  it; what changed since (another entry under
   the name, a file written to, which its change time or size tells; FAT
   keeps times in two-second steps, hence the size) stays and is counted;
   files and links that are still what was copied go; a folder goes once
@@ -868,9 +880,14 @@ TLS is rustls with ring and the system's certificate authorities
   what is in it goes, which changes it too: one that changed since it was
   copied (something came, went or was renamed in it, or another, empty
   folder took its place and number) stays once what in it is still as
-  copied went. A move that left anything is never a plain
+  copied went; a folder that stays without being looked into counts with
+  everything of it the record holds. A move that left anything is never a plain
   success: the job ends as `partly_moved`, with the number of entries that
-  stayed and one of them, which the explorer shows. The record has a
+  stayed and one of them, which the explorer shows. Tried again, the move
+  goes on into its earlier copy, a folder of the name in the target: it
+  adds what is missing there, counts a file or link the target has under
+  the same name as moved if it is the same, byte for byte, and otherwise
+  leaves the source's where it is, never replacing the target's. The record has a
   budget like an archive's plan (half a million entries, 16 MiB of names,
   some 50 MB of the files agent's memory at most): a
   move of more keeps the complete copy and the whole source and says so
