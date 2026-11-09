@@ -38,7 +38,20 @@
 #      recorded and restored, the one made group-writable is refused with
 #      why; importing again records nothing; retention leaves the imported
 #      backup alone, and removing it by hand removes its files
-#  14. everything made is removed again
+#  14. a wide volume (thirty thousand folders, two thousand files with
+#      three names each): counted whole while the agent holds few
+#      descriptors, backed up with the later names as links, and restored
+#      with every folder and link
+#  15. hard links whose names a container keeps replacing while the backup
+#      reads them: every link in the archive names a path it holds, so
+#      Debian's tar and a restore both take it
+#  16. zendiloosd killed while it restores: the container stopped for the
+#      restore is noted as owed a start, the old data stays, and the
+#      container runs again once zendiloosd is back
+#  17. a backup cut off with zendiloosd, which comes back while Docker is
+#      down (as after a power cut): the container stays owed a start
+#      until Docker is up, and then runs again
+#  18. everything made is removed again
 #
 # Needs the VM running with the package installed and set up, Docker's data
 # on a pool and the image alpine:3.20 (fetched if missing); account and
@@ -57,7 +70,11 @@ project=voltest
 volume=${project}_data
 extra=${project}_extra
 copy=${project}_copy
+wide=${project}_wide
+churn=${project}_churn
+churned=${project}_churned
 container=$project-db-1
+churner=$project-churner
 work=$(mktemp -d)
 
 say() { printf '\033[1m%s\033[0m\n' "$*"; }
@@ -122,10 +139,24 @@ in_volume() { vm "sudo docker run --rm -v $1:/v:ro alpine:3.20 sh -c '$2'"; }
 volume_json() { call GET /docker/volumes | jq -c --arg v "$1" '.[] | select(.name == $v)'; }
 # The Backups page's group of volume $1.
 backup_group() { call GET /docker/backups | jq -c --arg v "$1" '.[] | select(.volume == $v)'; }
-# Forgets the record of backup $1, as a database set up anew would not know it.
-forget_record() {
+# Runs the SQL $1 on zendiloosd's database (no double quotes in it).
+sql() {
     vm 'command -v sqlite3 >/dev/null || sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sqlite3 >/dev/null'
-    vm "sudo sqlite3 -cmd '.timeout 10000' /var/lib/zendiloos/zendiloos.db 'DELETE FROM docker_backups WHERE id = $1'"
+    vm "sudo sqlite3 -cmd '.timeout 10000' /var/lib/zendiloos/zendiloos.db \"$1\""
+}
+# Forgets the record of backup $1, as a database set up anew would not know it.
+forget_record() { sql "DELETE FROM docker_backups WHERE id = $1"; }
+# Whether container $1 is noted as owed a start.
+owed() { [[ -n $(sql "SELECT container FROM docker_owed_starts WHERE container = '$1'") ]]; }
+# Kills zendiloosd as soon as the unit $1 runs, as a crash or a power cut
+# would, and keeps it stopped.
+kill_zendiloosd_when() {
+    vm "for i in \$(seq 1 2400); do sudo systemctl is-active -q $1 && exec sudo sh -c 'systemctl kill -s KILL zendiloosd.service; systemctl stop zendiloosd.service'; sleep 0.05; done; exit 1"
+}
+# Debian's tar extracts the archive $1 (a path in the share) whole: every
+# hard link names a path the archive holds before it.
+debian_tar_extracts() {
+    vm "sudo bash -c 'set -o pipefail; d=\$(mktemp -d) && zstd -dcq /volume$number/$share/$1 | tar -xf - -C \$d; s=\$?; rm -rf \$d; exit \$s'"
 }
 
 back_up_now() {
@@ -145,11 +176,14 @@ remove_project() {
 
 cleanup() {
     set +e
-    call DELETE "/docker/volumes/$volume/backup-plan" >/dev/null
-    call DELETE "/docker/volumes/$extra/backup-plan" >/dev/null
-    call DELETE "/docker/volumes/$copy/backup-plan" >/dev/null
+    # Should a step have failed with Docker or zendiloosd stopped.
+    vm 'sudo systemctl start docker.service zendiloosd.service' >/dev/null 2>&1
+    for name in "$volume" "$extra" "$copy" "$wide" "$churn"; do
+        call DELETE "/docker/volumes/$name/backup-plan" >/dev/null
+    done
     remove_project
-    vm "sudo docker volume rm -f $volume $extra $copy" >/dev/null 2>&1
+    vm "sudo docker rm -f $churner" >/dev/null 2>&1
+    vm "sudo docker volume rm -f $volume $extra $copy $wide $churn $churned" >/dev/null 2>&1
     for id in $(call GET /shares | jq -r --arg s "$share" '.[] | select(.name == $s) | .id'); do
         call POST "/shares/$id/delete" "{\"confirm\":\"$share\"}" >/dev/null
     done
@@ -164,11 +198,12 @@ pool=$(call GET /apps/docker | jq -er .volume.pool) || fail "Docker's data is no
 vm 'sudo docker image inspect alpine:3.20 >/dev/null 2>&1 || sudo docker pull -q alpine:3.20' >/dev/null
 
 say "Cleaning up an earlier run"
-call DELETE "/docker/volumes/$volume/backup-plan" >/dev/null || true
-call DELETE "/docker/volumes/$extra/backup-plan" >/dev/null || true
-call DELETE "/docker/volumes/$copy/backup-plan" >/dev/null || true
+for name in "$volume" "$extra" "$copy" "$wide" "$churn"; do
+    call DELETE "/docker/volumes/$name/backup-plan" >/dev/null || true
+done
 remove_project
-vm "sudo docker volume rm -f $volume $extra $copy" >/dev/null 2>&1 || true
+vm "sudo docker rm -f $churner" >/dev/null 2>&1 || true
+vm "sudo docker volume rm -f $volume $extra $copy $wide $churn $churned" >/dev/null 2>&1 || true
 for id in $(call GET /shares | jq -r --arg s "$share" '.[] | select(.name == $s) | .id'); do
     job_succeeded "$(call POST "/shares/$id/delete" "{\"confirm\":\"$share\"}" | jq -r .id)"
 done
@@ -410,14 +445,142 @@ vm "sudo test -f /volume$number/$share/$newest_path" || fail "retention removed 
 vm "sudo test ! -e /volume$number/$share/$newest_path" || fail "the imported archive stayed"
 vm "sudo test -f /volume$number/$share/$older_path" || fail "a file nobody recorded was removed"
 
-say "14. Cleaning up"
-[[ $(status DELETE "/docker/volumes/$volume/backup-plan") == 204 ]] || fail "the plan: $(cat "$work/last")"
-[[ $(status DELETE "/docker/volumes/$extra/backup-plan") == 204 ]] || fail "the plan: $(cat "$work/last")"
-[[ $(status DELETE "/docker/volumes/$copy/backup-plan") == 204 ]] || fail "the plan: $(cat "$work/last")"
+say "14. A wide volume: counted whole with few descriptors, backed up and restored"
+vm "sudo docker volume create $wide" >/dev/null
+# Thirty thousand folders with a byte each, and two thousand files of two
+# bytes with three names each: 34000 bytes.
+vm "sudo docker run --rm -i -v $wide:/v alpine:3.20 sh -s" <<'EOF'
+set -e
+cd /v
+seq 1 30000 | sed 's/^/d/' | xargs mkdir
+seq 1 30000 | sed 's|.*|d&/x|' | xargs sh -c 'for f; do printf x > "$f"; done' sh
+mkdir -p links/a links/b links/c
+for n in $(seq 1 2000); do
+    printf ab > "links/a/f$n"
+    ln "links/a/f$n" "links/b/f$n"
+    ln "links/a/f$n" "links/c/f$n"
+done
+EOF
+agent=$(vm 'systemctl show -p MainPID --value zendiloos-agent.service')
+(( agent > 0 )) || fail "the system agent does not run"
+# The agent's descriptors, sampled while it counts: a descriptor per folder
+# still to count would be thousands.
+vm "sudo bash -s -- $agent" >"$work/descriptors" <<'EOF' &
+most=0
+for _ in $(seq 1 300); do
+    n=$(ls "/proc/$1/fd" 2>/dev/null | wc -l)
+    (( n > most )) && most=$n
+    sleep 0.02
+done
+echo "$most"
+EOF
+sampling=$!
+sleep 1
+call GET /docker/volumes/sizes >/dev/null
+sizes=$(call GET /docker/volumes/sizes)
+wait "$sampling"
+counted=$(jq -c --arg v "$wide" '.[] | select(.name == $v)' <<<"$sizes")
+[[ $(jq -r .complete <<<"$counted") == true && $(jq -r .bytes <<<"$counted") == 34000 ]] \
+    || fail "the wide volume is not counted whole, a file with several names once: $counted"
+(( $(cat "$work/descriptors") < 1000 )) \
+    || fail "the agent held $(cat "$work/descriptors") descriptors while it counted"
+[[ $(status PUT "/docker/volumes/$wide/backup-plan" "$plan") == 200 ]] || fail "plan: $(cat "$work/last")"
+back_up_now "$wide"
+wide_backup=$(call GET "/docker/volumes/$wide/backups" | jq -c '.[0]')
+wide_path=$(jq -r .archive <<<"$wide_backup")
+links=$(vm "sudo sh -c 'zstd -dcq /volume$number/$share/$wide_path | tar -tvf -'" | grep -c ' link to ' || true)
+[[ $links == 4000 ]] || fail "$links of the 4000 later names are links"
+debian_tar_extracts "$wide_path" || fail "Debian's tar cannot extract the wide volume's archive"
+vm "sudo docker run --rm -v $wide:/v alpine:3.20 sh -c 'rm -rf /v/d1* /v/links/b'"
+[[ $(restore "$(jq -r .id <<<"$wide_backup")" '{"target":"own_name"}') == 202 ]] \
+    || fail "restore of $wide: $(cat "$work/last")"
+job_succeeded "$(jq -r .id "$work/last")"
+[[ $(in_volume "$wide" 'ls -d /v/d* | wc -l') == 30000 ]] || fail "folders are missing after the restore"
+[[ $(in_volume "$wide" 'stat -c %h /v/links/b/f7') == 3 ]] || fail "the three names are not one file again"
+[[ $(in_volume "$wide" 'stat -c %i /v/links/a/f7 /v/links/b/f7 /v/links/c/f7 | sort -u | wc -l') == 1 ]] \
+    || fail "the names of one file came back as files of their own"
+
+say "15. Hard links whose names are replaced while the backup reads them"
+vm "sudo docker volume create $churn" >/dev/null
+vm "sudo docker volume create $churned" >/dev/null
+vm "sudo docker run --rm -i -v $churn:/v alpine:3.20 sh -c 'cat > /v/churn.sh'" <<'EOF'
+# Five hundred files with two names each, both names replaced by a file of
+# their own again and again: a backup finds a first name replaced (and
+# leaves it out), or a name it listed gone.
+cd /data && mkdir -p churn && cd churn
+for i in $(seq 1 500); do echo "$i" > "x$i"; ln "x$i" "y$i"; done
+while :; do
+    for i in $(seq 1 500); do
+        cp "x$i" "n$i" && ln -f "n$i" "m$i" && mv -f "n$i" "x$i" && mv -f "m$i" "y$i"
+    done
+done
+EOF
+vm "sudo docker run -d --name $churner -v $churn:/data alpine:3.20 sh /data/churn.sh" >/dev/null
+wait_for "the files with two names" "vm 'sudo test -e /volume$number/@docker/volumes/$churn/_data/churn/y500'" 60
+# Backed up while the container runs on.
+leave=$(jq -n --argjson share "$share_id" --argjson hour "$hour" \
+    '{share_id:$share,folder:"docker-backups",frequency:"daily",hour:$hour,keep:3,stop_containers:false}')
+[[ $(status PUT "/docker/volumes/$churn/backup-plan" "$leave") == 200 ]] || fail "plan: $(cat "$work/last")"
+for round in 1 2 3; do
+    sleep 2
+    back_up_now "$churn"
+    churn_backup=$(call GET "/docker/volumes/$churn/backups" | jq -c '.[0]')
+    churn_path=$(jq -r .archive <<<"$churn_backup")
+    links=$(vm "sudo sh -c 'zstd -dcq /volume$number/$share/$churn_path | tar -tvf -'" | grep -c ' link to ' || true)
+    (( links > 0 )) || fail "round $round: no hard link in the archive"
+    debian_tar_extracts "$churn_path" || fail "round $round: Debian's tar finds a link to a path the archive lacks"
+    [[ $(restore "$(jq -r .id <<<"$churn_backup")" "{\"target\":\"existing\",\"volume\":\"$churned\"}") == 202 ]] \
+        || fail "round $round: restore: $(cat "$work/last")"
+    job_succeeded "$(jq -r .id "$work/last")"
+done
+vm "sudo docker rm -f $churner" >/dev/null
+
+say "16. zendiloosd killed while it restores: the container is noted and runs again"
+wait_for "the container" running 60
+inside 'echo sixth > /extra/state'
+[[ $(restore "$latest" '{"target":"own_name","stop_containers":true}') == 202 ]] \
+    || fail "restore: $(cat "$work/last")"
+cut=$(jq -r .id "$work/last")
+# 256 MiB to hash and to extract: the unit runs for seconds.
+unit=zendiloos-volume-restore-$extra.service
+kill_zendiloosd_when "$unit" || fail "the restore's unit never ran"
+owed "$container" || fail "the container stopped for the restore is noted nowhere"
+running && fail "the container runs, though nothing started it"
+vm 'sudo systemctl start zendiloosd.service'
+wait_for "zendiloosd again" sign_in 60
+wait_for "the container after zendiloosd's restart" running 150
+vm "! sudo systemctl is-active -q $unit && ! sudo systemctl is-active -q zendiloos-volume-swap-$extra.service" \
+    || fail "a unit of the restore cut off still runs"
+[[ $(inside 'cat /extra/state') == sixth ]] || fail "the old data did not stay"
+owed "$container" && fail "still owed a start though it runs"
+[[ $(call GET "/jobs/$cut" | jq -r .state) == interrupted ]] || fail "the restore cut off: $(call GET "/jobs/$cut")"
+
+say "17. A backup cut off with zendiloosd, back while Docker is down: started once Docker is up"
+[[ $(status POST "/docker/volumes/$extra/backups") == 202 ]] || fail "back up $extra: $(cat "$work/last")"
+cut=$(jq -r .id "$work/last")
+# As a power cut would leave it: zendiloosd gone mid-way, and Docker not up
+# yet when it is back (Docker waits for its pool).
+kill_zendiloosd_when "zendiloos-volume-backup-$extra.service" || fail "the backup's unit never ran"
+owed "$container" || fail "the container stopped for the backup is noted nowhere"
+vm 'sudo systemctl stop docker.socket docker.service'
+vm 'sudo systemctl start zendiloosd.service'
+wait_for "zendiloosd again" sign_in 60
+# Its start and the minute's look after it find no Docker: the note stays.
+sleep 75
+owed "$container" || fail "the start owed was forgotten while Docker was down"
+vm 'sudo systemctl start docker.service'
+wait_for "the container once Docker is up" running 150
+wait_for "the start owed to be done" "! owed $container" 30
+[[ $(call GET "/jobs/$cut" | jq -r .state) == interrupted ]] || fail "the backup cut off: $(call GET "/jobs/$cut")"
+
+say "18. Cleaning up"
+for name in "$volume" "$extra" "$copy" "$wide" "$churn"; do
+    [[ $(status DELETE "/docker/volumes/$name/backup-plan") == 204 ]] || fail "the plan: $(cat "$work/last")"
+done
 remove_project
-[[ $(status DELETE "/docker/volumes/$volume") == 204 ]] || fail "removing $volume: $(cat "$work/last")"
-[[ $(status DELETE "/docker/volumes/$extra") == 204 ]] || fail "removing $extra: $(cat "$work/last")"
-[[ $(status DELETE "/docker/volumes/$copy") == 204 ]] || fail "removing $copy: $(cat "$work/last")"
+for name in "$volume" "$extra" "$copy" "$wide" "$churn" "$churned"; do
+    [[ $(status DELETE "/docker/volumes/$name") == 204 ]] || fail "removing $name: $(cat "$work/last")"
+done
 [[ -z $(volume_json "$volume") ]] || fail "$volume is still listed"
 
 say "All Docker volume tests passed"
