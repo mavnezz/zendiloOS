@@ -1471,7 +1471,15 @@ made outside it, of another driver, with driver options), and what takes
 in files whoever may write the share can change (`build`, built from the
 share at every deployment; `env_file`, `extends`, `include`, read when it
 is saved). Each must be confirmed, then and on every change;
-the audit log records `risks_accepted`. The folders inside the project's
+the audit log records `risks_accepted`. A confirmation holds for what was
+checked and nothing else: the check (`POST /docker/compose/check`) names
+it by a digest, SHA-256 of the file and of what Compose made of it with
+all it took in, the confirmation gives that back (`accepted`), and the
+project is made or changed only if Compose makes the same of the file
+then; otherwise it is refused (`compose_changed`) and checked again.
+Whoever may write the share could change an included file, an `env_file`
+or an extended one between the check and the save, and what was shown
+would no longer be what runs. The folders inside the project's
 folder its binds mount (`./config`) are made, as far as they are missing,
 through the file manager when the file is saved, as the administrator's
 own (the one exception to the rule that what is made in a share takes

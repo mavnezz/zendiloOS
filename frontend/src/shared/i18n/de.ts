@@ -2973,6 +2973,8 @@ const de: Messages = {
     project_unconfirmed:
       'Dieses Projekt stammt aus der Zeit, bevor zendiloOS das Bestätigte aufbewahrt hat. Öffnen Sie seine Compose-Datei und speichern Sie sie einmal; danach läuft es so wie gespeichert, nicht aus der Datei in der Freigabe.',
     compose_risks: 'Die Compose-Datei braucht Ihre Bestätigung',
+    compose_changed:
+      'Die Compose-Datei oder eine Datei, die sie einliest, hat sich seit der Prüfung geändert. Prüfen Sie sie erneut, bevor sie bereitgestellt wird.',
     share_denied: 'In diesem freigegebenen Ordner dürfen Sie nicht schreiben.',
     volume_in_use: 'Laufende Container nutzen das Volume',
     volume_busy:

@@ -2917,6 +2917,8 @@ const en = {
     project_unconfirmed:
       'This project was made before zendiloOS kept what you confirmed. Open its Compose file and save it once; from then on it runs as saved, not from the file in the share.',
     compose_risks: 'The Compose file needs your confirmation',
+    compose_changed:
+      'The Compose file, or a file it takes in, has changed since it was checked. Check it again before it is deployed.',
     share_denied: 'You may not write in this shared folder.',
     volume_in_use: 'Running containers use the volume',
     volume_busy: 'A backup or restore of the volume is under way; try again once it has ended.',

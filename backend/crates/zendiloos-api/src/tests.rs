@@ -998,12 +998,15 @@ async fn a_project_is_checked_shown_and_made_with_consent() {
             json!({ "name": "tesla", "share_id": 1, "folder": "docker/tesla", "compose": compose }),
         ))
         .await;
-    assert_eq!(check.body, json!({ "risks": [{ "service": "app", "kind": "privileged", "detail": null }] }));
+    assert_eq!(check.body["risks"], json!([{ "service": "app", "kind": "privileged", "detail": null }]));
+    let digest = check.body["digest"].as_str().unwrap();
 
-    let new = |accept: bool| json!({ "name": "tesla", "share_id": 1, "folder": "docker/tesla", "compose": compose, "start": true, "accept_risks": accept });
-    let refused = h.send(json(with_csrf(post("/api/v1/docker/projects"), &admin), new(false))).await;
+    let new = |accepted: Option<&str>| json!({ "name": "tesla", "share_id": 1, "folder": "docker/tesla", "compose": compose, "start": true, "accepted": accepted });
+    let refused = h.send(json(with_csrf(post("/api/v1/docker/projects"), &admin), new(None))).await;
     assert_problem(&refused, StatusCode::CONFLICT, "compose_risks");
-    let made = h.send(json(with_csrf(post("/api/v1/docker/projects"), &admin), new(true))).await;
+    let other = h.send(json(with_csrf(post("/api/v1/docker/projects"), &admin), new(Some("0123")))).await;
+    assert_problem(&other, StatusCode::CONFLICT, "compose_changed");
+    let made = h.send(json(with_csrf(post("/api/v1/docker/projects"), &admin), new(Some(digest)))).await;
     assert_eq!(made.status, StatusCode::CREATED, "{:?}", made.body);
     assert_eq!(made.body["job"]["kind"], "containers.project_deploy");
 
@@ -1026,7 +1029,7 @@ async fn a_project_is_checked_shown_and_made_with_consent() {
         (own.body["editable"].clone(), own.body["files"][0]["content"].clone()),
         (json!(true), json!(compose))
     );
-    let taken = h.send(json(with_csrf(post("/api/v1/docker/projects"), &admin), new(true))).await;
+    let taken = h.send(json(with_csrf(post("/api/v1/docker/projects"), &admin), new(Some(digest)))).await;
     assert_problem(&taken, StatusCode::CONFLICT, "project_exists");
 }
 

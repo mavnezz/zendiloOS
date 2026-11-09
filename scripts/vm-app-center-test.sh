@@ -130,7 +130,7 @@ done
 
 say "2. A project of one's own"
 new=$(jq -n --arg n "$project" --argjson s "$share_id" --arg c "$filled" --argjson src "$source_id" \
-    '{name:$n,share_id:$s,folder:"docker/lidarr",compose:$c,start:true,accept_risks:false,
+    '{name:$n,share_id:$s,folder:"docker/lidarr",compose:$c,start:true,
       template:{source_id:$src,app:"lidarr"}}')
 [[ $(status POST /docker/projects "$new") == 201 ]] || fail "create: $(cat "$work/last")"
 job_succeeded "$(jq -r .job.id "$work/last")"

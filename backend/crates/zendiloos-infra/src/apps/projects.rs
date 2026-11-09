@@ -91,7 +91,7 @@ mod tests {
             folder: "docker/media".into(),
             compose: "services:\n  app:\n    image: nginx\n".into(),
             start: false,
-            accept_risks: false,
+            accepted: None,
             template: Some(ProjectTemplate { source: 1, app: "jellyfin".into() }),
         };
         test.containers.create_project(new, &alice, &context).await.unwrap();
@@ -178,7 +178,7 @@ mod tests {
             folder: "docker/mine".into(),
             compose: "services:\n  app:\n    image: nginx\n".into(),
             start: false,
-            accept_risks: false,
+            accepted: None,
             template: None,
         }
     }

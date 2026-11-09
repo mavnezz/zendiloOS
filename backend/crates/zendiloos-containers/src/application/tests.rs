@@ -57,14 +57,14 @@ async fn asked(t: &TestContainers, call: &str) -> String {
     panic!("never asked for {call:?}: {:?}", t.engine.calls());
 }
 
-fn new_project(name: &str, compose: &str, accept_risks: bool) -> NewProject {
+fn new_project(name: &str, compose: &str, accepted: Option<&str>) -> NewProject {
     NewProject {
         name: name.into(),
         share_id: 1,
         folder: " docker/tesla/ ".into(),
         compose: compose.into(),
         start: true,
-        accept_risks,
+        accepted: accepted.map(str::to_owned),
         template: None,
     }
 }
@@ -74,7 +74,7 @@ async fn the_folders_a_project_mounts_are_made_by_whoever_deploys_it() {
     let (t, _) = setup();
     let compose = "services:\n  app:\n    image: nginx\n    volumes:\n      - ./config:/config\n      - ./data/db:/db\n";
     let template = ProjectTemplate { source: 1, app: "jellyfin".into() };
-    let new = NewProject { template: Some(template.clone()), ..new_project("tesla", compose, false) };
+    let new = NewProject { template: Some(template.clone()), ..new_project("tesla", compose, None) };
 
     t.containers.create_project(new, &alice(), &context()).await.unwrap();
 
@@ -86,7 +86,7 @@ async fn the_folders_a_project_mounts_are_made_by_whoever_deploys_it() {
     assert_eq!(own.template, Some(template), "the App Center finds it again");
 
     let changed = format!("{compose}      - ./cache:/cache\n");
-    t.containers.change_compose("tesla", &changed, false, false, &alice(), &context()).await.unwrap();
+    t.containers.change_compose("tesla", &changed, None, false, &alice(), &context()).await.unwrap();
     assert!(t.storage.folders.lock().unwrap()[2..].contains(&by_alice("docker/tesla/cache")));
 }
 
@@ -166,14 +166,17 @@ async fn a_project_that_reaches_beyond_its_containers_needs_consent() {
     let compose = "services:\n  app:\n    image: nginx\n    privileged: true\n";
 
     let refused =
-        t.containers.create_project(new_project("tesla", compose, false), &alice(), &context()).await;
+        t.containers.create_project(new_project("tesla", compose, None), &alice(), &context()).await;
 
     let Err(ContainersError::Risky(risks)) = refused else { panic!("{refused:?}") };
     assert_eq!(risks, [Risk::Privileged { service: "app".into() }]);
     assert!(t.storage.files.lock().unwrap().is_empty(), "nothing written");
+    let place = Some((1, "docker/tesla"));
+    let checked = t.containers.check_compose("tesla", place, compose, &alice(), &context()).await.unwrap();
+    assert_eq!(checked.risks, risks, "the check shows what is to be confirmed");
 
-    let job =
-        t.containers.create_project(new_project("tesla", compose, true), &alice(), &context()).await.unwrap();
+    let accepted = new_project("tesla", compose, Some(&checked.digest));
+    let job = t.containers.create_project(accepted, &alice(), &context()).await.unwrap();
 
     assert_eq!(job.unwrap().kind, "containers.project_deploy");
     assert_eq!(
@@ -190,21 +193,60 @@ async fn a_project_that_reaches_beyond_its_containers_needs_consent() {
 }
 
 #[tokio::test]
+async fn a_confirmation_holds_only_for_what_was_checked() {
+    let (t, audit) = setup();
+    let compose = "include:\n  - more.yaml\nservices:\n  app:\n    image: nginx\n";
+    let place = Some((1, "docker/tesla"));
+    let checked = t.containers.check_compose("tesla", place, compose, &alice(), &context()).await.unwrap();
+    let kinds: Vec<_> = checked.risks.iter().map(Risk::kind).collect();
+    assert_eq!(kinds, ["from_share"], "what was shown and confirmed");
+    // Whoever may write the share changes what the file takes in, after
+    // the check and before the project is made.
+    *t.engine.included.lock().unwrap() = "    privileged: true\n".into();
+
+    let accepted = new_project("tesla", compose, Some(&checked.digest));
+    let refused = t.containers.create_project(accepted.clone(), &alice(), &context()).await;
+
+    assert!(matches!(refused, Err(ContainersError::Changed)), "{refused:?}");
+    assert!(t.storage.files.lock().unwrap().is_empty(), "nothing written");
+    assert!(!t.engine.calls().iter().any(|c| c.starts_with("deploy")), "nothing runs");
+    assert!(!audit.actions().iter().any(|a| a.0 == "containers.project_create"));
+    // Checked again, the change is shown, and that confirmation holds.
+    let again = t.containers.check_compose("tesla", place, compose, &alice(), &context()).await.unwrap();
+    assert!(again.risks.contains(&Risk::Privileged { service: "app".into() }), "{:?}", again.risks);
+    let confirmed = NewProject { accepted: Some(again.digest.clone()), ..accepted };
+    t.containers.create_project(confirmed, &alice(), &context()).await.unwrap();
+    let deployed = asked(&t, "deploy tesla pull=false").await;
+    assert!(deployed.contains(r#""privileged":true"#), "{deployed}");
+
+    // So for a change: the file the confirmation was for, and no other.
+    let changed = "include:\n  - more.yaml\nservices:\n  app:\n    image: nginx:1.27\n";
+    let stale =
+        t.containers.change_compose("tesla", changed, Some(&again.digest), false, &alice(), &context()).await;
+    assert!(matches!(stale, Err(ContainersError::Changed)), "{stale:?}");
+    let checked = t.containers.check_compose("tesla", None, changed, &alice(), &context()).await.unwrap();
+    t.containers
+        .change_compose("tesla", changed, Some(&checked.digest), false, &alice(), &context())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn projects_need_a_free_name_a_readable_file_and_a_writable_share() {
     let (t, _) = setup();
     let plain = "services:\n  app:\n    image: nginx\n";
 
-    let taken = t.containers.create_project(new_project("stack", plain, false), &alice(), &context()).await;
+    let taken = t.containers.create_project(new_project("stack", plain, None), &alice(), &context()).await;
     assert!(matches!(taken, Err(ContainersError::NameTaken)), "{taken:?}");
     let broken =
-        t.containers.create_project(new_project("tesla", "broken: [", false), &alice(), &context()).await;
+        t.containers.create_project(new_project("tesla", "broken: [", None), &alice(), &context()).await;
     assert!(matches!(broken, Err(ContainersError::Refused(message)) if message.contains("mapping values")));
     let bob = Actor { account_id: 2, name: "bob".into() };
-    let denied = t.containers.create_project(new_project("tesla", plain, false), &bob, &context()).await;
+    let denied = t.containers.create_project(new_project("tesla", plain, None), &bob, &context()).await;
     assert!(matches!(denied, Err(ContainersError::Denied)), "{denied:?}");
-    let badly = t.containers.create_project(new_project("Tesla", plain, false), &alice(), &context()).await;
+    let badly = t.containers.create_project(new_project("Tesla", plain, None), &alice(), &context()).await;
     assert!(matches!(badly, Err(ContainersError::InvalidName(_))), "{badly:?}");
-    let resting = NewProject { start: false, ..new_project("tesla", plain, false) };
+    let resting = NewProject { start: false, ..new_project("tesla", plain, None) };
     assert!(t.containers.create_project(resting, &alice(), &context()).await.unwrap().is_none());
     assert!(!t.engine.calls().iter().any(|c| c.starts_with("deploy")), "not started");
 }
@@ -213,7 +255,7 @@ async fn projects_need_a_free_name_a_readable_file_and_a_writable_share() {
 async fn an_own_projects_file_is_changed_and_deployed_again() {
     let (t, _) = setup();
     let plain = "services:\n  app:\n    image: nginx\n";
-    let resting = NewProject { start: false, ..new_project("tesla", plain, false) };
+    let resting = NewProject { start: false, ..new_project("tesla", plain, None) };
     t.containers.create_project(resting, &alice(), &context()).await.unwrap();
 
     let source = t.containers.project_compose("tesla", &alice(), &context()).await.unwrap();
@@ -221,12 +263,12 @@ async fn an_own_projects_file_is_changed_and_deployed_again() {
     assert_eq!(source.files, [("/volume1/docker/docker/tesla/compose.yaml".to_owned(), plain.to_owned())]);
 
     let changed = "services:\n  app:\n    image: nginx:1.27\n";
-    t.containers.change_compose("tesla", changed, false, false, &alice(), &context()).await.unwrap();
+    t.containers.change_compose("tesla", changed, None, false, &alice(), &context()).await.unwrap();
     let deployed = asked(&t, "deploy tesla pull=false").await;
     assert!(deployed.contains("nginx:1.27"), "{deployed}");
     let source = t.containers.project_compose("tesla", &alice(), &context()).await.unwrap();
     assert_eq!(source.files[0].1, changed);
-    let foreign = t.containers.change_compose("stack", changed, false, false, &alice(), &context()).await;
+    let foreign = t.containers.change_compose("stack", changed, None, false, &alice(), &context()).await;
     assert!(matches!(foreign, Err(ContainersError::NotOwn)), "{foreign:?}");
 }
 
@@ -234,7 +276,7 @@ async fn an_own_projects_file_is_changed_and_deployed_again() {
 async fn an_own_project_without_containers_still_goes_down_when_deleted() {
     let (t, _) = setup();
     let plain = "services:\n  app:\n    image: nginx\n";
-    let resting = NewProject { start: false, ..new_project("tesla", plain, false) };
+    let resting = NewProject { start: false, ..new_project("tesla", plain, None) };
     t.containers.create_project(resting, &alice(), &context()).await.unwrap();
 
     t.containers.delete_project("tesla", &alice(), &context()).await.unwrap();
@@ -245,7 +287,7 @@ async fn an_own_project_without_containers_still_goes_down_when_deleted() {
 async fn a_file_changed_in_the_share_does_not_run() {
     let (t, _) = setup();
     let plain = "services:\n  app:\n    image: nginx\n";
-    t.containers.create_project(new_project("tesla", plain, false), &alice(), &context()).await.unwrap();
+    t.containers.create_project(new_project("tesla", plain, None), &alice(), &context()).await.unwrap();
     asked(&t, "deploy tesla pull=false").await;
     // Someone who may write the share changes the file there.
     let changed = "services:\n  app:\n    image: nginx\n    privileged: true\n";
@@ -263,7 +305,7 @@ async fn a_file_changed_in_the_share_does_not_run() {
 async fn a_project_made_before_runs_once_its_file_is_saved() {
     let (t, _) = setup();
     let plain = "services:\n  app:\n    image: nginx\n";
-    let resting = NewProject { start: false, ..new_project("tesla", plain, false) };
+    let resting = NewProject { start: false, ..new_project("tesla", plain, None) };
     t.containers.create_project(resting, &alice(), &context()).await.unwrap();
     // As a project made before the confirmed file was kept.
     for project in t.projects.0.lock().unwrap().iter_mut() {
@@ -276,7 +318,7 @@ async fn a_project_made_before_runs_once_its_file_is_saved() {
     let source = t.containers.project_compose("tesla", &alice(), &context()).await.unwrap();
     assert_eq!(source.files[0].1, plain, "read from the share to be saved");
 
-    t.containers.change_compose("tesla", plain, false, false, &alice(), &context()).await.unwrap();
+    t.containers.change_compose("tesla", plain, None, false, &alice(), &context()).await.unwrap();
     asked(&t, "deploy tesla pull=false").await;
     t.containers.redeploy("tesla", true, &alice(), &context()).await.unwrap();
     asked(&t, "deploy tesla pull=true").await;
@@ -286,10 +328,10 @@ async fn a_project_made_before_runs_once_its_file_is_saved() {
 async fn a_changed_file_is_deployed_with_the_newest_images_when_asked() {
     let (t, _) = setup();
     let compose = "services:\n  web:\n    image: nginx\n";
-    t.containers.create_project(new_project("tesla", compose, false), &alice(), &context()).await.unwrap();
+    t.containers.create_project(new_project("tesla", compose, None), &alice(), &context()).await.unwrap();
     t.engine.calls.lock().unwrap().clear();
     let changed = "services:\n  web:\n    image: nginx\n    restart: always\n";
-    t.containers.change_compose("tesla", changed, false, true, &alice(), &context()).await.unwrap();
+    t.containers.change_compose("tesla", changed, None, true, &alice(), &context()).await.unwrap();
     asked(&t, "deploy tesla pull=true").await;
 }
 
@@ -297,7 +339,7 @@ async fn a_changed_file_is_deployed_with_the_newest_images_when_asked() {
 async fn a_redeploy_pulls_only_when_asked_and_its_job_tells_what_compose_wrote() {
     let (t, _) = setup();
     let plain = "services:\n  app:\n    image: nginx\n";
-    let resting = NewProject { start: false, ..new_project("tesla", plain, false) };
+    let resting = NewProject { start: false, ..new_project("tesla", plain, None) };
     t.containers.create_project(resting, &alice(), &context()).await.unwrap();
 
     let job = t.containers.redeploy("tesla", false, &alice(), &context()).await.unwrap();
@@ -334,7 +376,7 @@ async fn apps_of_catalogs_are_left_to_the_app_center() {
         t.containers.redeploy("kuma", false, &alice(), &context()).await.map(|_| ()),
         t.containers.delete_project("kuma", &alice(), &context()).await.map(|_| ()),
         t.containers.project_compose("kuma", &alice(), &context()).await.map(|_| ()),
-        t.containers.change_compose("kuma", "x", true, false, &alice(), &context()).await.map(|_| ()),
+        t.containers.change_compose("kuma", "x", Some("x"), false, &alice(), &context()).await.map(|_| ()),
     ] {
         assert!(matches!(refused, Err(ContainersError::AppProject)), "{refused:?}");
     }

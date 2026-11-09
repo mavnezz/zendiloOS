@@ -4211,7 +4211,11 @@ export interface components {
         /** @enum {string} */
         ChassisStyle: "tower" | "rack" | "plain";
         ComposeChange: {
-            accept_risks?: boolean;
+            /**
+             * @description As for a new project: the `digest` of the check whose risks were
+             *     accepted.
+             */
+            accepted?: string | null;
             compose: string;
             /**
              * @description Pulls the newest images under the file's tags before the containers
@@ -4231,6 +4235,13 @@ export interface components {
             share_id?: number | null;
         };
         ComposeCheckResult: {
+            /**
+             * @description Names what was checked: the file and what Compose made of it, with
+             *     what it takes in. Given back as `accepted` once the risks were
+             *     confirmed, the project is made only if Compose makes the same of it
+             *     then.
+             */
+            digest: string;
             /**
              * @description To be confirmed before it runs; empty if nothing reaches beyond the
              *     containers.
@@ -5625,9 +5636,10 @@ export interface components {
         NewDockerProject: {
             /**
              * @description What the file lets containers do beyond themselves was shown and
-             *     accepted.
+             *     accepted: the `digest` of that check (`/docker/compose/check`). It is
+             *     made only if Compose makes the same of the file now.
              */
-            accept_risks?: boolean;
+            accepted?: string | null;
             compose: string;
             /** @description In the share: `docker/teslamate`; made if missing. */
             folder: string;
@@ -10048,7 +10060,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description `project_exists`; `refused`: Compose cannot read it; `compose_risks`: not accepted */
+            /** @description `project_exists`; `refused`: Compose cannot read it; `compose_risks`: not accepted; `compose_changed`: not what was accepted */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -10244,7 +10256,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description `app_project`, `not_own_project`; `refused`: Compose cannot read it; `compose_risks` */
+            /** @description `app_project`, `not_own_project`; `refused`: Compose cannot read it; `compose_risks`; `compose_changed` */
             409: {
                 headers: {
                     [name: string]: unknown;

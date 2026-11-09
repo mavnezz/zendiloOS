@@ -119,14 +119,17 @@ export function usePlaces() {
   })
 }
 
-/** What a Compose file in `folder` of a share would let its containers do. */
+/**
+ * What a Compose file in `folder` of a share would let its containers do,
+ * and the digest of what was checked, which accepting it names.
+ */
 export async function checkCompose(body: {
   name: string
   compose: string
   share_id: number
   folder: string
 }) {
-  return (await unwrap(api.POST('/api/v1/docker/compose/check', { body }))).risks
+  return unwrap(api.POST('/api/v1/docker/compose/check', { body }))
 }
 
 /** Makes the filled-in file a Docker project and deploys it; the job that does. */
@@ -135,7 +138,8 @@ export async function createProject(body: {
   share_id: number
   folder: string
   compose: string
-  accept_risks: boolean
+  /** The check's digest, when its risks were accepted. */
+  accepted: string | null
   template: { source_id: number; app: string }
 }) {
   const made = await unwrap(api.POST('/api/v1/docker/projects', { body: { ...body, start: true } }))

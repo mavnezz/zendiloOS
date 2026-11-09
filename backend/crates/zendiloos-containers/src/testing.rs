@@ -124,6 +124,9 @@ pub struct FakeEngine {
     /// What Compose reads from a file containing `privileged: true`; plain
     /// otherwise; a file containing `broken` it cannot read.
     pub calls: Mutex<Vec<String>>,
+    /// What a file with `include:` takes in from the share as Compose
+    /// reads it, which whoever may write the share can change.
+    pub included: Mutex<String>,
 }
 
 impl Default for FakeEngine {
@@ -175,6 +178,7 @@ impl Default for FakeEngine {
                 ComposeListing { name: "stack".into(), files: vec!["/opt/stack/compose.yml".into()] },
             ]),
             calls: Mutex::new(vec![]),
+            included: Mutex::new(String::new()),
         }
     }
 }
@@ -438,6 +442,11 @@ impl DockerEngine for FakeEngine {
         _: &RequestContext,
     ) -> Result<CheckedCompose, EngineError> {
         self.call(format!("check {project} {directory}"));
+        let given = compose;
+        let mut compose = compose.to_owned();
+        if compose.contains("include:") {
+            compose.push_str(&self.included.lock().unwrap());
+        }
         if compose.contains("broken") {
             return Err(EngineError::Refused("yaml: line 2: mapping values are not allowed".into()));
         }
@@ -449,6 +458,15 @@ impl DockerEngine for FakeEngine {
             .filter_map(|l| l.trim().strip_prefix("- ./")?.split_once(':'))
             .map(|(source, _)| format!("{directory}/{source}"))
             .collect();
+        let config = format!(
+            r#"{{"name":"{project}","services":{{"app":{{"image":"{image}","privileged":{privileged}}}}}}}"#
+        );
+        let digest = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::hash::DefaultHasher::new();
+            (given, &config).hash(&mut hasher);
+            format!("{:016x}", hasher.finish())
+        };
         Ok(CheckedCompose {
             model: ComposeModel {
                 services: vec![ComposeService {
@@ -460,9 +478,8 @@ impl DockerEngine for FakeEngine {
                 }],
                 ..ComposeModel::default()
             },
-            config: format!(
-                r#"{{"name":"{project}","services":{{"app":{{"image":"{image}","privileged":{privileged}}}}}}}"#
-            ),
+            config,
+            digest,
         })
     }
 

@@ -129,7 +129,7 @@ folder="/volume$volume/$share/docker/$project"
 vm "echo confirmed | sudo tee $folder/settings.conf >/dev/null"
 compose=$'services:\n  app:\n    image: alpine:3.20\n    restart: unless-stopped\n    command: ["sleep", "infinity"]\n    volumes:\n      - ./data:/data\n      - ./settings.conf:/settings.conf:ro\n'
 request=$(jq -n --arg name "$project" --argjson share "$share_id" --arg folder "docker/$project" --arg compose "$compose" \
-    '{name:$name,share_id:$share,folder:$folder,compose:$compose,start:true,accept_risks:false}')
+    '{name:$name,share_id:$share,folder:$folder,compose:$compose,start:true}')
 [[ $(status POST /docker/projects "$request") == 201 ]] || fail "create: $(cat "$work/last")"
 job_succeeded "$(jq -r .job.id "$work/last")"
 wait_for "the container" running 60

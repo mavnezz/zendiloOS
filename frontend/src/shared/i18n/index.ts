@@ -106,6 +106,7 @@ const KNOWN_PROBLEMS = [
   'update_busy',
   'password_locked',
   'compose_risks',
+  'compose_changed',
   'share_denied',
   'source_exists',
   'official_source',

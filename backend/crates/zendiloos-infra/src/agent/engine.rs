@@ -708,6 +708,18 @@ fn compose_model(text: &str) -> Result<ComposeModel, EngineError> {
     })
 }
 
+/// SHA-256 of a Compose file and of what Compose made of it, in hex: what
+/// an administrator confirmed, told apart from anything else.
+fn checked_digest(compose: &str, config: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    for part in [compose, config] {
+        hasher.update((part.len() as u64).to_be_bytes());
+        hasher.update(part.as_bytes());
+    }
+    hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 /// Output as people read it: without the terminal's control sequences
 /// Compose writes even with `--no-color`.
 fn plain(text: &str) -> String {
@@ -923,8 +935,9 @@ impl DockerEngine for AgentDockerEngine {
             directory: proto::ProjectDirectory::parse(directory).map_err(invalid)?,
             compose: proto::ComposeText::parse(compose).map_err(invalid)?,
         };
-        let config = self.printed(request, context).await?;
-        Ok(CheckedCompose { model: compose_model(&config)?, config: config.trim_end().to_owned() })
+        let config = self.printed(request, context).await?.trim_end().to_owned();
+        let digest = checked_digest(compose, &config);
+        Ok(CheckedCompose { model: compose_model(&config)?, config, digest })
     }
 
     async fn deploy_project(
@@ -1064,6 +1077,12 @@ mod tests {
             .await
             .unwrap();
         assert!(checked.model.services[0].privileged);
+        assert_eq!(checked.digest.len(), 64);
+        assert_eq!(
+            checked.digest,
+            checked_digest("services:\n  app:\n    privileged: true\n", &checked.config)
+        );
+        assert_ne!(checked_digest("a", "bc"), checked_digest("ab", "c"), "each part as long as it is");
         let broken = engine.check_compose(&name, "/volume1/docker/tesla", "broken: [", &context).await;
         assert!(matches!(broken, Err(EngineError::Refused(_))), "{broken:?}");
         let heard = Heard::default();

@@ -105,16 +105,16 @@ call GET /docker/places | jq -e --argjson id "$share_id" '.[] | select(.share_id
 risky='services:\n  app:\n    image: alpine:3.20\n    privileged: true\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock\n'
 plain='services:\n  app:\n    image: alpine:3.20\n    command: ["sh", "-c", "echo first; sleep 3600"]\n    volumes:\n      - ./data:/data\n'
 new() {
-    jq -n --arg n "$project" --argjson s "$share_id" --arg c "$(printf "$1")" --argjson accept "$2" \
-        '{name:$n,share_id:$s,folder:"docker/ztest",compose:$c,start:true,accept_risks:$accept}'
+    jq -n --arg n "$project" --argjson s "$share_id" --arg c "$(printf "$1")" \
+        '{name:$n,share_id:$s,folder:"docker/ztest",compose:$c,start:true}'
 }
 kinds=$(call POST /docker/compose/check "$(jq -n --arg n "$project" --argjson s "$share_id" --arg c "$(printf "$risky")" \
     '{name:$n,share_id:$s,folder:"docker/ztest",compose:$c}')" | jq -c '[.risks[].kind] | sort')
 [[ $kinds == '["docker_socket","privileged"]' ]] || fail "risks: $kinds"
-[[ $(status POST /docker/projects "$(new "$risky" false)") == 409 ]] || fail "risky without consent: $(cat "$work/last")"
+[[ $(status POST /docker/projects "$(new "$risky")") == 409 ]] || fail "risky without consent: $(cat "$work/last")"
 jq -e '.code == "compose_risks"' "$work/last" >/dev/null || fail "$(cat "$work/last")"
-[[ $(status POST /docker/projects "$(new 'services:\n  app: [' false)") == 409 ]] || fail "a broken file"
-[[ $(status POST /docker/projects "$(new "$plain" false)") == 201 ]] || fail "create: $(cat "$work/last")"
+[[ $(status POST /docker/projects "$(new 'services:\n  app: [')") == 409 ]] || fail "a broken file"
+[[ $(status POST /docker/projects "$(new "$plain")") == 201 ]] || fail "create: $(cat "$work/last")"
 job_succeeded "$(jq -r .job.id "$work/last")"
 volume=$(call GET /storage/pools | jq -r --arg p "$home" '.[] | select(.name == $p) | .volume')
 folder="/volume$volume/$share/docker/ztest"

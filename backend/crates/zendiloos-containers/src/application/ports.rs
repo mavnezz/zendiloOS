@@ -258,6 +258,9 @@ pub trait ProjectRepository: Send + Sync {
 pub struct CheckedCompose {
     pub model: ComposeModel,
     pub config: String,
+    /// Names exactly what was checked, the file and what Compose made of
+    /// it with whatever it took in: the same digest, the same project.
+    pub digest: String,
 }
 
 /// A share an administrator may put a project's folder in.

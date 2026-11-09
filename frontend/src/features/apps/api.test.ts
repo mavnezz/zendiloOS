@@ -69,16 +69,16 @@ describe('the App Center’s requests', () => {
   it('fill in an app and make it a project named after it', async () => {
     reset()
     on('POST', '/api/v1/apps/catalog/1/jellyfin/compose', { compose: 'services: {}\n' })
-    on('POST', '/api/v1/docker/compose/check', { risks: [] })
+    on('POST', '/api/v1/docker/compose/check', { risks: [], digest: 'c0ffee' })
     on('POST', '/api/v1/docker/projects', { job: { id: 7, kind: 'containers.project_deploy' } })
     const app = { source_id: 1, id: 'jellyfin' }
 
     const compose = await fillTemplate(app, { ports: { web: 8097 } })
     const place = { name: 'media', share_id: 3, folder: 'docker/media', compose }
-    expect(await checkCompose(place)).toEqual([])
+    expect(await checkCompose(place)).toEqual({ risks: [], digest: 'c0ffee' })
     const job = await createProject({
       ...place,
-      accept_risks: false,
+      accepted: null,
       template: { source_id: 1, app: 'jellyfin' },
     })
 

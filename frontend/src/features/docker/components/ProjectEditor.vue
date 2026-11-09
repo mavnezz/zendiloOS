@@ -52,6 +52,8 @@ const pull = ref(false)
 const checking = ref(false)
 const failure = ref<unknown>(null)
 const risks = ref<ComposeRisk[]>([])
+/** What the check came to: accepting its risks holds for that only. */
+const digest = ref<string | null>(null)
 const confirming = ref(false)
 
 watch(
@@ -94,6 +96,7 @@ async function deploy(): Promise<void> {
           },
     )
     risks.value = result.risks
+    digest.value = result.digest
     if (result.risks.length) confirming.value = true
     else submit(false)
   } catch (error) {
@@ -120,9 +123,10 @@ watch(showing, (open) => !open && deploying.value !== null && emit('done', name.
 
 function submit(accept: boolean): void {
   const failed = (error: unknown) => (failure.value = error)
+  const accepted = accept ? digest.value : null
   if (editing.value) {
     change.mutate(
-      { name: name.value, compose: compose.value, accept, pull: pull.value },
+      { name: name.value, compose: compose.value, accepted, pull: pull.value },
       { onSuccess: deployed, onError: failed },
     )
   } else {
@@ -133,7 +137,7 @@ function submit(accept: boolean): void {
         folder: folder.value,
         compose: compose.value,
         start: start.value,
-        accept_risks: accept,
+        accepted,
       },
       { onSuccess: (made) => deployed(made.job), onError: failed },
     )

@@ -62,6 +62,8 @@ const compose = ref('')
 const busy = ref(false)
 const failure = ref<string | null>(null)
 const risks = ref<ComposeRisk[]>([])
+/** What the check came to: accepting its risks holds for that only. */
+const digest = ref<string | null>(null)
 const confirming = ref(false)
 
 const asked = computed(() => props.app.settings.filter((setting) => !setting.generate))
@@ -180,7 +182,9 @@ async function deploy(): Promise<void> {
   busy.value = true
   failure.value = null
   try {
-    risks.value = await checkCompose({ ...place(), compose: compose.value })
+    const checked = await checkCompose({ ...place(), compose: compose.value })
+    risks.value = checked.risks
+    digest.value = checked.digest
     if (risks.value.length) confirming.value = true
     else await make(false)
   } catch (problem) {
@@ -212,7 +216,7 @@ async function make(accept: boolean): Promise<void> {
     const job = await createProject({
       ...place(),
       compose: compose.value,
-      accept_risks: accept,
+      accepted: accept ? digest.value : null,
       template: { source_id: props.app.source_id, app: props.app.id },
     })
     await actions.refresh()
