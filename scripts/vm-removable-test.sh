@@ -11,8 +11,15 @@
 #      copies into a share that take the owner of the folder they land in,
 #      the group zendiloos-files and the share's ACL, a move out of a share,
 #      deletion; a user who is no administrator
-#      is refused
-#   3. a drive with a file open is not ejected; then it is, and is gone
+#      is refused; thousands of files moved off FAT and exFAT while the
+#      kernel keeps dropping its caches (so it numbers their entries anew)
+#      arrive whole and leave nothing; a move tried again into a copy partly
+#      there leaves what differs and replaces nothing; one whose source is
+#      renamed meanwhile is not done; a folder downloaded while a file in it
+#      grows ends short, and the files agent says why
+#   3. a drive with a file open is not ejected; then it is, and is gone; one
+#      ejected without powering off stays so when zendiloosd and the agent
+#      restart, until it is plugged in again
 #   4. a drive pulled out unannounced is cleaned up and reported
 #   5. a disk that was part of a pool is never offered
 #
@@ -71,6 +78,40 @@ job_succeeded() {
     [[ $state == succeeded* ]] || fail "job $id: $state"
 }
 
+# How job $1 ended, within $2 seconds: its state, code and detail.
+job_state() {
+    local id=$1
+    [[ $id =~ ^[0-9]+$ ]] || fail "no job: $id"
+    wait_for "job $id" "[[ \$(call GET /jobs/$id | jq -r .state) != running ]]" "${2:-120}"
+    call GET "/jobs/$id" | jq -r '.state + " " + (.error_code // "") + " " + (.error_detail // "")'
+}
+
+# Moves $2 from the drive $1 into the share, as a job; its id.
+move_off() {
+    call POST "/files/removable/$1/transfer" \
+        "{\"mode\":\"move\",\"paths\":[\"$2\"],\"target_share\":$share_id,\"target_path\":\"\"}" | jq -r .id
+}
+
+# $2 files of a few KiB in ten folders, and four of 1 MiB, in $1 in the guest.
+fill() {
+    vm "sudo sh -c 'set -e; for d in \$(seq 1 10); do mkdir -p \"$1/d\$d\"; for f in \$(seq 1 $(($2 / 10))); do
+            head -c \$((512 + f * 7)) /dev/urandom >\"$1/d\$d/f\$f.bin\"; done; done
+        for n in 1 2 3 4; do head -c 1048576 /dev/urandom >\"$1/big\$n.bin\"; done'"
+}
+
+# The files in $1 in the guest, with their SHA-256, by path.
+sums() { vm "sudo sh -c 'cd \"$1\" && find . -type f -print0 | sort -z | xargs -0 sha256sum'"; }
+
+# Runs the script on stdin in the guest as root, in the background, as $1.
+background=()
+in_background() {
+    vm "cat >/tmp/zdl-$1.sh"
+    vm "sudo sh -c 'nohup sh /tmp/zdl-$1.sh </dev/null >/dev/null 2>&1 & echo \$! >/tmp/zdl-$1.pid'"
+    background+=("$1")
+}
+stop_background() {
+    vm "sudo sh -c 'kill \$(cat /tmp/zdl-$1.pid 2>/dev/null) 2>/dev/null; rm -f /tmp/zdl-$1.pid /tmp/zdl-$1.sh'"
+}
 # The status code of a raw upload of $3 as $2 into $1 (an API path).
 upload() {
     curl -sk -o "$work/last" -w '%{http_code}' -b "$work/admin.jar" -X POST -H "Origin: $base" \
@@ -101,6 +142,7 @@ mounted() { drive "$1" | jq -e '.state == "mounted"'; }
 
 cleanup() {
     set +e
+    for name in "${background[@]}"; do stop_background "$name"; done
     delete_share
     for id in "${plugged[@]}"; do "$root/scripts/vm.sh" removable-detach "$id" 2>/dev/null; done
     rm -rf "$work"
@@ -221,6 +263,66 @@ for path in /storage/removable "/files/removable/$fat_id/folder"; do
     code=$(curl -sk -o /dev/null -w '%{http_code}' -b "$work/rmuser.jar" -H "Origin: $base" "$api$path")
     [[ $code == 403 ]] || fail "a user got $code for $path"
 done
+
+say "2c. Thousands of files moved off FAT and exFAT while the kernel drops its caches"
+exfat_id=$(drive ZEXFAT | jq -er .id) exfat=$(drive ZEXFAT | jq -er .path)
+fill "$fat/many-fat" 3000
+fill "$exfat/many-exfat" 3000
+sums "$fat/many-fat" >"$work/many-fat.sums"
+sums "$exfat/many-exfat" >"$work/many-exfat.sums"
+# FAT and exFAT number an entry anew whenever the kernel forgot it.
+in_background drop <<'EOF'
+while :; do echo 2 >/proc/sys/vm/drop_caches; sleep 0.2; done
+EOF
+for moved in "$fat_id many-fat $fat" "$exfat_id many-exfat $exfat"; do
+    read -r id name place <<<"$moved"
+    state=$(job_state "$(move_off "$id" "$name")" 300)
+    [[ $state == succeeded* ]] || fail "moving $name off the drive: $state"
+    vm "sudo test ! -e '$place/$name'" || fail "$name left on the drive"
+    sums "$shared/$name" | cmp -s - "$work/$name.sums" || fail "$name did not arrive whole"
+    [[ $(wc -l <"$work/$name.sums") == 3004 ]] || fail "$name: $(wc -l <"$work/$name.sums") files"
+done
+stop_background drop
+
+say "2d. Tried again into a copy partly there: what differs stays, nothing is replaced"
+vm "sudo sh -c 'set -e; mkdir -p \"$fat/again/sub\" \"$shared/again\"
+    for n in a b c; do echo \"\$n from the stick\" >\"$fat/again/\$n.txt\"; done
+    echo d >\"$fat/again/sub/d.txt\"; cp \"$fat/again/a.txt\" \"$shared/again/\"; echo theirs >\"$shared/again/b.txt\"'"
+state=$(job_state "$(move_off "$fat_id" again)")
+# The file, and the folder that holds it.
+[[ $state =~ ^failed\ partly_moved\ 2\ (.*/)?again/b\.txt$ ]] || fail "tried again: $state"
+[[ $(vm "sudo cat '$shared/again/b.txt'") == theirs ]] || fail "the target's file was replaced"
+[[ $(vm "sudo ls -A '$fat/again'") == b.txt ]] || fail "left on the stick: $(vm "sudo ls -A '$fat/again'")"
+[[ $(vm "sudo cat '$shared/again/c.txt' '$shared/again/sub/d.txt'") == $'c from the stick\nd' ]] \
+    || fail "what was missing did not come"
+
+say "2e. A move whose source is renamed meanwhile is not done"
+fill "$exfat/renamed" 2000
+# As soon as the copy begins in the share.
+in_background rename <<EOF
+n=0
+until [ -e '$shared/renamed' ] || [ \$n -ge 3000 ]; do n=\$((n + 1)); sleep 0.02; done
+mv '$exfat/renamed' '$exfat/renamed-away'
+EOF
+state=$(job_state "$(move_off "$exfat_id" renamed)" 300)
+vm "sudo test -d '$exfat/renamed-away' && sudo test ! -e '$exfat/renamed'" || fail "not renamed during the move"
+[[ $state == "failed partly_moved "* ]] || fail "a move whose source was renamed: $state"
+[[ $(vm "sudo find '$exfat/renamed-away' -type f | wc -l") == 2004 ]] || fail "something of the renamed source went"
+stop_background rename
+
+say "2f. A folder downloaded while a file in it grows ends short, and says why"
+vm "sudo sh -c 'mkdir -p \"$shared/growing\" && head -c 33554432 /dev/urandom >\"$shared/growing/log.bin\"'"
+in_background grow <<EOF
+n=0
+while [ \$n -lt 3000 ]; do head -c 4096 /dev/zero >>'$shared/growing/log.bin'; n=\$((n + 1)); sleep 0.01; done
+EOF
+code=0
+curl -sk -o "$work/growing.tar" -b "$work/admin.jar" -H "Origin: $base" \
+    "$api/files/shares/$share_id/archive?path=growing" || code=$?
+stop_background grow
+[[ $code == 18 ]] || fail "the archive of a growing file: curl's exit $code, $(stat -c %s "$work/growing.tar") bytes"
+vm "sudo journalctl -u zendiloos-files -u zendiloos-agent --since -2min --no-pager" \
+    | grep -q 'entries changed while it was written' || fail "the files agent did not say why"
 delete_share
 
 say "3. Eject: not while in use, then gone"
@@ -260,11 +362,26 @@ call GET /storage/removable | jq -e --arg d "$disk" 'map(select(.disk == $d)) | 
 vm "! lsblk -rno NAME,MOUNTPOINTS /dev/$disk | grep -q zendiloos-removable" || fail "a pool's disk got mounted"
 pull zzfs
 
+say "3b. Ejected, it stays so when zendiloosd and the agent restart, until plugged in again"
+id=$(drive ZFAT | jq -er .id) place=$(drive ZFAT | jq -er .path) disk=$(drive ZFAT | jq -er .disk)
+[[ $(status POST "/storage/removable/$id/eject" '{"power_off":false}') =~ ^20 ]] || fail "eject: $(cat "$work/last")"
+drive ZFAT | jq -e '.state == "ejected"' >/dev/null || fail "not ejected: $(drive ZFAT)"
+vm "sudo systemctl restart zendiloos-agent zendiloosd"
+wait_for "zendiloosd to answer again" "[[ \$(status GET /storage/removable) == 200 ]]" 90
+# A look, as the list is one, mounts nothing ejected.
+drive ZFAT | jq -e '.state == "ejected"' >/dev/null || fail "after the restarts: $(drive ZFAT)"
+vm "! findmnt '$place' >/dev/null" || fail "mounted again after the restarts"
+# Pulled out and plugged in again, not necessarily while anyone looked.
+pull zfat
+wait_for "the disk to go" "! vm 'lsblk -dno NAME' | grep -qx '$disk'" 30
+plug "$work/fat.img" zfatagain
+wait_for "ZFAT to be mounted again" "mounted ZFAT" 90
+
 say "Back as before"
 for label in ZFAT ZEXT4 ZREADONLY; do
     id=$(drive "$label" | jq -er .id)
     [[ $(status POST "/storage/removable/$id/eject" '{"power_off":true}') =~ ^20 ]] || fail "eject $label: $(cat "$work/last")"
 done
-pull zfat; pull zext4; pull zro
+pull zfatagain; pull zext4; pull zro
 
 say "All removable drive tests passed"
