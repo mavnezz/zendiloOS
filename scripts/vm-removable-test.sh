@@ -8,8 +8,9 @@
 #   2. a write-protected drive is mounted read only; the explorer works on
 #      the drives: uploads (one larger than 1 MiB, through nginx, back whole
 #      as a download and in an archive), a file of a foreign UID on ext4,
-#      copies into a share that belong to the administrator with the share's
-#      ACL, a move out of a share, deletion; a user who is no administrator
+#      copies into a share that take the owner of the folder they land in,
+#      the group zendiloos-files and the share's ACL, a move out of a share,
+#      deletion; a user who is no administrator
 #      is refused
 #   3. a drive with a file open is not ejected; then it is, and is gone
 #   4. a drive pulled out unannounced is cleaned up and reported
@@ -186,14 +187,16 @@ vm "echo secret | sudo tee '$ext4/foreign.txt' >/dev/null && sudo chown 4321:432
 [[ $(call GET "/files/removable/$ext4_id/download?path=foreign.txt") == secret ]] || fail "ext4's foreign file"
 call GET "/files/removable/$ext4_id/search?path=&text=FOREIGN" | jq -e '[.entries[].path] | index("foreign.txt")' >/dev/null \
     || fail "the search on the drive: $(call GET "/files/removable/$ext4_id/search?path=&text=FOREIGN")"
-# Into the share: the administrator's, with the share's ACL, as an upload.
+# Into the share: the owner of the folder it lands in and the group
+# zendiloos-files, with the share's ACL, as an upload.
 job_succeeded "$(call POST "/files/removable/$fat_id/transfer" \
     "{\"mode\":\"copy\",\"paths\":[\"up.txt\"],\"target_share\":$share_id,\"target_path\":\"\"}" | jq -r .id)"
 job_succeeded "$(call POST "/files/removable/$ext4_id/transfer" \
     "{\"mode\":\"copy\",\"paths\":[\"foreign.txt\"],\"target_share\":$share_id,\"target_path\":\"\"}" | jq -r .id)"
 for name in up.txt foreign.txt; do
-    [[ $(vm "sudo stat -c %U '$shared/$name'") == "$user" ]] || fail "$name in the share is not the administrator's"
-    vm "sudo getfacl -p '$shared/$name' | grep -q '^user:$user:rw'" || fail "$name lacks the share's ACL"
+    [[ $(vm "sudo stat -c %U:%G '$shared/$name'") == root:zendiloos-files ]] \
+        || fail "$name in the share is $(vm "sudo stat -c %U:%G '$shared/$name'")"
+    vm "sudo getfacl -p '$shared/$name' | grep -q '^group:zendiloos-files:rw'" || fail "$name lacks the share's ACL"
 done
 [[ $(vm "sudo cat '$shared/foreign.txt'") == secret ]] || fail "the copied file's content"
 vm "sudo test -f '$fat/up.txt'" || fail "a copy took the original"
