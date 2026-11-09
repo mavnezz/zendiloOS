@@ -1173,8 +1173,10 @@ TLS is rustls with ring and the system's certificate authorities
   never keep others from listing, downloading or uploading. Each user has one
   long place at a time (a second copy waits behind the first, not in a
   place of everybody's), changes of whole shares' permissions have two of
-  their own, and a folder download read at less than a mebibyte in five
-  minutes is given up.
+  their own, backups and restores of Docker's volumes (hours in units of
+  their own) two more, counting the volumes' data one, and a folder
+  download read at less than a mebibyte in five minutes is given up. The
+  agent may hold 65536 descriptors.
 - **Nothing happens behind a caller's back:** a request still waiting for
   its turn, a place or a lock another operation holds, when its client
   gives up (zendiloosd's own timeout, its connection closed) is dropped,
@@ -1514,17 +1516,24 @@ unless the browser was told not to ask again.
 (`DockerVolumes`): name, driver, the Compose project that made them (its
 label), when they were made, and the containers that mount them, running
 or stopped, from the containers' mounts (each opens the container's page).
-What their data takes up is asked apart (`DockerVolumeSizes`), so the list
-does not wait for it: the agent counts each local volume whose data lies
-in Docker's data root (`<DockerRootDir>/volumes/<name>/_data`, as `docker
-info` and the volume's mount point agree) by descriptor, never following a
-link or entering another file system, a file with several names once, at
-most a million entries a volume and twenty seconds in all; a count cut
-short says "at least". `docker system df -v` would walk every volume
-without bounds, and cannot print JSON. A volume no container uses is
-removed (`docker volume rm`, without `--force`; its backup plan goes with
-it, its backups stay), and all unused ones at once (`docker volume prune
---all --force`, named ones too), each after a confirmation.
+A volume removed between the listing and the inspection is left out (each
+is then inspected alone). What their data takes up is asked apart
+(`DockerVolumeSizes`), so the list does not wait for it: the agent counts
+each local volume whose data lies in Docker's data root
+(`<DockerRootDir>/volumes/<name>/_data`, as `docker info` and the volume's
+mount point agree) by descriptor, never following a link or entering
+another file system, a file with several names once, at most a million
+entries a volume and twenty seconds in all; a count cut short, or one that
+could not look into a folder, says "at least". It holds a descriptor or
+two however wide or deep the folders are: it goes down by name and back up
+by `..`, which must be the folder it came from, and keeps only the names
+still to count. Counting has a place of its own in the agent, one at a
+time. `docker system df -v` would walk every volume without bounds, and
+cannot print JSON. A volume no container uses is removed (`docker volume
+rm`, without `--force`; its backup plan goes with it, its backups stay),
+and all unused ones at once (`docker volume prune --all --force`, named
+ones too), each after a confirmation; pruning is refused while a volume is
+backed up or restored, or waits for its turn.
 
 **Backups of volumes:** one plan per volume (`docker_backup_plans`): a
 folder of a share the administrator may write, chosen with the App
@@ -1533,80 +1542,154 @@ month's last where it has fewer) from a local hour of the host, as the
 SMART self-tests are planned; how many backups are kept (seven unless
 told otherwise); and whether the containers that use the volume are
 stopped meanwhile (yes unless told otherwise: a database's files are then
-consistent). A run is due once the latest time of its schedule lies after
-the plan was made, changed or last ran: a NAS that was off at that hour
-backs up once as soon as it is on again (zendiloosd looks every minute).
-Only local volumes without mount options (an NFS or bind volume's data is
-not in Docker's folder) are backed up. A run is a job, by hand ("Back up
-now") or on the schedule, one at a time per volume: the running
-containers that use the volume are noted with the run (`docker_backups`)
-and stopped, the agent writes the archive, the containers are started
-again whatever came of it (also after a restart of zendiloosd, from what
-was noted), the run is recorded with what it wrote, and a run that failed
-or could not start a container again is told (`docker_backup_failed`, in
-the routing group *Docker*). The audit log has `containers.backup_plan`,
+consistent). A new plan starts at the night's hour (one to five) the other
+plans take least, so that they spread over the night. The dialog says that
+whoever may read the chosen share reads all of the volume's contents in its
+backups, also what the containers keep to themselves (database files, keys,
+`.env` files), and names who that is (`GET
+/docker/backup-shares/{id}/readers`: the accounts and groups its rules let
+read, the NFS clients it is exported to). Each date's hour is a moment with
+the time zone's offset of that date (where the clock shows the hour twice,
+as summer time ends, the first time; where it skips it, the hour after), so
+a plan runs once a day across the change. A run is due once the latest time
+of its schedule lies after the plan was made, changed or last ran: a NAS
+that was off at that hour backs up once as soon as it is on again
+(zendiloosd looks every minute). A plan noted later than now (the clock was
+ahead and is put right) counts from now on. Only local volumes without
+mount options (an NFS or bind volume's data is not in Docker's folder) are
+backed up.
+
+A run is a job, by hand ("Back up now") or on the schedule, and so is a
+restore. Each claims its volume when it is asked for (one at a time per
+volume, `volume_busy` otherwise) with the containers it will keep stopped:
+those that use the volume and run, if it stops them, and those another
+backup or restore stopped. Backups and restores then take turns, one at a
+time on the whole NAS ("waiting" meanwhile; a claim holding a container
+another one stopped goes first), and only once its turn came, right before
+the agent starts the work, does a run stop the running containers that use
+the volume. Each is noted first as owed a start (`docker_owed_starts`, with
+the volume). A container stays stopped until the last claim holding it
+ended: a container of two volumes backed up at the same hour is stopped
+from the first's start to the second's end, and started once. Meanwhile a
+held container is not started, stopped, restarted or removed, nor its
+project controlled or deleted (`containers_held`); deploys, redeploys,
+image updates and updates of one container wait in their job until nothing
+holds the project's containers; Docker's data does not move while a volume
+is claimed, and no volume is claimed while it moves. When a run ends,
+whatever came of it, its claim goes, and the containers nothing else
+holds are started again; each is forgotten only once its start succeeded.
+A container stays owed when its start fails, and every minute, and when
+zendiloosd starts, those nothing holds are started, each only after the
+agent said nothing works on their volumes any more (`EndVolumeWork`, which
+stops what a restart left). zendiloosd is not ordered after
+`docker.service`: Docker waits for its pool's mount and has no start
+timeout, and the web interface must come up without it; the minute's look
+starts the containers once Docker is up. The run is recorded
+(`docker_backups`) with what it wrote, and a run that failed or could not
+start a container again is told (`docker_backup_failed`, in the routing
+group *Docker*). The audit log has `containers.backup_plan`,
 `containers.backup_plan_delete`, `containers.volume_backup`,
 `containers.volume_backup_remove` and `containers.volume_restore`.
 
 The agent checks a backup itself (`BackUpVolume`): a local volume whose
-data lies in Docker's data root, as it inspects it, and a share that is
-mounted. The work runs in a transient unit (`systemd-run`, this binary as
-`backup-volume`, the job as hex digits on its command line), outside the
-agent's sandbox, which can write neither shares nor Docker's data, in a
-sandbox of its own: no network, no devices, the whole system read only but
-the share, `CAP_DAC_READ_SEARCH` and `CAP_DAC_OVERRIDE` only. It reads the
-volume's data as root, by descriptor, never following a link or leaving
-its file system, and writes one archive per run,
-`<folder>/<volume>/<volume>-YYYYMMDD-HHMMSS.tar.zst` (the host's local
-time): tar with GNU headers (long names, numeric owners and groups, modes
-with set-ID bits, times, symbolic links as links, hard links as links,
-extended attributes `user.*`, `security.capability` and the POSIX ACLs as
-`SCHILY.xattr` records), compressed with zstd, readable by Debian's tar
-and zstd too; sockets, pipes and devices are left out. Beside it goes
+data lies in Docker's data root, as it inspects it, a share that is
+mounted, and no unit of the volume still running. The work runs in a
+transient unit (`systemd-run`, this binary as `backup-volume`, the job as
+hex digits on its command line), outside the agent's sandbox, which can
+write neither shares nor Docker's data, in a sandbox of its own: no
+network, no devices, no other processes seen (`ProtectProc=invisible`), its
+own IPC, `SystemCallFilter=@system-service`, `RestrictSUIDSGID`, the whole
+system read only but the share, `CAP_DAC_READ_SEARCH` and
+`CAP_DAC_OVERRIDE` only, 65536 descriptors. Each unit has a name of its own,
+`zendiloos-volume-<backup|restore|swap>-<volume>`, so systemd refuses a
+second one, and may run until ten minutes before the agent stops waiting
+(`RuntimeMaxSec`; six hours in all, zendiloosd waits ten minutes longer).
+Should the client hang up, the agent be asked to stop or the time run out,
+the agent stops the unit and waits for it before it answers: no unit works
+on behind an answer. Backups, restores and their removals have two places
+of their own in the agent, beside the long ones of deploys, pulls, drives
+and pools. When the agent starts, it stops the volumes' units still running
+(their client is gone) and has a unit remove what restores left beside
+every volume's data (`sweep-volumes`); backups and restores wait for it.
+
+The backup reads the volume's data as root, by descriptor, never following
+a link or leaving its file system, one name of a folder at a time, and
+writes one archive per run, `<folder>/<volume>/<volume>-YYYYMMDD-HHMMSS.tar.zst`
+(the host's local time): tar with GNU headers (long names, numeric owners
+and groups, modes with set-ID bits, times, symbolic links as links, hard
+links as links to the first name the archive holds, extended attributes
+`user.*`, `security.capability` and the POSIX ACLs as `SCHILY.xattr`
+records), compressed with zstd, readable by Debian's tar and zstd too;
+sockets, pipes and devices are left out. Beside it goes
 `<volume>-YYYYMMDD-HHMMSS.json`, its manifest: the volume's name, driver,
-labels, size and when it was made, the version of zendiloOS and the
+labels, size and when it was made, the release's version and the
 archive's SHA-256. The folders on the way are walked to beneath the share
 (`RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_XDEV`) and made as far
-as they are missing; both files are written under hidden names
-(`O_CREAT | O_EXCL | O_NOFOLLOW`) and renamed when complete
-(`RENAME_NOREPLACE`), and made with mode 0666 (folders 0777), so the
-share's inherited default ACL decides who may read and remove them, as
-for any new file; nothing is left that only root can use. zendiloosd
-records each file with its size and identity (device and inode), the
-archive's SHA-256 and the manifest. Retention removes the archives of the
-runs beyond the plan's number, newest kept, and only those recorded: the
-agent removes a file only while the name still is that file
-(`RemoveVolumeBackup`), never by a pattern; a file gone or replaced is left
-alone and forgotten. Failed runs are remembered ten at a time.
+as they are missing (0777, which the share's inherited default ACL
+narrows), and hidden files earlier backups left in the volume's folder
+there (a unit stopped while it wrote; regular files of root's named as
+backups name them) are removed first. Both files are written completely
+under hidden names (`O_CREAT | O_EXCL | O_NOFOLLOW`, mode 0666, so the
+share's inherited ACL decides who may read them), made writable by root
+only (the group's and others' write permission goes, and with the group's
+the ACL mask's, so no entry of the ACL may write them; who may read and
+remove them is as the folder's ACL says), and only then renamed into place
+(`RENAME_NOREPLACE`), the archive first; should the manifest not follow,
+the archive is removed again by its identity, so no archive is left
+without its manifest. zendiloosd records each file with its size, identity
+(inode, and the time it was written) and device, the archive's SHA-256,
+the data's size, its entries and the manifest. Retention removes the
+archives of the runs beyond the plan's number, the newest as recorded kept
+(never by their clock: the archive just written always stays), and only
+those recorded: the agent removes a file only while the name still is that
+file (`RemoveVolumeBackup`: its inode, size and time of writing, on the
+share's file system as it is mounted now; a ZFS dataset gets another
+device number each time it is mounted), never by a pattern; a file gone or
+replaced is left alone and forgotten. Failed runs are remembered ten at a
+time, after every run.
 
 **Restoring a backup** (`RestoreVolume`), from the volume or the list of
 its backups, goes into the volume of its own name (made again if it is
 gone: local, with the driver and labels of its manifest as the database
-keeps it, never as the copy in the share says, which others may change)
-or into another volume that exists, after a confirmation that names it;
-running containers that use it are stopped meanwhile and started again
-after only when asked to, otherwise it is refused (`volume_in_use`). The
-archive lies in a share that users may write, and restoring runs as root;
-so only an archive zendiloosd recorded is restored, by its recorded
-SHA-256. The agent refuses while a running container uses the volume, and
-runs the work in a transient unit (`restore-volume`; the system read only
-but the volume's folder in Docker's data root; `CAP_CHOWN`,
-`CAP_DAC_OVERRIDE`, `CAP_DAC_READ_SEARCH`, `CAP_FOWNER`, `CAP_FSETID`,
-`CAP_SETFCAP`). It opens the archive beneath the share without following
-a link (it must be a regular file), checks its SHA-256 before anything is
-extracted, then extracts it into a fresh folder beside the data
-(`_data.zendiloos-restore-<random>`, 0700) while the same bytes are hashed
-again: every entry's path is names beneath that folder (an absolute path,
-`..` or an odd name refuses the archive), every folder on the way is
-opened with `openat2(RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS |
-RESOLVE_NO_MAGICLINKS | RESOLVE_NO_XDEV)`, files are made with `O_EXCL |
-O_NOFOLLOW`, hard links name entries beneath without following a link,
-devices and other kinds refuse the archive; owners, modes, times and the
-extended attributes above are set on each through its descriptor, folders
-once their contents are in. Only if the second hash matches too and the
-file was read to its end does the fresh folder take the data's place, in
-one rename (`RENAME_EXCHANGE`), and the old contents are removed; any
-failure removes the fresh folder and leaves the old contents as they were.
+keeps it, never as the copy in the share says, which others may change;
+removed again if the restore fails) or into another volume that exists,
+after a confirmation that names it; running containers that use it are
+stopped meanwhile and started again after only when asked to, otherwise it
+is refused (`volume_in_use`), also when its turn came. The archive lies in a
+share that users may write, and restoring runs as root; so only an archive
+zendiloosd recorded is restored, by its recorded SHA-256, data and entries.
+The agent refuses while a running container uses the volume or a unit of
+the volume still runs, and runs the work in two transient units (the
+system read only but the volume's folder in Docker's data root;
+`CAP_CHOWN`, `CAP_DAC_OVERRIDE`, `CAP_DAC_READ_SEARCH`, `CAP_FOWNER`,
+`CAP_FSETID`, `CAP_SETFCAP`; set-ID bits allowed, as modes come back). The
+first (`restore-volume`) removes what earlier restores of the volume left
+beside its data (fresh folders of a unit stopped or killed by its time or
+memory), refuses when the volume's file system has less room free than the
+backup's data, opens the archive beneath the share without following a
+link (it must be a regular file, and writable by root only: one others may
+write could change between its check and its extraction), checks its
+SHA-256 before anything is extracted, then extracts it into a fresh folder
+beside the data (`_data.zendiloos-restore-<random>`, 0700) while the same
+bytes are hashed again, no more than the backup's data and entries and a
+little (an archive changed after its check never fills the pool): every
+entry's path is names beneath that folder (an absolute path, `..` or an
+odd name refuses the archive), every folder on the way is opened with
+`openat2(RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS |
+RESOLVE_NO_XDEV)`, files are made with `O_EXCL | O_NOFOLLOW`, hard links
+name entries beneath without following a link, devices and other kinds
+refuse the archive; owners, modes, times and the extended attributes above
+are set on each through its descriptor, folders once the entries left
+them, so only the folders an entry is in are kept in memory. Only if the
+second hash matches too and the file was read to its end does the agent
+look for running containers once more; if one uses the volume now, what was
+extracted goes and the old contents stay (`volume_in_use`). Otherwise the
+second unit (`swap-volume`) swaps the fresh folder in for the data in one
+rename (`RENAME_EXCHANGE`) and removes the old contents; what it could not
+remove is named on the job and goes with the next restore of the volume or
+the agent's next start. Removing a tree holds a descriptor or two however
+deep it goes. Any failure removes the fresh folder and leaves the old
+contents as they were.
 
 **Moving Docker's data** to another pool zendiloOS made: Docker stops, the
 dataset is copied with `zfs send -R | zfs receive -u` (up to six hours,
@@ -1614,7 +1697,8 @@ over a transport that waits as long), the mount unit, the drop-in and
 `data-root` follow, Docker starts from the copy, and only then is the old
 dataset destroyed; if the copy fails, or switching to the copy fails,
 Docker goes back to its data as it was and starts again, never left
-stopped. While it copies, other changes to pools go on (the pools' lock is
+stopped. It is refused while a volume is backed up or restored, or waits for
+its turn, and none is while it moves. While it copies, other changes to pools go on (the pools' lock is
 held only to check and to switch; one move at a time); the old pool cannot
 be deleted meanwhile, Docker's data root still being there. Containers that
 restart by themselves start again. The apps' datasets stay where they are.

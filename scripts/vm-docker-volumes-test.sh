@@ -2,22 +2,35 @@
 # Tests Docker's volumes and their backups end to end in a test VM, through
 # the HTTPS API:
 #
-#   1. a project with a named volume: the volume is listed with its project
-#      and the running container that uses it, and its size is counted
+#   1. a project with two named volumes: listed with its project and the
+#      running container that uses them, and their sizes counted
 #   2. a backup plan into a folder of a share, and "back up now": the
-#      container is stopped meanwhile and runs again afterwards
+#      container is stopped meanwhile and runs again afterwards; the plan
+#      tells who may read the share
 #   3. the archive and its manifest lie in the share, readable by tar and
-#      zstd, owners and links kept, the manifest's SHA-256 the archive's,
-#      both under the share's inherited ACL, none root's alone
+#      zstd (written by a unit in its sandbox: seccomp's @system-service,
+#      ProtectProc, PrivateIPC), owners and links kept, the manifest's
+#      SHA-256 the archive's, both readable as the share's inherited ACL
+#      says but writable by root only (no write in the ACL mask)
 #   4. the data changes; restoring under its own name is refused while the
 #      container runs unless it may be stopped, then brings the data back
 #      and the container runs again
 #   5. restoring into another volume
 #   6. an archive changed in the share is refused: its SHA-256 is not the
 #      one recorded, and the volume stays as it was
-#   7. retention: with two kept, the third backup removes the oldest
+#   7. an archive a share user may write (as a share's ACL could let them)
+#      is refused, the volume as it was
+#   8. one container of two volumes, both with plans at the same hour and
+#      backed up at once: one at a time, the container stopped from the
+#      first's start to the second's end, and started only once
+#   9. a restore whose unit is stopped midway: the old data stays, the
+#      container runs again, and what the unit left beside the data goes
+#      with the next restore
+#  10. leftovers are swept: a backup's hidden file in its folder before the
+#      next backup there, a restore's fresh folder when the agent starts
+#  11. retention: with two kept, the third backup removes the oldest
 #      archive and its manifest, and a look-alike file nobody recorded stays
-#   8. everything made is removed again
+#  12. everything made is removed again
 #
 # Needs the VM running with the package installed and set up, Docker's data
 # on a pool and the image alpine:3.20 (fetched if missing); account and
@@ -34,6 +47,7 @@ password=${ZENDILOOS_PASSWORD:-correct horse battery}
 share=volbackups
 project=voltest
 volume=${project}_data
+extra=${project}_extra
 copy=${project}_copy
 container=$project-db-1
 work=$(mktemp -d)
@@ -88,6 +102,11 @@ job_succeeded() {
 }
 
 running() { [[ $(vm "sudo docker inspect -f '{{.State.Running}}' $container") == true ]]; }
+# How often the container was started since $1 (Docker's time).
+starts_since() {
+    vm "sudo timeout 3 docker events --since '$1' --until \"\$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)\" \
+        --filter container=$container --filter event=start --format '{{.Status}}'" | grep -c start || true
+}
 started_at() { vm "sudo docker inspect -f '{{.State.StartedAt}}' $container"; }
 inside() { vm "sudo docker exec $container sh -c '$1'"; }
 # What the volume $1 holds at $2, seen from a container of its own.
@@ -95,7 +114,7 @@ in_volume() { vm "sudo docker run --rm -v $1:/v:ro alpine:3.20 sh -c '$2'"; }
 volume_json() { call GET /docker/volumes | jq -c --arg v "$1" '.[] | select(.name == $v)'; }
 
 back_up_now() {
-    [[ $(status POST "/docker/volumes/$volume/backups") == 202 ]] || fail "back up: $(cat "$work/last")"
+    [[ $(status POST "/docker/volumes/${1:-$volume}/backups") == 202 ]] || fail "back up: $(cat "$work/last")"
     job_succeeded "$(jq -r .id "$work/last")"
 }
 
@@ -112,8 +131,9 @@ remove_project() {
 cleanup() {
     set +e
     call DELETE "/docker/volumes/$volume/backup-plan" >/dev/null
+    call DELETE "/docker/volumes/$extra/backup-plan" >/dev/null
     remove_project
-    vm "sudo docker volume rm -f $volume $copy" >/dev/null 2>&1
+    vm "sudo docker volume rm -f $volume $extra $copy" >/dev/null 2>&1
     for id in $(call GET /shares | jq -r --arg s "$share" '.[] | select(.name == $s) | .id'); do
         call POST "/shares/$id/delete" "{\"confirm\":\"$share\"}" >/dev/null
     done
@@ -129,26 +149,28 @@ vm 'sudo docker image inspect alpine:3.20 >/dev/null 2>&1 || sudo docker pull -q
 
 say "Cleaning up an earlier run"
 call DELETE "/docker/volumes/$volume/backup-plan" >/dev/null || true
+call DELETE "/docker/volumes/$extra/backup-plan" >/dev/null || true
 remove_project
-vm "sudo docker volume rm -f $volume $copy" >/dev/null 2>&1 || true
+vm "sudo docker volume rm -f $volume $extra $copy" >/dev/null 2>&1 || true
 for id in $(call GET /shares | jq -r --arg s "$share" '.[] | select(.name == $s) | .id'); do
     job_succeeded "$(call POST "/shares/$id/delete" "{\"confirm\":\"$share\"}" | jq -r .id)"
 done
 
-say "1. A project with a named volume: listed with its container, counted"
+say "1. A project with two named volumes: listed with its container, counted"
 share_id=$(call POST /shares "$(jq -n --arg n "$share" --arg pool "$pool" --argjson me "$me" \
     '{name:$n,pool:$pool,access:[{kind:"account",id:$me,access:"read_write"}]}')" | jq -er .id) || fail "share"
 [[ $(status POST "/files/shares/$share_id/folders" '{"path":"compose"}') == 201 ]] || fail "folder compose"
 [[ $(status POST "/files/shares/$share_id/folders" '{"path":"docker-backups"}') == 201 ]] || fail "folder backups"
 number=$(call GET /storage/pools | jq -r --arg p "$pool" '.[] | select(.name == $p) | .volume')
 backups="/volume$number/$share/docker-backups/$volume"
-compose=$'services:\n  db:\n    image: alpine:3.20\n    restart: unless-stopped\n    command: ["sleep", "infinity"]\n    volumes:\n      - data:/data\nvolumes:\n  data: {}\n'
+compose=$'services:\n  db:\n    image: alpine:3.20\n    restart: unless-stopped\n    command: ["sleep", "infinity"]\n    volumes:\n      - data:/data\n      - extra:/extra\nvolumes:\n  data: {}\n  extra: {}\n'
 request=$(jq -n --arg name "$project" --argjson share "$share_id" --arg compose "$compose" \
     '{name:$name,share_id:$share,folder:"compose",compose:$compose,start:true,accept_risks:true}')
 [[ $(status POST /docker/projects "$request") == 201 ]] || fail "create: $(cat "$work/last")"
 job_succeeded "$(jq -r .job.id "$work/last")"
 wait_for "the container" running 60
 inside 'echo first > /data/state && mkdir -p /data/sub && ln -sf ../state /data/sub/link && chown 1234:4321 /data/state && dd if=/dev/urandom of=/data/blob bs=1M count=4 2>/dev/null'
+inside 'dd if=/dev/urandom of=/extra/blob bs=1M count=256 2>/dev/null'
 listed=$(volume_json "$volume")
 [[ $(jq -r .project <<<"$listed") == "$project" ]] || fail "the volume's project: $listed"
 [[ $(jq -c .used_by <<<"$listed") == "[{\"name\":\"$container\",\"running\":true}]" ]] || fail "used by: $listed"
@@ -162,6 +184,8 @@ plan=$(jq -n --argjson share "$share_id" --argjson hour "$hour" \
     '{share_id:$share,folder:"docker-backups",frequency:"daily",hour:$hour,keep:2}')
 [[ $(status PUT "/docker/volumes/$volume/backup-plan" "$plan") == 200 ]] || fail "plan: $(cat "$work/last")"
 [[ $(jq -r .stop_containers "$work/last") == true ]] || fail "the plan does not stop the containers"
+readers=$(call GET "/docker/backup-shares/$share_id/readers")
+jq -e --arg u "$user" '.accounts | index($u)' <<<"$readers" >/dev/null || fail "who may read the share: $readers"
 before=$(started_at)
 back_up_now
 wait_for "the container again" running 60
@@ -178,13 +202,18 @@ manifest="/volume$number/$share/$(jq -r .manifest <<<"$backup")"
 listing=$(vm "sudo zstd -dc $archive | tar -tvf -")
 grep -q ' 1234/4321 .* state$' <<<"$listing" || fail "the owner of state: $listing"
 grep -q 'sub/link -> ../state' <<<"$listing" || fail "the link: $listing"
+vm "sudo zstd -tq $archive" || fail "zstd does not read the archive"
 sum=$(vm "sudo sha256sum $archive" | cut -d' ' -f1)
 [[ $sum == $(jq -r .sha256 <<<"$backup") ]] || fail "the recorded SHA-256"
 [[ $(vm "sudo cat $manifest" | jq -r '.volume + " " + .sha256 + " " + .labels["com.docker.compose.project"]') \
     == "$volume $sum $project" ]] || fail "the manifest: $(vm "sudo cat $manifest")"
 for file in "$archive" "$manifest"; do
-    vm "sudo getfacl -p $file" | grep -q "^user:$user:rw" || fail "$file lacks the share's ACL"
-    [[ $(vm "sudo stat -c %a $file") != 600 ]] || fail "$file is root's alone"
+    acl=$(vm "sudo getfacl -p $file")
+    grep -q "^user:$user:r" <<<"$acl" || fail "$file lacks the share's ACL: $acl"
+    grep -q '^mask::r-' <<<"$acl" || fail "the share's writers may write $file: $acl"
+    [[ $(vm "sudo stat -c '%U %a' $file") =~ ^root\ [0-7][0145][0145]$ ]] \
+        || fail "only root may write $file: $(vm "sudo stat -c '%U %a' $file")"
+    vm "sudo -u nobody test -w $file" && fail "others may write $file"
 done
 [[ $(status GET "/files/shares/$share_id/download?path=$(jq -r .manifest <<<"$backup")") == 200 ]] \
     || fail "the administrator cannot read the manifest in the share"
@@ -221,7 +250,73 @@ state=$(job_end "$(jq -r .id "$work/last")")
 wait_for "the container after the refusal" running 60
 [[ $(inside 'cat /data/state') == third ]] || fail "the volume changed"
 
-say "7. Retention keeps two, and only removes what it recorded"
+say "7. An archive a share user may write is refused"
+back_up_now
+writable=$(call GET "/docker/volumes/$volume/backups" | jq -c '.[0]')
+writable_path="/volume$number/$share/$(jq -r .archive <<<"$writable")"
+inside 'echo fourth > /data/state'
+vm "sudo setfacl -m mask::rwx $writable_path"
+[[ $(restore "$(jq -r .id <<<"$writable")" '{"target":"own_name","stop_containers":true}') == 202 ]] \
+    || fail "restore: $(cat "$work/last")"
+state=$(job_end "$(jq -r .id "$work/last")")
+[[ $state == failed*"written by others"* ]] || fail "an archive others may write was restored: $state"
+wait_for "the container after the refusal" running 60
+[[ $(inside 'cat /data/state') == fourth ]] || fail "the volume changed"
+vm "sudo setfacl -m mask::r-x $writable_path"
+
+say "8. One container of two volumes, both at the same hour: stopped until both are done"
+[[ $(status PUT "/docker/volumes/$extra/backup-plan" "$plan") == 200 ]] || fail "plan: $(cat "$work/last")"
+[[ $(jq -r .hour "$work/last") == "$hour" ]] || fail "not at the same hour"
+since=$(vm 'date -u +%Y-%m-%dT%H:%M:%S.%NZ')
+[[ $(status POST "/docker/volumes/$extra/backups") == 202 ]] || fail "back up $extra: $(cat "$work/last")"
+first_job=$(jq -r .id "$work/last")
+[[ $(status POST "/docker/volumes/$volume/backups") == 202 ]] || fail "back up $volume: $(cat "$work/last")"
+second_job=$(jq -r .id "$work/last")
+ran_between=0
+while [[ $(call GET "/jobs/$second_job" | jq -r .state) == running ]]; do
+    if [[ $(call GET "/jobs/$first_job" | jq -r .state) != running ]] && running; then ran_between=1; fi
+    sleep 0.2
+done
+job_succeeded "$first_job"
+job_succeeded "$second_job"
+(( ran_between == 0 )) || fail "the container ran between the two backups"
+wait_for "the container after both" running 60
+[[ $(starts_since "$since") == 1 ]] || fail "the container was started $(starts_since "$since") times"
+
+say "9. A restore whose unit is stopped midway leaves the old data"
+inside 'echo fifth > /extra/state'
+latest=$(call GET "/docker/volumes/$extra/backups" | jq -r '[.[] | select(.state == "succeeded")][0].id')
+[[ $(restore "$latest" '{"target":"own_name","stop_containers":true}') == 202 ]] \
+    || fail "restore: $(cat "$work/last")"
+cut=$(jq -r .id "$work/last")
+# Stopped as soon as it runs, from outside, as a person or a shutdown would.
+unit=zendiloos-volume-restore-$extra.service
+vm "for i in \$(seq 1 2400); do sudo systemctl is-active -q $unit && exec sudo systemctl stop $unit; sleep 0.05; done; exit 1" \
+    || fail "the restore's unit never ran"
+state=$(job_end "$cut")
+[[ $state == failed* ]] || fail "a restore cut off succeeded: $state"
+wait_for "the container after the cut" running 60
+[[ $(inside 'cat /extra/state') == fifth ]] || fail "the old data did not stay"
+vm "sudo ls /volume$number/@docker/volumes/$extra" | grep -q '^_data.zendiloos-restore-' \
+    || say "   (the unit removed its fresh folder itself)"
+[[ $(restore "$latest" '{"target":"own_name","stop_containers":true}') == 202 ]] \
+    || fail "restore: $(cat "$work/last")"
+job_succeeded "$(jq -r .id "$work/last")"
+vm "sudo ls /volume$number/@docker/volumes/$extra" | grep -q '^_data.zendiloos-restore-' \
+    && fail "what the cut-off restore left stays beside the data"
+wait_for "the container after the restore" running 60
+
+say "10. Leftovers are swept"
+hidden="$backups/.$volume-19990101-000000.tar.zst.partial-0123456789abcdef"
+vm "echo left | sudo tee $hidden >/dev/null"
+back_up_now
+vm "sudo test ! -e $hidden" || fail "a hidden file an earlier backup left stays"
+fresh="/volume$number/@docker/volumes/$volume/_data.zendiloos-restore-0123456789abcdef"
+vm "sudo mkdir -p $fresh/deep && echo left | sudo tee $fresh/deep/file >/dev/null"
+vm 'sudo systemctl restart zendiloos-agent.service'
+wait_for "the sweep as the agent starts" "vm 'sudo test ! -e $fresh'" 120
+
+say "11. Retention keeps two, and only removes what it recorded"
 vm "echo not ours | sudo tee $backups/$volume-19990101-000000.tar.zst >/dev/null"
 sleep 2
 back_up_now
@@ -233,10 +328,12 @@ vm "sudo test ! -e $archive && sudo test ! -e $manifest" || fail "the oldest bac
 [[ $(vm "sudo ls $backups" | grep -c '\.tar\.zst$') == 3 ]] || fail "in the folder: $(vm "sudo ls $backups")"
 vm "sudo test -f $backups/$volume-19990101-000000.tar.zst" || fail "a file nobody recorded was removed"
 
-say "8. Cleaning up"
+say "12. Cleaning up"
 [[ $(status DELETE "/docker/volumes/$volume/backup-plan") == 204 ]] || fail "the plan: $(cat "$work/last")"
+[[ $(status DELETE "/docker/volumes/$extra/backup-plan") == 204 ]] || fail "the plan: $(cat "$work/last")"
 remove_project
 [[ $(status DELETE "/docker/volumes/$volume") == 204 ]] || fail "removing $volume: $(cat "$work/last")"
+[[ $(status DELETE "/docker/volumes/$extra") == 204 ]] || fail "removing $extra: $(cat "$work/last")"
 [[ $(status DELETE "/docker/volumes/$copy") == 204 ]] || fail "removing $copy: $(cat "$work/last")"
 [[ -z $(volume_json "$volume") ]] || fail "$volume is still listed"
 
