@@ -1251,8 +1251,8 @@ TLS is rustls with ring and the system's certificate authorities
   seen through and its outcome reported. Docker's work (fetching images,
   making containers, a deploy) has one budget of 30 minutes per request,
   a deploy's pull and its containers together (`DOCKER_WORK`), and 20
-  minutes more at most for the units that pin its folders; zendiloosd
-  waits twice their sum
+  minutes more at most for the units that pin its folders and the looks
+  at what its containers mount; zendiloosd waits twice their sum
   (`DOCKER_PATIENCE`, 100 minutes), so the agent's half for a turn and the
   work both fit before it gives up.
 - Every change to a pool, scrubs included, requires its `zendiloos:volume`
@@ -1579,7 +1579,14 @@ as it reads (a relative device starts where Docker runs, at `/`; Compose
 makes it absolute only for `o: bind` itself), and it could reach a share
 unpinned. It keeps the result as
 `/etc/zendiloos/projects/<project>.json` and runs Compose on that file with
-an empty `.env`; `down` removes it again. A project made before this was
+an empty `.env`; `down` removes it again. A deploy changes nothing of
+what runs before its images are there: it pulls from a file of its own
+(`<project>.json.pull`, removed afterwards), then pins the new binds
+beside the old ones, keeps the file and brings the project up, then asks
+Docker what the project's containers and volumes mount and leaves pinned
+only that (and, once it came up, the new binds), after a failure too, so
+neither a container Docker restarts loses its folder nor do pins of a
+failed deploy linger; while Docker cannot say, every pin stays. A project made before this was
 kept runs once its file is saved again. A project made elsewhere whose
 Compose file lies in a share is not deployed here, for the same reason,
 nor one that binds a folder or file in a share (below the share's root,

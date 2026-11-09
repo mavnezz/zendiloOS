@@ -400,9 +400,22 @@ async fn administrators_projects_run_from_what_was_confirmed_and_kept() {
     let deploy = Request::DeployProject { project: project("tesla"), config: config(confirmed), pull: true };
     assert_eq!(host.agent.execute(&deploy).await, Response::Done);
 
+    // Pulled from a file of its own, before anything of the running project
+    // changes; then up from the kept file, then a look at what it mounts.
     let compose =
-        format!("docker compose --file {} --env-file /dev/null --project-name tesla", kept.display());
-    assert_eq!(host.calls(), [format!("{compose} pull"), format!("{compose} up --detach --remove-orphans")]);
+        |file: &str| format!("docker compose --file {file} --env-file /dev/null --project-name tesla");
+    let label = "--filter label=com.docker.compose.project=tesla";
+    assert_eq!(
+        host.calls(),
+        [
+            format!("{} pull", compose(&format!("{}.pull", kept.display()))),
+            format!("{} up --detach --remove-orphans", compose(&kept.display().to_string())),
+            format!("docker ps --all --quiet --no-trunc {label}"),
+            format!("docker container inspect {FIRST}"),
+        ]
+    );
+    assert!(!host.root.join("etc-projects/tesla.json.pull").exists(), "the pull's file is gone");
+    let compose = compose(&kept.display().to_string());
     let file: serde_json::Value = serde_json::from_str(&fs::read_to_string(&kept).unwrap()).unwrap();
     assert_eq!(file["services"]["web"]["volumes"][0]["source"], "/etc/localtime");
     assert_eq!(file["x-zendiloos"]["pins"], serde_json::json!([]));
