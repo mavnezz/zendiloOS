@@ -320,7 +320,9 @@ code=0
 curl -sk -o "$work/growing.tar" -b "$work/admin.jar" -H "Origin: $base" \
     "$api/files/shares/$share_id/archive?path=growing" || code=$?
 stop_background grow
-[[ $code == 18 ]] || fail "the archive of a growing file: curl's exit $code, $(stat -c %s "$work/growing.tar") bytes"
+# Cut short: 18 over HTTP/1.1, 92 when nginx resets the HTTP/2 stream.
+[[ $code == 18 || $code == 92 ]] \
+    || fail "the archive of a growing file: curl's exit $code, $(stat -c %s "$work/growing.tar") bytes"
 vm "sudo journalctl -u zendiloos-files -u zendiloos-agent --since -2min --no-pager" \
     | grep -q 'entries changed while it was written' || fail "the files agent did not say why"
 delete_share

@@ -239,7 +239,7 @@ vm "sudo systemctl restart zendiloosd"
 wait_for "zendiloosd to answer again" "[[ \$(status GET /storage/inventory) == 200 ]]" 90
 wait_for "one disk of the dock" "[[ \$(records | jq 'map(select(.[1] != null)) | length') == 1 ]]" 30
 alone=$(records)
-[[ $(jq -c 'map(.[0])' <<<"$alone") == $(jq -c 'map(.[0])' <<<"$both") ]] || fail "other records: $both, then $alone"
+[[ $(jq -c 'map(.[0])' <<<"$alone") == "$(jq -c 'map(.[0])' <<<"$both")" ]] || fail "other records: $both, then $alone"
 "$root/scripts/vm.sh" removable-detach dock1
 docked=()
 wait_for "the dock's disks to go" "[[ \$(records | jq 'map(select(.[1] != null)) | length') == 0 ]]" 30
