@@ -12,12 +12,29 @@ import { ApiProblem, configureApi } from '@/shared/api/client'
 import { live } from '@/shared/api/live'
 import { i18n } from '@/shared/i18n'
 import { forgetAccount } from '@/shared/lib/forget'
+import { reloadOnStaleBuild } from '@/shared/lib/stale-build'
 import { applyTheme, followSystemTheme } from '@/shared/lib/theme'
 import { applyWallpaper, storedWallpaper } from '@/shared/lib/wallpapers'
 
 applyTheme()
 followSystemTheme()
 applyWallpaper(storedWallpaper())
+
+// A tab open across an update of zendiloOS: the parts of its build are
+// gone, so it loads the new build, once. The entry script's URL names the
+// build (its file name carries a hash of its content).
+reloadOnStaleBuild(window, () => ({
+  build: import.meta.url,
+  storage: (() => {
+    try {
+      return window.sessionStorage
+    } catch {
+      return undefined
+    }
+  })(),
+  now: Date.now,
+  reload: () => window.location.reload(),
+}))
 
 const queryClient = new QueryClient({
   defaultOptions: {

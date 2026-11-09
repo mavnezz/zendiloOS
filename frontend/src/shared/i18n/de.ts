@@ -3,6 +3,9 @@ import type { Messages } from './en'
 const de: Messages = {
   app: {
     name: 'zendiloOS',
+    staleBuild:
+      'Teile der Oberfläche ließen sich nicht laden: zendiloOS wurde wohl inzwischen aktualisiert. Laden Sie die Seite gleich neu.',
+    reload: 'Neu laden',
   },
   apps: {
     files: 'Dateien',

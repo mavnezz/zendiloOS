@@ -2035,7 +2035,13 @@ binary as `run-packages <id> <task>` outside the sandbox; the runner records
 each step in `/var/lib/zendiloos-packages/run.json`, which the agent reads
 back. A run outlives a restart of the agent and of zendiloosd, which matters
 when it installs zendiloOS: the package's maintainer scripts restart both,
-and the page follows the run from its record once zendiloosd is back.
+and the page follows the run from its record once zendiloosd is back. A
+tab left open across an update still runs the old build, whose lazily
+loaded parts are gone: when loading one fails (`vite:preloadError`), the
+page reloads once for that build (noted in `sessionStorage` with the
+entry script's URL, which names the build), and should the same build
+fail again within five minutes, a note asks to reload by hand instead of
+reloading on and on.
 
 **An update and long work exclude each other**, by refusal, never by
 waiting in a queue: an update (and finishing one) does not start while

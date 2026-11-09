@@ -2,6 +2,9 @@
 const en = {
   app: {
     name: 'zendiloOS',
+    staleBuild:
+      'Parts of the interface could not be loaded: zendiloOS was probably updated meanwhile. Reload the page in a moment.',
+    reload: 'Reload',
   },
   apps: {
     files: 'Files',
