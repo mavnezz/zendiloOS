@@ -461,6 +461,25 @@ async fn web_settings_the_host_cannot_keep_are_not_saved() {
     assert_eq!(s.repository.web_server().await.unwrap(), WebServer::default());
 }
 
+/// A browser that sends its confirmation twice at once (two tabs, a retry)
+/// gets one through to the host; the other finds nothing waiting, and
+/// must not take back what the first saved.
+#[tokio::test]
+async fn two_confirmations_at_once_leave_the_database_as_the_host_keeps_it() {
+    let s = setup();
+    let context = RequestContext::default();
+    let moved = WebServer { http_port: Some(8081), https_port: 8444, certificate_id: None };
+    s.certificates.apply_web_server(moved, &alice(), &context).await.unwrap();
+    let alice = alice();
+    let (first, second) = tokio::join!(
+        s.certificates.confirm_web_server(&alice, &context),
+        s.certificates.confirm_web_server(&alice, &context),
+    );
+    assert!(first.is_ok() != second.is_ok(), "one gets through: {first:?}, {second:?}");
+    assert_eq!(s.host.calls().iter().filter(|call| *call == "confirm").count(), 1);
+    assert_eq!(s.repository.web_server().await.unwrap(), moved, "the host keeps it");
+}
+
 /// An account's key at the authority goes with it.
 #[tokio::test]
 async fn what_acme_sh_kept_of_an_account_goes_with_it() {

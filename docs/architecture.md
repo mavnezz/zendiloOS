@@ -2106,7 +2106,9 @@ old files return, by a timer and after a restart of the agent (holding the
 lock changes take, so no change begins while they return). zendiloosd
 saves the settings as it confirms them (first, and takes them back if the
 agent cannot keep the change), so the database never holds settings that
-went back.
+went back; applying and confirming take turns under a lock of their own, so
+of two confirmations sent at once one gets through and the other takes
+nothing back.
 
 ### 4.12 Firewall
 

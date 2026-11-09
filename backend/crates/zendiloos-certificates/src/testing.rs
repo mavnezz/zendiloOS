@@ -176,13 +176,31 @@ impl CertificateRepository for MemoryCertificates {
     }
 
     async fn web_server(&self) -> Result<WebServer, PortError> {
+        pause().await;
         Ok(self.stored.lock().unwrap().web)
     }
 
     async fn save_web_server(&self, web: &WebServer) -> Result<(), PortError> {
+        pause().await;
         self.stored.lock().unwrap().web = *web;
         Ok(())
     }
+}
+
+/// Lets others run once, as a database does while it reads or writes:
+/// requests made at once take turns here.
+async fn pause() {
+    let mut paused = false;
+    std::future::poll_fn(|cx| {
+        if paused {
+            std::task::Poll::Ready(())
+        } else {
+            paused = true;
+            cx.waker().wake_by_ref();
+            std::task::Poll::Pending
+        }
+    })
+    .await;
 }
 
 /// How long a certificate the fake issues holds.

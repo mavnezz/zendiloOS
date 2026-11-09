@@ -201,6 +201,10 @@ pub struct Certificates {
     ports: Arc<CertificatesPorts>,
     /// Settings applied and waiting for confirmation; saved once confirmed.
     pending: Arc<Mutex<Option<WebServer>>>,
+    /// Held while the web server's settings change, from reading them to
+    /// the host's answer: two confirmations at once must not leave the
+    /// database saying other settings than the host keeps.
+    web: Arc<tokio::sync::Mutex<()>>,
     /// Certificates being issued now: not issued twice at once, nor deleted.
     issuing: Arc<Mutex<BTreeSet<i64>>>,
 }
@@ -239,6 +243,7 @@ impl Certificates {
         Self {
             ports: Arc::new(ports),
             pending: Arc::new(Mutex::new(None)),
+            web: Arc::new(tokio::sync::Mutex::new(())),
             issuing: Arc::new(Mutex::new(BTreeSet::new())),
         }
     }
@@ -699,6 +704,7 @@ impl Certificates {
         actor: &Actor,
         context: &RequestContext,
     ) -> Result<(), CertificatesError> {
+        let _web = self.web.lock().await;
         let before = self.ports.repository.web_server().await?;
         web.check(&self.ports.repository.certificates().await?, self.now())?;
         for port in web.new_ports(&before) {
@@ -722,6 +728,7 @@ impl Certificates {
         actor: &Actor,
         context: &RequestContext,
     ) -> Result<(), CertificatesError> {
+        let _web = self.web.lock().await;
         let waiting = *self.pending.lock().unwrap_or_else(PoisonError::into_inner);
         let Some(web) = waiting else {
             return Err(CertificatesError::Refused("no change waits for confirmation".into()));
