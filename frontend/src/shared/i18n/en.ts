@@ -1130,7 +1130,7 @@ const en = {
     smb1Note:
       'SMB 1 is not offered: ransomware such as WannaCry spread through it, and current systems no longer speak it.',
     nfsExplanation:
-      'NFS trusts the computers it exports to: whoever controls a computer of an allowed network acts as any user there. Export only to networks you control, and prefer SMB where it is an option.',
+      'NFS trusts the computers it exports to: whoever uses an allowed computer gets the access its rule gives, whatever user they claim to be. Export only to networks you control, and prefer SMB where it is an option.',
     discoveryExplanation:
       'Discovery only makes the NAS easier to find; it can always be reached by its address. Turned off, it no longer announces itself on the network.',
     advanced: {
@@ -2097,7 +2097,6 @@ const en = {
     enable: 'Enable',
     disable: 'Disable',
     toggleFailed: 'The account could not be changed',
-    sharesFollow: 'The files in {shares} get their permissions in the background.',
     description: 'Description',
     email: 'E-mail',
     groups: 'Groups',
@@ -2269,7 +2268,7 @@ const en = {
       files_delete: 'Delete files',
       files_move: 'Move files',
       files_restore_snapshot: 'Copy back from a snapshot',
-      sharing_apply_access: 'Apply share permissions',
+      sharing_migrate_permissions: 'Switch to permissions per share',
       sharing_delete_share: 'Delete share',
       storage_create_pool: 'Create pool',
       storage_destroy_pool: 'Delete pool',
@@ -2561,14 +2560,14 @@ const en = {
       members: 'No members | One member | {n} members',
       showMembers: 'Members of {name}',
       appliesToAll:
-        'The rules apply to the folder and everything in it; existing files get them in the background after saving.',
+        'The rules apply to the folder and everything in it as soon as they are saved; open SMB connections of whoever loses access end.',
       reachedAs: 'Computers reach it as',
       servicesHint:
         'SMB itself, its version and workgroup, are set for all folders in the control panel under File services.',
       yourAccess: 'Your access',
       network: 'Network',
       accessHint:
-        'In Files, for apps and over the network alike. Administrators need an entry too.',
+        'Over SMB and in Files; NFS goes by computer instead. Administrators need an entry too.',
       shared: 'Share on the network',
       sharedHint:
         'Offers {name} over SMB (Windows, macOS, Linux) and to the NFS computers below. Not shared, it is used on the NAS only, with the same permissions.',
@@ -2583,19 +2582,8 @@ const en = {
       permission: 'Permission',
       readOnly: 'Read only',
       readWrite: 'Read and write',
-      squash: 'User mapping',
-      squashes: {
-        root: 'Root as anonymous',
-        all: 'Everyone as anonymous',
-        none: 'No mapping',
-      },
-      squashHints: {
-        root: "The computer's root user is treated as the anonymous user; everyone else keeps their user ID.",
-        all: 'Everyone on the computer is treated as the anonymous user, whoever they are there.',
-        none: "Everyone keeps their user ID, root too: the computer's root can do anything in the folder.",
-      },
-      rootWarning:
-        'Allow this only for computers you administer yourself: their root is root in this folder.',
+      anyUser:
+        'Whoever uses a computer of this rule gets the chosen access to the whole folder, whatever user they claim to be: NFS believes what the computer says, so every request counts as the group zendiloos-files.',
       security: 'Security',
       async: 'Answer writes before they are on disk (async)',
       asyncHint:
@@ -2747,8 +2735,7 @@ const en = {
       rollbackLater:
         'The later snapshot is deleted too. | The {count} later snapshots are deleted too.',
       rollbackConfirm: 'Type {share} to confirm',
-      rolledBack:
-        'The share is back as it was on {time}. Its files get the permissions of now again in the background.',
+      rolledBack: 'The share is back as it was on {time}.',
       open: 'Snapshots',
       title: 'Snapshots of {name}',
       description:
@@ -2795,7 +2782,8 @@ const en = {
     recycleBinHint:
       'Files deleted over SMB go to .recycle/<user> in the share instead of disappearing.',
     nfs: 'NFS',
-    nfsWarning: 'NFS trusts the user IDs the client sends. Allow only computers you trust.',
+    nfsWarning:
+      'NFS tells computers apart, not people: whoever uses a computer below may read, or read and write, as its rule says, whatever user they claim to be. Allow only computers you trust.',
     nfsNetwork: 'IP address or network, e.g. 192.168.1.0/24',
     nfsWrite: 'Write',
     nfsAdd: 'Add computer or network',
@@ -2803,7 +2791,6 @@ const en = {
     create: 'Create share',
     created: 'Share {name} was created',
     saved: 'Changes to {name} saved',
-    savedHint: 'Existing files get the new permissions in the background.',
     deleteTitle: 'Delete share {name}?',
     deleteDescription: 'All files in {path} are deleted. This cannot be undone.',
     deleteSubmit: 'Delete share and all files',

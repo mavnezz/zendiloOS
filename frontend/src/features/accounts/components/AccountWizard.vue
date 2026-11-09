@@ -169,21 +169,16 @@ function toggleGroup(id: number, on: boolean): void {
   form.groups = on ? [...form.groups, id] : form.groups.filter((group) => group !== id)
 }
 
-/**
- * Group memberships, home and share rules, after the account itself.
- * Answers the shares whose files follow new memberships in the background.
- */
-async function follow(id: number): Promise<string[]> {
+/** Group memberships, home and share rules, after the account itself. */
+async function follow(id: number): Promise<void> {
   const before = memberOf(props.account?.id)
-  const following: string[] = []
   for (const group of groups.value ?? []) {
     const wanted = form.groups.includes(group.id)
     if (wanted === before.includes(group.id)) continue
     const members = wanted
       ? [...group.members, id]
       : group.members.filter((member) => member !== id)
-    const updated = await actions.updateGroup(group.id, { members })
-    following.push(...updated.pending_shares)
+    await actions.updateGroup(group.id, { members })
   }
   const home = homeOf(props.account?.id)
   const homeChanged =
@@ -198,13 +193,6 @@ async function follow(id: number): Promise<string[]> {
     )
     .map((share) => ({ share_id: share.id, rule: form.rules[share.id] ?? null }))
   await settings.setSubjectAccess('account', id, rules)
-  return following
-}
-
-/** What a notice says of shares whose files follow, if any. */
-function sharesFollow(shares: string[]): string | undefined {
-  const named = [...new Set(shares)]
-  return named.length ? t('people.sharesFollow', { shares: named.join(', ') }) : undefined
 }
 
 async function finish(): Promise<void> {
@@ -216,7 +204,7 @@ async function finish(): Promise<void> {
   error.value = null
   try {
     if (props.account) {
-      const updated = await actions.updateAccount(props.account.id, {
+      await actions.updateAccount(props.account.id, {
         full_name: form.fullName,
         description: form.description,
         email: form.email,
@@ -224,12 +212,8 @@ async function finish(): Promise<void> {
           ? {}
           : { role: form.role, disabled: !form.enabled, password_locked: form.passwordLocked }),
       })
-      const following = [...updated.pending_shares, ...(await follow(props.account.id))]
-      notifications.notify(
-        'success',
-        t('users.saved', { name: props.account.name }),
-        sharesFollow(following),
-      )
+      await follow(props.account.id)
+      notifications.notify('success', t('users.saved', { name: props.account.name }))
     } else {
       const created = await actions.createAccount({
         name: form.name.trim(),

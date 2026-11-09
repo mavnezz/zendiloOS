@@ -140,8 +140,8 @@ describe('the properties of a folder on a volume', () => {
     expect(page()).toContain('Could not be counted.')
   })
 
-  it('change storage, permissions, sharing and NFS, and say when files follow', async () => {
-    on('PATCH', '/api/v1/shares/10', () => ({ share: photos, job: job(4, 'sharing.apply_access') }))
+  it('change storage, permissions, sharing and NFS, which hold at once', async () => {
+    on('PATCH', '/api/v1/shares/10', () => photos)
     answer('GET', '/api/v1/files/shares/10/facts', counted)
     await properties()
     expect(page()).toContain('Properties of photos')
@@ -168,7 +168,8 @@ describe('the properties of a folder on a volume', () => {
     await click('Add a rule')
     await type('#nfs-client', ' 10.0.0.0/8 ')
     await choose('#nfs-permission', 'true')
-    await choose('#nfs-squash', 'all')
+    expect(page()).toContain('every request counts as the group zendiloos-files')
+    expect(document.body.querySelector('#nfs-squash')).toBeNull()
     await tick('Allow connections from ports above 1024')
     await click('OK')
     await click('Save')
@@ -181,17 +182,18 @@ describe('the properties of a folder on a volume', () => {
         { kind: 'account', id: 5, access: 'read_write' },
         { kind: 'account', id: 6, access: 'deny' },
       ],
-      nfs: [{ network: '10.0.0.0/8', write: true, squash: 'all', async: false, insecure: true }],
+      nfs: [{ network: '10.0.0.0/8', write: true, async: false, insecure: true }],
       settings: { quota_bytes: null, compression: 'zstd', record_size_bytes: 1048576 },
     })
-    expect(useNotifications().items.find((n) => n.title === 'Changes to photos saved')?.body).toBe(
-      'Existing files get the new permissions in the background.',
-    )
+    const saved = useNotifications().items.find((n) => n.title === 'Changes to photos saved')
+    expect(saved).toBeDefined()
+    expect(saved?.body).toBeUndefined()
   })
 
   it('check NFS rules in their dialog, and change one', async () => {
-    on('PATCH', '/api/v1/shares/10', () => ({ share: photos, job: null }))
+    on('PATCH', '/api/v1/shares/10', () => photos)
     await properties(photos, 'nfs')
+    expect(page()).toContain('NFS tells computers apart, not people')
     await click('Add a rule')
     await type('#nfs-client', 'nas lan')
     expect(page()).toContain('Not an address, network, host name or pattern.')
@@ -204,17 +206,13 @@ describe('the properties of a folder on a volume', () => {
     expect(document.body.querySelector<HTMLInputElement>('#nfs-client')!.value).toBe(
       '192.168.1.0/24',
     )
-    await choose('#nfs-squash', 'none')
-    expect(page()).toContain('their root is root in this folder')
     await tick('Answer writes before they are on disk')
     await type('#nfs-client', '*.Example.com')
     await click('OK')
     expect(page()).toContain('*.example.com')
     await click('Save')
     expect(callsTo('PATCH', '/api/v1/shares/10')[0]!.body).toMatchObject({
-      nfs: [
-        { network: '*.example.com', write: false, squash: 'none', async: true, insecure: false },
-      ],
+      nfs: [{ network: '*.example.com', write: false, async: true, insecure: false }],
     })
   })
 
@@ -278,7 +276,11 @@ describe('the snapshots dialog', () => {
   })
 
   it('rolls back once the folder is named, warning of later snapshots', async () => {
-    on('POST', /\/rollback$/, () => ({ destroyed: ['zdl-2026-11-07_10.00.00'] }))
+    // A snapshot from before the walk to share-level access brings that walk back, as a job.
+    on('POST', /\/rollback$/, () => ({
+      destroyed: ['zdl-2026-11-07_10.00.00'],
+      job: job(9, 'sharing.migrate_permissions', { target: 'photos' }),
+    }))
     await snapshotsOf()
     const rollbacks = document.body.querySelectorAll<HTMLButtonElement>(
       'button[aria-label="Roll back to this snapshot"]',
@@ -290,6 +292,7 @@ describe('the snapshots dialog', () => {
     await submit('#rollback-zdl-2026-11-06_10\\.00\\.00')
     expect(callsTo('POST', /\/rollback$/)[0]!.body).toEqual({ confirm: 'photos' })
     expect(page()).toContain('The share is back as it was on')
+    expect(page()).not.toContain('permissions')
 
     rollbacks[0]!.click()
     await settle()

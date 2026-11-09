@@ -33,7 +33,7 @@ vi.mock('@/shared/api/live', () => ({
 function job(id: number, state: Job['state']): Job {
   return {
     id,
-    kind: 'sharing.apply_access',
+    kind: 'sharing.migrate_permissions',
     target: 'photos',
     state,
     progress: null,

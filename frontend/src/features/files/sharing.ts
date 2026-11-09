@@ -59,7 +59,7 @@ export function useShareActions() {
   return {
     create: (body: CreateShareRequest): Promise<Share> =>
       refreshing(unwrap(api.POST('/api/v1/shares', { body }))),
-    update: (id: number, body: UpdateShareRequest): Promise<{ share: Share; job?: Job | null }> =>
+    update: (id: number, body: UpdateShareRequest): Promise<Share> =>
       refreshing(unwrap(api.PATCH('/api/v1/shares/{id}', { ...path(id), body }))),
     remove: (id: number, confirm: string): Promise<Job> =>
       refreshing(

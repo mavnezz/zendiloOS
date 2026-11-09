@@ -9,13 +9,10 @@ import type {
   CreateGroupRequest,
   Group,
   Homes,
-  Job,
   PasswordPolicy,
   ShareRuleLevel,
   SubjectKind,
   UpdateAccountRequest,
-  UpdatedAccount,
-  UpdatedGroup,
   UpdateGroupRequest,
 } from '@/shared/api/types'
 
@@ -49,8 +46,7 @@ export function useAccountActions() {
   return {
     createAccount: (body: CreateAccountRequest): Promise<Account> =>
       refreshing(unwrap(api.POST('/api/v1/accounts', { body }))),
-    /** Answers the account and the shares whose files follow the change. */
-    updateAccount: (id: number, body: UpdateAccountRequest): Promise<UpdatedAccount> =>
+    updateAccount: (id: number, body: UpdateAccountRequest): Promise<Account> =>
       refreshing(unwrap(api.PATCH('/api/v1/accounts/{id}', { ...path(id), body }))),
     resetPassword: async (id: number, password: string): Promise<void> => {
       await refreshing(
@@ -65,8 +61,7 @@ export function useAccountActions() {
     },
     createGroup: (body: CreateGroupRequest): Promise<Group> =>
       refreshing(unwrap(api.POST('/api/v1/groups', { body }))),
-    /** Answers the group and the shares whose files follow the change. */
-    updateGroup: (id: number, body: UpdateGroupRequest): Promise<UpdatedGroup> =>
+    updateGroup: (id: number, body: UpdateGroupRequest): Promise<Group> =>
       refreshing(unwrap(api.PATCH('/api/v1/groups/{id}', { ...path(id), body }))),
     deleteGroup: async (id: number): Promise<void> => {
       await refreshing(unwrap(api.DELETE('/api/v1/groups/{id}', path(id))))
@@ -130,21 +125,20 @@ export function useAccountSettings() {
         await client.invalidateQueries({ queryKey: ['homes'] })
       }
     },
-    /** Sets the rules of one account or group on the shares listed. */
+    /** Sets the rules of one account or group on the shares listed; they hold at once. */
     setSubjectAccess: async (
       kind: SubjectKind,
       id: number,
       rules: { share_id: number; rule: ShareRuleLevel | null }[],
-    ): Promise<Job[]> => {
-      if (!rules.length) return []
+    ): Promise<void> => {
+      if (!rules.length) return
       try {
-        const { jobs } = await unwrap(
+        await unwrap(
           api.PUT('/api/v1/shares/access/{kind}/{id}', {
             params: { path: { kind, id } },
             body: { rules },
           }),
         )
-        return jobs
       } finally {
         await client.invalidateQueries({ queryKey: ['shares'] })
       }

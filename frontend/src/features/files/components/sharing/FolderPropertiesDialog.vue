@@ -96,7 +96,6 @@ watch(open, (isOpen) => {
   nfs.value = share.nfs.map((rule) => ({
     network: rule.network,
     write: rule.write,
-    squash: rule.squash ?? 'root',
     async: rule.async ?? false,
     insecure: rule.insecure ?? false,
   }))
@@ -185,7 +184,7 @@ async function submit(): Promise<void> {
   pending.value = true
   error.value = null
   try {
-    const { job } = await actions.update(share.id, {
+    await actions.update(share.id, {
       description: description.value,
       shared: shared.value,
       recycle_bin: recycleBin.value,
@@ -193,11 +192,7 @@ async function submit(): Promise<void> {
       nfs: nfs.value,
       settings: settings(),
     })
-    notifications.notify(
-      'success',
-      t('shares.saved', { name: share.name }),
-      job ? t('shares.savedHint') : undefined,
-    )
+    notifications.notify('success', t('shares.saved', { name: share.name }))
     open.value = false
   } catch (failure) {
     error.value = problemMessage(failure)
@@ -485,7 +480,6 @@ const cell = 'px-2 py-1.5'
               <tr>
                 <th :class="cell">{{ t('explorer.nfs.client') }}</th>
                 <th :class="cell">{{ t('explorer.nfs.permission') }}</th>
-                <th :class="cell">{{ t('explorer.nfs.squash') }}</th>
                 <th :class="cell">{{ t('explorer.nfs.asyncShort') }}</th>
                 <th :class="cell">{{ t('explorer.nfs.insecureShort') }}</th>
                 <th :class="cell">
@@ -495,7 +489,7 @@ const cell = 'px-2 py-1.5'
             </thead>
             <tbody>
               <tr v-if="!nfs.length">
-                <td :class="cell" colspan="6" class="py-6 text-center text-muted-foreground">
+                <td :class="cell" colspan="5" class="py-6 text-center text-muted-foreground">
                   {{ t('explorer.nfs.none') }}
                 </td>
               </tr>
@@ -504,7 +498,6 @@ const cell = 'px-2 py-1.5'
                 <td :class="cell">
                   {{ rule.write ? t('explorer.nfs.readWrite') : t('explorer.nfs.readOnly') }}
                 </td>
-                <td :class="cell">{{ t(`explorer.nfs.squashes.${rule.squash ?? 'root'}`) }}</td>
                 <td :class="cell">
                   {{ rule.async ? t('explorer.nfs.yes') : t('explorer.nfs.no') }}
                 </td>
