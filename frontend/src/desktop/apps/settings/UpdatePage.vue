@@ -34,7 +34,7 @@ const power = usePower()
 
 const tab = ref('update')
 const failure = ref<string | null>(null)
-const asking = ref<'update' | 'restart' | null>(null)
+const asking = ref<'update' | 'finish' | 'restart' | null>(null)
 const showPackages = ref(false)
 const showNotes = ref(false)
 const showCurrentNotes = ref(false)
@@ -62,12 +62,15 @@ const newKernel = computed(() =>
   overview.value?.packages.some((p) => p.name.startsWith('linux-image')),
 )
 /** The steps of the run, in order, the release only when one is installed. */
-const steps = computed(() => [
-  'lists',
-  'debian',
-  ...(run.value?.zendiloos ? ['zendiloos'] : []),
-  'modules',
-])
+const steps = computed(() =>
+  run.value?.finishes
+    ? ['configure', 'repair', 'modules']
+    : ['lists', 'debian', ...(run.value?.zendiloos ? ['zendiloos'] : []), 'modules'],
+)
+/** An update cut off can be finished: dpkg says so, or the last one failed. */
+const finishable = computed(
+  () => !running.value && (overview.value?.interrupted || run.value?.state === 'failed'),
+)
 function stepState(step: string): 'done' | 'now' | 'later' {
   const at = steps.value.indexOf(run.value?.step ?? '')
   const index = steps.value.indexOf(step)
@@ -88,6 +91,7 @@ function confirmed(): void {
   const what = asking.value
   asking.value = null
   if (what === 'update') void act(actions.apply)
+  if (what === 'finish') void act(actions.finish)
   if (what === 'restart') void act(() => power.request('reboot'))
 }
 
@@ -204,7 +208,21 @@ const cell = 'px-3 py-1.5 text-left'
         </dl>
       </PageCard>
 
-      <PageCard v-if="run" :title="t('updates.runTitle')" :icon="PackageCheck">
+      <Alert v-if="overview.interrupted && !running" variant="destructive">
+        <TriangleAlert />
+        <span class="flex flex-wrap items-center gap-3">
+          {{ t('updates.interrupted') }}
+          <Button size="sm" variant="outline" :disabled="busy" @click="asking = 'finish'">{{
+            t('updates.finishTitle')
+          }}</Button>
+        </span>
+      </Alert>
+
+      <PageCard
+        v-if="run"
+        :title="run.finishes ? t('updates.finishTitle') : t('updates.runTitle')"
+        :icon="PackageCheck"
+      >
         <ol class="grid gap-2">
           <li v-for="step in steps" :key="step" class="flex items-center gap-2">
             <CircleCheck v-if="stepState(step) === 'done'" class="size-4 text-emerald-600" />
@@ -228,7 +246,9 @@ const cell = 'px-3 py-1.5 text-left'
           <div v-else class="mt-3 flex flex-wrap items-center gap-3">
             <p class="flex items-center gap-1.5 font-medium text-emerald-700 dark:text-emerald-400">
               <CircleCheck class="size-4" />
-              {{ t('updates.done', { at: when(run.finished_at) }) }}
+              {{
+                t(run.finishes ? 'updates.finished' : 'updates.done', { at: when(run.finished_at) })
+              }}
             </p>
             <Button
               v-if="overview.restart_needed"
@@ -247,6 +267,17 @@ const cell = 'px-3 py-1.5 text-left'
             v-if="run.error"
             class="max-h-60 overflow-auto rounded-md bg-zinc-900 p-3 font-mono text-xs whitespace-pre-wrap text-zinc-100"
             >{{ run.error }}</pre>
+          <div v-if="finishable && !overview.interrupted" class="flex flex-wrap items-center gap-3">
+            <p class="text-xs text-muted-foreground">{{ t('updates.finishHint') }}</p>
+            <Button
+              size="sm"
+              variant="outline"
+              class="ml-auto"
+              :disabled="busy"
+              @click="asking = 'finish'"
+              >{{ t('updates.finishTitle') }}</Button
+            >
+          </div>
         </div>
       </PageCard>
 
@@ -408,11 +439,27 @@ const cell = 'px-3 py-1.5 text-left'
 
     <ConfirmDialog
       :open="asking !== null"
-      :title="asking === 'restart' ? t('desktop.restartTitle') : t('updates.confirmTitle')"
-      :description="
-        asking === 'restart' ? t('desktop.restartDescription') : t('updates.confirmHint')
+      :title="
+        asking === 'restart'
+          ? t('desktop.restartTitle')
+          : asking === 'finish'
+            ? t('updates.confirmFinishTitle')
+            : t('updates.confirmTitle')
       "
-      :confirm-label="asking === 'restart' ? t('desktop.restartAction') : t('updates.updateNow')"
+      :description="
+        asking === 'restart'
+          ? t('desktop.restartDescription')
+          : asking === 'finish'
+            ? t('updates.confirmFinishHint')
+            : t('updates.confirmHint')
+      "
+      :confirm-label="
+        asking === 'restart'
+          ? t('desktop.restartAction')
+          : asking === 'finish'
+            ? t('updates.finishTitle')
+            : t('updates.updateNow')
+      "
       :cancel-label="t('desktop.cancel')"
       @update:open="(value: boolean) => !value && (asking = null)"
       @confirm="confirmed"

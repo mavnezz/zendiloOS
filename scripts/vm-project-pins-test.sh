@@ -12,7 +12,9 @@
 #      still shows the pinned folder, a redeploy is refused until the folder
 #      is back
 #   4. the confirmed file binds another folder: the container is made again
-#      on another pin, and back
+#      on another pin, and back; a deploy that fails (an image no registry
+#      has) leaves pinned what the running container mounts, and nothing
+#      else
 #   5. a named volume of the local driver with `o: rbind` onto a folder in
 #      the share mounts a pin too, also when the folder becomes a link; one
 #      whose device is relative (Compose leaves it so, Docker would take it
@@ -191,6 +193,29 @@ vm "sudo test -d $folder/other" || fail "the new folder was not made"
 change "$compose"
 [[ $(mounted /data) == "$first_pin" ]] || fail "back: /data from $(mounted /data)"
 [[ $(inside) == from-container ]] || fail "back: the container sees $(inside)"
+
+say "4b. A deploy that fails leaves the pins to what runs"
+pinned_now() { vm "sudo ls -1 $pins | sort | tr '\n' ' '"; }
+listed_now() { vm "sudo cat $kept" | jq -r '."x-zendiloos".pins[].at' | xargs -rn1 basename | sort | tr '\n' ' '; }
+before=$(pinned_now)
+[[ $(listed_now) == "$before" ]] || fail "the kept file lists $(listed_now), $before are pinned"
+# Another folder, and an image no registry has: the new folder is pinned
+# for `up`, which fails before it makes the container anew.
+broken=${compose/alpine:3.20/zendiloos.invalid\/missing:1}
+broken=${broken/.\/data:/.\/failed:}
+[[ $(status PUT "/docker/projects/$project/compose" "$(jq -n --arg c "$broken" '{compose:$c}')") == 202 ]] \
+    || fail "change: $(cat "$work/last")"
+state=$(job_end "$(jq -r .id "$work/last")")
+[[ $state == failed* ]] || fail "a deploy of a missing image: $state"
+running || fail "the container stopped"
+[[ $(mounted /data) == "$first_pin" ]] || fail "after the failure /data from $(mounted /data)"
+[[ $(pinned_now) == "$before" ]] || fail "pinned after the failure: $(pinned_now), before: $before"
+[[ $(listed_now) == "$before" ]] || fail "the kept file lists $(listed_now) after the failure"
+vm "sudo docker restart $container" >/dev/null
+wait_for "the container again" running 60
+[[ $(inside) == from-container ]] || fail "after Docker's own restart the container sees: $(inside)"
+change "$compose"
+[[ $(pinned_now) == "$before" ]] || fail "pinned after the redeploy: $(pinned_now), before: $before"
 
 [[ $(status POST "/shares/$share_id/delete" "{\"confirm\":\"$share\"}") == 409 ]] \
     || fail "the share a project lives in went: $(cat "$work/last")"

@@ -7,7 +7,8 @@ use zendiloos_kernel::{PortError, RequestContext, Timestamp};
 
 use crate::application::ports::{HostError, HostPackages, ReleaseSource, UpdateStore};
 use crate::domain::{
-    Asset, CheckResult, HostReport, PackageUpdate, Release, RunState, UpdateRun, UpdateSettings, channel_of,
+    Asset, Channel, CheckResult, HostReport, PackageUpdate, Release, RunState, UpdateRun, UpdateSettings,
+    channel_of,
 };
 
 /// A release as GitHub would list it.
@@ -47,8 +48,17 @@ impl ReleaseSource for FakeReleases {
 /// apt on a NAS with `packages` to upgrade; an update finishes at once.
 pub struct FakeHost {
     pub packages: Mutex<Vec<PackageUpdate>>,
+    /// The latest run, and the last that installed ([`FakeHost::record`]
+    /// keeps both as the runner does).
     pub run: Mutex<Option<UpdateRun>>,
+    pub update: Mutex<Option<UpdateRun>>,
+    /// The release of each update started, and the channel it was for.
     pub started: Mutex<Vec<Option<String>>>,
+    pub channels: Mutex<Vec<Channel>>,
+    /// dpkg left packages half done, until an update is finished.
+    pub interrupted: Mutex<bool>,
+    /// How often finishing an update was started.
+    pub finished: Mutex<usize>,
 }
 
 impl Default for FakeHost {
@@ -62,30 +72,45 @@ impl Default for FakeHost {
         Self {
             packages: Mutex::new(vec![package("openssl", true), package("tzdata", false)]),
             run: Mutex::default(),
+            update: Mutex::default(),
             started: Mutex::default(),
+            channels: Mutex::default(),
+            interrupted: Mutex::default(),
+            finished: Mutex::default(),
         }
     }
 }
 
 impl FakeHost {
+    /// Records a run as the NAS's runner does: as the latest, and one that
+    /// installs as the last update too.
+    pub fn record(&self, run: UpdateRun) {
+        if run.installs {
+            *self.update.lock().unwrap() = Some(run.clone());
+        }
+        *self.run.lock().unwrap() = Some(run);
+    }
+
     fn report(&self) -> HostReport {
         HostReport {
             packages: self.packages.lock().unwrap().clone(),
             running_kernel: "6.12.48+deb13-amd64".into(),
             newest_kernel: Some("6.12.48+deb13-amd64".into()),
             zfs_ready: true,
+            interrupted: *self.interrupted.lock().unwrap(),
         }
     }
 }
 
 #[async_trait]
 impl HostPackages for FakeHost {
-    /// As on the NAS, a check is a run too: its record replaces the last.
+    /// As on the NAS, a check is a run too: its record replaces the latest.
     async fn check(&self, _: &RequestContext) -> Result<HostReport, HostError> {
         let report = self.report();
-        *self.run.lock().unwrap() = Some(UpdateRun {
+        self.record(UpdateRun {
             id: format!("check{}", self.started.lock().unwrap().len()),
             installs: false,
+            finishes: false,
             state: RunState::Succeeded,
             step: "lists".into(),
             started_at: Timestamp::from_unix_seconds(300),
@@ -97,13 +122,20 @@ impl HostPackages for FakeHost {
         Ok(report)
     }
 
-    async fn start(&self, release: Option<&Release>, _: &RequestContext) -> Result<String, HostError> {
+    async fn start(
+        &self,
+        release: Option<&Release>,
+        channel: Channel,
+        _: &RequestContext,
+    ) -> Result<String, HostError> {
         self.started.lock().unwrap().push(release.map(|release| release.version.clone()));
+        self.channels.lock().unwrap().push(channel);
         self.packages.lock().unwrap().clear();
         let id = format!("run{}", self.started.lock().unwrap().len());
-        *self.run.lock().unwrap() = Some(UpdateRun {
+        self.record(UpdateRun {
             id: id.clone(),
             installs: true,
+            finishes: false,
             state: RunState::Succeeded,
             step: "modules".into(),
             started_at: Timestamp::from_unix_seconds(100),
@@ -115,8 +147,32 @@ impl HostPackages for FakeHost {
         Ok(id)
     }
 
+    /// Finishes at once: nothing is left half done.
+    async fn finish(&self, _: &RequestContext) -> Result<String, HostError> {
+        *self.interrupted.lock().unwrap() = false;
+        *self.finished.lock().unwrap() += 1;
+        let id = format!("finish{}", self.finished.lock().unwrap());
+        self.record(UpdateRun {
+            id: id.clone(),
+            installs: true,
+            finishes: true,
+            state: RunState::Succeeded,
+            step: "modules".into(),
+            started_at: Timestamp::from_unix_seconds(400),
+            finished_at: Some(Timestamp::from_unix_seconds(450)),
+            error: None,
+            zendiloos: None,
+            report: Some(self.report()),
+        });
+        Ok(id)
+    }
+
     async fn latest(&self, _: &RequestContext) -> Result<Option<UpdateRun>, HostError> {
         Ok(self.run.lock().unwrap().clone())
+    }
+
+    async fn last_update(&self, _: &RequestContext) -> Result<Option<UpdateRun>, HostError> {
+        Ok(self.update.lock().unwrap().clone())
     }
 }
 

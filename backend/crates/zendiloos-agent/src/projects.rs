@@ -13,14 +13,15 @@
 //! kept by root as `/etc/zendiloos/projects/<project>.json`, and Compose
 //! runs that file.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use zendiloos_agent_proto::{AppFolder, ProjectConfig, ProjectName, Response};
+use tokio::time::Instant;
+use zendiloos_agent_proto::{AppFolder, DOCKER_AROUND, DOCKER_WORK, ProjectConfig, ProjectName, Response};
 use zendiloos_exec::{Limits, Program, Surroundings};
 
 use crate::app_shares::{self, Found, Owner, Pin};
@@ -28,8 +29,15 @@ use crate::apps::{DOCKER_ENVIRONMENT, EXTENSION};
 use crate::operations::OperationError;
 use crate::pools::HostPaths;
 
-/// Pulling images and starting containers.
-const LONG: Limits = Limits { timeout: Duration::from_secs(30 * 60), max_stdout: 1024 * 1024 };
+/// What Compose writes, kept at most.
+const MAX_STDOUT: usize = 1024 * 1024;
+/// A look at what a project's containers and volumes mount.
+const LOOK: Limits = Limits { timeout: Duration::from_secs(60), max_stdout: 16 * 1024 * 1024 };
+/// A deploy's calls besides Compose's work, within [`DOCKER_AROUND`]: the
+/// pinning unit placed and restarted twice (three calls of systemctl each),
+/// and three looks at what the project mounts.
+const _: () =
+    assert!(6 * app_shares::SYSTEMCTL_SECONDS + 3 * LOOK.timeout.as_secs() <= DOCKER_AROUND.as_secs());
 
 #[derive(Debug)]
 pub(crate) struct Projects {
@@ -50,8 +58,13 @@ impl Projects {
         Owner::Project(project).kept(&self.paths).exists()
     }
 
-    /// Pins the binds of `config`, keeps it, and brings the project up from
-    /// it; with `pull`, its images are fetched first.
+    /// Brings the project up from `config`: with `pull`, its images are
+    /// fetched first, from a file of their own, while what runs keeps its
+    /// pins; then the binds of `config` are pinned beside those, `config` is
+    /// kept and the project comes up from it; then what its containers no
+    /// longer mount is unpinned, after a failure too: the pins are left to
+    /// what the containers mount then. Pulling and bringing up share one
+    /// budget, [`DOCKER_WORK`].
     pub(crate) async fn deploy(
         &self,
         project: &ProjectName,
@@ -59,6 +72,7 @@ impl Projects {
         pull: bool,
     ) -> Result<Response, OperationError> {
         let _serial = crate::waiting::lock(&self.serial).await?;
+        let until = Instant::now() + DOCKER_WORK;
         let owner = Owner::Project(project);
         let mut normalized: Value = serde_json::from_str(config.as_str())
             .map_err(|_| OperationError::Refused("the project cannot be read".into()))?;
@@ -71,20 +85,97 @@ impl Projects {
             let places = |id: &str| app_shares::pin_path(&self.paths, owner, id);
             pin_binds(&mut normalized, &volumes, &places)?
         };
-        if let Some(root) = normalized.as_object_mut() {
-            root.insert(EXTENSION.to_owned(), json!({ "pins": pins }));
-        }
-        keep(&self.paths.projects, &owner.kept(&self.paths), &normalized)?;
-        app_shares::place_unit(&self.systemctl, &self.paths, owner, &pins).await?;
-        if !pins.is_empty() {
-            app_shares::repin(&self.systemctl, owner).await?;
-        }
+        let kept = owner.kept(&self.paths);
         // Not quiet: what Compose writes goes to whoever deploys, line by
         // line, as it pulls and makes containers.
         if pull {
-            self.compose(project, &["pull"]).await?;
+            let fetching = kept.with_extension("json.pull");
+            keep(&self.paths.projects, &fetching, &with_pins(&normalized, &pins))?;
+            let pulled = self.compose(project, &fetching, &["pull"], until).await;
+            let _ = fs::remove_file(&fetching);
+            pulled?;
         }
-        self.compose(project, &["up", "--detach", "--remove-orphans"]).await
+        let before = self.kept_file(owner);
+        let pinned = beside(&pins, &before.as_ref().map(|(_, pins)| pins.clone()).unwrap_or_default());
+        if let Err(error) = self.pin(owner, &with_pins(&normalized, &pinned), &pinned).await {
+            // What runs keeps what it mounted: the file and pins before.
+            if let Some((normalized, pins)) = &before
+                && let Err(again) = self.pin(owner, normalized, pins).await
+            {
+                tracing::warn!(error = %again, "projects: the pins before the deploy are not back");
+            }
+            return Err(error);
+        }
+        let up = self.compose(project, &kept, &["up", "--detach", "--remove-orphans"], until).await;
+        let left = left_after(pinned, &pins, self.mounted(project).await.as_ref(), up.is_ok());
+        let settled = self.pin(owner, &with_pins(&normalized, &left), &left).await;
+        let done = up?;
+        settled?;
+        Ok(done)
+    }
+
+    /// The file kept from the last deploy and its pins; none if there is no
+    /// such file or it cannot be read.
+    fn kept_file(&self, owner: Owner<'_>) -> Option<(Value, Vec<Pin>)> {
+        let text = fs::read_to_string(owner.kept(&self.paths)).ok()?;
+        let normalized: Value = serde_json::from_str(&text).ok()?;
+        let pins = app_shares::pins_of(&normalized).ok()?;
+        Some((normalized, pins))
+    }
+
+    /// Keeps `normalized` and has its unit pin `pins`, and nothing else.
+    async fn pin(&self, owner: Owner<'_>, normalized: &Value, pins: &[Pin]) -> Result<(), OperationError> {
+        keep(&self.paths.projects, &owner.kept(&self.paths), normalized)?;
+        app_shares::place_unit(&self.systemctl, &self.paths, owner, pins).await?;
+        if !pins.is_empty() {
+            app_shares::repin(&self.systemctl, owner).await?;
+        }
+        Ok(())
+    }
+
+    /// What the project's containers mount, whether they run or not: the
+    /// sources of their binds, and what the volumes they use bind (their
+    /// devices); `None` if Docker cannot say.
+    async fn mounted(&self, project: &ProjectName) -> Option<BTreeSet<String>> {
+        let filter = format!("label=com.docker.compose.project={}", project.as_str());
+        let listed = self.printed(&["ps", "--all", "--quiet", "--no-trunc", "--filter", &filter]).await?;
+        let mut mounted = BTreeSet::new();
+        if listed.trim().is_empty() {
+            return Some(mounted);
+        }
+        let inspect: Vec<&str> =
+            ["container", "inspect"].into_iter().chain(listed.split_whitespace()).collect();
+        let described: Vec<Value> = serde_json::from_str(&self.printed(&inspect).await?).ok()?;
+        let mut volumes = Vec::new();
+        for mount in
+            described.iter().flat_map(|container| container["Mounts"].as_array().into_iter().flatten())
+        {
+            match (mount["Type"].as_str(), mount["Name"].as_str(), mount["Source"].as_str()) {
+                (Some("volume"), Some(name), _) => volumes.push(name),
+                (_, _, Some(source)) => {
+                    mounted.insert(source.to_owned());
+                }
+                _ => {}
+            }
+        }
+        if !volumes.is_empty() {
+            volumes.sort_unstable();
+            volumes.dedup();
+            let inspect: Vec<&str> = ["volume", "inspect"].into_iter().chain(volumes).collect();
+            let described: Vec<Value> = serde_json::from_str(&self.printed(&inspect).await?).ok()?;
+            mounted.extend(
+                described.iter().filter_map(|volume| volume["Options"]["device"].as_str().map(str::to_owned)),
+            );
+        }
+        Some(mounted)
+    }
+
+    /// What `docker` printed, if it answered.
+    async fn printed(&self, args: &[&str]) -> Option<String> {
+        let output = zendiloos_exec::run_with(&self.docker, args, None, &crate::docker::surroundings(), LOOK)
+            .await
+            .ok()?;
+        output.status.success().then(|| String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
     /// Takes the project's containers and networks down and removes what
@@ -92,9 +183,9 @@ impl Projects {
     pub(crate) async fn down(&self, project: &ProjectName) -> Result<Response, OperationError> {
         let _serial = crate::waiting::lock(&self.serial).await?;
         let owner = Owner::Project(project);
-        self.compose(project, &["down", "--remove-orphans"]).await?;
-        app_shares::remove_unit(&self.systemctl, &self.paths, owner).await?;
         let kept = owner.kept(&self.paths);
+        self.compose(project, &kept, &["down", "--remove-orphans"], Instant::now() + DOCKER_WORK).await?;
+        app_shares::remove_unit(&self.systemctl, &self.paths, owner).await?;
         match fs::remove_file(&kept) {
             Ok(()) => Ok(Response::Done),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Response::Done),
@@ -102,10 +193,24 @@ impl Projects {
         }
     }
 
-    /// `docker compose` on the kept file, nothing else read; what it writes
-    /// is reported line by line ([`crate::progress::line`]).
-    async fn compose(&self, project: &ProjectName, args: &[&str]) -> Result<Response, OperationError> {
-        let path = Owner::Project(project).kept(&self.paths).to_string_lossy().into_owned();
+    /// `docker compose` on `file`, one root keeps, nothing else read, given
+    /// up at `until`; what it writes is reported line by line
+    /// ([`crate::progress::line`]).
+    async fn compose(
+        &self,
+        project: &ProjectName,
+        file: &Path,
+        args: &[&str],
+        until: Instant,
+    ) -> Result<Response, OperationError> {
+        let timeout = until.saturating_duration_since(Instant::now());
+        if timeout.is_zero() {
+            return Err(OperationError::Failed(format!(
+                "Docker Compose did not finish within {} minutes",
+                DOCKER_WORK.as_secs() / 60
+            )));
+        }
+        let path = file.to_string_lossy().into_owned();
         let mut all =
             vec!["compose", "--file", &path, "--env-file", "/dev/null", "--project-name", project.as_str()];
         all.extend_from_slice(args);
@@ -113,8 +218,9 @@ impl Projects {
             variables: DOCKER_ENVIRONMENT.iter().map(|(n, v)| ((*n).to_owned(), (*v).to_owned())).collect(),
             directory: None,
         };
+        let limits = Limits { timeout, max_stdout: MAX_STDOUT };
         let output =
-            zendiloos_exec::run_lines(&self.docker, &all, &surroundings, LONG, &mut crate::progress::line)
+            zendiloos_exec::run_lines(&self.docker, &all, &surroundings, limits, &mut crate::progress::line)
                 .await?;
         if output.status.success() {
             return Ok(Response::Done);
@@ -134,6 +240,36 @@ struct Volumes<'a> {
     mounted: &'a dyn Fn(&Path) -> bool,
     /// What is at a folder of a mounted share or volume.
     find: &'a dyn Fn(&Path, &AppFolder) -> Result<Found, OperationError>,
+}
+
+/// `normalized` with `pins` as the pins its unit mounts.
+fn with_pins(normalized: &Value, pins: &[Pin]) -> Value {
+    let mut normalized = normalized.clone();
+    if let Some(root) = normalized.as_object_mut() {
+        root.insert(EXTENSION.to_owned(), json!({ "pins": pins }));
+    }
+    normalized
+}
+
+/// `pins`, and those of `before` at places `pins` has not.
+fn beside(pins: &[Pin], before: &[Pin]) -> Vec<Pin> {
+    let mut all = pins.to_vec();
+    all.extend(before.iter().filter(|old| !pins.iter().any(|pin| pin.at == old.at)).cloned());
+    all
+}
+
+/// Of the pins a deploy held while Compose made the containers, those to
+/// keep: what the project's containers and volumes mount now, and, once it
+/// came up, what its new file binds. All of them while Docker cannot say
+/// what is mounted: nothing is pulled from under a container.
+fn left_after(
+    pinned: Vec<Pin>,
+    wanted: &[Pin],
+    mounted: Option<&BTreeSet<String>>,
+    came_up: bool,
+) -> Vec<Pin> {
+    let Some(mounted) = mounted else { return pinned };
+    pinned.into_iter().filter(|pin| mounted.contains(&pin.at) || (came_up && wanted.contains(pin))).collect()
 }
 
 /// Points every bind of `normalized` whose source lies in a volume at a pin
@@ -557,6 +693,98 @@ mod tests {
             assert!(locate(outside, &volumes).unwrap().is_none(), "{outside}");
         }
         assert!(locate("/volume1/docker/a/../b", &volumes).is_err(), "no way out with ..");
+    }
+
+    fn pin_at(id: &str) -> Pin {
+        Pin {
+            share: "/volume1/docker".into(),
+            folder: AppFolder::parse(id).unwrap(),
+            at: format!("/run/zendiloos-project-shares/web/{id}"),
+            file: false,
+            create: false,
+        }
+    }
+
+    #[test]
+    fn a_deploy_keeps_what_runs_pinned_and_lets_go_of_the_rest() {
+        let (old, kept, new) = (pin_at("old"), pin_at("kept"), pin_at("new"));
+        let pinned = beside(&[kept.clone(), new.clone()], &[old.clone(), kept.clone()]);
+        assert_eq!(pinned, [kept.clone(), new.clone(), old.clone()], "each place once, the new file's first");
+        let mounting = |pins: &[&Pin]| pins.iter().map(|pin| pin.at.clone()).collect::<BTreeSet<String>>();
+
+        // Up: the containers mount what the new file binds; the old pin goes.
+        let up =
+            left_after(pinned.clone(), &[kept.clone(), new.clone()], Some(&mounting(&[&kept, &new])), true);
+        assert_eq!(up, [kept.clone(), new.clone()]);
+        // Failed before anything was made anew: back to what runs.
+        let failed =
+            left_after(pinned.clone(), &[kept.clone(), new.clone()], Some(&mounting(&[&old, &kept])), false);
+        assert_eq!(failed, [kept.clone(), old.clone()]);
+        // Failed halfway: what either kind of container mounts stays.
+        let halfway = left_after(pinned.clone(), &[], Some(&mounting(&[&old, &new])), false);
+        assert_eq!(halfway, [new.clone(), old.clone()]);
+        // Docker cannot say: nothing goes.
+        assert_eq!(left_after(pinned.clone(), &[], None, false), pinned);
+    }
+
+    #[tokio::test]
+    async fn what_the_containers_mount_is_asked_of_docker() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let folder = tempfile::tempdir().unwrap();
+        let docker = folder.path().join("docker");
+        let pins = "/run/zendiloos-project-shares/web";
+        let script = format!(
+            r#"#!/bin/sh
+case "$*" in
+  "ps --all --quiet --no-trunc --filter label=com.docker.compose.project=web") printf 'aaa\nbbb\n' ;;
+  "ps --all --quiet --no-trunc --filter label=com.docker.compose.project=gone") ;;
+  "ps --all --quiet --no-trunc --filter label=com.docker.compose.project=broken") exit 1 ;;
+  "container inspect aaa bbb") echo '[{{"Mounts":[{{"Type":"bind","Source":"{pins}/1"}},{{"Type":"volume","Name":"web_music","Source":"/var/lib/docker/volumes/web_music/_data"}}]}},{{"Mounts":[{{"Type":"bind","Source":"{pins}/2"}},{{"Type":"volume","Name":"web_music"}}]}}]' ;;
+  "volume inspect web_music") echo '[{{"Options":{{"device":"{pins}/3","o":"rbind","type":"none"}}}}]' ;;
+  *) exit 1 ;;
+esac
+"#
+        );
+        fs::write(&docker, script).unwrap();
+        fs::set_permissions(&docker, fs::Permissions::from_mode(0o755)).unwrap();
+        let projects = Projects::new(
+            Program::new(&docker).unwrap(),
+            Program::new("/bin/true").unwrap(),
+            HostPaths::default(),
+        );
+        let mounted = projects.mounted(&ProjectName::parse("web").unwrap()).await.unwrap();
+        let expected: BTreeSet<String> = [1, 2, 3].iter().map(|n| format!("{pins}/{n}")).collect();
+        assert_eq!(mounted, expected);
+        assert_eq!(projects.mounted(&ProjectName::parse("gone").unwrap()).await, Some(BTreeSet::new()));
+        assert_eq!(projects.mounted(&ProjectName::parse("broken").unwrap()).await, None, "Docker cannot say");
+    }
+
+    #[tokio::test]
+    async fn pull_and_up_share_one_budget() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let folder = tempfile::tempdir().unwrap();
+        let log = folder.path().join("calls.log");
+        let docker = folder.path().join("docker");
+        fs::write(&docker, format!("#!/bin/sh\necho \"$*\" >> {}\nsleep 5\n", log.display())).unwrap();
+        fs::set_permissions(&docker, fs::Permissions::from_mode(0o755)).unwrap();
+        let paths = HostPaths { projects: folder.path().join("projects"), ..HostPaths::default() };
+        let projects =
+            Projects::new(Program::new(&docker).unwrap(), Program::new("/bin/true").unwrap(), paths);
+        let project = ProjectName::parse("web").unwrap();
+        let kept = folder.path().join("web.json");
+
+        // A pull that takes the budget up: given up when it is spent, and
+        // nothing is left to bring the containers up with.
+        let began = std::time::Instant::now();
+        let until = Instant::now() + std::time::Duration::from_millis(300);
+        assert!(projects.compose(&project, &kept, &["pull"], until).await.is_err());
+        assert!(began.elapsed() < std::time::Duration::from_secs(4), "not waited for");
+        let up = projects.compose(&project, &kept, &["up", "--detach"], until).await.unwrap_err();
+        assert!(up.to_string().contains("did not finish within 30 minutes"), "{up}");
+        let calls = fs::read_to_string(&log).unwrap();
+        assert_eq!(calls.lines().filter(|call| call.ends_with(" up --detach")).count(), 0, "{calls}");
     }
 
     #[test]

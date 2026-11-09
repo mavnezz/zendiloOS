@@ -139,6 +139,8 @@ struct SimPackages {
     /// Kept while Docker is installed, with share contents.
     marker: Option<PathBuf>,
     run: Option<(PackageRun, std::time::Instant)>,
+    /// The last update, kept apart as the runner keeps it.
+    update: Option<(PackageRun, std::time::Instant)>,
     runs: u64,
     /// Debian has updates for the simulated system, until one is installed.
     pending: bool,
@@ -149,7 +151,15 @@ struct SimPackages {
 impl SimPackages {
     /// The latest run as it stands now: a step a second or two.
     fn current(&self) -> Option<PackageRun> {
-        let (run, started) = self.run.as_ref()?;
+        self.run.as_ref().map(|run| self.as_now(run))
+    }
+
+    /// The last update as it stands now.
+    fn last_update(&self) -> Option<PackageRun> {
+        self.update.as_ref().map(|run| self.as_now(run))
+    }
+
+    fn as_now(&self, (run, started): &(PackageRun, std::time::Instant)) -> PackageRun {
         let mut run = run.clone();
         let steps: &[(u64, &str)] = match run.task {
             PackageTask::InstallDocker | PackageTask::InstallAcme => &[(0, "lists"), (1, "install"), (3, "")],
@@ -158,6 +168,7 @@ impl SimPackages {
                 &[(0, "lists"), (1, "debian"), (3, "zendiloos"), (4, "modules"), (5, "")]
             }
             PackageTask::Update => &[(0, "lists"), (1, "debian"), (3, "modules"), (4, "")],
+            PackageTask::Finish => &[(0, "configure"), (1, "repair"), (2, "modules"), (3, "")],
         };
         let elapsed = started.elapsed().as_secs();
         for (at, step) in steps {
@@ -175,7 +186,7 @@ impl SimPackages {
                 run.step = (*step).to_owned();
             }
         }
-        Some(run)
+        run
     }
 
     /// What apt would say: a security update, another one and a new kernel
@@ -201,6 +212,7 @@ impl SimPackages {
             running_kernel: "6.12.48+deb13-amd64".into(),
             newest_kernel: Some(if updated { "6.12.57+deb13-amd64" } else { "6.12.48+deb13-amd64" }.into()),
             zfs_ready: true,
+            interrupted: false,
         }
     }
 }
@@ -315,6 +327,7 @@ impl SimulatedAgent {
                 acme: false,
                 marker: None,
                 run: None,
+                update: None,
                 runs: 0,
                 pending: true,
                 updated: false,
@@ -621,20 +634,31 @@ impl AgentTransport for SimulatedAgent {
                 if packages.current().is_some_and(|run| run.state == PackageRunState::Running) {
                     return Ok(error(ErrorCode::Forbidden, "refused: apt is busy with another run"));
                 }
+                if let Some(release) = release
+                    && !release.channel.takes(release.package.kind())
+                {
+                    let refused =
+                        format!("refused: the {} channel does not take it", release.channel.as_str());
+                    return Ok(error(ErrorCode::Forbidden, &refused));
+                }
                 packages.runs += 1;
                 let id = format!("{:016x}", packages.runs);
                 let run = PackageRun {
                     id: id.clone(),
                     task: *task,
                     state: PackageRunState::Running,
-                    step: "lists".into(),
+                    step: if *task == PackageTask::Finish { "configure" } else { "lists" }.into(),
                     started_at: i64::try_from((self.clock)()).unwrap_or(i64::MAX),
                     finished_at: None,
                     error: None,
-                    release: release.as_ref().map(|release| release.version().to_owned()),
+                    release: release.as_ref().map(|release| release.package.version().to_owned()),
                     report: None,
                 };
-                packages.run = Some((run, std::time::Instant::now()));
+                let now = std::time::Instant::now();
+                if task.updates() {
+                    packages.update = Some((run.clone(), now));
+                }
+                packages.run = Some((run, now));
                 Response::PackagesStarted { id }
             }
             Request::PackagesState {} => {
@@ -660,7 +684,8 @@ impl AgentTransport for SimulatedAgent {
                 }) {
                     packages.acme = true;
                 }
-                Response::Packages { run }
+                let update = packages.last_update().map(Box::new);
+                Response::Packages { run, update }
             }
             Request::EnableDocker { .. }
                 if !self.packages.lock().unwrap_or_else(PoisonError::into_inner).docker =>
@@ -1592,7 +1617,7 @@ mod tests {
         let busy =
             agent.call(Request::StartPackages { task: PackageTask::Update, release: None }, None).await;
         refused(&busy.unwrap(), ErrorCode::Forbidden);
-        let Response::Packages { run: Some(run) } =
+        let Response::Packages { run: Some(run), .. } =
             agent.call(Request::PackagesState {}, None).await.unwrap()
         else {
             panic!()

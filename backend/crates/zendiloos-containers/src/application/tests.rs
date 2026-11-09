@@ -447,21 +447,64 @@ async fn newer_images_are_found_and_their_projects_updated() {
     panic!("not audited");
 }
 
+/// A clock to set, at UTC.
+struct Settable(Mutex<zendiloos_kernel::Timestamp>);
+
+impl zendiloos_kernel::Clock for Settable {
+    fn now(&self) -> zendiloos_kernel::Timestamp {
+        *self.0.lock().unwrap()
+    }
+}
+
 #[tokio::test]
-async fn updates_come_on_schedule_only_when_due() {
-    let (t, _) = setup();
+async fn updates_come_on_schedule_once_due_also_when_the_minute_was_missed() {
+    // Monday 2 November 2026, midnight UTC.
+    const MONDAY: i64 = 1_793_577_600;
+    let at = |seconds: i64| zendiloos_kernel::Timestamp::from_unix_seconds(MONDAY + seconds);
+    let clock = Arc::new(Settable(Mutex::new(at(0))));
+    let t = TestContainers::new(Arc::new(Audit::default()), clock.clone());
+    // Wednesdays at 05:40.
     let schedule = UpdateSchedule { days: [false, false, true, false, false, false, false], minute: 340 };
     let settings = UpdateSettings { check: true, schedule: Some(schedule) };
     t.containers.set_update_settings(settings, &alice(), &context()).await.unwrap();
+    let wednesday = 2 * 86_400 + 340 * 60;
 
-    assert!(t.containers.scheduled(2, 339).await.unwrap().is_none());
+    *clock.0.lock().unwrap() = at(wednesday - 60);
+    assert!(t.containers.run_schedule().await.unwrap().is_none());
     assert!(t.engine.calls().is_empty(), "not even checked");
-    assert!(t.containers.scheduled(2, 340).await.unwrap().is_some());
+    // The minute passes unseen (asleep, busy): the next look updates, once.
+    *clock.0.lock().unwrap() = at(wednesday + 3 * 3600);
+    assert!(t.containers.run_schedule().await.unwrap().is_some());
     asked(&t, "project up stack").await;
+    *clock.0.lock().unwrap() = at(wednesday + 3 * 3600 + 60);
+    assert!(t.containers.run_schedule().await.unwrap().is_none(), "once");
+    *clock.0.lock().unwrap() = at(wednesday + 6 * 86_400);
+    assert!(t.containers.run_schedule().await.unwrap().is_none(), "not before next Wednesday");
+
+    // Put back from a clock that was ahead: due from now on.
+    *t.updates.since.lock().unwrap() = Some(at(wednesday + 30 * 86_400));
+    *clock.0.lock().unwrap() = at(wednesday + 7 * 86_400 + 60);
+    assert!(t.containers.run_schedule().await.unwrap().is_none());
+    assert_eq!(*t.updates.since.lock().unwrap(), Some(at(wednesday + 7 * 86_400 + 60)));
+    *clock.0.lock().unwrap() = at(wednesday + 14 * 86_400);
+    assert!(t.containers.run_schedule().await.unwrap().is_some());
 
     let unchecked = UpdateSettings { check: false, schedule: Some(schedule) };
     let refused = t.containers.set_update_settings(unchecked, &alice(), &context()).await;
     assert!(matches!(refused, Err(ContainersError::Invalid(_))), "{refused:?}");
+}
+
+#[tokio::test]
+async fn a_schedule_set_by_an_earlier_version_counts_from_now_on() {
+    let (t, _) = setup();
+    let schedule = UpdateSchedule { days: [true; 7], minute: 0 };
+    t.containers
+        .set_update_settings(UpdateSettings { check: true, schedule: Some(schedule) }, &alice(), &context())
+        .await
+        .unwrap();
+    *t.updates.since.lock().unwrap() = None;
+    assert!(t.containers.run_schedule().await.unwrap().is_none(), "no update right after the upgrade");
+    assert!(t.updates.since.lock().unwrap().is_some());
 }
 
 #[tokio::test]

@@ -1248,7 +1248,13 @@ TLS is rustls with ring and the system's certificate authorities
   programs it runs are not stopped with it, `TimeoutStopSec=2h`). zendiloosd waits two minutes for a quick system request
   and two hours for a long one, ten minutes and a day for files requests
   (copies, moves, the walk of a share), so once begun, a change is
-  seen through and its outcome reported.
+  seen through and its outcome reported. Docker's work (fetching images,
+  making containers, a deploy) has one budget of 30 minutes per request,
+  a deploy's pull and its containers together (`DOCKER_WORK`), and 20
+  minutes more at most for the units that pin its folders and the looks
+  at what its containers mount; zendiloosd waits twice their sum
+  (`DOCKER_PATIENCE`, 100 minutes), so the agent's half for a turn and the
+  work both fit before it gives up.
 - Every change to a pool, scrubs included, requires its `zendiloos:volume`
   property: pools the owner made stay untouched.
 - Known limits: with `erasable = "unused"`, a compromised `zendiloosd` could
@@ -1573,7 +1579,14 @@ as it reads (a relative device starts where Docker runs, at `/`; Compose
 makes it absolute only for `o: bind` itself), and it could reach a share
 unpinned. It keeps the result as
 `/etc/zendiloos/projects/<project>.json` and runs Compose on that file with
-an empty `.env`; `down` removes it again. A project made before this was
+an empty `.env`; `down` removes it again. A deploy changes nothing of
+what runs before its images are there: it pulls from a file of its own
+(`<project>.json.pull`, removed afterwards), then pins the new binds
+beside the old ones, keeps the file and brings the project up, then asks
+Docker what the project's containers and volumes mount and leaves pinned
+only that (and, once it came up, the new binds), after a failure too, so
+neither a container Docker restarts loses its folder nor do pins of a
+failed deploy linger; while Docker cannot say, every pin stays. A project made before this was
 kept runs once its file is saved again. A project made elsewhere whose
 Compose file lies in a share is not deployed here, for the same reason,
 nor one that binds a folder or file in a share (below the share's root,
@@ -1600,7 +1613,13 @@ registries for the digest under each tag the containers run, with a
 `HEAD` of the manifest (anonymous tokens where a registry wants one; no
 pull counted), and compares it with the image's digests. On a schedule
 (days of the week and a time, the machine's local time) or by hand,
-projects with a newer image are pulled and brought up again; containers
+projects with a newer image are pulled and brought up again. The schedule
+is due as a backup plan is, with the same calendar (daylight saving time
+included): once its latest time lies after it was set or last ran
+(`docker_update_settings.schedule_since`), so a minute missed (the NAS
+off, asleep or busy, its clock changed) is made up once at the next
+look, a clock that was ahead counts from when it is right, and one set
+before that was kept counts from the first look; containers
 outside a project are only pulled for, apps of catalogs left to the App
 Center, images pinned by digest never looked at. A container with a newer
 image says so in the list, which also says how many can be updated; one
@@ -2016,18 +2035,54 @@ binary as `run-packages <id> <task>` outside the sandbox; the runner records
 each step in `/var/lib/zendiloos-packages/run.json`, which the agent reads
 back. A run outlives a restart of the agent and of zendiloosd, which matters
 when it installs zendiloOS: the package's maintainer scripts restart both,
-and the page follows the run from its record once zendiloosd is back. An
-update does not start while background jobs run (`jobs_running`, the
-detail names them, recorded as denied; asked again once the release has
-come): a stopping agent first sees its running operations through, and
-the upgrade would wait for that, for hours maybe. The
-record is one file, which the next check replaces: so before a check or an
-update starts, zendiloosd says how the last update went (once) and keeps
-that run in its database, where the page still finds it. Tasks
+and the page follows the run from its record once zendiloosd is back. A
+tab left open across an update still runs the old build, whose lazily
+loaded parts are gone: when loading one fails (`vite:preloadError`), the
+page reloads once for that build (noted in `sessionStorage` with the
+entry script's URL, which names the build), and should the same build
+fail again within five minutes, a note asks to reload by hand instead of
+reloading on and on.
+
+**An update and long work exclude each other**, by refusal, never by
+waiting in a queue: an update (and finishing one) does not start while
+background jobs run (`jobs_running`, the detail names them, recorded as
+denied; asked again once the release has come): a stopping agent first
+sees its running operations through, and the upgrade would wait for that,
+for hours maybe. And from the moment an update is decided until its run
+on the NAS ended, no job starts (`Jobs` asks the update before it records
+one: backups, restores, deploys and image updates, copies, pool changes,
+a snapshot's restore, every kind) nor does a scrub: they are refused with
+`update_running` (409). A job asked to start counts as running from that
+moment, so of a job and an update that start together one sees the
+other. Schedules that come due meanwhile do not fail: backups, image
+updates and snapshots stay due and run once the update is done, a
+certificate's renewal the next day, a share's walk to share-level access
+five minutes later. The
+record of the latest run is replaced by the next one; an update's goes to
+`update.json` as well, which only the next update replaces, so a check or
+a plugin installed right after an update leaves how it went for the page
+and for its notification, which zendiloosd sends once and keeps in its
+database too (for a NAS whose last update a runner without that record
+made). Tasks
 are fixed: install Docker (`docker.io`, `docker-compose`) and the ACME
 client (`acme.sh`), the App Center's plugins; check (lists fetched, then
 `apt-get --simulate upgrade` parsed into packages, security updates marked
-by Debian's security archive); and update.
+by Debian's security archive); update; and finish an update.
+
+**An update cut off** (a power cut while DKMS builds ZFS for the new
+kernel, say) leaves packages unpacked or half configured. apt then sees
+nothing to upgrade and every install fails with "dpkg was interrupted".
+Each check and update reports it (`dpkg --audit` lists something:
+`interrupted` in the overview), and after an update that failed
+zendiloosd looks at once, without waiting for the daily check. The page
+then offers to finish the update (`POST /system/updates/finish`,
+`system.manage`, audited as `system.update_finish`): a run of the task
+`finish` in the packages unit, followed like an update and kept as the
+last update, so it survives the restart of zendiloosd that configuring
+zendiloOS's own package brings: `dpkg --configure -a`, then `apt-get
+--fix-broken install` from the lists it has, then the look at the kernel
+modules; it fails while `dpkg --audit` still lists something. It is
+refused while background jobs run, as an update is.
 
 **Releases.** zendiloosd reads the repository's releases from GitHub's API
 (`[updates]` in `zendiloosd.toml`): the package for this machine
@@ -2037,14 +2092,23 @@ release, test for a pre-release (`v1.2.0-rc.1`), development for the rolling
 release `dev` built from every commit on main. Each channel takes the
 steadier ones too; only a version newer than the running one, in dpkg's
 order, is offered, so coming back from test to stable waits for a newer
-stable release. Before an update zendiloosd downloads the three files to
+stable release. A check picks its release for the channel set when it
+ends, so a channel changed while apt fetched its lists counts, and a
+release the channel does not take is neither shown nor installed. Before an update zendiloosd downloads the three files to
 `/var/lib/zendiloos/updates`. The runner trusts none of it: it copies them
 out (never through a link, size-limited), checks the signature with the key
 the package brought along (`/usr/share/zendiloos/release-signing.pub`, or
-one an administrator put in `/etc/zendiloos`), the package's checksum, its
-name, architecture and version, and installs only a version newer than the
-installed one, so an old signed release cannot be brought back. A build
-without a key takes no updates of zendiloOS. How releases are made and
+one an administrator put in `/etc/zendiloos`), that the signature's trusted
+comment is `zendiloos <version>` of this very package (one key signs every
+build, the development build of each commit too), the package's checksum,
+its name, architecture and version, and installs only a version newer than
+the installed one, so an old signed release cannot be brought back. It is
+started with the NAS's channel (`run-packages <id> update <package>
+<channel>`, zendiloosd sends it along with the release) and takes a build
+only of a kind that channel takes, as its version says: `+dev.` only on
+development, `~rc.N` or `~beta.N` on test and development, a plain release
+everywhere, any other form as a development build. A build without a key
+takes no updates of zendiloOS. How releases are made and
 signed: `docs/releases.md`. What changed in the version that runs comes
 with its package (`/usr/share/zendiloos/changes.md`, `notes` in
 `[updates]`), read once when zendiloosd starts; the page shows it and an

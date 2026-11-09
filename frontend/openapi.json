@@ -11980,6 +11980,35 @@
         ]
       }
     },
+    "/api/v1/system/updates/finish": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Finishes an update that was cut off (`interrupted` in the overview):\ndpkg configures what it unpacked, apt completes what is missing, in a\nrun on the NAS the overview follows as `run`. Needs `system.manage`.\nRefused while background jobs run, as an update is.",
+        "operationId": "finish_system_update",
+        "responses": {
+          "202": {
+            "description": "Finishing begins."
+          },
+          "409": {
+            "description": "`update_busy`, `jobs_running` (the detail names the jobs)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/system/updates/settings": {
       "put": {
         "tags": [
@@ -21584,6 +21613,7 @@
         "required": [
           "id",
           "state",
+          "finishes",
           "step",
           "started_at",
           "restart_needed",
@@ -21603,6 +21633,10 @@
             ],
             "format": "int64"
           },
+          "finishes": {
+            "type": "boolean",
+            "description": "It finishes an update that was cut off rather than updating."
+          },
           "id": {
             "type": "string"
           },
@@ -21619,7 +21653,7 @@
           },
           "step": {
             "type": "string",
-            "description": "`lists`, `debian`, `zendiloos`, `modules`."
+            "description": "`lists`, `debian`, `zendiloos`, `modules`; finishing: `configure`,\n`repair`, `modules`."
           },
           "zendiloos": {
             "type": [
@@ -21725,7 +21759,8 @@
           "phase",
           "packages",
           "restart_needed",
-          "zfs_ready"
+          "zfs_ready",
+          "interrupted"
         ],
         "properties": {
           "checked_at": {
@@ -21746,6 +21781,10 @@
               "null"
             ],
             "description": "What changed in it, in Markdown, as its package brought it along;\nnull for a build without."
+          },
+          "interrupted": {
+            "type": "boolean",
+            "description": "dpkg left packages half installed or half configured: an update\nwas cut off, and is finished with `POST /system/updates/finish`."
           },
           "newest_kernel": {
             "type": [

@@ -1,9 +1,12 @@
 import { answer, cleanup, mountApp, on, problem } from '@/shared/testing/server'
 
 import { beforeEach, describe, expect, it } from 'vitest'
+import { nextTick } from 'vue'
 
 import { useSessionStore } from '@/features/auth/store'
 import type { SessionInfo } from '@/shared/api/types'
+import { i18n } from '@/shared/i18n'
+import { staleBuild } from '@/shared/lib/stale-build'
 
 import App from './App.vue'
 import { installNavigationGuard } from './navigation'
@@ -67,6 +70,16 @@ describe('the way to each page', () => {
     mountApp(App)
     const router = await start('/')
     expect(router.currentRoute.value.name).toBe('login')
+  })
+
+  it('asks to reload when parts of the interface failed to load again', async () => {
+    const wrapper = mountApp(App, { global: { stubs: { RouterView: true } } })
+    expect(wrapper.text()).not.toContain(i18n.global.t('app.staleBuild'))
+    staleBuild.value = true
+    await nextTick()
+    expect(wrapper.text()).toContain(i18n.global.t('app.staleBuild'))
+    expect(wrapper.find('button').text()).toBe(i18n.global.t('app.reload'))
+    staleBuild.value = false
   })
 
   it('signs out even when the server does not answer', async () => {

@@ -104,6 +104,7 @@ const KNOWN_PROBLEMS = [
   'not_checked',
   'nothing_to_update',
   'update_busy',
+  'update_running',
   'password_locked',
   'compose_risks',
   'compose_changed',

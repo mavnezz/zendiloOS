@@ -41,10 +41,10 @@ pub use apps::{
 pub use client::{AgentTransport, Report, TransportError, UnixTransport};
 pub use descriptor::{MessageReader, read_message_with_file, write_message_with_file};
 pub use docker::{
-    ArchiveDigest, BackupStem, ComposeText, ContainerAction, ContainerId, ExecCommand, FoundBackup, ImageId,
-    ImageReference, InvalidDockerName, NetworkName, ProjectAction, ProjectConfig, ProjectDirectory,
-    ProjectName, RefusedBackupFile, ShareLocation, Subnet, TerminalSize, VolumeLabels, VolumeName,
-    VolumeSize, WrittenFile,
+    ArchiveDigest, BackupStem, ComposeText, ContainerAction, ContainerId, DOCKER_AROUND, DOCKER_PATIENCE,
+    DOCKER_WORK, ExecCommand, FoundBackup, ImageId, ImageReference, InvalidDockerName, NetworkName,
+    ProjectAction, ProjectConfig, ProjectDirectory, ProjectName, RefusedBackupFile, ShareLocation, Subnet,
+    TerminalSize, VolumeLabels, VolumeName, VolumeSize, WrittenFile,
 };
 pub use files::{
     CountStop, DirectoryEntry, EntryFacts, EntryKind, FileLocation, FileRoot, FoundEntry, HOMES_DIRECTORY,
@@ -62,8 +62,8 @@ pub use network::{
     InvalidPrefix, Ipv4Config, Ipv6Config, NameServers, NetworkConfig, PendingNetwork, Prefix,
 };
 pub use packages::{
-    InvalidReleasePackage, PackageReport, PackageRun, PackageRunState, PackageTask, ReleasePackage,
-    UpgradablePackage,
+    InvalidReleasePackage, PackageReport, PackageRun, PackageRunState, PackageTask, ReleaseChannel,
+    ReleaseInstall, ReleasePackage, UpgradablePackage,
 };
 pub use removable::{
     InvalidRemovableId, MEMBER_SIGNATURES, REMOVABLE_PLACE, RemovableFilesystem, RemovableId,
@@ -246,12 +246,13 @@ pub enum Request {
     /// going on. Answers [`Response::PackagesStarted`].
     StartPackages {
         task: PackageTask,
-        /// For [`PackageTask::Update`] only: zendiloOS from this release.
+        /// For [`PackageTask::Update`] only: zendiloOS from this release,
+        /// if the NAS's channel takes its kind of build.
         #[serde(default)]
-        release: Option<ReleasePackage>,
+        release: Option<ReleaseInstall>,
     },
-    /// The latest run of apt: [`Response::Packages`]. A run whose unit is
-    /// gone without finishing counts as failed.
+    /// The latest run of apt, and the last update: [`Response::Packages`].
+    /// A run whose unit is gone without finishing counts as failed.
     PackagesState {},
     /// Puts Docker's data on a pool zendiloos created: the dataset
     /// `<pool>/zendiloos.docker`, mounted at `/volume<N>/@docker`, as
@@ -1066,6 +1067,11 @@ pub enum Response {
     },
     Packages {
         run: Option<PackageRun>,
+        /// The last run of an update ([`PackageTask::updates`]), kept apart:
+        /// the runs after it (a check, a plugin installed) do not replace
+        /// it. The same as `run` until another came.
+        #[serde(default)]
+        update: Option<Box<PackageRun>>,
     },
     Apps {
         /// `docker compose ls --all --format json`: every Compose project,

@@ -2,6 +2,9 @@
 const en = {
   app: {
     name: 'zendiloOS',
+    staleBuild:
+      'Parts of the interface could not be loaded: zendiloOS was probably updated meanwhile. Reload the page in a moment.',
+    reload: 'Reload',
   },
   apps: {
     files: 'Files',
@@ -2401,9 +2404,20 @@ const en = {
       debian: 'Install the Debian packages',
       zendiloos: 'Install zendiloOS {version}',
       modules: 'Check the kernel modules',
+      configure: 'Configure the unpacked packages',
+      repair: 'Complete what is missing',
     },
     done: 'The update is done ({at}).',
     failed: 'The update failed.',
+    finishTitle: 'Finish the update',
+    finished: 'The update is finished ({at}).',
+    interrupted:
+      'An update was cut off: Debian packages are left half installed. Finish it before anything else is installed.',
+    finishHint:
+      'If the update was cut off, finishing it configures what was unpacked and completes what is missing.',
+    confirmFinishTitle: 'Finish the update?',
+    confirmFinishHint:
+      'dpkg configures the packages it unpacked, then apt completes what is missing. If zendiloOS is among them, the interface is away for a moment.',
     reloadHint: 'zendiloOS {version} is installed. Reload the page to see the new interface.',
     reload: 'Reload',
     confirmTitle: 'Install the updates?',
@@ -2902,6 +2916,8 @@ const en = {
     not_checked: 'Look for updates first.',
     nothing_to_update: 'There is nothing to update.',
     update_busy: 'An update or a look for updates is going on already.',
+    update_running:
+      'The system is being updated. Background tasks start once the update is done; scheduled ones run then by themselves.',
     password_locked: 'The password of this account cannot be changed here; ask an administrator.',
     delivery_failed: 'The message did not go out',
     change_pending: 'Another change waits for confirmation.',

@@ -27,12 +27,25 @@ a stable release is newer.
 
 - `zendiloos_<version>_<arch>.deb`
 - `SHA256SUMS`: the checksums of the package and, if there is one, the ISO
-- `SHA256SUMS.minisig`: its signature, made with the release key
+- `SHA256SUMS.minisig`: its signature, made with the release key, whose
+  trusted comment (signed as well) names the build: `zendiloos <version>`
 - `zendiloos-amd64-netinst.iso`, for stable releases: the installation ISO
 
 The NAS checks the signature with the public key its own package brought
 along (`/usr/share/zendiloos/release-signing.pub`, from
 `packaging/release-signing.pub`), and installs nothing older than what runs.
+Every build is signed with the same key, the development build of each
+push to `main` too, so the signature alone does not say which build it is
+for: the NAS takes it only if its trusted comment is exactly
+`zendiloos <the version of the package>`, and a build only if its channel
+takes its kind, told by the version: a development build (`+dev.`) only on
+Development, a test release (`~rc.N`, `~beta.N`) on Test and Development, a
+release everywhere. A version of another form counts as a development
+build. CI has signed every release so since the first (`-t
+"zendiloos $version"` in the step Sign, as `just sign-release` does); the
+runner of the installed version checks, so an update from 0.3.0 or older
+is still taken the way that version takes it, and every update after with
+these checks.
 
 ## The release key
 

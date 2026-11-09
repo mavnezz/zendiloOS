@@ -5,8 +5,23 @@
 
 use std::collections::BTreeMap;
 use std::net::IpAddr;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+
+/// The longest Docker works on one request once its turn came: pulling an
+/// image, starting containers, and a project's deploy with its pull and its
+/// containers made together, in one budget.
+pub const DOCKER_WORK: Duration = Duration::from_secs(30 * 60);
+/// What a request about Docker takes at most besides that work: systemd's
+/// units that pin a project's folders, before and after Compose, and quick
+/// looks at what its containers mount.
+pub const DOCKER_AROUND: Duration = Duration::from_secs(20 * 60);
+/// How long a client waits for a request about Docker: the agent waits for
+/// its turn half of what the client waits at most, so the other half holds
+/// the work and what is around it.
+pub const DOCKER_PATIENCE: Duration = Duration::from_secs(2 * (30 + 20) * 60);
+const _: () = assert!(DOCKER_PATIENCE.as_secs() >= 2 * (DOCKER_WORK.as_secs() + DOCKER_AROUND.as_secs()));
 
 /// A text the agent passes to `docker` as one argument, checked by `valid`.
 macro_rules! checked_text {

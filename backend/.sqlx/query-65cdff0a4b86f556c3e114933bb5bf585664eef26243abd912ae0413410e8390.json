@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT schedule_since FROM docker_update_settings WHERE id = 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "schedule_since",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "docker_update_settings",
+            "name": "schedule_since"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "65cdff0a4b86f556c3e114933bb5bf585664eef26243abd912ae0413410e8390"
+}

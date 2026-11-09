@@ -20,8 +20,8 @@ use std::time::Duration;
 
 use serde_json::{Map, Value};
 use zendiloos_agent_proto::{
-    ComposeText, ContainerAction, ContainerId, ExecCommand, ImageId, ImageReference, NetworkName,
-    ProjectAction, ProjectDirectory, ProjectName, Response, Subnet, TerminalSize,
+    ComposeText, ContainerAction, ContainerId, DOCKER_WORK, ExecCommand, ImageId, ImageReference,
+    NetworkName, ProjectAction, ProjectDirectory, ProjectName, Response, Subnet, TerminalSize,
 };
 use zendiloos_exec::{Limits, Output, Program, Surroundings};
 
@@ -31,7 +31,7 @@ use crate::operations::OperationError;
 /// Reading: inspecting every container can be a few megabytes.
 const QUICK: Limits = Limits { timeout: Duration::from_secs(60), max_stdout: 16 * 1024 * 1024 };
 /// Fetching images and recreating containers.
-const LONG: Limits = Limits { timeout: Duration::from_secs(30 * 60), max_stdout: 1024 * 1024 };
+const LONG: Limits = Limits { timeout: DOCKER_WORK, max_stdout: 1024 * 1024 };
 const LOGS: Limits = Limits { timeout: Duration::from_secs(60), max_stdout: 8 * 1024 * 1024 };
 const MAX_LOG_LINES: u32 = 10_000;
 /// A Compose file shown here is at most this large.

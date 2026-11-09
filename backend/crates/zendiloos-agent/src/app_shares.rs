@@ -155,7 +155,9 @@ pub(crate) fn unit(agent: &Path, owner: Owner<'_>, shares: &[&str]) -> String {
     )
 }
 
-const SYSTEMCTL: Limits = Limits { timeout: Duration::from_secs(120), max_stdout: 1024 * 1024 };
+/// How long one call of systemctl takes at most.
+pub(crate) const SYSTEMCTL_SECONDS: u64 = 120;
+const SYSTEMCTL: Limits = Limits { timeout: Duration::from_secs(SYSTEMCTL_SECONDS), max_stdout: 1024 * 1024 };
 
 async fn systemctl(program: &Program, args: &[&str]) -> Result<(), OperationError> {
     let output = zendiloos_exec::run(program, args, SYSTEMCTL).await?;

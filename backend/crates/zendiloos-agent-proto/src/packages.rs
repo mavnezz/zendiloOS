@@ -19,10 +19,13 @@ pub enum PackageTask {
     /// Debian's packages upgraded, then zendiloOS from a release when one is
     /// given, then a [`PackageReport`].
     Update,
+    /// What an update cut off left half done, finished: `dpkg --configure
+    /// -a`, then `apt-get --fix-broken install`, then a [`PackageReport`].
+    Finish,
 }
 
 impl PackageTask {
-    const ALL: [Self; 4] = [Self::InstallDocker, Self::InstallAcme, Self::Check, Self::Update];
+    const ALL: [Self; 5] = [Self::InstallDocker, Self::InstallAcme, Self::Check, Self::Update, Self::Finish];
 
     /// The name the runner is started with.
     pub fn as_str(self) -> &'static str {
@@ -31,11 +34,54 @@ impl PackageTask {
             Self::InstallAcme => "install-acme",
             Self::Check => "check",
             Self::Update => "update",
+            Self::Finish => "finish",
         }
     }
 
     pub fn parse(name: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|task| task.as_str() == name)
+    }
+
+    /// Whether it updates the system, finishing an update among it: the
+    /// runner keeps the record of the last such run apart, which the runs
+    /// after it do not replace.
+    pub fn updates(self) -> bool {
+        matches!(self, Self::Update | Self::Finish)
+    }
+}
+
+/// Which builds of zendiloOS a NAS takes, its update channel; each takes
+/// those of the steadier ones too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReleaseChannel {
+    /// Releases: `1.2.0`.
+    Stable,
+    /// Release candidates and betas: `1.2.0~rc.1`.
+    Test,
+    /// Builds of a commit on `main`: `1.2.0+dev.<time>.g<commit>`.
+    Development,
+}
+
+impl ReleaseChannel {
+    const ALL: [Self; 3] = [Self::Stable, Self::Test, Self::Development];
+
+    /// The name the runner is started with.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Stable => "stable",
+            Self::Test => "test",
+            Self::Development => "development",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|channel| channel.as_str() == name)
+    }
+
+    /// Whether a build of `kind` may be installed on this channel.
+    pub fn takes(self, kind: Self) -> bool {
+        kind <= self
     }
 }
 
@@ -77,6 +123,38 @@ impl ReleasePackage {
         let inner = &self.0["zendiloos_".len()..self.0.len() - ".deb".len()];
         inner.rsplit_once('_').map_or(inner, |(version, _)| version)
     }
+
+    /// Which kind of build the version names (`scripts/release-version.sh`):
+    /// a release is numbers and dots (`1.2.0`), a test release that, `~`
+    /// and a name (`1.2.0~rc.1`, `1.2.0~beta.2`). Everything else counts as
+    /// a development build, the build of a commit
+    /// (`1.2.0+dev.<time>.g<commit>`) among it.
+    pub fn kind(&self) -> ReleaseChannel {
+        let numbers = |text: &str| {
+            !text.is_empty()
+                && text.split('.').all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+        };
+        let version = self.version();
+        match version.split_once('~') {
+            None if numbers(version) => ReleaseChannel::Stable,
+            Some((release, name))
+                if numbers(release)
+                    && name.starts_with(|c: char| c.is_ascii_alphabetic())
+                    && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '.') =>
+            {
+                ReleaseChannel::Test
+            }
+            _ => ReleaseChannel::Development,
+        }
+    }
+}
+
+/// A release an update installs, and the channel of the NAS it is for: a
+/// build of a kind the channel does not take is refused.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleaseInstall {
+    pub package: ReleasePackage,
+    pub channel: ReleaseChannel,
 }
 
 impl TryFrom<String> for ReleasePackage {
@@ -113,6 +191,11 @@ pub struct PackageReport {
     pub newest_kernel: Option<String>,
     /// The ZFS module is built for that kernel (DKMS).
     pub zfs_ready: bool,
+    /// dpkg left packages unpacked or half configured, as `dpkg --audit`
+    /// lists them: an update was cut off, and [`PackageTask::Finish`]
+    /// finishes what it began.
+    #[serde(default)]
+    pub interrupted: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -169,10 +252,38 @@ mod tests {
     }
 
     #[test]
+    fn a_version_tells_which_channels_may_take_it() {
+        let kind =
+            |version: &str| ReleasePackage::parse(&format!("zendiloos_{version}_amd64.deb")).unwrap().kind();
+        assert_eq!(kind("0.3.0"), ReleaseChannel::Stable);
+        assert_eq!(kind("10.20.30"), ReleaseChannel::Stable);
+        assert_eq!(kind("0.3.1~rc.1"), ReleaseChannel::Test);
+        assert_eq!(kind("0.3.1~beta.2"), ReleaseChannel::Test);
+        assert_eq!(kind("0.1.1~vmtest1"), ReleaseChannel::Test);
+        assert_eq!(kind("0.3.0+dev.20261109120000.gabc1234"), ReleaseChannel::Development);
+        assert_eq!(kind("0.3.1~rc.1+dev.20261109120000.gabc1234"), ReleaseChannel::Development);
+        // Whatever CI does not make counts as the least steady.
+        for odd in ["0.3.0-1", "0.3.0~", "0.3.0~1", "0.3..0", "0.3.0.", "0.3.0~rc-1"] {
+            assert_eq!(kind(odd), ReleaseChannel::Development, "{odd}");
+        }
+
+        use ReleaseChannel::{Development, Stable, Test};
+        assert!(Stable.takes(Stable) && !Stable.takes(Test) && !Stable.takes(Development));
+        assert!(Test.takes(Stable) && Test.takes(Test) && !Test.takes(Development));
+        assert!(Development.takes(Stable) && Development.takes(Test) && Development.takes(Development));
+        assert_eq!(ReleaseChannel::parse("development"), Some(Development));
+        assert_eq!(ReleaseChannel::parse("nightly"), None);
+        assert_eq!(serde_json::to_string(&Test).unwrap(), "\"test\"");
+    }
+
+    #[test]
     fn tasks_have_names_for_the_runner() {
         assert_eq!(PackageTask::parse("update"), Some(PackageTask::Update));
         assert_eq!(PackageTask::parse("install-docker"), Some(PackageTask::InstallDocker));
         assert_eq!(PackageTask::parse("install-acme"), Some(PackageTask::InstallAcme));
+        assert_eq!(PackageTask::parse("finish"), Some(PackageTask::Finish));
+        assert!(PackageTask::Update.updates() && PackageTask::Finish.updates());
+        assert!(!PackageTask::Check.updates() && !PackageTask::InstallDocker.updates());
         assert_eq!(PackageTask::parse("install-anything"), None);
         let json = serde_json::to_string(&PackageTask::InstallDocker).unwrap();
         assert_eq!(json, "\"install_docker\"");

@@ -26,6 +26,8 @@ impl Containers {
     ) -> Result<UpdateSettings, ContainersError> {
         let settings = settings.checked().map_err(|e| ContainersError::Invalid(e.to_string()))?;
         self.ports.updates.save(&settings).await?;
+        // Set or changed: due from now on, as a backup plan.
+        self.ports.updates.schedule_ran(self.now()).await?;
         self.audit("containers.updates_settings", Outcome::Success, "image updates", actor, context).await;
         Ok(settings)
     }
@@ -155,15 +157,33 @@ impl Containers {
         }
     }
 
-    /// Run every minute: updates when the schedule says so, by the
-    /// machine's local time.
+    /// Run every minute: updates once the latest time of the schedule (the
+    /// machine's local time) lies after it was set or last ran, as the
+    /// backup plans do: a minute missed (the NAS off, asleep or busy, its
+    /// clock changed) is made up once, on the next look. It counts as run
+    /// once started, whatever comes of it. A schedule never noted (set by
+    /// an earlier version) or noted while the clock was ahead counts from
+    /// now on. While the system is updated, what is due waits.
     pub async fn run_schedule(&self) -> Result<Option<Job>, ContainersError> {
+        if let Some(why) = self.ports.jobs.held().await {
+            tracing::info!(why, "containers: image updates on schedule wait until the update is done");
+            return Ok(None);
+        }
+        let settings = self.ports.updates.settings().await?;
+        let Some(schedule) = settings.schedule.filter(|_| settings.check) else { return Ok(None) };
         let now = self.now();
-        let local = now.unix_seconds() + i64::from(self.ports.clock.utc_offset(now));
-        // 1 January 1970 was a Thursday, the fourth day from Monday.
-        let weekday = usize::try_from((local.div_euclid(86_400) + 3).rem_euclid(7)).unwrap_or(0);
-        let minute = u16::try_from(local.rem_euclid(86_400) / 60).unwrap_or(0);
-        self.scheduled(weekday, minute).await
+        let since = match self.ports.updates.schedule_since().await? {
+            Some(since) if since <= now => since,
+            _ => {
+                self.ports.updates.schedule_ran(now).await?;
+                return Ok(None);
+            }
+        };
+        if !schedule.is_due(now, since, &|at| self.ports.clock.utc_offset(at)) {
+            return Ok(None);
+        }
+        self.ports.updates.schedule_ran(now).await?;
+        self.apply_updates(None, &RequestContext::default()).await
     }
 
     /// Run every few hours: asks the registries, if that is wanted.
@@ -172,17 +192,5 @@ impl Containers {
             self.check_updates(&RequestContext::default()).await?;
         }
         Ok(())
-    }
-
-    /// With the machine's local weekday (0 is Monday) and minute of the
-    /// day: updates when the schedule says so.
-    pub async fn scheduled(&self, weekday: usize, minute: u16) -> Result<Option<Job>, ContainersError> {
-        let settings = self.ports.updates.settings().await?;
-        match settings.schedule {
-            Some(schedule) if settings.check && schedule.due(weekday, minute) => {
-                self.apply_updates(None, &RequestContext::default()).await
-            }
-            _ => Ok(None),
-        }
     }
 }

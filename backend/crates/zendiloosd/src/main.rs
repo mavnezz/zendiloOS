@@ -13,7 +13,9 @@ use clap::{Parser, Subcommand};
 use tokio::net::TcpListener;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::task::JoinHandle;
-use zendiloos_agent_proto::{AgentTransport, ConsoleSetupCode, Request, Response, UnixTransport};
+use zendiloos_agent_proto::{
+    AgentTransport, ConsoleSetupCode, DOCKER_PATIENCE, Request, Response, UnixTransport,
+};
 use zendiloos_api::{ApiState, UseCases};
 use zendiloos_apps::application::{Catalogs, Docker, InstallPorts, Installs, TemplatePorts, Templates};
 use zendiloos_certificates::application::{Certificates, CertificatesError, CertificatesPorts, InStep};
@@ -142,6 +144,9 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         zendiloos_kernel::VERSION,
     )
     .with_current_notes(installed_notes(&config.updates.notes));
+    // An update starts only while no job runs, and no job starts while it
+    // is started or installs (docs/architecture.md, 4.10).
+    jobs.hold_while(Arc::new(updates.clone()));
     let system = SystemUseCases::new(SystemPorts {
         info: Arc::new(HostSystemInfo),
         metrics: Arc::new(metrics),
@@ -453,8 +458,10 @@ async fn agent_transports(
                     UnixTransport::new(&config.agent.files_socket, Duration::from_secs(600))
                         .with_long(Duration::from_secs(24 * 3600)),
                 ),
-                // Fetching an app's images too; the agent gives up after 30 minutes.
-                Arc::new(UnixTransport::new(&config.agent.socket, Duration::from_secs(31 * 60))),
+                // Docker's work: fetching images, making containers, a
+                // project's deploy with its pull. The agent waits for a turn
+                // half of this at most and works within the other half.
+                Arc::new(UnixTransport::new(&config.agent.socket, DOCKER_PATIENCE)),
                 // Copying Docker's data to another pool; the agent gives up after six hours.
                 Arc::new(UnixTransport::new(&config.agent.socket, Duration::from_secs(6 * 3600 + 600))),
             ),

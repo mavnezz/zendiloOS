@@ -5,11 +5,15 @@ pub mod ports;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use zendiloos_kernel::{Actor, AuditEntry, AuditLog, Clock, Outcome, PortError, RequestContext, RunningWork};
+use zendiloos_kernel::{
+    Actor, AuditEntry, AuditLog, Clock, Outcome, PortError, RequestContext, RunningWork, WorkHold,
+};
 use zendiloos_notify::{Level, NewNotification, Notifier};
 
 use self::ports::{HostError, HostPackages, ReleaseSource, UpdateStore};
-use crate::domain::{CheckResult, RunState, UpdateRun, UpdateSettings, compare_versions, newest_for};
+use crate::domain::{
+    Channel, CheckResult, Release, RunState, UpdateRun, UpdateSettings, compare_versions, newest_for,
+};
 
 /// How often [`Updates::tick`] wants to run; a daily check comes after a
 /// day without one.
@@ -82,6 +86,31 @@ pub struct Updates {
     phase: Arc<Mutex<Phase>>,
     /// One check or start at a time.
     busy: Arc<tokio::sync::Mutex<()>>,
+    /// A check's result and a change of the channel are saved one after
+    /// the other: what was found for one channel is never kept once
+    /// another is set.
+    saving: Arc<tokio::sync::Mutex<()>>,
+    /// An update or finishing one is decided and being started: new work
+    /// is held back from then on ([`WorkHold`]), and once its run is on
+    /// the NAS, for as long as that runs.
+    starting: Arc<Mutex<bool>>,
+}
+
+/// Holds new work back while it lives, from before an update looks at what
+/// runs until its run is on the NAS (or did not start).
+struct Starting(Arc<Mutex<bool>>);
+
+impl Starting {
+    fn new(flag: &Arc<Mutex<bool>>) -> Self {
+        *flag.lock().unwrap_or_else(PoisonError::into_inner) = true;
+        Self(Arc::clone(flag))
+    }
+}
+
+impl Drop for Starting {
+    fn drop(&mut self) {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = false;
+    }
 }
 
 impl Updates {
@@ -93,6 +122,8 @@ impl Updates {
             current_notes: None,
             phase: Arc::new(Mutex::new(Phase::Idle)),
             busy: Arc::new(tokio::sync::Mutex::new(())),
+            saving: Arc::new(tokio::sync::Mutex::new(())),
+            starting: Arc::new(Mutex::new(false)),
         }
     }
 
@@ -114,11 +145,11 @@ impl Updates {
 
     pub async fn overview(&self, request: &RequestContext) -> Result<UpdateOverview, UpdatesError> {
         let settings = self.ports.store.settings().await?;
-        let latest = self.ports.host.latest(request).await?;
-        let run = self.last_update(latest).await?;
+        let (latest, update) = self.runs(request).await?;
+        let run = self.shown(latest, update).await?;
         let mut check = self.ports.store.last_check().await?;
         if let Some(check) = &mut check {
-            self.forget_installed(check, run.as_ref());
+            self.forget_installed(check, run.as_ref(), settings.channel);
         }
         Ok(UpdateOverview {
             current: self.current.clone(),
@@ -130,18 +161,35 @@ impl Updates {
         })
     }
 
-    /// The last update that installed: the NAS's record while it is one,
-    /// otherwise as it was kept before a check replaced that record.
-    async fn last_update(&self, latest: Option<UpdateRun>) -> Result<Option<UpdateRun>, UpdatesError> {
-        match latest {
-            Some(run) if run.installs || run.state == RunState::Running => Ok(Some(run)),
+    /// The NAS's latest run of apt, whatever it did, and its last update.
+    async fn runs(
+        &self,
+        request: &RequestContext,
+    ) -> Result<(Option<UpdateRun>, Option<UpdateRun>), UpdatesError> {
+        let latest = self.ports.host.latest(request).await?;
+        let update = self.ports.host.last_update(request).await?;
+        Ok((latest, update))
+    }
+
+    /// The run the page shows: one going on, else the last update, as the
+    /// NAS keeps it or, from before it kept its own, as kept here.
+    async fn shown(
+        &self,
+        latest: Option<UpdateRun>,
+        update: Option<UpdateRun>,
+    ) -> Result<Option<UpdateRun>, UpdatesError> {
+        match (latest, update) {
+            (Some(run), _) if run.state == RunState::Running => Ok(Some(run)),
+            (_, Some(update)) => Ok(Some(update)),
+            (Some(run), None) if run.installs => Ok(Some(run)),
             _ => Ok(self.ports.store.last_run().await?),
         }
     }
 
-    /// Says how a finished update went, once, and keeps it: before a check
-    /// or another update replaces the NAS's record of it, and on each tick.
-    async fn remember(&self, run: Option<&UpdateRun>) -> Result<(), UpdatesError> {
+    /// Says how a finished update went, once, and keeps it: when a check or
+    /// another update starts, and on each tick. Returns whether it told of
+    /// one that failed.
+    async fn remember(&self, run: Option<&UpdateRun>) -> Result<bool, UpdatesError> {
         if let Some(run) = run
             && run.installs
             && run.state != RunState::Running
@@ -150,18 +198,18 @@ impl Updates {
             self.ports.store.save_last_run(run).await?;
             self.ports.store.save_said("run", &run.id).await?;
             self.say_finished(run).await;
+            return Ok(run.state == RunState::Failed);
         }
-        Ok(())
+        Ok(false)
     }
 
-    /// A release no newer than what runs is no update any more; after a
-    /// finished update, apt's report from its end counts.
-    fn forget_installed(&self, check: &mut CheckResult, run: Option<&UpdateRun>) {
-        if check
-            .release
-            .as_ref()
-            .is_some_and(|release| compare_versions(&release.version, &self.current).is_le())
-        {
+    /// A release no newer than what runs is no update any more, nor one
+    /// the channel does not take; after a finished update, apt's report
+    /// from its end counts.
+    fn forget_installed(&self, check: &mut CheckResult, run: Option<&UpdateRun>, channel: Channel) {
+        if check.release.as_ref().is_some_and(|release| {
+            compare_versions(&release.version, &self.current).is_le() || !channel.takes(release.channel)
+        }) {
             check.release = None;
         }
         if let Some(run) = run
@@ -209,28 +257,43 @@ impl Updates {
         actor: Option<&Actor>,
         request: &RequestContext,
     ) -> Result<CheckResult, UpdatesError> {
-        let latest = self.ports.host.latest(request).await?;
+        let (latest, update) = self.runs(request).await?;
         if latest.as_ref().is_some_and(|run| run.state == RunState::Running) {
             return Err(UpdatesError::Busy);
         }
-        // The check replaces the NAS's record of the last run.
-        self.remember(latest.as_ref()).await?;
+        self.remember(updated(latest.as_ref(), update.as_ref())).await?;
         self.set_phase(Phase::Checking);
         let result = self.look(request).await;
         self.set_phase(Phase::Idle);
-        let check = result?;
+        let (mut check, releases) = result?;
         if let Some(actor) = actor {
             self.audit("system.update_check", Outcome::Success, actor, request, "").await;
         }
-        self.ports.store.save_check(&check).await?;
+        {
+            // The release is the channel's as it is now: an administrator
+            // may have set another while apt fetched its lists.
+            let _saving = self.saving.lock().await;
+            let channel = self.ports.store.settings().await?.channel;
+            check.release = releases
+                .as_deref()
+                .and_then(|releases| newest_for(channel, releases, &self.current))
+                .cloned();
+            self.ports.store.save_check(&check).await?;
+        }
         self.say_available(&check).await;
         Ok(check)
     }
 
-    async fn look(&self, request: &RequestContext) -> Result<CheckResult, UpdatesError> {
-        let settings = self.ports.store.settings().await?;
-        let (release, release_error) = match self.ports.releases.releases().await {
-            Ok(releases) => (newest_for(settings.channel, &releases, &self.current).cloned(), None),
+    /// What GitHub and apt say: the releases for this machine (none if
+    /// GitHub could not be asked, which the result says) and the result
+    /// without its release, which is picked for the channel when it is
+    /// saved.
+    async fn look(
+        &self,
+        request: &RequestContext,
+    ) -> Result<(CheckResult, Option<Vec<Release>>), UpdatesError> {
+        let (releases, release_error) = match self.ports.releases.releases().await {
+            Ok(releases) => (Some(releases), None),
             Err(error) => (None, Some(error)),
         };
         let (host, host_error) = match self.ports.host.check(request).await {
@@ -238,7 +301,14 @@ impl Updates {
             Err(HostError::Refused(reason)) if reason.contains("busy") => return Err(UpdatesError::Busy),
             Err(error) => (None, Some(error.to_string())),
         };
-        Ok(CheckResult { checked_at: self.ports.clock.now(), release, release_error, host, host_error })
+        let check = CheckResult {
+            checked_at: self.ports.clock.now(),
+            release: None,
+            release_error,
+            host,
+            host_error,
+        };
+        Ok((check, releases))
     }
 
     /// Installs what the last check found: the release is downloaded, then
@@ -250,20 +320,25 @@ impl Updates {
     /// copy, a share's permissions, a pool's change), for hours maybe.
     pub async fn apply(&self, actor: &Actor, request: &RequestContext) -> Result<(), UpdatesError> {
         let busy = Arc::clone(&self.busy).try_lock_owned().map_err(|_| UpdatesError::Busy)?;
+        // Held before looking: a job asked to start meanwhile is seen here
+        // or sees the hold.
+        let starting = Starting::new(&self.starting);
         let running = self.ports.work.running().await;
         if !running.is_empty() {
             self.audit("system.update", Outcome::Denied, actor, request, "").await;
             return Err(UpdatesError::JobsRunning(running.join(", ")));
         }
-        let latest = self.ports.host.latest(request).await?;
+        let (latest, update) = self.runs(request).await?;
         if latest.as_ref().is_some_and(|run| run.state == RunState::Running) {
             return Err(UpdatesError::Busy);
         }
         // This run replaces the NAS's record of the last one.
-        self.remember(latest.as_ref()).await?;
+        self.remember(updated(latest.as_ref(), update.as_ref())).await?;
         let mut check = self.ports.store.last_check().await?.ok_or(UpdatesError::NotChecked)?;
-        let run = self.last_update(latest).await?;
-        self.forget_installed(&mut check, run.as_ref());
+        let run = self.shown(latest, update).await?;
+        // The agent installs only what the channel takes, and is told it.
+        let channel = self.ports.store.settings().await?.channel;
+        self.forget_installed(&mut check, run.as_ref(), channel);
         if !check.has_updates() {
             return Err(UpdatesError::NothingToDo);
         }
@@ -282,7 +357,7 @@ impl Updates {
                 if !running.is_empty() {
                     return Err(HostError::Refused(format!("background work runs: {}", running.join(", "))));
                 }
-                this.ports.host.start(release.as_ref(), &context).await
+                this.ports.host.start(release.as_ref(), channel, &context).await
             }
             .await;
             let outcome = if started.is_ok() { Outcome::Success } else { Outcome::Failure };
@@ -291,6 +366,7 @@ impl Updates {
                 Ok(id) => {
                     tracing::info!(run = id, release = target, "updates: the update runs");
                     this.set_phase(Phase::Idle);
+                    this.until_recorded(&id, starting).await;
                 }
                 Err(error) => {
                     tracing::warn!(%error, "updates: the update could not start");
@@ -299,6 +375,48 @@ impl Updates {
             }
         });
         Ok(())
+    }
+
+    /// Finishes an update that was cut off (a power cut while dpkg
+    /// configured, say): dpkg configures what it unpacked, apt completes
+    /// what is missing, in a run on the NAS like an update's, followed in
+    /// the overview. Returns once it began. Refused while background work
+    /// runs, as an update is: zendiloOS's own package may be among what
+    /// is configured.
+    pub async fn finish(&self, actor: &Actor, request: &RequestContext) -> Result<(), UpdatesError> {
+        let _busy = self.busy.try_lock().map_err(|_| UpdatesError::Busy)?;
+        let starting = Starting::new(&self.starting);
+        let running = self.ports.work.running().await;
+        if !running.is_empty() {
+            self.audit("system.update_finish", Outcome::Denied, actor, request, "").await;
+            return Err(UpdatesError::JobsRunning(running.join(", ")));
+        }
+        let (latest, update) = self.runs(request).await?;
+        if latest.as_ref().is_some_and(|run| run.state == RunState::Running) {
+            return Err(UpdatesError::Busy);
+        }
+        self.remember(updated(latest.as_ref(), update.as_ref())).await?;
+        let started = self.ports.host.finish(request).await;
+        let outcome = if started.is_ok() { Outcome::Success } else { Outcome::Failure };
+        self.audit("system.update_finish", outcome, actor, request, "").await;
+        let id = started?;
+        tracing::info!(run = id, "updates: finishing the update that was cut off");
+        let this = self.clone();
+        tokio::spawn(async move { this.until_recorded(&id, starting).await });
+        Ok(())
+    }
+
+    /// Keeps `starting` until the run `id` is on the NAS's record (a moment
+    /// after systemd started it, a minute at most), which holds new work
+    /// back from then on while it runs.
+    async fn until_recorded(&self, id: &str, starting: Starting) {
+        for _ in 0..300 {
+            match self.ports.host.latest(&RequestContext::default()).await {
+                Ok(Some(run)) if run.id == id => break,
+                _ => tokio::time::sleep(Duration::from_millis(200)).await,
+            }
+        }
+        drop(starting);
     }
 
     pub async fn settings(&self) -> Result<UpdateSettings, UpdatesError> {
@@ -311,31 +429,36 @@ impl Updates {
         actor: &Actor,
         request: &RequestContext,
     ) -> Result<UpdateSettings, UpdatesError> {
-        let before = self.ports.store.settings().await?;
-        self.ports.store.save_settings(&settings).await?;
-        self.audit("system.update_settings", Outcome::Success, actor, request, settings.channel.as_str())
-            .await;
-        if before.channel != settings.channel {
-            // What was found was for the other channel.
-            if let Some(mut check) = self.ports.store.last_check().await? {
-                check.release = None;
-                self.ports.store.save_check(&check).await?;
+        {
+            let _saving = self.saving.lock().await;
+            let before = self.ports.store.settings().await?;
+            self.ports.store.save_settings(&settings).await?;
+            if before.channel != settings.channel {
+                // What was found was for the other channel.
+                if let Some(mut check) = self.ports.store.last_check().await? {
+                    check.release = None;
+                    self.ports.store.save_check(&check).await?;
+                }
             }
         }
+        self.audit("system.update_settings", Outcome::Success, actor, request, settings.channel.as_str())
+            .await;
         Ok(settings)
     }
 
     /// Runs every [`TICK`]: says how a finished update went, once, and
-    /// looks for updates when a day passed without.
+    /// looks for updates when a day passed without. After an update that
+    /// failed it looks at once: whether dpkg was left half done (a run cut
+    /// off by a restart) is what the page then offers to finish.
     pub async fn tick(&self) -> Result<(), UpdatesError> {
         let request = RequestContext::default();
-        let latest = self.ports.host.latest(&request).await?;
-        self.remember(latest.as_ref()).await?;
+        let (latest, update) = self.runs(&request).await?;
+        let failed = self.remember(updated(latest.as_ref(), update.as_ref())).await?;
         let settings = self.ports.store.settings().await?;
         let last = self.ports.store.last_check().await?.map(|check| check.checked_at);
         let due =
             last.is_none_or(|at| self.ports.clock.now().unix_seconds() - at.unix_seconds() >= DAY_SECONDS);
-        if settings.check_daily && due {
+        if (settings.check_daily && due) || failed {
             match self.check(None, &request).await {
                 Ok(_) | Err(UpdatesError::Busy) => {}
                 Err(error) => return Err(error),
@@ -421,6 +544,36 @@ impl Updates {
     }
 }
 
+/// The last update on the NAS: its own record of it, or, on a NAS whose
+/// last update a runner made before it kept that record apart, the latest
+/// run while it is that update.
+fn updated<'a>(latest: Option<&'a UpdateRun>, update: Option<&'a UpdateRun>) -> Option<&'a UpdateRun> {
+    update.or(latest.filter(|run| run.installs))
+}
+
+/// While an update is started or installs, no new job starts: the
+/// package's upgrade restarts the agents, which see their operations
+/// through first, and zendiloosd, which cuts its own jobs off; Debian's
+/// updates may restart Docker and Samba under them.
+#[async_trait::async_trait]
+impl WorkHold for Updates {
+    async fn holding(&self) -> Option<String> {
+        if *self.starting.lock().unwrap_or_else(PoisonError::into_inner) {
+            return Some("system.update".to_owned());
+        }
+        match self.ports.host.latest(&RequestContext::default()).await {
+            Ok(Some(run)) if run.installs && run.state == RunState::Running => {
+                Some("system.update".to_owned())
+            }
+            Ok(_) => None,
+            Err(error) => {
+                tracing::warn!(%error, "updates: cannot tell whether an update installs");
+                None
+            }
+        }
+    }
+}
+
 /// An update under way is background work: reboots wait for it.
 #[async_trait::async_trait]
 impl RunningWork for Updates {
@@ -436,7 +589,7 @@ mod tests {
     use zendiloos_notify::testing::MemoryNotifications;
 
     use super::*;
-    use crate::domain::Channel;
+    use crate::domain::HostReport;
     use crate::testing::{FakeHost, FakeReleases, MemoryStore, release};
 
     struct Fixed;
@@ -524,6 +677,97 @@ mod tests {
         assert_eq!(check.release.unwrap().tag, "dev");
     }
 
+    /// apt as [`FakeHost`], whose check waits until `go` once it began.
+    struct SlowCheck {
+        host: FakeHost,
+        began: tokio::sync::Notify,
+        go: tokio::sync::Notify,
+    }
+
+    #[async_trait]
+    impl HostPackages for SlowCheck {
+        async fn check(&self, context: &RequestContext) -> Result<HostReport, HostError> {
+            self.began.notify_one();
+            self.go.notified().await;
+            self.host.check(context).await
+        }
+
+        async fn start(
+            &self,
+            release: Option<&Release>,
+            channel: Channel,
+            context: &RequestContext,
+        ) -> Result<String, HostError> {
+            self.host.start(release, channel, context).await
+        }
+
+        async fn finish(&self, context: &RequestContext) -> Result<String, HostError> {
+            self.host.finish(context).await
+        }
+
+        async fn latest(&self, context: &RequestContext) -> Result<Option<UpdateRun>, HostError> {
+            self.host.latest(context).await
+        }
+
+        async fn last_update(&self, context: &RequestContext) -> Result<Option<UpdateRun>, HostError> {
+            self.host.last_update(context).await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_check_that_ran_while_the_channel_changed_offers_what_the_new_channel_takes() {
+        let s = setup();
+        let host = Arc::new(SlowCheck {
+            host: FakeHost::default(),
+            began: tokio::sync::Notify::new(),
+            go: tokio::sync::Notify::new(),
+        });
+        let updates = Updates::new(UpdatesPorts { host: host.clone(), ..s.updates.ports.clone() }, "0.1.0");
+        let request = RequestContext::default();
+        let mut settings = updates.settings().await.unwrap();
+        settings.channel = Channel::Development;
+        updates.set_settings(settings, &alice(), &request).await.unwrap();
+
+        // Looked for on the development channel; back on stable while apt
+        // fetches its lists.
+        updates.start_check(&alice(), &request).await.unwrap();
+        host.began.notified().await;
+        settings.channel = Channel::Stable;
+        updates.set_settings(settings, &alice(), &request).await.unwrap();
+        host.go.notify_one();
+        for _ in 0..200 {
+            if s.store.check.lock().unwrap().as_ref().is_some_and(|check| check.host.is_some()) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
+        let overview = updates.overview(&request).await.unwrap();
+        assert_eq!(overview.settings.channel, Channel::Stable);
+        let offered = overview.check.and_then(|check| check.release).map(|release| release.tag);
+        assert_eq!(offered.as_deref(), Some("v0.2.0"), "the stable release, not the development build");
+        let said = s.said.all();
+        assert_eq!(said.last().map(|n| n.params["version"].as_str()), Some("0.2.0"));
+    }
+
+    #[tokio::test]
+    async fn a_release_the_channel_does_not_take_is_neither_offered_nor_installed() {
+        let s = setup();
+        let request = RequestContext::default();
+        // Kept from before, for another channel, however it got there.
+        *s.store.check.lock().unwrap() = Some(CheckResult {
+            checked_at: zendiloos_kernel::Timestamp::from_unix_seconds(40),
+            release: Some(release("dev", "0.3.0~rc.1+dev.1", true)),
+            release_error: None,
+            host: None,
+            host_error: None,
+        });
+        let overview = s.updates.overview(&request).await.unwrap();
+        assert_eq!(overview.check.unwrap().release, None);
+        assert!(matches!(s.updates.apply(&alice(), &request).await, Err(UpdatesError::NothingToDo)));
+        assert!(s.releases.downloaded.lock().unwrap().is_empty());
+    }
+
     #[tokio::test]
     async fn the_overview_says_what_changed_in_the_version_that_runs_if_its_package_says() {
         let request = RequestContext::default();
@@ -550,6 +794,11 @@ mod tests {
         }
         assert_eq!(*s.releases.downloaded.lock().unwrap(), ["0.2.0"]);
         assert_eq!(*s.host.started.lock().unwrap(), [Some("0.2.0".to_owned())]);
+        assert_eq!(
+            *s.host.channels.lock().unwrap(),
+            [Channel::Stable],
+            "the agent checks the release against it"
+        );
         let overview = s.updates.overview(&request).await.unwrap();
         assert_eq!(overview.phase, Phase::Idle);
         let run = overview.run.unwrap();
@@ -584,13 +833,99 @@ mod tests {
         s.updates.apply(&alice(), &request).await.unwrap();
     }
 
+    /// GitHub as [`FakeReleases`], whose download waits until `go` once it
+    /// began.
+    struct SlowDownload {
+        releases: Arc<FakeReleases>,
+        began: tokio::sync::Notify,
+        go: tokio::sync::Notify,
+    }
+
+    #[async_trait]
+    impl ReleaseSource for SlowDownload {
+        async fn releases(&self) -> Result<Vec<Release>, String> {
+            self.releases.releases().await
+        }
+
+        async fn download(&self, release: &Release) -> Result<(), String> {
+            self.began.notify_one();
+            self.go.notified().await;
+            self.releases.download(release).await
+        }
+    }
+
+    #[tokio::test]
+    async fn new_work_waits_from_the_decision_to_update_until_the_update_installed() {
+        let s = setup();
+        let request = RequestContext::default();
+        let releases = Arc::new(SlowDownload {
+            releases: s.releases.clone(),
+            began: tokio::sync::Notify::new(),
+            go: tokio::sync::Notify::new(),
+        });
+        let updates =
+            Updates::new(UpdatesPorts { releases: releases.clone(), ..s.updates.ports.clone() }, "0.1.0");
+        assert_eq!(WorkHold::holding(&updates).await, None, "nothing holds");
+
+        updates.check(None, &request).await.unwrap();
+        updates.apply(&alice(), &request).await.unwrap();
+        releases.began.notified().await;
+        assert_eq!(
+            WorkHold::holding(&updates).await.as_deref(),
+            Some("system.update"),
+            "while the release comes"
+        );
+        releases.go.notify_one();
+        for _ in 0..200 {
+            if WorkHold::holding(&updates).await.is_none() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(*s.host.started.lock().unwrap(), [Some("0.2.0".to_owned())]);
+        assert_eq!(WorkHold::holding(&updates).await, None, "the fake run ended at once");
+
+        // A run that installs holds new work back until it ends, finishing
+        // an update too; a check does not.
+        let run = |id: &str, installs: bool, finishes: bool, state: RunState| UpdateRun {
+            id: id.into(),
+            installs,
+            finishes,
+            state,
+            step: "debian".into(),
+            started_at: Timestamp::from_unix_seconds(100),
+            finished_at: None,
+            error: None,
+            zendiloos: None,
+            report: None,
+        };
+        s.host.record(run("run7", true, false, RunState::Running));
+        assert_eq!(WorkHold::holding(&updates).await.as_deref(), Some("system.update"));
+        s.host.record(run("finish1", true, true, RunState::Running));
+        assert_eq!(WorkHold::holding(&updates).await.as_deref(), Some("system.update"));
+        s.host.record(run("check9", false, false, RunState::Running));
+        assert_eq!(WorkHold::holding(&updates).await, None);
+    }
+
+    #[tokio::test]
+    async fn an_update_refused_for_running_work_holds_nothing_back() {
+        let s = setup();
+        let request = RequestContext::default();
+        s.updates.check(None, &request).await.unwrap();
+        *s.work.0.lock().unwrap() = vec!["containers.volume_backup db".into()];
+        assert!(matches!(s.updates.apply(&alice(), &request).await, Err(UpdatesError::JobsRunning(_))));
+        assert!(matches!(s.updates.finish(&alice(), &request).await, Err(UpdatesError::JobsRunning(_))));
+        assert_eq!(WorkHold::holding(&s.updates).await, None);
+    }
+
     #[tokio::test]
     async fn an_update_under_way_is_background_work() {
         let s = setup();
         assert!(RunningWork::running(&s.updates).await.is_empty(), "nothing goes on");
-        *s.host.run.lock().unwrap() = Some(UpdateRun {
+        s.host.record(UpdateRun {
             id: "run1".into(),
             installs: true,
+            finishes: false,
             state: RunState::Running,
             step: "debian".into(),
             started_at: Timestamp::from_unix_seconds(100),
@@ -627,6 +962,8 @@ mod tests {
         assert!(s.host.started.lock().unwrap().is_empty(), "the run did not start");
     }
 
+    /// A runner from before the last update's record was kept apart (the
+    /// one that installed this version): a check replaces its only record.
     #[tokio::test]
     async fn a_check_right_after_an_update_does_not_swallow_how_it_went() {
         let s = setup();
@@ -634,6 +971,7 @@ mod tests {
         *s.host.run.lock().unwrap() = Some(UpdateRun {
             id: "run9".into(),
             installs: true,
+            finishes: false,
             state: RunState::Failed,
             step: "debian".into(),
             started_at: Timestamp::from_unix_seconds(100),
@@ -653,6 +991,88 @@ mod tests {
         assert_eq!((run.id.as_str(), run.state), ("run9", RunState::Failed));
         s.updates.tick().await.unwrap();
         assert_eq!(s.said.all().iter().filter(|n| n.code == "updates_failed").count(), 1, "and said once");
+    }
+
+    #[tokio::test]
+    async fn a_plugin_installed_right_after_an_update_leaves_how_the_update_went() {
+        let s = setup();
+        let request = RequestContext::default();
+        let run = |id: &str, installs: bool, state: RunState, error: Option<&str>| UpdateRun {
+            id: id.into(),
+            installs,
+            finishes: false,
+            state,
+            step: "debian".into(),
+            started_at: Timestamp::from_unix_seconds(100),
+            finished_at: Some(Timestamp::from_unix_seconds(150)),
+            error: error.map(str::to_owned),
+            zendiloos: None,
+            report: None,
+        };
+        s.host.record(run("run9", true, RunState::Failed, Some("dpkg was interrupted")));
+        // Before the next tick, Docker is installed: a run of its own.
+        s.host.record(run("dock1", false, RunState::Succeeded, None));
+
+        s.updates.tick().await.unwrap();
+        let failed: Vec<_> = s.said.all().into_iter().filter(|n| n.code == "updates_failed").collect();
+        assert_eq!(failed.len(), 1, "how the update went is said");
+        assert_eq!(failed[0].params["error"], "dpkg was interrupted");
+        let shown = s.updates.overview(&request).await.unwrap().run.expect("the update is shown");
+        assert_eq!((shown.id.as_str(), shown.state), ("run9", RunState::Failed));
+        s.updates.tick().await.unwrap();
+        assert_eq!(s.said.all().iter().filter(|n| n.code == "updates_failed").count(), 1, "once");
+    }
+
+    #[tokio::test]
+    async fn an_update_cut_off_while_dpkg_configured_is_found_and_finished() {
+        let s = setup();
+        let request = RequestContext::default();
+        s.releases.releases.lock().unwrap().clear();
+        // A power cut while DKMS built ZFS for the new kernel: apt sees
+        // nothing to upgrade, dpkg lists what it did not configure.
+        s.host.packages.lock().unwrap().clear();
+        *s.host.interrupted.lock().unwrap() = true;
+        s.host.record(UpdateRun {
+            id: "run9".into(),
+            installs: true,
+            finishes: false,
+            state: RunState::Failed,
+            step: "debian".into(),
+            started_at: Timestamp::from_unix_seconds(10),
+            finished_at: None,
+            error: Some("the run stopped before it finished (was the NAS restarted?)".into()),
+            zendiloos: None,
+            report: None,
+        });
+
+        // The tick tells of it and looks at once.
+        s.updates.tick().await.unwrap();
+        let overview = s.updates.overview(&request).await.unwrap();
+        assert!(
+            overview
+                .check
+                .as_ref()
+                .and_then(|check| check.host.as_ref())
+                .is_some_and(|host| host.interrupted)
+        );
+        assert!(matches!(s.updates.apply(&alice(), &request).await, Err(UpdatesError::NothingToDo)));
+
+        *s.work.0.lock().unwrap() = vec!["storage.scrub tank".into()];
+        let refused = s.updates.finish(&alice(), &request).await;
+        assert!(matches!(refused, Err(UpdatesError::JobsRunning(_))), "{refused:?}");
+        s.work.0.lock().unwrap().clear();
+
+        s.updates.finish(&alice(), &request).await.unwrap();
+        assert_eq!(*s.host.finished.lock().unwrap(), 1);
+        let overview = s.updates.overview(&request).await.unwrap();
+        let run = overview.run.unwrap();
+        assert!(run.finishes && run.state == RunState::Succeeded, "{run:?}");
+        let host = overview.check.unwrap().host.unwrap();
+        assert!(!host.interrupted, "the end of the run says dpkg is done");
+
+        s.updates.tick().await.unwrap();
+        let installed = s.said.all().into_iter().filter(|n| n.code == "updates_installed").count();
+        assert_eq!(installed, 1, "how it went is said");
     }
 
     #[tokio::test]

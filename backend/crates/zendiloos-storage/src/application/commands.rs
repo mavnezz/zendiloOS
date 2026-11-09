@@ -8,7 +8,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use zendiloos_jobs::{Job, JobError, Jobs};
-use zendiloos_kernel::{Actor, AuditEntry, AuditLog, Clock, Outcome, RequestContext, Timestamp};
+use zendiloos_kernel::{
+    Actor, AuditEntry, AuditLog, Clock, Outcome, PortError, RequestContext, Timestamp, WorkHeld,
+};
 
 use crate::application::StorageError;
 use crate::application::ports::{
@@ -414,6 +416,7 @@ impl ReplaceDisk {
 }
 
 /// Command: starts a scrub. It runs in ZFS; the pool shows its progress.
+/// Not while an update of the system installs, as no job starts then.
 #[derive(Clone)]
 pub struct ScrubPool {
     context: Arc<Context>,
@@ -439,6 +442,9 @@ impl ScrubPool {
         }
         let name =
             PoolName::parse(pool).map_err(|_| StorageError::Plan(domain::PlanError::PoolNotManaged))?;
+        if let Some(why) = c.jobs.held().await {
+            return Err(PortError::new("background work", WorkHeld(why)).into());
+        }
         let outcome = c.admin.scrub(&name, request).await;
         let audit = if outcome.is_ok() { Outcome::Success } else { Outcome::Failure };
         c.audit("storage.scrub", audit, pool, actor, request).await;

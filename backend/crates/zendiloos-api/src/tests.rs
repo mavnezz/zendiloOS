@@ -1846,6 +1846,7 @@ fn openapi_documents_every_route() {
             "/api/v1/system/updates",
             "/api/v1/system/updates/apply",
             "/api/v1/system/updates/check",
+            "/api/v1/system/updates/finish",
             "/api/v1/system/updates/settings",
             "/api/v1/system/web-server",
             "/api/v1/system/web-server/confirm",
@@ -2306,6 +2307,32 @@ async fn plans_explain_why_a_disk_cannot_be_used() {
     assert_problem(&taken, StatusCode::CONFLICT, "name_taken");
     let name = plan(json!({ "name": "Mirror", "layout": "single", "disks": ["sdd"] })).await;
     assert_problem(&name, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
+}
+
+#[tokio::test]
+async fn no_job_nor_scrub_starts_while_an_update_installs() {
+    struct Installing;
+    #[async_trait::async_trait]
+    impl zendiloos_kernel::WorkHold for Installing {
+        async fn holding(&self) -> Option<String> {
+            Some("system.update".into())
+        }
+    }
+
+    let h = Harness::new();
+    h.jobs.hold_while(Arc::new(Installing));
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let scrub = h.send(empty(with_csrf(post("/api/v1/storage/pools/tank/scrub"), &admin))).await;
+    assert_problem(&scrub, StatusCode::CONFLICT, "update_running");
+    assert_eq!(scrub.body["detail"], "system.update");
+    let destroy = h
+        .send(json(
+            with_csrf(post("/api/v1/storage/pools/tank/destroy"), &admin),
+            json!({ "confirm": "tank" }),
+        ))
+        .await;
+    assert_problem(&destroy, StatusCode::CONFLICT, "update_running");
+    assert!(h.storage.calls().is_empty(), "nothing ran: {:?}", h.storage.calls());
 }
 
 #[tokio::test]
@@ -4241,4 +4268,15 @@ async fn administrators_look_for_updates_and_install_them() {
     let saved = send(Method::GET, "/api/v1/system/updates", None, &admin).await;
     assert_eq!(saved.body["settings"]["channel"], "development");
     assert_eq!(saved.body["release"], Value::Null, "what was found was for the other channel");
+    assert_eq!(saved.body["interrupted"], false);
+
+    let denied = send(Method::POST, "/api/v1/system/updates/finish", None, &user).await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN);
+    let finish = send(Method::POST, "/api/v1/system/updates/finish", None, &admin).await;
+    assert_eq!(finish.status, StatusCode::ACCEPTED, "{:?}", finish.body);
+    let finished = send(Method::GET, "/api/v1/system/updates", None, &admin).await;
+    assert_eq!(
+        (&finished.body["run"]["finishes"], &finished.body["run"]["state"]),
+        (&json!(true), &json!("succeeded"))
+    );
 }

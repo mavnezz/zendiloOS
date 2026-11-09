@@ -212,6 +212,12 @@ impl Containers {
     /// it, as a volume of that name made again may be another one, whose
     /// backups would push the gone one's out of what the plan keeps.
     pub async fn run_due_backups(&self) -> Vec<Job> {
+        // While an update of the system installs no job starts: what is
+        // due stays due until it is done.
+        if let Some(why) = self.ports.jobs.held().await {
+            tracing::info!(why, "backups: what is due waits until the update is done");
+            return Vec::new();
+        }
         let now = self.now();
         let offsets = |at| self.ports.clock.utc_offset(at);
         let plans = match self.ports.backups.plans().await {

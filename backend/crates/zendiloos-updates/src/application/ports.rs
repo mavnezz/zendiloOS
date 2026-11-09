@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use zendiloos_kernel::{PortError, RequestContext};
 
-use crate::domain::{CheckResult, HostReport, Release, UpdateRun, UpdateSettings};
+use crate::domain::{Channel, CheckResult, HostReport, Release, UpdateRun, UpdateSettings};
 
 #[derive(Debug, thiserror::Error)]
 pub enum HostError {
@@ -35,12 +35,26 @@ pub trait HostPackages: Send + Sync {
     async fn check(&self, context: &RequestContext) -> Result<HostReport, HostError>;
 
     /// Starts the update, in a unit of its own: Debian's packages, then
-    /// zendiloOS from `release` when given (downloaded before). Returns the
-    /// run's id at once.
-    async fn start(&self, release: Option<&Release>, context: &RequestContext) -> Result<String, HostError>;
+    /// zendiloOS from `release` when given (downloaded before), which the
+    /// NAS's `channel` must take. Returns the run's id at once.
+    async fn start(
+        &self,
+        release: Option<&Release>,
+        channel: Channel,
+        context: &RequestContext,
+    ) -> Result<String, HostError>;
+
+    /// Starts finishing an update that was cut off, in a unit of its own:
+    /// dpkg configures what it unpacked, apt completes what is missing.
+    /// Returns the run's id at once.
+    async fn finish(&self, context: &RequestContext) -> Result<String, HostError>;
 
     /// The latest run of apt, if any.
     async fn latest(&self, context: &RequestContext) -> Result<Option<UpdateRun>, HostError>;
+
+    /// The last run that updated, as the NAS keeps it apart: the runs
+    /// after it (a check, a plugin installed) do not replace it.
+    async fn last_update(&self, context: &RequestContext) -> Result<Option<UpdateRun>, HostError>;
 }
 
 /// Settings, the last check and what was said already.
@@ -54,7 +68,8 @@ pub trait UpdateStore: Send + Sync {
     async fn said(&self, topic: &str) -> Result<Option<String>, PortError>;
     async fn save_said(&self, topic: &str, key: &str) -> Result<(), PortError>;
     /// The last update run that installed, kept once it finished: the NAS
-    /// keeps one record, which the next check replaces.
+    /// keeps its own record of it too, but one from before that record was
+    /// kept apart is here only.
     async fn last_run(&self) -> Result<Option<UpdateRun>, PortError>;
     async fn save_last_run(&self, run: &UpdateRun) -> Result<(), PortError>;
 }

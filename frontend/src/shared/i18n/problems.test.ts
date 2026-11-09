@@ -15,6 +15,7 @@ const CODES = [
   'not_checked',
   'nothing_to_update',
   'update_busy',
+  'update_running',
   'password_locked',
   'in_use',
   'acme_installed',

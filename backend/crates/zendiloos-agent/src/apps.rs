@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use rustix::fs::{Mode, OFlags, fstat, openat};
 use serde_json::Value;
-use zendiloos_agent_proto::{AppFolder, AppName, DevicePath, MAX_LOG_LINES, Response, UserName};
+use zendiloos_agent_proto::{AppFolder, AppName, DOCKER_WORK, DevicePath, MAX_LOG_LINES, Response, UserName};
 use zendiloos_exec::{Limits, Output, Program, Surroundings};
 
 use crate::accounts::{AccountFiles, require_managed};
@@ -43,7 +43,7 @@ pub(crate) const DOCKER_ENVIRONMENT: [(&str, &str); 2] =
 /// Listing the projects: quick.
 const LIMITS: Limits = Limits { timeout: Duration::from_secs(120), max_stdout: 4 * 1024 * 1024 };
 /// Starting, stopping or removing containers.
-const LONG: Limits = Limits { timeout: Duration::from_secs(30 * 60), max_stdout: 1024 * 1024 };
+const LONG: Limits = Limits { timeout: DOCKER_WORK, max_stdout: 1024 * 1024 };
 const LOGS: Limits = Limits { timeout: Duration::from_secs(60), max_stdout: 8 * 1024 * 1024 };
 
 fn refused(reason: impl Into<String>) -> OperationError {

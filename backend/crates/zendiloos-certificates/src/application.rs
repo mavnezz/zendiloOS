@@ -709,12 +709,15 @@ impl Certificates {
     }
 
     /// The daily look: certificates renewed that nginx did not take it
-    /// takes now; certificates due are renewed, each in a job.
+    /// takes now; certificates due are renewed, each in a job, but not
+    /// while the system is updated (no job starts then): they are due the
+    /// next day still.
     pub async fn renew_due(&self) -> Result<Vec<Job>, CertificatesError> {
         let context = RequestContext::default();
         if !self.ports.host.installed(&context).await? {
             return Ok(Vec::new());
         }
+        let held = self.ports.jobs.held().await;
         let now = self.now();
         let mut started = Vec::new();
         for certificate in self.ports.repository.certificates().await? {
@@ -727,6 +730,14 @@ impl Certificates {
                 self.serve(&certificate, &context).await;
             }
             if !certificate.renewal_due(now) {
+                continue;
+            }
+            if let Some(why) = &held {
+                tracing::info!(
+                    why,
+                    name = certificate.common_name(),
+                    "certificates: renewed once the update is done"
+                );
                 continue;
             }
             match self.issue(certificate.id, None, &context).await {

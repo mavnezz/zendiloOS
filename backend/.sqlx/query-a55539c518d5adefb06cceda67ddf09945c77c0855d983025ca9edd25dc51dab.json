@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE docker_update_settings SET schedule_since = ? WHERE id = 1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "a55539c518d5adefb06cceda67ddf09945c77c0855d983025ca9edd25dc51dab"
+}
