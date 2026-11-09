@@ -16,6 +16,7 @@
 //! without taking on the user's credentials: nothing is refused for lack of
 //! permissions.
 
+mod compose;
 mod docker;
 mod host;
 mod volumes;
