@@ -258,6 +258,10 @@ vm-notify-test:
 vm-firewall-test:
     scripts/vm-firewall-test.sh
 
+# The web interface's settings and certificates in the second VM: saved settings after a restart, confirmations at once, chains acme.sh hands over, renewals nginx does not take
+vm-web-server-test:
+    scripts/vm-web-server-test.sh
+
 # Network changes with confirmation, in the second VM (ZENDILOOS_VM=2)
 vm-network-test:
     scripts/vm-network-test.sh
