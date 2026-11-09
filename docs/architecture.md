@@ -732,13 +732,12 @@ TLS is rustls with ring and the system's certificate authorities
   since among them) owns passes to root (its group stays) unless the
   account may write, by its own rule or, without one, by a group's, and is
   not disabled; the files agent reads who may write from the accounts and
-  groups as they are when the walk runs. That takes in its recycle bin and
-  private folders with what is in them, which stay private, now root's
-  alone: what passes to root from there keeps only its owner's entry, as
-  its former owner may have opened it to the owning group (everyone's
-  `zendiloos-users`), to others or to named people. They are not given back
-  when the account may write again (an administrator can; a new bin is
-  made). Files of other UIDs (system accounts, the users containers run as)
+  groups as they are when the walk runs. That takes in its recycle bin with
+  what is in it, which stays private, now root's alone: what passes to root
+  from there keeps only its owner's entry, as its former owner may have
+  opened it to the owning group (everyone's `zendiloos-users`), to others or
+  to named people. It is not given back when the account may write again
+  (an administrator can; a new bin is made). Files of other UIDs (system accounts, the users containers run as)
   keep their owners. Over SMB, Samba's `read only` and `write list` hold
   besides.
 - The files agent walks the tree itself, depth first, by descriptor
@@ -757,9 +756,16 @@ TLS is rustls with ring and the system's certificate authorities
   (system accounts, the users containers run as, set by hand) stay. So
   whatever a walk that failed or stopped halfway left, the next makes
   good. Links, other file systems, what is neither folder nor
-  file are left alone, and so are the entries of the bins and of private
-  folders (only their owner may enter: a bin a writer renamed, one passed
-  to root) with what is in them, whose owners alone change; an entry that
+  file are left alone, and so are the entries of the recycle bins
+  (`.recycle` at the share's top) with what is in them, whose owners alone
+  change. The bins are told by where they are, never by a mode: everything
+  else in the share is the share's and gets its rules, a folder only its
+  owner may enter too. Taking away leaves a folder whose named entries all
+  go (a share given to another group, an account disabled, someone denied)
+  at 0700; taken for a private one then, it would get nothing, nor would
+  anything below it, in that walk or any later one. Walks of an earlier
+  release did so; the update that changed it marked every share owed once
+  more, so that such folders get their rules again. An entry that
   cannot be changed, or a folder nested deeper than 256 to look into,
   does not stop the others, the job fails at the end naming one.
   One change per share runs at a time; a change of a share's folder waits

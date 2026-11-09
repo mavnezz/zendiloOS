@@ -310,10 +310,10 @@ pub(crate) fn default_with(current: Option<Acl>, access: &Acl, rules: &Rules) ->
     (Some(&acl) != before.as_ref()).then_some(acl)
 }
 
-/// What passes to root from a private place (a recycle bin, a folder only
-/// its owner could enter) stays private, root's alone: the ACL `current`
-/// (the mode's if `None`) with the owner's entry only, nothing for the
-/// owning group and others, no named entries. `None` if it is so already.
+/// What passes to root from a private place (a recycle bin and what is in
+/// it) stays private, root's alone: the ACL `current` (the mode's if
+/// `None`) with the owner's entry only, nothing for the owning group and
+/// others, no named entries. `None` if it is so already.
 pub(crate) fn owner_only(current: Option<Acl>, mode: u32) -> Option<Acl> {
     let before = current.unwrap_or_else(|| Acl::from_mode(mode));
     let entries = before

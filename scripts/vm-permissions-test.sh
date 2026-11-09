@@ -21,9 +21,13 @@
 #   6. a rollback of docs to a snapshot from before ben left brings his
 #      file and bin back as they were; the files get the rules of now again
 #   7. a disabled account: anna, who writes photos, is disabled; the
-#      folder denies her and what she owns passes to root; enabled again,
-#      she writes again
-#   8. everything is deleted again
+#      folder and the folders deep down deny her (their masks ---, mode
+#      0700) and what she owns passes to root; enabled again, she writes
+#      again, deep down too
+#   8. a share given to another group: "albums", written by office, goes
+#      to readers; its folders, deep down too, get readers' entries and
+#      lose office's, and ben, in readers, writes there
+#   9. everything is deleted again
 #
 # Needs the VM running with the package installed and set up; account and
 # password as for vm-storage-test.sh. Uses two free disks of the VM and
@@ -112,7 +116,7 @@ say "Signing in as $user"
 sign_in
 
 say "Cleaning up an earlier run"
-for name in photos docs projects; do
+for name in photos docs projects albums; do
     for id in $(call GET /shares | jq -r --arg name "$name" '.[] | select(.name == $name) | .id'); do
         job_succeeded "$(call POST "/shares/$id/delete" "{\"confirm\":\"$name\"}" | jq -r .id)"
     done
@@ -236,6 +240,10 @@ disabled=$(call PATCH "/accounts/$anna" '{"disabled":true}')
 jq -e '.disabled and (.pending_shares | index("photos"))' <<<"$disabled" >/dev/null || fail "disabling: $disabled"
 walks_done photos
 has_entry "$photos" 'user:anna:---'
+# ben is denied too (a kid): no entry below grants anything, the folders'
+# masks are --- and their modes 0700.
+has_entry "$photos/many/deep/a/b" 'user:anna:---'
+[[ $(vm "sudo stat -c '%a' $photos/many/deep/a/b") == 700 ]] || fail "photos/many/deep/a/b is not 0700"
 [[ $(owner_of "$photos/anna.txt") == root ]] || fail "a disabled account still owns its file"
 as anna "ls $photos" && fail "anna, disabled, lists photos"
 enabled=$(call PATCH "/accounts/$anna" '{"disabled":false}')
@@ -243,13 +251,41 @@ jq -e '(.disabled | not) and (.pending_shares | index("photos"))' <<<"$enabled" 
 walks_done photos
 has_entry "$photos" 'user:anna:rwx'
 as anna "echo more >> $photos/anna.txt" || fail "anna, enabled again, cannot write"
+# The folders a walk left at 0700 are not taken for private ones.
+for folder in many many/deep many/deep/a/b; do
+    has_entry "$photos/$folder" 'user:anna:rwx'
+    has_entry "$photos/$folder" 'default:user:anna:rwx'
+done
+has_entry "$photos/many/deep/a/b/file.txt" 'user:anna:rw-'
+as anna "echo more >> $photos/many/deep/a/b/file.txt" || fail "anna, enabled again, cannot write deep down"
+as anna "touch $photos/many/deep/a/b/anna.txt" || fail "anna, enabled again, cannot make files deep down"
+echo "   anna is denied while disabled and writes again deep down once enabled"
 
-say "8. Cleaning up"
-for name in photos docs projects; do
+say "8. A share given to another group gives it the folders there are"
+albums=$(share albums "$(rules "$(rule group "$office" read_write)")")
+albums_id=$(cat "$work/albums.id")
+vm "sudo sh -c 'mkdir -p $albums/2024/summer && echo x > $albums/2024/summer/beach.jpg'"
+has_entry "$albums/2024/summer" 'group:office:rwx'
+moved=$(call PATCH "/shares/$albums_id" "{\"access\":$(rules "$(rule group "$readers" read_write)")}")
+walk=$(jq -er .job.id <<<"$moved") || fail "no walk: $moved"
+job_succeeded "$walk"
+walks_done albums
+for folder in 2024 2024/summer; do
+    has_entry "$albums/$folder" 'group:readers:rwx'
+    has_entry "$albums/$folder" 'default:group:readers:rwx'
+    lacks "$albums/$folder" 'group:office'
+done
+has_entry "$albums/2024/summer/beach.jpg" 'group:readers:rw-'
+lacks "$albums/2024/summer/beach.jpg" 'group:office'
+as ben "touch $albums/2024/summer/ben.jpg" || fail "ben, in readers, cannot write the folders there were"
+echo "   readers have the folders there were, office has them no more"
+
+say "9. Cleaning up"
+for name in photos docs projects albums; do
     job_succeeded "$(call POST "/shares/$(cat "$work/$name.id")/delete" "{\"confirm\":\"$name\"}" | jq -r .id)"
 done
 for id in $office $interns $kids $writers $readers; do call DELETE "/groups/$id" >/dev/null; done
 for id in $anna $ben; do call DELETE "/accounts/$id" >/dev/null; done
 job_succeeded "$(call POST "/storage/pools/$pool/destroy" "{\"confirm\":\"$pool\"}" | jq -r .id)"
 
-say "Passed: new shares, new members, cut-off walks, leaving writers, rollbacks and disabled accounts all reach the files"
+say "Passed: new shares, new members, cut-off walks, leaving writers, rollbacks, disabled accounts and shares given to another group all reach the files"
