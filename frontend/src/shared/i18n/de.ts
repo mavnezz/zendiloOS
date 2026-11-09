@@ -2342,6 +2342,7 @@ const de: Messages = {
     tabSettings: 'Einstellungen',
     system: 'System',
     version: 'Installierte Version',
+    currentNotes: 'Neu in dieser Version',
     channel: 'Kanal',
     kernel: 'Laufender Kernel',
     checkedAt: 'Zuletzt gesucht',

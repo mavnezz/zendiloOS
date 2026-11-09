@@ -83,6 +83,24 @@ release notes, so replace them with notes written for people:
 release `dev`; its notes list the changes since the last release tag (the
 newest 50 commit subjects).
 
+## What is new in the installed version
+
+Each package says what changed in its version: `debian/rules` writes
+`/usr/share/zendiloos/changes.md` with `scripts/release-notes.sh`, and
+Control panel → Updates shows it below the installed version, without
+asking GitHub. A release or test release takes the newest entry of
+`debian/changelog`, as bullets; a development build "Changes since
+v1.2.0:" and the subjects of the commits since that tag, newest first, at
+most 50, the same list as the notes of the release `dev`. The package
+build reads the commits from the repository it was given (`/src` in
+`just deb`); where git cannot tell (no git, a worktree, no release tag),
+a development build takes the changelog's entry as well.
+`just release-notes-test` checks the script.
+
+The page shows these notes and those of an available release as
+Markdown (headings, lists, emphasis, code and links, which open in a new
+tab); HTML in them shows as text, and images are not loaded.
+
 ## Installation ISO
 
 Only the way in: afterwards a NAS updates itself, so an ISO is made for

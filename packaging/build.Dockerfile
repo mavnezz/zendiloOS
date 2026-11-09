@@ -1,9 +1,10 @@
-# Build environment of the zendiloos Debian package (`just deb`).
+# Build environment of the zendiloos Debian package (`just deb`). git reads
+# the commits a development build's notes list (scripts/release-notes.sh).
 FROM debian:trixie
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      build-essential ca-certificates curl debhelper rsync rustup xz-utils \
+      build-essential ca-certificates curl debhelper git rsync rustup xz-utils \
  && rm -rf /var/lib/apt/lists/*
 
 ENV RUSTUP_HOME=/opt/rustup \

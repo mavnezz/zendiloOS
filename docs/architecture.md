@@ -1757,7 +1757,10 @@ one an administrator put in `/etc/zendiloos`), the package's checksum, its
 name, architecture and version, and installs only a version newer than the
 installed one, so an old signed release cannot be brought back. A build
 without a key takes no updates of zendiloOS. How releases are made and
-signed: `docs/releases.md`.
+signed: `docs/releases.md`. What changed in the version that runs comes
+with its package (`/usr/share/zendiloos/changes.md`, `notes` in
+`[updates]`), read once when zendiloosd starts; the page shows it and an
+available release's notes as Markdown, with HTML in them as text.
 
 **The kernel and ZFS.** ZFS is built by DKMS for each kernel. After an
 update the runner looks for `zfs.ko` below the newest kernel's modules; if

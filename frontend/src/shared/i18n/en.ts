@@ -2301,6 +2301,7 @@ const en = {
     tabSettings: 'Settings',
     system: 'System',
     version: 'Installed version',
+    currentNotes: "What's new in this version",
     channel: 'Channel',
     kernel: 'Running kernel',
     checkedAt: 'Last looked',

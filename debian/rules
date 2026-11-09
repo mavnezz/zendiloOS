@@ -9,6 +9,9 @@ export SQLX_OFFLINE = true
 # The version zendiloosd reports and compares releases with
 # (zendiloos_kernel::VERSION): the package's own.
 export ZENDILOOS_VERSION := $(shell dpkg-parsechangelog -S Version)
+# The git repository a development build's notes list the commits of;
+# packaging/build-deb.sh builds in a copy without one and names the source.
+ZENDILOOS_REPOSITORY ?= .
 
 %:
 	dh $@
@@ -28,6 +31,10 @@ override_dh_auto_install:
 		debian/zendiloos/usr/libexec/zendiloos/zendiloos-agent
 	install -d debian/zendiloos/usr/share/zendiloos/webui
 	cp -r frontend/dist/. debian/zendiloos/usr/share/zendiloos/webui/
+	# What changed in this version, which Control panel → Updates shows
+	# under the installed version (scripts/release-notes.sh).
+	scripts/release-notes.sh "$(ZENDILOOS_VERSION)" debian/changelog "$(ZENDILOOS_REPOSITORY)" \
+		> debian/zendiloos/usr/share/zendiloos/changes.md
 	# The key releases are signed with; without it, this build takes no
 	# updates of zendiloOS (docs/releases.md).
 	if [ -f packaging/release-signing.pub ]; then \

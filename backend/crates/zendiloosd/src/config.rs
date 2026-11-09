@@ -34,7 +34,8 @@ pub struct Config {
     pub updates: UpdatesConfig,
 }
 
-/// Where zendiloOS's releases come from.
+/// Where zendiloOS's releases come from, and what changed in the one that
+/// runs.
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct UpdatesConfig {
@@ -42,11 +43,18 @@ pub struct UpdatesConfig {
     pub api: String,
     /// The repository whose releases are zendiloOS's, `owner/name`.
     pub repository: String,
+    /// What changed in the version that runs, in Markdown, which the
+    /// package brings along; without the file the update page shows none.
+    pub notes: PathBuf,
 }
 
 impl Default for UpdatesConfig {
     fn default() -> Self {
-        Self { api: "https://api.github.com".into(), repository: "mavnezz/zendiloOS".into() }
+        Self {
+            api: "https://api.github.com".into(),
+            repository: "mavnezz/zendiloOS".into(),
+            notes: PathBuf::from("/usr/share/zendiloos/changes.md"),
+        }
     }
 }
 
@@ -220,6 +228,9 @@ mod tests {
             [log]
             filter = "debug"
             format = "json"
+
+            [updates]
+            notes = "/srv/changes.md"
             "#,
         )
         .unwrap();
@@ -238,6 +249,8 @@ mod tests {
         assert_eq!(config.journal.journalctl.as_deref(), Some(Path::new("/bin/journalctl")));
         assert_eq!(config.network.ip.as_deref(), Some(Path::new("/bin/ip")));
         assert_eq!(config.log, LogConfig { filter: "debug".to_owned(), format: LogFormat::Json });
+        assert_eq!(config.updates.notes, Path::new("/srv/changes.md"));
+        assert_eq!(config.updates.repository, "mavnezz/zendiloOS", "the others keep their defaults");
     }
 
     #[test]

@@ -1,7 +1,7 @@
 import type { VueWrapper } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { click, mountApp, page, settle } from '@/desktop/testing/mount'
+import { button, click, mountApp, page, settle } from '@/desktop/testing/mount'
 import { called, on, problem, reset } from '@/shared/test-support/server'
 import type { UpdatesOverview } from '@/shared/api/types'
 import { i18n } from '@/shared/i18n'
@@ -23,6 +23,7 @@ const t = (key: string, values: Record<string, unknown> = {}) => i18n.global.t(k
 function overview(extra: Partial<UpdatesOverview> = {}): UpdatesOverview {
   return {
     current: '0.1.1',
+    current_notes: null,
     checked_at: 1_790_000_000,
     phase: 'idle',
     phase_error: null,
@@ -81,6 +82,29 @@ describe('the update page', () => {
     expect(called('POST', '/api/v1/system/updates/apply')).toHaveLength(1)
   })
 
+  it('shows what is new in the installed version, as Markdown, with HTML as text', async () => {
+    on(
+      'GET',
+      '/api/v1/system/updates',
+      overview({
+        current_notes:
+          'Changes since v0.1.0:\n\n- **Faster** shares\n- <img src=x onerror="alert(1)"> fixed',
+      }),
+    )
+    const { wrapper } = await mountApp(UpdatePage)
+    expect(page()).not.toContain('Faster')
+
+    await click(new RegExp(t('updates.currentNotes')))
+    expect(button(new RegExp(t('updates.currentNotes'))).getAttribute('aria-expanded')).toBe('true')
+    const notes = wrapper.findComponent(Markdown)
+    expect(notes.find('strong').text()).toBe('Faster')
+    expect(notes.find('img').exists()).toBe(false)
+    expect(notes.text()).toContain('<img src=x onerror="alert(1)"> fixed')
+
+    await click(new RegExp(t('updates.currentNotes')))
+    expect(page()).not.toContain('Faster')
+  })
+
   it('renders the release notes as Markdown, with HTML as text', async () => {
     on(
       'GET',
@@ -93,6 +117,7 @@ describe('the update page', () => {
       }),
     )
     const { wrapper } = await mountApp(UpdatePage)
+    expect(page(), 'a package without notes').not.toContain(t('updates.currentNotes'))
 
     await click(new RegExp(t('updates.showNotes')))
     const notes = wrapper.findComponent(Markdown)

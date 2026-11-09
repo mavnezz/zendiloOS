@@ -575,7 +575,8 @@ impl Harness {
                     clock: identity.clock.clone(),
                 },
                 "0.1.0",
-            ),
+            )
+            .with_current_notes(Some("- Initial package".into())),
         };
         let state = ApiState::new(use_cases, secure_cookies);
         Self {
@@ -4090,6 +4091,7 @@ async fn administrators_look_for_updates_and_install_them() {
     let before = send(Method::GET, "/api/v1/system/updates", None, &admin).await;
     assert_eq!(before.status, StatusCode::OK, "{:?}", before.body);
     assert_eq!(before.body["current"], "0.1.0");
+    assert_eq!(before.body["current_notes"], "- Initial package", "what changed in the version that runs");
     assert_eq!(before.body["settings"]["channel"], "stable");
     assert_eq!(before.body["checked_at"], Value::Null);
     let early = send(Method::POST, "/api/v1/system/updates/apply", None, &admin).await;

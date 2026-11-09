@@ -77,7 +77,8 @@ is on the console and in `/var/lib/zendiloos/setup-code`.
 
 Control panel → **Updates** looks for updates daily: Debian's packages
 and new releases of zendiloOS on the chosen channel. Installing is a click,
-and a restart only happens when you ask for it.
+and a restart only happens when you ask for it. The page also shows what is
+new in the version installed.
 
 ### Uninstall
 

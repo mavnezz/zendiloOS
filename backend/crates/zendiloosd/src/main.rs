@@ -47,7 +47,7 @@ use zendiloos_infra::sqlite::{
     SqliteSelfTestPlans, SqliteSessions, SqliteShareProjects, SqliteShares, SqliteSystemUpdates,
     SqliteTwoFactor, SqliteUpdateSettings, SqliteVolumeBackups,
 };
-use zendiloos_infra::updates::GitHubReleases;
+use zendiloos_infra::updates::{GitHubReleases, installed_notes};
 use zendiloos_jobs::Jobs;
 use zendiloos_kernel::{AllWork, AuditLog, RequestContext};
 use zendiloos_network::application::NetworkUseCases;
@@ -140,7 +140,8 @@ async fn serve(config: Config) -> anyhow::Result<()> {
             clock: Arc::new(SystemClock),
         },
         zendiloos_kernel::VERSION,
-    );
+    )
+    .with_current_notes(installed_notes(&config.updates.notes));
     let system = SystemUseCases::new(SystemPorts {
         info: Arc::new(HostSystemInfo),
         metrics: Arc::new(metrics),
