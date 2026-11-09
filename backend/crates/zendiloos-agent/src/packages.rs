@@ -179,10 +179,44 @@ fn tempfile_folder() -> Result<PathBuf, OperationError> {
     Ok(std::env::temp_dir().join(format!("zendiloos-release-{name}")))
 }
 
+/// Debian's package tools the runner calls, and where the kernels' modules
+/// lie: Debian's own, or stand-ins in tests.
+#[derive(Debug, Clone)]
+struct Debian {
+    apt_get: PathBuf,
+    dpkg: PathBuf,
+    dpkg_deb: PathBuf,
+    dpkg_query: PathBuf,
+    modules: PathBuf,
+}
+
+impl Default for Debian {
+    fn default() -> Self {
+        Self {
+            apt_get: "/usr/bin/apt-get".into(),
+            dpkg: "/usr/bin/dpkg".into(),
+            dpkg_deb: "/usr/bin/dpkg-deb".into(),
+            dpkg_query: "/usr/bin/dpkg-query".into(),
+            modules: "/lib/modules".into(),
+        }
+    }
+}
+
 /// `run-packages <id> <task> [<release> <channel>]`, in
 /// `zendiloos-packages.service`: does the task, each step recorded.
 pub fn run_packages(
     paths: &HostPaths,
+    id: &str,
+    task: &str,
+    release: Option<&str>,
+    channel: Option<&str>,
+) -> Result<(), String> {
+    run_with(paths, &Debian::default(), id, task, release, channel)
+}
+
+fn run_with(
+    paths: &HostPaths,
+    debian: &Debian,
     id: &str,
     task: &str,
     release: Option<&str>,
@@ -226,7 +260,7 @@ pub fn run_packages(
     };
     record(&paths.packages, &run)?;
     let mut report = None;
-    let done = steps(paths, task, release.as_ref(), &mut report, |step| {
+    let done = debian.steps(paths, task, release.as_ref(), &mut report, |step| {
         run.step = step.to_owned();
         record(&paths.packages, &run)
     });
@@ -238,66 +272,71 @@ pub fn run_packages(
     done
 }
 
-/// The steps of `task`; `step` records each as it begins.
-fn steps(
-    paths: &HostPaths,
-    task: PackageTask,
-    release: Option<&ReleaseInstall>,
-    report: &mut Option<PackageReport>,
-    mut step: impl FnMut(&str) -> Result<(), String>,
-) -> Result<(), String> {
-    // apt's lists, fetched anew; what an interrupted run left half done is
-    // finished first, but for a check, which changes nothing.
-    let lists = |step: &mut dyn FnMut(&str) -> Result<(), String>| {
-        step("lists")?;
-        if task != PackageTask::Check {
-            finish_interrupted()?;
-        }
-        apt(&["update"])
-    };
-    match task {
-        PackageTask::InstallDocker => {
-            lists(&mut step)?;
-            step("install")?;
-            apt(&["install", "--yes", "docker.io", "docker-compose"])
-        }
-        PackageTask::InstallAcme => {
-            lists(&mut step)?;
-            step("install")?;
-            apt(&["install", "--yes", "acme.sh"])
-        }
-        PackageTask::Check => {
-            lists(&mut step)?;
-            *report = Some(host_report()?);
-            Ok(())
-        }
-        PackageTask::Update => {
-            lists(&mut step)?;
-            step("debian")?;
-            apt(&["--with-new-pkgs", "--yes", "upgrade"])?;
-            if let Some(release) = release {
-                step("zendiloos")?;
-                install_release(paths, release)?;
+impl Debian {
+    /// The steps of `task`; `step` records each as it begins.
+    fn steps(
+        &self,
+        paths: &HostPaths,
+        task: PackageTask,
+        release: Option<&ReleaseInstall>,
+        report: &mut Option<PackageReport>,
+        mut step: impl FnMut(&str) -> Result<(), String>,
+    ) -> Result<(), String> {
+        // apt's lists, fetched anew; what an interrupted run left half done
+        // is finished first, but for a check, which changes nothing.
+        let lists = |step: &mut dyn FnMut(&str) -> Result<(), String>| {
+            step("lists")?;
+            if task != PackageTask::Check {
+                self.finish_interrupted()?;
             }
-            step("modules")?;
-            let checked = host_report()?;
-            *report = Some(checked.clone());
-            zfs_checked(&checked)
-        }
-        PackageTask::Finish => {
-            // Nothing fetched: what was unpacked is configured, and apt
-            // completes what is missing from the lists it has.
-            step("configure")?;
-            finish_interrupted()?;
-            step("repair")?;
-            apt(&["--fix-broken", "--yes", "install"])?;
-            step("modules")?;
-            let checked = host_report()?;
-            *report = Some(checked.clone());
-            if checked.interrupted {
-                return Err("dpkg still lists packages it did not finish (`dpkg --audit` names them)".into());
+            self.apt(&["update"])
+        };
+        match task {
+            PackageTask::InstallDocker => {
+                lists(&mut step)?;
+                step("install")?;
+                self.apt(&["install", "--yes", "docker.io", "docker-compose"])
             }
-            zfs_checked(&checked)
+            PackageTask::InstallAcme => {
+                lists(&mut step)?;
+                step("install")?;
+                self.apt(&["install", "--yes", "acme.sh"])
+            }
+            PackageTask::Check => {
+                lists(&mut step)?;
+                *report = Some(self.host_report()?);
+                Ok(())
+            }
+            PackageTask::Update => {
+                lists(&mut step)?;
+                step("debian")?;
+                self.apt(&["--with-new-pkgs", "--yes", "upgrade"])?;
+                if let Some(release) = release {
+                    step("zendiloos")?;
+                    self.install_release(paths, release)?;
+                }
+                step("modules")?;
+                let checked = self.host_report()?;
+                *report = Some(checked.clone());
+                zfs_checked(&checked)
+            }
+            PackageTask::Finish => {
+                // Nothing fetched: what was unpacked is configured, and apt
+                // completes what is missing from the lists it has.
+                step("configure")?;
+                self.finish_interrupted()?;
+                step("repair")?;
+                self.apt(&["--fix-broken", "--yes", "install"])?;
+                step("modules")?;
+                let checked = self.host_report()?;
+                *report = Some(checked.clone());
+                if checked.interrupted {
+                    return Err(
+                        "dpkg still lists packages it did not finish (`dpkg --audit` names them)".into()
+                    );
+                }
+                zfs_checked(&checked)
+            }
         }
     }
 }
@@ -314,36 +353,39 @@ fn zfs_checked(report: &PackageReport) -> Result<(), String> {
     ))
 }
 
-/// Copies the release out of the download folder, checks it and installs it.
-fn install_release(paths: &HostPaths, install: &ReleaseInstall) -> Result<(), String> {
-    let folder = paths.packages.join("release");
-    let package = take_release(paths, install, &folder)?;
-    let release = &install.package;
-    let field = |name: &str| -> Result<String, String> {
-        let output = Command::new("/usr/bin/dpkg-deb")
-            .args(["--field"])
-            .arg(&package)
-            .arg(name)
-            .output()
-            .map_err(|e| format!("dpkg-deb: {e}"))?;
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
-    };
-    if field("Package")? != "zendiloos" {
-        return Err("the release's package is not zendiloos".into());
+impl Debian {
+    /// Copies the release out of the download folder, checks it and
+    /// installs it.
+    fn install_release(&self, paths: &HostPaths, install: &ReleaseInstall) -> Result<(), String> {
+        let folder = paths.packages.join("release");
+        let package = take_release(paths, install, &folder)?;
+        let release = &install.package;
+        let field = |name: &str| -> Result<String, String> {
+            let output = Command::new(&self.dpkg_deb)
+                .args(["--field"])
+                .arg(&package)
+                .arg(name)
+                .output()
+                .map_err(|e| format!("dpkg-deb: {e}"))?;
+            Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        };
+        if field("Package")? != "zendiloos" {
+            return Err("the release's package is not zendiloos".into());
+        }
+        if field("Version")? != release.version() {
+            return Err("the release's package has another version than its name says".into());
+        }
+        let arch = run_text(&self.dpkg, &["--print-architecture"])?;
+        if field("Architecture")? != arch {
+            return Err(format!("the release's package is not for {arch}"));
+        }
+        let installed = run_text(&self.dpkg_query, &["--show", "--showformat=${Version}", "zendiloos"])
+            .unwrap_or_default();
+        if !installed.is_empty() && !self.newer(release.version(), &installed)? {
+            return Err(format!("{} is not newer than {installed}, which is installed", release.version()));
+        }
+        self.apt(&["install", "--yes", &package.to_string_lossy()])
     }
-    if field("Version")? != release.version() {
-        return Err("the release's package has another version than its name says".into());
-    }
-    let arch = run_text("/usr/bin/dpkg", &["--print-architecture"])?;
-    if field("Architecture")? != arch {
-        return Err(format!("the release's package is not for {arch}"));
-    }
-    let installed = run_text("/usr/bin/dpkg-query", &["--show", "--showformat=${Version}", "zendiloos"])
-        .unwrap_or_default();
-    if !installed.is_empty() && !newer(release.version(), &installed)? {
-        return Err(format!("{} is not newer than {installed}, which is installed", release.version()));
-    }
-    apt(&["install", "--yes", &package.to_string_lossy()])
 }
 
 /// Copies the release's three files from the download folder into `folder`
@@ -460,47 +502,103 @@ fn copy_plain(from: &Path, to: &Path, max: u64) -> Result<Vec<u8>, String> {
     Ok(kept)
 }
 
-/// What an upgrade would bring now, which kernel runs, which is newest,
-/// whether ZFS is built for it, and whether dpkg left packages half done.
-fn host_report() -> Result<PackageReport, String> {
-    let interrupted = interrupted()?;
-    let output = Command::new("/usr/bin/apt-get")
-        .args(["--simulate", "--quiet", "-o", "Debug::NoLocking=1", "--with-new-pkgs", "upgrade"])
-        .env_clear()
-        .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
-        .env("LANG", "C.UTF-8")
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|e| format!("apt-get cannot be started: {e}"))?;
-    // With packages half installed apt may see nothing to upgrade, or
-    // refuse to plan: finishing the update comes first either way.
-    let upgradable = if output.status.success() {
-        String::from_utf8_lossy(&output.stdout).lines().filter_map(upgradable).collect()
-    } else if interrupted {
-        Vec::new()
-    } else {
-        return Err(format!("apt-get --simulate upgrade failed ({})", output.status));
-    };
-    let running_kernel = rustix::system::uname().release().to_string_lossy().into_owned();
-    let newest_kernel = newest_kernel(Path::new("/lib/modules"))?;
-    let zfs_ready =
-        newest_kernel.as_deref().is_none_or(|kernel| has_zfs(&Path::new("/lib/modules").join(kernel)));
-    Ok(PackageReport { upgradable, running_kernel, newest_kernel, zfs_ready, interrupted })
-}
+impl Debian {
+    /// What an upgrade would bring now, which kernel runs, which is newest,
+    /// whether ZFS is built for it, and whether dpkg left packages half
+    /// done.
+    fn host_report(&self) -> Result<PackageReport, String> {
+        let interrupted = self.interrupted()?;
+        let output = Command::new(&self.apt_get)
+            .args(["--simulate", "--quiet", "-o", "Debug::NoLocking=1", "--with-new-pkgs", "upgrade"])
+            .env_clear()
+            .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
+            .env("LANG", "C.UTF-8")
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|e| format!("apt-get cannot be started: {e}"))?;
+        // With packages half installed apt may see nothing to upgrade, or
+        // refuse to plan: finishing the update comes first either way.
+        let upgradable = if output.status.success() {
+            String::from_utf8_lossy(&output.stdout).lines().filter_map(upgradable).collect()
+        } else if interrupted {
+            Vec::new()
+        } else {
+            return Err(format!("apt-get --simulate upgrade failed ({})", output.status));
+        };
+        let running_kernel = rustix::system::uname().release().to_string_lossy().into_owned();
+        let newest_kernel = self.newest_kernel(&self.modules)?;
+        let zfs_ready = newest_kernel.as_deref().is_none_or(|kernel| has_zfs(&self.modules.join(kernel)));
+        Ok(PackageReport { upgradable, running_kernel, newest_kernel, zfs_ready, interrupted })
+    }
 
-/// Whether dpkg left packages unpacked, half installed or half configured,
-/// or with triggers waiting: `dpkg --audit` lists them (an update cut off,
-/// by a power cut while DKMS built ZFS, say), and says nothing otherwise.
-fn interrupted() -> Result<bool, String> {
-    let output = Command::new("/usr/bin/dpkg")
-        .arg("--audit")
-        .env_clear()
-        .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
-        .env("LANG", "C.UTF-8")
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|e| format!("dpkg cannot be started: {e}"))?;
-    Ok(audit_lists_something(&output.stdout))
+    /// Whether dpkg left packages unpacked, half installed or half
+    /// configured, or with triggers waiting: `dpkg --audit` lists them (an
+    /// update cut off, by a power cut while DKMS built ZFS, say), and says
+    /// nothing otherwise.
+    fn interrupted(&self) -> Result<bool, String> {
+        let output = Command::new(&self.dpkg)
+            .arg("--audit")
+            .env_clear()
+            .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
+            .env("LANG", "C.UTF-8")
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|e| format!("dpkg cannot be started: {e}"))?;
+        Ok(audit_lists_something(&output.stdout))
+    }
+
+    /// The newest kernel with modules, by dpkg's order of versions.
+    fn newest_kernel(&self, modules: &Path) -> Result<Option<String>, String> {
+        let entries = match fs::read_dir(modules) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(format!("{}: {error}", modules.display())),
+        };
+        let mut newest: Option<String> = None;
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !entry.path().join("modules.dep").exists() && !entry.path().join("kernel").is_dir() {
+                continue;
+            }
+            newest = match newest {
+                Some(current) if !self.newer(&name, &current)? => Some(current),
+                _ => Some(name),
+            };
+        }
+        Ok(newest)
+    }
+
+    /// `a` is a newer version than `b`, as dpkg orders them.
+    fn newer(&self, a: &str, b: &str) -> Result<bool, String> {
+        let status = Command::new(&self.dpkg)
+            .args(["--compare-versions", a, "gt", b])
+            .stdin(Stdio::null())
+            .status()
+            .map_err(|e| format!("dpkg: {e}"))?;
+        Ok(status.success())
+    }
+
+    /// Finishes what an interrupted apt or dpkg left half done (a restart
+    /// in the middle of an update): until then every run of apt fails with
+    /// "dpkg was interrupted". Nothing to do is quick.
+    fn finish_interrupted(&self) -> Result<(), String> {
+        debian(&self.dpkg, &["--force-confdef", "--force-confold", "--configure", "-a"])
+    }
+
+    /// `apt-get` without questions, keeping changed configuration files,
+    /// waiting up to ten minutes for another apt to finish. Its output goes
+    /// to the journal; the last lines of a failure into the error.
+    ///
+    /// needrestart (which `docker.io` recommends) stays out of it: it would
+    /// restart this very unit once an update replaces this binary, and
+    /// Docker with every app after a library's update. Services restart as
+    /// their own packages say, as on a Debian without needrestart.
+    fn apt(&self, args: &[&str]) -> Result<(), String> {
+        let mut all = vec!["--quiet", "-o", "DPkg::Lock::Timeout=600"];
+        all.extend(["-o", "Dpkg::Options::=--force-confdef", "-o", "Dpkg::Options::=--force-confold"]);
+        all.extend_from_slice(args);
+        debian(&self.apt_get, &all)
+    }
 }
 
 /// What `dpkg --audit` printed names packages: it prints nothing when all
@@ -527,27 +625,6 @@ fn upgradable(line: &str) -> Option<UpgradablePackage> {
     Some(UpgradablePackage { name: name.to_owned(), from, to, security })
 }
 
-/// The newest kernel with modules, by dpkg's order of versions.
-fn newest_kernel(modules: &Path) -> Result<Option<String>, String> {
-    let entries = match fs::read_dir(modules) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(format!("{}: {error}", modules.display())),
-    };
-    let mut newest: Option<String> = None;
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if !entry.path().join("modules.dep").exists() && !entry.path().join("kernel").is_dir() {
-            continue;
-        }
-        newest = match newest {
-            Some(current) if !newer(&name, &current)? => Some(current),
-            _ => Some(name),
-        };
-    }
-    Ok(newest)
-}
-
 /// A `zfs.ko*` somewhere below the kernel's modules (DKMS puts it in
 /// `updates/dkms`).
 fn has_zfs(kernel: &Path) -> bool {
@@ -565,50 +642,19 @@ fn has_zfs(kernel: &Path) -> bool {
     walk(kernel, 6)
 }
 
-/// `a` is a newer version than `b`, as dpkg orders them.
-fn newer(a: &str, b: &str) -> Result<bool, String> {
-    let status = Command::new("/usr/bin/dpkg")
-        .args(["--compare-versions", a, "gt", b])
-        .stdin(Stdio::null())
-        .status()
-        .map_err(|e| format!("dpkg: {e}"))?;
-    Ok(status.success())
-}
-
-fn run_text(program: &str, args: &[&str]) -> Result<String, String> {
-    let output = Command::new(program).args(args).output().map_err(|e| format!("{program}: {e}"))?;
+fn run_text(program: &Path, args: &[&str]) -> Result<String, String> {
+    let output =
+        Command::new(program).args(args).output().map_err(|e| format!("{}: {e}", program.display()))?;
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
     } else {
-        Err(format!("{program} failed ({})", output.status))
+        Err(format!("{} failed ({})", program.display(), output.status))
     }
 }
 
-/// `apt-get` without questions, keeping changed configuration files, waiting
-/// up to ten minutes for another apt to finish. Its output goes to the
-/// journal; the last lines of a failure into the error.
-///
-/// needrestart (which `docker.io` recommends) stays out of it: it would
-/// restart this very unit once an update replaces this binary, and Docker
-/// with every app after a library's update. Services restart as their own
-/// packages say, as on a Debian without needrestart.
-/// Finishes what an interrupted apt or dpkg left half done (a restart in
-/// the middle of an update): until then every run of apt fails with "dpkg
-/// was interrupted". Nothing to do is quick.
-fn finish_interrupted() -> Result<(), String> {
-    debian("/usr/bin/dpkg", &["--force-confdef", "--force-confold", "--configure", "-a"])
-}
-
-fn apt(args: &[&str]) -> Result<(), String> {
-    let mut all = vec!["--quiet", "-o", "DPkg::Lock::Timeout=600"];
-    all.extend(["-o", "Dpkg::Options::=--force-confdef", "-o", "Dpkg::Options::=--force-confold"]);
-    all.extend_from_slice(args);
-    debian("/usr/bin/apt-get", &all)
-}
-
 /// Runs apt-get or dpkg without asking anything; prints what it said.
-fn debian(program: &str, args: &[&str]) -> Result<(), String> {
-    let name = Path::new(program).file_name().and_then(|name| name.to_str()).unwrap_or(program);
+fn debian(program: &Path, args: &[&str]) -> Result<(), String> {
+    let name = program.file_name().map_or_else(|| program.to_string_lossy(), |name| name.to_string_lossy());
     // `apt-get upgrade`: the first word that is no option nor its value.
     let action =
         args.iter().find(|arg| !arg.starts_with('-') && !arg.contains('=')).map(|arg| format!(" {arg}"));
@@ -780,7 +826,11 @@ mod tests {
         assert!(audit_lists_something(half.as_bytes()));
         assert!(!audit_lists_something(b""));
         assert!(!audit_lists_something(b"\n"));
-        assert_eq!(fs::metadata("/usr/bin/dpkg").is_ok(), interrupted().is_ok(), "dpkg answers where it is");
+        assert_eq!(
+            fs::metadata("/usr/bin/dpkg").is_ok(),
+            Debian::default().interrupted().is_ok(),
+            "dpkg answers where it is"
+        );
     }
 
     #[test]
@@ -794,6 +844,195 @@ mod tests {
         let paths = HostPaths { packages: folder.path().join("never"), ..HostPaths::default() };
         let release = run_packages(&paths, "ab12", "finish", Some("zendiloos_1.0_amd64.deb"), Some("stable"));
         assert!(release.unwrap_err().contains("only an update"));
+    }
+
+    /// Debian's tools as scripts in `root`, each writing its call to
+    /// `debian.log`: `apt-get --simulate` brings openssl (and fails while
+    /// `simulate-fails` is there), every other apt-get fails while
+    /// `apt-fails` is there; `dpkg --audit` prints `audit` while it is
+    /// there, `dpkg --configure -a` removes it (unless `stays` is there,
+    /// or fails while `configure-fails` is); `dpkg-deb` reads a zendiloos
+    /// 9.9.9 for amd64, `dpkg-query` knows no zendiloos. One kernel, with
+    /// ZFS built for it.
+    fn fake_debian(root: &Path) -> Debian {
+        let log = root.join("debian.log");
+        let script = |name: &str, body: &str| {
+            let path = root.join(name);
+            fs::write(
+                &path,
+                format!("#!/bin/sh\necho \"{name} $*\" >> {}\nR={}\n{body}\n", log.display(), root.display()),
+            )
+            .unwrap();
+            fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+            path
+        };
+        let apt_get = script(
+            "apt-get",
+            "case \"$*\" in\n\
+             *--simulate*) [ -e $R/simulate-fails ] && exit 100\n\
+               echo 'Inst openssl [3.5.1-1] (3.5.4-1~deb13u1 Debian-Security:13/stable-security [amd64])' ;;\n\
+             *) [ -e $R/apt-fails ] && { echo 'E: Unable to fetch some archives' >&2; exit 100; } ;;\n\
+             esac\nexit 0",
+        );
+        let dpkg = script(
+            "dpkg",
+            "case \"$*\" in\n\
+             --audit) [ -e $R/audit ] && cat $R/audit ;;\n\
+             *--configure*) [ -e $R/configure-fails ] && { echo 'dpkg: error processing package zfs-dkms' >&2; exit 1; }\n\
+               [ -e $R/stays ] || rm -f $R/audit ;;\n\
+             --print-architecture) echo amd64 ;;\n\
+             --compare-versions*) exit 1 ;;\n\
+             esac\nexit 0",
+        );
+        let dpkg_deb = script(
+            "dpkg-deb",
+            "case \"$3\" in Package) echo zendiloos ;; Version) echo 9.9.9 ;; Architecture) echo amd64 ;; esac",
+        );
+        let dpkg_query = script("dpkg-query", "exit 1");
+        let modules = root.join("modules");
+        fs::create_dir_all(modules.join("6.12.57+deb13-amd64/updates/dkms")).unwrap();
+        fs::write(modules.join("6.12.57+deb13-amd64/modules.dep"), "").unwrap();
+        fs::write(modules.join("6.12.57+deb13-amd64/updates/dkms/zfs.ko.xz"), "").unwrap();
+        Debian { apt_get, dpkg, dpkg_deb, dpkg_query, modules }
+    }
+
+    /// A NAS of fake tools in `root`, with the release 9.9.9 downloaded.
+    fn host(root: &Path) -> (HostPaths, Debian) {
+        let spool = root.join("spool");
+        fs::create_dir_all(&spool).unwrap();
+        fs::write(root.join("release.pub"), KEY).unwrap();
+        fs::write(spool.join("zendiloos_9.9.9_amd64.deb"), PACKAGE).unwrap();
+        fs::write(spool.join(SUMS), SIGNED_SUMS).unwrap();
+        fs::write(spool.join(SIGNATURE), SIGNED).unwrap();
+        let paths = HostPaths {
+            packages: root.join("state"),
+            update_spool: spool,
+            release_keys: vec![root.join("release.pub")],
+            ..HostPaths::default()
+        };
+        (paths, fake_debian(root))
+    }
+
+    fn called(root: &Path) -> Vec<String> {
+        fs::read_to_string(root.join("debian.log")).unwrap_or_default().lines().map(str::to_owned).collect()
+    }
+
+    fn recorded(paths: &HostPaths, file: &str) -> PackageRun {
+        serde_json::from_str(&fs::read_to_string(paths.packages.join(file)).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn an_update_installs_debians_packages_then_the_signed_release_then_looks_at_zfs() {
+        let root = tempfile::tempdir().unwrap();
+        let (paths, debian) = host(root.path());
+        let release = Some("zendiloos_9.9.9_amd64.deb");
+        run_with(&paths, &debian, "ab01", "update", release, Some("stable")).unwrap();
+
+        let calls = called(root.path());
+        let apt: Vec<&str> = calls
+            .iter()
+            .filter(|call| call.starts_with("apt-get"))
+            .map(|call| call.rsplit(" -o ").next().unwrap())
+            .collect();
+        assert_eq!(apt.len(), 4, "{calls:?}");
+        assert!(apt[0].ends_with("update") && apt[1].ends_with("--with-new-pkgs --yes upgrade"), "{apt:?}");
+        assert!(apt[2].contains("install --yes") && apt[2].ends_with("release/zendiloos_9.9.9_amd64.deb"));
+        assert!(apt[3].ends_with("Debug::NoLocking=1 --with-new-pkgs upgrade"), "a simulated one: {apt:?}");
+        assert!(
+            calls[0].starts_with("dpkg") && calls[0].ends_with("--configure -a"),
+            "what was cut off first"
+        );
+        let run = recorded(&paths, STATE_FILE);
+        assert_eq!(
+            (run.state, run.step.as_str(), run.release.as_deref()),
+            (PackageRunState::Succeeded, "modules", Some("9.9.9"))
+        );
+        let report = run.report.clone().unwrap();
+        assert_eq!(report.upgradable.len(), 1);
+        assert!(report.zfs_ready && !report.interrupted);
+        assert_eq!(report.newest_kernel.as_deref(), Some("6.12.57+deb13-amd64"));
+        assert_eq!(recorded(&paths, UPDATE_FILE), run, "kept as the last update");
+
+        // Without ZFS for the new kernel, it fails saying what to do.
+        fs::remove_file(root.path().join("modules/6.12.57+deb13-amd64/updates/dkms/zfs.ko.xz")).unwrap();
+        let missing = run_with(&paths, &debian, "ab02", "update", None, None).unwrap_err();
+        assert!(missing.contains("ZFS module is missing for kernel 6.12.57+deb13-amd64"), "{missing}");
+        assert_eq!(recorded(&paths, UPDATE_FILE).state, PackageRunState::Failed);
+    }
+
+    #[test]
+    fn finishing_configures_what_was_unpacked_and_completes_what_is_missing() {
+        let root = tempfile::tempdir().unwrap();
+        let (paths, debian) = host(root.path());
+        let audit = root.path().join("audit");
+        fs::write(&audit, "The following packages are only half configured:\n zfs-dkms\n").unwrap();
+
+        run_with(&paths, &debian, "ab01", "finish", None, None).unwrap();
+        let calls = called(root.path());
+        assert!(calls[0].ends_with("--configure -a"), "{calls:?}");
+        assert!(
+            calls[1].starts_with("apt-get") && calls[1].ends_with("--fix-broken --yes install"),
+            "{calls:?}"
+        );
+        assert!(!calls.iter().any(|call| call.ends_with(" update")), "nothing fetched: {calls:?}");
+        let run = recorded(&paths, UPDATE_FILE);
+        assert_eq!((run.task, run.state), (PackageTask::Finish, PackageRunState::Succeeded));
+        assert!(!run.report.unwrap().interrupted);
+
+        // dpkg still lists what it did not finish.
+        fs::write(&audit, "half configured: zfs-dkms\n").unwrap();
+        fs::write(root.path().join("stays"), "").unwrap();
+        let left = run_with(&paths, &debian, "ab02", "finish", None, None).unwrap_err();
+        assert!(left.contains("still lists"), "{left}");
+        assert!(recorded(&paths, STATE_FILE).report.unwrap().interrupted);
+        // dpkg fails: its last lines say why.
+        fs::write(root.path().join("configure-fails"), "").unwrap();
+        let failed = run_with(&paths, &debian, "ab03", "finish", None, None).unwrap_err();
+        assert!(failed.contains("dpkg failed") && failed.contains("zfs-dkms"), "{failed}");
+        assert_eq!(recorded(&paths, STATE_FILE).step, "configure");
+    }
+
+    #[test]
+    fn a_check_says_what_apt_would_bring_and_whether_dpkg_was_cut_off() {
+        let root = tempfile::tempdir().unwrap();
+        let (paths, debian) = host(root.path());
+        run_with(&paths, &debian, "ab01", "check", None, None).unwrap();
+        let report = recorded(&paths, STATE_FILE).report.unwrap();
+        assert_eq!((report.upgradable.len(), report.interrupted), (1, false));
+        assert!(
+            !called(root.path()).iter().any(|call| call.contains("--configure")),
+            "a check changes nothing"
+        );
+        assert!(!paths.packages.join(UPDATE_FILE).exists(), "no update");
+
+        // Half configured, apt refuses to plan: the check says so.
+        fs::write(root.path().join("audit"), "half configured: zfs-dkms\n").unwrap();
+        fs::write(root.path().join("simulate-fails"), "").unwrap();
+        run_with(&paths, &debian, "ab02", "check", None, None).unwrap();
+        let report = recorded(&paths, STATE_FILE).report.unwrap();
+        assert_eq!((report.upgradable.len(), report.interrupted), (0, true));
+        // Otherwise apt failing fails the check.
+        fs::remove_file(root.path().join("audit")).unwrap();
+        let failed = run_with(&paths, &debian, "ab03", "check", None, None).unwrap_err();
+        assert!(failed.contains("apt-get --simulate upgrade failed"), "{failed}");
+    }
+
+    #[test]
+    fn the_plugins_come_from_debian() {
+        let root = tempfile::tempdir().unwrap();
+        let (paths, debian) = host(root.path());
+        run_with(&paths, &debian, "ab01", "install-docker", None, None).unwrap();
+        run_with(&paths, &debian, "ab02", "install-acme", None, None).unwrap();
+        let installs: Vec<String> =
+            called(root.path()).into_iter().filter(|call| call.contains(" install ")).collect();
+        assert!(installs[0].ends_with("install --yes docker.io docker-compose"), "{installs:?}");
+        assert!(installs[1].ends_with("install --yes acme.sh"), "{installs:?}");
+        assert!(!paths.packages.join(UPDATE_FILE).exists(), "no update");
+
+        fs::write(root.path().join("apt-fails"), "").unwrap();
+        let failed = run_with(&paths, &debian, "ab03", "install-acme", None, None).unwrap_err();
+        assert!(failed.contains("apt-get update failed") && failed.contains("Unable to fetch"), "{failed}");
+        assert_eq!(recorded(&paths, STATE_FILE).state, PackageRunState::Failed);
     }
 
     /// A key made with `minisign -G -W` (its secret one is gone), and
@@ -968,7 +1207,7 @@ mod tests {
 
         // Signed and listed, but no Debian package at all: dpkg-deb finds no
         // name in it (or is not there to ask), and apt is never run.
-        let refused = install_release(&paths, &release).unwrap_err();
+        let refused = Debian::default().install_release(&paths, &release).unwrap_err();
         assert!(refused.contains("not zendiloos") || refused.contains("dpkg-deb"), "{refused}");
     }
 
@@ -994,7 +1233,7 @@ mod tests {
             return;
         }
         let modules = tempfile::tempdir().unwrap();
-        assert_eq!(newest_kernel(&modules.path().join("missing")).unwrap(), None);
+        assert_eq!(Debian::default().newest_kernel(&modules.path().join("missing")).unwrap(), None);
         for (kernel, modules_dep) in
             [("6.12.38+deb13-amd64", true), ("6.12.57+deb13-amd64", true), ("6.99.0-unpacked", false)]
         {
@@ -1003,9 +1242,12 @@ mod tests {
                 fs::write(modules.path().join(kernel).join("modules.dep"), "").unwrap();
             }
         }
-        assert_eq!(newest_kernel(modules.path()).unwrap().as_deref(), Some("6.12.57+deb13-amd64"));
-        assert!(newer("1.10", "1.9").unwrap());
-        assert!(!newer("1.0~rc1", "1.0").unwrap());
+        assert_eq!(
+            Debian::default().newest_kernel(modules.path()).unwrap().as_deref(),
+            Some("6.12.57+deb13-amd64")
+        );
+        assert!(Debian::default().newer("1.10", "1.9").unwrap());
+        assert!(!Debian::default().newer("1.0~rc1", "1.0").unwrap());
     }
 
     /// The agent's side, with systemctl and systemd-run as scripts: a file
