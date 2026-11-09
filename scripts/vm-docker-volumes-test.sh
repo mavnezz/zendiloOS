@@ -226,7 +226,7 @@ sum=$(vm "sudo sha256sum $archive" | cut -d' ' -f1)
     == "$volume $sum $project" ]] || fail "the manifest: $(vm "sudo cat $manifest")"
 for file in "$archive" "$manifest"; do
     acl=$(vm "sudo getfacl -p $file")
-    grep -q "^user:$user:r" <<<"$acl" || fail "$file lacks the share's ACL: $acl"
+    grep -q '^group:zendiloos-files:r' <<<"$acl" || fail "$file lacks the share's ACL: $acl"
     grep -q '^mask::r-' <<<"$acl" || fail "the share's writers may write $file: $acl"
     [[ $(vm "sudo stat -c '%U %a' $file") =~ ^root\ [0-7][0145][0145]$ ]] \
         || fail "only root may write $file: $(vm "sudo stat -c '%U %a' $file")"
