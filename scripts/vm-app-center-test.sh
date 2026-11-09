@@ -17,6 +17,11 @@
 #      again: the App Center's address follows
 #   5. apps installed the earlier way are still listed, stop and start
 #   6. the project goes, its folder stays
+#   7. a catalog of one's own, served over https inside the VM by a CA the
+#      VM trusts for the test, offers an app with `privileged: true` and one
+#      with a named volume binding / (`o: rbind`): the index offers both,
+#      as it sees only the files as written, and filling either in is
+#      refused (`against_catalog_policy`) once Compose has read it
 #
 # Needs the VM running with the package installed and set up, Docker on a
 # pool and the network to fetch Lidarr's image; account and password as
@@ -35,6 +40,12 @@ media=apptestmedia
 project=zapptest
 port=18686
 moved=18687
+# The catalog of one's own (step 7): served from this folder in the VM, on
+# this port, with a certificate of a CA trusted for the test only.
+catalog=/run/zendiloos-test-catalog
+catalog_port=18643
+catalog_unit=zendiloos-test-catalog
+catalog_ca=/usr/local/share/ca-certificates/zendiloos-test-catalog.crt
 work=$(mktemp -d)
 
 say() { printf '\033[1m%s\033[0m\n' "$*"; }
@@ -89,18 +100,42 @@ remove_project() {
     fi
 }
 
+sign_in() {
+    curl -sk -c "$work/admin.jar" -H "Origin: $base" -H 'Content-Type: application/json' \
+        -d "$(jq -n --arg name "$user" --arg password "$password" '{name: $name, password: $password}')" \
+        "$api/auth/login" | jq -er .csrf_token >"$work/admin.csrf"
+}
+
+# zendiloosd reads the trusted CAs when it starts.
+restart_zendiloosd() {
+    vm "sudo systemctl restart zendiloosd"
+    wait_for "zendiloosd" "curl -skf $api/health" 120
+    sign_in || fail "cannot sign in again"
+}
+
+# The catalog of one's own goes, and the CA with it; true if there was one.
+remove_catalog() {
+    local id
+    for id in $(call GET /apps/sources | jq -r --arg a "https://127.0.0.1:$catalog_port/v1/index.json" \
+        '.[] | select(.address == $a) | .id'); do
+        call DELETE "/apps/sources/$id" >/dev/null
+    done
+    vm "sudo systemctl stop $catalog_unit 2>/dev/null; sudo systemctl reset-failed $catalog_unit 2>/dev/null; sudo rm -rf $catalog
+        if [ -e $catalog_ca ]; then sudo rm $catalog_ca && sudo update-ca-certificates --fresh >/dev/null; exit 0; fi
+        exit 1"
+}
+
 cleanup() {
     set +e
     remove_project
     delete_shares
+    remove_catalog && restart_zendiloosd
     rm -rf "$work"
 }
 trap cleanup EXIT
 
 say "Signing in as $user"
-curl -sk -c "$work/admin.jar" -H "Origin: $base" -H 'Content-Type: application/json' \
-    -d "$(jq -n --arg name "$user" --arg password "$password" '{name: $name, password: $password}')" \
-    "$api/auth/login" | jq -er .csrf_token >"$work/admin.csrf" || fail "cannot sign in"
+sign_in || fail "cannot sign in"
 me=$(call GET /auth/session | jq -er .account.id)
 home=$(call GET /docker/data | jq -er .current.pool) || fail "Docker's data is not on a pool"
 volume=$(call GET /storage/pools | jq -r --arg p "$home" '.[] | select(.name == $p) | .volume')
@@ -108,6 +143,7 @@ volume=$(call GET /storage/pools | jq -r --arg p "$home" '.[] | select(.name == 
 say "Cleaning up an earlier run"
 remove_project
 delete_shares
+if remove_catalog; then restart_zendiloosd; fi
 
 say "1. Lidarr's template, filled in"
 source_id=$(call GET /apps/catalog | jq -er '[.[] | select(.id == "lidarr" and .official)][0].source_id') \
@@ -183,5 +219,64 @@ remove_project
 vm "sudo test -f $folder/compose.yaml && sudo test -d $folder/config" || fail "the folder went with the project"
 call GET /apps/projects | jq -e --arg p "$project" 'map(select(.project == $p)) | length == 0' >/dev/null \
     || fail "the App Center still lists it"
+
+say "7. A catalog of one's own whose apps break the policy"
+# An index entry as a catalog publishes it, with `compose` as its file.
+probe() {
+    jq -n --arg id "$1" --arg compose "$2" '{
+        id: $id, name: "Policy probe", tagline: "Shows what the catalog policy refuses",
+        description: "Not an app to run.\n", categories: ["monitoring"],
+        developer: "zendiloOS tests", website: "https://example.org", source: "https://example.org/source",
+        license: "MIT", maintainers: ["mavnezz"], architectures: ["amd64", "arm64"],
+        web: {port: "web", path: "/", scheme: "http"},
+        ports: [{id: "web", label: "Web interface", default: 18690}],
+        compose: $compose, icon: ("icons/" + $id + ".png"),
+        digest: "sha256:2cbf42f705a743b98a7c563720a8b5f8349bf6539b3f1985aa55ed73f5251fbf"
+    }'
+}
+plain_probe=$'services:\n  probe:\n    image: alpine:3.20\n    restart: unless-stopped\n    environment:\n      TZ: ${TZ}\n    ports:\n      - ${PORT_WEB}:8080\n    volumes:\n      - ${APP_DATA}/data:/data\n'
+privileged_probe=${plain_probe/restart: unless-stopped/restart: unless-stopped$'\n'    privileged: true}
+rbind_probe=$plain_probe$'      - host:/host\nvolumes:\n  host:\n    driver_opts:\n      type: none\n      o: rbind\n      device: /\n'
+index=$(jq -n --argjson a "$(probe probe-privileged "$privileged_probe")" --argjson b "$(probe probe-rbind "$rbind_probe")" \
+    '{format: 1, apps: [$a, $b]}')
+# A CA of the test's own, trusted by the VM until the test ends, signs the
+# certificate of a server for 127.0.0.1 that serves the index.
+vm "set -e
+    sudo mkdir -p $catalog/www/v1
+    cd $catalog
+    sudo openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 \
+        -subj '/CN=zendiloOS test catalog' -addext basicConstraints=critical,CA:TRUE \
+        -addext keyUsage=critical,keyCertSign -keyout ca.key -out ca.pem 2>/dev/null
+    sudo openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -subj /CN=127.0.0.1 \
+        -keyout server.key -out server.csr 2>/dev/null
+    printf 'subjectAltName=IP:127.0.0.1\nextendedKeyUsage=serverAuth\n' | sudo tee server.ext >/dev/null
+    sudo openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial -days 1 \
+        -extfile server.ext -out server.pem 2>/dev/null
+    sudo cp ca.pem $catalog_ca
+    sudo update-ca-certificates >/dev/null" || fail "cannot make the catalog's certificates"
+vm "sudo tee $catalog/www/v1/index.json >/dev/null" <<<"$index"
+vm "sudo systemd-run --quiet --unit $catalog_unit -p WorkingDirectory=$catalog/www -p CollectMode=inactive-or-failed \
+    openssl s_server -quiet -accept 127.0.0.1:$catalog_port -cert $catalog/server.pem -key $catalog/server.key -WWW" \
+    || fail "cannot serve the catalog"
+wait_for "the catalog's server" "vm 'curl -sf https://127.0.0.1:$catalog_port/v1/index.json'" 30
+restart_zendiloosd
+[[ $(status POST /apps/sources "{\"address\":\"https://127.0.0.1:$catalog_port/v1/index.json\"}") == 201 ]] \
+    || fail "the catalog was not added: $(cat "$work/last")"
+own=$(jq -er .id "$work/last")
+jq -e '.skipped == 0 and .refresh_error == null' "$work/last" >/dev/null || fail "its index: $(cat "$work/last")"
+# The index sees the files as written only: both are offered.
+call GET /apps/catalog | jq -e --argjson s "$own" '[.[] | select(.source_id == $s) | .id] | sort == ["probe-privileged", "probe-rbind"]' \
+    >/dev/null || fail "not offered: $(call GET /apps/catalog | jq -c --argjson s "$own" '[.[] | select(.source_id == $s)]')"
+refused() {
+    local body
+    body=$(jq -n --argjson s "$share_id" '{name:"zprobe",share_id:$s,folder:"docker/zprobe",ports:{web:18690}}')
+    [[ $(status POST "/apps/catalog/$own/$1/compose" "$body") == 422 ]] || fail "$1 was filled in: $(cat "$work/last")"
+    jq -e --arg w "$2" '.code == "against_catalog_policy" and (.detail | contains($w))' "$work/last" >/dev/null \
+        || fail "$1: $(cat "$work/last")"
+}
+refused probe-privileged "privileged"
+refused probe-rbind "volumes.host"
+remove_catalog || fail "the catalog was not there to remove"
+restart_zendiloosd
 
 say "All App Center tests passed"
