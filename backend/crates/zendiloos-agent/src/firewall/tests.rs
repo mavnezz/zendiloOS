@@ -31,7 +31,12 @@ fn rule(
 }
 
 fn config(rules: Vec<FirewallRule>, fallback: FirewallVerdict) -> FirewallConfig {
-    FirewallConfig { rules: FirewallRules::new(rules).unwrap(), fallback, bridges: vec![] }
+    FirewallConfig {
+        rules: FirewallRules::new(rules).unwrap(),
+        fallback,
+        bridges: vec![],
+        own_bridges: vec![],
+    }
 }
 
 fn chain<'a>(text: &'a str, name: &str) -> &'a str {
@@ -76,6 +81,7 @@ fn the_file_says_exactly_the_rules() {
     ];
     let mut with_bridges = config(rules, FirewallVerdict::Drop);
     with_bridges.bridges = vec![DockerBridge::parse("br-0123456789ab").unwrap()];
+    with_bridges.own_bridges = vec![InterfaceName::parse("br-lan").unwrap()];
     let text = ruleset(Some(&with_bridges), Phase::Kept);
     assert!(text.starts_with(HEADER));
     let (input, forward) = text.split_once("chain forward").unwrap();
@@ -102,10 +108,9 @@ fn the_file_says_exactly_the_rules() {
         "\t\ttype filter hook forward priority filter - 5; policy accept;\n",
         "\t\tiifname { \"br-0123456789ab\", \"docker0\" } accept\n",
         "\t\tiifname \"veth*\" accept\n",
-        "\t\tct status dnat jump published\n\
-         \t\t# Nothing else from outside reaches a container, not even sent to\n\
-         \t\t# its address through the NAS.\n\
-         \t\toifname { \"br-0123456789ab\", \"docker0\" } drop\n",
+        "\t\tct status dnat jump published\n",
+        "\t\tmeta iifkind \"bridge\" iifname != { \"br-lan\" } accept\n",
+        "\t\tmeta oifkind \"bridge\" oifname != { \"br-lan\" } drop\n\t}\n",
         "\t\tip saddr 10.0.0.7 drop\n",
         "\t\tmeta l4proto tcp ct original proto-dst { 8080-8081 } accept\n",
         "\t\tip6 saddr fd00::1-fd00::9 meta l4proto udp ct original proto-dst { 3478 } accept\n",
@@ -136,7 +141,9 @@ fn a_lan_bridge_named_br_dash_is_filtered() {
         forward: true,
         verdict: FirewallVerdict::Drop,
     };
-    let text = ruleset(Some(&config(vec![deny_lan], FirewallVerdict::Drop)), Phase::Kept);
+    let mut lan = config(vec![deny_lan], FirewallVerdict::Drop);
+    lan.own_bridges = vec![InterfaceName::parse("br-lan").unwrap()];
+    let text = ruleset(Some(&lan), Phase::Kept);
     let input = chain(&text, "input");
     let rule = input.find("iifname \"br-lan\" drop").expect("the rule");
     for (at, line) in input.match_indices(" accept").map(|(at, _)| (at, &input[..at])) {
@@ -144,7 +151,8 @@ fn a_lan_bridge_named_br_dash_is_filtered() {
         assert!(at > rule || !line.contains("br-"), "accepted before the rule: {line:?} in\n{input}");
     }
     let forward = chain(&text, "forward");
-    assert!(!forward.contains("br-lan") && !forward.contains("br-*"), "{forward}");
+    let jump = forward.find("ct status dnat jump published").expect("the jump");
+    assert!(!forward[..jump].contains("br-lan") && !forward.contains("br-*"), "{forward}");
     assert!(chain(&text, "published").contains("iifname \"br-lan\" drop"));
 }
 
@@ -157,9 +165,38 @@ fn new_forwarded_connections_without_dnat_meet_the_rules_or_a_drop() {
     let forward = chain(&text, "forward");
     let after_jump = &forward[forward.find("ct status dnat jump published").expect("the jump")..];
     assert!(
-        after_jump.lines().skip(1).any(|line| line.trim() == "oifname { \"docker0\" } drop"),
+        after_jump.lines().skip(1).any(|line| line.trim() == "meta oifkind \"bridge\" drop"),
         "a new connection to a container that was not translated falls through to `policy accept`:\n{forward}"
     );
+}
+
+/// Docker makes a bridge when a project starts, and names it as a network
+/// says (`com.docker.network.bridge.name`): the rules written before know
+/// neither. What comes from outside meets the drop on its way to any
+/// bridge, by the kernel's kind of device, but the machine's own; its
+/// containers still reach each other, and the LAN still reaches the
+/// machine's own bridge.
+#[test]
+fn a_bridge_docker_made_since_or_named_otherwise_is_kept_from_outside() {
+    let mut open = config(vec![], FirewallVerdict::Accept);
+    open.own_bridges = vec![InterfaceName::parse("virbr0").unwrap(), InterfaceName::parse("br-lan").unwrap()];
+    let text = ruleset(Some(&open), Phase::Kept);
+    let forward = chain(&text, "forward");
+    let after_jump: Vec<&str> = forward[forward.find("ct status dnat jump published").expect("the jump")..]
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.starts_with('#'))
+        .collect();
+    assert_eq!(
+        after_jump,
+        [
+            "ct status dnat jump published",
+            "meta iifkind \"bridge\" iifname != { \"br-lan\", \"virbr0\" } accept",
+            "meta oifkind \"bridge\" oifname != { \"br-lan\", \"virbr0\" } drop",
+        ],
+        "{forward}"
+    );
+    assert!(!forward.contains("oifname { \"docker0\" }"), "no list of names known when written: {forward}");
 }
 
 /// While a change waits, what others send on connections opened before it

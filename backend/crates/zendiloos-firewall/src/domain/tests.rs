@@ -228,9 +228,15 @@ fn rules_compile_to_what_the_host_matches() {
         ]
     );
     assert!(ruleset.bridges.is_empty());
-    // Docker's bridges go along, in order, once each.
-    let bridges = Facts { bridges: vec!["br-b".into(), "br-a".into(), "br-b".into()], ..facts() };
-    assert_eq!(compile(&settings, &bridges).unwrap().bridges, ["br-a", "br-b"]);
+    // Docker's bridges and the machine's own go along, in order, once each.
+    let bridges = Facts {
+        bridges: vec!["br-b".into(), "br-a".into(), "br-b".into()],
+        own_bridges: vec!["br-lan".into(), "br-dmz".into()],
+        ..facts()
+    };
+    let with_bridges = compile(&settings, &bridges).unwrap();
+    assert_eq!(with_bridges.bridges, ["br-a", "br-b"]);
+    assert_eq!(with_bridges.own_bridges, ["br-dmz", "br-lan"]);
 }
 
 #[test]

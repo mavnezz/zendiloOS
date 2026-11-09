@@ -568,6 +568,10 @@ pub struct Facts {
     /// Docker's bridges besides `docker0` (`br-` and 12 hex digits), by
     /// name: containers on them reach the NAS, and only these.
     pub bridges: Vec<String>,
+    /// The machine's own bridges (`br-lan`), by name: what comes from
+    /// outside reaches no other bridge, so a container's even on a bridge
+    /// Docker made since, or named otherwise.
+    pub own_bridges: Vec<String>,
 }
 
 impl Default for Facts {
@@ -583,6 +587,7 @@ impl Default for Facts {
             projects: Vec::new(),
             projects_unknown: false,
             bridges: Vec::new(),
+            own_bridges: Vec::new(),
         }
     }
 }
@@ -615,6 +620,8 @@ pub struct Ruleset {
     pub fallback: Action,
     /// Docker's bridges besides `docker0`, from [`Facts::bridges`].
     pub bridges: Vec<String>,
+    /// From [`Facts::own_bridges`].
+    pub own_bridges: Vec<String>,
 }
 
 /// The rules switched on, with their services resolved to the ports they
@@ -649,10 +656,14 @@ pub fn compile(settings: &FirewallSettings, facts: &Facts) -> Option<Ruleset> {
             action: rule.action,
         }));
     }
-    let mut bridges = facts.bridges.clone();
-    bridges.sort_unstable();
-    bridges.dedup();
-    Some(Ruleset { rules, fallback: settings.fallback, bridges })
+    let sorted = |names: &[String]| {
+        let mut names = names.to_vec();
+        names.sort_unstable();
+        names.dedup();
+        names
+    };
+    let (bridges, own_bridges) = (sorted(&facts.bridges), sorted(&facts.own_bridges));
+    Some(Ruleset { rules, fallback: settings.fallback, bridges, own_bridges })
 }
 
 /// How a request reached the web interface, as far as known.

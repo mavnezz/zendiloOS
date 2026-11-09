@@ -289,6 +289,11 @@ pub struct FirewallConfig {
     /// [`FirewallConfig::MAX_BRIDGES`].
     #[serde(default, deserialize_with = "bridges")]
     pub bridges: Vec<DockerBridge>,
+    /// The machine's own bridges (`br-lan`); what comes from outside is
+    /// forwarded to no other bridge but through a published port. At most
+    /// [`FirewallConfig::MAX_BRIDGES`]; none named as Docker names its own.
+    #[serde(default, deserialize_with = "own_bridges")]
+    pub own_bridges: Vec<InterfaceName>,
 }
 
 impl FirewallConfig {
@@ -299,6 +304,17 @@ fn bridges<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<Dock
     let bridges = Vec::<DockerBridge>::deserialize(deserializer)?;
     if bridges.len() > FirewallConfig::MAX_BRIDGES {
         return Err(serde::de::Error::custom("too many bridges"));
+    }
+    Ok(bridges)
+}
+
+fn own_bridges<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<InterfaceName>, D::Error> {
+    let bridges = Vec::<InterfaceName>::deserialize(deserializer)?;
+    if bridges.len() > FirewallConfig::MAX_BRIDGES {
+        return Err(serde::de::Error::custom("too many bridges"));
+    }
+    if bridges.iter().any(|name| DockerBridge::parse(name.as_str()).is_ok()) {
+        return Err(serde::de::Error::custom("one of Docker's bridges is not the machine's own"));
     }
     Ok(bridges)
 }
@@ -370,6 +386,7 @@ mod tests {
             rules: FirewallRules::new(vec![rule.clone()]).unwrap(),
             fallback: FirewallVerdict::Drop,
             bridges: vec![DockerBridge::parse("br-0123456789ab").unwrap()],
+            own_bridges: vec![InterfaceName::parse("br-lan").unwrap()],
         };
         let text = serde_json::to_string(&config).unwrap();
         assert_eq!(serde_json::from_str::<FirewallConfig>(&text).unwrap(), config);
@@ -391,14 +408,31 @@ mod tests {
         {
             assert!(DockerBridge::parse(odd).is_err(), "{odd}");
         }
-        let text = r#"{"rules":[],"fallback":"drop","bridges":["br-0123456789ab"]}"#;
+        let text = r#"{"rules":[],"fallback":"drop","bridges":["br-0123456789ab"],"own_bridges":["br-lan"]}"#;
         let config: FirewallConfig = serde_json::from_str(text).unwrap();
         assert_eq!(serde_json::to_string(&config).unwrap(), text);
-        assert!(serde_json::from_str::<FirewallConfig>(&text.replace("br-0123456789ab", "br-lan")).is_err());
+        assert!(serde_json::from_str::<FirewallConfig>(&text.replace("br-0123456789ab", "br-dmz")).is_err());
         let without: FirewallConfig = serde_json::from_str(r#"{"rules":[],"fallback":"drop"}"#).unwrap();
-        assert!(without.bridges.is_empty());
+        assert!(without.bridges.is_empty() && without.own_bridges.is_empty());
         let many = vec![r#""docker0""#; FirewallConfig::MAX_BRIDGES + 1].join(",");
         let many = format!(r#"{{"rules":[],"fallback":"drop","bridges":[{many}]}}"#);
         assert!(serde_json::from_str::<FirewallConfig>(&many).is_err());
+    }
+
+    /// Docker's bridges never pass for the machine's own: what comes from
+    /// outside would reach their containers.
+    #[test]
+    fn the_machines_own_bridges_are_not_dockers() {
+        let own = |names: &str| {
+            serde_json::from_str::<FirewallConfig>(&format!(
+                r#"{{"rules":[],"fallback":"drop","own_bridges":[{names}]}}"#
+            ))
+        };
+        assert_eq!(own(r#""br-lan","virbr0""#).unwrap().own_bridges.len(), 2);
+        for docker in [r#""docker0""#, r#""br-0123456789ab""#, r#""lo""#, r#""br lan""#] {
+            assert!(own(docker).is_err(), "{docker}");
+        }
+        let many = vec![r#""br0""#; FirewallConfig::MAX_BRIDGES + 1].join(",");
+        assert!(own(&many).is_err());
     }
 }

@@ -84,10 +84,22 @@ fn config(ruleset: &Ruleset) -> Result<FirewallConfig, HostError> {
     if bridges.len() > FirewallConfig::MAX_BRIDGES {
         return Err(invalid("number of Docker bridges"));
     }
+    // One the agent could not take is left out rather than all the rules:
+    // it is then kept from outside like Docker's.
+    let own_bridges: Vec<InterfaceName> = ruleset
+        .own_bridges
+        .iter()
+        .filter(|name| DockerBridge::parse(name).is_err())
+        .filter_map(|name| InterfaceName::parse(name).ok())
+        .collect();
+    if own_bridges.len() > FirewallConfig::MAX_BRIDGES {
+        return Err(invalid("number of the machine's bridges"));
+    }
     Ok(FirewallConfig {
         rules: FirewallRules::new(rules).map_err(|_| invalid("number of rules"))?,
         fallback: verdict(ruleset.fallback),
         bridges,
+        own_bridges,
     })
 }
 
@@ -190,10 +202,16 @@ mod tests {
             ],
             fallback: Action::Deny,
             bridges: vec!["br-0123456789ab".into()],
+            own_bridges: vec!["br-lan".into(), "docker0".into(), "br 2".into()],
         };
         let made = config(&ruleset).unwrap();
         assert_eq!(made.fallback, FirewallVerdict::Drop);
         assert_eq!(made.bridges, [DockerBridge::parse("br-0123456789ab").unwrap()]);
+        assert_eq!(
+            made.own_bridges,
+            [InterfaceName::parse("br-lan").unwrap()],
+            "neither Docker's nor a name the agent cannot take passes for the machine's own"
+        );
         let lan_bridge = Ruleset { bridges: vec!["br-lan".into()], ..ruleset.clone() };
         assert!(config(&lan_bridge).is_err(), "a bridge of the machine's own is not passed for Docker's");
         let rules: Vec<&FirewallRule> = made.rules.iter().collect();
@@ -209,6 +227,7 @@ mod tests {
             rules: vec![compiled(Some("lo"), Source::Any, Traffic::All)],
             fallback: Action::Allow,
             bridges: vec![],
+            own_bridges: vec![],
         };
         assert!(config(&odd).is_err());
         let backwards = Source::Range { from: "10.0.0.9".parse().unwrap(), to: "10.0.0.1".parse().unwrap() };
@@ -220,7 +239,7 @@ mod tests {
     async fn rules_are_applied_and_confirmed_through_the_agent() {
         let firewall = AgentFirewall::new(Arc::new(SimulatedAgent::new()));
         let context = RequestContext::default();
-        let ruleset = Ruleset { rules: vec![], fallback: Action::Deny, bridges: vec![] };
+        let ruleset = Ruleset { rules: vec![], fallback: Action::Deny, bridges: vec![], own_bridges: vec![] };
         assert_eq!(firewall.state(&context).await.unwrap().pending_until, None);
         assert!(firewall.begin(Some(&ruleset), 90, &context).await.unwrap().pending_until.is_some());
         assert!(firewall.state(&context).await.unwrap().pending_until.is_some());

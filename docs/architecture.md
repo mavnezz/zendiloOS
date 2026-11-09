@@ -2135,9 +2135,15 @@ DHCP's answers, then the rules, then the fallback. Its `forward` chain lets
 containers' own traffic pass and sends what Docker forwards to a published
 port (`ct status dnat`) through the rules that are about all ports, a project
 or ports, matched by the port it was sent to (`ct original proto-dst`), then
-the fallback; any other new connection from outside to Docker's bridges (a
-LAN host routing to a container's address through the NAS) is dropped. A drop
-there is final; an accept never overrides Docker's own drops. The agent has no network of its own (`PrivateNetwork`): `nft -c`
+the fallback; any other new connection from outside to a bridge (a LAN host
+routing to a container's address through the NAS) is dropped. That drop knows
+bridges by the kernel's kind of device (`meta oifkind "bridge"`), not by
+name: every bridge but the machine's own (those the network context finds
+with a member besides containers' `veth`s: a network card, a bond, a VM's
+`tap`), so also one Docker made after the rules were written or named
+otherwise (`com.docker.network.bridge.name`); containers on such a bridge
+still reach each other. A drop there is final; an accept never overrides
+Docker's own drops. The agent has no network of its own (`PrivateNetwork`): `nft -c`
 checks the file in a transient unit, and `zendiloos-firewall.service`
 (`nft -f`, early at boot before `network-pre.target`, after Debian's
 `nftables.service`, and again when that restarts or reloads, as its

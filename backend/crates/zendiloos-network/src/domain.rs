@@ -105,6 +105,11 @@ pub struct Network {
     /// Docker's bridges, by name (not shown): the firewall lets containers
     /// on them reach the NAS.
     pub docker_bridges: Vec<String>,
+    /// The machine's own bridges, by name: those with a member other than a
+    /// container's end of a `veth` pair (a network card, a bond, a VM's
+    /// `tap`). Docker's hold only containers, whatever they are named; the
+    /// firewall keeps connections from outside off every bridge but these.
+    pub own_bridges: Vec<String>,
 }
 
 impl Network {
@@ -119,6 +124,18 @@ impl Network {
             .map(|i| i.name.clone())
             .collect();
         docker_bridges.sort_unstable();
+        let mut own_bridges: Vec<String> = interfaces
+            .iter()
+            .filter(|i| i.kind == InterfaceKind::Bridge && !is_docker_bridge(&i.name))
+            .filter(|bridge| {
+                interfaces.iter().any(|member| {
+                    member.member_of.as_deref() == Some(bridge.name.as_str())
+                        && member.kind != InterfaceKind::Other("veth".into())
+                })
+            })
+            .map(|i| i.name.clone())
+            .collect();
+        own_bridges.sort_unstable();
         let mut interfaces: Vec<Interface> = interfaces.into_iter().filter(Interface::matters).collect();
         interfaces.sort_by(|a, b| a.name.cmp(&b.name));
         for interface in &mut interfaces {
@@ -126,7 +143,7 @@ impl Network {
             interface.addresses.sort_by_key(|a| (a.scope != AddressScope::Global, a.ip.is_ipv6()));
         }
         default_routes.sort_by_key(|route| (route.metric, route.gateway.is_ipv6()));
-        Self { interfaces, default_routes, name_servers, docker_bridges }
+        Self { interfaces, default_routes, name_servers, docker_bridges, own_bridges }
     }
 }
 
@@ -191,6 +208,35 @@ mod tests {
         assert_eq!(network.docker_bridges, ["br-9b4ffb8b3e6d", "docker0"]);
         let shown: Vec<&str> = network.interfaces.iter().map(|i| i.name.as_str()).collect();
         assert_eq!(shown, ["br-lan", "enp1s0"]);
+    }
+
+    /// A bridge is the machine's own when something besides containers is
+    /// in it: a network card, or a VM. A Docker network named otherwise
+    /// (`com.docker.network.bridge.name`) holds only containers' `veth`s,
+    /// and an empty bridge holds nobody to keep out.
+    #[test]
+    fn own_bridges_are_those_with_more_than_containers_in_them() {
+        let member = |name: &str, kind: InterfaceKind, bridge: &str| Interface {
+            member_of: Some(bridge.into()),
+            ..interface(name, kind)
+        };
+        let network = Network::new(
+            vec![
+                interface("br-lan", InterfaceKind::Bridge),
+                member("enp1s0", InterfaceKind::Ethernet, "br-lan"),
+                member("veth1", InterfaceKind::Other("veth".into()), "br-lan"),
+                interface("virbr0", InterfaceKind::Bridge),
+                member("vnet0", InterfaceKind::Other("tun".into()), "virbr0"),
+                interface("proxy0", InterfaceKind::Bridge),
+                member("veth2", InterfaceKind::Other("veth".into()), "proxy0"),
+                interface("br0", InterfaceKind::Bridge),
+                interface("docker0", InterfaceKind::Bridge),
+                member("enp2s0", InterfaceKind::Ethernet, "docker0"),
+            ],
+            vec![],
+            vec![],
+        );
+        assert_eq!(network.own_bridges, ["br-lan", "virbr0"]);
     }
 
     #[test]

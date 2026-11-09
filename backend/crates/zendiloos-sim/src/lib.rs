@@ -1738,6 +1738,7 @@ mod tests {
             rules: FirewallRules::new(vec![]).unwrap(),
             fallback: FirewallVerdict::Drop,
             bridges: vec![],
+            own_bridges: vec![],
         };
         let within = ConfirmWithin::seconds(90).ok();
         let apply = |config: Option<FirewallConfig>, confirm_within, waiting| Request::ApplyFirewall {
