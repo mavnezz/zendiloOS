@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
-use zendiloos_containers::application::{PlanInput, PlanView, RestoreTarget, VolumeView};
+use zendiloos_containers::application::{BackupGroup, PlanInput, PlanView, RestoreTarget, VolumeView};
 use zendiloos_containers::domain::{
     Backup, BackupFrequency, BackupOutcome, BackupSchedule, BackupTarget, DEFAULT_KEEP, VolumeSize,
 };
@@ -30,7 +30,11 @@ pub(super) fn routes() -> OpenApiRouter<ApiState> {
         .routes(routes!(prune_volumes))
         .routes(routes!(remove_volume))
         .routes(routes!(backup_plan, set_backup_plan, delete_backup_plan))
+        .routes(routes!(resume_backup_plan))
         .routes(routes!(list_backups, back_up_now))
+        .routes(routes!(backup_groups))
+        .routes(routes!(remove_backup))
+        .routes(routes!(import_backups))
         .routes(routes!(restore_backup))
         .routes(routes!(backup_readers))
 }
@@ -95,8 +99,11 @@ pub struct BackupPlanView {
     pub keep: u32,
     /// The containers that use the volume are stopped while it is backed up.
     pub stop_containers: bool,
-    /// When it runs next, Unix seconds.
+    /// When it runs next, Unix seconds; not while paused.
     pub next_at: i64,
+    /// The volume was gone when a run was due: no runs until it is resumed
+    /// or set anew, once a volume of the name is there again.
+    pub paused: bool,
 }
 
 impl From<PlanView> for BackupPlanView {
@@ -117,6 +124,7 @@ impl From<PlanView> for BackupPlanView {
             keep: plan.keep,
             stop_containers: plan.stop_containers,
             next_at: view.next_at.unix_seconds(),
+            paused: plan.paused,
         }
     }
 }
@@ -148,8 +156,11 @@ pub struct VolumeBackup {
     pub sha256: Option<String>,
     /// What the volume's files held.
     pub data_bytes: Option<u64>,
-    /// Who started it; `null` for the schedule.
+    /// Who started it; `null` for the schedule and for those imported.
     pub started_by: Option<String>,
+    /// Found again in a folder and recorded: of no plan, and never removed
+    /// by one.
+    pub imported: bool,
 }
 
 impl From<Backup> for VolumeBackup {
@@ -174,6 +185,7 @@ impl From<Backup> for VolumeBackup {
             sha256: written.as_ref().map(|w| w.sha256.clone()),
             data_bytes: written.as_ref().map(|w| w.data_bytes),
             started_by: backup.by,
+            imported: backup.imported,
         }
     }
 }
@@ -399,7 +411,7 @@ async fn list_backups(
 #[utoipa::path(post, path = "/docker/volumes/{name}/backups", tag = "docker", security(("session" = [])), params(("name" = String, Path)),
     responses((status = ACCEPTED, body = Job), (status = FORBIDDEN, body = Problem, description = "`forbidden`, `csrf_rejected`"),
         (status = NOT_FOUND, body = Problem, description = "`not_found`: it has no plan"),
-        (status = CONFLICT, body = Problem, description = "`volume_busy`: a backup or restore of it is under way")))]
+        (status = CONFLICT, body = Problem, description = "`volume_busy`: a backup or restore of it is under way; `plan_paused`: its plan is paused")))]
 async fn back_up_now(
     auth: Auth,
     State(state): State<ApiState>,
@@ -462,5 +474,109 @@ async fn restore_backup(
         .containers
         .restore_backup(id, target, request.stop_containers, &auth.0.actor(), &client)
         .await?;
+    Ok((StatusCode::ACCEPTED, Json(job.into())))
+}
+
+/// The recorded backups of one volume, and its plan.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DockerBackupGroup {
+    pub volume: String,
+    /// A volume of this name is there now; `false`: it was deleted.
+    pub exists: bool,
+    pub plan: Option<BackupPlanView>,
+    /// The newest first: those kept, and the runs that failed lately.
+    pub backups: Vec<VolumeBackup>,
+}
+
+impl From<BackupGroup> for DockerBackupGroup {
+    fn from(group: BackupGroup) -> Self {
+        Self {
+            volume: group.volume,
+            exists: group.exists,
+            plan: group.plan.map(Into::into),
+            backups: group.backups.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+/// Every volume with recorded backups or a backup plan, by name, also
+/// those deleted since, with their backups. Needs `containers.manage`.
+#[utoipa::path(get, path = "/docker/backups", tag = "docker", security(("session" = [])),
+    responses((status = OK, body = [DockerBackupGroup]), (status = FORBIDDEN, body = Problem, description = "`forbidden`"),
+        (status = BAD_GATEWAY, body = Problem, description = "`host_failed`: Docker does not answer")))]
+async fn backup_groups(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+) -> Result<Json<Vec<DockerBackupGroup>>, ApiError> {
+    manage(&auth)?;
+    Ok(Json(state.containers.backup_groups(&client).await?.into_iter().map(Into::into).collect()))
+}
+
+/// Removes a backup: its archive and manifest, each while it is still the
+/// file written, and its record; of a run that failed, only the record.
+/// Needs `containers.manage`.
+#[utoipa::path(delete, path = "/docker/backups/{id}", tag = "docker", security(("session" = [])), params(("id" = i64, Path)),
+    responses((status = NO_CONTENT, description = "Removed."), (status = FORBIDDEN, body = Problem, description = "`forbidden`, `csrf_rejected`"),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`"),
+        (status = CONFLICT, body = Problem, description = "`volume_busy`: it runs, or a backup or restore is under way")))]
+async fn remove_backup(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(id): Path<i64>,
+) -> Result<StatusCode, ApiError> {
+    manage(&auth)?;
+    state.containers.remove_backup(id, &auth.0.actor(), &client).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Resumes the volume's paused backup plan, once a volume of the name is
+/// there again: runs are due from now on. Needs `containers.manage`.
+#[utoipa::path(post, path = "/docker/volumes/{name}/backup-plan/resume", tag = "docker", security(("session" = [])), params(("name" = String, Path)),
+    responses((status = OK, body = BackupPlanView), (status = FORBIDDEN, body = Problem, description = "`forbidden`, `csrf_rejected`"),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`: it has no plan"),
+        (status = CONFLICT, body = Problem, description = "`refused`: there is no such volume, or it is not backed up here")))]
+async fn resume_backup_plan(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(name): Path<String>,
+) -> Result<Json<BackupPlanView>, ApiError> {
+    manage(&auth)?;
+    Ok(Json(state.containers.resume_backup_plan(&name, &auth.0.actor(), &client).await?.into()))
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ImportBackupsRequest {
+    /// A share the administrator may write.
+    pub share_id: i64,
+    /// The folder in it, `""` for its root; its subfolders are looked at
+    /// too.
+    #[serde(default)]
+    pub folder: String,
+}
+
+/// Records the backups found in a folder of a share, in a job: each
+/// `<volume>-YYYYMMDD-HHMMSS.tar.zst` with its manifest beside it, both
+/// root's and writable by nobody else, the archive's SHA-256 the one its
+/// manifest names. Those recorded already are passed over; those refused
+/// are listed with why in the job's output. They belong to no plan, and
+/// no plan removes them. Needs `containers.manage`.
+#[utoipa::path(post, path = "/docker/backups/import", tag = "docker", security(("session" = [])),
+    request_body = ImportBackupsRequest,
+    responses((status = ACCEPTED, body = Job), (status = FORBIDDEN, body = Problem, description = "`forbidden`, `csrf_rejected`; `share_denied`: a share the administrator may not write"),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`: no such share"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_input`")))]
+async fn import_backups(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    ApiJson(request): ApiJson<ImportBackupsRequest>,
+) -> Result<(StatusCode, Json<Job>), ApiError> {
+    manage(&auth)?;
+    let job =
+        state.containers.import_backups(request.share_id, &request.folder, &auth.0.actor(), &client).await?;
     Ok((StatusCode::ACCEPTED, Json(job.into())))
 }

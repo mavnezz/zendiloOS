@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, volume, share_id, started_at, finished_at, state, error,\n                    archive_path, archive_bytes, archive_device, archive_inode, archive_modified,\n                    manifest_path, manifest_bytes, manifest_device, manifest_inode, manifest_modified,\n                    sha256, data_bytes, entries, manifest, started_by\n             FROM docker_backups WHERE id = ?",
+  "query": "SELECT id, volume, share_id, started_at, finished_at, state, error,\n                    archive_path, archive_bytes, archive_device, archive_inode, archive_modified,\n                    manifest_path, manifest_bytes, manifest_device, manifest_inode, manifest_modified,\n                    sha256, data_bytes, entries, manifest, started_by, imported AS \"imported: bool\"\n             FROM docker_backups WHERE id = ?",
   "describe": {
     "columns": [
       {
@@ -244,6 +244,17 @@
             "name": "started_by"
           }
         }
+      },
+      {
+        "name": "imported: bool",
+        "ordinal": 22,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "docker_backups",
+            "name": "imported"
+          }
+        }
       }
     ],
     "parameters": {
@@ -271,8 +282,9 @@
       true,
       true,
       true,
-      true
+      true,
+      false
     ]
   },
-  "hash": "10bc3e9bb75f86b3dd6fb5054e58c57afdb77e8b43f8e592d0fbabfe445abb5c"
+  "hash": "5eb3fe57ba1ca3f7c25c6e5607551f270e12dd438c3e288cbff00c25ac56c550"
 }

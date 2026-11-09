@@ -127,6 +127,17 @@ impl VolumeArchiver for HeldArchiver {
     async fn end_work(&self, volume: &str, context: &RequestContext) -> Result<bool, EngineError> {
         self.inner.end_work(volume, context).await
     }
+
+    async fn scan(
+        &self,
+        place: &super::ports::SharePlace,
+        folder: &str,
+        known: &[String],
+        steps: &dyn super::ports::Steps,
+        context: &RequestContext,
+    ) -> Result<super::ports::ScannedArchives, super::ports::EngineError> {
+        self.inner.scan(place, folder, known, steps, context).await
+    }
 }
 
 struct World {
@@ -644,6 +655,17 @@ impl VolumeArchiver for SlowArchiver {
 
     async fn end_work(&self, volume: &str, context: &RequestContext) -> Result<bool, EngineError> {
         self.inner.end_work(volume, context).await
+    }
+
+    async fn scan(
+        &self,
+        place: &super::ports::SharePlace,
+        folder: &str,
+        known: &[String],
+        steps: &dyn super::ports::Steps,
+        context: &RequestContext,
+    ) -> Result<super::ports::ScannedArchives, super::ports::EngineError> {
+        self.inner.scan(place, folder, known, steps, context).await
     }
 }
 

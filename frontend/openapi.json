@@ -2481,6 +2481,179 @@
         ]
       }
     },
+    "/api/v1/docker/backups": {
+      "get": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "Every volume with recorded backups or a backup plan, by name, also\nthose deleted since, with their backups. Needs `containers.manage`.",
+        "operationId": "backup_groups",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DockerBackupGroup"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`host_failed`: Docker does not answer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/docker/backups/import": {
+      "post": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "Records the backups found in a folder of a share, in a job: each\n`<volume>-YYYYMMDD-HHMMSS.tar.zst` with its manifest beside it, both\nroot's and writable by nobody else, the archive's SHA-256 the one its\nmanifest names. Those recorded already are passed over; those refused\nare listed with why in the job's output. They belong to no plan, and\nno plan removes them. Needs `containers.manage`.",
+        "operationId": "import_backups",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportBackupsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`; `share_denied`: a share the administrator may not write",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no such share",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/docker/backups/{id}": {
+      "delete": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "Removes a backup: its archive and manifest, each while it is still the\nfile written, and its record; of a run that failed, only the record.\nNeeds `containers.manage`.",
+        "operationId": "remove_backup",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed."
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`volume_busy`: it runs, or a backup or restore is under way",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/docker/backups/{id}/restore": {
       "post": {
         "tags": [
@@ -4843,6 +5016,71 @@
         ]
       }
     },
+    "/api/v1/docker/volumes/{name}/backup-plan/resume": {
+      "post": {
+        "tags": [
+          "docker"
+        ],
+        "summary": "Resumes the volume's paused backup plan, once a volume of the name is\nthere again: runs are due from now on. Needs `containers.manage`.",
+        "operationId": "resume_backup_plan",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackupPlanView"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: it has no plan",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`refused`: there is no such volume, or it is not backed up here",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/docker/volumes/{name}/backups": {
       "get": {
         "tags": [
@@ -4937,7 +5175,7 @@
             }
           },
           "409": {
-            "description": "`volume_busy`: a backup or restore of it is under way",
+            "description": "`volume_busy`: a backup or restore of it is under way; `plan_paused`: its plan is paused",
             "content": {
               "application/json": {
                 "schema": {
@@ -12761,7 +12999,8 @@
           "hour",
           "keep",
           "stop_containers",
-          "next_at"
+          "next_at",
+          "paused"
         ],
         "properties": {
           "day": {
@@ -12795,7 +13034,11 @@
           "next_at": {
             "type": "integer",
             "format": "int64",
-            "description": "When it runs next, Unix seconds."
+            "description": "When it runs next, Unix seconds; not while paused."
+          },
+          "paused": {
+            "type": "boolean",
+            "description": "The volume was gone when a run was due: no runs until it is resumed\nor set anew, once a volume of the name is there again."
           },
           "share_id": {
             "type": "integer",
@@ -14353,6 +14596,41 @@
           "secret": {
             "type": "boolean",
             "description": "Never sent back once saved."
+          }
+        }
+      },
+      "DockerBackupGroup": {
+        "type": "object",
+        "description": "The recorded backups of one volume, and its plan.",
+        "required": [
+          "volume",
+          "exists",
+          "backups"
+        ],
+        "properties": {
+          "backups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VolumeBackup"
+            },
+            "description": "The newest first: those kept, and the runs that failed lately."
+          },
+          "exists": {
+            "type": "boolean",
+            "description": "A volume of this name is there now; `false`: it was deleted."
+          },
+          "plan": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/BackupPlanView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "volume": {
+            "type": "string"
           }
         }
       },
@@ -16165,6 +16443,24 @@
             }
           }
         }
+      },
+      "ImportBackupsRequest": {
+        "type": "object",
+        "required": [
+          "share_id"
+        ],
+        "properties": {
+          "folder": {
+            "type": "string",
+            "description": "The folder in it, `\"\"` for its root; its subfolders are looked at\ntoo."
+          },
+          "share_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "A share the administrator may write."
+          }
+        },
+        "additionalProperties": false
       },
       "InstalledApp": {
         "type": "object",
@@ -21618,7 +21914,8 @@
           "volume",
           "share_id",
           "started_at",
-          "state"
+          "state",
+          "imported"
         ],
         "properties": {
           "archive": {
@@ -21663,6 +21960,10 @@
             "type": "integer",
             "format": "int64"
           },
+          "imported": {
+            "type": "boolean",
+            "description": "Found again in a folder and recorded: of no plan, and never removed\nby one."
+          },
           "manifest": {
             "type": [
               "string",
@@ -21689,7 +21990,7 @@
               "string",
               "null"
             ],
-            "description": "Who started it; `null` for the schedule."
+            "description": "Who started it; `null` for the schedule and for those imported."
           },
           "state": {
             "$ref": "#/components/schemas/BackupState"

@@ -7,10 +7,13 @@ mod data;
 mod engine;
 pub mod ports;
 mod projects;
+mod records;
 mod updates;
 mod volumes;
 mod work;
 
+#[cfg(test)]
+mod records_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -34,6 +37,7 @@ use ports::{
     Registries, StorageError, UpdateSettingsRepository, VolumeArchiver,
 };
 pub use projects::{ComposeSource, NewProject};
+pub use records::{BackupGroup, Imported};
 pub use volumes::VolumeView;
 
 use crate::domain::{InvalidBackupPlan, InvalidProjectName, Moment, Risk, UpdateReport, UsageHistory};
@@ -101,6 +105,9 @@ pub enum ContainersError {
     /// A backup or restore of the volume is under way.
     #[error("a backup or restore of the volume {0} is under way")]
     VolumeBusy(String),
+    /// The volume's plan is paused: its volume was gone when it was due.
+    #[error("the backup plan of {0} is paused: resume it first")]
+    PlanPaused(String),
     /// A backup or restore keeps these containers stopped, or works on
     /// their volume, until it ends.
     #[error("a backup or restore keeps these containers stopped until it ends: {}", .0.join(", "))]
@@ -141,6 +148,7 @@ fn job_error(error: &ContainersError) -> JobError {
         ContainersError::Refused(_)
         | ContainersError::VolumeInUse(_)
         | ContainersError::VolumeBusy(_)
+        | ContainersError::PlanPaused(_)
         | ContainersError::Held(_) => "refused",
         ContainersError::Failed(_) => "agent_failed",
         _ => "internal",

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO docker_backups\n                 (volume, share_id, started_at, finished_at, state,\n                  archive_path, archive_bytes, archive_device, archive_inode, archive_modified,\n                  manifest_path, manifest_bytes, manifest_device, manifest_inode, manifest_modified,\n                  sha256, data_bytes, entries, manifest, imported)\n             SELECT ?1, ?2, ?3, ?3, 'succeeded', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, 1\n             WHERE NOT EXISTS (\n                 SELECT 1 FROM docker_backups WHERE share_id = ?2 AND archive_path = ?4 AND state = 'succeeded'\n             )",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 17
+    },
+    "nullable": []
+  },
+  "hash": "e192ec5844afd7aab83c713f4dc39ecbef41de415c30d2bdbd648691c11c64da"
+}

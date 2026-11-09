@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use async_trait::async_trait;
 use serde_json::Value;
-use zendiloos_containers::application::ports::{BackupRepository, NewBackup};
+use zendiloos_containers::application::ports::{BackupRepository, FoundArchive, NewBackup};
 use zendiloos_containers::domain::{
     Backup, BackupFile, BackupFrequency, BackupOutcome, BackupPlan, BackupSchedule, BackupTarget, OwedStart,
     WrittenBackup,
@@ -108,6 +108,7 @@ struct Row {
     entries: Option<i64>,
     manifest: Option<String>,
     started_by: Option<String>,
+    imported: bool,
 }
 
 impl Row {
@@ -136,6 +137,7 @@ impl Row {
             driver,
             labels,
             by: self.started_by,
+            imported: self.imported,
         })
     }
 }
@@ -168,6 +170,7 @@ macro_rules! rows {
                 entries: row.entries,
                 manifest: row.manifest,
                 started_by: row.started_by,
+                imported: row.imported,
             }
             .backup()
         })
@@ -179,7 +182,7 @@ impl BackupRepository for SqliteVolumeBackups {
     async fn plans(&self) -> Result<Vec<BackupPlan>, PortError> {
         let rows = sqlx::query!(
             r#"SELECT volume, share_id, folder, frequency, day, hour, keep,
-                      stop_containers AS "stop_containers: bool", since
+                      stop_containers AS "stop_containers: bool", since, paused AS "paused: bool"
                FROM docker_backup_plans ORDER BY volume"#
         )
         .fetch_all(self.db.pool())
@@ -197,6 +200,7 @@ impl BackupRepository for SqliteVolumeBackups {
                     keep: u32::try_from(row.keep).map_err(|_| stored("keep"))?,
                     stop_containers: row.stop_containers,
                     since: Timestamp::from_unix_seconds(row.since),
+                    paused: row.paused,
                 })
             })
             .collect()
@@ -208,12 +212,12 @@ impl BackupRepository for SqliteVolumeBackups {
             (i64::from(plan.schedule.hour), i64::from(plan.keep), plan.since.unix_seconds());
         sqlx::query!(
             "INSERT INTO docker_backup_plans
-                 (volume, share_id, folder, frequency, day, hour, keep, stop_containers, since)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 (volume, share_id, folder, frequency, day, hour, keep, stop_containers, since, paused)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT (volume) DO UPDATE SET
                  share_id = excluded.share_id, folder = excluded.folder, frequency = excluded.frequency,
                  day = excluded.day, hour = excluded.hour, keep = excluded.keep,
-                 stop_containers = excluded.stop_containers, since = excluded.since",
+                 stop_containers = excluded.stop_containers, since = excluded.since, paused = excluded.paused",
             plan.volume,
             plan.target.share_id,
             plan.target.folder,
@@ -222,7 +226,8 @@ impl BackupRepository for SqliteVolumeBackups {
             hour,
             keep,
             plan.stop_containers,
-            since
+            since,
+            plan.paused
         )
         .execute(self.db.pool())
         .await
@@ -245,6 +250,64 @@ impl BackupRepository for SqliteVolumeBackups {
             .await
             .map_err(db_error)?;
         Ok(())
+    }
+
+    async fn pause_plan(&self, volume: &str, paused: bool, at: Timestamp) -> Result<(), PortError> {
+        let at = at.unix_seconds();
+        sqlx::query!(
+            "UPDATE docker_backup_plans SET paused = ?, since = ? WHERE volume = ?",
+            paused,
+            at,
+            volume
+        )
+        .execute(self.db.pool())
+        .await
+        .map_err(db_error)?;
+        Ok(())
+    }
+
+    async fn import(&self, share_id: i64, found: &FoundArchive) -> Result<bool, PortError> {
+        let (written, at) = (&found.written, found.backed_up_at.unix_seconds());
+        let (archive, manifest) = (&written.archive, &written.manifest);
+        let (archive_bytes, archive_device, archive_inode) =
+            (bytes(archive.bytes), signed(archive.device), signed(archive.inode));
+        let (manifest_bytes, manifest_device, manifest_inode) =
+            (bytes(manifest.bytes), signed(manifest.device), signed(manifest.inode));
+        let data_bytes = bytes(written.data_bytes);
+        let entries = written.entries.map(bytes);
+        let (archive_modified, manifest_modified) = (archive.modified, manifest.modified);
+        let result = sqlx::query!(
+            "INSERT INTO docker_backups
+                 (volume, share_id, started_at, finished_at, state,
+                  archive_path, archive_bytes, archive_device, archive_inode, archive_modified,
+                  manifest_path, manifest_bytes, manifest_device, manifest_inode, manifest_modified,
+                  sha256, data_bytes, entries, manifest, imported)
+             SELECT ?1, ?2, ?3, ?3, 'succeeded', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, 1
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM docker_backups WHERE share_id = ?2 AND archive_path = ?4 AND state = 'succeeded'
+             )",
+            found.volume,
+            share_id,
+            at,
+            archive.path,
+            archive_bytes,
+            archive_device,
+            archive_inode,
+            archive_modified,
+            manifest.path,
+            manifest_bytes,
+            manifest_device,
+            manifest_inode,
+            manifest_modified,
+            written.sha256,
+            data_bytes,
+            entries,
+            written.manifest_json
+        )
+        .execute(self.db.pool())
+        .await
+        .map_err(db_error)?;
+        Ok(result.rows_affected() > 0)
     }
 
     async fn start(&self, backup: &NewBackup) -> Result<i64, PortError> {
@@ -326,12 +389,12 @@ impl BackupRepository for SqliteVolumeBackups {
 
     async fn backups(&self, volume: Option<&str>) -> Result<Vec<Backup>, PortError> {
         let rows = sqlx::query!(
-            "SELECT id, volume, share_id, started_at, finished_at, state, error,
+            r#"SELECT id, volume, share_id, started_at, finished_at, state, error,
                     archive_path, archive_bytes, archive_device, archive_inode, archive_modified,
                     manifest_path, manifest_bytes, manifest_device, manifest_inode, manifest_modified,
-                    sha256, data_bytes, entries, manifest, started_by
+                    sha256, data_bytes, entries, manifest, started_by, imported AS "imported: bool"
              FROM docker_backups WHERE ?1 IS NULL OR volume = ?1
-             ORDER BY started_at DESC, id DESC",
+             ORDER BY started_at DESC, id DESC"#,
             volume
         )
         .fetch_all(self.db.pool())
@@ -342,11 +405,11 @@ impl BackupRepository for SqliteVolumeBackups {
 
     async fn backup(&self, id: i64) -> Result<Option<Backup>, PortError> {
         let rows = sqlx::query!(
-            "SELECT id, volume, share_id, started_at, finished_at, state, error,
+            r#"SELECT id, volume, share_id, started_at, finished_at, state, error,
                     archive_path, archive_bytes, archive_device, archive_inode, archive_modified,
                     manifest_path, manifest_bytes, manifest_device, manifest_inode, manifest_modified,
-                    sha256, data_bytes, entries, manifest, started_by
-             FROM docker_backups WHERE id = ?",
+                    sha256, data_bytes, entries, manifest, started_by, imported AS "imported: bool"
+             FROM docker_backups WHERE id = ?"#,
             id
         )
         .fetch_all(self.db.pool())
@@ -366,11 +429,11 @@ impl BackupRepository for SqliteVolumeBackups {
     async fn interrupted(&self, at: Timestamp) -> Result<Vec<Backup>, PortError> {
         let mut transaction = self.db.pool().begin().await.map_err(db_error)?;
         let rows = sqlx::query!(
-            "SELECT id, volume, share_id, started_at, finished_at, state, error,
+            r#"SELECT id, volume, share_id, started_at, finished_at, state, error,
                     archive_path, archive_bytes, archive_device, archive_inode, archive_modified,
                     manifest_path, manifest_bytes, manifest_device, manifest_inode, manifest_modified,
-                    sha256, data_bytes, entries, manifest, started_by
-             FROM docker_backups WHERE state = 'running' ORDER BY id"
+                    sha256, data_bytes, entries, manifest, started_by, imported AS "imported: bool"
+             FROM docker_backups WHERE state = 'running' ORDER BY id"#
         )
         .fetch_all(&mut *transaction)
         .await
@@ -443,6 +506,7 @@ mod tests {
             keep: 7,
             stop_containers: true,
             since: Timestamp::from_unix_seconds(1_793_836_800),
+            paused: false,
         }
     }
 
@@ -483,10 +547,42 @@ mod tests {
         let at = Timestamp::from_unix_seconds(1_793_900_000);
         store.ran("db", at).await.unwrap();
         let plans = store.plans().await.unwrap();
-        assert_eq!(plans[1], BackupPlan { since: at, ..monthly });
+        assert_eq!(plans[1], BackupPlan { since: at, ..monthly.clone() });
+        store.pause_plan("db", true, at).await.unwrap();
+        assert!(store.plans().await.unwrap()[1].paused);
+        store.save_plan(&BackupPlan { paused: true, ..monthly.clone() }).await.unwrap();
+        let later = Timestamp::from_unix_seconds(1_794_000_000);
+        store.pause_plan("db", false, later).await.unwrap();
+        assert_eq!(store.plans().await.unwrap()[1], BackupPlan { since: later, ..monthly });
         assert!(store.delete_plan("db").await.unwrap());
         assert!(!store.delete_plan("db").await.unwrap());
         assert_eq!(store.plans().await.unwrap().len(), 1);
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn backups_found_again_are_recorded_once_of_no_plan() {
+        let (_dir, db) = temporary_database().await;
+        let store = SqliteVolumeBackups::new(db.clone());
+        let found = FoundArchive {
+            volume: "db".into(),
+            backed_up_at: Timestamp::from_unix_seconds(1_762_570_800),
+            written: written(7),
+        };
+        assert!(store.import(3, &found).await.unwrap());
+        assert!(!store.import(3, &found).await.unwrap(), "recorded already");
+        assert!(store.import(4, &found).await.unwrap(), "of another share");
+
+        let runs = store.backups(Some("db")).await.unwrap();
+        assert_eq!(runs.len(), 2);
+        let run = runs.iter().find(|run| run.share_id == 3).unwrap();
+        assert!(run.imported && run.by.is_none());
+        assert_eq!(run.written(), Some(&written(7)));
+        assert_eq!((run.started_at, run.finished_at), (found.backed_up_at, Some(found.backed_up_at)));
+        assert_eq!(run.labels["com.docker.compose.project"], "tesla");
+        let new = NewBackup { volume: "db".into(), share_id: 3, started_at: found.backed_up_at, by: None };
+        let ran = store.start(&new).await.unwrap();
+        assert!(!store.backup(ran).await.unwrap().unwrap().imported);
         db.close().await;
     }
 
