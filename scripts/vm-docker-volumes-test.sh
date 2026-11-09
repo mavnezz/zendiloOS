@@ -272,15 +272,12 @@ since=$(vm 'date -u +%Y-%m-%dT%H:%M:%S.%NZ')
 first_job=$(jq -r .id "$work/last")
 [[ $(status POST "/docker/volumes/$volume/backups") == 202 ]] || fail "back up $volume: $(cat "$work/last")"
 second_job=$(jq -r .id "$work/last")
-ran_between=0
-while [[ $(call GET "/jobs/$second_job" | jq -r .state) == running ]]; do
-    if [[ $(call GET "/jobs/$first_job" | jq -r .state) != running ]] && running; then ran_between=1; fi
-    sleep 0.2
-done
 job_succeeded "$first_job"
 job_succeeded "$second_job"
-(( ran_between == 0 )) || fail "the container ran between the two backups"
 wait_for "the container after both" running 60
+# Started once, after both: a start between the two would be a second one.
+# (Polling the jobs cannot tell: the second job starts the container just
+# before it is marked done.)
 [[ $(starts_since "$since") == 1 ]] || fail "the container was started $(starts_since "$since") times"
 
 say "9. A restore whose unit is stopped midway leaves the old data"
