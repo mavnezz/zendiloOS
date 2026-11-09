@@ -2056,10 +2056,14 @@ chain and key, size-limited, to `/etc/zendiloos/web/certificates/<n>`
 (root's; the key 0600). It opens them folder by folder without following a
 link (acme.sh's account owns those folders) and without waiting (a pipe in
 place of a file is refused). The pair goes to `<n>.zendiloos-new` first, on
-disk, is checked there (`openssl x509 -enddate` reads the chain, and the
-key's public key is the certificate's) and only then takes the place of the
-pair served, in one step (`RENAME_EXCHANGE`): whatever fails, nginx finds
-the working pair from before, never half a pair. acme.sh's folder of a
+disk, is checked there (the chain holds certificates only, at most ten, as
+nginx reads every block of it; openssl reads each, `openssl verify
+-partial_chain` finds each issued by the one after it, and the key's public
+key is the first's) and only then takes the place of the pair served, in one
+step (`RENAME_EXCHANGE`). There `nginx -t` reads it, under the lock changes
+of the web server take, and if nginx refuses it, the pair from before
+returns, in one step too: whatever fails, nginx finds the working pair from
+before, never half a pair. acme.sh's folder of a
 removed certificate, and of a removed account (its key at the authority),
 is removed by its account, in a unit of its own: the agent may read anything
 but write only what is root's. Numbers of accounts and certificates can come

@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, MutexGuard};
 use tokio::task::JoinHandle;
 use zendiloos_agent_proto::{ConfirmWithin, PendingWebServer, Response, WebServerConfig};
 use zendiloos_exec::{Limits, Program, Surroundings};
@@ -116,6 +116,21 @@ fn now() -> i64 {
 struct Pending {
     revert_at: i64,
     timer: JoinHandle<()>,
+}
+
+/// The lock changes of the web server take, held for a change of what
+/// nginx reads made elsewhere (a certificate's pair swapped in): no change
+/// is applied, goes back or reloads nginx meanwhile.
+pub(crate) struct Held<'a> {
+    web_server: &'a WebServer,
+    _pending: MutexGuard<'a, Option<Pending>>,
+}
+
+impl Held<'_> {
+    /// `nginx -t`: whether nginx would start with what it reads now.
+    pub(crate) async fn check(&self) -> Result<(), OperationError> {
+        self.web_server.check().await
+    }
 }
 
 #[derive(Debug)]
@@ -265,6 +280,11 @@ impl WebServer {
         }
         tracing::info!("web server: confirmed");
         Ok(Response::Done)
+    }
+
+    /// See [`Held`].
+    pub(crate) async fn hold(&self) -> Held<'_> {
+        Held { web_server: self, _pending: self.pending.lock().await }
     }
 
     /// nginx reads its certificate again: it was renewed. Not while a
