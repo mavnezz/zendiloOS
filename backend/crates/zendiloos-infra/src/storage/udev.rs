@@ -1,7 +1,8 @@
 //! `udevadm info --export-db` of the block devices that are disks: where
 //! each is plugged in, udev's `ID_PATH` (the name of its link in
-//! `/dev/disk/by-path`), and the kernel's sequence number of each
-//! (`DISKSEQ`), which a disk gets anew whenever it appears. zendiloosd
+//! `/dev/disk/by-path`), and when udev first set each up
+//! (`USEC_INITIALIZED`), which a disk gets anew whenever it is added.
+//! zendiloosd
 //! cannot look into `/dev` itself (`PrivateDevices`), so the agent passes
 //! udev's database on.
 
@@ -38,11 +39,16 @@ pub fn port_paths(export: &str) -> HashMap<String, String> {
     of_disks(export, "ID_PATH")
 }
 
-/// Kernel name to the kernel's sequence number of the disk (`DISKSEQ`).
-pub fn disk_sequences(export: &str) -> HashMap<String, u64> {
-    of_disks(export, "DISKSEQ")
+/// Kernel name to when udev first set the disk up (`USEC_INITIALIZED`,
+/// microseconds of this boot's monotonic clock). It is kept through the
+/// disk's change events and set anew only when the disk is added, plugged
+/// in again. The kernel's sequence number (`DISKSEQ`) is no such mark: a
+/// removable disk gets another one at every media change the kernel
+/// assumes, as when another disk is plugged into the same SCSI bus.
+pub fn initialized(export: &str) -> HashMap<String, u64> {
+    of_disks(export, "USEC_INITIALIZED")
         .into_iter()
-        .filter_map(|(name, sequence)| Some((name, sequence.parse().ok()?)))
+        .filter_map(|(name, usec)| Some((name, usec.parse().ok()?)))
         .collect()
 }
 
@@ -72,13 +78,13 @@ mod tests {
     }
 
     #[test]
-    fn reads_the_sequence_numbers_of_the_test_vm_s_disks() {
-        let sequences = disk_sequences(VM);
-        assert_eq!(sequences.get("sdd"), Some(&6));
-        assert_eq!(sequences.len(), 7, "{sequences:?}");
-        let odd = "E: DEVNAME=/dev/sdq\nE: DEVTYPE=disk\nE: DISKSEQ=many\n\n\
-                   E: DEVNAME=/dev/sdq1\nE: DEVTYPE=partition\nE: DISKSEQ=9\n";
-        assert!(disk_sequences(odd).is_empty());
+    fn reads_when_udev_set_up_the_test_vm_s_disks() {
+        let set_up = initialized(VM);
+        assert_eq!(set_up.get("sdd"), Some(&1839511));
+        assert_eq!(set_up.len(), 7, "{set_up:?}");
+        let odd = "E: DEVNAME=/dev/sdq\nE: DEVTYPE=disk\nE: USEC_INITIALIZED=soon\n\n\
+                   E: DEVNAME=/dev/sdq1\nE: DEVTYPE=partition\nE: USEC_INITIALIZED=9\n";
+        assert!(initialized(odd).is_empty());
     }
 
     #[test]

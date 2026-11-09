@@ -20,8 +20,9 @@ pub struct BlockDevice {
     /// `/dev/disk/by-path` name, e.g. `pci-0000:05:00.0-ata-1`.
     pub id_path: Option<String>,
     /// What tells this plugging in of a whole disk apart from any other,
-    /// before and after: the boot and the kernel's sequence number of the
-    /// disk (udev's `DISKSEQ`), which every disk that appears gets anew.
+    /// before and after: the boot and when udev set the disk up
+    /// (`USEC_INITIALIZED`), which it does anew whenever the disk is added
+    /// and keeps through the disk's change events.
     pub plugged_in: Option<String>,
     /// Transport as the kernel names it: `sata`, `nvme`, `usb`, `virtio`, …
     pub transport: Option<String>,

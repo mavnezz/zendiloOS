@@ -42,8 +42,8 @@ pub struct FakeStorage {
     pub stick: Mutex<Option<bool>>,
     /// Ejecting the stick fails as for open files while set.
     pub stick_busy: Mutex<bool>,
-    /// How often the stick was plugged in: each time its disk gets another
-    /// sequence number from the kernel.
+    /// How often the stick was plugged in: each time udev sets its disk up
+    /// anew.
     pub stick_plugged: Mutex<u64>,
     /// The drives ejected, as the database keeps them.
     pub ejected: Mutex<std::collections::BTreeMap<String, Option<String>>>,

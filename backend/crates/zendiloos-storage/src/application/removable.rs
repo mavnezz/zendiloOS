@@ -8,8 +8,8 @@
 //! pulled out or mounted by hand. That a drive was ejected is kept in the
 //! database ([`EjectedDrives`]) with the plugging in of its disk, so that
 //! a restart of zendiloosd or of the agent does not mount it again; it
-//! holds until the drive is pulled out, or seen plugged in anew (another
-//! sequence number of its disk, also after a restart of the NAS).
+//! holds until the drive is pulled out, or seen plugged in anew (udev set
+//! its disk up anew, also after a restart of the NAS).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -174,7 +174,7 @@ impl RemovableDrives {
             }
         };
         for (id, plugged_in) in ejected {
-            if drives.iter().any(|drive| drive.id == id && drive.plugged_in == plugged_in) {
+            if drives.iter().any(|drive| drive.id == id && same_plugging(drive, plugged_in.as_deref())) {
                 watched.held.insert(id.clone(), Hold::Ejected);
                 watched.ejected.insert(id, plugged_in);
             } else {
@@ -191,7 +191,9 @@ impl RemovableDrives {
         let gone: Vec<String> = watched
             .ejected
             .iter()
-            .filter(|(id, then)| !drives.iter().any(|drive| drive.id == **id && drive.plugged_in == **then))
+            .filter(|(id, then)| {
+                !drives.iter().any(|drive| drive.id == **id && same_plugging(drive, then.as_deref()))
+            })
             .map(|(id, _)| id.clone())
             .collect();
         for id in gone {
@@ -347,6 +349,17 @@ fn removable_error(error: AdminError) -> StorageError {
     }
 }
 
+/// Whether `drive` is still the plugging in of its disk `then` names.
+/// Unknown on either side counts as the same: a drive udev says nothing
+/// of must not count as plugged in anew, which would mount it again at
+/// once.
+fn same_plugging(drive: &RemovableDrive, then: Option<&str>) -> bool {
+    match (drive.plugged_in.as_deref(), then) {
+        (Some(now), Some(then)) => now == then,
+        _ => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
@@ -365,7 +378,7 @@ mod tests {
     #[derive(Default)]
     struct Fake {
         plugged: Mutex<bool>,
-        /// How often the stick was plugged in: its disk's sequence number.
+        /// How often the stick was plugged in: when udev set its disk up.
         plugs: Mutex<u64>,
         mounted: Mutex<bool>,
         /// Mounted read only although the device is not write-protected.
@@ -375,6 +388,8 @@ mod tests {
         ejected: Mutex<BTreeMap<String, Option<String>>>,
         /// The database cannot be read while set.
         unreadable: Mutex<bool>,
+        /// udev does not tell when it set the disk up while set.
+        udev_busy: Mutex<bool>,
     }
 
     impl Fake {
@@ -435,7 +450,8 @@ mod tests {
             Ok(vec![BlockDevice {
                 transport: Some("usb".into()),
                 removable: true,
-                plugged_in: Some(format!("boot/{}", self.plugs.lock().unwrap())),
+                plugged_in: (!*self.udev_busy.lock().unwrap())
+                    .then(|| format!("boot/{}", self.plugs.lock().unwrap())),
                 children: vec![partition],
                 ..device("sdf", DeviceKind::Disk)
             }])
@@ -603,6 +619,30 @@ mod tests {
         let listed = restarted.list(&context()).await.unwrap();
         assert!(listed[0].drive.is_mounted() && listed[0].hold.is_none(), "{listed:?}");
         assert_eq!(fake.ejected(), [], "forgotten");
+    }
+
+    #[tokio::test]
+    async fn an_ejected_stick_stays_held_while_udev_does_not_tell_its_plugging_in() {
+        let fake = Arc::new(Fake::default());
+        *fake.plugged.lock().unwrap() = true;
+        let (drives, _) = drives(&fake);
+        drives.list(&context()).await.unwrap();
+        drives.eject(ID, false, &admin(), &context()).await.unwrap();
+
+        // Right after the unmount udev handles the disk's event anew.
+        *fake.udev_busy.lock().unwrap() = true;
+        let listed = drives.list(&context()).await.unwrap();
+        assert_eq!((listed[0].drive.is_mounted(), listed[0].hold.clone()), (false, Some(Hold::Ejected)));
+        *fake.udev_busy.lock().unwrap() = false;
+        let listed = drives.list(&context()).await.unwrap();
+        assert_eq!((listed[0].drive.is_mounted(), listed[0].hold.clone()), (false, Some(Hold::Ejected)));
+        // Nor after a restart while udev is busy.
+        *fake.udev_busy.lock().unwrap() = true;
+        let (restarted, _) = self::drives(&fake);
+        let listed = restarted.list(&context()).await.unwrap();
+        assert_eq!((listed[0].drive.is_mounted(), listed[0].hold.clone()), (false, Some(Hold::Ejected)));
+        assert_eq!(fake.calls().iter().filter(|call| call.starts_with("mount")).count(), 1, "not again");
+        assert_eq!(fake.ejected(), [(ID.to_owned(), Some("boot/0".to_owned()))], "kept");
     }
 
     #[tokio::test]
