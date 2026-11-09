@@ -238,7 +238,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
             Err(error) => tracing::error!(%error, "cannot finish deleting shares"),
         }
     });
-    // After sharing: shares follow the members of groups they deny.
+    // After sharing: Samba's sections follow accounts and groups.
     let identity = identity(&config, &database, audit.clone(), agent.clone(), sharing.clone())?;
     let setup = announce_setup(&config, &identity).await?;
     let purge = spawn_session_purge(identity.purge_expired_sessions.clone());
@@ -355,7 +355,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     let firewall_upkeep = spawn_firewall_upkeep(firewall.clone(), jobs.clone());
 
     let snapshots = spawn_snapshot_schedules(sharing.clone());
-    let owed_access = spawn_owed_access(sharing.clone());
+    let migrations = spawn_permission_migrations(sharing.clone());
     let self_tests = spawn_self_test_schedule(storage.self_test_schedule.clone());
     let use_cases = UseCases {
         system,
@@ -416,7 +416,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     firewall_upkeep.abort();
     monitor.abort();
     snapshots.abort();
-    owed_access.abort();
+    migrations.abort();
     self_tests.abort();
     channel_delivery.abort();
     catalog_refresh.abort();
@@ -582,17 +582,20 @@ fn spawn_snapshot_schedules(sharing: SharingUseCases) -> JoinHandle<()> {
     })
 }
 
-/// Walks the shares whose files still owe them their rules (a walk failed,
-/// stopped with zendiloosd or never started): at the start and every five
-/// minutes; a share whose walks keep failing waits longer each time.
-fn spawn_owed_access(sharing: SharingUseCases) -> JoinHandle<()> {
+/// Walks the shares made before share-level access, once each, one after
+/// another (docs/architecture.md, 4.4): at the start and every five
+/// minutes, so a walk cut off or failed, or a share whose volume was not
+/// mounted, is walked later.
+fn spawn_permission_migrations(sharing: SharingUseCases) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut every_five_minutes = tokio::time::interval(Duration::from_secs(5 * 60));
         every_five_minutes.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             every_five_minutes.tick().await;
-            if let Err(error) = sharing.reconcile_access(&RequestContext::default()).await {
-                tracing::warn!(%error, "cannot look for shares whose files owe them their rules");
+            match sharing.migrate_permissions(&RequestContext::default()).await {
+                Ok(0) => {}
+                Ok(walked) => tracing::info!(walked, "shares given share-level access"),
+                Err(error) => tracing::warn!(%error, "cannot walk the shares to share-level access"),
             }
         }
     })
