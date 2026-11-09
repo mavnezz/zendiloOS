@@ -23,7 +23,7 @@ use zendiloos_agent_proto::{
 };
 use zendiloos_exec::{Limits, Program};
 
-use crate::acl::{self, Acl, Owners, Rules, Who};
+use crate::acl::{self, Acl, Managed, Owners, Rules, Who};
 use crate::config::Tools;
 use crate::operations::OperationError;
 use crate::pools::{HostPaths, run};
@@ -604,12 +604,11 @@ impl Sharing {
                 ),
             }
         }
-        Ok(Rules {
-            remove,
-            grant,
-            owners: owners(access, &passwd, &group),
-            managed: Some(crate::accounts::ID_MIN..=crate::accounts::ID_MAX),
-        })
+        let managed = Managed {
+            ids: crate::accounts::ID_MIN..=crate::accounts::ID_MAX,
+            groups: crate::passwd::group_id(&group, crate::accounts::USERS_GROUP).into_iter().collect(),
+        };
+        Ok(Rules { remove, grant, owners: owners(access, &passwd, &group), managed: Some(managed) })
     }
 
     /// The managed users who may write, directly or through a group, with
@@ -722,38 +721,57 @@ fn prepare_bin(bin: &fs::File, user: &str, uid: u32, gid: u32) -> Result<(), Ope
 }
 
 /// Folders deeper than this are not looked into; what is below counts as
-/// not changed.
+/// not changed. The folder at the limit itself is changed.
 const MAX_DEPTH: usize = if cfg!(test) { 8 } else { 256 };
-/// Entries that may fail before a change of a whole tree gives up.
-const MAX_FAILURES: usize = 100;
 
-/// The entries a change of a tree could not change.
+/// What a change of a tree could not change: entries, and folders too deep
+/// to look into. Counted, never a reason to stop: a walk goes on to the
+/// end whatever fails on the way, as whoever may write a share could make
+/// any number of failures (folders nested too deeply, say) and would
+/// otherwise keep every walk from the rest of the share, a revocation
+/// among it.
 #[derive(Debug, Default)]
 struct Failures {
     count: usize,
     first: Option<String>,
+    too_deep: usize,
+    first_too_deep: Option<String>,
 }
 
 impl Failures {
-    /// Notes one; too many end the change.
-    fn note(&mut self, path: &Path, error: Errno) -> Result<(), OperationError> {
-        self.note_why(path, std::io::Error::from(error))
-    }
-
-    fn note_why(&mut self, path: &Path, why: impl std::fmt::Display) -> Result<(), OperationError> {
+    fn note(&mut self, path: &Path, error: Errno) {
         self.count += 1;
         if self.first.is_none() {
-            self.first = Some(format!("{}: {why}", path.display()));
+            self.first = Some(format!("{}: {}", path.display(), std::io::Error::from(error)));
         }
-        if self.count > MAX_FAILURES { Err(self.error()) } else { Ok(()) }
+    }
+
+    fn note_too_deep(&mut self, path: &Path) {
+        self.too_deep += 1;
+        if self.first_too_deep.is_none() {
+            self.first_too_deep = Some(path.display().to_string());
+        }
+    }
+
+    fn any(&self) -> bool {
+        self.count > 0 || self.too_deep > 0
     }
 
     fn error(&self) -> OperationError {
-        OperationError::Failed(format!(
-            "the permissions of {} entries could not be changed, among them {}",
-            self.count,
-            self.first.as_deref().unwrap_or("?")
-        ))
+        let mut why = Vec::new();
+        if let Some(first) = &self.first {
+            why.push(format!(
+                "the permissions of {} entries could not be changed, among them {first}",
+                self.count
+            ));
+        }
+        if let Some(first) = &self.first_too_deep {
+            why.push(format!(
+                "{} folders are nested too deeply to look into, among them {first}",
+                self.too_deep
+            ));
+        }
+        OperationError::Failed(why.join("; "))
     }
 }
 
@@ -790,13 +808,19 @@ enum Pass {
 /// the others; the change fails at the end, naming one of them.
 fn change_tree(root: &Path, rules: &Rules) -> Result<(), OperationError> {
     let mut failures = Failures::default();
-    if !rules.remove.is_empty() || rules.owners.managed.is_some() || rules.managed.is_some() {
+    let taking = !rules.remove.is_empty() || rules.owners.managed.is_some() || rules.managed.is_some();
+    if taking {
         walk(root, rules, Pass::Remove, &mut failures)?;
     }
     if !rules.grant.is_empty() {
+        let taken = (failures.too_deep, failures.first_too_deep.clone());
         walk(root, rules, Pass::Grant, &mut failures)?;
+        // The same folders are too deep in both passes: counted once.
+        if taking {
+            (failures.too_deep, failures.first_too_deep) = taken;
+        }
     }
-    if failures.count > 0 { Err(failures.error()) } else { Ok(()) }
+    if failures.any() { Err(failures.error()) } else { Ok(()) }
 }
 
 const FOLDER: OFlags = OFlags::RDONLY.union(OFlags::DIRECTORY).union(OFlags::NOFOLLOW).union(OFlags::CLOEXEC);
@@ -852,7 +876,7 @@ fn walk(root: &Path, rules: &Rules, pass: Pass, failures: &mut Failures) -> Resu
                 // What is left of this folder cannot be read.
                 let path = level.path.clone();
                 stack.pop();
-                failures.note(&path, error)?;
+                failures.note(&path, error);
                 continue;
             }
             None => {
@@ -873,23 +897,24 @@ fn walk(root: &Path, rules: &Rules, pass: Pass, failures: &mut Failures) -> Resu
             Ok(Some(found)) => found,
             Ok(None) => continue,
             Err(error) => {
-                failures.note(&path, error)?;
+                failures.note(&path, error);
                 continue;
             }
         };
+        // At the depth limit too: only what is below is not looked into.
         if let Err(error) = change_entry(&found, private, rules, pass) {
-            failures.note(&path, error)?;
+            failures.note(&path, error);
         }
         if !found.folder {
             continue;
         }
         if stack.len() >= MAX_DEPTH {
-            failures.note_why(&path, "folders are nested too deeply to look into")?;
+            failures.note_too_deep(&path);
             continue;
         }
         match rustix::fs::Dir::new(found.entry) {
             Ok(inner) => stack.push(Level { folder: inner, path, top: false, private }),
-            Err(error) => failures.note(&path, error)?,
+            Err(error) => failures.note(&path, error),
         }
     }
     Ok(())
@@ -1128,7 +1153,8 @@ mod tests {
             [(Who::User(2001), SharePermission::ReadWrite), (Who::Group(2100), SharePermission::Read)]
         );
         assert_eq!(rules.remove, [Who::User(2002)], "anna keeps hers, a gone user has none");
-        assert_eq!(rules.managed, Some(crate::accounts::ID_MIN..=crate::accounts::ID_MAX), "they replace");
+        let managed = Managed { ids: crate::accounts::ID_MIN..=crate::accounts::ID_MAX, groups: vec![990] };
+        assert_eq!(rules.managed, Some(managed), "they replace, zendiloos-users's entries too");
         let unknown = sharing.rules(&[access(user("nobody"), true)], &[]).unwrap_err();
         assert!(unknown.to_string().contains("nobody"), "{unknown}");
         fs::remove_file(dir.path().join("group")).unwrap();
@@ -1410,7 +1436,8 @@ mod tests {
 
     /// Rules that replace what is there, as `Sharing::rules` makes them.
     fn replacing(grant: Vec<(Who, SharePermission)>) -> Rules {
-        Rules { grant, managed: Some(crate::accounts::ID_MIN..=crate::accounts::ID_MAX), ..Rules::default() }
+        let ids = crate::accounts::ID_MIN..=crate::accounts::ID_MAX;
+        Rules { grant, managed: Some(Managed { ids, groups: vec![990] }), ..Rules::default() }
     }
 
     /// What files made while `who` alone may write look like: the share's
@@ -1693,8 +1720,75 @@ mod tests {
             change_tree(&root, &Rules { grant: vec![(anna, SharePermission::Read)], ..Rules::default() });
 
         let error = failed.unwrap_err().to_string();
-        assert!(error.contains("nested too deeply") && error.contains("1 entries"), "{error}");
+        assert!(error.contains("1 folders are nested too deeply"), "{error}");
+        assert!(!error.contains("could not be changed"), "{error}");
         assert_eq!(acl_of(&root.join("d0"), acl::ACCESS).unwrap().named(anna), Some(5), "above it: changed");
+        let mut limit = root.clone();
+        for n in 0..MAX_DEPTH {
+            limit = limit.join(format!("d{n}"));
+        }
+        assert_eq!(named_of(&limit, anna), Some(5), "the folder at the limit itself: changed");
+        assert_eq!(named_of(&limit.join(format!("d{MAX_DEPTH}")), anna), None, "below it: not looked into");
+    }
+
+    #[test]
+    fn folders_planted_too_deep_do_not_keep_a_revocation_from_the_rest_of_the_share() {
+        // A writer (bob) about to lose write access plants more folders
+        // nested too deeply than the hundred failures that used to end a
+        // walk; each chain holds a file of the share with bob's entry.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("share");
+        let (bob, anna) = (Who::User(2002), Who::User(2001));
+        let chains = 202;
+        for n in 0..chains {
+            let top = root.join(format!("c{n}"));
+            let mut deep = top.clone();
+            for level in 0..MAX_DEPTH + 1 {
+                deep = deep.join(format!("d{level}"));
+            }
+            fs::create_dir_all(&deep).unwrap();
+            fs::write(top.join("t.txt"), "x").unwrap();
+            set_named(&top.join("t.txt"), 0o600, &[(bob, 6), (anna, 6)]);
+        }
+        let rules = replacing(vec![(anna, SharePermission::ReadWrite)]);
+
+        // The walk fails, the share stays owed and is walked again.
+        for _ in 0..2 {
+            let error = change_tree(&root, &rules).unwrap_err().to_string();
+            assert!(error.contains(&format!("{chains} folders are nested too deeply")), "{error}");
+        }
+
+        let kept: Vec<usize> =
+            (0..chains).filter(|n| named_of(&root.join(format!("c{n}/t.txt")), bob).is_some()).collect();
+        assert!(kept.is_empty(), "bob keeps rw on {} of {chains} files: {kept:?}", kept.len());
+        assert!((0..chains).all(|n| named_of(&root.join(format!("c{n}/t.txt")), anna) == Some(6)));
+    }
+
+    #[test]
+    fn a_named_entry_for_everyones_primary_group_does_not_outlive_a_walk() {
+        // zendiloos-users (990 here): every managed account's primary group,
+        // below the managed IDs. A writer gave it rwx by name (setfacl over
+        // NFS, or "Domain Users" over SMB).
+        let dir = tempfile::tempdir().unwrap();
+        let sharing = with_accounts(dir.path());
+        let root = dir.path().join("share");
+        let (family, users) = (Who::Group(2100), Who::Group(990));
+        fs::create_dir_all(root.join("projects")).unwrap();
+        fs::write(root.join("projects/plan.txt"), "x").unwrap();
+        set_named(&root.join("projects"), 0o700, &[(family, 7), (users, 7)]);
+        set_named(&root.join("projects/plan.txt"), 0o600, &[(family, 6), (users, 6)]);
+
+        // family may only read now.
+        let mut rules = sharing.rules(&[access(group("family"), false)], &[]).unwrap();
+        rules.owners = Owners::default();
+        change_tree(&root, &rules).unwrap();
+
+        for path in ["projects", "projects/plan.txt"] {
+            assert_eq!(named_of(&root.join(path), family).map(|p| p & 2), Some(0), "{path}: family reads");
+            assert_eq!(named_of(&root.join(path), users), None, "{path}: no way round it for everyone");
+        }
+        let default = acl_of(&root.join("projects"), acl::DEFAULT).unwrap();
+        assert_eq!(default.named(users), None, "nor for what comes later");
     }
 
     #[test]
@@ -1735,14 +1829,20 @@ mod tests {
     }
 
     #[test]
-    fn failures_are_counted_and_too_many_end_the_change() {
+    fn failures_are_counted_with_the_first_of_each_kind() {
         let mut failures = Failures::default();
-        for _ in 0..MAX_FAILURES {
-            failures.note(Path::new("/volume1/media/a"), Errno::IO).unwrap();
+        assert!(!failures.any());
+        for _ in 0..1000 {
+            failures.note(Path::new("/volume1/media/a"), Errno::IO);
         }
-        let error = failures.note(Path::new("/volume1/media/b"), Errno::IO).unwrap_err();
-        assert!(error.to_string().contains("101 entries"), "{error}");
-        assert!(error.to_string().contains("/volume1/media/a"), "{error}");
+        failures.note(Path::new("/volume1/media/b"), Errno::IO);
+        failures.note_too_deep(Path::new("/volume1/media/deep"));
+        assert!(failures.any());
+        let error = failures.error().to_string();
+        assert!(error.contains("1001 entries could not be changed, among them /volume1/media/a"), "{error}");
+        assert!(
+            error.contains("1 folders are nested too deeply to look into, among them /volume1/media/deep")
+        );
     }
 
     #[test]

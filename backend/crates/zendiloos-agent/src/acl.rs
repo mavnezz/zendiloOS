@@ -7,9 +7,10 @@
 //! groups are removed or set, and the mask becomes the union of the group
 //! class (the owning group and every named entry). A walk replaces what the
 //! rules decide, whatever an earlier walk left: the named entries of the
-//! IDs zendiloOS hands out that the rules do not grant go, and the owning
-//! group and others get nothing, as on the share's folder; entries of
-//! other IDs stay. An ACL without named entries keeps no mask; the kernel
+//! IDs zendiloOS hands out (and of `zendiloos-users`, every account's
+//! primary group) that the rules do not grant go, and the owning group and
+//! others get nothing, as on the share's folder; entries of other IDs
+//! stay. An ACL without named entries keeps no mask; the kernel
 //! then keeps it as the file's mode alone.
 
 use zendiloos_agent_proto::SharePermission;
@@ -151,8 +152,7 @@ impl Acl {
         if let Some(managed) = &rules.managed {
             let granted =
                 |entry: &Entry| rules.grant.iter().any(|(who, _)| who.key() == (entry.tag, entry.id));
-            self.entries
-                .retain(|e| !((e.tag == USER || e.tag == GROUP) && managed.contains(&e.id) && !granted(e)));
+            self.entries.retain(|e| !(managed.holds(e) && !granted(e)));
             for entry in &mut self.entries {
                 if entry.tag == GROUP_OBJ || entry.tag == OTHER {
                     entry.perm = 0;
@@ -203,12 +203,34 @@ pub(crate) struct Rules {
     pub(crate) remove: Vec<Who>,
     pub(crate) grant: Vec<(Who, SharePermission)>,
     pub(crate) owners: Owners,
-    /// The IDs zendiloOS hands out, of people, apps and groups (those gone
-    /// since among them). Their named entries are the rules' alone: a walk
-    /// removes those the rules do not grant and gives the owning group and
-    /// others nothing, so what a walk that failed or stopped left is made
-    /// good by the next. `None`: only `remove` goes.
-    pub(crate) managed: Option<std::ops::RangeInclusive<u32>>,
+    /// The IDs whose named entries are the rules' alone (see [`Managed`]):
+    /// a walk removes those the rules do not grant and gives the owning
+    /// group and others nothing, so what a walk that failed or stopped left
+    /// is made good by the next. `None`: only `remove` goes.
+    pub(crate) managed: Option<Managed>,
+}
+
+/// The IDs zendiloOS hands out, of people, apps and groups (those gone
+/// since among them), and the groups below them every managed account is
+/// in: `zendiloos-users`, each one's primary group, which no rule names.
+/// A named entry for it someone set (over NFS, or as "Domain Users" over
+/// SMB) would let every account through, the denied ones too.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Managed {
+    pub(crate) ids: std::ops::RangeInclusive<u32>,
+    /// GIDs outside `ids`: only group entries of theirs.
+    pub(crate) groups: Vec<u32>,
+}
+
+impl Managed {
+    /// Whether `entry` is a named entry of a managed ID.
+    fn holds(&self, entry: &Entry) -> bool {
+        match entry.tag {
+            USER => self.ids.contains(&entry.id),
+            GROUP => self.ids.contains(&entry.id) || self.groups.contains(&entry.id),
+            _ => false,
+        }
+    }
 }
 
 /// Who may own what is in a share. The kernel gives a file's owner the
@@ -352,19 +374,27 @@ mod tests {
     fn a_replacing_walk_takes_what_the_rules_do_not_grant_and_leaves_foreign_ids_alone() {
         let (bob, anna, kids, gone, debian) =
             (Who::User(2002), Who::User(2001), Who::Group(2100), Who::Group(2200), Who::User(1000));
+        let (users, user_990) = (Who::Group(990), Who::User(990));
         // bob kept rwx from a walk that failed, a deleted group its entry,
-        // the owner's own user (unmanaged) got one by hand; the file's
-        // owner opened it to the owning group and to others.
-        let left = named(0o777, &[(bob, 7), (anna, 5), (kids, 5), (gone, 7), (debian, 7)]);
+        // the owner's own user (unmanaged) got one by hand, a writer opened
+        // it to everyone's primary group by name (a system account of the
+        // same number keeps its entry); the file's owner opened it to the
+        // owning group and to others.
+        let left = named(
+            0o777,
+            &[(bob, 7), (anna, 5), (kids, 5), (gone, 7), (debian, 7), (users, 7), (user_990, 5)],
+        );
         let replacing = Rules {
             grant: vec![(anna, SharePermission::Read), (kids, SharePermission::ReadWrite)],
-            managed: Some(2000..=59999),
+            managed: Some(Managed { ids: 2000..=59999, groups: vec![990] }),
             ..Rules::default()
         };
 
         let stripped = without(Some(left.clone()), 0o777, &replacing).unwrap();
         assert_eq!(stripped.named(bob), None, "not granted: gone without being named");
         assert_eq!(stripped.named(gone), None);
+        assert_eq!(stripped.named(users), None, "everyone's primary group is managed");
+        assert_eq!(stripped.named(user_990), Some(5), "a user of that number is not");
         assert_eq!((stripped.named(anna), stripped.named(kids)), (Some(5), Some(5)), "granted ones stay");
         assert_eq!(stripped.named(debian), Some(7), "not an ID zendiloOS hands out");
         assert_eq!((base(&stripped, GROUP_OBJ), base(&stripped, OTHER)), (Some(0), Some(0)));

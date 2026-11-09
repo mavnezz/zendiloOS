@@ -708,8 +708,8 @@ TLS is rustls with ring and the system's certificate authorities
   the directory in between. Only a walk that read the rules after the
   latest mark and ended without errors settles it (`access_given`). One
   with errors (an entry it could not change, folders nested too deeply,
-  more than 100 failures, the files agent stopping or its deadline passing,
-  zendiloosd stopping) settles nothing. A share that still owes its files
+  the files agent stopping or its deadline passing, zendiloosd stopping)
+  settles nothing. A share that still owes its files
   their rules is walked again: when zendiloosd starts, after each walk and
   every five minutes, unless a walk of it is queued or under way or its
   volume is not mounted. After a failed walk the next waits five minutes,
@@ -750,7 +750,9 @@ TLS is rustls with ring and the system's certificate authorities
   changes nothing. A walk replaces what the rules decide, whatever it was
   told to remove: on every entry it changes, the named entries of the IDs
   zendiloOS hands out (2000 to 59999: people, apps and groups, those
-  deleted since among them) that the rules do not grant go, and the owning
+  deleted since among them; and the group `zendiloos-users`, every
+  account's primary group, whose named entry would let every account
+  through, those denied too) that the rules do not grant go, and the owning
   group (`group::`) and others (`other::`) get nothing, as on the share's
   folder, whose default entries new files inherit; entries of other IDs
   (system accounts, the users containers run as, set by hand) stay. So
@@ -767,7 +769,11 @@ TLS is rustls with ring and the system's certificate authorities
   release did so; the update that changed it marked every share owed once
   more, so that such folders get their rules again. An entry that
   cannot be changed, or a folder nested deeper than 256 to look into,
-  does not stop the others, the job fails at the end naming one.
+  does not stop the others, however many there are: the walk goes on to
+  the end and fails then, counting them and naming one of each (a writer
+  could otherwise plant folders too deep to keep every walk from the rest
+  of the share). The folder at the limit itself gets the rules and is
+  handed over; only what is below it is not looked into.
   One change per share runs at a time; a change of a share's folder waits
   15 seconds at most for one going through its files, then is refused
   ("try again"), while other shares are not held up. Something not a
