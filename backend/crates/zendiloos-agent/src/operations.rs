@@ -336,17 +336,16 @@ impl Operations {
             Request::DestroyShare { pool, volume, name } => {
                 self.pools.destroy_share(pool, *volume, name).await
             }
-            Request::ApplySharing { smb, nfs, services, homes } => {
-                self.sharing.apply(smb, nfs, services, homes.as_ref()).await
+            Request::ApplySharing { smb, nfs, services, homes, close } => {
+                self.sharing.apply(smb, nfs, services, homes.as_ref(), close).await
             }
             Request::PrepareHomes { pool, volume } => self.pools.prepare_homes(pool, *volume).await,
             Request::SetHomeQuota { pool, volume, user, quota_bytes } => {
                 self.pools.set_home_quota(pool, *volume, user, *quota_bytes).await
             }
             Request::MakeHome { volume, user } => self.sharing.make_home(*volume, user),
-            Request::SetShareAccess { volume, name, access, removed, recursive } => {
-                self.sharing.set_access(*volume, name, access, removed, *recursive).await
-            }
+            Request::PrepareShare { volume, name } => self.sharing.prepare_share(*volume, name).await,
+            Request::MigrateShare { volume, name } => self.sharing.migrate_share(*volume, name).await,
             Request::CreateUser { name } => self.accounts.create_user(name).await,
             Request::DeleteUser { name } => self.accounts.delete_user(name).await,
             Request::SetSmbPassword { name, password } => {

@@ -6,7 +6,8 @@
 //! The variables (`docs/format.md` of the catalog, section 3) get what an
 //! administrator would write by hand: the app's data folder is the
 //! project's own folder (`./config`), a share its path on the machine, the
-//! containers run as the administrator.
+//! containers run as the administrator in the group `zendiloos-files`,
+//! whose access every share's folder gives (docs/architecture.md, 4.4).
 
 use std::collections::BTreeMap;
 
@@ -21,6 +22,8 @@ pub const PROJECT_FOLDER: &str = ".";
 pub struct HostFacts {
     /// The administrator's account, which the containers run as.
     pub uid: u32,
+    /// The group `zendiloos-files`, which they run in: the shares' folders
+    /// let it read and write.
     pub gid: u32,
     /// `Europe/Berlin`.
     pub time_zone: String,

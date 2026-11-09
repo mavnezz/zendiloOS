@@ -57,7 +57,7 @@ impl Host {
             udevadm: any.clone(),
             testparm: any.clone(),
             exportfs: any.clone(),
-            setfacl: any.clone(),
+            smbcontrol: any.clone(),
             useradd: any.clone(),
             userdel: any.clone(),
             groupadd: any.clone(),

@@ -57,7 +57,9 @@ pub struct Tools {
     pub udevadm: PathBuf,
     pub testparm: PathBuf,
     pub exportfs: PathBuf,
-    pub setfacl: PathBuf,
+    /// Ends the open SMB connections of a share whose access was taken
+    /// away, and has every smbd read the configuration again first.
+    pub smbcontrol: PathBuf,
     pub useradd: PathBuf,
     pub userdel: PathBuf,
     pub groupadd: PathBuf,
@@ -107,7 +109,7 @@ impl Default for Tools {
             udevadm: PathBuf::from("/usr/bin/udevadm"),
             testparm: PathBuf::from("/usr/bin/testparm"),
             exportfs: PathBuf::from("/usr/sbin/exportfs"),
-            setfacl: PathBuf::from("/usr/bin/setfacl"),
+            smbcontrol: PathBuf::from("/usr/bin/smbcontrol"),
             useradd: PathBuf::from("/usr/sbin/useradd"),
             userdel: PathBuf::from("/usr/sbin/userdel"),
             groupadd: PathBuf::from("/usr/sbin/groupadd"),

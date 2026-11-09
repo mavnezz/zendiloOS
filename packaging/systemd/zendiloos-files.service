@@ -14,21 +14,28 @@ KillMode=mixed
 ExecStart=/usr/libexec/zendiloos/zendiloos-agent --role files
 
 # The same program as zendiloos-agent, serving only requests about the
-# contents of volumes: share permissions and the file manager. It
+# contents of volumes: the shares' folders and the file manager. It
 # may write below /volume<N> and act as a user, but touches no disk, no
 # system configuration and no network:
-# - share permissions: owner and ACLs of files owned by users (CAP_CHOWN,
-#   CAP_FOWNER), reaching them in users' private directories
-#   (CAP_DAC_READ_SEARCH);
-# - the file manager: opening files as the signed-in user (CAP_SETUID,
+# - a share's folder: owner root, group zendiloos-files and mode 2770
+#   (CAP_CHOWN; the group's set-group-ID bit, though root is not in the
+#   group: CAP_FSETID) and its one ACL; once, at the update to share-level
+#   access, every entry's ACL, of files owned by users (CAP_FOWNER),
+#   reaching them in users' private directories (CAP_DAC_READ_SEARCH);
+# - the file manager on a share: the files with root's access
+#   (CAP_DAC_OVERRIDE, CAP_DAC_READ_SEARCH), what it makes given the
+#   owner of the folder it is made in and the group zendiloos-files
+#   (CAP_CHOWN), only on threads working there, after zendiloosd checked
+#   the share's rules; every other thread drops the override at start;
+# - the file manager in a personal folder: as its user (CAP_SETUID,
 #   CAP_SETGID);
 # - personal folders: making each user's folder in /volume<N>/@homes and
 #   giving it to the user (CAP_CHOWN);
 # - removable drives, for administrators: their files with root's access,
 #   whoever owns them on a drive formatted elsewhere (CAP_DAC_OVERRIDE),
-#   only on threads working there; every other thread drops it at start.
+#   only on threads working there.
 NoNewPrivileges=yes
-CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_SETUID CAP_SETGID
+CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_FSETID CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_SETUID CAP_SETGID
 PrivateNetwork=yes
 # /usr, /boot and /etc read-only; volumes live directly below /.
 ProtectSystem=full

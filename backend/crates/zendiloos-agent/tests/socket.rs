@@ -95,7 +95,7 @@ impl Agent {
             ),
             testparm: script("testparm", ""),
             exportfs: script("exportfs", ""),
-            setfacl: script("setfacl", ""),
+            smbcontrol: script("smbcontrol", ""),
             useradd: script("useradd", ""),
             userdel: script("userdel", ""),
             groupadd: script("groupadd", ""),

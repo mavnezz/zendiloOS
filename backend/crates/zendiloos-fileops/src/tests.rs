@@ -577,7 +577,16 @@ fn a_failed_copy_into_another_file_system_leaves_nothing_behind() {
         return; // one file system here: nothing to show
     }
 
-    let copied = copy_new(from.as_fd(), c"album", to.as_fd(), c"album", source_fs, 0, &mut Copied::off());
+    let copied = copy_new(
+        from.as_fd(),
+        c"album",
+        to.as_fd(),
+        c"album",
+        source_fs,
+        0,
+        &mut Copied::off(),
+        NewEntries::Maker,
+    );
 
     assert!(copied.is_err(), "an unreadable file was copied");
     assert!(!target.path().join("album").exists(), "the half copy stayed");
@@ -870,6 +879,7 @@ fn copied_for_move(source: &ShareRoot, from: &str, target: &ShareRoot, to: &str)
         source.file_system,
         0,
         &mut copied,
+        NewEntries::Maker,
     )
     .unwrap();
     copied
@@ -1105,8 +1115,18 @@ fn a_move_of_more_than_it_records_keeps_its_source_whole() {
     let (from_parent, _) = photos.parent(&path("album")).unwrap();
     let (to_parent, _) = music.parent(&path("album")).unwrap();
     let copy = |name: &CStr, copied: &mut Copied| {
-        copy_new(from_parent.as_fd(), c"album", to_parent.as_fd(), name, photos.file_system, 0, copied)
-            .unwrap();
+        let owners = NewEntries::Maker;
+        copy_new(
+            from_parent.as_fd(),
+            c"album",
+            to_parent.as_fd(),
+            name,
+            photos.file_system,
+            0,
+            copied,
+            owners,
+        )
+        .unwrap();
     };
     let mut copied = Copied::within(3, 1024);
     copy(c"album", &mut copied);
@@ -1272,4 +1292,69 @@ fn a_copy_across_that_fails_removes_only_what_it_made() {
 fn a_share_is_written_out() {
     let v = Volumes::new();
     v.share("photos").sync().unwrap();
+}
+
+/// The test's own user and group, as a share's root would be given what is
+/// made in it: the owner of the folder, and a group.
+fn inheriting(root: ShareRoot) -> (ShareRoot, u32, u32) {
+    let (uid, gid) = (rustix::process::getuid().as_raw(), rustix::process::getgid().as_raw());
+    (root.with_new_entries(NewEntries::Inherit { group: gid }), uid, gid)
+}
+
+fn owners_of(path: &Path) -> (u32, u32) {
+    use std::os::unix::fs::MetadataExt;
+    let meta = fs::symlink_metadata(path).unwrap();
+    (meta.uid(), meta.gid())
+}
+
+#[test]
+fn what_is_made_in_a_share_takes_the_folders_owner_and_the_group() {
+    let v = Volumes::new();
+    v.write("photos", "album/a.jpg", "x");
+    symlink("a.jpg", v.share_path("photos").join("album/link")).unwrap();
+    let (photos, uid, gid) = inheriting(v.share("photos"));
+    let (music, _, _) = inheriting(v.share("music"));
+
+    photos.make_directory(&path("new")).unwrap();
+    let (_, upload) = photos.create_upload(&path("new")).unwrap();
+    photos.copy_entry(&path("album"), &photos, &path("copy")).unwrap();
+    photos.copy_entry(&path("album"), &music, &path("album")).unwrap();
+    photos.remove(&path("copy/a.jpg"), Some("anna")).unwrap();
+    photos.restore(&path(".recycle/anna/copy/a.jpg"), "anna").unwrap();
+
+    // As root, each would be the folder's owner's with the group; the
+    // test's own user can give it only its own, which it is checked to do.
+    for (share, made) in [
+        ("photos", "new"),
+        ("photos", &format!("new/{upload}")),
+        ("photos", "copy"),
+        ("photos", "copy/link"),
+        ("photos", "copy/a.jpg"),
+        ("music", "album/a.jpg"),
+        ("photos", ".recycle/anna"),
+    ] {
+        assert_eq!(owners_of(&v.share_path(share).join(made)), (uid, gid), "{share}/{made}");
+    }
+}
+
+#[test]
+fn a_shares_recycle_bin_is_everyones_who_may_use_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let v = Volumes::new();
+    v.write("photos", "album/a.jpg", "x");
+    // Someone else's bin, made before by another account.
+    fs::create_dir_all(v.share_path("photos").join(".recycle/anna")).unwrap();
+    fs::set_permissions(v.share_path("photos").join(".recycle/anna"), fs::Permissions::from_mode(0o770))
+        .unwrap();
+    let (photos, _, _) = inheriting(v.share("photos"));
+
+    photos.remove(&path("album/a.jpg"), Some("anna")).unwrap();
+
+    let bin = v.share_path("photos").join(".recycle/anna/album");
+    assert_eq!(fs::metadata(&bin).unwrap().permissions().mode() & 0o070, 0o070, "the group's too");
+    assert_eq!(fs::read_to_string(bin.join("a.jpg")).unwrap(), "x");
+    // In a personal folder a bin that is not the user's alone refuses.
+    let home = v.share("photos");
+    v.write("photos", "b.txt", "y");
+    assert!(matches!(home.remove(&path("b.txt"), Some("anna")), Err(FileError::Invalid(_))));
 }

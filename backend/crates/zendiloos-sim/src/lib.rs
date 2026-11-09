@@ -697,11 +697,11 @@ impl AgentTransport for SimulatedAgent {
                 self.apps().remove(app.as_str());
                 Response::Done
             }
-            // Every account is UID 2000 in zendiloOS's group; the machine has
-            // a graphics card and nothing else.
+            // Every account is UID 2000; the shares' group is 995; the machine
+            // has a graphics card and nothing else.
             Request::HostFacts { devices, .. } => Response::HostFacts {
                 uid: 2000,
-                gid: 1500,
+                gid: 995,
                 time_zone: "Europe/Berlin".into(),
                 devices: devices.iter().filter(|device| device.as_str() == "/dev/dri").cloned().collect(),
             },
@@ -1038,7 +1038,7 @@ impl AgentTransport for SimulatedAgent {
                 );
                 Response::Done
             }
-            Request::SetShareAccess { volume, name, .. } => {
+            Request::PrepareShare { volume, name } | Request::MigrateShare { volume, name } => {
                 changed(self.host().share_present(volume.get(), name.as_str()))
             }
             Request::CreateUser { name } => self.create(Kind::User, name.as_str()),
@@ -1444,13 +1444,7 @@ mod tests {
         };
         refused(&agent.call(of_nothing, None).await.unwrap(), ErrorCode::Forbidden);
 
-        let access = |name: ShareName| Request::SetShareAccess {
-            volume: one(),
-            name,
-            access: vec![],
-            removed: vec![],
-            recursive: true,
-        };
+        let access = |name: ShareName| Request::MigrateShare { volume: one(), name };
         done(agent.call(access(photos()), None).await.unwrap());
         refused(
             &agent.call(access(ShareName::parse("nothing").unwrap()), None).await.unwrap(),

@@ -300,9 +300,10 @@ pub enum Request {
         lines: u32,
     },
     /// What filling in an app of a catalog for an administrator's project
-    /// takes from the machine: the UID and primary GID of `user`, an
-    /// account zendiloOS manages, which the containers run as; the time
-    /// zone; and which of `devices` the machine has (at most
+    /// takes from the machine: the UID of `user`, an account zendiloOS
+    /// manages, and the GID of `zendiloos-files`, which the containers run
+    /// as, so that they read and write the shares' folders as that group
+    /// does; the time zone; and which of `devices` the machine has (at most
     /// [`DevicePath::MAX_COUNT`]). Answers [`Response::HostFacts`].
     HostFacts {
         user: UserName,
@@ -632,6 +633,12 @@ pub enum Request {
         /// folders are off.
         #[serde(default)]
         homes: Option<HomesShare>,
+        /// Shares whose open SMB connections end once the servers run with
+        /// the new configuration (`smbcontrol smbd close-share`): someone
+        /// lost access there, and clients connect again under the new
+        /// rules.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        close: Vec<ShareName>,
     },
     /// Makes the dataset of the personal folders, `<pool>/zendiloos.homes`,
     /// mounted at `/volume<N>/@homes`. What exists stays.
@@ -654,15 +661,24 @@ pub enum Request {
         volume: VolumeNumber,
         user: UserName,
     },
-    /// Sets owner, mode and POSIX ACLs of a share's directory: `access`
-    /// gets read (and write); `removed` loses its entries. With
-    /// `recursive`, also on everything in the share (role `files`).
-    SetShareAccess {
+    /// Gives a share's folder what every share has: owner `root`, group
+    /// `zendiloos-files`, mode 2770 and the one ACL that lets that group
+    /// read and write, inherited by what is made in it; and the recycle
+    /// bins' folder `.recycle` (role `files`). Access is the share's as a
+    /// whole, enforced by Samba and zendiloosd, never by entries per person.
+    PrepareShare {
         volume: VolumeNumber,
         name: ShareName,
-        access: Vec<ShareAccess>,
-        removed: Vec<Principal>,
-        recursive: bool,
+    },
+    /// The update to share-level access, once per share: [`Request::PrepareShare`],
+    /// then every folder and file in the share gets the entry of
+    /// `zendiloos-files` (folders the default entry too) and loses the
+    /// named entries of the accounts and groups zendiloOS manages; apps'
+    /// and other IDs' entries and the owners stay (role `files`). Reports
+    /// how many entries it went through as lines.
+    MigrateShare {
+        volume: VolumeNumber,
+        name: ShareName,
     },
     /// Creates a Linux user in group `zendiloos-users`: UID from 2000, no
     /// login shell, no home directory, locked Linux password. `conflict` if
@@ -894,7 +910,8 @@ impl Request {
             Request::PrepareHomes { .. } => "prepare_homes",
             Request::SetHomeQuota { .. } => "set_home_quota",
             Request::MakeHome { .. } => "make_home",
-            Request::SetShareAccess { .. } => "set_share_access",
+            Request::PrepareShare { .. } => "prepare_share",
+            Request::MigrateShare { .. } => "migrate_share",
             Request::CreateUser { .. } => "create_user",
             Request::DeleteUser { .. } => "delete_user",
             Request::SetSmbPassword { .. } => "set_smb_password",
@@ -1387,8 +1404,9 @@ impl Request {
             | Request::EndVolumeWork { .. }
             | Request::ControlProject { .. }
             // The ACME server checks the names: up to minutes with DNS.
-            | Request::IssueCertificate { .. } => true,
-            Request::SetShareAccess { recursive, .. } => *recursive,
+            | Request::IssueCertificate { .. }
+            // Every entry of a share, once.
+            | Request::MigrateShare { .. } => true,
             // Into the user's recycle bin it is a rename; for good (what is
             // in the bin already, or without one) it walks the tree.
             Request::RemoveEntry { location, recycle, .. } => {
@@ -1410,10 +1428,10 @@ impl Request {
         }
     }
 
-    /// An administrator's change of a whole share's permissions: it has
-    /// places of its own, so users' copies never hold it up for hours.
+    /// A walk through a whole share's permissions: it has places of its
+    /// own, so users' copies never hold it up for hours.
     pub fn is_walk(&self) -> bool {
-        matches!(self, Request::SetShareAccess { recursive: true, .. })
+        matches!(self, Request::MigrateShare { .. })
     }
 
     /// Reading from a disk to make it blink: places of their own, so disks
@@ -1443,7 +1461,8 @@ impl Request {
 
     pub fn role(&self) -> Role {
         match self {
-            Request::SetShareAccess { .. }
+            Request::PrepareShare { .. }
+            | Request::MigrateShare { .. }
             | Request::MakeHome { .. }
             | Request::ListDirectory { .. }
             | Request::SearchFiles { .. }
@@ -1529,10 +1548,9 @@ impl ShareAccess {
     }
 }
 
-/// What a user or group may do on a share. A denied user gets an ACL entry
-/// without permissions, which comes before every group entry; a denied
-/// group is kept out by Samba (`invalid users`), its members in the file
-/// system by entries of their own.
+/// What a user or group may do on a share, as Samba enforces it: `deny`
+/// becomes `invalid users`, which wins over `valid users`, also for the
+/// members of a group listed there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SharePermission {
@@ -1828,33 +1846,21 @@ pub struct NfsExport {
     pub clients: Vec<NfsClient>,
 }
 
+/// A host or network an export names. Whoever it is on that client, every
+/// request is squashed to the group `zendiloos-files` (`all_squash`, the
+/// agent fills in the IDs): the client has the share's access as a whole,
+/// read or read and write, as `sec=sys` gives it in effect anyway.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NfsClient {
     pub network: NfsHost,
     pub write: bool,
-    /// Root squashed unless said otherwise, as before there was a choice.
-    #[serde(default)]
-    pub squash: NfsSquash,
     /// `async`: writes answered before they are on disk.
     #[serde(default, rename = "async")]
     pub asynchronous: bool,
     /// `insecure`: also from ports above 1024.
     #[serde(default)]
     pub insecure: bool,
-}
-
-/// Whose identity an NFS client's requests keep.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum NfsSquash {
-    /// `no_root_squash`.
-    None,
-    /// `root_squash`.
-    #[default]
-    Root,
-    /// `all_squash`.
-    All,
 }
 
 /// Who an NFS rule is for: an IP address or network, or a host name with
@@ -2237,17 +2243,13 @@ mod tests {
         };
         assert_eq!(recycling.acting_user(), None, "a quick one takes no long place");
         assert!(Request::DestroyPool { name: PoolName::parse("tank").unwrap(), volume }.is_long());
-        let access = |recursive| Request::SetShareAccess {
-            volume,
-            name: share.clone(),
-            access: vec![],
-            removed: vec![],
-            recursive,
-        };
-        assert!(access(true).is_long());
-        assert!(!access(false).is_long());
-        assert!(access(true).is_walk() && !access(false).is_walk());
-        assert_eq!(access(true).acting_user(), None, "an administrator's, in places of its own");
+        let migrate = Request::MigrateShare { volume, name: share.clone() };
+        let prepare = Request::PrepareShare { volume, name: share.clone() };
+        assert!(migrate.is_long() && !prepare.is_long());
+        assert!(migrate.is_walk() && !prepare.is_walk());
+        assert_eq!(migrate.acting_user(), None, "zendiloosd's, in places of its own");
+        assert_eq!((migrate.role(), prepare.role()), (Role::Files, Role::Files));
+        assert_eq!((migrate.name(), prepare.name()), ("migrate_share", "prepare_share"));
         let id = || RemovableId::parse("1A2B-3C4D").unwrap();
         assert!(Request::MountRemovable { id: id() }.is_long());
         assert!(Request::EjectRemovable { id: id(), power_off: true }.is_long());
@@ -2602,6 +2604,14 @@ mod tests {
                 "oplocks": true, "leases": true, "durable_handles": false, "mac_compat": true, "follow_symlinks": true,
                 "veto_files": null, "delete_veto_files": false, "wsdd": true, "bonjour": true } } });
         assert!(serde_json::from_value::<Envelope>(request.clone()).is_ok());
+        let mut closing = request.clone();
+        closing["request"]["close"] = json!(["photos"]);
+        let Ok(Envelope { request: Request::ApplySharing { close, .. }, .. }) =
+            serde_json::from_value::<Envelope>(closing)
+        else {
+            panic!("the shares to close are read");
+        };
+        assert_eq!(close, [ShareName::parse("photos").unwrap()]);
         let injected = json!({ "version": 1, "request": { "op": "apply_sharing", "smb": [], "nfs": [{ "name": "photos",
             "volume": 1, "clients": [{ "network": "*(rw,no_root_squash)", "write": true }] }],
             "services": request["request"]["services"] } });
@@ -2624,20 +2634,18 @@ mod tests {
         for bad in ["", "nas lan", "nas(rw)", "a,b", "NAS.lan", "-a.lan", "a..lan", "@netgroup", "/x"] {
             assert_eq!(NfsHost::parse(bad), Err(InvalidNetwork), "{bad:?}");
         }
-        let old: NfsClient = serde_json::from_str(r#"{"network":"10.0.0.5","write":true}"#).unwrap();
-        assert_eq!((old.squash, old.asynchronous, old.insecure), (NfsSquash::Root, false, false));
+        let plain: NfsClient = serde_json::from_str(r#"{"network":"10.0.0.5","write":true}"#).unwrap();
+        assert_eq!((plain.asynchronous, plain.insecure), (false, false));
         let json = serde_json::to_string(&NfsClient {
             network: NfsHost::parse("nas.lan").unwrap(),
             write: false,
-            squash: NfsSquash::All,
             asynchronous: true,
             insecure: true,
         })
         .unwrap();
-        assert_eq!(
-            json,
-            r#"{"network":"nas.lan","write":false,"squash":"all","async":true,"insecure":true}"#
-        );
+        assert_eq!(json, r#"{"network":"nas.lan","write":false,"async":true,"insecure":true}"#);
+        let squash = r#"{"network":"10.0.0.5","write":true,"squash":"none"}"#;
+        assert!(serde_json::from_str::<NfsClient>(squash).is_err(), "whose identity is not asked any more");
     }
 
     #[test]

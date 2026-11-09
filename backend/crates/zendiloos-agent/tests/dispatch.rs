@@ -64,7 +64,7 @@ impl Host {
             udevadm: p("udevadm"),
             testparm: p("testparm"),
             exportfs: p("exportfs"),
-            setfacl: p("setfacl"),
+            smbcontrol: p("smbcontrol"),
             useradd: p("useradd"),
             userdel: p("userdel"),
             groupadd: p("groupadd"),
@@ -218,7 +218,8 @@ fn requests() -> Vec<Value> {
         json!({ "op": "set_group_members", "group": "family", "members": ["anna"] }),
         // The files agent's.
         json!({ "op": "make_home", "volume": 1, "user": "anna" }),
-        json!({ "op": "set_share_access", "volume": 1, "name": "media", "access": [], "removed": [], "recursive": false }),
+        json!({ "op": "prepare_share", "volume": 1, "name": "media" }),
+        json!({ "op": "migrate_share", "volume": 1, "name": "media" }),
         json!({ "op": "list_directory", "user": "anna", "location": { "volume": 1, "root": { "share": "media" }, "path": "" } }),
         json!({ "op": "open_file", "user": "anna", "location": { "volume": 1, "root": "home", "path": "a.txt" } }),
         json!({ "op": "make_directory", "user": "anna", "location": { "volume": 1, "root": { "share": "media" }, "path": "new" } }),
