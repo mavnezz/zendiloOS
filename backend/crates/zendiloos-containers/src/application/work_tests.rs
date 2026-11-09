@@ -16,7 +16,7 @@ use super::ports::{EngineError, SharePlace, Steps, VolumeArchiver};
 use super::{Containers, ContainersPorts, PlanInput, RestoreTarget};
 use crate::domain::{
     BackupFile, BackupFrequency, BackupOutcome, BackupSchedule, BackupTarget, ContainerAction,
-    ContainerState, WrittenBackup,
+    ContainerState, FAILURES_KEPT, WrittenBackup,
 };
 use crate::testing::{
     FakeArchiver, FakeBackupShares, FakeDockerData, FakeEngine, FakeRegistries, MemoryBackups,
@@ -317,6 +317,70 @@ async fn a_container_of_two_volumes_stays_stopped_until_both_are_backed_up() {
     assert_eq!(world.state("app"), ContainerState::Running, "started once both are done");
     let calls: Vec<String> = world.engine.calls().into_iter().filter(|c| c.ends_with(" app-id")).collect();
     assert_eq!(calls, ["stop app-id", "start app-id"], "never started in between");
+}
+
+/// Failed runs are remembered ten at a time, also while a plan keeps
+/// failing.
+#[tokio::test]
+async fn failures_beyond_ten_are_forgotten_while_a_plan_keeps_failing() {
+    let world = World::new();
+    let archiver = Arc::new(FakeArchiver::default());
+    let containers = world.containers(archiver.clone());
+    containers.set_backup_plan("orphan", nightly(false), &alice(), &RequestContext::default()).await.unwrap();
+    for n in 0..12 {
+        *archiver.fail.lock().unwrap() = Some("no space left on device".into());
+        *world.clock.0.lock().unwrap() = Timestamp::from_unix_seconds(MIDNIGHT + n * 24 * HOUR);
+        containers.back_up_now("orphan", &alice(), &RequestContext::default()).await.unwrap();
+        world.until(|| world.jobs_running() == 0).await;
+    }
+    let failed: Vec<i64> = world
+        .backups
+        .runs
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|r| matches!(r.outcome, BackupOutcome::Failed(_)))
+        .map(|r| r.id)
+        .collect();
+    assert_eq!(failed.len(), FAILURES_KEPT, "{failed:?}");
+    assert_eq!(failed.iter().min(), Some(&3), "the newest ten");
+}
+
+/// A plan noted while the clock was a year ahead runs at its next time
+/// once the clock is right, not a year later; and the run then is never
+/// removed by its own retention.
+#[tokio::test]
+async fn a_plan_noted_ahead_of_the_clock_runs_when_it_says_and_keeps_its_archive() {
+    let world = World::new();
+    let archiver = Arc::new(FakeArchiver::default());
+    let containers = world.containers(archiver.clone());
+    let keep_one = PlanInput { keep: 1, ..nightly(false) };
+    *world.clock.0.lock().unwrap() = Timestamp::from_unix_seconds(MIDNIGHT + 365 * 24 * HOUR);
+    containers
+        .set_backup_plan("orphan", keep_one.clone(), &alice(), &RequestContext::default())
+        .await
+        .unwrap();
+    containers.back_up_now("orphan", &alice(), &RequestContext::default()).await.unwrap();
+    world.until(|| world.jobs_running() == 0).await;
+    let ahead = Timestamp::from_unix_seconds(MIDNIGHT + 365 * 24 * HOUR);
+    super::ports::BackupRepository::ran(world.backups.as_ref(), "orphan", ahead).await.unwrap();
+
+    // The clock is put right: at noon on the 5th, then at three on the 6th.
+    *world.clock.0.lock().unwrap() = Timestamp::from_unix_seconds(MIDNIGHT + 12 * HOUR);
+    assert!(containers.run_due_backups().await.is_empty());
+    let since = world.backups.plans.lock().unwrap()[0].since;
+    assert_eq!(since, Timestamp::from_unix_seconds(MIDNIGHT + 12 * HOUR), "noted anew");
+    *world.clock.0.lock().unwrap() = Timestamp::from_unix_seconds(MIDNIGHT + 27 * HOUR);
+    assert_eq!(containers.run_due_backups().await.len(), 1);
+    world.until(|| world.jobs_running() == 0).await;
+
+    let runs = world.backups.runs.lock().unwrap().clone();
+    assert_eq!(runs.len(), 1, "{runs:?}");
+    assert_eq!(
+        runs[0].started_at,
+        Timestamp::from_unix_seconds(MIDNIGHT + 27 * HOUR),
+        "the one just written"
+    );
 }
 
 /// A container a restore stopped is not started meanwhile, by hand or by

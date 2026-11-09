@@ -10,8 +10,8 @@ mod volumes;
 
 pub use backups::{
     Backup, BackupFile, BackupFrequency, BackupOutcome, BackupPlan, BackupSchedule, BackupTarget,
-    DEFAULT_KEEP, FAILURES_KEPT, InvalidBackupPlan, MAX_KEEP, OwedStart, WrittenBackup, backup_stem, beyond,
-    is_share_folder, stale_failures,
+    DEFAULT_KEEP, FAILURES_KEPT, InvalidBackupPlan, MAX_KEEP, OwedStart, UtcOffsets, WrittenBackup,
+    backup_stem, beyond, is_share_folder, stale_failures,
 };
 pub use compose::{ComposeModel, ComposeService, Risk, ServiceMount, file_reads, risks};
 pub use details::{

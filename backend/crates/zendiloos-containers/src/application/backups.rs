@@ -109,7 +109,7 @@ impl Steps for JobSteps {
 impl Containers {
     pub(super) fn plan_view(&self, plan: BackupPlan) -> PlanView {
         let now = self.now();
-        let next_at = plan.schedule.next(now, self.ports.clock.utc_offset(now));
+        let next_at = plan.schedule.next(now, &|at| self.ports.clock.utc_offset(at));
         PlanView { plan, next_at }
     }
 
@@ -186,10 +186,11 @@ impl Containers {
 
     /// Starts the backups whose time has come; run every minute. A plan
     /// counts as run once it was started, whatever comes of it: the next
-    /// comes at its time.
+    /// comes at its time. A plan noted while the clock was ahead counts from
+    /// now on, once the clock was put right.
     pub async fn run_due_backups(&self) -> Vec<Job> {
         let now = self.now();
-        let offset = self.ports.clock.utc_offset(now);
+        let offsets = |at| self.ports.clock.utc_offset(at);
         let plans = match self.ports.backups.plans().await {
             Ok(plans) => plans,
             Err(error) => {
@@ -198,7 +199,21 @@ impl Containers {
             }
         };
         let mut jobs = Vec::new();
-        for plan in plans.into_iter().filter(|plan| plan.is_due(now, offset)) {
+        let mut due = Vec::new();
+        for plan in plans {
+            if plan.noted_ahead(now) {
+                tracing::info!(
+                    volume = plan.volume,
+                    "backups: the plan was noted ahead of the clock; due from now"
+                );
+                if let Err(error) = self.ports.backups.ran(&plan.volume, now).await {
+                    tracing::warn!(%error, volume = plan.volume, "backups: cannot note the plan anew");
+                }
+            } else if plan.is_due(now, &offsets) {
+                due.push(plan);
+            }
+        }
+        for plan in due {
             if let Err(error) = self.ports.backups.ran(&plan.volume, now).await {
                 tracing::warn!(%error, volume = plan.volume, "backups: cannot note the run; not started");
                 continue;
@@ -295,7 +310,22 @@ impl Containers {
         } else {
             self.retain(plan, context).await;
         }
+        self.forget_stale_failures(&plan.volume).await;
         done
+    }
+
+    /// Forgets the failed runs of `volume` beyond the newest ten: after
+    /// every run, also while a plan keeps failing.
+    async fn forget_stale_failures(&self, volume: &str) {
+        let backups = match self.ports.backups.backups(Some(volume)).await {
+            Ok(backups) => backups,
+            Err(error) => return tracing::warn!(%error, "backups: cannot read the runs to forget"),
+        };
+        for stale in stale_failures(&backups) {
+            if let Err(error) = self.ports.backups.forget(stale.id).await {
+                tracing::warn!(%error, "backups: cannot forget an old failure");
+            }
+        }
     }
 
     /// Stops what the plan says, backs up, starts again once nothing else
@@ -347,7 +377,7 @@ impl Containers {
     }
 
     /// Removes the archives beyond the plan's number: only those recorded,
-    /// each by the identity it had when written; and forgets old failures.
+    /// each by the identity it had when written.
     async fn retain(&self, plan: &BackupPlan, context: &RequestContext) {
         let backups = match self.ports.backups.backups(Some(&plan.volume)).await {
             Ok(backups) => backups,
@@ -380,11 +410,6 @@ impl Containers {
                 Err(error) => {
                     tracing::warn!(%error, path = written.archive.path, "backups: an old archive stays")
                 }
-            }
-        }
-        for stale in stale_failures(&backups) {
-            if let Err(error) = self.ports.backups.forget(stale.id).await {
-                tracing::warn!(%error, "backups: cannot forget an old failure");
             }
         }
     }
