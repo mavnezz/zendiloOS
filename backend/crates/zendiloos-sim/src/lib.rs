@@ -517,7 +517,10 @@ impl SimulatedAgent {
                 FileError::Denied => ErrorCode::Denied,
                 FileError::Exists => ErrorCode::Conflict,
                 FileError::Invalid(_) | FileError::CaseClash(..) => ErrorCode::InvalidRequest,
-                FileError::PartlyMoved(_) | FileError::NotDurable(_) | FileError::Io(_) => ErrorCode::Failed,
+                FileError::PartlyMoved(_)
+                | FileError::NotDurable(_)
+                | FileError::ArchiveChanged(_)
+                | FileError::Io(_) => ErrorCode::Failed,
             };
             (error(code, &failure.to_string()), None)
         })

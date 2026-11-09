@@ -491,34 +491,78 @@ fn folders_become_tar_archives_of_the_planned_length() {
     );
 }
 
+/// A file rewritten to the size planned before it is written is no change:
+/// it goes in as it is then. One that grew or shrank since is written to
+/// the planned size, cut or padded, to keep the archive's order, and the
+/// archive is left unfinished: everything but its end, so the download
+/// never looks complete, and the error names what changed.
 #[test]
-fn an_archive_follows_its_plan_to_the_byte() {
+fn an_archive_of_files_that_changed_is_left_unfinished() {
     let v = Volumes::new();
     v.write("photos", "grows.txt", "1234");
     v.write("photos", "shrinks.txt", "12345678");
+    v.write("photos", "same size.txt", "abcd");
     v.write("photos", ".recycle/anna/old.txt", "old");
     let photos = v.share("photos");
 
     let plan = photos.plan_archive(&SharePath::root(), "photos").unwrap();
-    v.write("photos", "grows.txt", "123456789");
-    v.write("photos", "shrinks.txt", "12");
+    v.write("photos", "same size.txt", "wxyz");
     let mut archive = Vec::new();
     photos.write_archive(&SharePath::root(), &plan, &mut archive).unwrap();
 
     assert_eq!(archive.len() as u64, plan.length());
     let entries = unpacked(&archive);
     let names: Vec<&str> = entries.iter().map(|(name, _, _)| name.as_str()).collect();
-    assert_eq!(names, ["photos/", "photos/grows.txt", "photos/shrinks.txt"], "no recycle bins");
-    assert_eq!(entries[1].2, "1234", "cut to the planned size");
-    assert_eq!(entries[2].2, "12\0\0\0\0\0\0", "padded to the planned size");
+    let all = ["photos/", "photos/grows.txt", "photos/same size.txt", "photos/shrinks.txt"];
+    assert_eq!(names, all, "no recycle bins");
+    assert_eq!(entries[2].2, "wxyz", "as it is when it is written");
 
-    // A file gone since the plan: the archive ends short.
-    fs::remove_file(v.share_path("photos").join("grows.txt")).unwrap();
+    v.write("photos", "grows.txt", "123456789");
+    v.write("photos", "shrinks.txt", "12");
     let mut short = Vec::new();
-    assert!(photos.write_archive(&SharePath::root(), &plan, &mut short).is_err());
-    assert!((short.len() as u64) < plan.length());
+    let changed = photos.write_archive(&SharePath::root(), &plan, &mut short);
+
+    let named = ArchiveChanged { count: 2, example: "photos/grows.txt".into() };
+    assert!(matches!(&changed, Err(FileError::ArchiveChanged(c)) if *c == named), "{changed:?}");
+    assert!(changed.unwrap_err().to_string().contains("left unfinished"));
+    assert_eq!(short.len() as u64, plan.length() - 1024, "all but the two blocks that end it");
+    let entries = unpacked(&short);
+    assert_eq!(entries.iter().map(|(name, _, _)| name.as_str()).collect::<Vec<_>>(), all);
+    assert_eq!(entries[1].2, "1234", "cut to the planned size");
+    assert_eq!(entries[3].2, "12\0\0\0\0\0\0", "padded to the planned size");
 }
 
+/// A folder gone since the plan, with what was in it, and a link that
+/// points elsewhere: written as planned, empty, and the archive is left
+/// unfinished.
+#[test]
+fn an_archive_whose_folder_went_or_link_moved_is_left_unfinished() {
+    let v = Volumes::new();
+    v.write("photos", "album/inner/a.txt", "a");
+    let album = v.share_path("photos").join("album");
+    symlink("inner/a.txt", album.join("link")).unwrap();
+    let photos = v.share("photos");
+    let plan = photos.plan_archive(&path("album"), "album").unwrap();
+    fs::remove_dir_all(album.join("inner")).unwrap();
+    fs::remove_file(album.join("link")).unwrap();
+    symlink("elsewhere", album.join("link")).unwrap();
+
+    let mut short = Vec::new();
+    let changed = photos.write_archive(&path("album"), &plan, &mut short);
+
+    // The folder, the file in it, the link.
+    let named = ArchiveChanged { count: 3, example: "album/inner/".into() };
+    assert!(matches!(&changed, Err(FileError::ArchiveChanged(c)) if *c == named), "{changed:?}");
+    assert_eq!(
+        unpacked(&short),
+        [
+            ("album/".to_owned(), '5', String::new()),
+            ("album/inner/".to_owned(), '5', String::new()),
+            ("album/inner/a.txt".to_owned(), '0', "\0".to_owned()),
+            ("album/link".to_owned(), '2', "inner/a.txt".to_owned()),
+        ]
+    );
+}
 #[test]
 fn what_cannot_be_read_refuses_the_archive() {
     if rustix::process::geteuid().is_root() {

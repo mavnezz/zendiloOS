@@ -42,7 +42,7 @@ mod archive;
 mod copied;
 mod stream;
 
-pub use archive::{ArchivePlan, MAX_ARCHIVE_ENTRIES, MAX_ARCHIVE_NAME_BYTES};
+pub use archive::{ArchiveChanged, ArchivePlan, MAX_ARCHIVE_ENTRIES, MAX_ARCHIVE_NAME_BYTES};
 use copied::Stays;
 pub use copied::{Copied, Kept, MAX_MOVED_ENTRIES, MAX_MOVED_NAME_BYTES};
 pub use stream::{PIECES_IN_FLIGHT, Piece, Received, Taken, copy_through, settle};
@@ -79,6 +79,10 @@ pub enum FileError {
     /// its source.
     #[error("the copy could not be written out ({0}); nothing was removed")]
     NotDurable(#[source] std::io::Error),
+    /// Entries changed while a folder was written as an archive, which was
+    /// left unfinished so that it never looks complete.
+    #[error("{0}")]
+    ArchiveChanged(ArchiveChanged),
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }

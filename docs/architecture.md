@@ -935,7 +935,14 @@ TLS is rustls with ring and the system's certificate authorities
   same way into a pipe whose reading end goes to `zendiloosd` like a
   downloaded file, following the plan to the byte (a file that grew is
   cut, one that shrank padded); should writing fail midway, the download
-  ends short of its length and the browser reports it as failed. At the
+  ends short of its length and the browser reports it as failed. What was
+  sent cannot be taken back, and a download that looks complete must be
+  the folder as it was: an entry that changed while the archive was
+  written (another size than planned, written to while it was read, gone,
+  a link pointing elsewhere) is written as planned, and the archive is then
+  left without the two blocks that end it, so it ends short all the same;
+  the files agent logs how many changed and the first of them. A file
+  rewritten to its planned size before it is read goes in as it is then. At the
   share's top the recycle bins are left out, everywhere uploads in
   progress; at most four folders are written at once.
 - **The explorer** is one app for files and for the folders on the

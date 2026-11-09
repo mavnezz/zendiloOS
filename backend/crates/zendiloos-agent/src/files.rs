@@ -569,8 +569,16 @@ impl Files {
                     })
                     .await;
                     drop((permit, place));
-                    if let Err(error) = written {
-                        tracing::info!(%error, "archive: ended before its end");
+                    match written {
+                        Ok(()) => {}
+                        // The download fails, so the person sees it; the
+                        // log says which file changed.
+                        Err(OperationError::File(FileError::ArchiveChanged(changed))) => tracing::warn!(
+                            entries = changed.count,
+                            example = %changed.example,
+                            "archive: entries changed while it was written; left unfinished"
+                        ),
+                        Err(error) => tracing::info!(%error, "archive: ended before its end"),
                     }
                 });
                 Ok((Response::Archive { size }, Some(OwnedFd::from(reader))))

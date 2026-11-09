@@ -7,13 +7,25 @@
 //! since is cut, one that shrank is padded with zeros. Should writing fail
 //! midway, the download ends short of its announced length, which browsers
 //! report as a failed download.
+//!
+//! What was sent cannot be taken back, and a download that looks complete
+//! must hold the folder as it was. So an entry that changed while the
+//! archive was written (a file of another size than planned, one written
+//! to while it was read, an entry gone or of another kind, a link pointing
+//! elsewhere) is written as planned to keep the archive's order, and the
+//! archive is then left unfinished: everything else is written, but not
+//! the two blocks that end a tar archive, so the download ends short of
+//! its announced length all the same, and [`FileError::ArchiveChanged`]
+//! names what changed for the log. A file rewritten to the size planned
+//! before it is read is no change: it is written as it is then, with its
+//! time and mode.
 
 use std::ffi::CString;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 
-use rustix::fs::{AtFlags, Dir, FileType, OFlags, fstat, readlinkat, statat};
+use rustix::fs::{AtFlags, Dir, FileType, OFlags, Stat, fstat, readlinkat, statat};
 use zendiloos_agent_proto::SharePath;
 
 use super::{
@@ -192,37 +204,83 @@ impl ShareRoot {
     }
 
     /// Writes the archive `plan` describes of the folder `path`: exactly
-    /// [`ArchivePlan::length`] bytes, unless it fails.
+    /// [`ArchivePlan::length`] bytes, unless it fails, or entries changed
+    /// while it was written ([`FileError::ArchiveChanged`]): then all but
+    /// the two blocks that end it.
     pub fn write_archive(
         &self,
         path: &SharePath,
         plan: &ArchivePlan,
         out: &mut impl Write,
     ) -> Result<(), FileError> {
-        // The folders on the way to the current entry, opened: entries come
-        // folder by folder, each folder before what is in it.
-        let mut open: Vec<(usize, OwnedFd)> =
-            vec![(0, self.resolve(path, OFlags::PATH | OFlags::DIRECTORY)?)];
+        // The folders on the way to the current entry, opened, or none where
+        // one could not be: entries come folder by folder, each folder
+        // before what is in it.
+        let mut open: Vec<(usize, Option<OwnedFd>)> =
+            vec![(0, Some(self.resolve(path, OFlags::PATH | OFlags::DIRECTORY)?))];
+        let mut changed = Changes::default();
         for (index, entry) in plan.entries.iter().enumerate() {
-            out.write_all(&header(plan, index))?;
-            let Some(parent) = entry.parent else { continue };
+            let Some(parent) = entry.parent else {
+                out.write_all(&header(plan, index, None))?;
+                continue;
+            };
             while open.last().is_some_and(|(i, _)| *i != parent) {
                 open.pop();
             }
-            let folder =
-                open.last().map(|(_, fd)| fd.as_fd()).ok_or(FileError::Invalid("the plan is broken"))?;
-            match entry.kind {
+            let (_, folder) = open.last().ok_or(FileError::Invalid("the plan is broken"))?;
+            let folder = folder.as_ref().map(AsFd::as_fd);
+            let opened =
+                |flags| folder.and_then(|folder| open_beneath_flags(folder, &entry.name, flags).ok());
+            match &entry.kind {
                 Kind::Directory => {
-                    let inner = open_beneath_flags(folder, &entry.name, OFlags::PATH | OFlags::DIRECTORY)?;
+                    out.write_all(&header(plan, index, None))?;
+                    let inner = opened(OFlags::PATH | OFlags::DIRECTORY);
+                    if inner.is_none() {
+                        changed.note(plan, index);
+                    }
                     open.push((index, inner));
                 }
                 Kind::File { size } => {
-                    let file = open_beneath_flags(folder, &entry.name, OFlags::RDONLY | OFlags::NONBLOCK)?;
-                    copy_exactly(file, size, out)?;
-                    out.write_all(&padding(size))?;
+                    let file = opened(OFlags::RDONLY | OFlags::NONBLOCK).map(File::from);
+                    let before = file
+                        .as_ref()
+                        .and_then(|file| fstat(file).ok())
+                        .filter(|stat| kind(stat) == FileType::RegularFile);
+                    // As it is now, if it is of the size planned.
+                    let planned = before.filter(|stat| file_size(stat) == *size);
+                    out.write_all(&header(plan, index, planned.as_ref()))?;
+                    let whole = match (&file, &before) {
+                        (Some(file), Some(before)) => {
+                            let copied = copy_exactly(file, *size, out)?;
+                            // Written to while it was read: what went out is
+                            // neither the old file nor the new one.
+                            planned.is_some()
+                                && copied
+                                && fstat(file).is_ok_and(|after| same_times(before, &after))
+                        }
+                        _ => {
+                            zeros(*size, out)?;
+                            false
+                        }
+                    };
+                    out.write_all(&padding(*size))?;
+                    if !whole {
+                        changed.note(plan, index);
+                    }
                 }
-                Kind::Symlink { .. } => {}
+                Kind::Symlink { target } => {
+                    out.write_all(&header(plan, index, None))?;
+                    let now =
+                        folder.and_then(|folder| readlinkat(folder, entry.name.as_c_str(), Vec::new()).ok());
+                    if now.is_none_or(|now| now.as_bytes() != target.as_slice()) {
+                        changed.note(plan, index);
+                    }
+                }
             }
+        }
+        if let Some(example) = changed.example {
+            out.flush()?;
+            return Err(FileError::ArchiveChanged(ArchiveChanged { count: changed.count, example }));
         }
         out.write_all(&[0; 2 * BLOCK as usize])?;
         out.flush()?;
@@ -230,24 +288,69 @@ impl ShareRoot {
     }
 }
 
-/// `size` bytes of `file`: cut if it grew, padded with zeros if it shrank
-/// or is no longer a regular file.
-fn copy_exactly(file: OwnedFd, size: u64, out: &mut impl Write) -> Result<(), FileError> {
-    let copied = if kind(&fstat(&file)?) == FileType::RegularFile {
-        std::io::copy(&mut File::from(file).take(size), out)?
-    } else {
-        0
-    };
-    let mut missing = size - copied;
+/// Entries of a folder that changed while it was written as an archive,
+/// which therefore was left unfinished: how many, and the first of them,
+/// its path in the archive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchiveChanged {
+    pub count: u64,
+    pub example: String,
+}
+
+impl std::fmt::Display for ArchiveChanged {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} entries changed while the archive was written, such as {}; it was left unfinished",
+            self.count, self.example
+        )
+    }
+}
+
+/// What changed so far while an archive was written.
+#[derive(Debug, Default)]
+struct Changes {
+    count: u64,
+    example: Option<String>,
+}
+
+impl Changes {
+    fn note(&mut self, plan: &ArchivePlan, index: usize) {
+        self.count += 1;
+        self.example.get_or_insert_with(|| String::from_utf8_lossy(&plan.path(index)).into_owned());
+    }
+}
+
+fn file_size(stat: &Stat) -> u64 {
+    u64::try_from(stat.st_size).unwrap_or(0)
+}
+
+/// Whether a file's size and times are the same in both: nothing wrote to
+/// it in between.
+fn same_times(before: &Stat, after: &Stat) -> bool {
+    let times = |stat: &Stat| (stat.st_mtime, stat.st_mtime_nsec, stat.st_ctime, stat.st_ctime_nsec);
+    file_size(before) == file_size(after) && times(before) == times(after)
+}
+
+/// `size` bytes of `file`, padded with zeros if it shrank; whether it had
+/// them all.
+fn copy_exactly(file: &File, size: u64, out: &mut impl Write) -> Result<bool, FileError> {
+    let mut reading = file;
+    let copied = std::io::copy(&mut (&mut reading).take(size), out)?;
+    zeros(size - copied, out)?;
+    Ok(copied == size)
+}
+
+/// `count` zeros.
+fn zeros(mut count: u64, out: &mut impl Write) -> Result<(), FileError> {
     let zeros = [0u8; 64 * 1024];
-    while missing > 0 {
-        let chunk = usize::try_from(missing.min(zeros.len() as u64)).unwrap_or(zeros.len());
+    while count > 0 {
+        let chunk = usize::try_from(count.min(zeros.len() as u64)).unwrap_or(zeros.len());
         out.write_all(&zeros[..chunk])?;
-        missing -= chunk as u64;
+        count -= chunk as u64;
     }
     Ok(())
 }
-
 fn padding(size: u64) -> Vec<u8> {
     vec![0; usize::try_from((BLOCK - size % BLOCK) % BLOCK).unwrap_or(0)]
 }
@@ -258,13 +361,17 @@ fn entry_length(plan: &ArchivePlan, index: usize) -> u64 {
         Kind::File { size } => size.div_ceil(BLOCK) * BLOCK,
         _ => 0,
     };
-    header(plan, index).len() as u64 + content
+    header(plan, index, None).len() as u64 + content
 }
 
 /// The ustar header of entry `index`, after a pax header if a value does
-/// not fit.
-fn header(plan: &ArchivePlan, index: usize) -> Vec<u8> {
+/// not fit; with the time and mode of `now` if given, the entry as it is
+/// when it is written, which takes no more room.
+#[allow(clippy::useless_conversion)]
+fn header(plan: &ArchivePlan, index: usize, now: Option<&Stat>) -> Vec<u8> {
     let entry = &plan.entries[index];
+    let (mode, modified) =
+        now.map_or((entry.mode, entry.modified), |now| (now.st_mode, i64::from(now.st_mtime)));
     let path = plan.path(index);
     let (typeflag, size, link) = match &entry.kind {
         Kind::Directory => (b'5', 0, &[][..]),
@@ -281,7 +388,7 @@ fn header(plan: &ArchivePlan, index: usize) -> Vec<u8> {
     if size > OCTAL_11 {
         records.extend(pax_record("size", size.to_string().as_bytes()));
     }
-    let modified = u64::try_from(entry.modified).unwrap_or(0).min(OCTAL_11);
+    let modified = u64::try_from(modified).unwrap_or(0).min(OCTAL_11);
     let mut out = Vec::new();
     if !records.is_empty() {
         out.extend(ustar(b"././@PaxHeader", b'x', 0o644, records.len() as u64, modified, &[]));
@@ -290,7 +397,7 @@ fn header(plan: &ArchivePlan, index: usize) -> Vec<u8> {
         out.extend(padding(length));
     }
     let size = if size > OCTAL_11 { 0 } else { size };
-    out.extend(ustar(&path, typeflag, entry.mode & 0o1777, size, modified, link));
+    out.extend(ustar(&path, typeflag, mode & 0o1777, size, modified, link));
     out
 }
 
