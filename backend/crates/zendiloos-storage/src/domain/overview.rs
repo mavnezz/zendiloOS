@@ -1,6 +1,7 @@
 //! One answer to "is my storage all right?": every concern about the pools
 //! and disks, the worst first.
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use zendiloos_kernel::Timestamp;
@@ -25,6 +26,35 @@ pub enum Severity {
     Critical,
 }
 
+/// A disk as the pages name it: its kernel name, its slot where the
+/// enclosure places it, and its model and serial number.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiskLabel {
+    pub name: String,
+    pub slot: Option<SlotName>,
+    pub model: Option<String>,
+    pub serial: Option<String>,
+}
+
+/// A slot of the enclosure as the pages name it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlotName {
+    /// E.g. `Bay 1`.
+    pub label: String,
+    /// The name of its group, e.g. `Front bays`.
+    pub group: String,
+}
+
+impl SlotName {
+    pub fn new(label: &str, group: &str) -> Self {
+        Self { label: label.to_owned(), group: group.to_owned() }
+    }
+}
+
+/// The slot each disk the enclosure places is in, by the disk's kernel
+/// name.
+pub type SlotLabels = HashMap<String, SlotName>;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Concern {
     /// The pool's data cannot be reached.
@@ -45,7 +75,10 @@ pub enum Concern {
     /// Read, write or checksum errors on one of the pool's devices.
     DeviceErrors {
         pool: String,
+        /// As ZFS names it, e.g. `wwn-0x5002538d4130f2e7-part1`.
         device: String,
+        /// The disk it is on, if one present matches.
+        disk: Option<DiskLabel>,
         errors: u64,
     },
     VolumeFilling {
@@ -55,10 +88,12 @@ pub enum Concern {
     DiskFailing {
         disk: String,
         model: Option<String>,
+        slot: Option<SlotName>,
     },
     DiskWorn {
         disk: String,
         model: Option<String>,
+        slot: Option<SlotName>,
     },
     /// One failing disk loses everything.
     NoRedundancy {
@@ -116,17 +151,26 @@ impl Overview {
 
 /// What is wrong with `pools` and `disks`. `health` holds the SMART
 /// verdicts last read ([`DiskVerdicts`]); disks not in
-/// it are not judged.
-pub fn overview(pools: &[Pool], disks: &[Disk], health: &DiskVerdicts, now: Timestamp) -> Overview {
+/// it are not judged. `slots` names the slot of each disk the enclosure
+/// places, so a concern names a disk as the pages do. `pools` must have
+/// their disks resolved ([`super::resolve_pool_disks`]).
+pub fn overview(
+    pools: &[Pool],
+    disks: &[Disk],
+    health: &DiskVerdicts,
+    slots: &SlotLabels,
+    now: Timestamp,
+) -> Overview {
     let mut concerns = Vec::new();
     for pool in pools {
-        concerns.extend(pool_concerns(pool, now));
+        concerns.extend(pool_concerns(pool, disks, slots, now));
     }
     for disk in disks {
-        let (disk_name, model) = (disk.name.clone(), disk.model.clone());
+        let (disk_name, model, slot) =
+            (disk.name.clone(), disk.model.clone(), slots.get(&disk.name).cloned());
         match health.of(disk) {
-            Some(Health::Failing) => concerns.push(Concern::DiskFailing { disk: disk_name, model }),
-            Some(Health::Warning) => concerns.push(Concern::DiskWorn { disk: disk_name, model }),
+            Some(Health::Failing) => concerns.push(Concern::DiskFailing { disk: disk_name, model, slot }),
+            Some(Health::Warning) => concerns.push(Concern::DiskWorn { disk: disk_name, model, slot }),
             Some(Health::Good) | None => {}
         }
     }
@@ -134,7 +178,18 @@ pub fn overview(pools: &[Pool], disks: &[Disk], health: &DiskVerdicts, now: Time
     Overview { concerns }
 }
 
-fn pool_concerns(pool: &Pool, now: Timestamp) -> Vec<Concern> {
+/// The disk `name` (a kernel name) as the pages name it.
+fn label(name: &str, disks: &[Disk], slots: &SlotLabels) -> DiskLabel {
+    let disk = disks.iter().find(|disk| disk.name == name);
+    DiskLabel {
+        name: name.to_owned(),
+        slot: slots.get(name).cloned(),
+        model: disk.and_then(|disk| disk.model.clone()),
+        serial: disk.and_then(|disk| disk.serial.clone()),
+    }
+}
+
+fn pool_concerns(pool: &Pool, disks: &[Disk], slots: &SlotLabels, now: Timestamp) -> Vec<Concern> {
     let name = || pool.name.clone();
     let mut concerns = Vec::new();
     match pool.state {
@@ -152,7 +207,8 @@ fn pool_concerns(pool: &Pool, now: Timestamp) -> Vec<Concern> {
     for device in &pool.devices {
         let errors = device.read_errors + device.write_errors + device.checksum_errors;
         if errors > 0 {
-            concerns.push(Concern::DeviceErrors { pool: name(), device: device.name.clone(), errors });
+            let disk = device.disk.as_deref().map(|disk| label(disk, disks, slots));
+            concerns.push(Concern::DeviceErrors { pool: name(), device: device.name.clone(), disk, errors });
         }
     }
     if let Some(percent) = percent_used(pool).filter(|&p| p >= FILL_THRESHOLDS[0]) {
@@ -265,7 +321,7 @@ mod tests {
         tank.scan = checked(3);
         let health = verdicts(&[("S1", Health::Good)]);
 
-        let overview = overview(&[tank], &[disk("sda", Some("S1"))], &health, now());
+        let overview = overview(&[tank], &[disk("sda", Some("S1"))], &health, &SlotLabels::new(), now());
 
         assert_eq!(overview, Overview { concerns: vec![] });
         assert_eq!(overview.verdict(), None);
@@ -281,21 +337,75 @@ mod tests {
         let health = verdicts(&[("S1", Health::Failing), ("sdb", Health::Warning)]);
         let disks = [disk("sda", Some("S1")), disk("sdb", None), disk("sdc", Some("unread"))];
 
-        let overview = overview(&[single, tank], &disks, &health, now());
+        let overview = overview(&[single, tank], &disks, &health, &SlotLabels::new(), now());
 
         let model = Some("Model".to_owned());
         assert_eq!(
             overview.concerns,
             [
-                Concern::DiskFailing { disk: "sda".into(), model: model.clone() },
-                Concern::DiskWorn { disk: "sdb".into(), model },
+                Concern::DiskFailing { disk: "sda".into(), model: model.clone(), slot: None },
+                Concern::DiskWorn { disk: "sdb".into(), model, slot: None },
                 Concern::PoolDegraded { pool: "tank".into(), state: VdevState::Degraded },
-                Concern::DeviceErrors { pool: "tank".into(), device: "disk-1".into(), errors: 3 },
+                Concern::DeviceErrors { pool: "tank".into(), device: "disk-1".into(), disk: None, errors: 3 },
                 Concern::VolumeFilling { pool: "tank".into(), percent: 85 },
                 Concern::NoRedundancy { pool: "backup".into() },
             ]
         );
         assert_eq!(overview.verdict(), Some(Severity::Critical));
+    }
+
+    #[test]
+    fn errors_of_a_device_name_its_disk_as_the_pages_do() {
+        let mut tank = pool("tank", PoolLayout::Mirror, 3);
+        tank.scan = checked(3);
+        tank.devices[0].name = "wwn-0x5002538d4130f2e7-part1".into();
+        tank.devices[0].disk = Some("sda".into());
+        tank.devices[0].read_errors = 2;
+        tank.devices[1].disk = Some("sdb".into());
+        tank.devices[1].write_errors = 1;
+        tank.devices[2].checksum_errors = 4;
+        let mut sda = disk("sda", Some("S2YXNDAHA16081"));
+        sda.model = Some("SAMSUNG MZ7LN256HCHP".into());
+        let sdb = Disk { model: None, ..disk("sdb", Some("S-B")) };
+        let slots = SlotLabels::from([("sda".to_owned(), SlotName::new("Bay 1", "Front bays"))]);
+        let health = verdicts(&[("S2YXNDAHA16081", Health::Warning)]);
+
+        let concerns = overview(&[tank], &[sda, sdb], &health, &slots, now()).concerns;
+
+        assert_eq!(
+            concerns,
+            [
+                Concern::DiskWorn {
+                    disk: "sda".into(),
+                    model: Some("SAMSUNG MZ7LN256HCHP".into()),
+                    slot: Some(SlotName::new("Bay 1", "Front bays")),
+                },
+                Concern::DeviceErrors {
+                    pool: "tank".into(),
+                    device: "wwn-0x5002538d4130f2e7-part1".into(),
+                    disk: Some(DiskLabel {
+                        name: "sda".into(),
+                        slot: Some(SlotName::new("Bay 1", "Front bays")),
+                        model: Some("SAMSUNG MZ7LN256HCHP".into()),
+                        serial: Some("S2YXNDAHA16081".into()),
+                    }),
+                    errors: 2,
+                },
+                Concern::DeviceErrors {
+                    pool: "tank".into(),
+                    device: "disk-1".into(),
+                    disk: Some(DiskLabel {
+                        name: "sdb".into(),
+                        slot: None,
+                        model: None,
+                        serial: Some("S-B".into()),
+                    }),
+                    errors: 1,
+                },
+                Concern::DeviceErrors { pool: "tank".into(), device: "disk-2".into(), disk: None, errors: 4 },
+            ],
+            "a device no disk matches keeps the name ZFS gives it"
+        );
     }
 
     #[test]
@@ -305,7 +415,7 @@ mod tests {
         tank.data_errors = 2;
         tank.space = Some(PoolSpace { used_bytes: 95, available_bytes: 5, mounted: true });
 
-        let concerns = overview(&[tank], &[], &DiskVerdicts::default(), now()).concerns;
+        let concerns = overview(&[tank], &[], &DiskVerdicts::default(), &SlotLabels::new(), now()).concerns;
 
         assert!(concerns.iter().all(|c| c.severity() == Severity::Critical), "{concerns:?}");
         assert_eq!(concerns.len(), 3);
@@ -314,7 +424,8 @@ mod tests {
     #[test]
     fn a_mirror_that_lost_its_partner_is_not_redundant() {
         let none = DiskVerdicts::default();
-        let concerns = overview(&[pool("tank", PoolLayout::Mirror, 1)], &[], &none, now()).concerns;
+        let concerns =
+            overview(&[pool("tank", PoolLayout::Mirror, 1)], &[], &none, &SlotLabels::new(), now()).concerns;
         assert_eq!(concerns, [Concern::NoRedundancy { pool: "tank".into() }]);
     }
 
@@ -326,7 +437,8 @@ mod tests {
         recent.scan = checked(30);
         let new = pool("new", PoolLayout::Mirror, 2);
 
-        let concerns = overview(&[old, recent, new], &[], &DiskVerdicts::default(), now()).concerns;
+        let concerns =
+            overview(&[old, recent, new], &[], &DiskVerdicts::default(), &SlotLabels::new(), now()).concerns;
 
         assert_eq!(concerns, [Concern::ScrubOverdue { pool: "old".into(), days: 45 }]);
         assert_eq!(concerns[0].severity(), Severity::Notice);

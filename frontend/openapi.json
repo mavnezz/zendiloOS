@@ -13853,7 +13853,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "`pool_unavailable`, `pool_degraded` (`pool`, `state`);\n`pool_data_errors` (`pool`, `files`); `device_errors` (`pool`,\n`device`, `errors`); `volume_filling` (`pool`, `percent`);\n`disk_failing`, `disk_worn` (`disk`, `model`); `no_redundancy`\n(`pool`); `scrub_overdue` (`pool`, `days`)."
+            "description": "`pool_unavailable`, `pool_degraded` (`pool`, `state`);\n`pool_data_errors` (`pool`, `files`); `device_errors` (`pool`,\n`device` as ZFS names it, `errors`, and for the disk it is on\n`disk`, its kernel name, with `model` and `serial` as far as known);\n`volume_filling` (`pool`, `percent`); `disk_failing`, `disk_worn`\n(`disk`, `model`); `no_redundancy` (`pool`); `scrub_overdue`\n(`pool`, `days`). A disk the enclosure places also has `slot` (its\nlabel) and `group` (the name of the slot's group)."
           },
           "params": {
             "type": "object",

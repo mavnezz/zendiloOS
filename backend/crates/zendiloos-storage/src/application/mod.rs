@@ -82,11 +82,13 @@ impl StorageUseCases {
             ports.clock.clone(),
             ports.notifier.clone(),
         ));
+        let slots = enclosure::EnclosureSlots::new(ports.enclosure.clone(), ports.catalog.clone());
         let monitor = Arc::new(monitor::StorageMonitor::new(
             ports.devices.clone(),
             ports.zfs.clone(),
             ports.smart.clone(),
             ports.inventory.clone(),
+            slots.clone(),
             ports.notifier,
             ports.clock.clone(),
         ));
@@ -94,6 +96,7 @@ impl StorageUseCases {
             ports.devices.clone(),
             ports.zfs.clone(),
             Arc::clone(&monitor),
+            slots,
             ports.clock.clone(),
         );
         let self_test_schedule = self_tests::SelfTestSchedule::new(

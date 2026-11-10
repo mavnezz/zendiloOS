@@ -56,10 +56,60 @@ describe('the storage concerns', () => {
 
     expect(wrapper.get('[role="status"] h3').text()).toBe('Act now')
     expect(wrapper.findAll('li').map((item) => item.text())).toEqual([
-      'Disk sda (?) is failing. Replace it.',
+      'Disk sda is failing. Replace it.',
       'Pool tank is degraded: it works, but with less protection against a disk failing.',
       'from_a_newer_server',
     ])
+  })
+
+  it('name a disk as the pages do, with its slot and model, and a device as ZFS does otherwise', () => {
+    overview.value = {
+      ...base(),
+      verdict: 'warning',
+      concerns: [
+        {
+          severity: 'warning',
+          code: 'device_errors',
+          params: {
+            pool: 'test',
+            device: 'wwn-0x5002538d4130f2e7-part1',
+            errors: '3',
+            disk: 'sda',
+            model: 'SAMSUNG MZ7LN256HCHP',
+            serial: 'S1ZENX0H802190',
+            slot: 'Bay 1',
+            group: 'Front bays',
+          },
+        },
+        {
+          severity: 'warning',
+          code: 'device_errors',
+          params: { pool: 'test', device: 'ata-X-part1', errors: '1', disk: 'sdb', serial: 'S-B' },
+        },
+        {
+          severity: 'warning',
+          code: 'device_errors',
+          params: { pool: 'test', device: 'wwn-0x5000-part1', errors: '2' },
+        },
+        {
+          severity: 'warning',
+          code: 'disk_worn',
+          params: { disk: 'sdc', model: 'WD RED', slot: 'Bay 3', group: 'Front bays' },
+        },
+      ],
+    }
+
+    const wrapper = mount(StorageConcerns, { global: { plugins: [i18n] } })
+
+    const items = wrapper.findAll('li p')
+    expect(items.map((item) => item.text())).toEqual([
+      'sda (Bay 1, Front bays · SAMSUNG MZ7LN256HCHP) in pool test reported 3 read, write or checksum errors.',
+      'sdb (S-B) in pool test reported 1 read, write or checksum errors.',
+      'wwn-0x5000-part1 in pool test reported 2 read, write or checksum errors.',
+      'Disk sdc (Bay 3, Front bays · WD RED) shows signs of wear. Keep a backup and watch it.',
+    ])
+    expect(items[0]!.attributes('title')).toBe('wwn-0x5002538d4130f2e7-part1')
+    expect(items[2]!.attributes('title')).toBeUndefined()
   })
 
   it('take the tone of the verdict', () => {

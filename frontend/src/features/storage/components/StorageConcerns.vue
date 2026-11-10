@@ -25,14 +25,36 @@ const tones: Record<StorageSeverity, string> = {
 
 const verdict = computed(() => overview.value?.verdict ?? null)
 
+/**
+ * A disk as the pages name it: its kernel name, with its slot where the
+ * enclosure places it and its model (or serial number) where known.
+ */
+function diskName(params: Record<string, string>): string {
+  const about = [
+    params.slot ? t('storage.enclosure.slot', { slot: params.slot, group: params.group }) : '',
+    params.model || params.serial || '',
+  ].filter(Boolean)
+  return about.length ? `${params.disk} (${about.join(' · ')})` : (params.disk ?? '')
+}
+
 /** The concern in the interface language; unknown codes as they are. */
 function wording(concern: StorageConcern): string {
   const key = `storage.concerns.${concern.code}`
   if (!i18n.te(key)) return concern.code
   const params: Record<string, string> = { ...concern.params }
   if (params.state) params.state = t(`notices.states.${params.state}`)
-  if (params.model === '') params.model = '?'
+  // A device of a pool on a disk present is named as that disk; otherwise as ZFS names it.
+  if (params.disk) {
+    const name = diskName(params)
+    if (concern.code === 'device_errors') params.device = name
+    else params.disk = name
+  }
   return t(key, params)
+}
+
+/** As ZFS names a device it is about, if it names the disk otherwise. */
+function zfsName(concern: StorageConcern): string | undefined {
+  return concern.code === 'device_errors' && concern.params.disk ? concern.params.device : undefined
 }
 </script>
 
@@ -57,7 +79,7 @@ function wording(concern: StorageConcern): string {
           :is="icons[concern.severity]"
           :class="cn('mt-0.5 size-4 shrink-0', tones[concern.severity])"
         />
-        <p class="text-sm">{{ wording(concern) }}</p>
+        <p class="text-sm" :title="zfsName(concern)">{{ wording(concern) }}</p>
       </li>
     </ul>
   </section>

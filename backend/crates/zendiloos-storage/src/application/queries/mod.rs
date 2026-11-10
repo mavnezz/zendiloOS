@@ -5,6 +5,7 @@ use std::sync::Arc;
 use zendiloos_kernel::{Clock, PortError, RequestContext, Timestamp};
 
 use crate::application::StorageError;
+use crate::application::enclosure::EnclosureSlots;
 use crate::application::monitor::StorageMonitor;
 use crate::application::ports::{ArraySource, BlockDeviceSource, SmartSource, ZfsSource};
 use crate::domain::{self, Array, BlockDevice, Disk, Overview, Pool, SmartReport, Volume};
@@ -63,29 +64,33 @@ pub struct StorageSummary {
 
 /// Query: every concern about pools and disks, the worst first. Pools are
 /// read now; SMART verdicts come from the monitor, so asking reads no disk.
+/// A disk is named as the pages name it, with its slot.
 #[derive(Clone)]
 pub struct GetStorageOverview {
     devices: Arc<dyn BlockDeviceSource>,
     zfs: Arc<dyn ZfsSource>,
     monitor: Arc<StorageMonitor>,
+    slots: EnclosureSlots,
     clock: Arc<dyn Clock>,
 }
 
 impl GetStorageOverview {
-    pub fn new(
+    pub(crate) fn new(
         devices: Arc<dyn BlockDeviceSource>,
         zfs: Arc<dyn ZfsSource>,
         monitor: Arc<StorageMonitor>,
+        slots: EnclosureSlots,
         clock: Arc<dyn Clock>,
     ) -> Self {
-        Self { devices, zfs, monitor, clock }
+        Self { devices, zfs, monitor, slots, clock }
     }
 
     pub async fn execute(&self, context: &RequestContext) -> Result<StorageSummary, PortError> {
         let (devices, pools) = inventory(self.devices.as_ref(), self.zfs.as_ref(), context).await?;
         let disks = domain::disks(&devices, &pools);
         let health = self.monitor.disk_health().await;
-        let overview = domain::overview(&pools, &disks, &health, self.clock.now());
+        let slots = self.slots.of(&disks).await;
+        let overview = domain::overview(&pools, &disks, &health, &slots, self.clock.now());
         Ok(StorageSummary { overview, pools, disks })
     }
 }

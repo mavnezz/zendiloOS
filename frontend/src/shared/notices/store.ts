@@ -18,6 +18,10 @@ export function wording(notification: ServerNotification): { title: string; body
   if (notification.code === 'disk_health' && params.health) {
     params.health = t(`storage.health.${params.health === 'failing' ? 'failing' : 'warning'}`)
   }
+  // A disk the enclosure places is named with its slot, as the pages name it.
+  if (notification.code === 'disk_health' && params.slot) {
+    params.disk = `${params.disk} (${t('storage.enclosure.slot', { slot: params.slot, group: params.group })})`
+  }
   if (notification.code === 'firewall_blocked') {
     const service = `${key}.services.${params.service}`
     if (params.project) params.service = t(`${key}.project`, { name: params.project })

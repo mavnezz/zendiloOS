@@ -240,26 +240,85 @@ impl Pool {
 }
 
 /// Fills in [`PoolDevice::disk`] from the block devices: ZFS names a
-/// device by its `/dev/disk/by-id` link, usually of a partition
-/// (`…-part1`).
+/// device by a link in `/dev/disk/by-id` (or `by-path`), usually of a
+/// partition (`…-part1`), sometimes by its kernel name. A device no disk
+/// matches keeps none, and is shown as ZFS names it.
 pub fn resolve_pool_disks(pools: &mut [Pool], devices: &[BlockDevice]) {
     for device in pools.iter_mut().flat_map(|pool| pool.devices.iter_mut()) {
-        let link = device.path.as_deref().and_then(|path| path.strip_prefix("/dev/disk/by-id/"));
-        device.disk = link.and_then(|link| disk_with_link(devices, link));
+        device.disk = disk_of(devices, device.path.as_deref(), &device.name);
     }
 }
 
-fn disk_with_link(devices: &[BlockDevice], link: &str) -> Option<String> {
-    let disks = devices.iter().filter(|device| device.kind == DeviceKind::Disk);
-    for disk in disks.clone() {
-        if disk.descendants().iter().any(|device| device.id_link.as_deref() == Some(link)) {
-            return Some(disk.name.clone());
+/// The whole disk behind a pool device: by its path, else by its name.
+fn disk_of(devices: &[BlockDevice], path: Option<&str>, name: &str) -> Option<String> {
+    let disks: Vec<&BlockDevice> = devices.iter().filter(|device| device.kind == DeviceKind::Disk).collect();
+    let by_path = path.and_then(|path| {
+        if let Some(link) = path.strip_prefix("/dev/disk/by-id/") {
+            disk_with_link(&disks, link)
+        } else if let Some(port) = path.strip_prefix("/dev/disk/by-path/") {
+            disk_at_port(&disks, port)
+        } else {
+            path.strip_prefix("/dev/").and_then(|kernel| disk_named(&disks, kernel))
         }
+    });
+    by_path.or_else(|| {
+        disk_with_link(&disks, name)
+            .or_else(|| disk_at_port(&disks, name))
+            .or_else(|| disk_named(&disks, name))
+    })
+}
+
+/// `link` without a partition's `-part<N>`.
+fn whole(link: &str) -> &str {
+    match link.rsplit_once("-part") {
+        Some((disk, number)) if number.parse::<u32>().is_ok() => disk,
+        _ => link,
     }
-    // A partition link lsblk did not report: `<disk link>-part<N>`.
-    let (disk_link, number) = link.rsplit_once("-part")?;
-    number.parse::<u32>().ok()?;
-    disks.into_iter().find(|disk| disk.id_link.as_deref() == Some(disk_link)).map(|disk| disk.name.clone())
+}
+
+/// The disk a `/dev/disk/by-id` link names: the link lsblk reports for it
+/// or one of its partitions, its WWN (`wwn-0x…`, NVMe's `nvme-eui.…`), or
+/// a link ending in its serial number (`ata-<model>_<serial>`), which only
+/// counts when no other disk reports that serial number too.
+fn disk_with_link(disks: &[&BlockDevice], link: &str) -> Option<String> {
+    let reported = |device: &BlockDevice| device.id_link.as_deref() == Some(link);
+    if let Some(disk) = disks.iter().find(|disk| disk.descendants().into_iter().any(reported)) {
+        return Some(disk.name.clone());
+    }
+    let link = whole(link);
+    let named = |disk: &&&BlockDevice| {
+        disk.id_link.as_deref() == Some(link)
+            || disk.wwn.as_deref().is_some_and(|wwn| {
+                link.strip_prefix("wwn-").or_else(|| link.strip_prefix("nvme-")) == Some(wwn)
+            })
+    };
+    if let Some(disk) = disks.iter().find(named) {
+        return Some(disk.name.clone());
+    }
+    let serial = |disk: &&&BlockDevice| {
+        disk.serial.as_deref().is_some_and(|serial| {
+            serial.len() >= 4 && link.strip_suffix(serial).is_some_and(|rest| rest.ends_with('_'))
+        })
+    };
+    let mut matching = disks.iter().filter(serial);
+    match (matching.next(), matching.next()) {
+        (Some(disk), None) => Some(disk.name.clone()),
+        _ => None,
+    }
+}
+
+/// The disk plugged in at a `/dev/disk/by-path` name, or its partition's.
+fn disk_at_port(disks: &[&BlockDevice], port: &str) -> Option<String> {
+    let port = whole(port);
+    disks.iter().find(|disk| disk.id_path.as_deref() == Some(port)).map(|disk| disk.name.clone())
+}
+
+/// The disk with the kernel name `kernel`, or holding a partition of it.
+fn disk_named(disks: &[&BlockDevice], kernel: &str) -> Option<String> {
+    disks
+        .iter()
+        .find(|disk| disk.descendants().iter().any(|device| device.name == kernel))
+        .map(|disk| disk.name.clone())
 }
 
 /// What other parts of the NAS keep on a pool's volume besides the pool's
@@ -391,5 +450,47 @@ mod tests {
         let disks: Vec<_> = pools[0].devices.iter().map(|d| d.disk.as_deref()).collect();
         assert_eq!(disks, [Some("sda"), Some("sdb"), None]);
         assert!(pools[0].uses_disk("sdb"));
+    }
+
+    #[test]
+    fn finds_disks_by_their_wwn_serial_number_port_or_kernel_name() {
+        let mut sda = disk("sda", vec![partition("sda1", Some("zfs_member"), &[])]);
+        sda.id_link = Some("ata-SAMSUNG_MZ7LN256HCHP-000L7_S1ZENX0H802190".into());
+        sda.serial = Some("S1ZENX0H802190".into());
+        let mut sdb = disk("sdb", vec![partition("sdb1", Some("zfs_member"), &[])]);
+        sdb.id_link = Some("ata-SAMSUNG_MZ7TY256HDHP_S2YXNDAHA16081".into());
+        sdb.wwn = Some("0x5002538d4130f2e7".into());
+        let mut sdc = disk("sdc", vec![partition("sdc1", Some("zfs_member"), &[])]);
+        sdc.id_path = Some("pci-0000:00:12.0-ata-3".into());
+        let mut nvme = disk("nvme0n1", vec![partition("nvme0n1p1", Some("zfs_member"), &[])]);
+        nvme.wwn = Some("eui.0025388b91b2c3d4".into());
+        // Two disks of a USB dock that report the bridge's serial number.
+        let mut sdd = disk("sdd", vec![]);
+        sdd.serial = Some("DOCK0001".into());
+        let mut sde = disk("sde", vec![]);
+        sde.serial = Some("DOCK0001".into());
+        let devices = [sda, sdb, sdc, nvme, sdd, sde];
+        let mut pools = [pool_with(&[
+            "/dev/disk/by-id/wwn-0x5002538d4130f2e7-part1",
+            "/dev/disk/by-id/ata-Samsung_SSD_850_S1ZENX0H802190-part1",
+            "/dev/disk/by-path/pci-0000:00:12.0-ata-3-part1",
+            "/dev/disk/by-id/nvme-eui.0025388b91b2c3d4-part1",
+            "/dev/sda1",
+            "/dev/disk/by-id/usb-JMicron_Dock_DOCK0001-part1",
+            "/dev/disk/by-id/wwn-0x5000000000000000-part1",
+        ])];
+        // A device ZFS knows by name only, its path gone.
+        let mut bare = pools[0].devices[0].clone();
+        (bare.path, bare.name) = (None, "wwn-0x5002538d4130f2e7-part1".into());
+        pools[0].devices.push(bare);
+
+        resolve_pool_disks(&mut pools, &devices);
+
+        let disks: Vec<_> = pools[0].devices.iter().map(|d| d.disk.as_deref()).collect();
+        assert_eq!(
+            disks,
+            [Some("sdb"), Some("sda"), Some("sdc"), Some("nvme0n1"), Some("sda"), None, None, Some("sdb")],
+            "a serial number two disks report names neither"
+        );
     }
 }

@@ -4319,9 +4319,12 @@ export interface components {
             /**
              * @description `pool_unavailable`, `pool_degraded` (`pool`, `state`);
              *     `pool_data_errors` (`pool`, `files`); `device_errors` (`pool`,
-             *     `device`, `errors`); `volume_filling` (`pool`, `percent`);
-             *     `disk_failing`, `disk_worn` (`disk`, `model`); `no_redundancy`
-             *     (`pool`); `scrub_overdue` (`pool`, `days`).
+             *     `device` as ZFS names it, `errors`, and for the disk it is on
+             *     `disk`, its kernel name, with `model` and `serial` as far as known);
+             *     `volume_filling` (`pool`, `percent`); `disk_failing`, `disk_worn`
+             *     (`disk`, `model`); `no_redundancy` (`pool`); `scrub_overdue`
+             *     (`pool`, `days`). A disk the enclosure places also has `slot` (its
+             *     label) and `group` (the name of the slot's group).
              */
             code: string;
             params: {

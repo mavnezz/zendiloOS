@@ -6,6 +6,7 @@ use std::time::Duration;
 use zendiloos_kernel::{Clock, RequestContext, Timestamp};
 use zendiloos_notify::{Level, NewNotification, Notifier};
 
+use crate::application::enclosure::EnclosureSlots;
 use crate::application::inventory::known_shared;
 use crate::application::ports::{BlockDeviceSource, DiskInventoryStore, SmartSource, ZfsSource};
 use crate::domain::{
@@ -29,6 +30,8 @@ pub struct StorageMonitor {
     /// Which serial numbers are shared, so that a disk of a USB dock keeps
     /// its key whichever disks are present.
     inventory: Arc<dyn DiskInventoryStore>,
+    /// To name a disk told of by its slot too.
+    slots: EnclosureSlots,
     notifier: Notifier,
     clock: Arc<dyn Clock>,
     /// Held for a whole look, one at a time.
@@ -45,11 +48,12 @@ impl StorageMonitor {
         zfs: Arc<dyn ZfsSource>,
         smart: Arc<dyn SmartSource>,
         inventory: Arc<dyn DiskInventoryStore>,
+        slots: EnclosureSlots,
         notifier: Notifier,
         clock: Arc<dyn Clock>,
     ) -> Self {
         let seen = tokio::sync::Mutex::new(Seen::default());
-        Self { devices, zfs, smart, inventory, notifier, clock, seen, health: Mutex::default() }
+        Self { devices, zfs, smart, inventory, slots, notifier, clock, seen, health: Mutex::default() }
     }
 
     /// The SMART verdicts of the disks holding data, as last read. Empty
@@ -105,6 +109,14 @@ impl StorageMonitor {
                     self.health.lock().unwrap_or_else(PoisonError::into_inner).by_key.insert(key, health);
                 events.extend(domain::disk_event(&disk.name, disk.model.as_deref(), before, health));
             }
+            if events.iter().any(|event| matches!(event, StorageEvent::DiskHealth { .. })) {
+                let slots = self.slots.of(&disks).await;
+                for event in &mut events {
+                    if let StorageEvent::DiskHealth { disk, slot, .. } = event {
+                        slot.clone_from(&slots.get(disk.as_str()).cloned());
+                    }
+                }
+            }
         }
         seen.pools = Some(pools);
         drop(seen);
@@ -147,15 +159,19 @@ fn notification(event: StorageEvent) -> NewNotification {
                 .with("pool", pool)
                 .with("percent", percent.to_string())
         }
-        StorageEvent::DiskHealth { disk, model, health } => {
+        StorageEvent::DiskHealth { disk, model, slot, health } => {
             let (level, health) = match health {
                 Health::Failing => (Level::Error, "failing"),
                 _ => (Level::Warning, "warning"),
             };
-            NewNotification::new(level, "disk_health")
+            let told = NewNotification::new(level, "disk_health")
                 .with("disk", disk)
                 .with("model", model.unwrap_or_default())
-                .with("health", health)
+                .with("health", health);
+            match slot {
+                Some(slot) => told.with("slot", slot.label).with("group", slot.group),
+                None => told,
+            }
         }
     }
 }
@@ -176,11 +192,13 @@ mod tests {
         let (ports, _) = FakeStorage::ports(jobs, Arc::new(NoAudit), Arc::new(FixedClock));
         let repository = Arc::new(MemoryNotifications::default());
         let notifier = Notifier::new(repository.clone(), Arc::new(FixedClock));
+        let slots = EnclosureSlots::new(ports.enclosure, ports.catalog);
         let monitor = StorageMonitor::new(
             ports.devices,
             ports.zfs,
             ports.smart,
             ports.inventory,
+            slots,
             notifier,
             Arc::new(FixedClock),
         );
@@ -313,6 +331,7 @@ mod tests {
             dock.clone(),
             dock.clone(),
             ports.inventory,
+            EnclosureSlots::new(ports.enclosure, ports.catalog),
             notifier,
             dock.clone(),
         );
@@ -351,9 +370,21 @@ mod tests {
         let disk = notification(StorageEvent::DiskHealth {
             disk: "sdd".into(),
             model: None,
+            slot: None,
             health: Health::Failing,
         });
         assert_eq!((disk.level, disk.params["health"].as_str()), (Level::Error, "failing"));
+        assert!(!disk.params.contains_key("slot"), "a disk in no slot is named without one");
+        let placed = notification(StorageEvent::DiskHealth {
+            disk: "sda".into(),
+            model: Some("WD RED".into()),
+            slot: Some(domain::SlotName::new("Bay 1", "Front bays")),
+            health: Health::Warning,
+        });
+        assert_eq!(
+            (placed.params["slot"].as_str(), placed.params["group"].as_str()),
+            ("Bay 1", "Front bays")
+        );
     }
 
     /// Where a notification goes by default depends on its kind's most
@@ -385,7 +416,7 @@ mod tests {
             events.push(StorageEvent::VolumeFilling { pool: pool(), percent });
         }
         for health in [Health::Good, Health::Warning, Health::Failing] {
-            events.push(StorageEvent::DiskHealth { disk: "sdd".into(), model: None, health });
+            events.push(StorageEvent::DiskHealth { disk: "sdd".into(), model: None, slot: None, health });
         }
         for event in events {
             let raised = notification(event);

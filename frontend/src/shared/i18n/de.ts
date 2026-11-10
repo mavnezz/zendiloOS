@@ -1871,9 +1871,9 @@ const de: Messages = {
       device_errors:
         '{device} in Pool {pool} meldete {errors} Lese-, Schreib- oder Prüfsummenfehler.',
       volume_filling: 'Volume {pool} ist zu {percent} % voll.',
-      disk_failing: 'Platte {disk} ({model}) fällt aus. Ersetzen Sie sie.',
+      disk_failing: 'Platte {disk} fällt aus. Ersetzen Sie sie.',
       disk_worn:
-        'Platte {disk} ({model}) zeigt Verschleiß. Halten Sie eine Sicherung bereit und behalten Sie sie im Blick.',
+        'Platte {disk} zeigt Verschleiß. Halten Sie eine Sicherung bereit und behalten Sie sie im Blick.',
       no_redundancy:
         'Pool {pool} hat keine Redundanz: Fällt seine Platte aus, sind die Daten verloren.',
       scrub_overdue: 'Die Daten auf Pool {pool} wurden zuletzt vor {days} Tagen geprüft.',
