@@ -128,6 +128,14 @@ describe('the device page', () => {
     expect(page()).toContain('0.50 · 0.40 · 0.30')
     expect(page()).toContain('tank')
     expect(page()).not.toContain('odd')
+
+    // Side by side as the window allows, read as device, uptime, hardware, storage.
+    const grid = document.querySelector<HTMLElement>('[data-testid="device-cards"]')!
+    expect(grid.className).toContain('@2xl:grid-cols-2')
+    expect(grid.className).toContain('@6xl:grid-cols-3')
+    expect(
+      [...grid.querySelectorAll(':scope > section h3')].map((h) => h.textContent?.trim()),
+    ).toEqual([t('device.device'), t('device.uptime'), t('device.hardware'), t('device.storage')])
   })
 
   it('does with little', async () => {

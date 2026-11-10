@@ -92,7 +92,7 @@ const share = (pool: Pool) => {
 <template>
   <div>
     <PageHeader :title="t('device.title')" :description="t('device.description')" />
-    <div class="grid gap-4 @3xl:grid-cols-2 @6xl:grid-cols-3" data-testid="device-cards">
+    <div class="grid gap-4 @2xl:grid-cols-2 @6xl:grid-cols-3" data-testid="device-cards">
       <PageCard
         :title="t('device.device')"
         :icon="Server"
