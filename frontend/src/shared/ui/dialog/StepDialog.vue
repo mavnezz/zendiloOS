@@ -14,8 +14,16 @@ import { cn } from '@/shared/lib/utils'
 /**
  * `steps` shows numbered steps across the top, `step` the current one
  * (from 0); without steps it is a plain large dialog, e.g. for editing.
+ * `wide` gives room for content side by side, such as a list to choose from
+ * next to the choices it allows.
  */
-defineProps<{ title: string; closeLabel: string; steps?: string[]; step?: number }>()
+defineProps<{
+  title: string
+  closeLabel: string
+  steps?: string[]
+  step?: number
+  wide?: boolean
+}>()
 const open = defineModel<boolean>('open', { default: false })
 </script>
 
@@ -30,7 +38,14 @@ const open = defineModel<boolean>('open', { default: false })
       <DialogOverlay class="fixed inset-0 z-[1000] bg-black/40 backdrop-blur-[2px]" />
       <DialogContent
         :aria-describedby="undefined"
-        class="fixed top-1/2 left-1/2 z-[1001] flex h-[min(40rem,calc(100dvh-2rem))] w-[calc(100%-2rem)] max-w-3xl -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border bg-card shadow-lg"
+        :class="
+          cn(
+            'fixed top-1/2 left-1/2 z-[1001] flex w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border bg-card shadow-lg',
+            wide
+              ? 'h-[min(46rem,calc(100dvh-2rem))] max-w-4xl'
+              : 'h-[min(40rem,calc(100dvh-2rem))] max-w-3xl',
+          )
+        "
       >
         <header class="flex items-center gap-2 px-5 pt-4 pb-2">
           <DialogTitle class="flex-1 text-base font-semibold">{{ title }}</DialogTitle>
