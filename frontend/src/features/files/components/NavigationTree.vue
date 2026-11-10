@@ -9,12 +9,15 @@ import { cn } from '@/shared/lib/utils'
 
 import { folderAt, HOME } from '../lib/location'
 import { EXPLORER } from '../lib/tree'
+import PersonalFoldersBranch from './PersonalFoldersBranch.vue'
 import TreeBranch from './TreeBranch.vue'
 
 /**
  * Where the explorer can go: the personal folder, the favourites, the
- * volumes with their folders, the removable drives plugged in (for those
- * who manage storage), and the recycle bins.
+ * volumes with their folders (and, for those who manage shares, the
+ * personal folders of every account on the volume holding them), the
+ * removable drives plugged in (for those who manage storage), and the
+ * recycle bins.
  */
 const props = defineProps<{
   home: boolean
@@ -97,6 +100,11 @@ function driveTitle(drive: RemovableDrive): string | undefined {
           :name="folder.name"
           :depth="1"
           :volume-folder="{ shared: folder.shared, access: folder.access ?? null }"
+        />
+        <PersonalFoldersBranch
+          v-if="volume.personal_folders.length"
+          :volume="volume.volume"
+          :folders="volume.personal_folders"
         />
       </ul>
     </template>

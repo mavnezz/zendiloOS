@@ -56,15 +56,15 @@ function slot(disk: Disk): string {
       @select="$emit('select', $event)"
       @edit="editing = true"
     />
-    <div class="flex flex-wrap items-center gap-2 rounded-lg bg-muted/50 px-3 py-2 text-xs">
+    <div
+      class="flex flex-wrap items-center gap-2 rounded-lg bg-muted/50 px-3 py-2 text-xs"
+      data-testid="self-test-schedule"
+    >
       <CalendarClock class="size-4 shrink-0 text-muted-foreground" />
       <p class="min-w-0 flex-1 truncate">
         <span class="font-medium">{{ t('storage.selfTestPlans.title') }}:</span>
         {{ schedule.length ? schedule.join(' · ') : t('storage.selfTestPlans.none') }}
       </p>
-      <Button v-if="canManage" variant="soft" size="sm" shape="pill" @click="editing = true">
-        {{ t('storage.enclosure.edit') }}
-      </Button>
       <Button v-if="canManage" variant="soft" size="sm" shape="pill" @click="planning = true">
         {{ t('storage.selfTestPlans.button') }}
       </Button>

@@ -158,3 +158,24 @@ describe('the wording of firewall notices', () => {
     i18n.global.locale.value = 'en'
   })
 })
+
+describe('the wording of disk notices', () => {
+  const notice = (params: Record<string, string>): ServerNotification => ({
+    id: 1,
+    at: 0,
+    level: 'error',
+    code: 'disk_health',
+    params,
+  })
+
+  it('names a disk with its slot where the enclosure places it', async () => {
+    const { wording } = await import('./store')
+    const { i18n } = await import('@/shared/i18n')
+    i18n.global.locale.value = 'en'
+    expect(wording(notice({ disk: 'sda', model: 'WD RED', health: 'failing' })).title).toBe(
+      'Disk sda reports problems',
+    )
+    const placed = notice({ disk: 'sda', health: 'failing', slot: 'Bay 1', group: 'Front bays' })
+    expect(wording(placed).title).toBe('Disk sda (Bay 1, Front bays) reports problems')
+  })
+})

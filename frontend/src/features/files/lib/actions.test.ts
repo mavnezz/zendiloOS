@@ -144,6 +144,19 @@ describe('the actions', () => {
     expect(enabled(ejected)).not.toContain('properties')
   })
 
+  it('only open the personal folders listed, and nothing in another’s', () => {
+    const others = item('bob', {
+      kind: 'directory',
+      share: 0,
+      path: '',
+      personal: { own: false, volume: 1 },
+    })
+    const homes = situation({ kind: 'homes', writable: false, canManage: true, items: [others] })
+    expect(ids(homes)).toEqual(['open'])
+    expect(enabled(homes)).toEqual(['open'])
+    expect(ids(situation({ kind: 'private', canManage: true }))).toEqual([])
+  })
+
   it('know their keys', () => {
     const press = (key: string, init: KeyboardEventInit = {}) =>
       shortcut(new KeyboardEvent('keydown', { key, ...init }))
@@ -203,6 +216,11 @@ describe('locations', () => {
     expect(sameLocation({ kind: 'bin', share: 1, path: 'a' }, { kind: 'bin', share: 1 })).toBe(
       false,
     )
+    expect(sameLocation({ kind: 'homes', volume: 1 }, { kind: 'homes', volume: 1 })).toBe(true)
+    expect(sameLocation({ kind: 'homes', volume: 1 }, { kind: 'volume', volume: 1 })).toBe(false)
+    const bob = { kind: 'private', volume: 1, name: 'bob' } as const
+    expect(sameLocation(bob, { ...bob })).toBe(true)
+    expect(sameLocation(bob, { ...bob, name: 'carol' })).toBe(false)
     expect(withinBin('.recycle/anna', '.recycle/anna/a/b')).toBe('a/b')
     expect(withinBin('.recycle/anna', '.recycle/anna')).toBe('')
     expect(withinBin('.recycle/anna', '.recycle/annabel/x')).toBeNull()

@@ -1345,9 +1345,12 @@ pub struct Concern {
     pub severity: Severity,
     /// `pool_unavailable`, `pool_degraded` (`pool`, `state`);
     /// `pool_data_errors` (`pool`, `files`); `device_errors` (`pool`,
-    /// `device`, `errors`); `volume_filling` (`pool`, `percent`);
-    /// `disk_failing`, `disk_worn` (`disk`, `model`); `no_redundancy`
-    /// (`pool`); `scrub_overdue` (`pool`, `days`).
+    /// `device` as ZFS names it, `errors`, and for the disk it is on
+    /// `disk`, its kernel name, with `model` and `serial` as far as known);
+    /// `volume_filling` (`pool`, `percent`); `disk_failing`, `disk_worn`
+    /// (`disk`, `model`); `no_redundancy` (`pool`); `scrub_overdue`
+    /// (`pool`, `days`). A disk the enclosure places also has `slot` (its
+    /// label) and `group` (the name of the slot's group).
     pub code: String,
     pub params: std::collections::BTreeMap<String, String>,
 }
@@ -1365,6 +1368,11 @@ fn state_name(state: storage::VdevState) -> &'static str {
     }
 }
 
+/// Where the enclosure places a disk, as parameters.
+fn slot_params(slot: Option<storage::SlotName>) -> Vec<(&'static str, String)> {
+    slot.map(|slot| vec![("slot", slot.label), ("group", slot.group)]).unwrap_or_default()
+}
+
 impl From<storage::Concern> for Concern {
     fn from(concern: storage::Concern) -> Self {
         use storage::Concern as C;
@@ -1379,17 +1387,28 @@ impl From<storage::Concern> for Concern {
             C::PoolDataErrors { pool, files } => {
                 ("pool_data_errors", vec![("pool", pool), ("files", files.to_string())])
             }
-            C::DeviceErrors { pool, device, errors } => {
-                ("device_errors", vec![("pool", pool), ("device", device), ("errors", errors.to_string())])
+            C::DeviceErrors { pool, device, disk, errors } => {
+                let mut params = vec![("pool", pool), ("device", device), ("errors", errors.to_string())];
+                if let Some(disk) = disk {
+                    params.push(("disk", disk.name));
+                    params.extend(disk.model.map(|model| ("model", model)));
+                    params.extend(disk.serial.map(|serial| ("serial", serial)));
+                    params.extend(slot_params(disk.slot));
+                }
+                ("device_errors", params)
             }
             C::VolumeFilling { pool, percent } => {
                 ("volume_filling", vec![("pool", pool), ("percent", percent.to_string())])
             }
-            C::DiskFailing { disk, model } => {
-                ("disk_failing", vec![("disk", disk), ("model", model.unwrap_or_default())])
+            C::DiskFailing { disk, model, slot } => {
+                let mut params = vec![("disk", disk), ("model", model.unwrap_or_default())];
+                params.extend(slot_params(slot));
+                ("disk_failing", params)
             }
-            C::DiskWorn { disk, model } => {
-                ("disk_worn", vec![("disk", disk), ("model", model.unwrap_or_default())])
+            C::DiskWorn { disk, model, slot } => {
+                let mut params = vec![("disk", disk), ("model", model.unwrap_or_default())];
+                params.extend(slot_params(slot));
+                ("disk_worn", params)
             }
             C::NoRedundancy { pool } => ("no_redundancy", vec![("pool", pool)]),
             C::ScrubOverdue { pool, days } => {
@@ -1769,14 +1788,28 @@ mod tests {
             ),
             (C::PoolDataErrors { pool: "tank".into(), files: 2 }, "pool_data_errors", "files", "2"),
             (
-                C::DeviceErrors { pool: "tank".into(), device: "sda".into(), errors: 7 },
+                C::DeviceErrors { pool: "tank".into(), device: "sda".into(), disk: None, errors: 7 },
                 "device_errors",
                 "errors",
                 "7",
             ),
             (C::VolumeFilling { pool: "tank".into(), percent: 91 }, "volume_filling", "percent", "91"),
-            (C::DiskFailing { disk: "sda".into(), model: Some("WD".into()) }, "disk_failing", "model", "WD"),
-            (C::DiskWorn { disk: "nvme0n1".into(), model: None }, "disk_worn", "model", ""),
+            (
+                C::DiskFailing { disk: "sda".into(), model: Some("WD".into()), slot: None },
+                "disk_failing",
+                "model",
+                "WD",
+            ),
+            (
+                C::DiskWorn {
+                    disk: "nvme0n1".into(),
+                    model: None,
+                    slot: Some(storage::SlotName::new("M.2 1", "Underneath")),
+                },
+                "disk_worn",
+                "slot",
+                "M.2 1",
+            ),
             (C::NoRedundancy { pool: "tank".into() }, "no_redundancy", "pool", "tank"),
             (C::ScrubOverdue { pool: "tank".into(), days: 40 }, "scrub_overdue", "days", "40"),
         ];
@@ -1791,6 +1824,26 @@ mod tests {
                 "{shown}"
             );
         }
+        // The disk behind a device, as the pages name it; the device as ZFS does.
+        let errors = to(Concern::from(C::DeviceErrors {
+            pool: "test".into(),
+            device: "wwn-0x5002538d4130f2e7-part1".into(),
+            disk: Some(storage::DiskLabel {
+                name: "sda".into(),
+                slot: Some(storage::SlotName::new("Bay 1", "Front bays")),
+                model: Some("SAMSUNG MZ7LN256HCHP".into()),
+                serial: Some("S1ZENX0H802190".into()),
+            }),
+            errors: 3,
+        }));
+        assert_eq!(
+            errors["params"],
+            json!({
+                "pool": "test", "device": "wwn-0x5002538d4130f2e7-part1", "errors": "3", "disk": "sda",
+                "model": "SAMSUNG MZ7LN256HCHP", "serial": "S1ZENX0H802190", "slot": "Bay 1",
+                "group": "Front bays",
+            })
+        );
         let shown = to(warnings(vec![
             storage::PlanWarning::MixedSizes { unused_bytes: 10 },
             storage::PlanWarning::NoRedundancy,

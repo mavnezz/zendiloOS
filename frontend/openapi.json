@@ -7376,7 +7376,7 @@
         "tags": [
           "files"
         ],
-        "summary": "The volumes with their folders, for the file manager's tree. Someone\nwho manages shares (`shares.manage`) sees every volume and every folder\non it, those they may not open marked; everyone else only the folders\nthey may use, and the volumes holding one. Needs `files.read`.",
+        "summary": "The volumes with their folders, for the file manager's tree. Someone\nwho manages shares (`shares.manage`) sees every volume and every folder\non it, those they may not open marked, and every account's personal\nfolder on the volume holding them; everyone else only the folders they\nmay use, and the volumes holding one. Needs `files.read`.",
         "operationId": "file_volumes",
         "responses": {
           "200": {
@@ -13853,7 +13853,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "`pool_unavailable`, `pool_degraded` (`pool`, `state`);\n`pool_data_errors` (`pool`, `files`); `device_errors` (`pool`,\n`device`, `errors`); `volume_filling` (`pool`, `percent`);\n`disk_failing`, `disk_worn` (`disk`, `model`); `no_redundancy`\n(`pool`); `scrub_overdue` (`pool`, `days`)."
+            "description": "`pool_unavailable`, `pool_degraded` (`pool`, `state`);\n`pool_data_errors` (`pool`, `files`); `device_errors` (`pool`,\n`device` as ZFS names it, `errors`, and for the disk it is on\n`disk`, its kernel name, with `model` and `serial` as far as known);\n`volume_filling` (`pool`, `percent`); `disk_failing`, `disk_worn`\n(`disk`, `model`); `no_redundancy` (`pool`); `scrub_overdue`\n(`pool`, `days`). A disk the enclosure places also has `slot` (its\nlabel) and `group` (the name of the slot's group)."
           },
           "params": {
             "type": "object",
@@ -15873,7 +15873,8 @@
           "volume",
           "pool",
           "mounted",
-          "folders"
+          "folders",
+          "personal_folders"
         ],
         "properties": {
           "folders": {
@@ -15885,6 +15886,13 @@
           },
           "mounted": {
             "type": "boolean"
+          },
+          "personal_folders": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PersonalFolderDto"
+            },
+            "description": "The personal folders on this volume, by name: for someone who\nmanages shares every account's; empty for everyone else, who has\ntheir own as the personal folder."
           },
           "pool": {
             "type": "string"
@@ -18489,6 +18497,29 @@
           },
           "settings": {
             "$ref": "#/components/schemas/WebServer"
+          }
+        }
+      },
+      "PersonalFolderDto": {
+        "type": "object",
+        "description": "An account's personal folder, listed for someone who manages shares.",
+        "required": [
+          "account_id",
+          "name",
+          "own"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "name": {
+            "type": "string",
+            "description": "The account's name, which the folder has too."
+          },
+          "own": {
+            "type": "boolean",
+            "description": "The signed-in user's own, opened as the personal folder (share\n`0`); the others' are private to their accounts (0700), and nobody\nelse opens them."
           }
         }
       },

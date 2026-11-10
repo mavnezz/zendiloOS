@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 
+use super::overview::SlotName;
 use super::pool::{Pool, ScanKind, ScanState, VdevState};
 use super::smart::Health;
 
@@ -32,6 +33,8 @@ pub enum StorageEvent {
     DiskHealth {
         disk: String,
         model: Option<String>,
+        /// Where the enclosure places it; filled in by whoever knows.
+        slot: Option<SlotName>,
         health: Health,
     },
 }
@@ -99,6 +102,7 @@ pub fn disk_event(
     (after > before.unwrap_or(Health::Good)).then(|| StorageEvent::DiskHealth {
         disk: disk.to_owned(),
         model: model.map(str::to_owned),
+        slot: None,
         health: after,
     })
 }
@@ -220,6 +224,7 @@ mod tests {
             StorageEvent::DiskHealth {
                 disk: "sdd".into(),
                 model: Some("HDD".into()),
+                slot: None,
                 health: Health::Failing
             }
         );

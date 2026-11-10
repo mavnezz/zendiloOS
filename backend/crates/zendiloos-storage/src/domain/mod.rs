@@ -28,7 +28,9 @@ pub use events::{FILL_THRESHOLDS, StorageEvent, disk_event, pool_events};
 pub use inventory::{
     CalendarDate, InvalidInventory, InventoryDetails, InventoryRecord, MAX_NOTE_CHARS, MAX_VENDOR_CHARS,
 };
-pub use overview::{Concern, Overview, SCRUB_OVERDUE_AFTER, Severity, overview};
+pub use overview::{
+    Concern, DiskLabel, Overview, SCRUB_OVERDUE_AFTER, Severity, SlotLabels, SlotName, overview,
+};
 pub use plan::{
     DISK_RESERVE_BYTES, InvalidPoolName, MAX_POOL_DISKS, PlanError, PlanWarning, PlannedDisk, PoolName,
     PoolPlan, ReplacePlan, Unusable, is_usable, plan_pool, plan_replace,

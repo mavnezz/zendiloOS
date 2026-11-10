@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { Server } from 'lucide-vue-next'
+import { Pencil, Server } from 'lucide-vue-next'
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import { problemMessage } from '@/shared/i18n'
 import { Alert } from '@/shared/ui/alert'
 import { Button } from '@/shared/ui/button'
+import { PanelSection } from '@/shared/ui/section'
 
 import { saveEnclosure, useDisks, useEnclosure, useLocating, useRefreshStorage } from '../api'
 import EnclosureSchematic from './EnclosureSchematic.vue'
@@ -22,6 +23,12 @@ const refresh = useRefreshStorage()
 
 const blinking = computed(() => (locating.value ?? []).map((session) => session.disk))
 const detected = computed(() => enclosure.value?.detected ?? null)
+/** What the heading names: the model chosen, or a layout of one's own. */
+const chosen = computed(() => {
+  const value = enclosure.value
+  if (value?.source === 'model' && value.model) return `${value.model.vendor} ${value.model.name}`
+  return value?.source === 'custom' ? t('storage.enclosure.dialog.custom') : undefined
+})
 const failure = ref<string | null>(null)
 const saving = ref(false)
 
@@ -41,7 +48,11 @@ async function chooseDetected(): Promise<void> {
 }
 </script>
 
-<!-- Where each disk sits, above the list of disks; a short call to set it up while it is not. -->
+<!--
+  Where each disk sits, above the list of disks, under a heading of its own
+  with the model and the way to edit it; a short call to set it up while it
+  is not.
+-->
 <template>
   <Alert v-if="error" variant="destructive">{{ problemMessage(error) }}</Alert>
   <section
@@ -78,7 +89,18 @@ async function chooseDetected(): Promise<void> {
       </Button>
     </div>
   </section>
-  <section v-else-if="enclosure" class="grid gap-2" :aria-label="t('storage.enclosure.title')">
+  <PanelSection
+    v-else-if="enclosure"
+    :title="t('storage.enclosure.title')"
+    :description="chosen"
+    data-testid="enclosure-section"
+  >
+    <template v-if="canManage" #actions>
+      <Button variant="outline" size="sm" @click="$emit('edit')">
+        <Pencil />
+        {{ t('storage.enclosure.edit') }}
+      </Button>
+    </template>
     <EnclosureSchematic
       :enclosure="enclosure"
       :disks="disks"
@@ -104,5 +126,5 @@ async function chooseDetected(): Promise<void> {
         {{ name }}
       </button>
     </p>
-  </section>
+  </PanelSection>
 </template>

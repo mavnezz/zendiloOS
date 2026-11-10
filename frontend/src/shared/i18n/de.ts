@@ -1871,9 +1871,9 @@ const de: Messages = {
       device_errors:
         '{device} in Pool {pool} meldete {errors} Lese-, Schreib- oder Prüfsummenfehler.',
       volume_filling: 'Volume {pool} ist zu {percent} % voll.',
-      disk_failing: 'Platte {disk} ({model}) fällt aus. Ersetzen Sie sie.',
+      disk_failing: 'Platte {disk} fällt aus. Ersetzen Sie sie.',
       disk_worn:
-        'Platte {disk} ({model}) zeigt Verschleiß. Halten Sie eine Sicherung bereit und behalten Sie sie im Blick.',
+        'Platte {disk} zeigt Verschleiß. Halten Sie eine Sicherung bereit und behalten Sie sie im Blick.',
       no_redundancy:
         'Pool {pool} hat keine Redundanz: Fällt seine Platte aus, sind die Daten verloren.',
       scrub_overdue: 'Die Daten auf Pool {pool} wurden zuletzt vor {days} Tagen geprüft.',
@@ -2598,6 +2598,13 @@ const de: Messages = {
     unsharedNow: '{name} ist jetzt nur noch auf dem NAS; Dateien und Berechtigungen bleiben',
     binEmpty: 'Der Papierkorb ist leer.',
     volumeEmpty: 'Auf diesem Volume gibt es noch keinen Ordner.',
+    homes: {
+      title: 'Persönliche Ordner',
+      private: 'Privat: Nur {name} öffnet ihn',
+      noAccess: 'Kein Zugriff',
+      noAccessText: 'Der persönliche Ordner von {name} ist privat.',
+      noAccessHint: 'Nur {name} kann ihn öffnen, hier oder über das Netzwerk.',
+    },
     volumeFolderHint:
       'Ein Ordner direkt auf einem Volume: Kleinbuchstaben, Ziffern, - und _, beginnend mit einem Buchstaben. Zuerst nutzen nur Sie ihn; in seinen Eigenschaften geben Sie ihn im Netzwerk frei und anderen Zugriff.',
     emptyBinDescription:
@@ -2623,6 +2630,7 @@ const de: Messages = {
       file: '{ext}-Datei',
       plainFile: 'Datei',
       drive: 'Wechseldatenträger',
+      personalFolder: 'Persönlicher Ordner',
     },
     actions: {
       open: 'Öffnen',

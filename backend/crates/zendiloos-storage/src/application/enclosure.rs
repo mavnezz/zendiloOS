@@ -18,6 +18,7 @@ use super::ports::{
 use super::queries::inventory;
 use crate::domain::{
     self, Disk, DiskVerdicts, EnclosureChoice, EnclosureModel, Health, Layout, Machine, Placement,
+    SlotLabels, SlotName,
 };
 
 /// What zendiloOS knows about the machine's enclosure.
@@ -157,6 +158,43 @@ impl Enclosures {
                 Ok(EnclosureView { machine, detected, chosen })
             }
         }
+    }
+}
+
+/// The slots of the enclosure chosen, to name disks as the pages do.
+#[derive(Clone)]
+pub struct EnclosureSlots {
+    store: Arc<dyn EnclosureStore>,
+    catalog: Arc<dyn EnclosureCatalog>,
+}
+
+impl EnclosureSlots {
+    pub fn new(store: Arc<dyn EnclosureStore>, catalog: Arc<dyn EnclosureCatalog>) -> Self {
+        Self { store, catalog }
+    }
+
+    /// The slot each of `disks` is in; none while no enclosure is set up,
+    /// or when it cannot be read: a disk is then named without one.
+    pub async fn of(&self, disks: &[Disk]) -> SlotLabels {
+        let choice = match self.store.chosen().await {
+            Ok(Some(choice)) => choice,
+            Ok(None) => return SlotLabels::new(),
+            Err(error) => {
+                tracing::warn!(%error, "cannot read the enclosure; disks are named without their slots");
+                return SlotLabels::new();
+            }
+        };
+        let Ok(layout) = choice.layout(&self.catalog.models()) else { return SlotLabels::new() };
+        let placement = domain::place(&layout, disks);
+        layout
+            .groups()
+            .iter()
+            .flat_map(|group| group.slots.iter().map(move |slot| (group, slot)))
+            .filter_map(|(group, slot)| {
+                let placed = placement.slots.iter().find(|placed| placed.slot == slot.id)?;
+                Some((placed.disk.clone()?, SlotName::new(&slot.label, &group.name)))
+            })
+            .collect()
     }
 }
 
@@ -402,6 +440,22 @@ mod tests {
         assert_eq!(chosen.placement.unplaced, ["sde"]);
         assert!(chosen.health.is_empty(), "the monitor has not looked yet");
         assert_eq!(audit.entries().last().unwrap().action, "storage.enclosure_update");
+    }
+
+    #[tokio::test]
+    async fn disks_are_named_by_their_slots_once_an_enclosure_is_chosen() {
+        let (use_cases, fake, _) = testing_ports();
+        let request = RequestContext::default();
+        let slots = EnclosureSlots::new(fake.clone(), Arc::new(crate::testing::TestCatalog));
+        let disks = use_cases.list_disks.execute(&request).await.unwrap();
+        assert!(slots.of(&disks).await.is_empty(), "no enclosure set up");
+
+        use_cases.enclosure.choose(Some(model_choice(vec![])), &admin(), &request).await.unwrap();
+
+        let named = slots.of(&disks).await;
+        assert_eq!(named.get("sda"), Some(&SlotName::new("Bay 1", "Front bays")));
+        assert_eq!(named.get("nvme0n1"), Some(&SlotName::new("M.2 1", "M.2 slots")));
+        assert_eq!(named.get("sde"), None, "in no slot");
     }
 
     #[tokio::test]

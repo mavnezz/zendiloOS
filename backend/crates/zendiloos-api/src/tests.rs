@@ -2745,6 +2745,17 @@ async fn personal_folders_are_switched_on_and_given_to_accounts() {
     assert!(calls.contains(&"prepare_homes tank 1".to_owned()), "{calls:?}");
     assert!(calls.contains(&"set_home tank 1 bob Some(10737418240)".to_owned()), "{calls:?}");
 
+    // Administrators see every account's personal folder on its volume, private to its account.
+    let volumes = h.send(empty(with_cookie(get("/api/v1/files/volumes"), &admin))).await;
+    let tank = volumes.body.as_array().unwrap().iter().find(|v| v["pool"] == "tank").unwrap();
+    assert_eq!(tank["personal_folders"], json!([{ "account_id": bob, "name": "bob", "own": false }]));
+    let bobs = h.send(empty(with_cookie(get("/api/v1/files/volumes"), &bob_session))).await;
+    assert!(
+        bobs.body.as_array().unwrap().iter().all(|v| v["personal_folders"] == json!([])),
+        "bob sees only his own, as the personal folder: {}",
+        bobs.body
+    );
+
     let listed = h.send(empty(with_cookie(get("/api/v1/homes"), &admin))).await;
     assert_eq!(listed.body["homes"], json!([{ "account_id": bob, "quota_bytes": 10_737_418_240_u64 }]));
     let refused = h.send(empty(with_cookie(get("/api/v1/homes"), &bob_session))).await;

@@ -28,6 +28,10 @@ export type Location =
    * `share` the person's bin of that folder, `path` a folder inside it.
    */
   | { kind: 'bin'; share?: Place; path?: string }
+  /** The personal folders of every account on a volume, for those who manage shares. */
+  | { kind: 'homes'; volume: number }
+  /** Another account's personal folder: private to it, nothing to show. */
+  | { kind: 'private'; volume: number; name: string }
 
 export function folderAt(share: Place, path = '', snapshot: string | null = null): Location {
   return { kind: 'folder', share, path, snapshot }
@@ -40,6 +44,10 @@ export function sameLocation(a: Location, b: Location): boolean {
   }
   if (a.kind === 'bin' && b.kind === 'bin') {
     return a.share === b.share && (a.path ?? '') === (b.path ?? '')
+  }
+  if (a.kind === 'homes' && b.kind === 'homes') return a.volume === b.volume
+  if (a.kind === 'private' && b.kind === 'private') {
+    return a.volume === b.volume && a.name === b.name
   }
   return a.kind === b.kind
 }

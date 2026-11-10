@@ -97,16 +97,22 @@ pub fn message(notification: &Notification, host: &str, language: Language) -> M
                 "" => param("disk"),
                 model => model,
             };
+            // As the interface names it: with its slot where the enclosure places it.
+            let disk = match (param("slot"), param("group")) {
+                ("", _) => param("disk").to_owned(),
+                (slot, "") => format!("{} ({slot})", param("disk")),
+                (slot, group) => format!("{} ({slot}, {group})", param("disk")),
+            };
             if german {
                 let health = if failing { "kritisch" } else { "auffällig" };
                 (
-                    format!("Platte {} meldet Probleme", param("disk")),
+                    format!("Platte {disk} meldet Probleme"),
                     format!("{model}: SMART-Zustand ist {health}. Planen Sie den Austausch."),
                 )
             } else {
                 let health = if failing { "failing" } else { "worrying" };
                 (
-                    format!("Disk {} reports problems", param("disk")),
+                    format!("Disk {disk} reports problems"),
                     format!("{model}: SMART health is {health}. Plan to replace it."),
                 )
             }
@@ -365,6 +371,12 @@ mod tests {
                 vec![("disk", "sda"), ("health", "warning")],
                 "Disk sda reports problems",
                 "Platte sda meldet Probleme",
+            ),
+            (
+                "disk_health",
+                vec![("disk", "sda"), ("health", "warning"), ("slot", "Bay 1"), ("group", "Front bays")],
+                "Disk sda (Bay 1, Front bays) reports problems",
+                "Platte sda (Bay 1, Front bays) meldet Probleme",
             ),
             (
                 "snapshot_failed",

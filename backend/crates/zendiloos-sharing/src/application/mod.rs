@@ -18,7 +18,8 @@ use zendiloos_kernel::{AuditLog, Clock};
 use zendiloos_notify::Notifier;
 
 pub use files::{
-    FileVolume, FilesError, FilesUseCases, Transfer, Upload, UploadTicket, UsableShare, VolumeFolder,
+    FileVolume, FilesError, FilesUseCases, PersonalFolder, Transfer, Upload, UploadTicket, UsableShare,
+    VolumeFolder,
 };
 pub use homes::HomesSettings;
 use ports::{Directory, FileHost, RemovableRoots, ShareHost, ShareProjects, ShareRepository, Volumes};

@@ -19,7 +19,9 @@ use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 use zendiloos_identity::domain::Permission;
 use zendiloos_kernel::RequestContext;
-use zendiloos_sharing::application::{FileVolume, FilesError, Transfer, Upload, UsableShare, VolumeFolder};
+use zendiloos_sharing::application::{
+    FileVolume, FilesError, PersonalFolder, Transfer, Upload, UsableShare, VolumeFolder,
+};
 use zendiloos_sharing::domain::{self as sharing, FilePath, PlaceId, ShareId};
 
 use crate::auth::Auth;
@@ -162,6 +164,24 @@ impl From<VolumeFolder> for VolumeFolderDto {
     }
 }
 
+/// An account's personal folder, listed for someone who manages shares.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PersonalFolderDto {
+    pub account_id: i64,
+    /// The account's name, which the folder has too.
+    pub name: String,
+    /// The signed-in user's own, opened as the personal folder (share
+    /// `0`); the others' are private to their accounts (0700), and nobody
+    /// else opens them.
+    pub own: bool,
+}
+
+impl From<PersonalFolder> for PersonalFolderDto {
+    fn from(folder: PersonalFolder) -> Self {
+        Self { account_id: folder.account, name: folder.name, own: folder.own }
+    }
+}
+
 /// A volume and its folders the signed-in user sees.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct FileVolumeDto {
@@ -171,6 +191,10 @@ pub struct FileVolumeDto {
     pub mounted: bool,
     /// By name.
     pub folders: Vec<VolumeFolderDto>,
+    /// The personal folders on this volume, by name: for someone who
+    /// manages shares every account's; empty for everyone else, who has
+    /// their own as the personal folder.
+    pub personal_folders: Vec<PersonalFolderDto>,
 }
 
 impl From<FileVolume> for FileVolumeDto {
@@ -180,14 +204,16 @@ impl From<FileVolume> for FileVolumeDto {
             pool: volume.pool,
             mounted: volume.mounted,
             folders: volume.folders.into_iter().map(VolumeFolderDto::from).collect(),
+            personal_folders: volume.personal_folders.into_iter().map(PersonalFolderDto::from).collect(),
         }
     }
 }
 
 /// The volumes with their folders, for the file manager's tree. Someone
 /// who manages shares (`shares.manage`) sees every volume and every folder
-/// on it, those they may not open marked; everyone else only the folders
-/// they may use, and the volumes holding one. Needs `files.read`.
+/// on it, those they may not open marked, and every account's personal
+/// folder on the volume holding them; everyone else only the folders they
+/// may use, and the volumes holding one. Needs `files.read`.
 #[utoipa::path(
     get,
     path = "/files/volumes",

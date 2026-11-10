@@ -100,6 +100,54 @@ describe('the notification settings', () => {
     expect(page()).toContain('timed out')
   })
 
+  it('show each channel as a card of a grid, each with its own actions', async () => {
+    const { wrapper } = await mountApp(ChannelsSection)
+    const grid = document.querySelector<HTMLElement>('[data-testid="channel-grid"]')!
+    expect(grid.className).toContain('grid-cols-[repeat(auto-fill,minmax(18rem,1fr))]')
+    const cards = [...grid.children] as HTMLElement[]
+    expect(cards.map((card) => card.querySelector('.font-medium')?.textContent?.trim())).toEqual([
+      'Admins',
+      'Chat',
+      'Odd',
+    ])
+    const actions = (card: HTMLElement) => [...card.querySelectorAll('button')]
+    for (const card of cards) {
+      expect(
+        actions(card).map((b) => b.textContent?.trim() || b.getAttribute('aria-label')),
+      ).toEqual([t('channels.test'), t('channels.change'), t('channels.remove')])
+    }
+
+    actions(cards[1]!)[0]!.click()
+    await settle()
+    expect(called('POST', '/api/v1/notification-channels/2/test')).toHaveLength(1)
+    expect(called('POST', '/api/v1/notification-channels/1/test')).toHaveLength(0)
+    expect(cards[1]!.textContent).toContain('connection refused')
+
+    actions(cards[2]!)[1]!.click()
+    await settle()
+    expect(wrapper.findComponent({ name: 'ChannelDialog' }).props('channel')).toMatchObject({
+      id: 3,
+    })
+    await press(t('desktop.close'))
+
+    actions(cards[1]!)[2]!.click()
+    await settle()
+    expect(page()).toContain(t('channels.removeTitle', { name: 'Chat' }))
+  })
+
+  it('keep the mail server to one quiet line with its own change', async () => {
+    const { wrapper } = await mountApp(ChannelsSection)
+    const line = document.querySelector<HTMLElement>('[data-testid="mail-server"]')!
+    expect(line.textContent?.replace(/\s+/g, ' ')).toContain(
+      `${t('channels.mailServer.title')}: smtp.example.org:587 · STARTTLS · nas@example.org`,
+    )
+    const buttons = line.querySelectorAll('button')
+    expect([...buttons].map((b) => b.textContent?.trim())).toEqual([t('channels.change')])
+    buttons[0]!.click()
+    await settle()
+    expect(wrapper.findComponent({ name: 'MailServerDialog' }).props('open')).toBe(true)
+  })
+
   it('say when there is no mail server for the email channels', async () => {
     on('GET', '/api/v1/notification-mail-server', null)
     await mountApp(ChannelsSection)
