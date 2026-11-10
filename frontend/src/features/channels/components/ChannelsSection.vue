@@ -31,6 +31,14 @@ const removeOpen = ref(false)
 const tests = ref<Record<number, { ok: boolean; text: string } | 'sending'>>({})
 const failure = ref<string | null>(null)
 
+/** Where mail goes out, in one line: server and port, encryption, sender. */
+const serverLine = computed(() => {
+  const value = server.value
+  if (!value) return ''
+  const security = t(`channels.mailServer.short.${value.security}`)
+  return `${value.server}:${value.port} · ${security} · ${value.from}`
+})
+
 const mailing = computed(() =>
   (channels.value ?? []).some((channel) => channel.target.kind === 'email'),
 )
@@ -91,33 +99,27 @@ async function remove(): Promise<void> {
      channels, and which kinds go where. -->
 <template>
   <div class="grid gap-8">
-    <p class="text-sm text-muted-foreground">{{ t('channels.hint') }}</p>
-
-    <PanelSection :title="t('channels.mailServer.title')">
-      <Alert v-if="serverError" variant="destructive">{{ problemMessage(serverError) }}</Alert>
-      <div class="flex items-center gap-3 rounded-xl border bg-card p-4">
-        <Server class="size-4 shrink-0 text-primary" />
-        <div class="grid min-w-0 flex-1 gap-0.5">
-          <template v-if="server">
-            <span class="truncate font-medium">{{ server.server }}:{{ server.port }}</span>
-            <span class="truncate text-sm text-muted-foreground">
-              {{ t(`channels.mailServer.short.${server.security}`) }} · {{ server.from }}
-            </span>
-          </template>
-          <span
-            v-else
-            class="text-sm"
-            :class="mailing ? 'text-destructive' : 'text-muted-foreground'"
-          >
+    <div class="grid gap-3">
+      <p class="text-sm text-muted-foreground">{{ t('channels.hint') }}</p>
+      <!-- The mail server serves every email channel: one quiet line. -->
+      <div
+        class="flex flex-wrap items-center gap-2 rounded-lg bg-muted/50 px-3 py-2 text-xs"
+        data-testid="mail-server"
+      >
+        <Server class="size-4 shrink-0 text-muted-foreground" />
+        <p class="min-w-0 flex-1 truncate">
+          <span class="font-medium">{{ t('channels.mailServer.title') }}:</span>
+          {{ serverLine }}
+          <span v-if="!server" :class="mailing ? 'text-destructive' : 'text-muted-foreground'">
             {{ t('channels.mailServer.none') }}
           </span>
-        </div>
-        <Button size="sm" variant="outline" @click="serverOpen = true">
-          <Pencil />
+        </p>
+        <Button variant="soft" size="sm" shape="pill" @click="serverOpen = true">
           {{ server ? t('channels.change') : t('channels.mailServer.setUp') }}
         </Button>
       </div>
-    </PanelSection>
+      <Alert v-if="serverError" variant="destructive">{{ problemMessage(serverError) }}</Alert>
+    </div>
 
     <PanelSection :title="t('channels.title')">
       <template #actions>
@@ -132,13 +134,17 @@ async function remove(): Promise<void> {
         {{ t('channels.none') }}
       </p>
 
-      <ul class="grid gap-3">
+      <ul
+        v-if="channels?.length"
+        class="grid grid-cols-[repeat(auto-fill,minmax(18rem,1fr))] gap-3"
+        data-testid="channel-grid"
+      >
         <li
           v-for="channel in channels"
           :key="channel.id"
-          class="grid gap-2 rounded-xl border bg-card p-4"
+          class="flex min-w-0 flex-col gap-1.5 rounded-xl border bg-card p-3"
         >
-          <div class="flex items-center gap-2">
+          <div class="flex min-w-0 items-center gap-2">
             <component
               :is="channel.target.kind === 'email' ? Mail : Webhook"
               class="size-4 shrink-0 text-primary"
@@ -147,7 +153,7 @@ async function remove(): Promise<void> {
           </div>
           <ul
             v-if="channel.target.kind === 'email'"
-            class="flex flex-wrap gap-x-4 gap-y-1 text-sm"
+            class="grid gap-0.5 text-sm"
             :aria-label="t('channels.recipients')"
           >
             <li v-for="(entry, index) in channel.recipients" :key="index" class="min-w-0 truncate">
@@ -182,7 +188,7 @@ async function remove(): Promise<void> {
           </p>
           <p
             v-if="tests[channel.id] && tests[channel.id] !== 'sending'"
-            class="text-sm"
+            class="text-xs"
             :class="
               (tests[channel.id] as { ok: boolean }).ok
                 ? 'text-emerald-700 dark:text-emerald-400'
@@ -192,7 +198,7 @@ async function remove(): Promise<void> {
           >
             {{ (tests[channel.id] as { text: string }).text }}
           </p>
-          <div class="flex flex-wrap justify-end gap-2">
+          <div class="mt-auto flex flex-wrap items-center gap-1 pt-1.5">
             <Button
               size="sm"
               variant="outline"
@@ -207,8 +213,9 @@ async function remove(): Promise<void> {
               {{ t('channels.change') }}
             </Button>
             <Button
-              size="sm"
+              size="icon-sm"
               variant="ghost"
+              class="ml-auto text-muted-foreground hover:text-destructive"
               :aria-label="t('channels.remove')"
               :title="t('channels.remove')"
               @click="((removing = channel), (removeOpen = true))"
