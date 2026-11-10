@@ -83,12 +83,21 @@ const share = (pool: Pool) => {
 }
 </script>
 
-<!-- Who this machine is, what it is made of, and how long it has been running. -->
+<!--
+  Who this machine is, what it is made of, and how long it has been running.
+  The cards sit side by side as the window allows: one column, then device
+  and uptime beside each other above hardware and storage, then the short
+  device and uptime stacked beside the taller hardware and storage.
+-->
 <template>
   <div>
     <PageHeader :title="t('device.title')" :description="t('device.description')" />
-    <div class="grid max-w-3xl gap-4">
-      <PageCard :title="t('device.device')" :icon="Server">
+    <div class="grid gap-4 @3xl:grid-cols-2 @6xl:grid-cols-3" data-testid="device-cards">
+      <PageCard
+        :title="t('device.device')"
+        :icon="Server"
+        class="@6xl:col-start-1 @6xl:row-start-1"
+      >
         <div v-if="info" class="grid gap-4">
           <div>
             <p class="text-2xl font-semibold tracking-tight">{{ info.hostname }}</p>
@@ -107,7 +116,7 @@ const share = (pool: Pool) => {
         </div>
       </PageCard>
 
-      <PageCard :title="t('device.uptime')" :icon="Clock">
+      <PageCard :title="t('device.uptime')" :icon="Clock" class="@6xl:col-start-1 @6xl:row-start-2">
         <div v-if="uptime !== undefined" class="grid gap-4">
           <div>
             <p class="text-2xl font-semibold tracking-tight">{{ formatDuration(uptime) }}</p>
@@ -117,11 +126,20 @@ const share = (pool: Pool) => {
         </div>
       </PageCard>
 
-      <PageCard :title="t('device.hardware')" :icon="Cpu">
+      <PageCard
+        :title="t('device.hardware')"
+        :icon="Cpu"
+        class="@6xl:col-start-2 @6xl:row-span-2 @6xl:row-start-1"
+      >
         <DefinitionList :items="hardware" />
       </PageCard>
 
-      <PageCard v-if="pools.length" :title="t('device.storage')" :icon="Database">
+      <PageCard
+        v-if="pools.length"
+        :title="t('device.storage')"
+        :icon="Database"
+        class="self-start @6xl:col-start-3 @6xl:row-span-2 @6xl:row-start-1"
+      >
         <div class="grid gap-4">
           <div v-for="pool in pools" :key="pool.guid" class="grid gap-1.5">
             <div class="flex items-baseline justify-between gap-2">
