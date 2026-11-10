@@ -1552,6 +1552,36 @@ async fn the_volumes_show_everyone_their_folders_and_those_who_manage_all() {
     assert_eq!(bobs.len(), 1, "a volume without a folder of theirs is left out");
     assert_eq!(bobs[0].folders.iter().map(|f| f.share.name.as_str()).collect::<Vec<_>>(), ["photos"]);
     assert!(s.files.volumes(&carol(), false, &request).await.unwrap().is_empty());
+    assert!(all.iter().all(|v| v.personal_folders.is_empty()), "personal folders are off");
+}
+
+#[tokio::test]
+async fn those_who_manage_shares_see_every_personal_folder_and_only_their_own_opens() {
+    let s = setup();
+    let request = RequestContext::default();
+    s.sharing.enable_homes("tank", &alice(), &request).await.unwrap();
+    for account in [2, 1] {
+        s.sharing.set_account_home(account, true, None, &alice(), &request).await.unwrap();
+    }
+    // An account deleted since, its folder kept.
+    let gone = crate::domain::Home { account: 99, quota_bytes: None };
+    ShareRepository::set_home(s.shares.as_ref(), &gone).await.unwrap();
+
+    let all = s.files.volumes(&alice(), true, &request).await.unwrap();
+    let tank = all.iter().find(|v| v.pool == "tank").unwrap();
+    let listed: Vec<_> = tank.personal_folders.iter().map(|f| (f.account, f.name.as_str(), f.own)).collect();
+    assert_eq!(
+        listed,
+        [(1, "alice", true), (2, "bob", false)],
+        "by name; an account no longer named has none to list"
+    );
+    assert!(all.iter().filter(|v| v.pool != "tank").all(|v| v.personal_folders.is_empty()));
+
+    let bobs = s.files.volumes(&bob(), false, &request).await.unwrap();
+    assert!(bobs.iter().all(|v| v.personal_folders.is_empty()), "others' names are not told");
+    let strangers = s.files.list(&bob(), crate::domain::HOME_SHARE, FilePath::root(), None, &request).await;
+    assert!(strangers.is_ok(), "bob opens his own");
+    assert!(s.file_host.calls().contains(&"list bob home:".to_owned()), "as himself, never as another");
 }
 
 // The walk to share-level access, once for shares made before it came.

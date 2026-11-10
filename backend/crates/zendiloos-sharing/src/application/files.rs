@@ -119,6 +119,22 @@ pub struct FileVolume {
     pub mounted: bool,
     /// By name.
     pub folders: Vec<VolumeFolder>,
+    /// The personal folders on it, by account name: for someone who
+    /// manages shares, every account's; for everyone else none (their own
+    /// is the personal folder, [`HOME_SHARE`]).
+    pub personal_folders: Vec<PersonalFolder>,
+}
+
+/// An account's personal folder as someone who manages shares sees it:
+/// only its account opens it (0700, the files agent acting as that
+/// account), so the others' are listed, never opened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PersonalFolder {
+    pub account: i64,
+    /// The account's name, which the folder has too.
+    pub name: String,
+    /// The user's own, which they open as [`HOME_SHARE`].
+    pub own: bool,
 }
 
 /// A folder directly on a volume, and what the user may do in it: `None`
@@ -250,8 +266,10 @@ impl FilesUseCases {
 
     /// The volumes and their folders: with `everything` (someone who
     /// manages shares) every volume and every folder on it, also those the
-    /// user cannot open; otherwise only the folders the user may use, and
-    /// the volumes that have one. zendiloOS's own datasets are no folders.
+    /// user cannot open, and the personal folders of every account on the
+    /// volume holding them; otherwise only the folders the user may use,
+    /// and the volumes that have one. zendiloOS's own datasets are no
+    /// folders.
     pub async fn volumes(
         &self,
         actor: &Actor,
@@ -260,6 +278,7 @@ impl FilesUseCases {
     ) -> Result<Vec<FileVolume>, FilesError> {
         let groups = self.ports.directory.memberships(actor.account_id).await?;
         let shares = self.ports.shares.list().await?;
+        let homes = if everything { self.personal_folders(actor).await? } else { None };
         // Without the agent, the volumes the shares are on still show.
         let mut volumes: Vec<(String, u16, bool)> = match self.ports.volumes.volumes(context).await {
             Ok(volumes) => volumes.into_iter().map(|v| (v.pool, v.number, v.mounted)).collect(),
@@ -268,9 +287,12 @@ impl FilesUseCases {
                 Vec::new()
             }
         };
-        for share in &shares {
-            if !volumes.iter().any(|(pool, ..)| *pool == share.pool) {
-                volumes.push((share.pool.clone(), share.volume, true));
+        let homes_volume = homes.as_ref().map(|(location, _)| (location.pool.clone(), location.volume));
+        for (pool, number) in
+            shares.iter().map(|share| (share.pool.clone(), share.volume)).chain(homes_volume)
+        {
+            if !volumes.iter().any(|(known, ..)| *known == pool) {
+                volumes.push((pool, number, true));
             }
         }
         volumes.sort_by_key(|(_, number, _)| *number);
@@ -286,9 +308,42 @@ impl FilesUseCases {
                     })
                     .filter(|folder| everything || folder.access.is_some())
                     .collect();
-                (everything || !folders.is_empty()).then_some(FileVolume { pool, number, mounted, folders })
+                let personal_folders = match &homes {
+                    Some((location, listed)) if location.pool == pool => listed.clone(),
+                    _ => Vec::new(),
+                };
+                (everything || !folders.is_empty()).then_some(FileVolume {
+                    pool,
+                    number,
+                    mounted,
+                    folders,
+                    personal_folders,
+                })
             })
             .collect())
+    }
+
+    /// Where the personal folders are and whose they are, by name; `None`
+    /// while they are off. An account no longer named has none to list.
+    async fn personal_folders(
+        &self,
+        actor: &Actor,
+    ) -> Result<Option<(domain::HomesLocation, Vec<PersonalFolder>)>, FilesError> {
+        let Some(location) = self.ports.shares.homes_location().await? else { return Ok(None) };
+        let names = self.ports.directory.names().await?;
+        let mut folders: Vec<PersonalFolder> = self
+            .ports
+            .shares
+            .homes()
+            .await?
+            .into_iter()
+            .filter_map(|home| {
+                let name = names.accounts.get(&home.account)?.clone();
+                Some(PersonalFolder { account: home.account, name, own: home.account == actor.account_id })
+            })
+            .collect();
+        folders.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(Some((location, folders)))
     }
 
     /// The volume of the user's personal folder, if they have one.

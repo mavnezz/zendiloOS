@@ -2112,8 +2112,9 @@ export interface paths {
         /**
          * The volumes with their folders, for the file manager's tree. Someone
          *     who manages shares (`shares.manage`) sees every volume and every folder
-         *     on it, those they may not open marked; everyone else only the folders
-         *     they may use, and the volumes holding one. Needs `files.read`.
+         *     on it, those they may not open marked, and every account's personal
+         *     folder on the volume holding them; everyone else only the folders they
+         *     may use, and the volumes holding one. Needs `files.read`.
          */
         get: operations["file_volumes"];
         put?: never;
@@ -5004,6 +5005,12 @@ export interface components {
             /** @description By name. */
             folders: components["schemas"]["VolumeFolderDto"][];
             mounted: boolean;
+            /**
+             * @description The personal folders on this volume, by name: for someone who
+             *     manages shares every account's; empty for everyone else, who has
+             *     their own as the personal folder.
+             */
+            personal_folders: components["schemas"]["PersonalFolderDto"][];
             pool: string;
             /**
              * Format: int32
@@ -5916,6 +5923,19 @@ export interface components {
              */
             revert_at: number;
             settings: components["schemas"]["WebServer"];
+        };
+        /** @description An account's personal folder, listed for someone who manages shares. */
+        PersonalFolderDto: {
+            /** Format: int64 */
+            account_id: number;
+            /** @description The account's name, which the folder has too. */
+            name: string;
+            /**
+             * @description The signed-in user's own, opened as the personal folder (share
+             *     `0`); the others' are private to their accounts (0700), and nobody
+             *     else opens them.
+             */
+            own: boolean;
         };
         PlacedGroup: {
             /** Format: int32 */
