@@ -1,3 +1,40 @@
+zendiloos (0.4.0) unstable; urgency=medium
+
+  * Firewall changes wait for confirmation on forwarded connections too,
+    and the drop for forwarding from outside covers every Docker bridge,
+    whatever its name and however new.
+  * Recovery codes stay usable when someone with only the password used up
+    the account's code limit; administrators can clear an account's failed
+    sign-ins.
+  * Certificates: every certificate of a new chain is checked, nginx tests
+    it before it stays, and a renewal nginx did not take is shown and
+    retried. The web server's saved settings are put in force again after
+    a restart.
+  * Apps and projects: the confirmation names host paths reached through
+    named volumes, devices, zendiloOS's own folders and the host network;
+    the catalog's policy applies again; accepting risks is bound to what
+    was checked. Projects made elsewhere that bind into shares are not
+    redeployed or updated through zendiloOS.
+  * Moves off FAT and exFAT cards are reliable, and a move goes on into a
+    folder of the same name at the target without replacing anything. A
+    folder download whose files change while it is packed ends visibly
+    short.
+  * Ejected drives stay ejected across restarts until they are pulled out;
+    disks in USB docks keep one inventory record.
+  * Volume backups stay within bounded memory on very large volumes and
+    leave no files behind when they fail late.
+  * Updates: a release is installed only if its signature names its
+    version and the NAS's channel takes it; an update cut off while dpkg
+    configured can be finished from the Updates page; no jobs start while
+    an update installs. Deploys share one time budget and keep their pins
+    consistent; the image update schedule no longer skips a run.
+  * Info and Notifications use the space of the window; the enclosure has
+    a heading of its own; errors name disks as the pages do;
+    administrators see every account's personal folder in the explorer.
+  * Fixes and hardening throughout.
+
+ -- zendiloOS <julian@stuch.info>  Tue, 10 Nov 2026 12:43:05 +0000
+
 zendiloos (0.3.0) unstable; urgency=medium
 
   * Access to a share is the share's as a whole: Samba, the file manager
