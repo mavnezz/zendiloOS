@@ -6,6 +6,7 @@ import { useI18n } from 'vue-i18n'
 import type { PersonalFolderDto } from '@/shared/api/types'
 import { cn } from '@/shared/lib/utils'
 
+import { MARKED_FOLDER_TONE } from '../lib/fileIcon'
 import { HOME } from '../lib/location'
 import { EXPLORER } from '../lib/tree'
 import TreeBranch from './TreeBranch.vue'
@@ -41,7 +42,9 @@ watch(
 const row = (active: boolean) =>
   cn(
     'flex items-center gap-1 rounded-md py-1 pr-2 text-sm',
-    active ? 'bg-primary/10 font-medium text-primary' : 'hover:bg-foreground/5',
+    active
+      ? 'bg-background font-medium text-primary shadow-xs dark:bg-foreground/10'
+      : 'hover:bg-foreground/5',
   )
 </script>
 
@@ -84,7 +87,7 @@ const row = (active: boolean) =>
               :title="t('explorer.homes.private', { name: folder.name })"
               @click="explorer.go({ kind: 'private', volume, name: folder.name })"
             >
-              <FolderLock class="size-4 shrink-0 fill-amber-400/30 text-amber-500" />
+              <FolderLock :class="cn('size-4 shrink-0', MARKED_FOLDER_TONE)" />
               <span class="truncate">{{ folder.name }}</span>
               <span class="sr-only">{{ t('explorer.homes.private', { name: folder.name }) }}</span>
             </button>

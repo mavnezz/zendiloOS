@@ -1,21 +1,12 @@
 <script setup lang="ts">
-import {
-  ArrowDown,
-  ArrowUp,
-  File,
-  Folder,
-  FolderLock,
-  House,
-  Link,
-  Network,
-  TriangleAlert,
-} from 'lucide-vue-next'
+import { ArrowDown, ArrowUp, TriangleAlert } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 
 import { formatBytes, formatDateTime } from '@/shared/lib/format'
 import { cn } from '@/shared/lib/utils'
 
 import { type Item, type SortKey } from '../lib/actions'
+import { fileIcon } from '../lib/fileIcon'
 
 /** The entries where the explorer is, as rows with their details. */
 const props = defineProps<{
@@ -42,13 +33,6 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 
-function icon(item: Item) {
-  if (item.personal) return item.personal.own ? House : FolderLock
-  if (item.volumeFolder?.access === null) return FolderLock
-  if (item.volumeFolder?.shared) return Network
-  return item.kind === 'directory' ? Folder : item.kind === 'symlink' ? Link : File
-}
-
 const usable = () => props.items.filter((item) => !item.unreadable)
 const allSelected = () =>
   usable().length > 0 && usable().every((item) => props.selected.has(item.key))
@@ -70,8 +54,8 @@ function pointerUp(item: Item, event: PointerEvent): void {
 <template>
   <table class="w-full text-sm" :aria-multiselectable="true">
     <thead class="sticky top-0 z-10 bg-background text-left text-xs text-muted-foreground">
-      <tr class="border-b">
-        <th class="w-8 p-2">
+      <tr class="border-b bg-muted/60">
+        <th class="w-8 py-2 pr-1 pl-3">
           <input
             type="checkbox"
             class="size-4 accent-primary"
@@ -92,7 +76,7 @@ function pointerUp(item: Item, event: PointerEvent): void {
             type="button"
             :class="
               cn(
-                'flex w-full items-center gap-1 p-2 hover:text-foreground',
+                'flex w-full items-center gap-1 px-2 py-2 hover:text-foreground',
                 column === 'size' && 'justify-end',
               )
             "
@@ -105,7 +89,7 @@ function pointerUp(item: Item, event: PointerEvent): void {
             </template>
           </button>
         </th>
-        <th v-if="showOrigin" class="hidden p-2 font-medium @xl:table-cell">
+        <th v-if="showOrigin" class="hidden px-2 py-2 font-medium @xl:table-cell">
           {{ originLabel ?? t('explorer.columns.origin') }}
         </th>
       </tr>
@@ -116,8 +100,8 @@ function pointerUp(item: Item, event: PointerEvent): void {
         :key="item.unreadable ? `unreadable:${index}` : item.key"
         :class="
           cn(
-            'border-b select-none last:border-b-0',
-            selected.has(item.key) ? 'bg-primary/10' : 'hover:bg-accent/50',
+            'border-b border-border/60 select-none last:border-b-0',
+            selected.has(item.key) ? 'bg-primary/10' : 'hover:bg-muted/50',
             (item.volumeFolder?.access === null || item.personal?.own === false) &&
               'text-muted-foreground',
           )
@@ -133,7 +117,7 @@ function pointerUp(item: Item, event: PointerEvent): void {
           item.kind === 'directory' && !item.personal && emit('drop', item, $event)
         "
       >
-        <td class="p-2" @click.stop>
+        <td class="py-2.5 pr-1 pl-3" @click.stop>
           <input
             v-if="!item.unreadable"
             type="checkbox"
@@ -143,14 +127,14 @@ function pointerUp(item: Item, event: PointerEvent): void {
             @change="emit('toggle', item)"
           />
         </td>
-        <td class="w-full max-w-0 p-2">
+        <td class="w-full max-w-0 px-2 py-2.5">
           <span
             v-if="item.unreadable"
             class="flex min-w-0 items-center gap-2 text-muted-foreground"
             :title="t('files.unreadableName')"
           >
             <TriangleAlert
-              class="size-4 shrink-0 text-amber-600 dark:text-amber-400"
+              class="size-5 shrink-0 text-amber-600 dark:text-amber-400"
               aria-hidden="true"
             />
             <span class="truncate">{{ item.name }}</span>
@@ -164,31 +148,26 @@ function pointerUp(item: Item, event: PointerEvent): void {
             @keydown.enter.stop.prevent="emit('open', item)"
           >
             <component
-              :is="icon(item)"
-              :class="
-                cn(
-                  'size-4 shrink-0',
-                  item.personal?.own
-                    ? 'text-sky-500'
-                    : item.kind === 'directory'
-                      ? 'fill-amber-400/30 text-amber-500'
-                      : 'text-muted-foreground',
-                )
-              "
+              :is="fileIcon(item).icon"
+              :class="cn('size-5 shrink-0', fileIcon(item).tone)"
+              aria-hidden="true"
             />
             <span class="truncate">{{ item.name }}</span>
           </button>
         </td>
-        <td class="hidden p-2 whitespace-nowrap text-muted-foreground @2xl:table-cell">
+        <td class="hidden px-2 py-2.5 whitespace-nowrap text-muted-foreground @2xl:table-cell">
           {{ item.modified !== null ? formatDateTime(item.modified * 1000) : '' }}
         </td>
-        <td class="hidden truncate p-2 text-muted-foreground @xl:table-cell">
+        <td class="hidden truncate px-2 py-2.5 text-muted-foreground @xl:table-cell">
           {{ typeOf(item) }}
         </td>
-        <td class="hidden p-2 text-right whitespace-nowrap tabular-nums @lg:table-cell">
+        <td class="hidden px-2 py-2.5 text-right whitespace-nowrap tabular-nums @lg:table-cell">
           {{ item.kind === 'file' && item.size !== null ? formatBytes(item.size) : '' }}
         </td>
-        <td v-if="showOrigin" class="hidden truncate p-2 text-muted-foreground @xl:table-cell">
+        <td
+          v-if="showOrigin"
+          class="hidden truncate px-2 py-2.5 text-muted-foreground @xl:table-cell"
+        >
           {{ item.origin }}
         </td>
       </tr>

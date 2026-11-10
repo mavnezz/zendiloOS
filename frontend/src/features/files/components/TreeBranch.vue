@@ -8,6 +8,7 @@ import { cn } from '@/shared/lib/utils'
 import { useFolder } from '../api'
 import type { Item } from '../lib/actions'
 import { folderAt, joinPath, type Place } from '../lib/location'
+import { FOLDER_TONE, MARKED_FOLDER_TONE } from '../lib/fileIcon'
 import { EXPLORER, folderItem } from '../lib/tree'
 
 /** A folder in the tree, its folders below it once opened. */
@@ -82,7 +83,9 @@ function dropped(event: DragEvent): void {
       :class="
         cn(
           'flex items-center gap-1 rounded-md py-1 pr-2 text-sm',
-          here ? 'bg-primary/10 font-medium text-primary' : 'hover:bg-foreground/5',
+          here
+            ? 'bg-background font-medium text-primary shadow-xs dark:bg-foreground/10'
+            : 'hover:bg-foreground/5',
           locked && 'text-muted-foreground',
           over && 'bg-primary/10 ring-2 ring-primary ring-inset',
         )
@@ -115,7 +118,7 @@ function dropped(event: DragEvent): void {
           :class="
             cn(
               'size-4 shrink-0',
-              home || drive ? 'text-sky-500' : 'fill-amber-400/30 text-amber-500',
+              home || drive ? 'text-sky-500' : icon === Folder ? FOLDER_TONE : MARKED_FOLDER_TONE,
             )
           "
         />
