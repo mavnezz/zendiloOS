@@ -2621,6 +2621,26 @@ const de: Messages = {
     entries: 'Einträge',
     back: 'Zurück',
     forward: 'Vor',
+    refresh: 'Aktualisieren',
+    toolbar: {
+      label: 'Aktionen',
+      more: 'Mehr',
+    },
+    view: {
+      label: 'Ansicht',
+      list: 'Listenansicht',
+      grid: 'Kachelansicht',
+    },
+    sort: {
+      label: 'Sortieren',
+      ascending: 'Nach {column} sortiert, aufsteigend',
+      descending: 'Nach {column} sortiert, absteigend',
+    },
+    sections: {
+      mine: 'Meine Dateien',
+      fold: '{name} einklappen',
+      unfold: '{name} ausklappen',
+    },
     search: {
       placeholder: 'In diesem Ordner suchen',
       busy: 'Suche nach „{text}“ in diesem Ordner und darunter …',
@@ -2633,7 +2653,7 @@ const de: Messages = {
       nothing: 'Unter diesem Ordner nichts gefunden.',
       clear: 'Suche löschen',
     },
-    volume: 'Volume {n} ({pool})',
+    volume: 'Volume {n} · {pool}',
     expand: 'Ordner in {name} zeigen',
     collapse: 'Ordner in {name} verbergen',
     noAccess: 'Kein Zugriff',
@@ -2788,7 +2808,7 @@ const de: Messages = {
       manage: 'Snapshots verwalten',
     },
     drive: {
-      heading: 'Wechseldatenträger',
+      heading: 'Externe Laufwerke',
       mounted: 'Eingehängt',
       ejected: 'Ausgeworfen',
       failed: 'Nicht einhängbar',

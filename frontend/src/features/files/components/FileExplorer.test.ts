@@ -283,6 +283,7 @@ function notified(text: string): boolean {
 let saved: string[] = []
 beforeEach(() => {
   cleanup()
+  localStorage.clear()
   saved = []
   vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (
     this: HTMLAnchorElement,
@@ -308,7 +309,7 @@ describe('the places', () => {
     for (const place of [
       'Personal folder',
       'Album',
-      'Volume 1 (tank)',
+      'Volume 1 · tank',
       'photos',
       'media',
       'Recycle bin',
@@ -821,10 +822,10 @@ describe('the personal folders of every account', () => {
     expect(document.body.querySelector('[role="alert"]')).toBeNull()
     expect(useNotifications().items).toEqual([])
     expect(callsTo('GET', '/api/v1/files/shares/0/folder').length).toBe(before)
-    expect(crumbs()).toEqual(['Volume 1 (tank)', 'Personal folders', 'bob'])
+    expect(crumbs()).toEqual(['Volume 1 · tank', 'Personal folders', 'bob'])
 
     await press('Up one folder')
-    expect(crumbs()).toEqual(['Volume 1 (tank)', 'Personal folders'])
+    expect(crumbs()).toEqual(['Volume 1 · tank', 'Personal folders'])
   })
 
   it('are listed on the right too, to open and nothing else', async () => {
@@ -863,7 +864,7 @@ describe('folders on a volume', () => {
   it('lists them for administrators, those they cannot open marked', async () => {
     serve(true)
     await show(true)
-    await goTo('Volume 1 (tank)')
+    await goTo('Volume 1 · tank')
     expect(names()).toEqual(['media', 'photos', 'secret'])
     expect(page()).toContain('Shared folder')
     expect(page()).toContain('Folder on the volume')
@@ -875,7 +876,7 @@ describe('folders on a volume', () => {
   it('makes one, off the network and for its maker only', async () => {
     serve(true)
     await show(true)
-    await goTo('Volume 1 (tank)')
+    await goTo('Volume 1 · tank')
     await use('New folder')
     expect(page()).toContain('A folder directly on a volume')
     await type('#file-name', 'docker')
@@ -893,7 +894,7 @@ describe('folders on a volume', () => {
   it('shares one on the network and stops sharing another', async () => {
     serve(true)
     await show(true)
-    await goTo('Volume 1 (tank)')
+    await goTo('Volume 1 · tank')
     await fire(row('media'), 'click')
     await use('Share on the network')
     expect(callsTo('PATCH', '/api/v1/shares/3')[0]!.body).toEqual({ shared: true })
@@ -905,7 +906,7 @@ describe('folders on a volume', () => {
   it('sets its properties in tabs, and deletes it by its name', async () => {
     serve(true)
     await show(true)
-    await goTo('Volume 1 (tank)')
+    await goTo('Volume 1 · tank')
     await fire(row('photos'), 'click')
     await use('Properties')
     expect(page()).toContain('Properties of photos')
@@ -996,14 +997,14 @@ describe('removable drives', () => {
   it('are shown only to those who manage storage', async () => {
     serve(true)
     await show(true)
-    expect(page()).not.toContain('Removable drives')
+    expect(page()).not.toContain('External drives')
     expect(callsTo('GET', '/api/v1/storage/removable')).toHaveLength(0)
   })
 
   it('are opened, and their files copied into a folder on a volume and back', async () => {
     serveDrives()
     await showWithDrives()
-    expect(page()).toContain('Removable drives')
+    expect(page()).toContain('External drives')
     await goTo('STICK')
     expect(names()).toEqual(['Photos', 'song.mp3'])
     expect(page()).not.toContain('Add to favourites')
@@ -1105,5 +1106,370 @@ describe('removable drives', () => {
     expect(node('STICK').querySelector('[title]')!.getAttribute('title')).toBe(
       'the file system is damaged',
     )
+  })
+})
+
+/** The buttons of the toolbar by their names, each enabled (`true`) or not. */
+function toolbar(): Record<string, boolean> {
+  const group = document.body.querySelector('[role="group"][aria-label="Actions"]')!
+  return Object.fromEntries(
+    [...group.querySelectorAll('button')].map((b) => [b.getAttribute('aria-label'), !b.disabled]),
+  )
+}
+function toolbarButton(name: string): HTMLButtonElement {
+  const group = document.body.querySelector('[role="group"][aria-label="Actions"]')!
+  const found = group.querySelector<HTMLButtonElement>(`button[aria-label="${name}"]`)
+  if (!found) throw new Error(`no ${name} in the toolbar: ${Object.keys(toolbar()).join(', ')}`)
+  return found
+}
+async function opened(label: string): Promise<HTMLElement[]> {
+  const trigger = document.body.querySelector<HTMLElement>(`[aria-label="${label}"]`)!
+  trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+  await settle()
+  return [...document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')]
+}
+/** What "More" offers: each name, and whether it is greyed out. */
+async function more(): Promise<[string, boolean][]> {
+  const items = await opened('More')
+  const offered = items.map((i): [string, boolean] => [
+    i.querySelector('.flex-1')?.textContent?.trim() ?? '',
+    i.hasAttribute('data-disabled'),
+  ])
+  await closeMenu()
+  return offered
+}
+async function fromMore(label: string): Promise<void> {
+  const found = (await opened('More')).find((i) => i.textContent?.trim().startsWith(label))
+  if (!found) throw new Error(`More offers no ${label}`)
+  found.click()
+  await settle()
+}
+
+function tiles(): HTMLLIElement[] {
+  return [...document.body.querySelectorAll<HTMLLIElement>('[data-view="grid"] > li')]
+}
+function tileNames(): string[] {
+  return tiles().map((t) => t.querySelector('[data-name]')!.textContent.trim())
+}
+function tile(name: string): HTMLLIElement {
+  const found = tiles().find((t) => t.querySelector('[data-name]')!.textContent.trim() === name)
+  if (!found) throw new Error(`no tile ${name} among ${tileNames().join(', ')}`)
+  return found
+}
+function chosenTiles(): string[] {
+  return tiles()
+    .filter((t) => t.dataset.selected === 'true')
+    .map((t) => t.querySelector('[data-name]')!.textContent.trim())
+}
+/** Whether a node of the tree shows, its section unfolded. */
+function shows(element: Element): boolean {
+  return element.closest('[style*="display: none"]') === null
+}
+/** Storage that refuses every access, as in some private windows. */
+function refuseStorage(): void {
+  const refuse = () => {
+    throw new DOMException('denied', 'SecurityError')
+  }
+  vi.spyOn(Storage.prototype, 'getItem').mockImplementation(refuse)
+  vi.spyOn(Storage.prototype, 'setItem').mockImplementation(refuse)
+}
+
+describe('the toolbar', () => {
+  it('offers what is used most as buttons, the rest behind More, as the selection allows', async () => {
+    serve()
+    await show()
+    await goTo('photos')
+    expect(toolbar()).toEqual({
+      Upload: true,
+      'New folder': true,
+      Download: false,
+      Delete: false,
+      More: true,
+    })
+    expect(await more()).toEqual([
+      ['Open', true],
+      ['Cut', true],
+      ['Copy', true],
+      ['Paste', true],
+      ['Rename', true],
+      ['Add to favourites', false],
+      ['Previous versions', false],
+      ['Properties', false],
+    ])
+
+    await fire(row('Album'), 'click')
+    expect(toolbar()).toMatchObject({ Download: true, Delete: true })
+    toolbarButton('Download').click()
+    expect(saved.at(-1)).toBe('/api/v1/files/shares/1/archive?path=Album')
+
+    await fire(row('b.txt'), 'click')
+    await fromMore('Rename')
+    expect(document.body.querySelector<HTMLInputElement>('#file-name')!.value).toBe('b.txt')
+    await press('Close')
+
+    await fire(row('a.jpg'), 'click', { ctrlKey: true })
+    expect(toolbar()).toMatchObject({ Download: false, Delete: true })
+    expect(toolbarButton('Delete').className).toContain('text-destructive')
+    toolbarButton('Delete').click()
+    await settle()
+    expect(page()).toContain('Move to the recycle bin?')
+    await confirm('Delete')
+    expect(callsTo('POST', '/api/v1/files/shares/1/delete')[0]!.body).toEqual({
+      paths: ['a.jpg', 'b.txt'],
+    })
+  })
+
+  it('makes folders and uploads into the folder shown', async () => {
+    serve()
+    await show()
+    await goTo('photos')
+    toolbarButton('New folder').click()
+    await settle()
+    await type('#file-name', 'New')
+    await confirm('Create')
+    expect(callsTo('POST', '/api/v1/files/shares/1/folders')[0]!.body).toEqual({ path: 'New' })
+
+    toolbarButton('Upload').click()
+    await settle()
+    const input = document.body.querySelector<HTMLInputElement>('input[type="file"]')!
+    Object.defineProperty(input, 'files', { value: [new File(['y'], 'z.txt')], configurable: true })
+    input.dispatchEvent(new Event('change'))
+    await settle()
+    expect(FakeUpload.sent.map((u) => u.url)).toEqual([
+      '/api/v1/files/shares/1/upload?path=&name=z.txt&replace=false',
+    ])
+  })
+
+  it('greys out what a read-only folder does not allow, and names undoing', async () => {
+    serve()
+    answer('GET', '/api/v1/files/favourites', [{ share_id: 3, path: '', share_name: 'media' }])
+    await show()
+    await goTo('media')
+    expect(toolbar()).toMatchObject({ Upload: false, 'New folder': false, Delete: false })
+    await fire(row('film.mkv'), 'click')
+    expect(toolbar()).toMatchObject({ Download: true, Delete: false })
+    expect(await more()).toContainEqual(['Copy', false])
+    await fire(document.body.querySelector('[aria-label="Entries"]')!, 'click')
+    expect(await more()).toContainEqual(['Remove from favourites', false])
+  })
+
+  it('puts restoring and emptying first in the recycle bin', async () => {
+    serve()
+    on('GET', '/api/v1/files/shares/0/folder', ({ query }) =>
+      query.get('path') === '.recycle/anna' ? problem(404, 'not_found') : folder('', []),
+    )
+    await show()
+    await goTo('Recycle bin')
+    expect(toolbar()).toEqual({ Restore: false, 'Empty the recycle bin': true, More: false })
+    expect((await more()).map(([name]) => name)).toEqual([
+      'Open',
+      'Download',
+      'Delete',
+      'Properties',
+    ])
+
+    await fire(row('old.txt'), 'click')
+    expect(toolbar()).toMatchObject({ Restore: true, More: true })
+    toolbarButton('Restore').click()
+    await settle()
+    expect(callsTo('POST', '/api/v1/files/shares/1/restore')[0]!.body).toEqual({
+      paths: ['.recycle/anna/old.txt'],
+    })
+    toolbarButton('Empty the recycle bin').click()
+    await settle()
+    await confirm('Empty the recycle bin')
+    expect(callsTo('POST', '/api/v1/files/shares/1/delete')[0]!.body).toEqual({
+      paths: ['.recycle/anna/old.txt'],
+    })
+  })
+
+  it('offers nothing in another account’s private folder', async () => {
+    serve(true)
+    await show(true)
+    await press('Show the folders in Personal folders')
+    privateButton('bob').click()
+    await settle()
+    expect(toolbar()).toEqual({})
+    expect(document.body.querySelector('[aria-label="Grid view"]')).not.toBeNull()
+  })
+
+  it('reads again what is shown and the places', async () => {
+    serve()
+    await show()
+    const folders = callsTo('GET', '/api/v1/files/shares/0/folder').length
+    const places = callsTo('GET', '/api/v1/files/volumes').length
+    await press('Refresh')
+    expect(callsTo('GET', '/api/v1/files/shares/0/folder').length).toBeGreaterThan(folders)
+    expect(callsTo('GET', '/api/v1/files/volumes').length).toBeGreaterThan(places)
+    expect(document.body.querySelector('[aria-label="Refresh"]')!.getAttribute('aria-busy')).toBe(
+      'false',
+    )
+  })
+})
+
+describe('the top bar', () => {
+  it('opens the places over the entries in a narrow window; going somewhere closes them', async () => {
+    serve()
+    await show()
+    const aside = () => document.body.querySelector('aside')!
+    expect(aside().className).not.toContain('absolute')
+    document.body.querySelector<HTMLButtonElement>('button[aria-label="Places"]')!.click()
+    await settle()
+    expect(aside().className).toContain('absolute')
+    await goTo('photos')
+    expect(aside().className).not.toContain('absolute')
+    expect(names()).toContain('b.txt')
+  })
+
+  it('clears the search with Escape', async () => {
+    serve()
+    await show()
+    await goTo('photos')
+    await type('input[type="search"]', 'a.j')
+    expect(names()).toEqual(['a.jpg'])
+    const input = document.body.querySelector<HTMLInputElement>('input[type="search"]')!
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await settle()
+    expect(input.value).toBe('')
+    expect(names()).toContain('b.txt')
+  })
+})
+
+describe('the grid', () => {
+  it('shows tiles to choose, open, sort and drop on, and is remembered', async () => {
+    serve()
+    await show()
+    await goTo('photos')
+    await press('Grid view')
+    expect(localStorage.getItem('zendiloos.files.view')).toBe('grid')
+    expect(rows()).toHaveLength(0)
+    expect(tileNames()).toEqual(['Album', 'a.jpg', 'b.txt', 'bad-�.txt', 'data.bin', 'link'])
+    expect(tile('Album').querySelector('.lucide-folder')).not.toBeNull()
+    expect(tile('a.jpg').querySelector('.lucide-file-image')).not.toBeNull()
+    expect(tile('bad-�.txt').querySelector('input')).toBeNull()
+
+    await fire(tile('b.txt'), 'click')
+    expect(chosenTiles()).toEqual(['b.txt'])
+    await fire(tile('a.jpg'), 'click', { ctrlKey: true })
+    expect(chosenTiles()).toEqual(['a.jpg', 'b.txt'])
+    expect(toolbar()).toMatchObject({ Download: false, Delete: true })
+    await fire(tile('link'), 'click', { shiftKey: true })
+    expect(chosenTiles()).toEqual(['a.jpg', 'b.txt', 'data.bin', 'link'])
+    tile('Album').querySelector('input')!.click()
+    await settle()
+    expect(chosenTiles()).toContain('Album')
+    await fire(tile('bad-�.txt'), 'click')
+    expect(chosenTiles()).toHaveLength(5)
+    await fire(document.body.querySelector('[data-view="grid"]')!, 'click')
+    expect(chosenTiles()).toEqual([])
+
+    await fire(tile('Album'), 'click')
+    await key('ArrowRight')
+    expect(chosenTiles()).toEqual(['a.jpg'])
+    await key('ArrowLeft')
+    expect(chosenTiles()).toEqual(['Album'])
+
+    const sizes = await opened('Sort')
+    sizes.find((i) => i.textContent?.trim() === 'Size')!.click()
+    await settle()
+    expect(tileNames()).toEqual(['Album', 'link', 'data.bin', 'b.txt', 'bad-�.txt', 'a.jpg'])
+
+    await menu(tile('b.txt'), 'Rename')
+    expect(document.body.querySelector<HTMLInputElement>('#file-name')!.value).toBe('b.txt')
+    await press('Close')
+
+    await fire(tile('b.txt'), 'dragstart')
+    tile('Album').dispatchEvent(dropEvent({ entries: { share: 1, paths: ['b.txt'] } }))
+    await settle()
+    expect(callsTo('POST', '/api/v1/files/shares/1/transfer')[0]!.body).toMatchObject({
+      mode: 'move',
+      paths: ['b.txt'],
+      target_path: 'Album',
+    })
+
+    await fire(tile('Album'), 'dblclick')
+    expect(tileNames()).toEqual(['c.png'])
+    const tap = new MouseEvent('pointerup', { bubbles: true })
+    Object.defineProperty(tap, 'pointerType', { value: 'touch' })
+    tile('c.png').querySelector('button')!.dispatchEvent(tap)
+    await settle()
+    expect(document.body.querySelector('[role="dialog"]')!.textContent).toContain('c.png')
+    await press('Close')
+
+    await press('List view')
+    expect(localStorage.getItem('zendiloos.files.view')).toBe('list')
+    expect(names()).toEqual(['c.png'])
+  })
+
+  it('shows personal folders and where found entries are', async () => {
+    serve(true)
+    await show(true)
+    await press('Grid view')
+    await goTo('Personal folders')
+    expect(tileNames()).toEqual(['anna', 'bob'])
+    expect(tile('bob').className).toContain('text-muted-foreground')
+    expect(tile('bob').getAttribute('draggable')).toBe('false')
+    expect(tile('anna').querySelector('.lucide-house')).not.toBeNull()
+    await fire(tile('bob'), 'dblclick')
+    expect(document.body.querySelector('[data-testid="private-folder"]')).not.toBeNull()
+  })
+
+  it('opens as last chosen, and as a list when storage refuses', async () => {
+    localStorage.setItem('zendiloos.files.view', 'grid')
+    serve()
+    await show()
+    expect(tileNames()).toEqual(['Docs', 'notes.txt'])
+
+    cleanup()
+    refuseStorage()
+    serve()
+    await show()
+    expect(names()).toEqual(['Docs', 'notes.txt'])
+    await press('Grid view')
+    expect(tileNames()).toEqual(['Docs', 'notes.txt'])
+  })
+})
+
+describe('the sections of the places', () => {
+  it('fold away, a volume’s name still going to the volume, and stay folded', async () => {
+    serve()
+    answer('GET', '/api/v1/files/favourites', [
+      { share_id: 1, path: 'Album', share_name: 'photos' },
+    ])
+    await show()
+    expect(shows(treeButton('Personal folder'))).toBe(true)
+    treeButton('My files').click()
+    await settle()
+    expect(treeButton('My files').getAttribute('aria-expanded')).toBe('false')
+    expect(shows(treeButton('Personal folder'))).toBe(false)
+    expect(shows(treeButton('Album'))).toBe(false)
+
+    await press('Collapse Volume 1 · tank')
+    expect(shows(treeButton('photos'))).toBe(false)
+    await goTo('Volume 1 · tank')
+    expect(names()).toEqual(['media', 'photos'])
+    expect(treeButton('Volume 1 · tank').getAttribute('aria-current')).toBe('location')
+    expect(JSON.parse(localStorage.getItem('zendiloos.files.collapsedSections')!)).toEqual([
+      'mine',
+      'volume:1',
+    ])
+
+    cleanup()
+    serve()
+    await show()
+    expect(shows(treeButton('Personal folder'))).toBe(false)
+    expect(shows(treeButton('photos'))).toBe(false)
+    await press('Expand Volume 1 · tank')
+    expect(shows(treeButton('photos'))).toBe(true)
+  })
+
+  it('are all open when storage refuses, and fold all the same', async () => {
+    refuseStorage()
+    serve()
+    await show()
+    expect(shows(treeButton('Personal folder'))).toBe(true)
+    treeButton('My files').click()
+    await settle()
+    expect(shows(treeButton('Personal folder'))).toBe(false)
   })
 })

@@ -1,14 +1,9 @@
 <script setup lang="ts">
 import { useQueries, useQueryClient } from '@tanstack/vue-query'
 import {
-  ArrowLeft,
-  ArrowRight,
-  ArrowUp,
   ClipboardPaste,
   Copy,
   Download,
-  Eye,
-  EyeOff,
   FolderLock,
   FolderOpen,
   FolderPlus,
@@ -16,12 +11,10 @@ import {
   History,
   Info,
   Network,
-  PanelLeft,
   Pencil,
   Plug,
   RotateCcw,
   Scissors,
-  Search,
   Star,
   Trash2,
   Unplug,
@@ -89,11 +82,15 @@ import {
   useHistory,
   withinBin,
 } from '../lib/location'
+import { storedView, storeView } from '../lib/preferences'
 import { EXPLORER, folderItem } from '../lib/tree'
 import { useShareActions, useShares } from '../sharing'
 import DetailsView from './DetailsView.vue'
 import EntryPropertiesDialog from './EntryPropertiesDialog.vue'
+import ExplorerToolbar from './ExplorerToolbar.vue'
+import ExplorerTopBar from './ExplorerTopBar.vue'
 import FilePreview from './FilePreview.vue'
+import GridView from './GridView.vue'
 import NameDialog from './NameDialog.vue'
 import NavigationTree from './NavigationTree.vue'
 import PreviousVersionsDialog from './PreviousVersionsDialog.vue'
@@ -212,6 +209,13 @@ const { data: snapshots } = useShareSnapshots(
 const showHidden = ref(false)
 const search = ref('')
 const sort = ref<{ key: SortKey; descending: boolean }>({ key: 'name', descending: false })
+/** Again by the same key, the other way round. */
+function sortBy(key: SortKey): void {
+  sort.value = { key, descending: sort.value.key === key ? !sort.value.descending : false }
+}
+/** Rows or tiles, as last chosen in this browser. */
+const view = ref(storedView())
+watch(view, storeView)
 
 /** Typing pauses this long before the folder is searched on the NAS. */
 const SEARCH_DELAY_MS = 300
@@ -1093,14 +1097,17 @@ function dropHere(event: DragEvent): void {
 }
 
 // Keys where the entries have the focus.
+const STEPS: Record<string, number> = { ArrowDown: 1, ArrowUp: -1 }
+const GRID_STEPS: Record<string, number> = { ...STEPS, ArrowRight: 1, ArrowLeft: -1 }
 function keydown(event: KeyboardEvent): void {
   const key = shortcut(event)
   if (key === null) {
-    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    // Down and up go along the entries; in the grid, so do right and left.
+    const step = (view.value === 'grid' ? GRID_STEPS : STEPS)[event.key]
+    if (step) {
       const usable = items.value.filter((i) => !i.unreadable)
       const at = usable.findIndex((i) => i.key === anchor)
-      const next =
-        usable[Math.max(0, Math.min(usable.length - 1, at + (event.key === 'ArrowDown' ? 1 : -1)))]
+      const next = usable[Math.max(0, Math.min(usable.length - 1, at + step))]
       if (next) {
         selected.value = new Set([next.key])
         anchor = next.key
@@ -1243,6 +1250,20 @@ watch(
   },
 )
 
+/** Reads again what is shown and the places (drives among them), whatever it is. */
+const refreshing = ref(false)
+async function refresh(): Promise<void> {
+  refreshing.value = true
+  try {
+    await Promise.all([
+      client.invalidateQueries({ queryKey: ['files'] }),
+      client.invalidateQueries({ queryKey: ['storage', 'removable'] }),
+    ])
+  } finally {
+    refreshing.value = false
+  }
+}
+
 const treeOpen = ref(false)
 provide(EXPLORER, {
   current: location,
@@ -1255,15 +1276,13 @@ provide(EXPLORER, {
 
 <!-- The NAS's files: a tree of places on the left, what is in one on the right. -->
 <template>
-  <div class="relative flex h-full min-h-0">
+  <div class="relative flex h-full min-h-0 bg-muted/50 dark:bg-muted/30">
     <ContextMenu :actions="contextMenu" @select="(id) => choose(id, treeTarget ?? here)">
       <aside
         :class="
           cn(
-            'w-64 shrink-0 overflow-y-auto border-r bg-muted/40',
-            treeOpen
-              ? 'absolute inset-y-0 left-0 z-30 bg-background shadow-lg'
-              : 'hidden @3xl:block',
+            'w-60 shrink-0 overflow-y-auto',
+            treeOpen ? 'absolute inset-y-0 left-0 z-30 bg-muted shadow-lg' : 'hidden @3xl:block',
           )
         "
         @contextmenu.capture="aimed = null"
@@ -1282,92 +1301,32 @@ provide(EXPLORER, {
       @click="treeOpen = false"
     />
 
-    <div class="flex min-h-0 min-w-0 flex-1 flex-col">
-      <div class="flex items-center gap-1 border-b px-2 py-1.5">
-        <Button
-          variant="ghost"
-          size="icon"
-          class="@3xl:hidden"
-          :title="t('explorer.navigation')"
-          :aria-label="t('explorer.navigation')"
-          @click="treeOpen = !treeOpen"
-        >
-          <PanelLeft />
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon"
-          :disabled="!history.canBack.value"
-          :title="t('explorer.back')"
-          :aria-label="t('explorer.back')"
-          @click="history.back()"
-        >
-          <ArrowLeft />
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon"
-          :disabled="!history.canForward.value"
-          :title="t('explorer.forward')"
-          :aria-label="t('explorer.forward')"
-          @click="history.forward()"
-        >
-          <ArrowRight />
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon"
-          :disabled="!canUp"
-          :title="t('files.up')"
-          :aria-label="t('files.up')"
-          @click="up"
-        >
-          <ArrowUp />
-        </Button>
-        <ol
-          class="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto rounded-md border bg-background px-2 py-1 text-sm"
-          :aria-label="t('files.location')"
-        >
-          <li
-            v-for="(crumb, index) in crumbs"
-            :key="index"
-            class="flex min-w-0 shrink-0 items-center gap-1"
-          >
-            <span v-if="index" class="text-muted-foreground">›</span>
-            <button
-              type="button"
-              class="truncate rounded px-1 hover:bg-accent"
-              @click="go(crumb.location)"
-            >
-              {{ crumb.label }}
-            </button>
-          </li>
-        </ol>
-        <label class="relative hidden @xl:block">
-          <Search
-            class="pointer-events-none absolute top-1/2 left-2 size-4 -translate-y-1/2 text-muted-foreground"
-          />
-          <input
-            v-model="search"
-            type="search"
-            class="h-8 w-44 rounded-md border bg-background pr-2 pl-8 text-sm"
-            :placeholder="t('explorer.search.placeholder')"
-            :aria-label="t('explorer.search.placeholder')"
-            @keydown.escape="search = ''"
-          />
-        </label>
-        <Button
-          variant="ghost"
-          size="icon"
-          :title="showHidden ? t('files.hideHidden') : t('files.showHidden')"
-          :aria-label="showHidden ? t('files.hideHidden') : t('files.showHidden')"
-          :aria-pressed="showHidden"
-          @click="showHidden = !showHidden"
-        >
-          <EyeOff v-if="showHidden" />
-          <Eye v-else />
-        </Button>
-      </div>
+    <div
+      class="m-2 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border bg-background shadow-sm @3xl:ml-0"
+    >
+      <ExplorerTopBar
+        v-model:search="search"
+        v-model:show-hidden="showHidden"
+        :crumbs="crumbs"
+        :can-back="history.canBack.value"
+        :can-forward="history.canForward.value"
+        :can-up="canUp"
+        :refreshing="refreshing"
+        @back="history.back()"
+        @forward="history.forward()"
+        @up="up"
+        @refresh="refresh"
+        @go="go"
+        @places="treeOpen = !treeOpen"
+      />
+      <ExplorerToolbar
+        v-model:view="view"
+        class="border-b"
+        :actions="available"
+        :sort="sort"
+        @select="(id) => choose(id, here)"
+        @sort="sortBy"
+      />
 
       <div
         v-if="location.kind === 'folder' && location.snapshot !== null"
@@ -1473,7 +1432,21 @@ provide(EXPLORER, {
             problemMessage(viewError)
           }}</Alert>
           <template v-else>
+            <GridView
+              v-if="view === 'grid'"
+              :items="items"
+              :selected="selected"
+              :show-origin="location.kind === 'bin' || results !== undefined"
+              @pick="pick"
+              @toggle="toggle"
+              @open="open"
+              @aim="aimEntry"
+              @drag-start="dragStart"
+              @drop="(item, event) => dropOn(event, item.share, item.path)"
+              @clear="selected = new Set()"
+            />
             <DetailsView
+              v-else
               :items="items"
               :selected="selected"
               :sort="sort"
@@ -1482,9 +1455,7 @@ provide(EXPLORER, {
               :origin-label="
                 results !== undefined ? t('explorer.columns.folder') : t('explorer.columns.origin')
               "
-              @sort="
-                (key) => (sort = { key, descending: sort.key === key ? !sort.descending : false })
-              "
+              @sort="sortBy"
               @pick="pick"
               @toggle="toggle"
               @toggle-all="toggleAll"

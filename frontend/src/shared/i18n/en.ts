@@ -2575,6 +2575,26 @@ const en = {
     entries: 'Entries',
     back: 'Back',
     forward: 'Forward',
+    refresh: 'Refresh',
+    toolbar: {
+      label: 'Actions',
+      more: 'More',
+    },
+    view: {
+      label: 'View',
+      list: 'List view',
+      grid: 'Grid view',
+    },
+    sort: {
+      label: 'Sort',
+      ascending: 'Sorted by {column}, ascending',
+      descending: 'Sorted by {column}, descending',
+    },
+    sections: {
+      mine: 'My files',
+      fold: 'Collapse {name}',
+      unfold: 'Expand {name}',
+    },
     search: {
       placeholder: 'Search this folder',
       busy: 'Looking for “{text}” in this folder and below it …',
@@ -2587,7 +2607,7 @@ const en = {
       nothing: 'Nothing found below this folder.',
       clear: 'Clear the search',
     },
-    volume: 'Volume {n} ({pool})',
+    volume: 'Volume {n} · {pool}',
     expand: 'Show the folders in {name}',
     collapse: 'Hide the folders in {name}',
     noAccess: 'No access',
@@ -2741,7 +2761,7 @@ const en = {
       manage: 'Manage snapshots',
     },
     drive: {
-      heading: 'Removable drives',
+      heading: 'External drives',
       mounted: 'Mounted',
       ejected: 'Ejected',
       failed: 'Cannot be mounted',
