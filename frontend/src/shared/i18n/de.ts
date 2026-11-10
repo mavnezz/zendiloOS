@@ -1747,7 +1747,6 @@ const de: Messages = {
       button: 'Neuer Pool',
       title: 'Neuer Pool',
       description: 'Ein Pool fasst Platten zu einem Volume zusammen. Die Platten werden gelöscht.',
-      stepOf: 'Schritt {current} / {total}',
       steps: {
         disks: 'Platten und Aufbau',
         name: 'Name',

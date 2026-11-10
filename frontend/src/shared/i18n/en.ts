@@ -1713,7 +1713,6 @@ const en = {
       button: 'New pool',
       title: 'New pool',
       description: 'A pool combines disks into one volume. The disks are erased.',
-      stepOf: 'Step {current} / {total}',
       steps: {
         disks: 'Disks and layout',
         name: 'Name',

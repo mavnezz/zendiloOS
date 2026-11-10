@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { Check, HardDrive, MemoryStick } from 'lucide-vue-next'
 import { computed, nextTick, ref, useTemplateRef, watch } from 'vue'
-import { I18nT, useI18n } from 'vue-i18n'
+import { useI18n } from 'vue-i18n'
 
 import type { Disk, NewPoolLayout, PoolPlan } from '@/shared/api/types'
 import { problemMessage } from '@/shared/i18n'
@@ -10,7 +10,7 @@ import { cn } from '@/shared/lib/utils'
 import { Alert } from '@/shared/ui/alert'
 import { Badge } from '@/shared/ui/badge'
 import { Button } from '@/shared/ui/button'
-import { ModalDialog } from '@/shared/ui/dialog'
+import { StepDialog } from '@/shared/ui/dialog'
 import { Input } from '@/shared/ui/input'
 import { Label } from '@/shared/ui/label'
 import { useJobsStore } from '@/shared/jobs/store'
@@ -211,27 +211,17 @@ async function create(): Promise<void> {
 </script>
 
 <template>
-  <ModalDialog
+  <StepDialog
     v-model:open="open"
     :title="t('storage.create.title')"
     :close-label="t('desktop.close')"
+    :steps="STEPS.map((name) => t(`storage.create.steps.${name}`))"
+    :step="step - 1"
     wide
   >
-    <template #header>
-      <h3
-        ref="heading"
-        tabindex="-1"
-        class="flex items-baseline justify-between gap-4 border-b pb-3 text-sm font-semibold outline-none"
-      >
-        <span>{{ t(`storage.create.steps.${STEPS[step - 1]}`) }}</span>
-        <I18nT keypath="storage.create.stepOf" tag="span" class="shrink-0 tabular-nums">
-          <template #current>
-            <span class="text-primary">{{ step }}</span>
-          </template>
-          <template #total>{{ STEPS.length }}</template>
-        </I18nT>
-      </h3>
-    </template>
+    <h3 ref="heading" tabindex="-1" class="sr-only">
+      {{ t(`storage.create.steps.${STEPS[step - 1]}`) }}
+    </h3>
 
     <div
       v-if="step === 1"
@@ -252,7 +242,7 @@ async function create(): Promise<void> {
           v-else
           role="group"
           aria-labelledby="pool-disks-heading"
-          class="-m-[3px] grid content-start gap-2 p-[3px] md:max-h-[min(32rem,calc(100dvh-21rem))] md:overflow-y-auto"
+          class="-m-[3px] grid content-start gap-2 p-[3px] md:max-h-[min(30rem,calc(100dvh-17rem))] md:overflow-y-auto"
         >
           <label
             v-for="disk in candidates"
@@ -317,7 +307,7 @@ async function create(): Promise<void> {
           ref="layoutList"
           role="radiogroup"
           aria-labelledby="pool-layout-heading"
-          class="relative -m-[3px] grid content-start gap-2 p-[3px] md:max-h-[min(32rem,calc(100dvh-21rem))] md:overflow-y-auto"
+          class="relative -m-[3px] grid content-start gap-2 p-[3px] md:max-h-[min(30rem,calc(100dvh-17rem))] md:overflow-y-auto"
         >
           <label
             v-for="option in layouts"
@@ -542,5 +532,5 @@ async function create(): Promise<void> {
         {{ t('storage.create.submit') }}
       </Button>
     </template>
-  </ModalDialog>
+  </StepDialog>
 </template>

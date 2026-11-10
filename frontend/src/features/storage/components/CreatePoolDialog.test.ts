@@ -70,8 +70,14 @@ function card(layout: string): string {
   return document.querySelector(`[data-layout="${layout}"]`)?.textContent ?? ''
 }
 
+/** The step's title, as the dialog announces it. */
 function heading(): string {
   return document.querySelector('[role="dialog"] h3')?.textContent?.replace(/\s+/g, ' ') ?? ''
+}
+
+/** The step the step bar marks current: its number and its name. */
+function currentStep(): string {
+  return document.querySelector('[aria-current="step"]')?.textContent?.replace(/\s+/g, '') ?? ''
 }
 
 async function mountDialog() {
@@ -115,7 +121,7 @@ describe('CreatePoolDialog', () => {
   it('shows the free disks as cards', async () => {
     await mountDialog()
     expect(heading()).toContain(t('storage.create.steps.disks'))
-    expect(heading()).toContain(t('storage.create.stepOf', { current: 1, total: 3 }))
+    expect(currentStep()).toBe(`1${t('storage.create.steps.disks')}`.replace(/\s+/g, ''))
     const text = page()
     expect(text).not.toContain('sda')
     expect(text).toContain(formatBytes(4 * TB))
@@ -215,7 +221,7 @@ describe('CreatePoolDialog', () => {
     await mountDialog()
     await choose('sdc', 'sde')
     await click(t('storage.create.next'))
-    expect(heading()).toContain(t('storage.create.stepOf', { current: 2, total: 3 }))
+    expect(currentStep()).toBe(`2${t('storage.create.steps.name')}`.replace(/\s+/g, ''))
     expect(document.activeElement?.id).toBe('pool-name')
     expect(page()).toContain(`${t('storage.create.diskCount', 2)} (sdc, sde)`)
     expect(page()).toContain(t('storage.create.layouts.mirror.name'))
@@ -243,7 +249,7 @@ describe('CreatePoolDialog', () => {
     expect(document.querySelector('[role="dialog"] [role="alert"]')?.textContent).toContain(
       'tank exists',
     )
-    expect(heading()).toContain(t('storage.create.stepOf', { current: 2, total: 3 }))
+    expect(currentStep()).toBe(`2${t('storage.create.steps.name')}`.replace(/\s+/g, ''))
     expect(document.querySelector('#pool-confirm')).toBeNull()
   })
 
@@ -255,7 +261,7 @@ describe('CreatePoolDialog', () => {
     await click(t('storage.create.next'))
     await type('#pool-name', 'tank')
     await submit('[role="dialog"] form')
-    expect(heading()).toContain(t('storage.create.stepOf', { current: 3, total: 3 }))
+    expect(currentStep()).toBe(`3${t('storage.create.steps.review')}`.replace(/\s+/g, ''))
     expect(page()).toContain('/volume1')
     const submitButton = button(t('storage.create.submit'))
     expect(submitButton.disabled).toBe(true)
