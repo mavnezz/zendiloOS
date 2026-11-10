@@ -75,7 +75,14 @@ function volumes(admin = false): FileVolumeDto[] {
       recycle_bin: true,
     })
   }
-  return [{ volume: 1, pool: 'tank', mounted: true, folders }]
+  // Those who manage shares see every account's personal folder, their own among them.
+  const personal_folders = admin
+    ? [
+        { account_id: 7, name: 'anna', own: true },
+        { account_id: 8, name: 'bob', own: false },
+      ]
+    : []
+  return [{ volume: 1, pool: 'tank', mounted: true, folders, personal_folders }]
 }
 
 const SNAPSHOT = 'zdl-2026-11-01_10.00.00'
@@ -232,6 +239,19 @@ function treeButton(name: string): HTMLButtonElement {
   )
   if (!found) throw new Error(`no ${name} in the tree`)
   return found
+}
+/** Another account's personal folder in the tree, which only says it is private. */
+function privateButton(name: string): HTMLButtonElement {
+  const found = [...document.body.querySelectorAll<HTMLButtonElement>('aside button')].find(
+    (b) => b.title === `Private: only ${name} opens it`,
+  )
+  if (!found) throw new Error(`no private folder ${name} in the tree`)
+  return found
+}
+function crumbs(): string[] {
+  return [...document.body.querySelectorAll('ol[aria-label="Location"] button')].map(
+    (b) => b.textContent?.trim() ?? '',
+  )
 }
 async function goTo(name: string): Promise<void> {
   treeButton(name).click()
@@ -769,6 +789,73 @@ describe('recycle bins and previous versions', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('the personal folders of every account', () => {
+  it('are listed for administrators, their own opening as the personal folder', async () => {
+    serve(true)
+    await show(true)
+    await press('Show the folders in Personal folders')
+    expect(treeButton('anna')).toBeTruthy()
+    const bob = privateButton('bob')
+    expect(bob.querySelector('.lucide-folder-lock')).not.toBeNull()
+    expect(bob.closest('[role="treeitem"] > div')!.className).toContain('text-muted-foreground')
+
+    await goTo('anna')
+    expect(names()).toEqual(['Docs', 'notes.txt'])
+    expect(crumbs()).toEqual(['Personal folder'])
+  })
+
+  it('say kindly that another account’s is private, without asking the NAS', async () => {
+    serve(true)
+    await show(true)
+    await press('Show the folders in Personal folders')
+    const before = callsTo('GET', '/api/v1/files/shares/0/folder').length
+    privateButton('bob').click()
+    await settle()
+
+    const state = document.body.querySelector('[data-testid="private-folder"]')!
+    expect(state.textContent).toContain('No access')
+    expect(state.textContent).toContain('bob’s personal folder is private.')
+    expect(document.body.querySelector('[role="alert"]')).toBeNull()
+    expect(useNotifications().items).toEqual([])
+    expect(callsTo('GET', '/api/v1/files/shares/0/folder').length).toBe(before)
+    expect(crumbs()).toEqual(['Volume 1 (tank)', 'Personal folders', 'bob'])
+
+    await press('Up one folder')
+    expect(crumbs()).toEqual(['Volume 1 (tank)', 'Personal folders'])
+  })
+
+  it('are listed on the right too, to open and nothing else', async () => {
+    serve(true)
+    await show(true)
+    await goTo('Personal folders')
+    expect(names()).toEqual(['anna', 'bob'])
+    expect(page()).toContain('Personal folder')
+    expect(row('bob').className).toContain('text-muted-foreground')
+    expect(row('bob').getAttribute('draggable')).toBe('false')
+
+    await fire(row('bob'), 'click')
+    const offered = (await menuHere()).map((item) => item.textContent?.trim())
+    await closeMenu()
+    expect(offered).toEqual(['OpenEnter'])
+    await key('Delete')
+    expect(callsTo('POST', '/api/v1/files/shares/0/delete')).toEqual([])
+    await key('Enter')
+    expect(document.body.querySelector('[data-testid="private-folder"]')).not.toBeNull()
+
+    await press('Back')
+    await fire(row('anna'), 'dblclick')
+    expect(names()).toEqual(['Docs', 'notes.txt'])
+  })
+
+  it('are not shown to those who do not manage shares, so other names stay unknown', async () => {
+    serve()
+    await show()
+    expect(() => treeButton('Personal folders')).toThrow()
+    expect(page()).not.toContain('bob')
+    expect(treeButton('Personal folder')).toBeTruthy()
   })
 })
 

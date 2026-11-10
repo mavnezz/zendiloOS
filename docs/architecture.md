@@ -704,7 +704,11 @@ TLS is rustls with ring and the system's certificate authorities
   given one), with a recycle bin like the shares; the name `home` is
   therefore no longer free for shares. In the file manager it is share 0,
   which the files agent resolves to the folder of the user it acts as and
-  nobody else's. Turning them off, or taking one away, leaves the files.
+  nobody else's. Those who manage shares see every account's personal
+  folder listed (by name, in `GET /files/volumes` with the volume holding
+  them), only their own to open; nothing changes in how the others are
+  reached, and everyone else learns no other account's name. Turning them
+  off, or taking one away, leaves the files.
   A folder of the name that belongs to another UID (an earlier account of
   the same name) is moved aside (`<name>.previous-<uid>`) and a fresh one
   made, so the new account is never locked out of its own folder.
@@ -965,7 +969,11 @@ TLS is rustls with ring and the system's certificate authorities
 - **The explorer** is one app for files and for the folders on the
   volumes (the Shares app of before is part of it): on the left a tree of
   places (the personal folder, the favourites, each volume with its folders
-  down to any depth, the removable drives plugged in, and one recycle bin
+  down to any depth and, for those who manage shares, under the volume
+  holding them a node "Personal folders" with every account's by name: their
+  own opens as the personal folder does, the others' show a lock and, opened,
+  say kindly that they are private, without asking the NAS; the removable
+  drives plugged in, and one recycle bin
   view that gathers the person's bins of every folder, each entry with the
   folder it was deleted from; folders in it open to any depth, and what is
   in them is restored or deleted for good from there too), on the right the

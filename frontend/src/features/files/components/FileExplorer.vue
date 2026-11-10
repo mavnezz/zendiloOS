@@ -9,6 +9,7 @@ import {
   Download,
   Eye,
   EyeOff,
+  FolderLock,
   FolderOpen,
   FolderPlus,
   FolderSearch,
@@ -318,6 +319,15 @@ const bins = useQueries({
 
 const allItems = computed<Item[]>(() => {
   const at = location.value
+  if (at.kind === 'homes') {
+    const volume = volumes.value?.find((v) => v.volume === at.volume)
+    return (volume?.personal_folders ?? []).map((f) => ({
+      ...folderItem(HOME, '', f.name),
+      key: `personal:${f.account_id}`,
+      personal: { own: f.own, volume: at.volume },
+    }))
+  }
+  if (at.kind === 'private') return []
   if (at.kind === 'volume') {
     const volume = volumes.value?.find((v) => v.volume === at.volume)
     return (volume?.folders ?? []).map((f) => ({
@@ -586,6 +596,7 @@ const managing = ref<number | null>(null)
 const managedShare = (id: number | null) => managed.data.value?.find((s) => s.id === id) ?? null
 
 function typeOf(item: Item): string {
+  if (item.personal) return t('explorer.types.personalFolder')
   if (item.drive || (isDrive(item.share) && item.path === '')) return t('explorer.types.drive')
   if (item.volumeFolder) {
     return item.volumeFolder.shared
@@ -600,6 +611,11 @@ function typeOf(item: Item): string {
 }
 
 function open(item: Item): void {
+  if (item.personal) {
+    const { own, volume } = item.personal
+    go(own ? folderAt(HOME) : { kind: 'private', volume, name: item.name })
+    return
+  }
   if (item.volumeFolder?.access === null) return
   if (item.drive && item.drive.state !== 'mounted') return
   const at = location.value
@@ -1106,6 +1122,14 @@ function keydown(event: KeyboardEvent): void {
 
 function up(): void {
   const at = location.value
+  if (at.kind === 'homes') {
+    go({ kind: 'volume', volume: at.volume })
+    return
+  }
+  if (at.kind === 'private') {
+    go({ kind: 'homes', volume: at.volume })
+    return
+  }
   if (at.kind === 'bin') {
     if (at.share === undefined) return
     go(at.path ? { kind: 'bin', share: at.share, path: parentPath(at.path) } : { kind: 'bin' })
@@ -1121,6 +1145,7 @@ function up(): void {
 
 const canUp = computed(() => {
   const at = location.value
+  if (at.kind === 'homes' || at.kind === 'private') return true
   if (at.kind === 'bin') return at.share !== undefined
   return (
     at.kind === 'folder' &&
@@ -1151,6 +1176,18 @@ const crumbs = computed<{ label: string; location: Location }[]>(() => {
     return [
       { label: t('explorer.volume', { n: at.volume, pool: volume?.pool ?? '' }), location: at },
     ]
+  }
+  if (at.kind === 'homes' || at.kind === 'private') {
+    const volume = volumes.value?.find((v) => v.volume === at.volume)
+    const crumbsOfHomes: { label: string; location: Location }[] = [
+      {
+        label: t('explorer.volume', { n: at.volume, pool: volume?.pool ?? '' }),
+        location: { kind: 'volume', volume: at.volume },
+      },
+      { label: t('explorer.homes.title'), location: { kind: 'homes', volume: at.volume } },
+    ]
+    if (at.kind === 'private') crumbsOfHomes.push({ label: at.name, location: at })
+    return crumbsOfHomes
   }
   const list: { label: string; location: Location }[] = []
   const volume = at.share !== HOME ? volumeOf(at.share) : undefined
@@ -1377,7 +1414,11 @@ provide(EXPLORER, {
         </Button>
       </div>
 
-      <ContextMenu :actions="contextMenu" @select="(id) => choose(id, treeTarget ?? here)">
+      <ContextMenu
+        :actions="contextMenu"
+        :disabled="location.kind === 'private'"
+        @select="(id) => choose(id, treeTarget ?? here)"
+      >
         <div
           class="relative min-h-0 flex-1 overflow-auto outline-none"
           tabindex="0"
@@ -1407,6 +1448,27 @@ provide(EXPLORER, {
           <p v-else-if="binEmpty" class="p-6 text-sm text-muted-foreground">
             {{ t('files.binEmpty') }}
           </p>
+          <div
+            v-else-if="location.kind === 'private'"
+            class="flex min-h-full flex-col items-center justify-center gap-3 p-6 text-center"
+            role="status"
+            data-testid="private-folder"
+          >
+            <div
+              class="flex size-12 items-center justify-center rounded-xl bg-muted text-muted-foreground"
+            >
+              <FolderLock class="size-6" />
+            </div>
+            <div class="space-y-1">
+              <h3 class="text-lg font-semibold">{{ t('explorer.homes.noAccess') }}</h3>
+              <p class="max-w-sm text-sm">
+                {{ t('explorer.homes.noAccessText', { name: location.name }) }}
+              </p>
+              <p class="max-w-sm text-sm text-muted-foreground">
+                {{ t('explorer.homes.noAccessHint', { name: location.name }) }}
+              </p>
+            </div>
+          </div>
           <Alert v-else-if="viewError" variant="destructive" class="m-4">{{
             problemMessage(viewError)
           }}</Alert>

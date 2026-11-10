@@ -2598,6 +2598,13 @@ const de: Messages = {
     unsharedNow: '{name} ist jetzt nur noch auf dem NAS; Dateien und Berechtigungen bleiben',
     binEmpty: 'Der Papierkorb ist leer.',
     volumeEmpty: 'Auf diesem Volume gibt es noch keinen Ordner.',
+    homes: {
+      title: 'Persönliche Ordner',
+      private: 'Privat: Nur {name} öffnet ihn',
+      noAccess: 'Kein Zugriff',
+      noAccessText: 'Der persönliche Ordner von {name} ist privat.',
+      noAccessHint: 'Nur {name} kann ihn öffnen, hier oder über das Netzwerk.',
+    },
     volumeFolderHint:
       'Ein Ordner direkt auf einem Volume: Kleinbuchstaben, Ziffern, - und _, beginnend mit einem Buchstaben. Zuerst nutzen nur Sie ihn; in seinen Eigenschaften geben Sie ihn im Netzwerk frei und anderen Zugriff.',
     emptyBinDescription:
@@ -2623,6 +2630,7 @@ const de: Messages = {
       file: '{ext}-Datei',
       plainFile: 'Datei',
       drive: 'Wechseldatenträger',
+      personalFolder: 'Persönlicher Ordner',
     },
     actions: {
       open: 'Öffnen',

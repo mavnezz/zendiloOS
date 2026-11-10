@@ -5,6 +5,7 @@ import {
   File,
   Folder,
   FolderLock,
+  House,
   Link,
   Network,
   TriangleAlert,
@@ -42,6 +43,7 @@ const emit = defineEmits<{
 const { t } = useI18n()
 
 function icon(item: Item) {
+  if (item.personal) return item.personal.own ? House : FolderLock
   if (item.volumeFolder?.access === null) return FolderLock
   if (item.volumeFolder?.shared) return Network
   return item.kind === 'directory' ? Folder : item.kind === 'symlink' ? Link : File
@@ -116,17 +118,20 @@ function pointerUp(item: Item, event: PointerEvent): void {
           cn(
             'border-b select-none last:border-b-0',
             selected.has(item.key) ? 'bg-primary/10' : 'hover:bg-accent/50',
-            item.volumeFolder?.access === null && 'text-muted-foreground',
+            (item.volumeFolder?.access === null || item.personal?.own === false) &&
+              'text-muted-foreground',
           )
         "
         :aria-selected="selected.has(item.key)"
-        :draggable="!item.unreadable && !item.volumeFolder"
+        :draggable="!item.unreadable && !item.volumeFolder && !item.personal"
         @click="!item.unreadable && emit('pick', item, $event)"
         @dblclick="!item.unreadable && emit('open', item)"
         @contextmenu="!item.unreadable && emit('aim', item)"
         @dragstart="emit('dragStart', item, $event)"
-        @dragover="item.kind === 'directory' && $event.preventDefault()"
-        @drop.prevent.stop="item.kind === 'directory' && emit('drop', item, $event)"
+        @dragover="item.kind === 'directory' && !item.personal && $event.preventDefault()"
+        @drop.prevent.stop="
+          item.kind === 'directory' && !item.personal && emit('drop', item, $event)
+        "
       >
         <td class="p-2" @click.stop>
           <input
@@ -163,9 +168,11 @@ function pointerUp(item: Item, event: PointerEvent): void {
               :class="
                 cn(
                   'size-4 shrink-0',
-                  item.kind === 'directory'
-                    ? 'fill-amber-400/30 text-amber-500'
-                    : 'text-muted-foreground',
+                  item.personal?.own
+                    ? 'text-sky-500'
+                    : item.kind === 'directory'
+                      ? 'fill-amber-400/30 text-amber-500'
+                      : 'text-muted-foreground',
                 )
               "
             />

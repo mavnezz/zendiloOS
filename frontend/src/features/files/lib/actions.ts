@@ -1,6 +1,6 @@
 import type { FileKind, RemovableState } from '@/shared/api/types'
 
-import type { Place } from './location'
+import type { Location, Place } from './location'
 
 /** Everything the context menu offers, in its order. */
 export const ACTIONS = [
@@ -49,6 +49,11 @@ export interface Item {
     /** `null`: listed for someone who manages shares, but not to open. */
     access: 'read' | 'read_write' | null
   }
+  /**
+   * An account's personal folder among those on a volume: the person's own
+   * opens as the personal folder; another's is private, only listed.
+   */
+  personal?: { own: boolean; volume: number }
   /** For a removable drive itself, in the tree. */
   drive?: {
     state: RemovableState
@@ -77,7 +82,7 @@ export interface EntryInfo {
 
 /** What the explorer is looking at, and what is chosen there. */
 export interface Situation {
-  kind: 'volume' | 'folder' | 'bin'
+  kind: Location['kind']
   /** What is shown is what a search below the folder found. */
   searching: boolean
   /** Entries can be made, changed and removed here. */
@@ -116,6 +121,9 @@ export interface ActionState {
 }
 
 function relevant(id: ActionId, s: Situation): boolean {
+  // The personal folders are only listed, to open; another's is private.
+  if (s.kind === 'homes') return id === 'open'
+  if (s.kind === 'private') return false
   switch (id) {
     case 'openLocation':
       return s.searching

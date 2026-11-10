@@ -2553,6 +2553,13 @@ const en = {
     unsharedNow: '{name} is on the NAS only now; its files and permissions stay',
     binEmpty: 'The recycle bin is empty.',
     volumeEmpty: 'There is no folder on this volume yet.',
+    homes: {
+      title: 'Personal folders',
+      private: 'Private: only {name} opens it',
+      noAccess: 'No access',
+      noAccessText: '{name}’s personal folder is private.',
+      noAccessHint: 'Only {name} can open it, here or over the network.',
+    },
     volumeFolderHint:
       'A folder directly on a volume: lowercase letters, digits, - and _, starting with a letter. Only you may use it at first; share it on the network and give others access in its properties.',
     emptyBinDescription:
@@ -2578,6 +2585,7 @@ const en = {
       file: '{ext} file',
       plainFile: 'File',
       drive: 'Removable drive',
+      personalFolder: 'Personal folder',
     },
     actions: {
       open: 'Open',
