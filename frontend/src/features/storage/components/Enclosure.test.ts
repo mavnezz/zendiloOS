@@ -299,6 +299,27 @@ describe('the enclosure on the disks page', () => {
     expect(wrapper.findComponent({ name: 'DiskDetail' }).props('name')).toBe('sdd')
   })
 
+  it('edits the enclosure from its own heading, apart from the self-test schedule', async () => {
+    await open('disks')
+    const section = document.querySelector<HTMLElement>('[data-testid="enclosure-section"]')!
+    const heading = section.querySelector('header')!
+    expect(heading.textContent).toContain(t('storage.enclosure.title'))
+    expect(heading.textContent).toContain('UGREEN DXP4800 Plus')
+    expect(heading.textContent).toContain(t('storage.enclosure.edit'))
+
+    const schedule = document.querySelector('[data-testid="self-test-schedule"]')!
+    const actions = [...schedule.querySelectorAll('button')].map((b) => b.textContent?.trim())
+    expect(actions).toEqual([t('storage.selfTestPlans.button')])
+  })
+
+  it('names a layout of one’s own in the heading', async () => {
+    on('GET', '/api/v1/storage/enclosure', chosen({ source: 'custom', model: null }))
+    await open('disks')
+    const heading = document.querySelector('[data-testid="enclosure-section"] header')!
+    expect(heading.textContent).toContain(t('storage.enclosure.dialog.custom'))
+    expect(heading.textContent).not.toContain('UGREEN DXP4800 Plus')
+  })
+
   it('overrides a slot of the model and saves', async () => {
     on('PUT', '/api/v1/storage/enclosure', chosen())
     await open('disks')
