@@ -17,7 +17,8 @@ const open = defineModel<boolean>('open', { default: false })
 
 <!--
   A modal window for a short form. With a `footer`, its body scrolls between
-  the title and the buttons, which stay in view.
+  the title and the buttons, which stay in view; a `header` goes under the
+  title and stays in view too, e.g. to say which step of a wizard this is.
 -->
 <template>
   <DialogRoot v-model:open="open">
@@ -31,7 +32,10 @@ const open = defineModel<boolean>('open', { default: false })
         ]"
         v-bind="description ? {} : { 'aria-describedby': undefined }"
       >
-        <div class="flex items-start gap-2" :class="$slots.footer && 'px-6 pt-5 pb-4'">
+        <div
+          class="flex items-start gap-2"
+          :class="$slots.footer && ($slots.header ? 'px-6 pt-5 pb-2' : 'px-6 pt-5 pb-4')"
+        >
           <div class="grid flex-1 gap-1">
             <DialogTitle class="text-lg font-semibold">{{ title }}</DialogTitle>
             <DialogDescription v-if="description" class="text-sm text-muted-foreground">
@@ -44,6 +48,9 @@ const open = defineModel<boolean>('open', { default: false })
           >
             <X class="size-4" />
           </DialogClose>
+        </div>
+        <div v-if="$slots.header" :class="$slots.footer && 'px-6 pb-4'">
+          <slot name="header" />
         </div>
         <div
           v-if="$slots.footer"

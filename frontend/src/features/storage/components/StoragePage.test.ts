@@ -248,13 +248,14 @@ describe('the storage pages', () => {
     })
     await open('pools')
     await click(new RegExp(t('storage.create.button')))
-    await type('#pool-name', 'fast')
     for (const box of document.querySelectorAll<HTMLInputElement>(
       '[role="dialog"] input[type="checkbox"]',
     )) {
       box.click()
       await settle()
     }
+    await click(t('storage.create.next'))
+    await type('#pool-name', 'fast')
     await submit('[role="dialog"] form')
     expect(called('POST', '/api/v1/storage/pools/plan')[0]?.body).toEqual({
       name: 'fast',
@@ -274,15 +275,21 @@ describe('the storage pages', () => {
     expect(page()).toContain(`${t('jobs.kinds.storage_create_pool')}`)
   })
 
-  it('goes back from a plan and shows a refused one', async () => {
+  it('shows a refused plan and stays at the name', async () => {
     on('POST', '/api/v1/storage/pools/plan', problem(422, 'disk_unusable', 'sdc is too small'))
     await open('pools')
     await click(new RegExp(t('storage.create.button')))
-    await type('#pool-name', 'fast')
     document.querySelector<HTMLInputElement>('[role="dialog"] input[type="checkbox"]')!.click()
     await settle()
+    await click(t('storage.create.next'))
+    await type('#pool-name', 'fast')
     await submit('[role="dialog"] form')
+    expect(called('POST', '/api/v1/storage/pools/plan')[0]?.body).toMatchObject({
+      layout: 'single',
+      disks: ['sdc'],
+    })
     expect(page()).toContain('sdc is too small')
+    expect(document.querySelector('#pool-name')).not.toBeNull()
   })
 
   it('destroys a pool once its name is typed', async () => {
