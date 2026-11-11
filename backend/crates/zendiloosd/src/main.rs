@@ -18,6 +18,7 @@ use zendiloos_agent_proto::{
 };
 use zendiloos_api::{ApiState, UseCases};
 use zendiloos_apps::application::{Catalogs, Docker, InstallPorts, Installs, TemplatePorts, Templates};
+use zendiloos_backup::application::{BackupPorts, Backups};
 use zendiloos_certificates::application::{Certificates, CertificatesError, CertificatesPorts, InStep};
 use zendiloos_containers::application::{Containers, ContainersPorts};
 use zendiloos_firewall::application::{Firewall, FirewallPorts};
@@ -25,13 +26,14 @@ use zendiloos_identity::application::commands::{PendingSetup, PurgeExpiredSessio
 use zendiloos_identity::application::{IdentityConfig, IdentityPorts, IdentityUseCases};
 use zendiloos_infra::SystemClock;
 use zendiloos_infra::agent::{
-    AgentAcme, AgentApps, AgentDockerData, AgentDockerEngine, AgentFiles, AgentFirewall, AgentNetwork,
-    AgentPowerControl, AgentSharing, AgentSsh, AgentStorage, AgentSystemAccounts, AgentTime, AgentUpdates,
-    AgentVms, AgentVolumeArchiver, AgentWebTls, RandomPlanTokens, RandomVmIds, agent_version,
+    AgentAcme, AgentApps, AgentBackup, AgentDockerData, AgentDockerEngine, AgentFiles, AgentFirewall,
+    AgentNetwork, AgentPowerControl, AgentSharing, AgentSsh, AgentStorage, AgentSystemAccounts, AgentTime,
+    AgentUpdates, AgentVms, AgentVolumeArchiver, AgentWebTls, RandomPlanTokens, RandomVmIds, agent_version,
 };
 use zendiloos_infra::apps::{
     CatalogPolicy, ContainersForApps, FilesForApps, HttpsCatalogs, RandomSecrets, SharingForApps, YamlFiller,
 };
+use zendiloos_infra::backup::{DrivesForBackup, SharesForBackupTasks};
 use zendiloos_infra::containers::{HttpsRegistries, SharesForBackups, SharesForProjects};
 use zendiloos_infra::enclosure::BuiltInCatalog;
 use zendiloos_infra::firewall::ServicesForFirewall;
@@ -44,11 +46,11 @@ use zendiloos_infra::notify::NetworkChannels;
 use zendiloos_infra::sharing::DrivesForFiles;
 use zendiloos_infra::sqlite::{
     Database, Occupants, SqliteAccountAddresses, SqliteAccounts, SqliteAppSources, SqliteAuditLog,
-    SqliteCertificates, SqliteChannels, SqliteDiskInventory, SqliteEjectedDrives, SqliteEnclosure,
-    SqliteFirewall, SqliteGroups, SqliteInstalledApps, SqliteJobs, SqliteNotifications, SqlitePreferences,
-    SqliteProjects, SqliteSecurity, SqliteSelfTestPlans, SqliteSessions, SqliteShareProjects, SqliteShares,
-    SqliteSystemUpdates, SqliteTwoFactor, SqliteUpdateSettings, SqliteVmImages, SqliteVmLocations, SqliteVms,
-    SqliteVolumeBackups,
+    SqliteBackupRuns, SqliteBackupSettings, SqliteBackupTasks, SqliteCertificates, SqliteChannels,
+    SqliteDiskInventory, SqliteEjectedDrives, SqliteEnclosure, SqliteFirewall, SqliteGroups,
+    SqliteInstalledApps, SqliteJobs, SqliteNotifications, SqlitePreferences, SqliteProjects, SqliteSecurity,
+    SqliteSelfTestPlans, SqliteSessions, SqliteShareProjects, SqliteShares, SqliteSystemUpdates,
+    SqliteTwoFactor, SqliteUpdateSettings, SqliteVmImages, SqliteVmLocations, SqliteVms, SqliteVolumeBackups,
 };
 use zendiloos_infra::updates::{GitHubReleases, installed_notes};
 use zendiloos_jobs::Jobs;
@@ -113,7 +115,7 @@ async fn main() -> anyhow::Result<()> {
 async fn serve(config: Config) -> anyhow::Result<()> {
     let database = open_database(&config).await?;
     let audit: Arc<dyn AuditLog> = Arc::new(SqliteAuditLog::new(database.clone()));
-    let (agent, files_agent, patient_agent, moving_agent) = agent_transports(&config).await;
+    let (agent, files_agent, patient_agent, moving_agent, backup_agent) = agent_transports(&config).await;
     let (metrics, sampler) = MetricsHub::spawn(Duration::from_secs(2), Arc::new(SystemClock));
     let journal = JournalctlReader::new(config.journal.journalctl.as_deref());
     match journal.path() {
@@ -396,6 +398,26 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         }
     });
 
+    // Backup tasks: runs and restores may take a day, as their transport
+    // waits.
+    let backup = Backups::new(BackupPorts {
+        tasks: Arc::new(SqliteBackupTasks::new(database.clone())),
+        runs: Arc::new(SqliteBackupRuns::new(database.clone())),
+        settings: Arc::new(SqliteBackupSettings::new(database.clone())),
+        host: Arc::new(AgentBackup::new(backup_agent)),
+        shares: Arc::new(SharesForBackupTasks::new(sharing.clone())),
+        drives: Arc::new(DrivesForBackup::new(Arc::clone(&storage.removable))),
+        jobs: jobs.clone(),
+        notifier: notifier.clone(),
+        audit: audit.clone(),
+        clock: Arc::new(SystemClock),
+    });
+    match backup.recover().await {
+        0 => {}
+        interrupted => tracing::warn!(interrupted, "backup: runs were cut off when zendiloosd stopped"),
+    }
+    let backup_schedule = spawn_backup_schedule(backup.clone());
+
     let snapshots = spawn_snapshot_schedules(sharing.clone());
     let migrations = spawn_permission_migrations(sharing.clone());
     let self_tests = spawn_self_test_schedule(storage.self_test_schedule.clone());
@@ -418,6 +440,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         certificates,
         firewall,
         vms,
+        backup,
     };
     let state = ApiState::new(use_cases, config.secure_cookies);
     let app = zendiloos_api::router(state);
@@ -459,6 +482,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     firewall_upkeep.abort();
     monitor.abort();
     snapshots.abort();
+    backup_schedule.abort();
     migrations.abort();
     self_tests.abort();
     channel_delivery.abort();
@@ -473,11 +497,8 @@ async fn serve(config: Config) -> anyhow::Result<()> {
 /// operations need it.
 /// The system and the files agent, and the system agent once more with
 /// the patience apps need. The simulation serves all.
-async fn agent_transports(
-    config: &Config,
-) -> (Arc<dyn AgentTransport>, Arc<dyn AgentTransport>, Arc<dyn AgentTransport>, Arc<dyn AgentTransport>) {
-    type Transport = Arc<dyn AgentTransport>;
-    let (system, files, patient, moving): (Transport, Transport, Transport, Transport) =
+async fn agent_transports(config: &Config) -> (Transport, Transport, Transport, Transport, Transport) {
+    let (system, files, patient, moving, backups): (Transport, Transport, Transport, Transport, Transport) =
         match config.agent.transport {
             AgentTransportKind::Unix => (
                 // Long enough for whatever the agent runs once it started
@@ -500,13 +521,20 @@ async fn agent_transports(
                 Arc::new(UnixTransport::new(&config.agent.socket, DOCKER_PATIENCE)),
                 // Copying Docker's data to another pool; the agent gives up after six hours.
                 Arc::new(UnixTransport::new(&config.agent.socket, Duration::from_secs(6 * 3600 + 600))),
+                // Backup tasks: a listing of a server's folder within minutes;
+                // a run or restore within a day, the agent's unit ten minutes
+                // sooner.
+                Arc::new(
+                    UnixTransport::new(&config.agent.socket, Duration::from_secs(600))
+                        .with_long(Duration::from_secs(24 * 3600 + 1200)),
+                ),
             ),
             AgentTransportKind::Simulated => {
                 tracing::warn!("using the simulated agent: privileged operations are not carried out");
                 // Share contents are real files, kept with the state.
                 let simulated =
                     Arc::new(SimulatedAgent::new().with_files(config.state_dir.join("simulated-volumes")));
-                (simulated.clone(), simulated.clone(), simulated.clone(), simulated)
+                (simulated.clone(), simulated.clone(), simulated.clone(), simulated.clone(), simulated)
             }
         };
     for (role, transport) in [("system", &system), ("files", &files)] {
@@ -515,8 +543,10 @@ async fn agent_transports(
             Err(error) => tracing::warn!(role, error = %error_chain(&error), "agent not reachable"),
         }
     }
-    (system, files, patient, moving)
+    (system, files, patient, moving, backups)
 }
+
+type Transport = Arc<dyn AgentTransport>;
 
 /// `outer: inner: innermost`, so the log shows the root cause.
 fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
@@ -610,6 +640,30 @@ fn spawn_storage_monitor(
             if let Err(error) = inventory.observe(&RequestContext::default()).await {
                 tracing::warn!(%error, "cannot note the disks present");
             }
+        }
+    })
+}
+
+/// Starts backup tasks whose time came or whose drive was plugged in,
+/// every minute (a missed one on the first look), and forgets runs older
+/// than the log keeps once a day.
+fn spawn_backup_schedule(backup: Backups) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut every_minute = tokio::time::interval(Duration::from_secs(60));
+        every_minute.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut minutes: u32 = 0;
+        loop {
+            every_minute.tick().await;
+            for job in backup.run_due().await {
+                tracing::info!(job = job.id.get(), "backup: a task backs up on its own");
+            }
+            if minutes % (24 * 60) == 5 {
+                let forgotten = backup.purge_log().await;
+                if forgotten > 0 {
+                    tracing::info!(forgotten, "backup: forgot runs older than the log keeps");
+                }
+            }
+            minutes = minutes.wrapping_add(1);
         }
     })
 }

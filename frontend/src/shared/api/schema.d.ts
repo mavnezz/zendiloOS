@@ -594,6 +594,321 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/backup/key": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * The NAS's public key for SSH servers, made the first time it is asked
+         *     for; its private key never leaves the NAS. Needs `backup.manage`.
+         */
+        post: operations["backup_key"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/backup/plugin": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** What the plugin offers. Needs `backup.manage`. */
+        get: operations["backup_plugin"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/backup/plugin/install": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Installs rsync and the SSH client from Debian, as a job. Needs
+         *     `backup.manage`.
+         */
+        post: operations["install_backup_plugin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/backup/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every task's runs, newest first. Needs `backup.manage`. */
+        get: operations["backup_runs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/backup/runs/{id}/transfers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** A run's transfer list, as kept. Needs `backup.manage`. */
+        get: operations["backup_run_transfers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/backup/servers/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Lists a folder of a server, to see that it can be reached as given.
+         *     Needs `backup.manage`.
+         */
+        post: operations["check_backup_server"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/backup/servers/host-keys": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** The host keys an SSH server offers. Needs `backup.manage`. */
+        post: operations["backup_host_keys"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/backup/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The plugin's settings. Needs `backup.manage`. */
+        get: operations["backup_settings"];
+        /** Changes the plugin's settings. Needs `backup.manage`. */
+        put: operations["set_backup_settings"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/backup/shares/{id}/readers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Who may read share `id`: whoever may, reads what is backed up into it.
+         *     Needs `backup.manage`.
+         */
+        get: operations["backup_share_readers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/backup/tasks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every task with how it stands. Needs `backup.manage`. */
+        get: operations["list_backup_tasks"];
+        put?: never;
+        /** Makes a task. Needs `backup.manage`. */
+        post: operations["create_backup_task"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/backup/tasks/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** A task. Needs `backup.manage`. */
+        get: operations["get_backup_task"];
+        /** Changes a task; its folder in the target stays. Needs `backup.manage`. */
+        put: operations["update_backup_task"];
+        post?: never;
+        /**
+         * Forgets a task and its log; what it backed up stays. Needs
+         *     `backup.manage`.
+         */
+        delete: operations["delete_backup_task"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/backup/tasks/{id}/browse": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The entries of a folder of a version. Needs `backup.manage`. */
+        get: operations["browse_backup_task"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/backup/tasks/{id}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Restores from a task's backup, as a job: what is restored into a share
+         *     takes the folder's owner and the share's group and ACL. Needs
+         *     `backup.manage`.
+         */
+        post: operations["restore_backup_task"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/backup/tasks/{id}/run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** "Back up now", as a job. Needs `backup.manage`. */
+        post: operations["run_backup_task"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/backup/tasks/{id}/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** A task's runs, newest first. Needs `backup.manage`. */
+        get: operations["backup_task_runs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/backup/tasks/{id}/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Stops a task's run. Needs `backup.manage`. */
+        post: operations["stop_backup_task"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/backup/tasks/{id}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What a task's backup holds: looked at on its target. Needs
+         *     `backup.manage`.
+         */
+        get: operations["backup_task_versions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/certificates": {
         parameters: {
             query?: never;
@@ -4409,6 +4724,71 @@ export interface components {
             tag: string;
             version: string;
         };
+        /** @description An entry of a folder in a backup or on a server. */
+        BackupEntry: {
+            /** Format: int64 */
+            bytes: number;
+            kind: components["schemas"]["BackupEntryKind"];
+            /** Format: int64 */
+            modified?: number | null;
+            name: string;
+        };
+        /** @enum {string} */
+        BackupEntryKind: "folder" | "file" | "link" | "other";
+        /** @enum {string} */
+        BackupExisting: "skip" | "replace";
+        /** @enum {string} */
+        BackupFrequency: "hourly" | "daily" | "weekly";
+        /** @description A host key an SSH server offers, to compare with the server's own and pin. */
+        BackupHostKey: {
+            /** @description `SHA256:…`, as `ssh-keygen -lf` shows it. */
+            fingerprint: string;
+            line: string;
+        };
+        BackupHostKeysRequest: {
+            host: string;
+            /** Format: int32 */
+            port: number;
+        };
+        BackupKey: {
+            /** @description The NAS's public key, to put into a server's `authorized_keys`. */
+            public_key: string;
+        };
+        BackupMode: {
+            /** Format: int32 */
+            keep_changed_days?: number | null;
+            /** @enum {string} */
+            kind: "mirror";
+        } | {
+            /** Format: int32 */
+            keep_days?: number | null;
+            /** Format: int32 */
+            keep_last?: number | null;
+            /** @enum {string} */
+            kind: "versioned";
+        };
+        /** @enum {string} */
+        BackupOutcome: "running" | "succeeded" | "partial" | "failed" | "stopped" | "interrupted";
+        /**
+         * @description Where a task reads or writes: a folder of a share, of a removable drive
+         *     (by its file system's UUID), or of the task's server.
+         */
+        BackupPlace: {
+            /** @enum {string} */
+            kind: "share";
+            path: string;
+            /** Format: int64 */
+            share_id: number;
+        } | {
+            drive: string;
+            /** @enum {string} */
+            kind: "drive";
+            path: string;
+        } | {
+            /** @enum {string} */
+            kind: "server";
+            path: string;
+        };
         /** @description A volume's backup plan as set. */
         BackupPlanRequest: {
             /**
@@ -4489,6 +4869,15 @@ export interface components {
             weekday?: number | null;
         };
         /**
+         * @description The plugin: rsync and the SSH client installed, and the NAS's public
+         *     key for SSH servers once made.
+         */
+        BackupPlugin: {
+            installed: boolean;
+            public_key?: string | null;
+            ssh: boolean;
+        };
+        /**
          * @description Who may read a share backups may go to: they read all of a backed-up
          *     volume's contents.
          */
@@ -4500,8 +4889,196 @@ export interface components {
             /** @description Hosts and networks it is exported to over NFS. */
             nfs: string[];
         };
+        BackupRestoreRequest: {
+            existing: components["schemas"]["BackupExisting"];
+            /** @description Folders and files in it; none for all. */
+            paths?: string[];
+            to?: components["schemas"]["BackupPlace"] | null;
+            /**
+             * Format: int64
+             * @description A version, by when its run started; left out: the mirror's copy.
+             */
+            version?: number | null;
+        };
+        /** @description A run, as logged. */
+        BackupRun: {
+            /** @description Who started it by hand. */
+            by?: string | null;
+            /** Format: int64 */
+            bytes: number;
+            error?: string | null;
+            /** Format: int64 */
+            files: number;
+            /** Format: int64 */
+            finished_at?: number | null;
+            /** Format: int64 */
+            id: number;
+            /** Format: int64 */
+            job_id?: number | null;
+            outcome: components["schemas"]["BackupOutcome"];
+            /** Format: int64 */
+            started_at: number;
+            /** Format: int64 */
+            task_id: number;
+            /**
+             * Format: int64
+             * @description Entries of its transfer list (the first 5000 are kept).
+             */
+            transfers: number;
+            trigger: components["schemas"]["BackupTrigger"];
+            /** @description The version it made. */
+            version?: string | null;
+        };
+        /** @description When a task backs up on its own, in the NAS's time zone. */
+        BackupSchedule: {
+            frequency: components["schemas"]["BackupFrequency"];
+            /**
+             * Format: int32
+             * @description Not used hourly.
+             */
+            hour?: number;
+            /** Format: int32 */
+            minute: number;
+            /**
+             * Format: int32
+             * @description 0 (Monday) to 6, weekly only.
+             */
+            weekday?: number | null;
+        };
+        /**
+         * @description An rsync server. A daemon needs its module; SSH its host key, as the
+         *     administrator compared and pinned it.
+         */
+        BackupServer: {
+            fingerprint?: string | null;
+            host: string;
+            /** @description `ssh-ed25519 AAAA…` */
+            host_key?: string | null;
+            module?: string | null;
+            /** Format: int32 */
+            port: number;
+            transport: components["schemas"]["BackupTransport"];
+            user: string;
+        };
+        BackupServerCheck: {
+            /**
+             * @description A daemon's password; left out, the one task `task_id` has stored for
+             *     the same daemon.
+             */
+            password?: string | null;
+            path: string;
+            server: components["schemas"]["BackupServer"];
+            /** Format: int64 */
+            task_id?: number | null;
+        };
+        /** @description The plugin's settings. */
+        BackupSettings: {
+            /**
+             * Format: int32
+             * @description KiB/s for tasks that follow the default; 0 is no limit.
+             */
+            bwlimit_kib: number;
+            /**
+             * Format: int32
+             * @description Days the log is kept.
+             */
+            log_days: number;
+        };
+        /** @description Who reads what is backed up into a share. */
+        BackupShareReaders: {
+            accounts: string[];
+            groups: string[];
+            /** @description Computers it is exported to over NFS. */
+            nfs: string[];
+        };
         /** @enum {string} */
         BackupState: "running" | "succeeded" | "failed";
+        /**
+         * @description A task with how it stands. A daemon's password is never shown, only
+         *     whether one is stored.
+         */
+        BackupTask: {
+            /** Format: int32 */
+            bwlimit_kib?: number | null;
+            /** Format: int64 */
+            created_at: number;
+            excludes: string[];
+            /** @description The folder in the target holding its backup. */
+            folder: string;
+            hidden: boolean;
+            /** Format: int64 */
+            id: number;
+            kind: components["schemas"]["BackupTaskKind"];
+            last_run?: components["schemas"]["BackupRun"] | null;
+            mode: components["schemas"]["BackupMode"];
+            name: string;
+            /**
+             * Format: int64
+             * @description When its schedule runs it next.
+             */
+            next_at?: number | null;
+            notify_success: boolean;
+            on_plug: boolean;
+            password_set: boolean;
+            /** @description Its places on the NAS are there now (a server's is not looked at). */
+            reachable: boolean;
+            running: boolean;
+            schedule?: components["schemas"]["BackupSchedule"] | null;
+            server?: components["schemas"]["BackupServer"] | null;
+            source: components["schemas"]["BackupPlace"];
+            target: components["schemas"]["BackupPlace"];
+        };
+        /** @enum {string} */
+        BackupTaskKind: "local" | "push" | "pull";
+        /** @description A task as made or changed. */
+        BackupTaskRequest: {
+            /**
+             * Format: int32
+             * @description KiB/s; none follows the settings, 0 is no limit.
+             */
+            bwlimit_kib?: number | null;
+            excludes: string[];
+            /** @description Whether names starting with `.` are backed up. */
+            hidden: boolean;
+            mode: components["schemas"]["BackupMode"];
+            name: string;
+            notify_success?: boolean;
+            /** @description Back up when its target drive is plugged in. */
+            on_plug?: boolean;
+            /**
+             * @description A daemon's password; left out or empty, a stored one stays for the
+             *     same daemon, port, user and module.
+             */
+            password?: string | null;
+            schedule?: components["schemas"]["BackupSchedule"] | null;
+            server?: components["schemas"]["BackupServer"] | null;
+            source: components["schemas"]["BackupPlace"];
+            target: components["schemas"]["BackupPlace"];
+        };
+        /** @description One entry of a run's transfer list. */
+        BackupTransfer: {
+            /**
+             * @description rsync's itemized change: `>f+++++++++` a new file, `*deleting` one
+             *     deleted.
+             */
+            change: string;
+            path: string;
+        };
+        BackupTransfers: {
+            run: components["schemas"]["BackupRun"];
+            transfers: components["schemas"]["BackupTransfer"][];
+        };
+        /** @enum {string} */
+        BackupTransport: "daemon" | "ssh";
+        /** @enum {string} */
+        BackupTrigger: "manual" | "schedule" | "plug";
+        /** @description What a task's backup holds to restore from. */
+        BackupVersions: {
+            /** @description A mirror's copy is there. */
+            current: boolean;
+            /** @description Complete versions, by when their runs started, newest first. */
+            versions: number[];
+        };
         /** @description What becomes of an interface a change touches. */
         Becomes: {
             device: string;
@@ -6048,7 +6625,7 @@ export interface components {
             older?: string | null;
         };
         /** @enum {string} */
-        KindGroup: "storage" | "folders" | "system" | "certificates" | "security" | "docker";
+        KindGroup: "storage" | "folders" | "system" | "certificates" | "security" | "docker" | "backup";
         /** @enum {string} */
         KindLevel: "info" | "success" | "warning" | "error";
         /** @description What the server sends. */
@@ -9668,6 +10245,686 @@ export interface operations {
             };
             /** @description `too_many_attempts` */
             429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    backup_key: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupKey"];
+                };
+            };
+            /** @description `backup_not_installed` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    backup_plugin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupPlugin"];
+                };
+            };
+        };
+    };
+    install_backup_plugin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description `backup_installed` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    backup_runs: {
+        parameters: {
+            query?: {
+                /** @description 1 to 500, 50 unless told otherwise. */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupRun"][];
+                };
+            };
+        };
+    };
+    backup_run_transfers: {
+        parameters: {
+            query?: {
+                offset?: number;
+                /** @description 1 to 1000, 200 unless told otherwise. */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupTransfers"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    check_backup_server: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BackupServerCheck"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupEntry"][];
+                };
+            };
+            /** @description `host_key_changed` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `agent_failed`: rsync could not reach it, in its words */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    backup_host_keys: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BackupHostKeysRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupHostKey"][];
+                };
+            };
+            /** @description `agent_failed`: the server did not answer */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    backup_settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupSettings"];
+                };
+            };
+        };
+    };
+    set_backup_settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BackupSettings"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupSettings"];
+                };
+            };
+            /** @description `invalid_input` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    backup_share_readers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupShareReaders"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    list_backup_tasks: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupTask"][];
+                };
+            };
+        };
+    };
+    create_backup_task: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BackupTaskRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupTask"];
+                };
+            };
+            /** @description `backup_not_installed`, `name_taken`, `folder_taken`, `share_missing` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    get_backup_task: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupTask"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    update_backup_task: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BackupTaskRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupTask"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `task_running`, `name_taken`, `folder_taken` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_backup_task: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `task_running` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    browse_backup_task: {
+        parameters: {
+            query?: {
+                /** @description A version, by when its run started; left out: the mirror's copy. */
+                version?: number;
+                /** @description A folder in it; left out: its top. */
+                path?: string;
+            };
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupEntry"][];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    restore_backup_task: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BackupRestoreRequest"];
+            };
+        };
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `task_running`, `restore_running`, `drive_missing` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    run_backup_task: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `task_running`, `restore_running`, `drive_missing`, `share_missing`, `update_running` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    backup_task_runs: {
+        parameters: {
+            query?: {
+                /** @description 1 to 500, 50 unless told otherwise. */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupRun"][];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    stop_backup_task: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `task_not_running` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    backup_task_versions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupVersions"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `drive_missing`, `host_key_changed` */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE backup_runs SET finished_at = ?, outcome = ?, files = ?, bytes = ?, version = ?, error = ?,\n                 transfers = ?\n             WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 8
+    },
+    "nullable": []
+  },
+  "hash": "58333780e5dedd6969939220bda87c76b7de691490e33020a27f21e09ba7b855"
+}

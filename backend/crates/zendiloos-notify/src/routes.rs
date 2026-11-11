@@ -33,6 +33,8 @@ pub enum Group {
     Security,
     /// The Docker app: backups of volumes.
     Docker,
+    /// The Backup app: its tasks' runs.
+    Backup,
 }
 
 impl Group {
@@ -44,6 +46,7 @@ impl Group {
             Self::Certificates => "certificates",
             Self::Security => "security",
             Self::Docker => "docker",
+            Self::Backup => "backup",
         }
     }
 }
@@ -64,7 +67,7 @@ const fn kind(key: &'static str, group: Group, level: Level) -> Kind {
 }
 
 /// Every kind zendiloOS raises, in the order the table shows them.
-pub const KINDS: [Kind; 17] = [
+pub const KINDS: [Kind; 20] = [
     // Degraded a warning; faulted, removed or unavailable an error.
     kind("pool_trouble", Group::Storage, Level::Error),
     kind("pool_recovered", Group::Storage, Level::Success),
@@ -87,6 +90,10 @@ pub const KINDS: [Kind; 17] = [
     kind("certificate_not_taken", Group::Certificates, Level::Error),
     kind("firewall_blocked", Group::Security, Level::Warning),
     kind("docker_backup_failed", Group::Docker, Level::Error),
+    kind("backup_failed", Group::Backup, Level::Error),
+    // Complete but for files that could not be read.
+    kind("backup_partial", Group::Backup, Level::Warning),
+    kind("backup_succeeded", Group::Backup, Level::Success),
 ];
 
 /// The kind a notification of `code` at `level` belongs to.
@@ -166,10 +173,11 @@ mod tests {
                 Group::System,
                 Group::Certificates,
                 Group::Security,
-                Group::Docker
+                Group::Docker,
+                Group::Backup
             ]
             .map(Group::as_str),
-            ["storage", "folders", "system", "certificates", "security", "docker"]
+            ["storage", "folders", "system", "certificates", "security", "docker", "backup"]
         );
     }
 

@@ -1,4 +1,5 @@
 use zendiloos_apps::application::{Catalogs, Docker, Installs, Templates};
+use zendiloos_backup::application::Backups;
 use zendiloos_certificates::application::Certificates;
 use zendiloos_containers::application::Containers;
 use zendiloos_firewall::application::Firewall;
@@ -35,6 +36,7 @@ pub struct ApiState {
     pub(crate) certificates: Certificates,
     pub(crate) firewall: Firewall,
     pub(crate) vms: Vms,
+    pub(crate) backup: Backups,
     /// Session cookies get `Secure` and the `__Host-` prefix. Only turn
     /// this off where the interface is reached over plain HTTP.
     pub(crate) secure_cookies: bool,
@@ -60,6 +62,7 @@ pub struct UseCases {
     pub certificates: Certificates,
     pub firewall: Firewall,
     pub vms: Vms,
+    pub backup: Backups,
 }
 
 impl ApiState {
@@ -83,6 +86,7 @@ impl ApiState {
             certificates,
             firewall,
             vms,
+            backup,
         } = use_cases;
         Self {
             system,
@@ -103,6 +107,7 @@ impl ApiState {
             certificates,
             firewall,
             vms,
+            backup,
             secure_cookies,
         }
     }

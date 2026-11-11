@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT server_password FROM backup_tasks WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "server_password",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "backup_tasks",
+            "name": "server_password"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "cd247004f37de4f2e01eb1516ffbf2724bc5d95e76d12c4f2f1f65b1fe01a92f"
+}

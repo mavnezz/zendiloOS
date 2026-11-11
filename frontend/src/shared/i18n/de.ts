@@ -1541,6 +1541,7 @@ const de: Messages = {
         certificates: 'Zertifikate',
         security: 'Sicherheit',
         docker: 'Docker',
+        backup: 'Sicherung',
       },
       kinds: {
         pool_trouble: 'Pool beeinträchtigt oder ausgefallen',
@@ -1560,6 +1561,9 @@ const de: Messages = {
         certificate_not_taken: 'Neues Zertifikat nicht übernommen',
         firewall_blocked: 'Firewall sperrt einen Dienst',
         docker_backup_failed: 'Sicherung eines Docker-Volumes fehlgeschlagen',
+        backup_failed: 'Sicherungsaufgabe fehlgeschlagen',
+        backup_partial: 'Sicherungsaufgabe unvollständig',
+        backup_succeeded: 'Sicherungsaufgabe abgeschlossen',
       },
     },
   },
@@ -3105,6 +3109,18 @@ const de: Messages = {
     certificate_not_taken: {
       title: 'Neues Zertifikat für {name} nicht übernommen',
       body: '{reason} Die Weboberfläche zeigt weiter das bisherige; sie übernimmt das neue bei der täglichen Prüfung auf Erneuerungen, oder es lässt sich im ACME-Client (App Center) erneut ausstellen.',
+    },
+    backup_failed: {
+      title: 'Sicherung „{task}“ fehlgeschlagen',
+      body: '{reason} Im Protokoll der App „Sicherung“ steht, was geschah.',
+    },
+    backup_partial: {
+      title: 'Sicherung „{task}“ unvollständig',
+      body: 'Einige Dateien konnten nicht gelesen werden oder verschwanden währenddessen: {reason}',
+    },
+    backup_succeeded: {
+      title: 'Sicherung „{task}“ abgeschlossen',
+      body: '{files} Dateien übertragen.',
     },
     docker_backup_failed: {
       title: 'Keine Sicherung des Volumes {volume}',

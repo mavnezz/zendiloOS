@@ -148,6 +148,32 @@ pub fn message(notification: &Notification, host: &str, language: Language) -> M
                 param("reason")
             ),
         ),
+        "backup_failed" if german => (
+            format!("Sicherung „{}“ fehlgeschlagen", param("task")),
+            format!("{}\nIm Protokoll der App „Sicherung“ steht, was geschah.", param("reason")),
+        ),
+        "backup_failed" => (
+            format!("Backup \"{}\" failed", param("task")),
+            format!("{}\nThe Backup app's log says what happened.", param("reason")),
+        ),
+        "backup_partial" if german => (
+            format!("Sicherung „{}“ unvollständig", param("task")),
+            format!(
+                "Einige Dateien konnten nicht gelesen werden oder verschwanden währenddessen:\n{}",
+                param("reason")
+            ),
+        ),
+        "backup_partial" => (
+            format!("Backup \"{}\" is incomplete", param("task")),
+            format!("Some files could not be read, or vanished meanwhile:\n{}", param("reason")),
+        ),
+        "backup_succeeded" if german => (
+            format!("Sicherung „{}“ abgeschlossen", param("task")),
+            format!("{} Dateien übertragen.", param("files")),
+        ),
+        "backup_succeeded" => {
+            (format!("Backup \"{}\" done", param("task")), format!("{} files transferred.", param("files")))
+        }
         "removable_pulled" if german => (
             format!("{} wurde abgezogen, ohne ausgeworfen zu werden", param("drive")),
             "Werfen Sie Laufwerke aus, bevor Sie sie abziehen; was gerade geschrieben wurde, kann fehlen."
@@ -405,6 +431,24 @@ mod tests {
                 vec![("volume", "tesla_db"), ("reason", "No space left on device")],
                 "No backup of the volume tesla_db",
                 "Keine Sicherung des Volumes tesla_db",
+            ),
+            (
+                "backup_failed",
+                vec![("task", "Photos"), ("reason", "Connection refused")],
+                "Backup \"Photos\" failed",
+                "Sicherung „Photos“ fehlgeschlagen",
+            ),
+            (
+                "backup_partial",
+                vec![("task", "Photos"), ("reason", "file has vanished")],
+                "Backup \"Photos\" is incomplete",
+                "Sicherung „Photos“ unvollständig",
+            ),
+            (
+                "backup_succeeded",
+                vec![("task", "Photos"), ("files", "12")],
+                "Backup \"Photos\" done",
+                "Sicherung „Photos“ abgeschlossen",
             ),
             (
                 "firewall_blocked",

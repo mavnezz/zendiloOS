@@ -407,7 +407,7 @@ impl Backups {
         if names.is_empty() {
             return;
         }
-        let pruned = self.ports.host.prune(&plan.target, &names, password, context).await;
+        let pruned = self.ports.host.prune(task.id, &plan.target, &names, password, context).await;
         match pruned {
             Ok(()) => tracing::info!(
                 task = task.id,

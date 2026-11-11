@@ -9,6 +9,7 @@ mod accounts;
 mod app_sources;
 mod audit;
 mod backup;
+mod backup_tasks;
 mod certificates;
 mod channels;
 mod enclosure;
@@ -49,6 +50,7 @@ use sqlx::sqlite::{
 pub use accounts::SqliteAccounts;
 pub use app_sources::SqliteAppSources;
 pub use audit::SqliteAuditLog;
+pub use backup_tasks::{SqliteBackupRuns, SqliteBackupSettings, SqliteBackupTasks};
 pub use certificates::SqliteCertificates;
 pub use channels::{SqliteAccountAddresses, SqliteChannels};
 pub use enclosure::{SqliteDiskInventory, SqliteEnclosure};

@@ -309,10 +309,11 @@ pub trait BackupHost: Send + Sync {
     ) -> Result<RunReport, HostError>;
     /// Stops a task's run; none running is no failure.
     async fn stop(&self, task: i64, context: &RequestContext) -> Result<(), HostError>;
-    /// Removes versions (and kept changes) of a task's folder `at` by
+    /// Removes versions (and kept changes) of task `task`'s folder `at` by
     /// their names in it.
     async fn prune(
         &self,
+        task: i64,
         at: &Location,
         names: &[String],
         password: Option<&Secret>,

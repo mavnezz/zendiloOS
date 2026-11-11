@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT change, path FROM backup_transfers WHERE run_id = ? ORDER BY seq LIMIT ? OFFSET ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "change",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "backup_transfers",
+            "name": "change"
+          }
+        }
+      },
+      {
+        "name": "path",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "backup_transfers",
+            "name": "path"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "a520a6b624e882d91bdfc1924d784e50fba9b7acef79fb1657ee17e32e67847a"
+}

@@ -458,6 +458,7 @@ impl BackupHost for FakeHost {
 
     async fn prune(
         &self,
+        _: i64,
         at: &Location,
         names: &[String],
         _: Option<&Secret>,

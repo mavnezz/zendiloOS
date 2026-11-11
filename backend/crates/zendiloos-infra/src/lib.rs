@@ -9,6 +9,7 @@
 
 pub mod agent;
 pub mod apps;
+pub mod backup;
 mod blocking;
 mod clock;
 pub mod containers;

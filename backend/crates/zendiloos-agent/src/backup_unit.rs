@@ -645,7 +645,11 @@ impl Unit<'_> {
     ) -> Result<Ended, Fail> {
         let program = Program::new(&self.job.rsync).map_err(|e| failed(e.to_string()))?;
         let home = self.scratch.0.display().to_string();
-        let surroundings = Surroundings { variables: vec![("HOME".into(), home)], directory: None };
+        // Times as UTC, in listings too.
+        let surroundings = Surroundings {
+            variables: vec![("HOME".into(), home), ("TZ".into(), "UTC".into())],
+            directory: None,
+        };
         // The unit's own time limit ends a run that takes too long.
         let limits = Limits { timeout: std::time::Duration::from_secs(7 * 24 * 3600), max_stdout: 0 };
         let mut last_told: Option<std::time::Instant> = None;

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE backup_tasks SET since = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "a50f3bd273432d8cfa3b6c71c18446c06f10b98ae4fea01367e5cf4165c88ea5"
+}

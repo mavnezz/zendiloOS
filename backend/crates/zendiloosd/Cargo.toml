@@ -28,6 +28,7 @@ zendiloos-sim.workspace = true
 zendiloos-storage.workspace = true
 zendiloos-system.workspace = true
 zendiloos-vms.workspace = true
+zendiloos-backup.workspace = true
 zendiloos-updates.workspace = true
 anyhow.workspace = true
 axum.workspace = true

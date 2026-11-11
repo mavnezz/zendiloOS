@@ -1834,6 +1834,1020 @@
         ]
       }
     },
+    "/api/v1/backup/key": {
+      "post": {
+        "tags": [
+          "backup"
+        ],
+        "summary": "The NAS's public key for SSH servers, made the first time it is asked\nfor; its private key never leaves the NAS. Needs `backup.manage`.",
+        "operationId": "backup_key",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackupKey"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`backup_not_installed`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/backup/plugin": {
+      "get": {
+        "tags": [
+          "backup"
+        ],
+        "summary": "What the plugin offers. Needs `backup.manage`.",
+        "operationId": "backup_plugin",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackupPlugin"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/backup/plugin/install": {
+      "post": {
+        "tags": [
+          "backup"
+        ],
+        "summary": "Installs rsync and the SSH client from Debian, as a job. Needs\n`backup.manage`.",
+        "operationId": "install_backup_plugin",
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`backup_installed`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/backup/runs": {
+      "get": {
+        "tags": [
+          "backup"
+        ],
+        "summary": "Every task's runs, newest first. Needs `backup.manage`.",
+        "operationId": "backup_runs",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "1 to 500, 50 unless told otherwise.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/BackupRun"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/backup/runs/{id}/transfers": {
+      "get": {
+        "tags": [
+          "backup"
+        ],
+        "summary": "A run's transfer list, as kept. Needs `backup.manage`.",
+        "operationId": "backup_run_transfers",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "1 to 1000, 200 unless told otherwise.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackupTransfers"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/backup/servers/check": {
+      "post": {
+        "tags": [
+          "backup"
+        ],
+        "summary": "Lists a folder of a server, to see that it can be reached as given.\nNeeds `backup.manage`.",
+        "operationId": "check_backup_server",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BackupServerCheck"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/BackupEntry"
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`host_key_changed`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`agent_failed`: rsync could not reach it, in its words",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/backup/servers/host-keys": {
+      "post": {
+        "tags": [
+          "backup"
+        ],
+        "summary": "The host keys an SSH server offers. Needs `backup.manage`.",
+        "operationId": "backup_host_keys",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BackupHostKeysRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/BackupHostKey"
+                  }
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`agent_failed`: the server did not answer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/backup/settings": {
+      "get": {
+        "tags": [
+          "backup"
+        ],
+        "summary": "The plugin's settings. Needs `backup.manage`.",
+        "operationId": "backup_settings",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackupSettings"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "backup"
+        ],
+        "summary": "Changes the plugin's settings. Needs `backup.manage`.",
+        "operationId": "set_backup_settings",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BackupSettings"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackupSettings"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/backup/shares/{id}/readers": {
+      "get": {
+        "tags": [
+          "backup"
+        ],
+        "summary": "Who may read share `id`: whoever may, reads what is backed up into it.\nNeeds `backup.manage`.",
+        "operationId": "backup_share_readers",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackupShareReaders"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/backup/tasks": {
+      "get": {
+        "tags": [
+          "backup"
+        ],
+        "summary": "Every task with how it stands. Needs `backup.manage`.",
+        "operationId": "list_backup_tasks",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/BackupTask"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "backup"
+        ],
+        "summary": "Makes a task. Needs `backup.manage`.",
+        "operationId": "create_backup_task",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BackupTaskRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackupTask"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`backup_not_installed`, `name_taken`, `folder_taken`, `share_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/backup/tasks/{id}": {
+      "get": {
+        "tags": [
+          "backup"
+        ],
+        "summary": "A task. Needs `backup.manage`.",
+        "operationId": "get_backup_task",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackupTask"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "backup"
+        ],
+        "summary": "Changes a task; its folder in the target stays. Needs `backup.manage`.",
+        "operationId": "update_backup_task",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BackupTaskRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackupTask"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`task_running`, `name_taken`, `folder_taken`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "backup"
+        ],
+        "summary": "Forgets a task and its log; what it backed up stays. Needs\n`backup.manage`.",
+        "operationId": "delete_backup_task",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`task_running`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/backup/tasks/{id}/browse": {
+      "get": {
+        "tags": [
+          "backup"
+        ],
+        "summary": "The entries of a folder of a version. Needs `backup.manage`.",
+        "operationId": "browse_backup_task",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "version",
+            "in": "query",
+            "description": "A version, by when its run started; left out: the mirror's copy.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "description": "A folder in it; left out: its top.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/BackupEntry"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/backup/tasks/{id}/restore": {
+      "post": {
+        "tags": [
+          "backup"
+        ],
+        "summary": "Restores from a task's backup, as a job: what is restored into a share\ntakes the folder's owner and the share's group and ACL. Needs\n`backup.manage`.",
+        "operationId": "restore_backup_task",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BackupRestoreRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`task_running`, `restore_running`, `drive_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/backup/tasks/{id}/run": {
+      "post": {
+        "tags": [
+          "backup"
+        ],
+        "summary": "\"Back up now\", as a job. Needs `backup.manage`.",
+        "operationId": "run_backup_task",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`task_running`, `restore_running`, `drive_missing`, `share_missing`, `update_running`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/backup/tasks/{id}/runs": {
+      "get": {
+        "tags": [
+          "backup"
+        ],
+        "summary": "A task's runs, newest first. Needs `backup.manage`.",
+        "operationId": "backup_task_runs",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "1 to 500, 50 unless told otherwise.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/BackupRun"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/backup/tasks/{id}/stop": {
+      "post": {
+        "tags": [
+          "backup"
+        ],
+        "summary": "Stops a task's run. Needs `backup.manage`.",
+        "operationId": "stop_backup_task",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "409": {
+            "description": "`task_not_running`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/backup/tasks/{id}/versions": {
+      "get": {
+        "tags": [
+          "backup"
+        ],
+        "summary": "What a task's backup holds: looked at on its target. Needs\n`backup.manage`.",
+        "operationId": "backup_task_versions",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackupVersions"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`drive_missing`, `host_key_changed`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/certificates": {
       "get": {
         "tags": [
@@ -14395,6 +15409,244 @@
           }
         }
       },
+      "BackupEntry": {
+        "type": "object",
+        "description": "An entry of a folder in a backup or on a server.",
+        "required": [
+          "name",
+          "kind",
+          "bytes"
+        ],
+        "properties": {
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "kind": {
+            "$ref": "#/components/schemas/BackupEntryKind"
+          },
+          "modified": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "BackupEntryKind": {
+        "type": "string",
+        "enum": [
+          "folder",
+          "file",
+          "link",
+          "other"
+        ]
+      },
+      "BackupExisting": {
+        "type": "string",
+        "enum": [
+          "skip",
+          "replace"
+        ]
+      },
+      "BackupFrequency": {
+        "type": "string",
+        "enum": [
+          "hourly",
+          "daily",
+          "weekly"
+        ]
+      },
+      "BackupHostKey": {
+        "type": "object",
+        "description": "A host key an SSH server offers, to compare with the server's own and pin.",
+        "required": [
+          "line",
+          "fingerprint"
+        ],
+        "properties": {
+          "fingerprint": {
+            "type": "string",
+            "description": "`SHA256:…`, as `ssh-keygen -lf` shows it."
+          },
+          "line": {
+            "type": "string"
+          }
+        }
+      },
+      "BackupHostKeysRequest": {
+        "type": "object",
+        "required": [
+          "host",
+          "port"
+        ],
+        "properties": {
+          "host": {
+            "type": "string"
+          },
+          "port": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "BackupKey": {
+        "type": "object",
+        "required": [
+          "public_key"
+        ],
+        "properties": {
+          "public_key": {
+            "type": "string",
+            "description": "The NAS's public key, to put into a server's `authorized_keys`."
+          }
+        }
+      },
+      "BackupMode": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "An exact copy; what a run deletes or replaces kept that many days,\nor not at all.",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "keep_changed_days": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int32",
+                "minimum": 0
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "mirror"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A dated version per run; the newest `keep_last` and those younger\nthan `keep_days` kept (neither: all).",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "keep_days": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int32",
+                "minimum": 0
+              },
+              "keep_last": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int32",
+                "minimum": 0
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "versioned"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "BackupOutcome": {
+        "type": "string",
+        "enum": [
+          "running",
+          "succeeded",
+          "partial",
+          "failed",
+          "stopped",
+          "interrupted"
+        ]
+      },
+      "BackupPlace": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "share_id",
+              "path",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "share"
+                ]
+              },
+              "path": {
+                "type": "string"
+              },
+              "share_id": {
+                "type": "integer",
+                "format": "int64"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "drive",
+              "path",
+              "kind"
+            ],
+            "properties": {
+              "drive": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "drive"
+                ]
+              },
+              "path": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "In the daemon's module, or on the SSH server (from the user's home\nunless it starts with `/`).",
+            "required": [
+              "path",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "server"
+                ]
+              },
+              "path": {
+                "type": "string"
+              }
+            }
+          }
+        ],
+        "description": "Where a task reads or writes: a folder of a share, of a removable drive\n(by its file system's UUID), or of the task's server."
+      },
       "BackupPlanRequest": {
         "type": "object",
         "description": "A volume's backup plan as set.",
@@ -14530,6 +15782,28 @@
           }
         }
       },
+      "BackupPlugin": {
+        "type": "object",
+        "description": "The plugin: rsync and the SSH client installed, and the NAS's public\nkey for SSH servers once made.",
+        "required": [
+          "installed",
+          "ssh"
+        ],
+        "properties": {
+          "installed": {
+            "type": "boolean"
+          },
+          "public_key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ssh": {
+            "type": "boolean"
+          }
+        }
+      },
       "BackupReadersView": {
         "type": "object",
         "description": "Who may read a share backups may go to: they read all of a backed-up\nvolume's contents.",
@@ -14562,6 +15836,291 @@
           }
         }
       },
+      "BackupRestoreRequest": {
+        "type": "object",
+        "required": [
+          "existing"
+        ],
+        "properties": {
+          "existing": {
+            "$ref": "#/components/schemas/BackupExisting"
+          },
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Folders and files in it; none for all."
+          },
+          "to": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/BackupPlace",
+                "description": "A folder of a share or a drive; left out: where the task's source is."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "version": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "A version, by when its run started; left out: the mirror's copy."
+          }
+        },
+        "additionalProperties": false
+      },
+      "BackupRun": {
+        "type": "object",
+        "description": "A run, as logged.",
+        "required": [
+          "id",
+          "task_id",
+          "trigger",
+          "started_at",
+          "outcome",
+          "files",
+          "bytes",
+          "transfers"
+        ],
+        "properties": {
+          "by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who started it by hand."
+          },
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "files": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "finished_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "job_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/BackupOutcome"
+          },
+          "started_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "task_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "transfers": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Entries of its transfer list (the first 5000 are kept).",
+            "minimum": 0
+          },
+          "trigger": {
+            "$ref": "#/components/schemas/BackupTrigger"
+          },
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The version it made."
+          }
+        }
+      },
+      "BackupSchedule": {
+        "type": "object",
+        "description": "When a task backs up on its own, in the NAS's time zone.",
+        "required": [
+          "frequency",
+          "minute"
+        ],
+        "properties": {
+          "frequency": {
+            "$ref": "#/components/schemas/BackupFrequency"
+          },
+          "hour": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Not used hourly.",
+            "minimum": 0
+          },
+          "minute": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "weekday": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "0 (Monday) to 6, weekly only.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "BackupServer": {
+        "type": "object",
+        "description": "An rsync server. A daemon needs its module; SSH its host key, as the\nadministrator compared and pinned it.",
+        "required": [
+          "transport",
+          "host",
+          "port",
+          "user"
+        ],
+        "properties": {
+          "fingerprint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "host": {
+            "type": "string"
+          },
+          "host_key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`ssh-ed25519 AAAA…`"
+          },
+          "module": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "port": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "transport": {
+            "$ref": "#/components/schemas/BackupTransport"
+          },
+          "user": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "BackupServerCheck": {
+        "type": "object",
+        "required": [
+          "server",
+          "path"
+        ],
+        "properties": {
+          "password": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A daemon's password; left out, the one task `task_id` has stored for\nthe same daemon."
+          },
+          "path": {
+            "type": "string"
+          },
+          "server": {
+            "$ref": "#/components/schemas/BackupServer"
+          },
+          "task_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          }
+        },
+        "additionalProperties": false
+      },
+      "BackupSettings": {
+        "type": "object",
+        "description": "The plugin's settings.",
+        "required": [
+          "log_days",
+          "bwlimit_kib"
+        ],
+        "properties": {
+          "bwlimit_kib": {
+            "type": "integer",
+            "format": "int32",
+            "description": "KiB/s for tasks that follow the default; 0 is no limit.",
+            "minimum": 0
+          },
+          "log_days": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Days the log is kept.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "BackupShareReaders": {
+        "type": "object",
+        "description": "Who reads what is backed up into a share.",
+        "required": [
+          "accounts",
+          "groups",
+          "nfs"
+        ],
+        "properties": {
+          "accounts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "nfs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Computers it is exported to over NFS."
+          }
+        }
+      },
       "BackupState": {
         "type": "string",
         "enum": [
@@ -14569,6 +16128,288 @@
           "succeeded",
           "failed"
         ]
+      },
+      "BackupTask": {
+        "type": "object",
+        "description": "A task with how it stands. A daemon's password is never shown, only\nwhether one is stored.",
+        "required": [
+          "id",
+          "name",
+          "kind",
+          "folder",
+          "source",
+          "target",
+          "password_set",
+          "mode",
+          "on_plug",
+          "excludes",
+          "hidden",
+          "notify_success",
+          "created_at",
+          "running",
+          "reachable"
+        ],
+        "properties": {
+          "bwlimit_kib": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "excludes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "folder": {
+            "type": "string",
+            "description": "The folder in the target holding its backup."
+          },
+          "hidden": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/BackupTaskKind"
+          },
+          "last_run": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/BackupRun"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mode": {
+            "$ref": "#/components/schemas/BackupMode"
+          },
+          "name": {
+            "type": "string"
+          },
+          "next_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When its schedule runs it next."
+          },
+          "notify_success": {
+            "type": "boolean"
+          },
+          "on_plug": {
+            "type": "boolean"
+          },
+          "password_set": {
+            "type": "boolean"
+          },
+          "reachable": {
+            "type": "boolean",
+            "description": "Its places on the NAS are there now (a server's is not looked at)."
+          },
+          "running": {
+            "type": "boolean"
+          },
+          "schedule": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/BackupSchedule"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "server": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/BackupServer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source": {
+            "$ref": "#/components/schemas/BackupPlace"
+          },
+          "target": {
+            "$ref": "#/components/schemas/BackupPlace"
+          }
+        }
+      },
+      "BackupTaskKind": {
+        "type": "string",
+        "enum": [
+          "local",
+          "push",
+          "pull"
+        ]
+      },
+      "BackupTaskRequest": {
+        "type": "object",
+        "description": "A task as made or changed.",
+        "required": [
+          "name",
+          "source",
+          "target",
+          "mode",
+          "excludes",
+          "hidden"
+        ],
+        "properties": {
+          "bwlimit_kib": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "KiB/s; none follows the settings, 0 is no limit.",
+            "minimum": 0
+          },
+          "excludes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "hidden": {
+            "type": "boolean",
+            "description": "Whether names starting with `.` are backed up."
+          },
+          "mode": {
+            "$ref": "#/components/schemas/BackupMode"
+          },
+          "name": {
+            "type": "string"
+          },
+          "notify_success": {
+            "type": "boolean"
+          },
+          "on_plug": {
+            "type": "boolean",
+            "description": "Back up when its target drive is plugged in."
+          },
+          "password": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A daemon's password; left out or empty, a stored one stays for the\nsame daemon, port, user and module."
+          },
+          "schedule": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/BackupSchedule"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "server": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/BackupServer",
+                "description": "When one place is the server's."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source": {
+            "$ref": "#/components/schemas/BackupPlace"
+          },
+          "target": {
+            "$ref": "#/components/schemas/BackupPlace"
+          }
+        },
+        "additionalProperties": false
+      },
+      "BackupTransfer": {
+        "type": "object",
+        "description": "One entry of a run's transfer list.",
+        "required": [
+          "change",
+          "path"
+        ],
+        "properties": {
+          "change": {
+            "type": "string",
+            "description": "rsync's itemized change: `>f+++++++++` a new file, `*deleting` one\ndeleted."
+          },
+          "path": {
+            "type": "string"
+          }
+        }
+      },
+      "BackupTransfers": {
+        "type": "object",
+        "required": [
+          "run",
+          "transfers"
+        ],
+        "properties": {
+          "run": {
+            "$ref": "#/components/schemas/BackupRun"
+          },
+          "transfers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BackupTransfer"
+            }
+          }
+        }
+      },
+      "BackupTransport": {
+        "type": "string",
+        "enum": [
+          "daemon",
+          "ssh"
+        ]
+      },
+      "BackupTrigger": {
+        "type": "string",
+        "enum": [
+          "manual",
+          "schedule",
+          "plug"
+        ]
+      },
+      "BackupVersions": {
+        "type": "object",
+        "description": "What a task's backup holds to restore from.",
+        "required": [
+          "current",
+          "versions"
+        ],
+        "properties": {
+          "current": {
+            "type": "boolean",
+            "description": "A mirror's copy is there."
+          },
+          "versions": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "description": "Complete versions, by when their runs started, newest first."
+          }
+        }
       },
       "Becomes": {
         "oneOf": [
@@ -19101,7 +20942,8 @@
           "system",
           "certificates",
           "security",
-          "docker"
+          "docker",
+          "backup"
         ]
       },
       "KindLevel": {
@@ -25674,6 +27516,10 @@
     {
       "name": "vms",
       "description": "Virtual machines: the plugin, VMs through libvirt and their state"
+    },
+    {
+      "name": "backup",
+      "description": "Backup tasks: the plugin, tasks to places on the NAS and rsync servers, their log, restores"
     }
   ]
 }

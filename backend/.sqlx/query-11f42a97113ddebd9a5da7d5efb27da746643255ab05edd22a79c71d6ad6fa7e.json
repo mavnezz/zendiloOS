@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT log_days, bwlimit_kib FROM backup_settings WHERE id = 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "log_days",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "backup_settings",
+            "name": "log_days"
+          }
+        }
+      },
+      {
+        "name": "bwlimit_kib",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "backup_settings",
+            "name": "bwlimit_kib"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "11f42a97113ddebd9a5da7d5efb27da746643255ab05edd22a79c71d6ad6fa7e"
+}

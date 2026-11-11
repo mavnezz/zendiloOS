@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO backup_settings (id, log_days, bwlimit_kib) VALUES (1, ?, ?)\n             ON CONFLICT (id) DO UPDATE SET log_days = excluded.log_days, bwlimit_kib = excluded.bwlimit_kib",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "6adcc260235b90a1f6ee1ae18cfce375604015b5c3f6fb0209165aa581c52c74"
+}

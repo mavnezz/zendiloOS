@@ -1509,6 +1509,7 @@ const en = {
         certificates: 'Certificates',
         security: 'Security',
         docker: 'Docker',
+        backup: 'Backup',
       },
       kinds: {
         pool_trouble: 'Pool degraded or failing',
@@ -1528,6 +1529,9 @@ const en = {
         certificate_not_taken: 'New certificate not taken',
         firewall_blocked: 'Firewall blocks a service',
         docker_backup_failed: 'Backup of a Docker volume failed',
+        backup_failed: 'Backup task failed',
+        backup_partial: 'Backup task incomplete',
+        backup_succeeded: 'Backup task done',
       },
     },
   },
@@ -3051,6 +3055,18 @@ const en = {
     certificate_not_taken: {
       title: 'New certificate for {name} not taken',
       body: '{reason} The web interface still shows the one before; it takes the new one at the daily look for renewals, or issue it again in the ACME client (App Center).',
+    },
+    backup_failed: {
+      title: 'Backup "{task}" failed',
+      body: "{reason} The Backup app's log says what happened.",
+    },
+    backup_partial: {
+      title: 'Backup "{task}" is incomplete',
+      body: 'Some files could not be read, or vanished meanwhile: {reason}',
+    },
+    backup_succeeded: {
+      title: 'Backup "{task}" done',
+      body: '{files} files transferred.',
     },
     docker_backup_failed: {
       title: 'No backup of the volume {volume}',
