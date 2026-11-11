@@ -275,6 +275,11 @@ vm-vms-test:
 vm-network-test:
     scripts/vm-network-test.sh
 
+# The network taken over from ifupdown, kept once confirmed and given back when
+# not, in a throwaway VM (ZENDILOOS_VM=3) that the script makes an ifupdown machine
+vm-network-takeover-test:
+    scripts/vm-network-takeover-test.sh
+
 # An older package set up and in use, then the newest over it (see the script)
 [positional-arguments]
 vm-upgrade-test *args:
