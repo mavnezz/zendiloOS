@@ -647,7 +647,7 @@ set up, so that a failing disk is noticed without the interface open.
   change of a channel keeps its level; so new kinds reach existing
   channels as their level did before.
 - **Delivery.** Each notification raised goes into a queue in the
-  database (`notification_deliveries`, migration `0051`), once for each
+  database (`notification_deliveries`, migration `0052`), once for each
   channel its kind is routed to, and out from there at once, each channel
   on a task of its own, with 30 seconds per try; the last outcome is kept
   and shown. A try that fails for a reason that may pass (the network or
