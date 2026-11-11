@@ -1699,6 +1699,9 @@ const en = {
       ipv6Automatic: 'Automatically',
       ipv6Off: 'Off',
       switchedOff: 'Without IPv4 and IPv6 the interface is switched off.',
+      offQuestion: 'Really switch {name} off?',
+      offWarning:
+        'It then has no address. If you reach the NAS through it, this page stops answering, and the old settings return after two minutes unconfirmed.',
       switchOff: 'Switch off',
       apply: 'Apply',
     },
