@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO vm_images (id, name, bytes, origin, share, path, volume, added_at, ready)\n             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 9
+    },
+    "nullable": []
+  },
+  "hash": "684275623a714c4e15795b98fc3ee2c7bc1e43e780ce9655a7a4727a36b36497"
+}

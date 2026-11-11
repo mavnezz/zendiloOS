@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ref } from 'vue'
 
-import type { VmPlugin } from '@/shared/api/types'
+import type { VmImage, VmPlugin } from '@/shared/api/types'
 import { i18n } from '@/shared/i18n'
 import { useJobsStore } from '@/shared/jobs/store'
 import { formatBytes } from '@/shared/lib/format'
@@ -27,6 +27,17 @@ const PLUGIN: VmPlugin = {
   cores: 2,
   memory_bytes: 2 * 1024 ** 3,
   bridges: ['br0'],
+  image_upload_max_bytes: 32 * 1024 ** 3,
+}
+
+const DEBIAN: VmImage = {
+  id: '00000000000a',
+  name: 'debian-13.iso',
+  bytes: 700 * 1024 ** 2,
+  origin: { kind: 'share', share: 'media', path: 'isos/debian-13.iso' },
+  added_at: 1,
+  ready: true,
+  used_by: [],
 }
 
 const JOB = {
@@ -44,8 +55,8 @@ const JOB = {
   output: [],
 }
 
-async function mountWizard(taken: string[] = []) {
-  return mountApp(CreateVmDialog, { props: { open: true, plugin: PLUGIN, taken } })
+async function mountWizard(taken: string[] = [], images: VmImage[] = [DEBIAN]) {
+  return mountApp(CreateVmDialog, { props: { open: true, plugin: PLUGIN, taken, images } })
 }
 
 /** The step the step bar marks current. */
@@ -119,10 +130,12 @@ describe('the wizard for a new VM', () => {
     expect(button(t('vms.wizard.next')).disabled).toBe(true)
     await type('#vm-cpus', '1')
     await next()
-    expect(value('#vm-disk')).toBe('64')
+    expect(currentStep()).toBe(stepLabel(3, 'storage'))
+    expect(value('#vm-disk-0-size')).toBe('64')
+    expect(value('#vm-disk-0-bus')).toBe('sata')
   })
 
-  it('picks an ISO from a share and makes the VM', async () => {
+  it('gives the VM disks, an image of the library and cards, and makes it', async () => {
     on('POST', '/api/v1/vms', { vm: {}, job: JOB })
     const { wrapper } = await mountWizard()
     await type('#vm-name', ' Debian ')
@@ -130,40 +143,27 @@ describe('the wizard for a new VM', () => {
     await type('#vm-cpus', '1')
     await type('#vm-memory', '256')
     await next()
-    await type('#vm-disk', '1')
 
-    await click(t('vms.wizard.pickIso'))
-    const tree = () => [...document.querySelectorAll('[role="treeitem"]')]
-    const expand = (name: string) =>
-      tree()
-        .find((row) => row.textContent?.trim() === name)!
-        .querySelector('button')!
-        .click()
-    expand('media')
+    await type('#vm-disk-0-size', '1')
+    await click(t('vms.devices.addDisk'))
+    await type('#vm-disk-1-size', '0')
+    expect(page()).toContain(t('vms.wizard.invalid.disk'))
+    expect(button(t('vms.wizard.next')).disabled).toBe(true)
+    await type('#vm-disk-1-size', '4')
+    await type('#vm-disk-1-bus', 'sata')
+    await type('#vm-drive-0', DEBIAN.id)
+    // Booted from the drive, then the first disk; the second boots too, last.
+    document.querySelector<HTMLButtonElement>('[data-boot="disk:1"] [role="switch"]')!.click()
     await settle()
-    expand('isos')
-    await settle()
-    expect(page()).toContain('debian-13.iso')
-    expect(page()).not.toContain('notes.txt')
-    // A folder is no ISO.
-    const pickedFolder = tree().find((row) => row.textContent?.trim() === 'isos')!
-    pickedFolder.querySelectorAll('button')[1]!.click()
-    await settle()
-    expect(button(t('folderPicker.confirm')).disabled).toBe(true)
-    const file = tree().find((row) => row.textContent?.trim() === 'debian-13.iso')!
-    file.querySelectorAll('button')[1]!.click()
-    await settle()
-    await click(t('folderPicker.confirm'))
-    expect(document.querySelector('[data-testid="vm-iso"]')?.textContent?.trim()).toBe(
-      'media/isos/debian-13.iso',
-    )
     await next()
 
     expect(currentStep()).toBe(stepLabel(4, 'review'))
-    expect(page()).toContain(t('vms.wizard.bridge', { bridge: 'br0' }))
     expect(page()).toContain('256 MiB')
-    radio('data-network', 'br0').click()
-    await settle()
+    expect(page()).toContain('1 GiB, 4 GiB')
+    expect(page()).toContain('debian-13.iso')
+    await type('#vm-nic-0-network', 'br0')
+    await click(t('vms.devices.addNic'))
+    await type('#vm-nic-1-model', 'e1000e')
     await submit('#vm-wizard')
     expect(called('POST', '/api/v1/vms')[0]?.body).toEqual({
       name: 'Debian',
@@ -171,29 +171,50 @@ describe('the wizard for a new VM', () => {
       cpus: 1,
       memory_mib: 256,
       firmware: 'uefi',
-      disk_gib: 1,
-      network: { kind: 'bridge', bridge: 'br0' },
+      disks: [
+        { slot: 0, size_gib: 1, bus: 'virtio' },
+        { slot: 1, size_gib: 4, bus: 'sata' },
+      ],
+      nics: [
+        { slot: 0, model: 'virtio', network: { kind: 'bridge', bridge: 'br0' } },
+        { slot: 1, model: 'e1000e', network: { kind: 'user' } },
+      ],
+      drives: [{ slot: 0, image: DEBIAN.id }],
+      boot: [
+        { kind: 'drive', slot: 0 },
+        { kind: 'disk', slot: 0 },
+        { kind: 'disk', slot: 1 },
+      ],
       autostart: false,
-      iso: { share_id: 3, path: 'isos/debian-13.iso' },
     })
     expect(useJobsStore().list.map((job) => job.id)).toContain(7)
     expect(wrapper.emitted('created')).toHaveLength(1)
   })
 
+  it('leads to the library while it has no image', async () => {
+    const { wrapper } = await mountWizard([], [])
+    await type('#vm-name', 'box')
+    await next()
+    await next()
+    expect(page()).toContain(t('vms.devices.noImages'))
+    await click(t('vms.devices.toImages'))
+    expect(wrapper.emitted('library')).toHaveLength(1)
+  })
+
   it('says why the server refused', async () => {
-    on('POST', '/api/v1/vms', problem(422, 'iso_denied'))
+    on('POST', '/api/v1/vms', problem(409, 'vms_not_set_up'))
     await mountWizard()
     await type('#vm-name', 'box')
     for (let step = 0; step < 3; step++) await next()
     await submit('#vm-wizard')
-    expect(page()).toContain(t('errors.iso_denied'))
+    expect(page()).toContain(t('errors.vms_not_set_up'))
   })
 
   /** Without a bridge, the wizard says where one is made. */
   it('points to the Network page while the NAS has no bridge', async () => {
     const openApp = vi.fn()
     await mountApp(CreateVmDialog, {
-      props: { open: true, plugin: { ...PLUGIN, bridges: [] }, taken: [] },
+      props: { open: true, plugin: { ...PLUGIN, bridges: [] }, taken: [], images: [] },
       global: {
         provide: {
           [WINDOW_SECTION as symbol]: { section: ref(undefined), navigate: vi.fn(), openApp },
@@ -203,7 +224,8 @@ describe('the wizard for a new VM', () => {
     await type('#vm-name', 'box')
     for (let step = 0; step < 3; step++) await next()
     expect(page()).toContain(t('vms.wizard.noBridge'))
-    expect(document.querySelector('[data-network="br0"]')).toBeNull()
+    const networks = [...document.querySelectorAll<HTMLOptionElement>('#vm-nic-0-network option')]
+    expect(networks.map((option) => option.value)).toEqual([''])
     await click(t('vms.wizard.toNetwork'))
     expect(openApp).toHaveBeenCalledWith('settings', 'network')
   })

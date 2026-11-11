@@ -149,6 +149,8 @@ const KNOWN_PROBLEMS = [
   'vms_not_set_up',
   'vm_creating',
   'vm_not_running',
+  'vm_running',
+  'image_in_use',
   'iso_denied',
   'agent_failed',
 ] as const
@@ -198,6 +200,8 @@ export function problemMessage(error: unknown): string {
     'volume_in_use',
     // The VMs on a bridge.
     'device_in_use',
+    // The VMs with an image in a drive.
+    'image_in_use',
     // The containers a backup or restore keeps stopped.
     'containers_held',
     // libvirt's or apt's words.

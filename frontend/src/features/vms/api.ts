@@ -1,8 +1,15 @@
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
-import { computed } from 'vue'
+import { computed, onScopeDispose, shallowRef, type Ref } from 'vue'
 
-import { api, unwrap } from '@/shared/api/client'
-import type { CreateVmRequest, VirtualMachine } from '@/shared/api/types'
+import { ApiProblem, api, csrfToken, unwrap } from '@/shared/api/client'
+import { live } from '@/shared/api/live'
+import type {
+  CreateVmRequest,
+  UpdateVmRequest,
+  VirtualMachine,
+  VmImage,
+  VmStats,
+} from '@/shared/api/types'
 
 import { settling } from './lib/vms'
 
@@ -28,6 +35,17 @@ export function useVms(enabled: () => boolean = () => true) {
   })
 }
 
+/** The image library: asked again every few seconds while one is being added. */
+export function useVmImages(enabled: () => boolean = () => true) {
+  return useQuery({
+    queryKey: ['vms', 'images'],
+    queryFn: () => unwrap(api.GET('/api/v1/vms/images')),
+    enabled: computed(enabled),
+    refetchInterval: (query) =>
+      (query.state.data ?? []).some((image) => !image.ready) ? 3000 : false,
+  })
+}
+
 /** Changes to VMs; each reads the list again. */
 export function useVmActions() {
   const client = useQueryClient()
@@ -35,12 +53,14 @@ export function useVmActions() {
     try {
       return await request
     } finally {
-      await client.invalidateQueries({ queryKey: ['vms', 'list'] })
+      await client.invalidateQueries({ queryKey: ['vms'] })
     }
   }
   const id = (id: string) => ({ params: { path: { id } } })
   return {
     create: (body: CreateVmRequest) => refreshing(unwrap(api.POST('/api/v1/vms', { body }))),
+    update: (vm: string, body: UpdateVmRequest): Promise<VirtualMachine> =>
+      refreshing(unwrap(api.PUT('/api/v1/vms/{id}', { ...id(vm), body }))),
     start: (vm: string): Promise<VirtualMachine> =>
       refreshing(unwrap(api.POST('/api/v1/vms/{id}/start', id(vm)))),
     shutDown: (vm: string): Promise<VirtualMachine> =>
@@ -54,6 +74,95 @@ export function useVmActions() {
     remove: (vm: string, confirm: string) =>
       refreshing(unwrap(api.POST('/api/v1/vms/{id}/delete', { ...id(vm), body: { confirm } }))),
   }
+}
+
+/** How often a running upload tells the server the person is still there. */
+const KEEP_ALIVE_MS = 5 * 60 * 1000
+
+function uploadProblem(request: XMLHttpRequest): ApiProblem {
+  try {
+    const body = JSON.parse(request.responseText) as { code?: string; detail?: string }
+    return new ApiProblem(request.status, body.code ?? 'unknown', body.detail)
+  } catch {
+    return new ApiProblem(request.status, 'unknown')
+  }
+}
+
+/**
+ * Sends `file` into the library as `name`. Through XMLHttpRequest, because
+ * fetch cannot report how much of a request body went out.
+ */
+export function uploadImage(
+  file: Blob,
+  name: string,
+  options: { onProgress: (fraction: number) => void; signal?: AbortSignal },
+): Promise<VmImage> {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest()
+    request.open('POST', `/api/v1/vms/images/upload?${new URLSearchParams({ name })}`)
+    const token = csrfToken()
+    if (token) request.setRequestHeader('X-CSRF-Token', token)
+    request.setRequestHeader('Content-Type', 'application/octet-stream')
+    request.upload.onprogress = (event) => {
+      if (event.lengthComputable && event.total > 0) options.onProgress(event.loaded / event.total)
+    }
+    // A long upload is the person's doing: it keeps the session alive.
+    const alive = setInterval(() => {
+      void fetch('/api/v1/auth/session', { credentials: 'same-origin' }).catch(() => undefined)
+    }, KEEP_ALIVE_MS)
+    const done = (settle: () => void) => () => {
+      clearInterval(alive)
+      settle()
+    }
+    request.onload = done(() =>
+      request.status < 300
+        ? resolve(JSON.parse(request.responseText) as VmImage)
+        : reject(uploadProblem(request)),
+    )
+    request.onerror = done(() => reject(new ApiProblem(0, 'network')))
+    request.onabort = done(() => reject(new ApiProblem(0, 'aborted')))
+    options.signal?.addEventListener('abort', () => request.abort())
+    request.send(file)
+  })
+}
+
+/** Changes to the library; each reads it again. */
+export function useImageActions() {
+  const client = useQueryClient()
+  async function refreshing<T>(request: Promise<T>): Promise<T> {
+    try {
+      return await request
+    } finally {
+      await client.invalidateQueries({ queryKey: ['vms', 'images'] })
+    }
+  }
+  const id = (id: string) => ({ params: { path: { id } } })
+  return {
+    importFromShare: (shareId: number, path: string, name: string) =>
+      refreshing(
+        unwrap(api.POST('/api/v1/vms/images', { body: { share_id: shareId, path, name } })),
+      ),
+    upload: (
+      file: Blob,
+      name: string,
+      onProgress: (fraction: number) => void,
+      signal?: AbortSignal,
+    ) => refreshing(uploadImage(file, name, { onProgress, signal })),
+    rename: (image: string, name: string) =>
+      refreshing(unwrap(api.PUT('/api/v1/vms/images/{id}', { ...id(image), body: { name } }))),
+    remove: (image: string) => refreshing(unwrap(api.DELETE('/api/v1/vms/images/{id}', id(image)))),
+  }
+}
+
+/**
+ * What the VMs use, every few seconds while it is looked at: the live
+ * topic subscribed for as long as the calling component lives.
+ */
+export function useVmStats(): Ref<VmStats | null> {
+  const stats = shallowRef<VmStats | null>(null)
+  const stop = live.subscribe('vm_stats', (data) => (stats.value = data))
+  onScopeDispose(stop)
+  return stats
 }
 
 /** The console's WebSocket on this page's own origin. */

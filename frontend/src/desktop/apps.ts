@@ -22,6 +22,7 @@ import {
   Palette,
   RefreshCw,
   ScrollText,
+  Server,
   Settings,
   Settings2,
   Shield,
@@ -242,8 +243,12 @@ export const APPS: AppDefinition[] = [
     tile: 'bg-linear-to-br from-violet-400 to-indigo-600',
     permission: 'vms.manage',
     requires: 'vms',
-    size: { width: 1040, height: 700 },
+    size: { width: 1120, height: 760 },
     minimum: { width: 360, height: 320 },
+    sections: [
+      { id: 'machines', label: 'vms.sections.machines', icon: Server },
+      { id: 'images', label: 'vms.sections.images', icon: Disc3 },
+    ],
     component: defineAsyncComponent(() => import('@/features/vms/components/VmsApp.vue')),
   },
   {

@@ -27,6 +27,7 @@ function plugin(extra: Partial<VmPlugin> = {}): VmPlugin {
     cores: 8,
     memory_bytes: 16 * 1024 ** 3,
     bridges: [],
+    image_upload_max_bytes: 32 * 1024 ** 3,
     ...extra,
   }
 }

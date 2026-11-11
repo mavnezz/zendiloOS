@@ -90,15 +90,19 @@ ExecStart=/usr/libexec/zendiloos/zendiloos-agent
 #   backup-volume, restore-volume or remove-volume-backup), outside this
 #   sandbox, each in a sandbox of its own that may write only the share or
 #   the volume's folder;
-# - virtual machines (a proof of concept): libvirt's daemon, outside this
-#   sandbox, runs QEMU and passt; the agent talks to it with virsh over
-#   its socket (AF_UNIX) and keeps each domain's XML in
-#   /etc/zendiloos/vms; a VM's disk is a zvol (/dev/zfs, as for pools);
+# - virtual machines: libvirt's daemon, outside this sandbox, runs QEMU
+#   and passt; the agent talks to it with virsh over its socket (AF_UNIX)
+#   and keeps each domain's XML in /etc/zendiloos/vms; a VM's disks are
+#   zvols (/dev/zfs, as for pools), made, grown and destroyed with zfs;
 #   /dev/kvm, /proc/cpuinfo and /sys are only looked at, and whether a
 #   VM's bridge is a bridge of the host's is asked of systemd-networkd over
-#   D-Bus (busctl), as this sandbox sees none of the host's links. ISOs are copied
-#   from a share and removed again by transient units (systemd-run, this
-#   binary as copy-vm-iso, and rm) that may write only the VMs' folder; the
+#   D-Bus (busctl), as this sandbox sees none of the host's links. The
+#   image library's ISOs are copied from a share, received from an upload
+#   through a pipe whose writing end goes to zendiloosd, and removed again,
+#   by transient units (systemd-run, this binary as copy-vm-iso and
+#   receive-vm-image, and rm) that may write only the VMs' folder, the
+#   receiving one with no capability at all; the free space for an upload
+#   is looked at (statvfs) and its folder listed, read only. The
 #   consoles' folder is made by systemd-tmpfiles in one. A console is
 #   QEMU's VNC socket in /run/zendiloos-vms, opened without following a
 #   link and connected to (connecting needs no write access to /run), and

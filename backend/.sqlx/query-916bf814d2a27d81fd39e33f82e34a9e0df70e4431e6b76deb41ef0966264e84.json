@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM vm_nics WHERE vm = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "916bf814d2a27d81fd39e33f82e34a9e0df70e4431e6b76deb41ef0966264e84"
+}

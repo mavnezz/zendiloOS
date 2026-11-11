@@ -1,7 +1,7 @@
-//! Use cases: the plugin installed and its storage set up, VMs made (an
-//! ISO copied, the domain defined, in a job), run, changed and removed,
-//! and their consoles opened. All for administrators (`vms.manage`); the
-//! caller checks that.
+//! Use cases: the plugin installed and its storage set up, VMs made (in a
+//! job), run, changed and removed, the image library filled from shares
+//! and browsers, the VMs' load watched, and their consoles opened. All for
+//! administrators (`vms.manage`); the caller checks that.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -11,8 +11,15 @@ use zendiloos_jobs::{Job, JobError, Jobs, Progress};
 use zendiloos_kernel::{Actor, AuditEntry, AuditLog, Clock, Outcome, PortError, RequestContext};
 
 use crate::domain::{
-    HostLimits, Invalid, IsoChoice, IsoOrigin, PowerState, Vm, VmAction, VmSettings, check_name, is_vm_id,
+    BootDevice, Disk, Drive, Firmware, HostLimits, Invalid, IsoChoice, Nic, PowerState, Vm, VmAction,
+    VmCounters, VmImage, VmSettings, check_name, is_vm_id,
 };
+
+mod images;
+mod stats;
+
+pub use images::{ImageUpload, UploadTicket, VmImageView};
+pub use stats::{STATS_EVERY, VmStatsSubscription};
 
 /// The VMs as zendiloOS keeps them.
 #[async_trait]
@@ -24,6 +31,24 @@ pub trait VmRepository: Send + Sync {
     async fn create(&self, vm: &Vm) -> Result<bool, PortError>;
     async fn set_ready(&self, id: &str) -> Result<(), PortError>;
     async fn set_autostart(&self, id: &str, autostart: bool) -> Result<bool, PortError>;
+    /// Replaces its settings, devices and all. `false`: its name is taken.
+    async fn update(&self, vm: &Vm) -> Result<bool, PortError>;
+    async fn delete(&self, id: &str) -> Result<bool, PortError>;
+}
+
+/// The image library as zendiloOS keeps it.
+#[async_trait]
+pub trait VmImageRepository: Send + Sync {
+    /// Oldest first.
+    async fn list(&self) -> Result<Vec<VmImage>, PortError>;
+    async fn find(&self, id: &str) -> Result<Option<VmImage>, PortError>;
+    /// `false`: its name or id is taken.
+    async fn create(&self, image: &VmImage) -> Result<bool, PortError>;
+    /// In the library, of `bytes`.
+    async fn set_ready(&self, id: &str, bytes: u64) -> Result<(), PortError>;
+    async fn set_bytes(&self, id: &str, bytes: u64) -> Result<(), PortError>;
+    /// `false`: another image has that name.
+    async fn rename(&self, id: &str, name: &str) -> Result<bool, PortError>;
     async fn delete(&self, id: &str) -> Result<bool, PortError>;
 }
 
@@ -84,7 +109,8 @@ pub enum HostError {
     Port(#[from] PortError),
 }
 
-/// libvirt, QEMU and the VMs' storage on the host, through the system agent.
+/// libvirt, QEMU, the VMs' storage and the image library on the host,
+/// through the system agent.
 #[async_trait]
 pub trait VmHost: Send + Sync {
     async fn facts(&self, context: &RequestContext) -> Result<HostFacts, PortError>;
@@ -94,17 +120,43 @@ pub trait VmHost: Send + Sync {
     async fn install(&self, context: &RequestContext) -> Result<(), HostError>;
     /// Puts the VMs' storage on the pool; libvirt follows it.
     async fn set_up(&self, place: &StoragePlace, context: &RequestContext) -> Result<(), HostError>;
-    /// Copies the ISO for the VM `id` beside its disk.
-    async fn copy_iso(
+    /// Copies the ISO into the library as `image`; the bytes copied.
+    async fn copy_image(
         &self,
-        id: &str,
+        image: &str,
         place: &StoragePlace,
         iso: &IsoSource,
         steps: &dyn Steps,
         context: &RequestContext,
-    ) -> Result<(), HostError>;
-    /// Makes its disk and defines it; with the copy of its ISO if it has one.
+    ) -> Result<u64, HostError>;
+    /// The library's files: their size by image.
+    async fn image_files(
+        &self,
+        place: &StoragePlace,
+        context: &RequestContext,
+    ) -> Result<BTreeMap<String, u64>, PortError>;
+    /// Removes an image's file; one that is gone is no failure.
+    async fn delete_image(&self, image: &str, volume: u16, context: &RequestContext)
+    -> Result<(), HostError>;
+    /// Where an upload of `bytes` as `image` is written: closed once all is
+    /// written, then [`VmHost::finish_upload`] says what came of it.
+    async fn open_upload(
+        &self,
+        image: &str,
+        volume: u16,
+        bytes: u64,
+        context: &RequestContext,
+    ) -> Result<tokio::fs::File, HostError>;
+    /// The bytes an upload stored, once its writer is closed.
+    async fn finish_upload(&self, image: &str, context: &RequestContext) -> Result<u64, HostError>;
+    /// Makes a new VM's disks and defines it.
     async fn define(&self, vm: &Vm, context: &RequestContext) -> Result<(), HostError>;
+    /// Changes a VM that is off: disks made or grown, the domain defined
+    /// anew, the disks in `removed` destroyed.
+    async fn update(&self, vm: &Vm, removed: &[u8], context: &RequestContext) -> Result<(), HostError>;
+    /// Puts the image the VM's drive `drive` has into it, or ejects it:
+    /// at once while it runs.
+    async fn change_media(&self, vm: &Vm, drive: u8, context: &RequestContext) -> Result<(), HostError>;
     async fn set_autostart(
         &self,
         id: &str,
@@ -112,11 +164,13 @@ pub trait VmHost: Send + Sync {
         context: &RequestContext,
     ) -> Result<(), HostError>;
     async fn control(&self, id: &str, action: VmAction, context: &RequestContext) -> Result<(), HostError>;
-    /// Removes the VM, its disk and its ISO's copy; what is gone already
-    /// is no failure.
+    /// Removes the VM and its disks; what is gone already is no failure.
     async fn remove(&self, vm: &Vm, context: &RequestContext) -> Result<(), HostError>;
     /// What libvirt says each VM zendiloOS made does, by id.
     async fn states(&self, context: &RequestContext) -> Result<BTreeMap<String, PowerState>, PortError>;
+    /// What libvirt counts of each running VM zendiloOS made, by id: one
+    /// look for all.
+    async fn counters(&self, context: &RequestContext) -> Result<BTreeMap<String, VmCounters>, PortError>;
     async fn open_console(&self, id: &str, context: &RequestContext) -> Result<ConsoleSession, HostError>;
 }
 
@@ -144,13 +198,17 @@ pub trait IsoFiles: Send + Sync {
     ) -> Result<IsoSource, IsoError>;
 }
 
-/// New ids for VMs: twelve lowercase hexadecimal digits, at random.
+/// New ids for VMs and images: twelve lowercase hexadecimal digits, at
+/// random; and MAC addresses for their network cards.
 pub trait VmIds: Send + Sync {
     fn new_id(&self) -> String;
+    /// `52:54:00:xx:xx:xx`, QEMU's prefix, the rest at random.
+    fn new_mac(&self) -> String;
 }
 
 pub struct VmsPorts {
     pub repository: Arc<dyn VmRepository>,
+    pub images: Arc<dyn VmImageRepository>,
     pub host: Arc<dyn VmHost>,
     pub isos: Arc<dyn IsoFiles>,
     pub ids: Arc<dyn VmIds>,
@@ -176,7 +234,7 @@ pub enum VmsError {
     NotSetUp,
     #[error("there is no such pool")]
     PoolNotFound,
-    #[error("another virtual machine has that name")]
+    #[error("another virtual machine or image has that name")]
     NameTaken,
     #[error("the virtual machine is still being created")]
     Creating,
@@ -186,6 +244,12 @@ pub enum VmsError {
     IsoDenied,
     #[error("the virtual machine is not running")]
     NotRunning,
+    /// Its hardware changes only while it is off.
+    #[error("the virtual machine is not shut off: shut it down before its hardware changes")]
+    Running,
+    /// The image is in the drives of these VMs.
+    #[error("the image is in use by {}", .0.join(", "))]
+    ImageInUse(Vec<String>),
     #[error("{0}")]
     Refused(String),
     #[error("{0}")]
@@ -223,6 +287,10 @@ fn job_error(error: HostError) -> JobError {
     }
 }
 
+fn outcome<T, E>(done: &Result<T, E>) -> Outcome {
+    if done.is_ok() { Outcome::Success } else { Outcome::Failure }
+}
+
 /// Consoles open at once per account.
 pub const CONSOLES_PER_ACCOUNT: usize = 4;
 
@@ -241,11 +309,26 @@ pub struct VmView {
     pub state: PowerState,
 }
 
-/// What an administrator asks for.
+/// What an administrator asks for: the settings of a VM to make. Its
+/// cards' MAC addresses are given here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewVm {
     pub settings: VmSettings,
-    pub iso: Option<IsoChoice>,
+}
+
+/// What an administrator changes of a VM: all but what it runs. A card in
+/// a slot it had keeps its MAC address, a new one gets one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VmChange {
+    pub name: String,
+    pub cpus: u16,
+    pub memory_mib: u32,
+    pub firmware: Firmware,
+    pub disks: Vec<Disk>,
+    pub nics: Vec<Nic>,
+    pub drives: Vec<Drive>,
+    pub boot: Vec<BootDevice>,
+    pub autostart: bool,
 }
 
 /// The consoles each account has open.
@@ -289,17 +372,39 @@ impl Steps for JobSteps {
     }
 }
 
+/// A VM being deleted or changed: no second change of it meanwhile.
+struct Busy {
+    busy: Arc<Mutex<BTreeSet<String>>>,
+    id: String,
+}
+
+impl Drop for Busy {
+    fn drop(&mut self) {
+        self.busy.lock().unwrap_or_else(PoisonError::into_inner).remove(&self.id);
+    }
+}
+
 #[derive(Clone)]
 pub struct Vms {
     ports: Arc<VmsPorts>,
     consoles: Arc<OpenConsoles>,
-    /// VMs whose deletion runs: not deleted twice at once.
-    deleting: Arc<Mutex<BTreeSet<String>>>,
+    /// VMs being deleted or changed.
+    busy: Arc<Mutex<BTreeSet<String>>>,
+    /// The library and the drives that hold its images change one at a
+    /// time: an image is never deleted while a VM is given it.
+    library: Arc<tokio::sync::Mutex<()>>,
+    stats: Arc<stats::Hub>,
 }
 
 impl Vms {
     pub fn new(ports: VmsPorts) -> Self {
-        Self { ports: Arc::new(ports), consoles: Arc::default(), deleting: Arc::default() }
+        Self {
+            ports: Arc::new(ports),
+            consoles: Arc::default(),
+            busy: Arc::default(),
+            library: Arc::default(),
+            stats: Arc::default(),
+        }
     }
 
     async fn audit(
@@ -316,6 +421,27 @@ impl Vms {
         if let Err(error) = self.ports.audit.record(entry).await {
             tracing::error!(%error, action, "vms: cannot write the audit log");
         }
+    }
+
+    /// A new id no VM and no image has.
+    async fn new_id(&self) -> Result<String, VmsError> {
+        let id = self.ports.ids.new_id();
+        let taken =
+            self.ports.repository.find(&id).await?.is_some() || self.ports.images.find(&id).await?.is_some();
+        if !is_vm_id(&id) || taken {
+            return Err(VmsError::Port(PortError::new(
+                "virtual machine ids",
+                format!("{id:?} is no new id"),
+            )));
+        }
+        Ok(id)
+    }
+
+    fn take_busy(&self, id: &str, what: &str) -> Result<Busy, VmsError> {
+        if !self.busy.lock().unwrap_or_else(PoisonError::into_inner).insert(id.to_owned()) {
+            return Err(VmsError::Refused(format!("the virtual machine is being {what}")));
+        }
+        Ok(Busy { busy: Arc::clone(&self.busy), id: id.to_owned() })
     }
 
     // The plugin.
@@ -344,8 +470,7 @@ impl Vms {
             .start("vms.install", Some("libvirt".into()), Some(actor), move |progress| async move {
                 progress.step("packages", Some(0.05)).await;
                 let done = this.ports.host.install(&context).await;
-                let outcome = if done.is_ok() { Outcome::Success } else { Outcome::Failure };
-                this.audit("vms.install", outcome, "libvirt", &who, &context).await;
+                this.audit("vms.install", outcome(&done), "libvirt", &who, &context).await;
                 done.map_err(job_error)
             })
             .await?;
@@ -372,10 +497,19 @@ impl Vms {
             .find(|place| place.pool == pool)
             .ok_or(VmsError::PoolNotFound)?;
         let done = self.ports.host.set_up(&place, context).await;
-        let outcome = if done.is_ok() { Outcome::Success } else { Outcome::Failure };
-        self.audit("vms.storage", outcome, pool, actor, context).await;
+        self.audit("vms.storage", outcome(&done), pool, actor, context).await;
         done?;
         self.plugin(context).await
+    }
+
+    /// The VMs' storage, which VMs and images need.
+    async fn storage(&self, context: &RequestContext) -> Result<(HostFacts, StoragePlace), VmsError> {
+        let facts = self.ports.host.facts(context).await?;
+        if !facts.installed {
+            return Err(VmsError::NotInstalled);
+        }
+        let place = facts.storage.clone().ok_or(VmsError::NotSetUp)?;
+        Ok((facts, place))
     }
 
     // The VMs.
@@ -425,43 +559,44 @@ impl Vms {
         states.get(&vm.id).copied().unwrap_or(PowerState::Unknown)
     }
 
-    /// Records the VM and makes it in a job: the ISO copied (if one was
-    /// picked), the disk made and the domain defined. Should that fail,
-    /// what was made goes again, the record too.
+    /// The ids of the library's images a VM may be given.
+    async fn ready_images(&self) -> Result<Vec<String>, VmsError> {
+        Ok(self
+            .ports
+            .images
+            .list()
+            .await?
+            .into_iter()
+            .filter(|image| image.ready)
+            .map(|image| image.id)
+            .collect())
+    }
+
+    /// Records the VM and makes it in a job: its disks made and the domain
+    /// defined. Should that fail, what was made goes again, the record too.
     pub async fn create(
         &self,
         new: NewVm,
         actor: &Actor,
         context: &RequestContext,
     ) -> Result<(VmView, Job), VmsError> {
-        let facts = self.ports.host.facts(context).await?;
-        if !facts.installed {
-            return Err(VmsError::NotInstalled);
-        }
-        let place = facts.storage.clone().ok_or(VmsError::NotSetUp)?;
+        let (facts, place) = self.storage(context).await?;
+        let _library = self.library.lock().await;
         let existing = self.ports.repository.list().await?;
         let taken: Vec<&str> = existing.iter().map(|vm| vm.settings.name.as_str()).collect();
-        let name = new.settings.check(&facts.limits, &taken)?;
-        let iso = match &new.iso {
-            Some(choice) => {
-                choice.check()?;
-                Some(self.ports.isos.locate(actor, choice, context).await?)
-            }
-            None => None,
-        };
-        let id = self.ports.ids.new_id();
-        if !is_vm_id(&id) || existing.iter().any(|vm| vm.id == id) {
-            return Err(VmsError::Port(PortError::new(
-                "virtual machine ids",
-                format!("{id:?} is no new id"),
-            )));
+        let macs: BTreeSet<String> =
+            existing.iter().flat_map(|vm| vm.settings.nics.iter().map(|nic| nic.mac.clone())).collect();
+        let mut settings = new.settings;
+        for nic in &mut settings.nics {
+            nic.mac.clear();
         }
+        settings.give_macs(&[], &macs, || self.ports.ids.new_mac());
+        let images = self.ready_images().await?;
+        let images: Vec<&str> = images.iter().map(String::as_str).collect();
+        let name = settings.check(&facts.limits, &taken, &images, None)?;
         let vm = Vm {
-            id,
-            settings: VmSettings { name, ..new.settings },
-            iso: iso
-                .as_ref()
-                .map(|source| IsoOrigin { share: source.share.clone(), path: source.path.clone() }),
+            id: self.new_id().await?,
+            settings: VmSettings { name, ..settings },
             pool: place.pool.clone(),
             volume: place.volume,
             created_at: self.ports.clock.now(),
@@ -476,8 +611,8 @@ impl Vms {
             .ports
             .jobs
             .start("vms.create", Some(vm.settings.name.clone()), Some(actor), move |progress| async move {
-                let outcome = this.make(&made, &place, iso.as_ref(), &progress, &context_owned).await;
-                match &outcome {
+                let done = this.make(&made, &progress, &context_owned).await;
+                match &done {
                     Ok(()) => {
                         if let Err(error) = this.ports.repository.set_ready(&made.id).await {
                             tracing::error!(%error, id = made.id, "vms: made, but cannot record it");
@@ -485,9 +620,8 @@ impl Vms {
                     }
                     Err(_) => this.undo(&made, &context_owned).await,
                 }
-                let result = if outcome.is_ok() { Outcome::Success } else { Outcome::Failure };
-                this.audit("vms.create", result, &made.settings.name, &who, &context_owned).await;
-                outcome.map_err(job_error)
+                this.audit("vms.create", outcome(&done), &made.settings.name, &who, &context_owned).await;
+                done.map_err(job_error)
             })
             .await;
         match started {
@@ -499,32 +633,8 @@ impl Vms {
         }
     }
 
-    async fn make(
-        &self,
-        vm: &Vm,
-        place: &StoragePlace,
-        iso: Option<&IsoSource>,
-        progress: &Progress,
-        context: &RequestContext,
-    ) -> Result<(), HostError> {
-        if let Some(iso) = iso {
-            progress.step("copying_iso", Some(0.0)).await;
-            // Reported as the agent's answer comes, kept in order.
-            let (sender, mut reported) = tokio::sync::mpsc::unbounded_channel::<(String, Option<u8>)>();
-            let forwarded = {
-                let progress = progress.clone();
-                tokio::spawn(async move {
-                    while let Some((step, percent)) = reported.recv().await {
-                        let share = percent.map(|p| f32::from(p.min(100)) / 100.0 * 0.9);
-                        progress.step(&step, share).await;
-                    }
-                })
-            };
-            let copied = self.ports.host.copy_iso(&vm.id, place, iso, &JobSteps(sender), context).await;
-            let _ = forwarded.await;
-            copied?;
-        }
-        progress.step("defining", Some(0.95)).await;
+    async fn make(&self, vm: &Vm, progress: &Progress, context: &RequestContext) -> Result<(), HostError> {
+        progress.step("defining", Some(0.1)).await;
         self.ports.host.define(vm, context).await
     }
 
@@ -543,6 +653,86 @@ impl Vms {
         if vm.ready { Ok(vm) } else { Err(VmsError::Creating) }
     }
 
+    /// Changes a VM. Its name, autostart and the images in its drives
+    /// change whenever; everything else, its hardware, only while it is
+    /// shut off. Removing a disk destroys it: `confirm` must then be its
+    /// name, typed again. Its domain is defined anew from the settings.
+    pub async fn update(
+        &self,
+        id: &str,
+        change: VmChange,
+        confirm: Option<&str>,
+        actor: &Actor,
+        context: &RequestContext,
+    ) -> Result<VmView, VmsError> {
+        let vm = self.ready(id).await?;
+        let _busy = self.take_busy(&vm.id, "changed")?;
+        let facts = self.ports.host.facts(context).await?;
+        let _library = self.library.lock().await;
+        let others: Vec<Vm> =
+            self.ports.repository.list().await?.into_iter().filter(|other| other.id != vm.id).collect();
+        let taken: Vec<&str> = others.iter().map(|other| other.settings.name.as_str()).collect();
+        let macs: BTreeSet<String> =
+            others.iter().flat_map(|other| other.settings.nics.iter().map(|nic| nic.mac.clone())).collect();
+        let VmChange { name, cpus, memory_mib, firmware, disks, mut nics, drives, boot, autostart } = change;
+        for nic in &mut nics {
+            nic.mac.clear();
+        }
+        let mut settings = VmSettings {
+            name,
+            os: vm.settings.os,
+            cpus,
+            memory_mib,
+            firmware,
+            disks,
+            nics,
+            drives,
+            boot,
+            autostart,
+        };
+        settings.give_macs(&vm.settings.nics, &macs, || self.ports.ids.new_mac());
+        let images = self.ready_images().await?;
+        let images: Vec<&str> = images.iter().map(String::as_str).collect();
+        settings.name = settings.check(&facts.limits, &taken, &images, Some(&vm.settings))?;
+
+        let hardware = settings.hardware_differs(&vm.settings);
+        let removed = settings.removed_disks(&vm.settings);
+        let media = settings.changed_media(&vm.settings);
+        if hardware {
+            let states = self.ports.host.states(context).await?;
+            if states.get(&vm.id) != Some(&PowerState::ShutOff) {
+                return Err(VmsError::Running);
+            }
+        }
+        if !removed.is_empty()
+            && check_name(confirm.unwrap_or_default()).ok().as_deref() != Some(vm.settings.name.as_str())
+        {
+            return Err(VmsError::ConfirmMismatch);
+        }
+        let changed = Vm { settings, ..vm.clone() };
+        let done = async {
+            if hardware {
+                self.ports.host.update(&changed, &removed, context).await?;
+            } else {
+                for drive in &media {
+                    self.ports.host.change_media(&changed, *drive, context).await?;
+                }
+                if changed.settings.autostart != vm.settings.autostart {
+                    self.ports.host.set_autostart(&vm.id, changed.settings.autostart, context).await?;
+                }
+            }
+            Ok::<_, HostError>(())
+        }
+        .await;
+        self.audit("vms.change", outcome(&done), &changed.settings.name, actor, context).await;
+        done?;
+        if !self.ports.repository.update(&changed).await? {
+            return Err(VmsError::NameTaken);
+        }
+        drop(_library);
+        self.get(&vm.id, context).await
+    }
+
     pub async fn control(
         &self,
         id: &str,
@@ -552,8 +742,7 @@ impl Vms {
     ) -> Result<VmView, VmsError> {
         let vm = self.ready(id).await?;
         let done = self.ports.host.control(&vm.id, action, context).await;
-        let outcome = if done.is_ok() { Outcome::Success } else { Outcome::Failure };
-        self.audit(action.audit(), outcome, &vm.settings.name, actor, context).await;
+        self.audit(action.audit(), outcome(&done), &vm.settings.name, actor, context).await;
         done?;
         self.get(id, context).await
     }
@@ -567,16 +756,15 @@ impl Vms {
     ) -> Result<VmView, VmsError> {
         let vm = self.ready(id).await?;
         let done = self.ports.host.set_autostart(&vm.id, autostart, context).await;
-        let outcome = if done.is_ok() { Outcome::Success } else { Outcome::Failure };
         let action = if autostart { "vms.autostart_on" } else { "vms.autostart_off" };
-        self.audit(action, outcome, &vm.settings.name, actor, context).await;
+        self.audit(action, outcome(&done), &vm.settings.name, actor, context).await;
         done?;
         self.ports.repository.set_autostart(&vm.id, autostart).await?;
         self.get(id, context).await
     }
 
-    /// Removes the VM with its disk; `confirm` must be its name, typed
-    /// again.
+    /// Removes the VM with its disks; `confirm` must be its name, typed
+    /// again. The images it had stay in the library.
     pub async fn delete(
         &self,
         id: &str,
@@ -588,18 +776,12 @@ impl Vms {
         if check_name(confirm).ok().as_deref() != Some(vm.settings.name.as_str()) {
             return Err(VmsError::ConfirmMismatch);
         }
-        if !self.deleting.lock().unwrap_or_else(PoisonError::into_inner).insert(vm.id.clone()) {
-            return Err(VmsError::Refused("the virtual machine is being deleted".into()));
-        }
+        let _busy = self.take_busy(&vm.id, "deleted")?;
         let removed = self.ports.host.remove(&vm, context).await;
-        let outcome = if removed.is_ok() { Outcome::Success } else { Outcome::Failure };
-        self.audit("vms.delete", outcome, &vm.settings.name, actor, context).await;
-        let forgotten = match removed {
-            Ok(()) => self.ports.repository.delete(&vm.id).await.map(|_| ()).map_err(VmsError::from),
-            Err(error) => Err(error.into()),
-        };
-        self.deleting.lock().unwrap_or_else(PoisonError::into_inner).remove(&vm.id);
-        forgotten
+        self.audit("vms.delete", outcome(&removed), &vm.settings.name, actor, context).await;
+        removed?;
+        self.ports.repository.delete(&vm.id).await?;
+        Ok(())
     }
 
     /// Opens a running VM's console: at most [`CONSOLES_PER_ACCOUNT`] per
@@ -619,8 +801,7 @@ impl Vms {
         }
         let seat = self.take_seat(actor.account_id)?;
         let opened = self.ports.host.open_console(&view.vm.id, context).await;
-        let outcome = if opened.is_ok() { Outcome::Success } else { Outcome::Failure };
-        self.audit("vms.console", outcome, &view.vm.settings.name, actor, context).await;
+        self.audit("vms.console", outcome(&opened), &view.vm.settings.name, actor, context).await;
         Ok(Console { session: opened?, name: view.vm.settings.name, _seat: seat })
     }
 

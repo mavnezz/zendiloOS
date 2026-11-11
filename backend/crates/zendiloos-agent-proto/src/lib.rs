@@ -83,9 +83,11 @@ pub use time::{
     TimeServer, TimeServers, TimeZone,
 };
 pub use vms::{
-    InvalidVmCpus, InvalidVmDiskSize, InvalidVmId, InvalidVmMemory, VM_CONSOLES, VM_DOMAIN_PREFIX,
-    VMS_DATASET, VMS_DIRECTORY, VmAction, VmCpus, VmDiskSize, VmFirmware, VmId, VmIsoSource, VmMemory,
-    VmNetwork, VmOs, VmSpec, VmStorage,
+    InvalidVmCpus, InvalidVmDiskSize, InvalidVmId, InvalidVmImageId, InvalidVmMemory, InvalidVmSlot,
+    InvalidVmSpec, VM_CONSOLES, VM_DISKS_MAX, VM_DOMAIN_PREFIX, VM_DRIVES_MAX, VM_IMAGE_UPLOAD_MAX,
+    VM_IMAGES_DIRECTORY, VM_NICS_MAX, VMS_DATASET, VMS_DIRECTORY, VmAction, VmBoot, VmCpus, VmDevices,
+    VmDisk, VmDiskBus, VmDiskSize, VmDiskSlot, VmDrive, VmDriveSlot, VmFirmware, VmId, VmImageFile,
+    VmImageId, VmIsoSource, VmMemory, VmNetwork, VmNic, VmNicModel, VmNicSlot, VmOs, VmSpec, VmStorage,
 };
 pub use web::TlsMinimum;
 
@@ -558,18 +560,58 @@ pub enum Request {
         pool: PoolName,
         volume: VolumeNumber,
     },
-    /// Copies an ISO from a share to `/volume<N>/@vms/isos/<id>.iso` in a
-    /// unit of its own (blocks cloned where the pool can), reporting how far
-    /// it is; QEMU only ever sees the copy.
-    CopyVmIso {
-        id: VmId,
+    /// Copies an ISO from a share into the library,
+    /// `/volume<N>/@vms/isos/<image>.iso`, in a unit of its own (blocks
+    /// cloned where the pool can), reporting how far it is; QEMU only ever
+    /// sees the copy. Answers [`Response::VmImageStored`].
+    CopyVmImage {
+        image: VmImageId,
         volume: VolumeNumber,
         source: VmIsoSource,
     },
-    /// Makes the VM's disk (a sparse zvol) where missing and defines the
-    /// domain `zendiloos-<id>` from XML the agent builds from `spec`.
+    /// The library's images, as files: [`Response::VmImages`].
+    VmImages {
+        volume: VolumeNumber,
+    },
+    /// Removes an image's file from the library; one that is gone already
+    /// is no failure. zendiloosd checked that no VM has it.
+    DeleteVmImage {
+        image: VmImageId,
+        volume: VolumeNumber,
+    },
+    /// Starts receiving an upload of `bytes` into the library as `image`:
+    /// a unit of its own reads a pipe, whose writing end comes along with
+    /// [`Response::VmImageUpload`], into a file without a name, and names it
+    /// only once exactly `bytes` came (at most [`VM_IMAGE_UPLOAD_MAX`]).
+    OpenVmImageUpload {
+        image: VmImageId,
+        volume: VolumeNumber,
+        bytes: u64,
+    },
+    /// Once the pipe is closed: waits for the upload's unit, and answers
+    /// [`Response::VmImageStored`], or why the image was not kept.
+    FinishVmImageUpload {
+        image: VmImageId,
+    },
+    /// Makes a new VM's disks (sparse zvols) and defines the domain
+    /// `zendiloos-<id>` from XML the agent builds from `spec`.
     DefineVm {
         spec: VmSpec,
+    },
+    /// Changes a VM that is shut off: disks of `spec` it does not have are
+    /// made, those smaller than `spec` grown (never shrunk), the domain is
+    /// defined anew from `spec`, and the disks in `remove` (none of
+    /// `spec`'s) are destroyed.
+    UpdateVm {
+        spec: VmSpec,
+        remove: Vec<VmDiskSlot>,
+    },
+    /// Puts the image of `spec`'s drive `drive` into that drive, or ejects
+    /// it if the drive is empty in `spec`: the domain defined anew from
+    /// `spec` and, while the VM runs, the medium changed at once.
+    ChangeVmMedia {
+        spec: VmSpec,
+        drive: VmDriveSlot,
     },
     /// libvirt starts the VM with the machine, or not.
     SetVmAutostart {
@@ -580,8 +622,8 @@ pub enum Request {
         id: VmId,
         action: VmAction,
     },
-    /// Powers the VM off if it runs, undefines it, and destroys its disks
-    /// and the copy of its ISO.
+    /// Powers the VM off if it runs, undefines it, and destroys its disks;
+    /// the library's images stay.
     DeleteVm {
         id: VmId,
         pool: PoolName,
@@ -590,6 +632,10 @@ pub enum Request {
     /// `virsh list --all`: every domain and its state. Answers
     /// [`Response::VmStates`].
     VmStates {},
+    /// What the running VMs zendiloOS made use: `virsh domstats` once for
+    /// all, with their CPU time, memory and network counters. Answers
+    /// [`Response::VmStats`].
+    VmStats {},
     /// Connects to a running VM's console, VNC on a Unix socket, and
     /// answers [`Response::VmConsole`] with the connected socket.
     OpenVmConsole {
@@ -946,12 +992,19 @@ impl Request {
             Request::DockerState {} => "docker_state",
             Request::VmHost {} => "vm_host",
             Request::EnableVms { .. } => "enable_vms",
-            Request::CopyVmIso { .. } => "copy_vm_iso",
+            Request::CopyVmImage { .. } => "copy_vm_image",
+            Request::VmImages { .. } => "vm_images",
+            Request::DeleteVmImage { .. } => "delete_vm_image",
+            Request::OpenVmImageUpload { .. } => "open_vm_image_upload",
+            Request::FinishVmImageUpload { .. } => "finish_vm_image_upload",
             Request::DefineVm { .. } => "define_vm",
+            Request::UpdateVm { .. } => "update_vm",
+            Request::ChangeVmMedia { .. } => "change_vm_media",
             Request::SetVmAutostart { .. } => "set_vm_autostart",
             Request::ControlVm { .. } => "control_vm",
             Request::DeleteVm { .. } => "delete_vm",
             Request::VmStates {} => "vm_states",
+            Request::VmStats {} => "vm_stats",
             Request::OpenVmConsole { .. } => "open_vm_console",
             Request::EnableDocker { .. } => "enable_docker",
             Request::MoveDocker { .. } => "move_docker",
@@ -1225,6 +1278,21 @@ pub enum Response {
         /// What `virsh list --all` printed.
         virsh_list: String,
     },
+    VmStats {
+        /// What `virsh domstats` printed, only of domains zendiloOS made.
+        domstats: String,
+    },
+    /// The library's images, by their files ([`Request::VmImages`]).
+    VmImages {
+        files: Vec<VmImageFile>,
+    },
+    /// An image is in the library, of `bytes`.
+    VmImageStored {
+        bytes: u64,
+    },
+    /// An upload's unit waits for the image; the writing end of its pipe
+    /// comes along ([`Request::OpenVmImageUpload`]).
+    VmImageUpload {},
     /// A VM's console was opened; the connected socket comes along
     /// ([`Request::OpenVmConsole`]).
     VmConsole {},
@@ -1539,8 +1607,9 @@ impl Request {
             // Restarts Docker.
             | Request::EnableDocker { .. }
             // An ISO of gigabytes copied; a VM's disks destroyed.
-            | Request::CopyVmIso { .. }
+            | Request::CopyVmImage { .. }
             | Request::DeleteVm { .. }
+            | Request::UpdateVm { .. }
             | Request::MoveDocker { .. }
             // Fetch images, start or stop containers.
             | Request::StartApp { .. }

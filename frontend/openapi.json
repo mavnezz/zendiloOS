@@ -12459,7 +12459,7 @@
         "tags": [
           "vms"
         ],
-        "summary": "Makes a VM, as a job: the ISO copied from its share (which the\nadministrator must be able to read), a sparse disk, the domain defined.\nNeeds `vms.manage`.",
+        "summary": "Makes a VM, as a job: its sparse disks made, the domain defined, the\nlibrary's images in its drives. Needs `vms.manage`.",
         "operationId": "create_vm",
         "requestBody": {
           "content": {
@@ -12492,7 +12492,299 @@
             }
           },
           "422": {
-            "description": "`invalid_input`: more than the machine has, an unknown bridge, no .iso; `iso_denied`",
+            "description": "`invalid_input`: more than the machine has, an unknown bridge or image, devices that break the rules",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/vms/images": {
+      "get": {
+        "tags": [
+          "vms"
+        ],
+        "summary": "The library, oldest first, with the VMs each image is in. Needs\n`vms.manage`.",
+        "operationId": "list_vm_images",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/VmImage"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "vms"
+        ],
+        "summary": "Adds an ISO from a share to the library, as a job: the file, which the\nadministrator must be able to read, copied into the VMs' storage (its\nblocks cloned where the pool can). Needs `vms.manage`.",
+        "operationId": "import_vm_image",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportVmImageRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportedVmImage"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no such file",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`vms_not_installed`, `vms_not_set_up`, `name_taken`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`: no .iso, no name; `iso_denied`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/vms/images/upload": {
+      "post": {
+        "tags": [
+          "vms"
+        ],
+        "summary": "Uploads an ISO into the library: the request body, unchanged, of the\nlength `Content-Length` says, at most the plugin's\n`image_upload_max_bytes`. It goes through a pipe into a unit of the\nagent's, which names it only once it came whole. Needs `vms.manage`.",
+        "operationId": "upload_vm_image",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "query",
+            "description": "What the image is called: the file's name, as a rule.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VmImage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_request`: no length, or the upload did not complete",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`vms_not_set_up`, `name_taken`; `refused`: no room on the pool",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`: no name, larger than allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/vms/images/{id}": {
+      "put": {
+        "tags": [
+          "vms"
+        ],
+        "summary": "Renames an image; its file stays as it is. Needs `vms.manage`.",
+        "operationId": "rename_vm_image",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenameVmImageRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VmImage"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`name_taken`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "vms"
+        ],
+        "summary": "Removes an image from the library. Refused while a VM has it in a\ndrive, the VMs named. Needs `vms.manage`.",
+        "operationId": "delete_vm_image",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`image_in_use`: the VMs that have it, in `detail`; `refused`: still being added",
             "content": {
               "application/json": {
                 "schema": {
@@ -12667,6 +12959,79 @@
             "session": []
           }
         ]
+      },
+      "put": {
+        "tags": [
+          "vms"
+        ],
+        "summary": "Changes a VM, its domain defined anew from its settings. Its name,\nautostart and the images in its drives change while it runs (a medium\nat once); anything else only while it is shut off. Needs `vms.manage`.",
+        "operationId": "update_vm",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateVmRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VirtualMachine"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`vm_running`: hardware changes while it is not shut off; `vm_creating`; `name_taken`; `refused`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`: a disk shrunk, more than the machine has; `confirmation_mismatch`: a disk removed without the name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
       }
     },
     "/api/v1/vms/{id}/autostart": {
@@ -12739,7 +13104,7 @@
         "tags": [
           "vms"
         ],
-        "summary": "Removes the VM: powered off, undefined, its disk and its ISO's copy\ndestroyed. Needs `vms.manage`.",
+        "summary": "Removes the VM: powered off, undefined, its disks destroyed; the images\nit had stay in the library. Needs `vms.manage`.",
         "operationId": "delete_vm",
         "parameters": [
           {
@@ -15254,36 +15619,43 @@
           "cpus",
           "memory_mib",
           "firmware",
-          "disk_gib",
-          "network"
+          "disks",
+          "nics",
+          "drives",
+          "boot"
         ],
         "properties": {
           "autostart": {
             "type": "boolean"
+          },
+          "boot": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VmBootDevice"
+            },
+            "description": "The devices it boots from, first first."
           },
           "cpus": {
             "type": "integer",
             "format": "int32",
             "minimum": 0
           },
-          "disk_gib": {
-            "type": "integer",
-            "format": "int32",
-            "minimum": 0
+          "disks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VmDisk"
+            },
+            "description": "1 to 8."
+          },
+          "drives": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VmDrive"
+            },
+            "description": "Up to 3, with images of the library or empty."
           },
           "firmware": {
             "$ref": "#/components/schemas/VmFirmware"
-          },
-          "iso": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/VmIsoChoice",
-                "description": "Copied to the VMs' storage and attached read-only; none: it boots\nfrom its disk, or into the firmware."
-              },
-              {
-                "type": "null"
-              }
-            ]
           },
           "memory_mib": {
             "type": "integer",
@@ -15293,8 +15665,12 @@
           "name": {
             "type": "string"
           },
-          "network": {
-            "$ref": "#/components/schemas/VmNetwork"
+          "nics": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VmNicChoice"
+            },
+            "description": "Up to 4."
           },
           "os": {
             "$ref": "#/components/schemas/VmOs"
@@ -17776,6 +18152,47 @@
         },
         "additionalProperties": false
       },
+      "ImportVmImageRequest": {
+        "type": "object",
+        "required": [
+          "share_id",
+          "path"
+        ],
+        "properties": {
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What it is called; its file's name if none."
+          },
+          "path": {
+            "type": "string",
+            "description": "In the share: `isos/debian-13.1.0-amd64-netinst.iso`."
+          },
+          "share_id": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ImportedVmImage": {
+        "type": "object",
+        "description": "An image recorded, and the job that copies it.",
+        "required": [
+          "image",
+          "job"
+        ],
+        "properties": {
+          "image": {
+            "$ref": "#/components/schemas/VmImage"
+          },
+          "job": {
+            "$ref": "#/components/schemas/Job"
+          }
+        }
+      },
       "InstalledApp": {
         "type": "object",
         "description": "An app installed the earlier way, with a dataset and an account of its\nown: it is started, stopped and removed, no longer installed or\nupdated so.",
@@ -18534,6 +18951,24 @@
           },
           {
             "type": "object",
+            "required": [
+              "data",
+              "type"
+            ],
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/VmStats"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "vm_stats"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
             "description": "The last request could not be understood.",
             "required": [
               "message",
@@ -18600,7 +19035,8 @@
         "enum": [
           "metrics",
           "jobs",
-          "notifications"
+          "notifications",
+          "vm_stats"
         ]
       },
       "LocateRequest": {
@@ -21080,6 +21516,18 @@
         },
         "additionalProperties": false
       },
+      "RenameVmImageRequest": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
       "RenewRecoveryCodesRequest": {
         "type": "object",
         "required": [
@@ -23410,6 +23858,76 @@
         },
         "additionalProperties": false
       },
+      "UpdateVmRequest": {
+        "type": "object",
+        "description": "A VM's settings as they are to be: all of them, its system aside.",
+        "required": [
+          "name",
+          "cpus",
+          "memory_mib",
+          "firmware",
+          "disks",
+          "nics",
+          "drives",
+          "boot",
+          "autostart"
+        ],
+        "properties": {
+          "autostart": {
+            "type": "boolean"
+          },
+          "boot": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VmBootDevice"
+            }
+          },
+          "confirm": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The VM's name, typed again: needed when a disk is removed."
+          },
+          "cpus": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "disks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VmDisk"
+            },
+            "description": "A disk of a slot it had keeps its data and only grows; one left out\nis destroyed."
+          },
+          "drives": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VmDrive"
+            }
+          },
+          "firmware": {
+            "$ref": "#/components/schemas/VmFirmware"
+          },
+          "memory_mib": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string"
+          },
+          "nics": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VmNicChoice"
+            },
+            "description": "A card of a slot it had keeps its MAC address."
+          }
+        },
+        "additionalProperties": false
+      },
       "UpdatesOverview": {
         "type": "object",
         "required": [
@@ -23606,8 +24124,10 @@
           "cpus",
           "memory_mib",
           "firmware",
-          "disk_gib",
-          "network",
+          "disks",
+          "nics",
+          "drives",
+          "boot",
           "autostart",
           "pool",
           "volume",
@@ -23618,6 +24138,13 @@
           "autostart": {
             "type": "boolean"
           },
+          "boot": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VmBootDevice"
+            },
+            "description": "The devices it boots from, first first."
+          },
           "cpus": {
             "type": "integer",
             "format": "int32",
@@ -23627,10 +24154,17 @@
             "type": "integer",
             "format": "int64"
           },
-          "disk_gib": {
-            "type": "integer",
-            "format": "int32",
-            "minimum": 0
+          "disks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VmDisk"
+            }
+          },
+          "drives": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VmDrive"
+            }
           },
           "firmware": {
             "$ref": "#/components/schemas/VmFirmware"
@@ -23638,16 +24172,6 @@
           "id": {
             "type": "string",
             "description": "Twelve hexadecimal digits."
-          },
-          "iso": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/VmIsoOrigin"
-              },
-              {
-                "type": "null"
-              }
-            ]
           },
           "memory_mib": {
             "type": "integer",
@@ -23657,8 +24181,11 @@
           "name": {
             "type": "string"
           },
-          "network": {
-            "$ref": "#/components/schemas/VmNetwork"
+          "nics": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VmNic"
+            }
           },
           "os": {
             "$ref": "#/components/schemas/VmOs"
@@ -23684,6 +24211,87 @@
         "properties": {
           "autostart": {
             "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VmBootDevice": {
+        "type": "object",
+        "description": "A device a VM boots from.",
+        "required": [
+          "kind",
+          "slot"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/VmBootKind"
+          },
+          "slot": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "VmBootKind": {
+        "type": "string",
+        "enum": [
+          "disk",
+          "drive"
+        ]
+      },
+      "VmDisk": {
+        "type": "object",
+        "description": "A disk: a sparse zvol in its slot, 0 to 7.",
+        "required": [
+          "slot",
+          "size_gib",
+          "bus"
+        ],
+        "properties": {
+          "bus": {
+            "$ref": "#/components/schemas/VmDiskBus"
+          },
+          "size_gib": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "slot": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "VmDiskBus": {
+        "type": "string",
+        "description": "How a disk is attached: virtio (Linux), SATA (systems without virtio\ndrivers).",
+        "enum": [
+          "virtio",
+          "sata"
+        ]
+      },
+      "VmDrive": {
+        "type": "object",
+        "description": "A CD drive in its slot, 0 to 2, with an image of the library or empty.",
+        "required": [
+          "slot"
+        ],
+        "properties": {
+          "image": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "An image's id; none: empty."
+          },
+          "slot": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
           }
         },
         "additionalProperties": false
@@ -23720,38 +24328,149 @@
           }
         }
       },
-      "VmIsoChoice": {
+      "VmImage": {
         "type": "object",
-        "description": "An ISO in a share, picked as the VM's installation medium.",
+        "description": "An ISO of the library, kept once for as many VMs as want it.",
         "required": [
-          "share_id",
-          "path"
+          "id",
+          "name",
+          "origin",
+          "added_at",
+          "ready",
+          "used_by"
         ],
         "properties": {
-          "path": {
-            "type": "string",
-            "description": "In the share: `isos/debian-13.1.0-amd64-netinst.iso`."
-          },
-          "share_id": {
+          "added_at": {
             "type": "integer",
             "format": "int64"
-          }
-        },
-        "additionalProperties": false
-      },
-      "VmIsoOrigin": {
-        "type": "object",
-        "description": "Where a VM's ISO was copied from.",
-        "required": [
-          "share",
-          "path"
-        ],
-        "properties": {
-          "path": {
+          },
+          "bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "None while it is not known: an ISO a VM had before the library,\nuntil the library is looked at.",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string",
+            "description": "Twelve hexadecimal digits."
+          },
+          "name": {
             "type": "string"
           },
-          "share": {
+          "origin": {
+            "$ref": "#/components/schemas/VmImageOrigin"
+          },
+          "ready": {
+            "type": "boolean",
+            "description": "In the library: false while it is being copied or uploaded."
+          },
+          "used_by": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The VMs that have it in a drive; it stays while there are any."
+          }
+        }
+      },
+      "VmImageOrigin": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Copied from a file in a share.",
+            "required": [
+              "share",
+              "path",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "share"
+                ]
+              },
+              "path": {
+                "type": "string"
+              },
+              "share": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Uploaded from a browser, a file of that name.",
+            "required": [
+              "file",
+              "kind"
+            ],
+            "properties": {
+              "file": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "upload"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "Where an image came from."
+      },
+      "VmLoad": {
+        "type": "object",
+        "description": "A running VM's load. What libvirt cannot tell is none: the CPU on the\nfirst look, the network for a card through passt (it has no device on\nthe host to count).",
+        "required": [
+          "id",
+          "memory_bytes"
+        ],
+        "properties": {
+          "cpu_percent": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float",
+            "description": "Busy share of its vCPUs, 0 to 100."
+          },
+          "id": {
             "type": "string"
+          },
+          "memory_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "What it was given.",
+            "minimum": 0
+          },
+          "memory_used_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "received_bytes_per_second": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "sent_bytes_per_second": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
           }
         }
       },
@@ -23792,7 +24511,64 @@
             }
           }
         ],
-        "description": "How a VM reaches the network."
+        "description": "How a network card reaches the network."
+      },
+      "VmNic": {
+        "type": "object",
+        "description": "A network card, with the MAC address zendiloOS gave it.",
+        "required": [
+          "slot",
+          "model",
+          "network",
+          "mac"
+        ],
+        "properties": {
+          "mac": {
+            "type": "string"
+          },
+          "model": {
+            "$ref": "#/components/schemas/VmNicModel"
+          },
+          "network": {
+            "$ref": "#/components/schemas/VmNetwork"
+          },
+          "slot": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "VmNicChoice": {
+        "type": "object",
+        "description": "A network card as asked for, in its slot, 0 to 3.",
+        "required": [
+          "slot",
+          "model",
+          "network"
+        ],
+        "properties": {
+          "model": {
+            "$ref": "#/components/schemas/VmNicModel"
+          },
+          "network": {
+            "$ref": "#/components/schemas/VmNetwork"
+          },
+          "slot": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "VmNicModel": {
+        "type": "string",
+        "description": "The network card a VM sees: virtio, or an e1000e every system knows.",
+        "enum": [
+          "virtio",
+          "e1000e"
+        ]
       },
       "VmOs": {
         "type": "string",
@@ -23811,7 +24587,8 @@
           "pools",
           "cores",
           "memory_bytes",
-          "bridges"
+          "bridges",
+          "image_upload_max_bytes"
         ],
         "properties": {
           "bridges": {
@@ -23829,6 +24606,12 @@
           },
           "hardware": {
             "$ref": "#/components/schemas/VmHardware"
+          },
+          "image_upload_max_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The largest image a browser uploads into the library.",
+            "minimum": 0
           },
           "installed": {
             "type": "boolean"
@@ -23870,6 +24653,63 @@
           "creating",
           "unknown"
         ]
+      },
+      "VmStats": {
+        "type": "object",
+        "description": "What the virtual machines use now.",
+        "required": [
+          "at",
+          "vms",
+          "running",
+          "total",
+          "cpu_percent",
+          "memory_assigned_bytes",
+          "host_memory_bytes",
+          "host_cores"
+        ],
+        "properties": {
+          "at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix time in seconds."
+          },
+          "cpu_percent": {
+            "type": "number",
+            "format": "float",
+            "description": "The share of the machine's threads the VMs keep busy, 0 to 100."
+          },
+          "host_cores": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "host_memory_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "memory_assigned_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "What the running VMs were given, against the machine's memory.",
+            "minimum": 0
+          },
+          "running": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "vms": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VmLoad"
+            },
+            "description": "Each running VM's load."
+          }
+        }
       },
       "VmStoragePlace": {
         "type": "object",

@@ -60,6 +60,27 @@ describe('LiveClient', () => {
     expect(received).toEqual([metrics])
   })
 
+  it('delivers what the VMs use to those who watch them', () => {
+    const received: unknown[] = []
+    client.subscribe('vm_stats', (data) => received.push(data.running))
+    client.connect()
+    sockets[0]!.opened()
+    const data = {
+      at: 1,
+      vms: [],
+      running: 2,
+      total: 3,
+      cpu_percent: 10,
+      memory_assigned_bytes: 0,
+      host_memory_bytes: 0,
+      host_cores: 4,
+    }
+    sockets[0]!.receive({ type: 'vm_stats', data })
+    sockets[0]!.receive({ type: 'metrics', data: metrics })
+    expect(sockets[0]!.sent).toEqual([{ type: 'subscribe', topic: 'vm_stats' }])
+    expect(received).toEqual([2])
+  })
+
   it('unsubscribes when the last listener leaves', () => {
     client.connect()
     sockets[0]!.opened()

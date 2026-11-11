@@ -250,12 +250,20 @@ impl Operations {
                 },
                 Err(error) => Err(error),
             },
-            Request::CopyVmIso { id, volume, source } => self.vms.copy_iso(id, *volume, source).await,
+            Request::CopyVmImage { image, volume, source } => {
+                self.vms.copy_image(image, *volume, source).await
+            }
+            Request::VmImages { volume } => self.vms.images(*volume),
+            Request::DeleteVmImage { image, volume } => self.vms.delete_image(image, *volume).await,
+            Request::FinishVmImageUpload { image } => self.vms.finish_upload(image).await,
             Request::DefineVm { spec } => self.vms.define(spec).await,
+            Request::UpdateVm { spec, remove } => self.vms.update(spec, remove).await,
+            Request::ChangeVmMedia { spec, drive } => self.vms.change_media(spec, *drive).await,
             Request::SetVmAutostart { id, autostart } => self.vms.set_autostart(id, *autostart).await,
             Request::ControlVm { id, action } => self.vms.control(id, *action).await,
             Request::DeleteVm { id, pool, volume } => self.vms.delete(id, pool, *volume).await,
             Request::VmStates {} => self.vms.states().await,
+            Request::VmStats {} => self.vms.stats().await,
             Request::StartApp { app } => self.apps.start(app).await,
             Request::StopApp { app } => self.apps.stop(app).await,
             Request::RemoveApp { app, pool, volume } => match self.apps.remove(app).await {
@@ -301,6 +309,12 @@ impl Operations {
             Request::OpenVmConsole { id } => {
                 return match self.vms.open_console(id).await {
                     Ok((response, socket)) => (response, Some(socket)),
+                    Err(error) => (failure(&error), None),
+                };
+            }
+            Request::OpenVmImageUpload { image, volume, bytes } => {
+                return match self.vms.open_upload(image, *volume, *bytes).await {
+                    Ok((response, pipe)) => (response, Some(pipe)),
                     Err(error) => (failure(&error), None),
                 };
             }

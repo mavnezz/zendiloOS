@@ -541,6 +541,7 @@ impl Harness {
         let vm_host = Arc::new(zendiloos_vms::testing::FakeVmHost::default());
         let vms = zendiloos_vms::application::Vms::new(zendiloos_vms::application::VmsPorts {
             repository: Arc::new(zendiloos_vms::testing::MemoryVms::default()),
+            images: Arc::new(zendiloos_vms::testing::MemoryImages::default()),
             host: vm_host.clone(),
             isos: Arc::new(zendiloos_vms::testing::FakeIsos),
             ids: Arc::new(zendiloos_vms::testing::CountingIds::default()),
@@ -1885,6 +1886,9 @@ fn openapi_documents_every_route() {
             "/api/v1/system/web-server",
             "/api/v1/system/web-server/confirm",
             "/api/v1/vms",
+            "/api/v1/vms/images",
+            "/api/v1/vms/images/upload",
+            "/api/v1/vms/images/{id}",
             "/api/v1/vms/plugin",
             "/api/v1/vms/plugin/install",
             "/api/v1/vms/plugin/storage",

@@ -47,7 +47,8 @@ use zendiloos_infra::sqlite::{
     SqliteCertificates, SqliteChannels, SqliteDiskInventory, SqliteEjectedDrives, SqliteEnclosure,
     SqliteFirewall, SqliteGroups, SqliteInstalledApps, SqliteJobs, SqliteNotifications, SqlitePreferences,
     SqliteProjects, SqliteSecurity, SqliteSelfTestPlans, SqliteSessions, SqliteShareProjects, SqliteShares,
-    SqliteSystemUpdates, SqliteTwoFactor, SqliteUpdateSettings, SqliteVms, SqliteVolumeBackups,
+    SqliteSystemUpdates, SqliteTwoFactor, SqliteUpdateSettings, SqliteVmImages, SqliteVms,
+    SqliteVolumeBackups,
 };
 use zendiloos_infra::updates::{GitHubReleases, installed_notes};
 use zendiloos_jobs::Jobs;
@@ -369,6 +370,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     // ISO copied, a VM's disks destroyed) is the system transport's own.
     let vms = Vms::new(VmsPorts {
         repository: Arc::new(SqliteVms::new(database.clone())),
+        images: Arc::new(SqliteVmImages::new(database.clone())),
         // The bridges VMs may go on, as zendiloosd reads the host's network.
         host: Arc::new(AgentVms::new(agent.clone(), network.get_network.clone())),
         isos: Arc::new(zendiloos_infra::vms::SharesForVms::new(files.clone())),
@@ -376,6 +378,18 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         jobs: jobs.clone(),
         audit: audit.clone(),
         clock: Arc::new(SystemClock),
+    });
+    // Images being copied or uploaded when zendiloosd stopped were cut off:
+    // what of them is on the host goes, with their records.
+    let unfinished = vms.clone();
+    tokio::spawn(async move {
+        match unfinished.discard_unfinished_images(&RequestContext::default()).await {
+            Ok(0) => {}
+            Ok(removed) => tracing::info!(removed, "vms: removed images whose copy or upload was cut off"),
+            Err(error) => {
+                tracing::warn!(%error, "vms: cannot remove images whose copy or upload was cut off")
+            }
+        }
     });
 
     let snapshots = spawn_snapshot_schedules(sharing.clone());

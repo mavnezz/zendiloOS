@@ -84,7 +84,7 @@ The Debian package `zendiloos` (built with `just deb`) installs:
 | `/etc/nfs.conf.d/zendiloos.conf` | fixed ports for NFSv3's helpers (mountd, statd, lockd), so the firewall can name them |
 | `/etc/zendiloos/firewall/zendiloos.nft` | the firewall's rules, written by the agent once the firewall is on; `zendiloos-firewall.service` loads them with `nft` before the network comes up (4.12) |
 | `/etc/zendiloos/apps/`, `/etc/zendiloos/projects/` | what the agent checked and runs, root's alone: apps installed the earlier way and administrators' Compose projects (4.9) |
-| `/etc/zendiloos/vms/`, `/etc/tmpfiles.d/zendiloos-vms.conf`, `/run/zendiloos-vms/` | virtual machines (4.13): each domain's XML as the agent defined it; the consoles' folder, made at every boot, with QEMU's VNC sockets |
+| `/etc/zendiloos/vms/`, `/etc/tmpfiles.d/zendiloos-vms.conf`, `/run/zendiloos-vms/` | virtual machines (4.13): each domain's XML as the agent defined it; the consoles' folder, made at every boot, with QEMU's VNC sockets; their disks and the image library on a pool (`/volume<N>/@vms`) |
 | `/etc/zendiloos/id-high-water` | the highest UID and GID the agent ever handed out (4.2) |
 | `/var/lib/zendiloos-acme/` | acme.sh's accounts, certificates and files for HTTP challenges, owned by the system user `zendiloos-acme`; a DNS provider's credentials only while it runs, in `/run/zendiloos-acme/` (4.11) |
 | `/run/zendiloos-removable/` | the places removable drives are mounted at, a folder each, named by the UUID of their file system |
@@ -157,7 +157,7 @@ tests in `zendiloos-architecture` catch, as part of `cargo test`.
 | `zendiloos-network` | interfaces, addresses, default routes, name servers; an interface's IP settings and name servers through systemd-networkd, and bridges, bonds and VLANs made, changed and removed, each change with confirmation (6); the network taken over from ifupdown in a job, with confirmation (6); later the hostname | kernel, jobs |
 | `zendiloos-certificates` | the ACME client plugin (acme.sh): accounts, challenges and certificates from Let's Encrypt, renewed daily; the web interface's ports and certificate, changed with confirmation (4.11) | kernel, jobs, notify |
 | `zendiloos-firewall` | the firewall: one ordered list of rules (interface, service or ports, source, allow or deny) and what happens when none matches, enforced by nftables for the NAS and the ports Docker publishes, changed with confirmation; services nobody reaches, told (4.12) | kernel, notify |
-| `zendiloos-vms` | virtual machines, a proof of concept: the plugin (libvirt and QEMU installed, their storage on a pool, the hardware check), VMs from an OS preset with their disk and an ISO copied from a share, made in a job, their state from libvirt and their consoles (4.13) | kernel, jobs |
+| `zendiloos-vms` | virtual machines: the plugin (libvirt and QEMU installed, their storage on a pool, the hardware check), VMs from an OS preset with their disks, network cards and CD drives, made in a job and changed (hardware only while off), the image library (ISOs copied from a share or uploaded), what running VMs use, their state from libvirt and their consoles (4.13) | kernel, jobs |
 | `zendiloos-infra` | all secondary adapters, SQLite migrations | kernel, jobs, notify, contexts, agent-proto, exec; in tests also sim |
 | `zendiloos-api` | primary adapter: axum routes, DTOs, OpenAPI, auth middleware, WebSocket | kernel, jobs, notify, contexts |
 | `zendiloosd` | composition root (binary) | everything except agent |
@@ -368,7 +368,7 @@ frontend/src/
   WebSocket; jobs are also stored in the database so a restart can mark them
   as interrupted.
 - **One WebSocket per browser tab** (`/api/v1/ws`) for live data, with
-  topic subscriptions (`metrics`, `jobs`, `notifications`) instead of one
+  topic subscriptions (`metrics`, `jobs`, `notifications`, `vm_stats`) instead of one
   connection per data stream. A subscription to `metrics` gets the latest
   sample at once; `jobs` brings the whole job at every change:
 
@@ -383,7 +383,8 @@ frontend/src/
 
   A single sampler task produces metrics (every 2 s) and distributes them
   through `tokio::sync::broadcast`/`watch`; the load does not depend on the
-  number of open browsers. A terminal in a container uses a WebSocket of
+  number of open browsers. `vm_stats`, for `vms.manage` only, is sampled
+  every 3 s by one task that runs only while someone is subscribed (4.13). A terminal in a container uses a WebSocket of
   its own (`/api/v1/docker/containers/{id}/terminal`).
 - In production `zendiloosd` listens on `/run/zendiloos/api.sock`, during
   development on `127.0.0.1:8780` (`just dev`; Vite proxies to it).
@@ -425,7 +426,8 @@ simple to audit.
   `useradd`, `userdel`, `groupadd`, `groupdel`, `gpasswd`, `smbpasswd`,
   `testparm`, `exportfs`, `smbcontrol`, `sshd`, `docker`, `dockerd`,
   `setsid`, `openssl`, `nginx`, `nft`, `virsh` (and, in transient units,
-  `systemd-tmpfiles`, this binary as `copy-vm-iso`, 4.13, and `ip link
+  `systemd-tmpfiles`, this binary as `copy-vm-iso` and `receive-vm-image`,
+  4.13, and `ip link
   delete` for a network device zendiloOS made that goes, 6).
   `zendiloos-docker-bridges.service`, a unit of the package, runs
   `iptables` and `ip6tables` as this binary's `docker-bridges` (4.12).
@@ -1321,8 +1323,11 @@ TLS is rustls with ring and the system's certificate authorities
   `/sys` are only looked at, the bridge a VM goes on is asked of
   systemd-networkd over D-Bus (its own network namespace shows none of the
   host's links), and a console's socket is connected to, which
-  needs no write access to `/run`. What writes the volumes (an ISO copied
-  or removed) runs in transient units that may write only `/volume<N>/@vms`.
+  needs no write access to `/run`. What writes the volumes (an ISO copied,
+  uploaded or removed) runs in transient units that may write only
+  `/volume<N>/@vms`; the one receiving an upload has no capability at all
+  and reads a pipe whose other end zendiloosd holds, nothing of the
+  storage's.
   libvirtd and QEMU run outside, under libvirt's own confinement (AppArmor
   per VM, QEMU as `libvirt-qemu`).
 - Folder downloads are planned before the first byte (each entry once,
@@ -2423,16 +2428,20 @@ them to anyone on every connection first, or a denying fallback, means
 nobody does) is listed on the Firewall tab with a way to allow it, and told
 once as `firewall_blocked` until it is reachable again.
 
-### 4.13 Virtual machines (proof of concept)
+### 4.13 Virtual machines
 
 **What it is.** A third plugin of the App Center, *Virtual machines*:
 libvirt and QEMU from Debian, installed by the package runner when an
 administrator asks, the VMs' storage on a pool, and then a desktop app of
-that name in which administrators (`vms.manage`) make, start, stop and
-remove VMs and open their consoles. It is a proof of concept in scope, not
-in care: every value is checked as in the other contexts, nothing a client
-sends reaches a command line or a domain's XML as text, and zendiloosd
-gains no privilege. Its context is `zendiloos-vms` (migration 0049).
+that name in which administrators (`vms.manage`) make, change, start, stop
+and remove VMs, keep a library of ISOs, watch what the VMs use and open
+their consoles. The app has a page for the machines (how many run, the
+share of the NAS's CPU they keep busy, the memory the running ones were
+given against the NAS's, and a card per VM with its own load) and one for
+the image library. Every value is checked as in the other contexts,
+nothing a client sends reaches a command line or a domain's XML as text,
+and zendiloosd gains no privilege. Its context is `zendiloos-vms`
+(migrations 0049 and 0050).
 
 **The hardware check.** The plugin's page says whether the CPU can run VMs
 (`/dev/kvm` is there, with the flag `vmx` for Intel VT-x or `svm` for
@@ -2445,7 +2454,7 @@ but at the speed of an emulator.
 
 **libvirt, not QEMU run by hand.** libvirt starts QEMU as `libvirt-qemu`,
 confined by an AppArmor profile it makes for each VM (`virt-aa-helper`:
-only that VM's disk, ISO and console socket), hands the files it attaches
+only that VM's disks, the images in its drives and its console socket), hands the files it attaches
 to that account while the VM runs and gives them back after, starts passt,
 picks the OVMF build from the firmware QEMU describes, shuts a guest down
 through ACPI and starts VMs with the machine. zendiloOS talks to its system
@@ -2479,47 +2488,89 @@ are left to the list above.
 pool zendiloOS made (`setuid`, `devices` and `exec` off; the dot keeps it
 from ever being a share), mounted by its own unit at `/volume<N>/@vms`
 before libvirtd, which a drop-in (`RequiresMountsFor`) keeps from starting
-without it, as for Docker's data. A VM's disk is a sparse zvol
-`<pool>/zendiloos.vms/<id>-disk0` (`volmode=dev`: its partitions never show
-on the host), virtio for the Linux preset and SATA for Windows and other
-systems, which bring no virtio drivers. A pool with the VMs' storage on it
-is not deleted (the agent refuses); moving the storage is not offered yet.
+without it, as for Docker's data. A VM's disks are sparse zvols
+`<pool>/zendiloos.vms/<id>-disk<N>` (`volmode=dev`: their partitions never
+show on the host), the library's ISOs files in `/volume<N>/@vms/isos`. A
+pool with the VMs' storage on it is not deleted (the agent refuses);
+moving the storage is not offered yet.
 
 **A VM.** Its settings: a name, an OS preset (Linux, Windows, other) that
-fills in vCPUs, memory, disk size and firmware, vCPUs up to the machine's
-threads and memory up to its total (the administrator weighs what the NAS
-keeps), UEFI (OVMF, Secure Boot off) or BIOS (SeaBIOS), one system disk,
-an optional ISO, the network and autostart. The agent builds the domain's
-XML from the checked protocol types alone (`VmSpec`) and keeps it as
-`/etc/zendiloos/vms/zendiloos-<id>.xml` (`virsh define --validate`): q35,
-the host's CPU, ACPI; virtio disk, network card, video, balloon and random
-source for Linux; SATA, an e1000e card and VGA for the others; Hyper-V's
-enlightenments and local time for Windows; a VNC console on a Unix socket
-and nothing listening on a network. Making a VM is a job (`vms.create`):
-the ISO copied, the disk made, the domain defined; what a failure leaves
-goes again, its record too. Start, shut down (ACPI), restart (ACPI), force
-off, autostart on and off, and delete with the name typed again (the domain
-undefined with its NVRAM, the zvol destroyed, the ISO's copy removed) are
-audited (`vms.install`, `vms.storage`, `vms.create`, `vms.start`,
-`vms.shutdown`, `vms.restart`, `vms.force_off`, `vms.autostart_on`,
-`vms.autostart_off`, `vms.delete`, `vms.console`).
+fills in vCPUs, memory, the first disk's size, the firmware, the disks'
+bus and the cards' model, vCPUs up to the machine's threads and memory up
+to its total (the administrator weighs what the NAS keeps), UEFI (OVMF,
+Secure Boot off) or BIOS (SeaBIOS), and its devices: 1 to 8 disks, each in
+a slot (0 to 7, its zvol `<id>-disk<slot>`) with a size of 1 GiB to 64 TiB
+and a bus, virtio (Linux) or SATA (systems that bring no virtio drivers,
+Windows' installer among them); up to 4 network cards, each in a slot,
+virtio or an Intel e1000e every system knows, through passt or on a host
+bridge; up to 3 SATA CD drives, each with an image of the library or
+empty (an image goes into an empty drive while the VM runs, which needs
+the drive); and a boot order of these disks and drives, each once, the
+others never booted from. A new VM gets one disk, one card through the
+NAS and one empty drive, booted from the drive first. Each card gets a MAC
+address when it is added (`52:54:00`, QEMU's prefix, the rest at random,
+none another card has) and keeps it whatever else changes, so a DHCP
+server's reservation holds; a client never chooses one. The agent builds
+the domain's XML from the checked protocol types alone (`VmSpec`, read
+only whole: slots, MAC addresses and boot devices each once, the boot
+order of devices the VM has) and keeps it as
+`/etc/zendiloos/vms/zendiloos-<id>.xml` (`virsh define --validate`; written
+beside it first and kept only once libvirt took it, so the file is always
+libvirt's definition): q35, the host's CPU, ACPI; each disk on a target of
+its slot (virtio `vda` to `vdh`, SATA `sda` to `sdh`) and each drive after
+them (`sdi` to `sdk`), so a device keeps its place whatever is added;
+`<boot order>` on the devices of the boot order; for Linux virtio video,
+a memory balloon whose guest reports its memory every five seconds and a
+random source; VGA and no balloon for the others; Hyper-V's enlightenments
+and local time for Windows; a VNC console on a Unix socket and nothing
+listening on a network. Making a VM is a job (`vms.create`): its disks
+made, the domain defined; what a failure leaves goes again, its record
+too. Start, shut down (ACPI), restart (ACPI), force off, autostart on and
+off, a change, and delete with the name typed again (the domain undefined
+with its NVRAM, its zvols destroyed; the images in its drives stay in the
+library) are audited (`vms.install`, `vms.storage`, `vms.create`,
+`vms.start`, `vms.shutdown`, `vms.restart`, `vms.force_off`,
+`vms.autostart_on`, `vms.autostart_off`, `vms.change`, `vms.delete`,
+`vms.console`).
 
-**The network.** By default user-mode networking through passt: the VM's
-connections leave from the NAS's own address as the NAS's sockets, through
+**Changing a VM.** Everything but its system can be changed after it is
+made (`PUT /vms/{id}`, the whole settings, `vms.change`), and the domain is
+always defined anew from the stored settings by the agent, never edited as
+text. Its name (zendiloOS's alone) and autostart change at any time; so do
+the images in its drives: the domain is defined anew and, while QEMU runs,
+the medium changed at once (`virsh change-media --update` or `--eject`,
+`--live --force`, as a guest may have locked its tray); libvirt's security
+drivers give the new file to QEMU's account and its AppArmor profile, as
+at a start. Everything else is hardware and changes only while the VM is
+shut off: vCPUs, memory, the firmware (the interface warns that a system
+installed with one may not boot with the other), disks added, grown or
+removed, cards added, removed or changed, drives added or removed, the
+boot order. zendiloosd refuses it otherwise (`vm_running`), and so does
+the agent (`UpdateVm`), which looks at libvirt's state itself. A disk only
+grows (`zfs set volsize`; the guest grows its partition itself), never
+shrinks; the agent looks at every zvol's size first and changes nothing if
+one would. A disk removed is destroyed with its data, after the domain no
+longer names it, and only with the VM's name typed again. A card keeps
+its MAC address by its slot; a card on a bridge that is gone since may
+stay on it, but none goes onto one the machine does not have.
+
+**The network.** Each card goes through passt by default, user-mode
+networking: the VM's connections leave from the NAS's own address as the
+NAS's sockets, through
 its firewall's rules for what goes out; nothing reaches the VM (no ports
 are forwarded). Or a Linux bridge of the machine's own (not Docker's
 `docker0` or `br-<id>`, not libvirt's `virbr…`), on which libvirt puts the
 VM's tap: the VM is on the LAN as a machine of its own and gets its address
 from the LAN's DHCP server. Such a bridge is made on the Network page (6),
 over the card that connects the NAS to the LAN, which keeps the NAS's
-address; the wizard offers the bridges there are and, without one, points
-there. Which those are zendiloosd reads itself, with `ip` in the host's
-network namespace, as the Network page does (the agent has a network
+address; the wizard and the edit dialog offer the bridges there are and,
+without one, point there. Which those are zendiloosd reads itself, with
+`ip` in the host's network namespace, as the Network page does (the agent has a network
 namespace of its own, whose `/sys/class/net` shows only its loopback):
 every bridge but Docker's (`docker0`, `br-` and twelve hex digits) and
 libvirt's (`virbr…`), also one without members made for VMs only. Defining
-a VM on a bridge, the agent checks again that it is one of the host's
-links and a bridge, asking systemd-networkd (`GetLinkByName`,
+a VM with a card on a bridge, the agent checks again that it is one of
+the host's links and a bridge, asking systemd-networkd (`GetLinkByName`,
 `DescribeLink`'s kind and type); a link it does not know or describes as
 anything else is refused, and so is every bridge where systemd-networkd
 does not run (ifupdown, NetworkManager). A link it knows but does not
@@ -2533,26 +2584,86 @@ refuses with `device_in_use` naming the VMs. The firewall's rules do not
 filter what a VM on a bridge sends to the LAN or receives from it, only
 what reaches the NAS itself.
 
-**ISOs never come from a share.** QEMU must not reach the shares, and
-libvirt, which gives each file it attaches to QEMU's account while the VM
-runs, must never change a file in one. So the ISO an administrator picks
-in a share is copied into `/volume<N>/@vms/isos/<id>.iso` and only the copy
-is attached, read-only, as a SATA CD drive booted first; it goes with the
-VM. zendiloosd first opens the file through the file manager as that
-administrator (`SharesForVms`), so a share or a file they may not read is
-refused (`iso_denied`). The copy is the job's first step, with its
-progress: the system agent cannot write the volumes, so it starts the
-unit `zendiloos-vm-iso-<id>.service` (this binary as `copy-vm-iso`), which
-may write only `/volume<N>/@vms` and has no capability but
-`CAP_DAC_READ_SEARCH`. It opens the file beneath the share's root
-(`openat2`, no links, no other file system, only a regular file, without
-waiting on a pipe) and copies as `cp --reflink=auto` would: `FICLONE`
-first, then `copy_file_range`, which OpenZFS 2.3 answers by cloning blocks
-within the pool where its `zfs_bclone_enabled` lets it (cheap and
-instant), else a plain copy; under a hidden name, renamed once complete and
-on disk. Whoever may write the share could swap the file between the check
-and the copy for another plain file in that share, which would be copied
-in its place; administrators are as good as root anyway (S2).
+**The image library.** ISOs live once in `/volume<N>/@vms/isos` as
+`<image>.iso`, the image's id twelve hexadecimal digits zendiloosd draws,
+and as records (migration 0050: a name of up to 128 characters, unique
+without case and renamable, the size, where it came from, when it was
+added); as many VMs as want one have it in a drive, read-only, and an
+image is not deleted while a VM has it (`image_in_use`, naming the VMs).
+QEMU must not reach the shares, and libvirt, which gives each file it
+attaches to QEMU's account while the VM runs, must never change a file in
+one: only the library's files are ever attached. An image is added in one
+of two ways, each audited (`vms.image_add`, `vms.image_upload`,
+`vms.image_rename`, `vms.image_delete`).
+
+*From the NAS*, in a job (`vms.image_add`), with its progress. zendiloosd
+first opens the file through the file manager as that administrator
+(`SharesForVms`), so a share or a file they may not read is refused
+(`iso_denied`). The system agent cannot write the volumes, so it starts
+the unit `zendiloos-vm-iso-<image>.service` (this binary as
+`copy-vm-iso`), which may write only `/volume<N>/@vms` and has no
+capability but `CAP_DAC_READ_SEARCH`. It opens the file beneath the
+share's root (`openat2`, no links, no other file system, only a regular
+file, without waiting on a pipe) and copies as `cp --reflink=auto` would:
+`FICLONE` first, then `copy_file_range`, which OpenZFS 2.3 answers by
+cloning blocks within the pool where its `zfs_bclone_enabled` lets it
+(cheap and instant), else a plain copy; under a hidden name, renamed once
+complete and on disk. Whoever may write the share could swap the file
+between the check and the copy for another plain file in that share,
+which would be copied in its place; administrators are as good as root
+anyway (S2).
+
+*From the browser* (`POST /vms/images/upload`, the body as it is, of the
+length `Content-Length` announces, at most 32 GiB, which nginx passes on
+unbuffered). zendiloosd must not gain write access to the VMs' storage,
+so it never holds anything of it, not even a descriptor of a file there:
+the agent (`OpenVmImageUpload`) checks the size against the limit and the
+pool's free space, makes a pipe, and starts the unit
+`zendiloos-vm-upload-<image>.service` (this binary as `receive-vm-image`,
+`systemd-run --pipe` with the pipe's reading end as its standard input),
+which may write only `/volume<N>/@vms`, has no capability at all and runs
+for twelve hours at most; zendiloosd gets the pipe's writing end with the
+answer (`SCM_RIGHTS`, as a console's socket). The unit reads the pipe
+into a file without a name in the library's folder (`O_TMPFILE`; a
+hidden name where a file system has none), counting: past the size
+announced it stops and refuses. Only once the pipe is closed after
+exactly that many bytes is the file written out (`fsync`) and given its
+name (`linkat` of `/proc/self/fd/<n>`, which needs no capability for a
+file of its own), which may not be taken; until then nothing of it shows
+in the folder, and an upload cut off, refused or given up (the browser
+gone, zendiloosd or the agent restarted) leaves nothing, as the nameless
+file goes with its last descriptor. zendiloosd writes what comes and
+stops at the size announced, closes the pipe and asks for the end
+(`FinishVmImageUpload`), which the agent answers from the unit's last
+line; a refused or failed upload's record goes, and its file, if any.
+What a pipe holds at a time is all a compromised zendiloosd could put
+anywhere: the unit, not zendiloosd, decides what becomes a file and of
+which name. Images being copied or uploaded when zendiloosd stopped are
+removed at its next start, with what of them is on the host.
+
+The proof of concept copied a VM's ISO to `isos/<vm id>.iso` beside the
+others: migration 0050 makes each such copy an image of that id, named
+after its file in the share (numbered where two have the same name), its
+size looked at the first time the library is listed. Each VM it migrates
+gets one disk (`<id>-disk0`, of its bus by its preset), one card (its MAC
+address made from its id, so it changes once from the one libvirt had
+given it), and one drive with its ISO or empty, booted as it was.
+
+**What VMs use.** Every three seconds while someone with `vms.manage`
+watches, the live WebSocket's topic `vm_stats` (3.1) carries each running
+VM's CPU (its busy share of its vCPUs, from the CPU time between two
+looks), the memory it uses (as its guest says through the balloon
+driver: in all less what it can use without swapping; else what QEMU
+holds of the host's, at most what it was given) and its network's
+receive and send rates, and the VMs' share of the machine: of its
+threads, and the memory the running ones were given against its total.
+The agent asks libvirt once per round for all domains (`virsh domstats
+--list-active --nowait --cpu-total --balloon --interface`, never waiting
+for a guest that does not answer) and passes on only zendiloOS's domains;
+zendiloosd reads the counters, unprivileged. One round serves every
+watcher, and none runs while nobody watches. A card through passt has no
+device on the host, so libvirt counts nothing for it: its rates show as
+not counted.
 
 **The console.** QEMU's VNC server listens on
 `/run/zendiloos-vms/<id>.vnc`. The folder is made at every boot by
@@ -2590,14 +2701,13 @@ long as their licence is kept and their source named, which
 one of noVNC's own files would have to be published under MPL-2.0; none
 is made. Decided deliberately, as `deny.toml` asks of any other licence.
 
-**[Later]** Changing a VM once made (vCPUs, memory, the disk's size, a
-second disk), changing or ejecting its ISO, snapshots and backups of its
-zvol, moving the storage to another pool, handing devices to a VM (the
-IOMMU), a TPM and Secure Boot with Microsoft's keys for Windows 11 and the
-virtio drivers for Windows, rules of the firewall for VMs on a bridge (what
-is bridged to them is not filtered), what
-libvirt-guests does at a shutdown (Debian's default: guests shut down),
-and pools that hold VMs named in `pool_in_use`.
+**[Later]** Snapshots and backups of a VM's zvols, moving the storage to
+another pool, handing devices to a VM (the IOMMU), a TPM and Secure Boot
+with Microsoft's keys for Windows 11, rules of the firewall for VMs on a
+bridge (what is bridged to them is not filtered), counting the traffic of
+cards through passt, what libvirt-guests does at a shutdown (Debian's
+default: guests shut down), pools that hold VMs named in `pool_in_use`,
+and pages for the VMs' storage, networks and logs.
 
 ---
 

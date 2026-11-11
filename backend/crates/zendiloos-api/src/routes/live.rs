@@ -3,6 +3,8 @@
 //! ```text
 //! → {"type":"subscribe","topic":"metrics"}
 //! ← {"type":"metrics","data":{…}}            the latest sample at once, then every new one
+//! → {"type":"subscribe","topic":"vm_stats"}  (`vms.manage` only)
+//! ← {"type":"vm_stats","data":{…}}           every few seconds, while anyone watches
 //! ```
 //!
 //! Not part of the OpenAPI paths (it is no REST operation), but its message
@@ -27,6 +29,9 @@ use zendiloos_system::application::ports::MetricsSubscription;
 use zendiloos_system::domain::MetricsSample;
 
 use zendiloos_identity::application::{AuthContext, IdentityError};
+use zendiloos_identity::domain::Permission;
+use zendiloos_vms::application::VmStatsSubscription;
+use zendiloos_vms::domain::VmStatsSample;
 
 use crate::auth::{Auth, check_same_origin, session_token};
 use crate::error::ApiError;
@@ -55,6 +60,8 @@ pub enum LiveTopic {
     Jobs,
     /// New notifications.
     Notifications,
+    /// What the virtual machines use, for those who manage them.
+    VmStats,
 }
 
 /// What the browser sends.
@@ -77,6 +84,9 @@ pub enum LiveMessage {
     },
     Notification {
         data: super::jobs::Notification,
+    },
+    VmStats {
+        data: VmStats,
     },
     /// The last request could not be understood.
     Error {
@@ -124,6 +134,64 @@ pub struct DiskMetrics {
 pub struct TemperatureMetrics {
     pub label: String,
     pub celsius: f32,
+}
+
+/// What the virtual machines use now.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct VmStats {
+    /// Unix time in seconds.
+    pub at: i64,
+    /// Each running VM's load.
+    pub vms: Vec<VmLoad>,
+    pub running: usize,
+    pub total: usize,
+    /// The share of the machine's threads the VMs keep busy, 0 to 100.
+    pub cpu_percent: f32,
+    /// What the running VMs were given, against the machine's memory.
+    pub memory_assigned_bytes: u64,
+    pub host_memory_bytes: u64,
+    pub host_cores: u32,
+}
+
+/// A running VM's load. What libvirt cannot tell is none: the CPU on the
+/// first look, the network for a card through passt (it has no device on
+/// the host to count).
+#[derive(Debug, Serialize, ToSchema)]
+pub struct VmLoad {
+    pub id: String,
+    /// Busy share of its vCPUs, 0 to 100.
+    pub cpu_percent: Option<f32>,
+    pub memory_used_bytes: Option<u64>,
+    /// What it was given.
+    pub memory_bytes: u64,
+    pub received_bytes_per_second: Option<u64>,
+    pub sent_bytes_per_second: Option<u64>,
+}
+
+impl From<VmStatsSample> for VmStats {
+    fn from(sample: VmStatsSample) -> Self {
+        Self {
+            at: sample.at.unix_seconds(),
+            vms: sample
+                .vms
+                .into_iter()
+                .map(|load| VmLoad {
+                    id: load.id,
+                    cpu_percent: load.cpu_percent,
+                    memory_used_bytes: load.memory_used_bytes,
+                    memory_bytes: load.memory_bytes,
+                    received_bytes_per_second: load.received_bytes_per_second,
+                    sent_bytes_per_second: load.sent_bytes_per_second,
+                })
+                .collect(),
+            running: sample.running,
+            total: sample.total,
+            cpu_percent: sample.cpu_percent,
+            memory_assigned_bytes: sample.memory_assigned_bytes,
+            host_memory_bytes: sample.host_memory_bytes,
+            host_cores: sample.host_cores,
+        }
+    }
 }
 
 impl From<MetricsSample> for Metrics {
@@ -186,7 +254,15 @@ enum Event {
     Sample(Option<MetricsSample>),
     Job(Result<zendiloos_jobs::Job, broadcast::error::RecvError>),
     Notification(Result<zendiloos_notify::Notification, broadcast::error::RecvError>),
+    VmStats(Option<VmStatsSample>),
     CheckSession,
+}
+
+async fn next_vm_stats(subscription: &mut Option<VmStatsSubscription>) -> Option<VmStatsSample> {
+    match subscription {
+        Some(subscription) => subscription.next().await,
+        None => std::future::pending().await,
+    }
 }
 
 async fn next_notification(
@@ -234,6 +310,7 @@ async fn serve(mut socket: WebSocket, state: ApiState, token: Secret, mut viewer
     let mut metrics: Option<Box<dyn MetricsSubscription>> = None;
     let mut jobs: Option<broadcast::Receiver<zendiloos_jobs::Job>> = None;
     let mut notifications: Option<broadcast::Receiver<zendiloos_notify::Notification>> = None;
+    let mut vm_stats: Option<VmStatsSubscription> = None;
     let mut session_check = tokio::time::interval(SESSION_CHECK);
     session_check.tick().await;
 
@@ -243,6 +320,7 @@ async fn serve(mut socket: WebSocket, state: ApiState, token: Secret, mut viewer
             sample = next_sample(&mut metrics) => Event::Sample(sample),
             job = next_job(&mut jobs) => Event::Job(job),
             notification = next_notification(&mut notifications) => Event::Notification(notification),
+            sample = next_vm_stats(&mut vm_stats) => Event::VmStats(sample),
             _ = session_check.tick() => Event::CheckSession,
         };
         let delivered = match event {
@@ -279,6 +357,26 @@ async fn serve(mut socket: WebSocket, state: ApiState, token: Secret, mut viewer
                     notifications = None;
                     true
                 }
+                Ok(LiveRequest::Subscribe { topic: LiveTopic::VmStats }) => {
+                    // Accepted either way; only those who manage VMs get any.
+                    if viewer.can(Permission::VmsManage) {
+                        let subscription = state.vms.watch_stats();
+                        let latest = subscription.latest();
+                        vm_stats = Some(subscription);
+                        match latest {
+                            Some(sample) => {
+                                send(&mut socket, &LiveMessage::VmStats { data: sample.into() }).await
+                            }
+                            None => true,
+                        }
+                    } else {
+                        true
+                    }
+                }
+                Ok(LiveRequest::Unsubscribe { topic: LiveTopic::VmStats }) => {
+                    vm_stats = None;
+                    true
+                }
                 Err(error) => send(&mut socket, &LiveMessage::Error { message: error.to_string() }).await,
             },
             Event::Incoming(Some(Ok(Message::Close(_)))) => {
@@ -313,6 +411,13 @@ async fn serve(mut socket: WebSocket, state: ApiState, token: Secret, mut viewer
                 notifications = None;
                 true
             }
+            Event::VmStats(Some(sample)) => {
+                send(&mut socket, &LiveMessage::VmStats { data: sample.into() }).await
+            }
+            Event::VmStats(None) => {
+                vm_stats = None;
+                true
+            }
             Event::CheckSession => match state.identity.authenticate.verify(&token).await {
                 // What the account may see now: a role taken away also ends
                 // what it was subscribed to.
@@ -320,6 +425,9 @@ async fn serve(mut socket: WebSocket, state: ApiState, token: Secret, mut viewer
                     viewer = fresh;
                     if !sees_notifications(&viewer) {
                         notifications = None;
+                    }
+                    if !viewer.can(Permission::VmsManage) {
+                        vm_stats = None;
                     }
                     true
                 }

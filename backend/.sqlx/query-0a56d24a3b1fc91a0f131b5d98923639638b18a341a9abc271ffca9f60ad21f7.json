@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id AS \"id!\", name, os, cpus, memory_mib, firmware, disk_gib, bridge,\n                      autostart AS \"autostart: bool\", iso_share, iso_path, pool, volume, created_at,\n                      ready AS \"ready: bool\"\n               FROM vms WHERE id = ?",
+  "query": "SELECT id AS \"id!\", name, os, cpus, memory_mib, firmware, autostart AS \"autostart: bool\", boot,\n                      pool, volume, created_at, ready AS \"ready: bool\"\n               FROM vms WHERE id = ?",
   "describe": {
     "columns": [
       {
@@ -70,30 +70,8 @@
         }
       },
       {
-        "name": "disk_gib",
-        "ordinal": 6,
-        "type_info": "Integer",
-        "origin": {
-          "Table": {
-            "table": "vms",
-            "name": "disk_gib"
-          }
-        }
-      },
-      {
-        "name": "bridge",
-        "ordinal": 7,
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "vms",
-            "name": "bridge"
-          }
-        }
-      },
-      {
         "name": "autostart: bool",
-        "ordinal": 8,
+        "ordinal": 6,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -103,30 +81,19 @@
         }
       },
       {
-        "name": "iso_share",
-        "ordinal": 9,
+        "name": "boot",
+        "ordinal": 7,
         "type_info": "Text",
         "origin": {
           "Table": {
             "table": "vms",
-            "name": "iso_share"
-          }
-        }
-      },
-      {
-        "name": "iso_path",
-        "ordinal": 10,
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "vms",
-            "name": "iso_path"
+            "name": "boot"
           }
         }
       },
       {
         "name": "pool",
-        "ordinal": 11,
+        "ordinal": 8,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -137,7 +104,7 @@
       },
       {
         "name": "volume",
-        "ordinal": 12,
+        "ordinal": 9,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -148,7 +115,7 @@
       },
       {
         "name": "created_at",
-        "ordinal": 13,
+        "ordinal": 10,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -159,7 +126,7 @@
       },
       {
         "name": "ready: bool",
-        "ordinal": 14,
+        "ordinal": 11,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -180,15 +147,12 @@
       false,
       false,
       false,
-      true,
       false,
-      true,
-      true,
       false,
       false,
       false,
       false
     ]
   },
-  "hash": "6fe181b59bed1513dbb8ecbe035d1adf0ddb4ee818928afb9e29b2058668ff47"
+  "hash": "0a56d24a3b1fc91a0f131b5d98923639638b18a341a9abc271ffca9f60ad21f7"
 }

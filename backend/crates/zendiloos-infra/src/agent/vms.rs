@@ -12,9 +12,10 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use zendiloos_agent_proto::{
-    AgentTransport, ErrorCode, InterfaceName, PackageRunState, PackageTask, PoolName, Report, Request,
-    RequestId, Response, ShareLocation, ShareName, SharePath, VmCpus, VmDiskSize, VmFirmware, VmId,
-    VmIsoSource, VmMemory, VmNetwork, VmOs, VmSpec, VolumeNumber,
+    AgentTransport, ErrorCode, InterfaceName, MacAddress, PackageRunState, PackageTask, PoolName, Report,
+    Request, RequestId, Response, ShareLocation, ShareName, SharePath, VmBoot, VmCpus, VmDevices, VmDisk,
+    VmDiskBus, VmDiskSize, VmDiskSlot, VmDrive, VmDriveSlot, VmFirmware, VmId, VmImageId, VmIsoSource,
+    VmMemory, VmNetwork, VmNic, VmNicModel, VmNicSlot, VmOs, VmSpec, VolumeNumber,
 };
 use zendiloos_kernel::{PortError, RequestContext};
 use zendiloos_network::application::GetNetwork;
@@ -23,7 +24,10 @@ use zendiloos_storage::application::ports::ZfsSource;
 use zendiloos_vms::application::{
     ConsoleSession, HostError, HostFacts, IsoSource, Steps, StoragePlace, VmHost, VmIds,
 };
-use zendiloos_vms::domain::{Firmware, HostLimits, Network, OsPreset, PowerState, Vm, VmAction};
+use zendiloos_vms::domain::{
+    BootDevice, DiskBus, Firmware, HostLimits, Network, NicModel, OsPreset, PowerState, Vm, VmAction,
+    VmCounters,
+};
 
 use super::{AgentStorage, WHAT, agent_error, call, call_raw, call_raw_reporting, unexpected};
 
@@ -107,35 +111,141 @@ fn place(pool: &str, volume: u16) -> Result<(PoolName, VolumeNumber), HostError>
     ))
 }
 
+fn image_id(id: &str) -> Result<VmImageId, HostError> {
+    VmImageId::parse(id).map_err(|_| invalid("image id"))
+}
+
+fn volume_number(volume: u16) -> Result<VolumeNumber, HostError> {
+    VolumeNumber::new(volume).map_err(|_| invalid("volume number"))
+}
+
+fn disk_slot(slot: u8) -> Result<VmDiskSlot, HostError> {
+    VmDiskSlot::new(slot).map_err(|_| invalid("disk slot"))
+}
+
+fn drive_slot(slot: u8) -> Result<VmDriveSlot, HostError> {
+    VmDriveSlot::new(slot).map_err(|_| invalid("drive slot"))
+}
+
 /// The VM in the agent's terms: every value checked once more.
 fn spec(vm: &Vm) -> Result<VmSpec, HostError> {
     let settings = &vm.settings;
     let (pool, volume) = place(&vm.pool, vm.volume)?;
-    Ok(VmSpec {
-        id: vm_id(&vm.id)?,
-        os: match settings.os {
+    let disks = settings
+        .disks
+        .iter()
+        .map(|disk| {
+            Ok(VmDisk {
+                slot: disk_slot(disk.slot)?,
+                size: VmDiskSize::new(disk.size_gib).map_err(|_| invalid("disk size"))?,
+                bus: match disk.bus {
+                    DiskBus::Virtio => VmDiskBus::Virtio,
+                    DiskBus::Sata => VmDiskBus::Sata,
+                },
+            })
+        })
+        .collect::<Result<Vec<_>, HostError>>()?;
+    let nics = settings
+        .nics
+        .iter()
+        .map(|nic| {
+            Ok(VmNic {
+                slot: VmNicSlot::new(nic.slot).map_err(|_| invalid("card slot"))?,
+                model: match nic.model {
+                    NicModel::Virtio => VmNicModel::Virtio,
+                    NicModel::E1000e => VmNicModel::E1000e,
+                },
+                network: match &nic.network {
+                    Network::User => VmNetwork::User,
+                    Network::Bridge(bridge) => VmNetwork::Bridge {
+                        bridge: InterfaceName::parse(bridge).map_err(|_| invalid("bridge"))?,
+                    },
+                },
+                mac: MacAddress::parse(&nic.mac).map_err(|_| invalid("MAC address"))?,
+            })
+        })
+        .collect::<Result<Vec<_>, HostError>>()?;
+    let drives = settings
+        .drives
+        .iter()
+        .map(|drive| {
+            Ok(VmDrive {
+                slot: drive_slot(drive.slot)?,
+                image: drive.image.as_deref().map(image_id).transpose()?,
+            })
+        })
+        .collect::<Result<Vec<_>, HostError>>()?;
+    let boot = settings
+        .boot
+        .iter()
+        .map(|device| match device {
+            BootDevice::Disk(slot) => disk_slot(*slot).map(VmBoot::Disk),
+            BootDevice::Drive(slot) => drive_slot(*slot).map(VmBoot::Drive),
+        })
+        .collect::<Result<Vec<_>, HostError>>()?;
+    VmSpec::new(
+        vm_id(&vm.id)?,
+        match settings.os {
             OsPreset::Linux => VmOs::Linux,
             OsPreset::Windows => VmOs::Windows,
             OsPreset::Other => VmOs::Other,
         },
-        cpus: VmCpus::new(settings.cpus).map_err(|_| invalid("number of CPUs"))?,
-        memory: VmMemory::new(settings.memory_mib).map_err(|_| invalid("memory size"))?,
-        firmware: match settings.firmware {
+        VmCpus::new(settings.cpus).map_err(|_| invalid("number of CPUs"))?,
+        VmMemory::new(settings.memory_mib).map_err(|_| invalid("memory size"))?,
+        match settings.firmware {
             Firmware::Uefi => VmFirmware::Uefi,
             Firmware::Bios => VmFirmware::Bios,
         },
-        disk: VmDiskSize::new(settings.disk_gib).map_err(|_| invalid("disk size"))?,
-        network: match &settings.network {
-            Network::User => VmNetwork::User,
-            Network::Bridge(bridge) => {
-                VmNetwork::Bridge { bridge: InterfaceName::parse(bridge).map_err(|_| invalid("bridge"))? }
-            }
-        },
-        iso: vm.iso.is_some(),
-        autostart: settings.autostart,
+        VmDevices { disks, nics, drives, boot },
+        settings.autostart,
         pool,
         volume,
-    })
+    )
+    .map_err(|error| HostError::Port(PortError::new(WHAT, format!("not a valid VM for the agent: {error}"))))
+}
+
+/// `Response::VmImageStored`'s bytes, or the agent's refusal or failure.
+fn stored(response: Response) -> Result<u64, HostError> {
+    match response {
+        Response::VmImageStored { bytes } => Ok(bytes),
+        other => Err(host_answer(other).err().unwrap_or_else(|| invalid("answer"))),
+    }
+}
+
+/// `virsh domstats`: the counters of each domain zendiloOS made, by id.
+/// What a domain does not tell (a guest without a balloon driver, a card
+/// without a device on the host) is none.
+pub(crate) fn counters(text: &str) -> BTreeMap<String, VmCounters> {
+    let mut all = BTreeMap::new();
+    let mut current: Option<(String, VmCounters)> = None;
+    let add = |sum: &mut Option<u64>, value: u64| *sum = Some(sum.unwrap_or(0).saturating_add(value));
+    for line in text.lines() {
+        if let Some(name) = line.strip_prefix("Domain: '").and_then(|rest| rest.strip_suffix('\'')) {
+            all.extend(current.take());
+            current = VmId::of_domain(name).map(|id| (id.as_str().to_owned(), VmCounters::default()));
+            continue;
+        }
+        let Some((_, counters)) = current.as_mut() else { continue };
+        let Some((key, value)) = line.trim().split_once('=') else { continue };
+        let Ok(value) = value.parse::<u64>() else { continue };
+        match key {
+            "cpu.time" => counters.cpu_time_ns = Some(value),
+            "balloon.current" => counters.memory_current_kib = Some(value),
+            "balloon.available" => counters.memory_available_kib = Some(value),
+            "balloon.usable" => counters.memory_usable_kib = Some(value),
+            "balloon.unused" => counters.memory_unused_kib = Some(value),
+            "balloon.rss" => counters.memory_rss_kib = Some(value),
+            _ if key.starts_with("net.") && key.ends_with(".rx.bytes") => {
+                add(&mut counters.received_bytes, value)
+            }
+            _ if key.starts_with("net.") && key.ends_with(".tx.bytes") => {
+                add(&mut counters.sent_bytes, value)
+            }
+            _ => {}
+        }
+    }
+    all.extend(current);
+    all
 }
 
 /// `virsh list --all`: the state of each domain zendiloOS made, by id;
@@ -226,30 +336,91 @@ impl VmHost for AgentVms {
         self.done(Request::EnableVms { pool, volume }, context).await
     }
 
-    async fn copy_iso(
+    async fn copy_image(
         &self,
-        id: &str,
+        image: &str,
         storage: &StoragePlace,
         iso: &IsoSource,
         steps: &dyn Steps,
         context: &RequestContext,
-    ) -> Result<(), HostError> {
-        let request = Request::CopyVmIso {
-            id: vm_id(id)?,
-            volume: VolumeNumber::new(storage.volume).map_err(|_| invalid("volume number"))?,
+    ) -> Result<u64, HostError> {
+        let request = Request::CopyVmImage {
+            image: image_id(image)?,
+            volume: volume_number(storage.volume)?,
             source: VmIsoSource {
                 share: ShareLocation {
-                    volume: VolumeNumber::new(iso.volume).map_err(|_| invalid("volume number"))?,
+                    volume: volume_number(iso.volume)?,
                     share: ShareName::parse(&iso.share).map_err(|_| invalid("share name"))?,
                 },
                 path: SharePath::parse(&iso.path).map_err(|_| invalid("path in a share"))?,
             },
         };
-        host_answer(call_raw_reporting(self.transport(), request, &Forward(steps), context).await?)
+        stored(call_raw_reporting(self.transport(), request, &Forward(steps), context).await?)
+    }
+
+    async fn image_files(
+        &self,
+        storage: &StoragePlace,
+        context: &RequestContext,
+    ) -> Result<BTreeMap<String, u64>, PortError> {
+        let volume =
+            VolumeNumber::new(storage.volume).map_err(|_| PortError::new(WHAT, "not a volume number"))?;
+        match call(self.transport(), Request::VmImages { volume }, context).await? {
+            Response::VmImages { files } => {
+                Ok(files.into_iter().map(|file| (file.image.as_str().to_owned(), file.bytes)).collect())
+            }
+            other => Err(unexpected(other)),
+        }
+    }
+
+    async fn delete_image(
+        &self,
+        image: &str,
+        volume: u16,
+        context: &RequestContext,
+    ) -> Result<(), HostError> {
+        self.done(Request::DeleteVmImage { image: image_id(image)?, volume: volume_number(volume)? }, context)
+            .await
+    }
+
+    async fn open_upload(
+        &self,
+        image: &str,
+        volume: u16,
+        bytes: u64,
+        context: &RequestContext,
+    ) -> Result<tokio::fs::File, HostError> {
+        let request =
+            Request::OpenVmImageUpload { image: image_id(image)?, volume: volume_number(volume)?, bytes };
+        let request_id = context.request_id.as_deref().and_then(|id| RequestId::parse(id).ok());
+        let answer =
+            self.transport.call_with_file(request, request_id).await.map_err(|e| PortError::new(WHAT, e))?;
+        match answer {
+            (Response::VmImageUpload {}, Some(pipe)) => {
+                Ok(tokio::fs::File::from_std(std::fs::File::from(pipe)))
+            }
+            (other, _) => Err(host_answer(other).err().unwrap_or_else(|| invalid("answer"))),
+        }
+    }
+
+    async fn finish_upload(&self, image: &str, context: &RequestContext) -> Result<u64, HostError> {
+        stored(
+            call_raw(self.transport(), Request::FinishVmImageUpload { image: image_id(image)? }, context)
+                .await?,
+        )
     }
 
     async fn define(&self, vm: &Vm, context: &RequestContext) -> Result<(), HostError> {
         self.done(Request::DefineVm { spec: spec(vm)? }, context).await
+    }
+
+    async fn update(&self, vm: &Vm, removed: &[u8], context: &RequestContext) -> Result<(), HostError> {
+        let remove = removed.iter().map(|slot| disk_slot(*slot)).collect::<Result<Vec<_>, _>>()?;
+        self.done(Request::UpdateVm { spec: spec(vm)?, remove }, context).await
+    }
+
+    async fn change_media(&self, vm: &Vm, drive: u8, context: &RequestContext) -> Result<(), HostError> {
+        self.done(Request::ChangeVmMedia { spec: spec(vm)?, drive: drive_slot(drive)? }, context).await
     }
 
     async fn set_autostart(
@@ -279,6 +450,13 @@ impl VmHost for AgentVms {
     async fn states(&self, context: &RequestContext) -> Result<BTreeMap<String, PowerState>, PortError> {
         match call(self.transport(), Request::VmStates {}, context).await? {
             Response::VmStates { virsh_list } => Ok(states(&virsh_list)),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    async fn counters(&self, context: &RequestContext) -> Result<BTreeMap<String, VmCounters>, PortError> {
+        match call(self.transport(), Request::VmStats {}, context).await? {
+            Response::VmStats { domstats } => Ok(counters(&domstats)),
             other => Err(unexpected(other)),
         }
     }
@@ -343,13 +521,19 @@ impl VmIds for RandomVmIds {
         getrandom::fill(&mut bytes).expect("the system's random source is available");
         bytes.iter().map(|b| format!("{b:02x}")).collect()
     }
+
+    fn new_mac(&self) -> String {
+        let mut bytes = [0_u8; 3];
+        getrandom::fill(&mut bytes).expect("the system's random source is available");
+        format!("52:54:00:{:02x}:{:02x}:{:02x}", bytes[0], bytes[1], bytes[2])
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use zendiloos_kernel::Timestamp;
     use zendiloos_sim::SimulatedAgent;
-    use zendiloos_vms::domain::{IsoOrigin, VmSettings};
+    use zendiloos_vms::domain::{Drive, VmSettings};
 
     use super::*;
 
@@ -378,15 +562,13 @@ mod tests {
     }
 
     fn vm(id: &str) -> Vm {
+        let mut settings =
+            VmSettings { cpus: 1, memory_mib: 256, ..VmSettings::preset("box", OsPreset::Linux) };
+        settings.nics[0].mac = "52:54:00:00:00:01".into();
+        settings.drives = vec![Drive { slot: 0, image: Some("00000000000a".into()) }];
         Vm {
             id: id.into(),
-            settings: VmSettings {
-                cpus: 1,
-                memory_mib: 256,
-                disk_gib: 1,
-                ..VmSettings::preset("box", OsPreset::Linux)
-            },
-            iso: Some(IsoOrigin { share: "media".into(), path: "isos/x.iso".into() }),
+            settings,
             pool: "tank".into(),
             volume: 1,
             created_at: Timestamp::from_unix_seconds(0),
@@ -451,14 +633,44 @@ mod tests {
     #[test]
     fn a_vm_reaches_the_agent_only_as_checked_values() {
         let spec = spec(&vm("0a1b2c3d4e5f")).unwrap();
-        assert!(spec.iso && spec.network == VmNetwork::User && spec.memory.mib() == 256);
+        assert!(spec.nics()[0].network == VmNetwork::User && spec.memory.mib() == 256);
+        assert_eq!(spec.images().map(VmImageId::as_str).collect::<Vec<_>>(), ["00000000000a"]);
+        assert_eq!(
+            spec.boot(),
+            [VmBoot::Drive(VmDriveSlot::new(0).unwrap()), VmBoot::Disk(VmDiskSlot::new(0).unwrap())]
+        );
         assert!(super::spec(&vm("../../etc")).is_err());
-        let mut bridge = vm("0a1b2c3d4e5f");
-        bridge.settings.network = Network::Bridge("br0 extra".into());
-        assert!(super::spec(&bridge).is_err());
-        let mut small = vm("0a1b2c3d4e5f");
-        small.settings.memory_mib = 64;
-        assert!(super::spec(&small).is_err());
+        let broken = |change: fn(&mut Vm)| {
+            let mut vm = vm("0a1b2c3d4e5f");
+            change(&mut vm);
+            super::spec(&vm).is_err()
+        };
+        assert!(broken(|vm| vm.settings.nics[0].network = Network::Bridge("br0 extra".into())));
+        assert!(broken(|vm| vm.settings.memory_mib = 64));
+        assert!(broken(|vm| vm.settings.nics[0].mac = "ff:ff:ff:ff:ff:ff".into()));
+        assert!(broken(|vm| vm.settings.drives[0].image = Some("../../shadow".into())));
+        assert!(broken(|vm| vm.settings.disks[0].slot = 8));
+        assert!(broken(|vm| vm.settings.boot = vec![BootDevice::Disk(5)]));
+    }
+
+    #[test]
+    fn counters_come_only_for_zendiloos_domains_and_add_up_the_cards() {
+        let text = "Domain: 'zendiloos-0a1b2c3d4e5f'\n  state.state=1\n  cpu.time=12000000000\n  \
+                    balloon.current=2097152\n  balloon.available=2000000\n  balloon.usable=1500000\n  \
+                    balloon.rss=900000\n  net.count=2\n  net.0.name=vnet0\n  net.0.rx.bytes=100\n  \
+                    net.0.tx.bytes=10\n  net.1.name=vnet1\n  net.1.rx.bytes=50\n  net.1.tx.bytes=5\n\n\
+                    Domain: 'win10'\n  cpu.time=1\n\
+                    Domain: 'zendiloos-00000000000b'\n  cpu.time=7\n  balloon.current=1024\n  balloon.rss=512\n  \
+                    net.count=1\n";
+        let read = counters(text);
+        assert_eq!(read.len(), 2);
+        let web = &read["0a1b2c3d4e5f"];
+        assert_eq!(web.cpu_time_ns, Some(12_000_000_000));
+        assert_eq!((web.received_bytes, web.sent_bytes), (Some(150), Some(15)));
+        assert_eq!(web.memory_used_bytes(), Some(500_000 * 1024));
+        let windows = &read["00000000000b"];
+        assert_eq!((windows.received_bytes, windows.memory_used_bytes()), (None, Some(512 * 1024)));
+        assert!(counters("").is_empty());
     }
 
     #[tokio::test]
@@ -484,18 +696,57 @@ mod tests {
         impl Steps for Silent {
             fn step(&self, _: &str, _: Option<u8>) {}
         }
-        host.copy_iso(&made.id, &pools[0], &iso, &Silent, &context).await.unwrap();
+        assert!(
+            matches!(host.define(&made, &context).await, Err(HostError::Refused(reason)) if reason.contains("library"))
+        );
+        assert_eq!(host.copy_image("00000000000a", &pools[0], &iso, &Silent, &context).await.unwrap(), 4096);
+        assert_eq!(host.image_files(&pools[0], &context).await.unwrap()["00000000000a"], 4096);
         host.define(&made, &context).await.unwrap();
         assert!(matches!(host.define(&made, &context).await, Err(HostError::Refused(_))));
         assert_eq!(host.states(&context).await.unwrap()["0a1b2c3d4e5f"], PowerState::ShutOff);
         assert!(matches!(host.open_console(&made.id, &context).await, Err(HostError::Refused(_))));
+        made.settings.cpus = 2;
+        host.update(&made, &[], &context).await.unwrap();
 
         host.control(&made.id, VmAction::Start, &context).await.unwrap();
+        assert!(
+            matches!(host.update(&made, &[], &context).await, Err(HostError::Refused(reason)) if reason.contains("not shut off"))
+        );
+        host.change_media(&made, 0, &context).await.unwrap();
+        let counted = host.counters(&context).await.unwrap();
+        assert!(counted["0a1b2c3d4e5f"].cpu_time_ns.is_some());
         let mut console = host.open_console(&made.id, &context).await.unwrap();
         assert_eq!(console.output.recv().await.unwrap(), b"RFB 003.008\n");
         drop(console);
         host.control(&made.id, VmAction::Shutdown, &context).await.unwrap();
         host.remove(&made, &context).await.unwrap();
         assert!(host.states(&context).await.unwrap().is_empty());
+        host.delete_image("00000000000a", pools[0].volume, &context).await.unwrap();
+        assert!(host.image_files(&pools[0], &context).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_upload_is_written_into_the_agents_pipe() {
+        use tokio::io::AsyncWriteExt;
+
+        let host = AgentVms::new(Arc::new(SimulatedAgent::new()), network_with_bridges());
+        let context = RequestContext::default();
+        host.install(&context).await.unwrap();
+        let pools = host.pools(&context).await.unwrap();
+        host.set_up(&pools[0], &context).await.unwrap();
+        let mut file = host.open_upload("00000000000c", pools[0].volume, 5, &context).await.unwrap();
+        file.write_all(b"hello").await.unwrap();
+        file.flush().await.unwrap();
+        drop(file);
+        assert_eq!(host.finish_upload("00000000000c", &context).await.unwrap(), 5);
+        assert!(matches!(host.finish_upload("00000000000c", &context).await, Err(HostError::Refused(_))));
+
+        let mut short = host.open_upload("00000000000d", pools[0].volume, 5, &context).await.unwrap();
+        short.write_all(b"he").await.unwrap();
+        short.flush().await.unwrap();
+        drop(short);
+        let refused = host.finish_upload("00000000000d", &context).await;
+        assert!(matches!(refused, Err(HostError::Refused(reason)) if reason.contains("2 of 5")));
+        assert!(matches!(host.open_upload("x", 1, 5, &context).await, Err(HostError::Port(_))));
     }
 }

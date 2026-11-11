@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT vm AS \"vm!\", slot, model, bridge, mac FROM vm_nics\n               WHERE ?1 IS NULL OR vm = ?1 ORDER BY vm, slot",
+  "describe": {
+    "columns": [
+      {
+        "name": "vm!",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vm_nics",
+            "name": "vm"
+          }
+        }
+      },
+      {
+        "name": "slot",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "vm_nics",
+            "name": "slot"
+          }
+        }
+      },
+      {
+        "name": "model",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vm_nics",
+            "name": "model"
+          }
+        }
+      },
+      {
+        "name": "bridge",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vm_nics",
+            "name": "bridge"
+          }
+        }
+      },
+      {
+        "name": "mac",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vm_nics",
+            "name": "mac"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "9a4e6eedc02282208fd5410d9d40c518b647297ac8e122c0691a28259d2f7f2b"
+}

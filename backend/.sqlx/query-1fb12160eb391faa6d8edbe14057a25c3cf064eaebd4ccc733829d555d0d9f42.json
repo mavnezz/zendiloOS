@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO vm_nics (vm, slot, model, bridge, mac) VALUES (?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "1fb12160eb391faa6d8edbe14057a25c3cf064eaebd4ccc733829d555d0d9f42"
+}

@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT vm AS \"vm!\", slot, image FROM vm_drives\n               WHERE ?1 IS NULL OR vm = ?1 ORDER BY vm, slot",
+  "describe": {
+    "columns": [
+      {
+        "name": "vm!",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vm_drives",
+            "name": "vm"
+          }
+        }
+      },
+      {
+        "name": "slot",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "vm_drives",
+            "name": "slot"
+          }
+        }
+      },
+      {
+        "name": "image",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vm_drives",
+            "name": "image"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "564e4ec3e9358174215d26f19fae43674a722d822699248dac0b6d0829c6c174"
+}

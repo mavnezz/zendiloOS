@@ -1,0 +1,122 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", name, bytes, origin, share, path, volume, added_at, ready AS \"ready: bool\"\n               FROM vm_images WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vm_images",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "name",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vm_images",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "bytes",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "vm_images",
+            "name": "bytes"
+          }
+        }
+      },
+      {
+        "name": "origin",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vm_images",
+            "name": "origin"
+          }
+        }
+      },
+      {
+        "name": "share",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vm_images",
+            "name": "share"
+          }
+        }
+      },
+      {
+        "name": "path",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vm_images",
+            "name": "path"
+          }
+        }
+      },
+      {
+        "name": "volume",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "vm_images",
+            "name": "volume"
+          }
+        }
+      },
+      {
+        "name": "added_at",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "vm_images",
+            "name": "added_at"
+          }
+        }
+      },
+      {
+        "name": "ready: bool",
+        "ordinal": 8,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "vm_images",
+            "name": "ready"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "5be8eb875564602fb8814b9a480bc706b08a68dc303d581e7fe9345554808a0b"
+}

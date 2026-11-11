@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO vm_drives (vm, slot, image) VALUES (?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "51ef2d7dbd424afacdc7e5257c096ae88a7a697eb3dacd8f1ee1443a2b8d3e92"
+}
