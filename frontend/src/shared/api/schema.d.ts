@@ -2533,7 +2533,8 @@ export interface paths {
         put?: never;
         /**
          * Sends a test message on this channel alone now and waits for the
-         *     outcome. Needs `system.manage`.
+         *     outcome; once one went out, what waits on the channel goes out too.
+         *     Needs `system.manage`.
          */
         post: operations["test_channel"];
         delete?: never;
@@ -6409,6 +6410,11 @@ export interface components {
             };
         };
         NotificationChannel: {
+            /**
+             * @description What will not go out, because it cannot or its tries ran out: the
+             *     most recent first, for a week.
+             */
+            failed: components["schemas"]["UndeliveredNotification"][];
             /** Format: int64 */
             id: number;
             language: components["schemas"]["ChannelLanguage"];
@@ -6423,6 +6429,11 @@ export interface components {
             /** @description For an email channel: each recipient, as mail reaches it now. */
             recipients: components["schemas"]["ChannelRecipient"][];
             target: components["schemas"]["ChannelTarget"];
+            /**
+             * @description What did not go out yet and is tried again, with a growing pause,
+             *     for about twelve hours: the oldest first.
+             */
+            waiting: components["schemas"]["UndeliveredNotification"][];
         };
         /** @enum {string} */
         NotificationLevel: "info" | "success" | "warning" | "error";
@@ -7652,6 +7663,23 @@ export interface components {
             enabled: boolean;
             /** @description Recovery codes not used yet. */
             recovery_codes_left: number;
+        };
+        /** @description A notification that has not gone out on a channel. */
+        UndeliveredNotification: {
+            /**
+             * Format: int64
+             * @description Waiting: when it is tried next; failed: when it failed for good. In
+             *     Unix seconds.
+             */
+            at: number;
+            /**
+             * Format: int32
+             * @description How often it was tried.
+             */
+            attempts: number;
+            /** @description Why the last try failed. */
+            error?: string | null;
+            notification: components["schemas"]["Notification"];
         };
         UninstallRequest: {
             /** @description The app's id, repeated: its data goes with it. */

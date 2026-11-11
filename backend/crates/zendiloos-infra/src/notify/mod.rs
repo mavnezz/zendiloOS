@@ -1,6 +1,12 @@
 //! Delivering notifications by email (SMTP) and to webhooks (HTTP POST).
 //! TLS is rustls with the system's certificate authorities
 //! (`ca-certificates`); nothing is bundled.
+//!
+//! A failure says whether it may pass, so the queue knows whether to try
+//! again: a server not reached (no network or name resolution yet after a
+//! boot, refused, timed out, cut off) or one that answers "later" (an SMTP
+//! 4xx, an HTTP 5xx) may; an answer that refuses (a password, an address,
+//! the request) or a certificate that is not trusted does not.
 
 mod webhook;
 
@@ -17,6 +23,7 @@ use lettre::{AsyncTransport, Tokio1Executor};
 use zendiloos_notify::Notification;
 use zendiloos_notify::channels::{ChannelSender, Email, Security, Target};
 use zendiloos_notify::message::Message;
+use zendiloos_notify::queue::SendFailure;
 
 /// [`ChannelSender`] over the network.
 #[derive(Debug, Clone)]
@@ -46,7 +53,7 @@ impl ChannelSender for NetworkChannels {
         message: &Message,
         notification: &Notification,
         host: &str,
-    ) -> Result<(), String> {
+    ) -> Result<(), SendFailure> {
         match target {
             Target::Email(email) => send_mail(email, message, host).await,
             Target::Webhook(hook) => {
@@ -56,16 +63,25 @@ impl ChannelSender for NetworkChannels {
     }
 }
 
-async fn send_mail(email: &Email, message: &Message, host: &str) -> Result<(), String> {
-    let mailbox = |address: &str| address.parse::<Mailbox>().map_err(|e| format!("{address}: {e}"));
+async fn send_mail(email: &Email, message: &Message, host: &str) -> Result<(), SendFailure> {
+    let mailbox = |address: &str| {
+        address.parse::<Mailbox>().map_err(|e| SendFailure::permanent(format!("{address}: {e}")))
+    };
     let mut builder = Mail::builder().from(mailbox(&email.from)?).subject(&message.title);
     for to in &email.to {
         builder = builder.to(mailbox(to)?);
     }
     let body = if message.body.is_empty() { message.title.clone() } else { message.body.clone() };
-    let mail = builder.header(ContentType::TEXT_PLAIN).body(body).map_err(|e| e.to_string())?;
+    let mail = builder
+        .header(ContentType::TEXT_PLAIN)
+        .body(body)
+        .map_err(|e| SendFailure::permanent(e.to_string()))?;
 
-    let tls = || TlsParameters::builder(email.server.clone()).build_rustls().map_err(|e| format!("TLS: {e}"));
+    let tls = || {
+        TlsParameters::builder(email.server.clone())
+            .build_rustls()
+            .map_err(|e| SendFailure::permanent(format!("TLS: {e}")))
+    };
     let tls = match email.security {
         Security::Tls => Tls::Wrapper(tls()?),
         Security::StartTls => Tls::Required(tls()?),
@@ -78,7 +94,43 @@ async fn send_mail(email: &Email, message: &Message, host: &str) -> Result<(), S
     if let (Some(username), Some(password)) = (&email.username, &email.password) {
         transport = transport.credentials(Credentials::new(username.clone(), password.clone()));
     }
-    transport.build().send(mail).await.map(drop).map_err(|e| e.to_string())
+    transport.build().send(mail).await.map(drop).map_err(|e| smtp_failure(&e))
+}
+
+/// Whether an SMTP error may pass: a 4xx answer (greylisting, a full
+/// mailbox, the server busy) or a server not reached. A 5xx answer (a
+/// password or an address refused), a TLS certificate that is not trusted,
+/// and a server that cannot do what is asked of it (STARTTLS, a way to
+/// sign in) do not.
+fn smtp_failure(error: &lettre::transport::smtp::Error) -> SendFailure {
+    let reason = error.to_string();
+    let lasting = error.is_permanent()
+        || error.is_client()
+        || error.is_response()
+        || error.is_tls()
+        || refused_by_tls(error);
+    if error.is_transient() || error.is_timeout() || !lasting {
+        SendFailure::transient(reason)
+    } else {
+        SendFailure::permanent(reason)
+    }
+}
+
+/// Whether TLS refused the connection (a certificate not trusted or for
+/// another name, no version or cipher in common), which trying again does
+/// not change, rather than the connection breaking during the handshake.
+/// rustls's error hides in an `io::Error` somewhere along the chain.
+fn refused_by_tls(error: &(dyn std::error::Error + 'static)) -> bool {
+    let mut next = Some(error);
+    while let Some(error) = next {
+        let inner =
+            error.downcast_ref::<std::io::Error>().and_then(|io| io.get_ref()).map(|inner| inner as _);
+        if [Some(error), inner].into_iter().flatten().any(|e| e.is::<rustls::Error>()) {
+            return true;
+        }
+        next = error.source();
+    }
+    false
 }
 
 #[cfg(test)]

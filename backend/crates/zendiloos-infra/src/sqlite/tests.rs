@@ -126,6 +126,7 @@ async fn creates_a_private_database_and_applies_all_migrations() {
             "installed_apps",
             "jobs",
             "notification_channels",
+            "notification_deliveries",
             "notification_mail_server",
             "notification_marks",
             "notification_routes",

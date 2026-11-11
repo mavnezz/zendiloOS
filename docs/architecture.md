@@ -633,9 +633,26 @@ set up, so that a failing disk is noticed without the interface open.
   that level. A new channel starts at warnings and errors; a
   change of a channel keeps its level; so new kinds reach existing
   channels as their level did before.
-- **Delivery.** Each notification raised is delivered on a task of its
-  own, to the channels its kind is routed to, with 30 seconds per
-  channel; the last outcome is kept and shown. A test goes to that
+- **Delivery.** Each notification raised goes into a queue in the
+  database (`notification_deliveries`, migration `0051`), once for each
+  channel its kind is routed to, and out from there at once, each channel
+  on a task of its own, with 30 seconds per try; the last outcome is kept
+  and shown. A try that fails for a reason that may pass (the network or
+  name resolution not up yet after a boot or an update, a connection
+  refused, cut off or timed out, an SMTP 4xx, an HTTP 5xx, 408 or 429) is
+  tried again after a pause that doubles from a minute to an hour, 18
+  times in all, about twelve hours: counted in tries, not by the clock,
+  which a machine without a battery for its clock sets only once the
+  network is up. What cannot succeed fails for good at once: an SMTP 5xx
+  (a password or an address refused), any other HTTP answer, a
+  certificate not trusted, no mail server or no recipient with an
+  address. A channel's notifications go out in the order raised: while
+  the oldest waits, those behind it wait with it, and a new one for the
+  channel, or a test that went out, tries them all at once. The queue
+  outlives a restart of zendiloosd; a try cut off by one is made again,
+  so a message may arrive twice but none is lost. The channel's card
+  lists what waits (with the tries and the reason) and what failed for
+  good, kept for a week, at most 20 per channel. A test goes to that
   channel alone and answers with the server's reason when it fails.
   Changes to the mail server, channels and routes are audited
   (`notify.mail_server_update`, `notify.channel_*`, `notify.routes_update`).

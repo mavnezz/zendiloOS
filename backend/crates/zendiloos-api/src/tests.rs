@@ -278,6 +278,8 @@ pub(crate) struct Harness {
     pub(crate) notifier: Notifier,
     /// The accounts' addresses, as the channels see them.
     pub(crate) channel_addresses: Arc<zendiloos_notify::testing::MemoryAddresses>,
+    /// What waits on the channels and what failed for good.
+    pub(crate) channel_queue: Arc<zendiloos_notify::testing::MemoryQueue>,
     pub(crate) share_host: Arc<zendiloos_sharing::testing::Host>,
     pub(crate) file_host: Arc<zendiloos_sharing::testing::Files>,
     pub(crate) catalogs: Arc<zendiloos_apps::testing::FakeReader>,
@@ -458,6 +460,7 @@ impl Harness {
         let notifier = Notifier::new(Arc::new(MemoryNotifications::default()), identity.clock.clone())
             .routed(channel_routes.clone());
         let channel_addresses = Arc::new(zendiloos_notify::testing::MemoryAddresses::default());
+        let channel_queue = Arc::new(zendiloos_notify::testing::MemoryQueue::default());
         let share_host = Arc::new(zendiloos_sharing::testing::Host::default());
         let file_host = Arc::new(zendiloos_sharing::testing::Files::default());
         let sharing_ports = SharingPorts {
@@ -598,6 +601,7 @@ impl Harness {
                 zendiloos_notify::channels::ChannelPorts {
                     repository: Arc::new(zendiloos_notify::testing::MemoryChannels::default()),
                     routes: channel_routes,
+                    queue: channel_queue.clone(),
                     addresses: channel_addresses.clone(),
                     sender: Arc::new(zendiloos_notify::testing::RecordingSender::default()),
                     audit: identity.audit.clone(),
@@ -629,6 +633,7 @@ impl Harness {
             storage: storage_fake,
             notifier,
             channel_addresses,
+            channel_queue,
             share_host,
             file_host,
             catalogs,
@@ -3919,11 +3924,53 @@ async fn administrators_send_to_accounts_and_addresses_and_webhooks() {
     assert_problem(&failed, StatusCode::BAD_GATEWAY, "delivery_failed");
     assert_eq!(failed.body["detail"], "connection refused");
 
+    // What did not go out: waiting to be tried again, and failed for good.
+    use zendiloos_notify::queue::{QueueState, QueuedDelivery};
+    let chat_id = chat.body["id"].as_i64().unwrap();
+    let degraded = zendiloos_notify::Notification {
+        id: 4,
+        at: zendiloos_kernel::Timestamp::from_unix_seconds(1000),
+        level: zendiloos_notify::Level::Error,
+        code: "pool_trouble".into(),
+        params: [("pool".to_owned(), "tank".to_owned())].into(),
+    };
+    let queued = |id, state, at, error: &str| QueuedDelivery {
+        id,
+        channel_id: chat_id,
+        notification: degraded.clone(),
+        state,
+        attempts: 3,
+        at: zendiloos_kernel::Timestamp::from_unix_seconds(at),
+        error: Some(error.into()),
+    };
+    h.channel_queue.0.lock().unwrap().extend([
+        queued(1, QueueState::Failed, 1100, "the server answered 404 Not Found"),
+        queued(2, QueueState::Failed, 1200, "the server answered 401 Unauthorized"),
+        queued(3, QueueState::Waiting, 1300, "Temporary failure in name resolution"),
+    ]);
+
     let listed = h.send(empty(with_cookie(get("/api/v1/notification-channels"), &admin))).await;
     let names: Vec<&str> =
         listed.body.as_array().unwrap().iter().map(|c| c["name"].as_str().unwrap()).collect();
     assert_eq!(names, ["Chat", "Household"]);
     assert_eq!(listed.body[0]["last_error"], "connection refused");
+    assert_eq!(
+        listed.body[0]["waiting"],
+        json!([{
+            "notification": {
+                "id": 4, "at": 1000, "level": "error", "code": "pool_trouble", "params": { "pool": "tank" },
+            },
+            "attempts": 3, "at": 1300, "error": "Temporary failure in name resolution",
+        }])
+    );
+    let failed: Vec<&str> =
+        listed.body[0]["failed"].as_array().unwrap().iter().map(|f| f["error"].as_str().unwrap()).collect();
+    assert_eq!(
+        failed,
+        ["the server answered 401 Unauthorized", "the server answered 404 Not Found"],
+        "newest first"
+    );
+    assert_eq!((listed.body[1]["waiting"].clone(), listed.body[1]["failed"].clone()), (json!([]), json!([])));
 
     let nobody = json!({ "name": "Nobody", "target": { "kind": "email" }, "language": "en" });
     let refused = send(Method::POST, "/api/v1/notification-channels", &admin, Some(nobody)).await;

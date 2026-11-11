@@ -26,6 +26,8 @@ const mail: NotificationChannel = {
   language: 'en',
   last_delivery_at: 1_790_000_000,
   last_error: null,
+  waiting: [],
+  failed: [],
 }
 
 const hook: NotificationChannel = {
@@ -36,6 +38,8 @@ const hook: NotificationChannel = {
   language: 'de',
   last_delivery_at: 1_790_000_000,
   last_error: 'timed out',
+  waiting: [],
+  failed: [],
 }
 
 const account = (id: number, name: string) => ({
@@ -166,6 +170,54 @@ describe('the notification settings', () => {
       )!
     expect(cell('Admins').checked).toBe(true)
     expect(cell('Odd').checked).toBe(false)
+  })
+
+  it('say what waits to go out on a channel and what never went out', async () => {
+    const degraded = {
+      id: 7,
+      at: 1_790_000_000,
+      level: 'warning' as const,
+      code: 'pool_trouble',
+      params: { pool: 'tank', state: 'degraded' },
+    }
+    const recovered = { ...degraded, id: 8, level: 'success' as const, code: 'pool_recovered' }
+    on('GET', '/api/v1/notification-channels', [
+      {
+        ...hook,
+        waiting: [
+          {
+            notification: degraded,
+            attempts: 3,
+            at: 1_790_000_600,
+            error: 'Temporary failure in name resolution',
+          },
+          { notification: recovered, attempts: 0, at: 1_790_000_600, error: null },
+        ],
+        failed: [
+          {
+            notification: degraded,
+            attempts: 1,
+            at: 1_789_000_000,
+            error: 'the server answered 401 Unauthorized',
+          },
+        ],
+      },
+      mail,
+    ])
+    await mountApp(ChannelsSection)
+    const text = (id: string) =>
+      document.querySelector(`[data-testid="${id}"]`)?.textContent?.replace(/\s+/g, ' ') ?? ''
+    expect(text('channel-waiting')).toContain(i18n.global.t('channels.queue.tries', { n: 3 }, 3))
+    expect(text('channel-waiting')).toContain('Temporary failure in name resolution')
+    expect(text('channel-waiting')).toContain(
+      i18n.global.t('notices.pool_recovered.title', { pool: 'tank' }),
+    )
+    expect(text('channel-waiting')).not.toContain(
+      i18n.global.t('channels.queue.tries', { n: 0 }, 0),
+    )
+    expect(text('channel-failed')).toContain(i18n.global.t('channels.queue.failed', { n: 1 }, 1))
+    expect(text('channel-failed')).toContain('the server answered 401 Unauthorized')
+    expect(document.querySelectorAll('[data-testid="channel-waiting"]')).toHaveLength(1)
   })
 
   it('sends tests and says how they went', async () => {

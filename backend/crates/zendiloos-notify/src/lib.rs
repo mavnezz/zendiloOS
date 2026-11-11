@@ -9,7 +9,7 @@
 //! Where a notification goes is routed by its kind ([`routes`]): kept in
 //! the notification center (stored and published to the browsers) or not,
 //! and on which channels ([`channels`]), which get every notification
-//! raised, kept or not.
+//! raised, kept or not, and try again what did not go out ([`queue`]).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -20,6 +20,7 @@ use zendiloos_kernel::{Clock, PortError, Timestamp};
 
 pub mod channels;
 pub mod message;
+pub mod queue;
 pub mod routes;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -394,11 +395,78 @@ pub mod testing {
         }
     }
 
+    /// [`DeliveryQueue`](crate::queue::DeliveryQueue) in memory.
+    #[derive(Default)]
+    pub struct MemoryQueue(pub Mutex<Vec<crate::queue::QueuedDelivery>>);
+
+    #[async_trait]
+    impl crate::queue::DeliveryQueue for MemoryQueue {
+        async fn enqueue(
+            &self,
+            notification: &Notification,
+            channels: &[i64],
+            at: Timestamp,
+        ) -> Result<(), PortError> {
+            let mut all = self.0.lock().unwrap();
+            for channel_id in channels {
+                let id = all.iter().map(|d| d.id).max().unwrap_or(0) + 1;
+                all.push(crate::queue::QueuedDelivery {
+                    id,
+                    channel_id: *channel_id,
+                    notification: notification.clone(),
+                    state: crate::queue::QueueState::Waiting,
+                    attempts: 0,
+                    at,
+                    error: None,
+                });
+            }
+            Ok(())
+        }
+
+        async fn queued(&self) -> Result<Vec<crate::queue::QueuedDelivery>, PortError> {
+            Ok(self.0.lock().unwrap().clone())
+        }
+
+        async fn dequeue(&self, id: i64) -> Result<(), PortError> {
+            self.0.lock().unwrap().retain(|d| d.id != id);
+            Ok(())
+        }
+
+        async fn record(&self, delivery: &crate::queue::QueuedDelivery) -> Result<(), PortError> {
+            if let Some(stored) = self.0.lock().unwrap().iter_mut().find(|d| d.id == delivery.id) {
+                *stored = delivery.clone();
+            }
+            Ok(())
+        }
+
+        async fn prune(&self, before: Timestamp, keep: u32) -> Result<(), PortError> {
+            use crate::queue::QueueState::Failed;
+            let mut all = self.0.lock().unwrap();
+            all.retain(|d| d.state != Failed || d.at >= before);
+            let mut kept = HashMap::<i64, u32>::new();
+            let mut newest_first: Vec<_> =
+                all.iter().filter(|d| d.state == Failed).map(|d| (d.at, d.id, d.channel_id)).collect();
+            newest_first.sort_by(|a, b| b.cmp(a));
+            let mut gone = Vec::new();
+            for (_, id, channel_id) in newest_first {
+                let count = kept.entry(channel_id).or_default();
+                *count += 1;
+                if *count > keep {
+                    gone.push(id);
+                }
+            }
+            all.retain(|d| !gone.contains(&d.id));
+            Ok(())
+        }
+    }
+
     /// [`ChannelSender`](crate::channels::ChannelSender) that keeps what it
-    /// is given; a channel whose name starts with `broken` fails.
+    /// is given; a channel whose name starts with `broken` fails in a way
+    /// that may pass, and every one fails as `failing` says while it is set.
     #[derive(Default)]
     pub struct RecordingSender {
         pub sent: Mutex<Vec<(String, crate::message::Message)>>,
+        pub failing: Mutex<Option<crate::queue::SendFailure>>,
     }
 
     #[async_trait]
@@ -409,13 +477,16 @@ pub mod testing {
             message: &crate::message::Message,
             _: &Notification,
             _: &str,
-        ) -> Result<(), String> {
+        ) -> Result<(), crate::queue::SendFailure> {
             let to = match target {
                 crate::channels::Target::Email(email) => email.to.join(","),
                 crate::channels::Target::Webhook(webhook) => webhook.url.clone(),
             };
+            if let Some(failure) = self.failing.lock().unwrap().clone() {
+                return Err(failure);
+            }
             if to.contains("broken") {
-                return Err("connection refused".into());
+                return Err(crate::queue::SendFailure::transient("connection refused"));
             }
             self.sent.lock().unwrap().push((to, message.clone()));
             Ok(())

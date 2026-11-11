@@ -43,6 +43,8 @@ const stored: NotificationChannel = {
   language: 'de',
   last_delivery_at: null,
   last_error: null,
+  waiting: [],
+  failed: [],
 }
 
 async function mountDialog(channel: NotificationChannel | null) {

@@ -1,19 +1,23 @@
+use std::collections::BTreeMap;
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use zendiloos_kernel::{PortError, Timestamp};
-use zendiloos_notify::Level;
 use zendiloos_notify::channels::{
     AccountAddress, AccountAddresses, Channel, ChannelRepository, ChannelSettings, Delivery, Destination,
     MailServer, Recipient, Saved, Security, Webhook, WebhookFormat,
 };
 use zendiloos_notify::message::Language;
+use zendiloos_notify::queue::{DeliveryQueue, QueueState, QueuedDelivery};
 use zendiloos_notify::routes::{RouteRepository, Routes};
+use zendiloos_notify::{Level, Notification};
 
 use super::Database;
 
 /// [`ChannelRepository`] on the `notification_channels` and
-/// `notification_mail_server` tables, and [`RouteRepository`] on
-/// `notification_routes`.
+/// `notification_mail_server` tables, [`RouteRepository`] on
+/// `notification_routes` and [`DeliveryQueue`] on
+/// `notification_deliveries`.
 #[derive(Debug, Clone)]
 pub struct SqliteChannels {
     db: Database,
@@ -277,6 +281,116 @@ impl RouteRepository for SqliteChannels {
     }
 }
 
+#[async_trait]
+impl DeliveryQueue for SqliteChannels {
+    async fn enqueue(
+        &self,
+        notification: &Notification,
+        channels: &[i64],
+        at: Timestamp,
+    ) -> Result<(), PortError> {
+        let params =
+            serde_json::to_string(&notification.params).map_err(|e| PortError::new("notification", e))?;
+        let (raised_at, level, at) =
+            (notification.at.unix_seconds(), notification.level.as_str(), at.unix_seconds());
+        let mut tx = self.db.pool().begin().await.map_err(db_error)?;
+        for channel in channels {
+            sqlx::query!(
+                "INSERT INTO notification_deliveries
+                     (channel_id, notification_id, raised_at, level, code, params, state, attempts, at, error)
+                 VALUES (?, ?, ?, ?, ?, ?, 'waiting', 0, ?, NULL)",
+                channel,
+                notification.id,
+                raised_at,
+                level,
+                notification.code,
+                params,
+                at
+            )
+            .execute(&mut *tx)
+            .await
+            .map_err(db_error)?;
+        }
+        tx.commit().await.map_err(db_error)
+    }
+
+    async fn queued(&self) -> Result<Vec<QueuedDelivery>, PortError> {
+        let rows = sqlx::query!(
+            r#"SELECT id AS "id!", channel_id, notification_id, raised_at, level, code, params, state,
+                      attempts, at, error
+               FROM notification_deliveries ORDER BY id"#
+        )
+        .fetch_all(self.db.pool())
+        .await
+        .map_err(db_error)?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| {
+                // A row this version cannot read is left out, not guessed at.
+                let params: BTreeMap<String, String> = serde_json::from_str(&row.params).ok()?;
+                Some(QueuedDelivery {
+                    id: row.id,
+                    channel_id: row.channel_id,
+                    notification: Notification {
+                        id: row.notification_id,
+                        at: Timestamp::from_unix_seconds(row.raised_at),
+                        level: Level::parse(&row.level)?,
+                        code: row.code,
+                        params,
+                    },
+                    state: QueueState::parse(&row.state)?,
+                    attempts: u32::try_from(row.attempts).ok()?,
+                    at: Timestamp::from_unix_seconds(row.at),
+                    error: row.error,
+                })
+            })
+            .collect())
+    }
+
+    async fn dequeue(&self, id: i64) -> Result<(), PortError> {
+        sqlx::query!("DELETE FROM notification_deliveries WHERE id = ?", id)
+            .execute(self.db.pool())
+            .await
+            .map_err(db_error)?;
+        Ok(())
+    }
+
+    async fn record(&self, delivery: &QueuedDelivery) -> Result<(), PortError> {
+        let (state, attempts, at) =
+            (delivery.state.as_str(), i64::from(delivery.attempts), delivery.at.unix_seconds());
+        sqlx::query!(
+            "UPDATE notification_deliveries SET state = ?, attempts = ?, at = ?, error = ? WHERE id = ?",
+            state,
+            attempts,
+            at,
+            delivery.error,
+            delivery.id
+        )
+        .execute(self.db.pool())
+        .await
+        .map_err(db_error)?;
+        Ok(())
+    }
+
+    async fn prune(&self, before: Timestamp, keep: u32) -> Result<(), PortError> {
+        let (before, keep) = (before.unix_seconds(), i64::from(keep));
+        sqlx::query!(
+            "DELETE FROM notification_deliveries WHERE state = 'failed' AND (at < ? OR id IN (
+                 SELECT id FROM (
+                     SELECT id, row_number() OVER (PARTITION BY channel_id ORDER BY at DESC, id DESC) AS newer
+                     FROM notification_deliveries WHERE state = 'failed'
+                 ) WHERE newer > ?
+             ))",
+            before,
+            keep
+        )
+        .execute(self.db.pool())
+        .await
+        .map_err(db_error)?;
+        Ok(())
+    }
+}
+
 /// [`AccountAddresses`] on the `accounts` table.
 #[derive(Debug, Clone)]
 pub struct SqliteAccountAddresses {
@@ -395,6 +509,61 @@ mod tests {
         assert!(channels.delete(chat.id).await.unwrap());
         assert!(!channels.delete(chat.id).await.unwrap());
         assert!(channels.routes().await.unwrap().channels.is_empty(), "its routes went with it");
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn the_queue_keeps_what_waits_and_what_failed_and_goes_with_its_channel() {
+        let (_dir, db) = temporary_database().await;
+        let channels = SqliteChannels::new(db.clone());
+        let at = Timestamp::from_unix_seconds(1_793_836_800);
+        let admins =
+            channels.create(&mail("Admins", vec![Recipient::Account(3)]), at).await.unwrap().unwrap();
+        let family =
+            channels.create(&mail("Family", vec![Recipient::Account(4)]), at).await.unwrap().unwrap();
+        let degraded = Notification {
+            id: 0,
+            at,
+            level: Level::Warning,
+            code: "pool_trouble".into(),
+            params: BTreeMap::from([("pool".into(), "tank".into())]),
+        };
+
+        channels.enqueue(&degraded, &[admins.id, family.id], at).await.unwrap();
+        let listed = channels.queued().await.unwrap();
+        assert_eq!(listed.len(), 2);
+        assert_eq!((listed[0].channel_id, listed[1].channel_id), (admins.id, family.id));
+        assert_eq!(
+            (&listed[0].notification, listed[0].state, listed[0].attempts, listed[0].at, &listed[0].error),
+            (&degraded, QueueState::Waiting, 0, at, &None)
+        );
+
+        let later = Timestamp::from_unix_seconds(at.unix_seconds() + 60);
+        let waiting =
+            QueuedDelivery { attempts: 1, at: later, error: Some("no network".into()), ..listed[0].clone() };
+        channels.record(&waiting).await.unwrap();
+        channels.dequeue(listed[1].id).await.unwrap();
+        assert_eq!(channels.queued().await.unwrap(), std::slice::from_ref(&waiting));
+
+        // Failed ones: those before `before` go, and all but each channel's
+        // newest `keep`.
+        for (n, code) in ["a", "b", "c"].into_iter().enumerate() {
+            let notification = Notification { code: code.into(), ..degraded.clone() };
+            channels.enqueue(&notification, &[family.id], at).await.unwrap();
+            let queued = channels.queued().await.unwrap().pop().unwrap();
+            let failed_at = Timestamp::from_unix_seconds(at.unix_seconds() + 100 * n as i64);
+            let failed = QueuedDelivery { state: QueueState::Failed, attempts: 1, at: failed_at, ..queued };
+            channels.record(&failed).await.unwrap();
+        }
+        channels.prune(Timestamp::from_unix_seconds(at.unix_seconds() + 50), 1).await.unwrap();
+        let codes: Vec<String> =
+            channels.queued().await.unwrap().into_iter().map(|d| d.notification.code).collect();
+        assert_eq!(codes, ["pool_trouble", "c"], "waiting ones stay");
+
+        assert!(channels.delete(admins.id).await.unwrap());
+        let codes: Vec<String> =
+            channels.queued().await.unwrap().into_iter().map(|d| d.notification.code).collect();
+        assert_eq!(codes, ["c"], "a channel's deliveries go with it");
         db.close().await;
     }
 

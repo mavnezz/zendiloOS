@@ -1498,6 +1498,13 @@ const de: Messages = {
     testSent: 'Die Testnachricht ist verschickt.',
     lastSent: 'Zuletzt gesendet {time}.',
     lastFailed: 'Nicht gesendet {time}:',
+    queue: {
+      waiting:
+        'Wartet auf Zustellung, nächster Versuch {time}: | Eine Meldung wartet auf Zustellung, nächster Versuch {time}: | {n} Meldungen warten auf Zustellung, nächster Versuch {time}:',
+      tries: 'noch nicht versucht | einmal versucht | {n}-mal versucht',
+      failed:
+        'Nicht zugestellt: | Eine Meldung wurde nicht zugestellt und wird nicht mehr versucht: | {n} Meldungen wurden nicht zugestellt und werden nicht mehr versucht:',
+    },
     remove: 'Entfernen',
     removeTitle: '{name} entfernen?',
     removeHint: 'Über diesen Kanal gehen dann keine Meldungen mehr.',

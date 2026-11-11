@@ -1466,6 +1466,13 @@ const en = {
     testSent: 'The test message went out.',
     lastSent: 'Last sent {time}.',
     lastFailed: 'Not sent {time}:',
+    queue: {
+      waiting:
+        'Waiting to go out, tried again {time}: | One notification waiting to go out, tried again {time}: | {n} notifications waiting to go out, tried again {time}:',
+      tries: 'not tried yet | tried once | tried {n} times',
+      failed:
+        'Not delivered: | One notification not delivered, and not tried again: | {n} notifications not delivered, and not tried again:',
+    },
     remove: 'Remove',
     removeTitle: 'Remove {name}?',
     removeHint: 'Notifications no longer go out on this channel.',

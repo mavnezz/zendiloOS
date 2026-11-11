@@ -3,9 +3,14 @@ import { Mail, Pencil, Plus, Send, Server, Trash2, Webhook } from 'lucide-vue-ne
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import type { ChannelRecipient, NotificationChannel } from '@/shared/api/types'
+import type {
+  ChannelRecipient,
+  NotificationChannel,
+  UndeliveredNotification,
+} from '@/shared/api/types'
 import { problemMessage } from '@/shared/i18n'
 import { formatDateTime } from '@/shared/lib/format'
+import { wording } from '@/shared/notices/store'
 import { Alert } from '@/shared/ui/alert'
 import { Button } from '@/shared/ui/button'
 import { ConfirmDialog } from '@/shared/ui/confirm-dialog'
@@ -71,6 +76,11 @@ function recipient(entry: ChannelRecipient): { name: string; detail: string | nu
   const name = account?.name ?? t('channels.account', { id })
   if (entry.problem) return { name, detail: t(`channels.problems.${entry.problem}`) }
   return { name, detail: entry.address ?? null }
+}
+
+/** A notification that has not gone out, by its title and when. */
+function undelivered(item: UndeliveredNotification): string {
+  return `${wording(item.notification).title} (${formatDateTime(item.notification.at * 1000)})`
 }
 
 async function test(channel: NotificationChannel): Promise<void> {
@@ -186,6 +196,52 @@ async function remove(): Promise<void> {
               }}
             </template>
           </p>
+          <!-- What did not go out: waiting for the next try, and what never will. -->
+          <div
+            v-if="channel.waiting.length"
+            class="grid gap-0.5 text-xs"
+            data-testid="channel-waiting"
+          >
+            <p class="font-medium text-amber-700 dark:text-amber-400">
+              {{
+                t(
+                  'channels.queue.waiting',
+                  {
+                    n: channel.waiting.length,
+                    time: formatDateTime(channel.waiting[0]!.at * 1000),
+                  },
+                  channel.waiting.length,
+                )
+              }}
+            </p>
+            <ul class="grid gap-0.5 text-muted-foreground">
+              <li v-for="(item, index) in channel.waiting" :key="index" class="min-w-0 truncate">
+                {{ undelivered(item) }}
+                <template v-if="item.attempts">
+                  · {{ t('channels.queue.tries', { n: item.attempts }, item.attempts) }}
+                </template>
+              </li>
+            </ul>
+            <p v-if="channel.waiting[0]!.error" class="text-muted-foreground">
+              {{ channel.waiting[0]!.error }}
+            </p>
+          </div>
+          <div
+            v-if="channel.failed.length"
+            class="grid gap-0.5 text-xs"
+            data-testid="channel-failed"
+          >
+            <p class="font-medium text-destructive">
+              {{ t('channels.queue.failed', { n: channel.failed.length }, channel.failed.length) }}
+            </p>
+            <ul class="grid gap-0.5 text-muted-foreground">
+              <li v-for="(item, index) in channel.failed" :key="index" class="min-w-0">
+                {{ undelivered(item) }}
+                · {{ t('channels.queue.tries', { n: item.attempts }, item.attempts) }}:
+                {{ item.error }}
+              </li>
+            </ul>
+          </div>
           <p
             v-if="tests[channel.id] && tests[channel.id] !== 'sending'"
             class="text-xs"

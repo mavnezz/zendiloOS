@@ -8674,7 +8674,7 @@
         "tags": [
           "notifications"
         ],
-        "summary": "Sends a test message on this channel alone now and waits for the\noutcome. Needs `system.manage`.",
+        "summary": "Sends a test message on this channel alone now and waits for the\noutcome; once one went out, what waits on the channel goes out too.\nNeeds `system.manage`.",
         "operationId": "test_channel",
         "parameters": [
           {
@@ -20255,9 +20255,18 @@
           "name",
           "target",
           "recipients",
-          "language"
+          "language",
+          "waiting",
+          "failed"
         ],
         "properties": {
+          "failed": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UndeliveredNotification"
+            },
+            "description": "What will not go out, because it cannot or its tries ran out: the\nmost recent first, for a week."
+          },
           "id": {
             "type": "integer",
             "format": "int64"
@@ -20292,6 +20301,13 @@
           },
           "target": {
             "$ref": "#/components/schemas/ChannelTarget"
+          },
+          "waiting": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UndeliveredNotification"
+            },
+            "description": "What did not go out yet and is tried again, with a growing pause,\nfor about twelve hours: the oldest first."
           }
         }
       },
@@ -23799,6 +23815,38 @@
             "type": "integer",
             "description": "Recovery codes not used yet.",
             "minimum": 0
+          }
+        }
+      },
+      "UndeliveredNotification": {
+        "type": "object",
+        "description": "A notification that has not gone out on a channel.",
+        "required": [
+          "notification",
+          "attempts",
+          "at"
+        ],
+        "properties": {
+          "at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Waiting: when it is tried next; failed: when it failed for good. In\nUnix seconds."
+          },
+          "attempts": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How often it was tried.",
+            "minimum": 0
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the last try failed."
+          },
+          "notification": {
+            "$ref": "#/components/schemas/Notification"
           }
         }
       },
