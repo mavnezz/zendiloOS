@@ -28,16 +28,20 @@ const PLUGIN: VmPlugin = {
 describe('the VM settings', () => {
   it('come from a preset, held to the machine', () => {
     expect(limits(PLUGIN)).toEqual({ cpus: 2, memoryMib: 2048 })
+    // Half of the NAS's 2 GiB at most.
     expect(presetForm('linux', PLUGIN, 'web')).toMatchObject({
       name: 'web',
       cpus: 2,
-      memoryMib: 2048,
+      memoryMib: 1024,
       diskGib: 20,
       firmware: 'uefi',
       bridge: null,
     })
-    // Windows asks for 4 GiB; this NAS has 2.
-    expect(presetForm('windows', PLUGIN).memoryMib).toBe(2048)
+    // Windows asks for 4 GiB; this NAS has 2, of which a VM is offered half.
+    expect(presetForm('windows', PLUGIN).memoryMib).toBe(1024)
+    // Whole steps only: of 1974 MiB, not 987 but 896.
+    const odd = { ...PLUGIN, memory_bytes: 1974 * 1024 * 1024 }
+    expect(presetForm('linux', odd).memoryMib).toBe(896)
     expect(presetForm('other', PLUGIN).firmware).toBe('bios')
     expect(presetForm('linux', undefined).memoryMib).toBe(128)
   })

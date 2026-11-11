@@ -192,7 +192,7 @@ zvol="$pool/zendiloos.vms/$id-disk0"
 note "$domain on $zvol"
 [[ $(vm_state "$id") == shut_off ]] || fail "after creating: $(call GET "/vms/$id")"
 [[ $(status POST /vms "$new") == 422 ]] || fail "a second VM of the same name: $(cat "$work/last")"
-read -r volsize volmode refreservation < <(vm "sudo zfs get -H -p -o value volsize,volmode,refreservation $zvol" | tr '\n' ' ')
+read -r volsize volmode refreservation < <(vm "sudo zfs get -H -p -o value volsize,volmode,refreservation $zvol" | tr '\n' ' '; echo)
 [[ $volsize == $((1 << 30)) && $volmode == dev && $refreservation == 0 ]] \
     || fail "the zvol: volsize $volsize, volmode $volmode, refreservation $refreservation"
 xml=$(vm "sudo virsh -c qemu:///system dumpxml $domain")
@@ -214,7 +214,7 @@ vm "pgrep -u libvirt-qemu passt >/dev/null" || note "passt does not show as a pr
 
 say "4. Its console answers with QEMU's VNC greeting"
 wss="wss://${base#https://}/api/v1/vms/$id/console"
-vm "test -S /run/zendiloos-vms/$id.vnc" || fail "no console socket in the VM"
+vm "sudo test -S /run/zendiloos-vms/$id.vnc" || fail "no console socket in the VM"
 greeting=""
 for attempt in 1 2 3; do
     if greeting=$(NODE_TLS_REJECT_UNAUTHORIZED=0 node "$root/scripts/vm-vnc-probe.mjs" "$wss" "$session" "$base" 2>&1); then

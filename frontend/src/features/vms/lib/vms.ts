@@ -13,6 +13,8 @@ import type {
 
 export const NAME_MAX = 48
 export const MEMORY_MIN_MIB = 128
+/** Memory is chosen in steps of this, as the wizard's field takes it. */
+export const MEMORY_STEP_MIB = 128
 export const DISK_MAX_GIB = 64 * 1024
 const MIB = 1024 * 1024
 
@@ -58,15 +60,20 @@ export function limits(plugin: VmPlugin | undefined): { cpus: number; memoryMib:
   }
 }
 
-/** A preset's settings, held to what the machine has. */
+/**
+ * A preset's settings, held to what the machine has. Of its memory a VM is
+ * offered at most half, in whole steps: the rest stays for the NAS and
+ * ZFS's cache, and a value off the field's steps could not be sent.
+ */
 export function presetForm(os: VmOs, plugin: VmPlugin | undefined, name = ''): VmForm {
   const preset = PRESETS[os]
   const most = limits(plugin)
+  const half = Math.floor(most.memoryMib / 2 / MEMORY_STEP_MIB) * MEMORY_STEP_MIB
   return {
     name,
     os,
     cpus: Math.min(preset.cpus, most.cpus),
-    memoryMib: Math.max(MEMORY_MIN_MIB, Math.min(preset.memory_mib, most.memoryMib)),
+    memoryMib: Math.max(MEMORY_MIN_MIB, Math.min(preset.memory_mib, half)),
     firmware: preset.firmware,
     diskGib: preset.disk_gib,
     iso: null,

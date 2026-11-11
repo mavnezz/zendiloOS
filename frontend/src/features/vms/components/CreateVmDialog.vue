@@ -20,6 +20,7 @@ import { useVmActions } from '../api'
 import {
   DISK_MAX_GIB,
   MEMORY_MIN_MIB,
+  MEMORY_STEP_MIB,
   OS_PRESETS,
   STEP_PROBLEMS,
   formatMemory,
@@ -209,7 +210,7 @@ const reviewRows = computed(() => [
               type="number"
               :min="MEMORY_MIN_MIB"
               :max="most.memoryMib"
-              step="128"
+              :step="MEMORY_STEP_MIB"
               :aria-invalid="has('memory')"
               @update:model-value="(value) => (form.memoryMib = number(value))"
             />

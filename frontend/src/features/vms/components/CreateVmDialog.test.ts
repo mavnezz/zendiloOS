@@ -108,8 +108,8 @@ describe('the wizard for a new VM', () => {
     expect(page()).toContain(t('vms.wizard.cpus', { n: 2 }))
     expect(page()).toContain(t('vms.wizard.memory', { total: formatBytes(2 * 1024 ** 3) }))
     expect(value('#vm-cpus')).toBe('2')
-    // Windows asks for 4 GiB; this NAS has 2.
-    expect(value('#vm-memory')).toBe('2048')
+    // Windows asks for 4 GiB; this NAS has 2, of which a VM is offered half.
+    expect(value('#vm-memory')).toBe('1024')
     expect(radio('data-firmware', 'uefi').checked).toBe(true)
     await type('#vm-cpus', '3')
     expect(page()).toContain(t('vms.wizard.invalid.cpus', { max: 2 }))
