@@ -99,8 +99,12 @@ fn host(installed: bool) -> Host {
              case \"$1\" in\n\
              domstate) test -f \"$state/$2\" && cat \"$state/$2\" ;;\n\
              define) name=$(sed -n 's/.*<name>\\(.*\\)<\\/name>.*/\\1/p' \"$3\"); \
-                     [ -f \"$state/$name\" ] || echo 'shut off' > \"$state/$name\" ;;\n\
-             undefine) eval last=\\${{$#}}; rm \"$state/$last\" ;;\n\
+                     uuid=$(sed -n 's/.*<uuid>\\(.*\\)<\\/uuid>.*/\\1/p' \"$3\"); \
+                     if [ -f \"$state/$name\" ]; then [ \"$uuid\" = \"$(cat \"$state/uuid.$name\")\" ] || \
+                       {{ echo \"error: operation failed: domain '$name' already exists with uuid $(cat \"$state/uuid.$name\")\" >&2; exit 1; }}; \
+                     else echo 'shut off' > \"$state/$name\"; echo 8b45cec4-586f-4885-973a-9e24c63b82fe > \"$state/uuid.$name\"; fi ;;\n\
+             domuuid) cat \"$state/uuid.$2\" ;;\n\
+             undefine) eval last=\\${{$#}}; rm \"$state/$last\" \"$state/uuid.$last\" ;;\n\
              list) printf ' Id   Name                     State\\n----------------------------------------\\n'\n\
                    for f in \"$state\"/zendiloos-*; do [ -e \"$f\" ] && printf ' -    %s   %s\\n' \"$(basename \"$f\")\" \"$(cat \"$f\")\"; done\n\
                    printf ' 3    win10                    running\\n' ;;\n\

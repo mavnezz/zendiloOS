@@ -645,6 +645,19 @@ impl Vms {
         Ok(self.domain_state(id).await?.is_some())
     }
 
+    /// The UUID libvirt gave a defined domain. Defining it again must name
+    /// it: XML without one is a new domain to libvirt, refused as long as
+    /// one of the same name is there.
+    async fn domain_uuid(&self, id: &VmId) -> Result<String, OperationError> {
+        let domain = id.domain();
+        let output = zendiloos_exec::run(&self.tools.virsh, virsh(&["domuuid", &domain]), QUICK).await?;
+        let uuid = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        if !output.status.success() || !is_uuid(&uuid) {
+            return Err(OperationError::Failed(format!("libvirt gave no UUID for {domain}: {uuid}")));
+        }
+        Ok(uuid)
+    }
+
     /// The zvol's size in bytes; none if there is no such zvol.
     async fn volsize(&self, dataset: &str) -> Result<Option<u64>, OperationError> {
         let output = zendiloos_exec::run(
@@ -845,10 +858,12 @@ impl Vms {
     /// domain is defined already, and autostart follows `spec` either way.
     async fn define_domain(&self, spec: &VmSpec, existing: bool) -> Result<(), OperationError> {
         let console = self.paths.consoles.join(format!("{}.vnc", spec.id.as_str()));
+        let uuid = if existing { Some(self.domain_uuid(&spec.id).await?) } else { None };
         let places = Places {
             zvols: self.paths.zvols.join(Self::dataset(&spec.pool)),
             images: self.images_folder(spec.volume),
             console,
+            uuid,
         };
         let xml = domain_xml(spec, &places);
         fs::create_dir_all(&self.paths.domains)
@@ -1155,6 +1170,19 @@ pub(crate) struct Places {
     pub zvols: PathBuf,
     pub images: PathBuf,
     pub console: PathBuf,
+    /// The defined domain's UUID, when it is defined again; libvirt makes
+    /// one up for a new domain.
+    pub uuid: Option<String>,
+}
+
+/// `8b45cec4-586f-4885-973a-9e24c63b82fe`: what `virsh domuuid` answers.
+fn is_uuid(text: &str) -> bool {
+    let groups: Vec<&str> = text.split('-').collect();
+    groups.len() == 5
+        && groups
+            .iter()
+            .zip([8, 4, 4, 4, 12])
+            .all(|(group, length)| group.len() == length && group.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
 /// `vda`, `vdb`, … or `sda`, `sdb`, … for the `index`th device of a bus.
@@ -1181,6 +1209,12 @@ pub(crate) fn domain_xml(spec: &VmSpec, places: &Places) -> String {
     let windows = spec.os == VmOs::Windows;
     let linux = spec.os == VmOs::Linux;
     let name = escape(&spec.id.domain());
+    let uuid = places
+        .uuid
+        .as_deref()
+        .filter(|uuid| is_uuid(uuid))
+        .map(|uuid| format!("  <uuid>{}</uuid>\n", escape(uuid)))
+        .unwrap_or_default();
     let memory = spec.memory.mib();
     let cpus = spec.cpus.get();
     let os = match spec.firmware {
@@ -1286,7 +1320,7 @@ pub(crate) fn domain_xml(spec: &VmSpec, places: &Places) -> String {
     }
     format!(
         "<!-- Written by zendiloOS from the VM's settings; changed only there. -->\n\
-         <domain type='kvm'>\n  <name>{name}</name>\n  \
+         <domain type='kvm'>\n  <name>{name}</name>\n{uuid}  \
          <memory unit='MiB'>{memory}</memory>\n  <currentMemory unit='MiB'>{memory}</currentMemory>\n  \
          <vcpu placement='static'>{cpus}</vcpu>\n{os}  <features>\n    <acpi/>\n    <apic/>\n{hyperv}  </features>\n  \
          <cpu mode='host-passthrough' check='none'/>\n  <clock offset='{clock}'/>\n  \
@@ -1357,8 +1391,32 @@ mod tests {
             zvols: PathBuf::from("/dev/zvol/tank/zendiloos.vms"),
             images: PathBuf::from("/volume1/@vms/isos"),
             console: PathBuf::from("/run/zendiloos-vms/0a1b2c3d4e5f.vnc"),
+            uuid: None,
         };
         domain_xml(spec, &places)
+    }
+
+    #[test]
+    fn a_domain_defined_again_keeps_its_uuid() {
+        let spec = spec(VmOs::Linux, VmFirmware::Uefi, linux());
+        let mut places = Places {
+            zvols: PathBuf::from("/dev/zvol/tank/zendiloos.vms"),
+            images: PathBuf::from("/volume1/@vms/isos"),
+            console: PathBuf::from("/run/zendiloos-vms/0a1b2c3d4e5f.vnc"),
+            uuid: Some("8b45cec4-586f-4885-973a-9e24c63b82fe".to_owned()),
+        };
+        let xml = domain_xml(&spec, &places);
+        assert!(
+            xml.contains(
+                "<name>zendiloos-0a1b2c3d4e5f</name>\n  <uuid>8b45cec4-586f-4885-973a-9e24c63b82fe</uuid>\n"
+            ),
+            "{xml}"
+        );
+        // Anything else is left for libvirt to make up, never written.
+        places.uuid = Some("8b45cec4-586f-4885-973a-9e24c63b82fe'/><x".to_owned());
+        assert!(!domain_xml(&spec, &places).contains("<uuid>"));
+        assert!(is_uuid("8b45cec4-586f-4885-973a-9e24c63b82fe"));
+        assert!(!is_uuid("8b45cec4586f4885973a9e24c63b82fe") && !is_uuid(""));
     }
 
     #[test]
