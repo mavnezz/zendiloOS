@@ -374,16 +374,16 @@ if [[ ${ZENDILOOS_BRIDGE_TEST_VM:-} == 1 ]]; then
         [[ $(status DELETE "/network/devices/$bridge") == 409 ]] && jq -e '.code == "device_in_use" and .detail == "zbridged"' "$work/last" >/dev/null \
             || fail "$bridge could be removed with a VM on it: $(cat "$work/last")"
         check "$bridge stays while the VM is on it (device_in_use: zbridged)"
-        vm 'command -v tcpdump >/dev/null || sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q tcpdump >/dev/null'
         [[ $(status POST "/vms/$vm_id/start") == 200 ]] || fail "starting the VM: $(cat "$work/last")"
         tap=$(vm "sudo virsh -c qemu:///system domiflist zendiloos-$vm_id | awk 'NR > 2 && \$1 != \"\" {print \$1; exit}'")
         [[ -n $tap ]] || fail "the VM has no tap"
-        # Its firmware boots from the network when the disk has nothing:
-        # its DHCP request leaves through the bridge, the offer comes back.
-        offer=$(vm "sudo timeout 90 tcpdump -lnv -c 1 -i $tap 'udp src port 67' 2>/dev/null" || true)
-        yours=$(grep -oE 'Your-IP [0-9.]+' <<<"$offer" | awk '{print $2}' || true)
-        [[ $yours == 10.0.2.* ]] || fail "no DHCP offer reached the VM's tap $tap: $offer"
-        check "QEMU's DHCP offered the VM $yours through $bridge (seen on its tap $tap)"
+        # The VM's tap is a port of the bridge and up. Traffic through the
+        # bridge was shown above with the stand-in: a VM with an empty disk
+        # sends none, as OVMF boots only the devices in libvirt's boot order,
+        # and a network card is never among them.
+        wait_for "$tap to join $bridge" "[[ \$(master_of $tap) == $bridge ]]" 30
+        vm "ip -br link show dev $tap | grep -qw UP" || fail "$tap is not up: $(vm "ip -br link show dev $tap")"
+        check "the VM's tap $tap is a port of $bridge and up"
         status POST "/vms/$vm_id/force-off" >/dev/null
         [[ $(status POST "/vms/$vm_id/delete" '{"confirm":"zbridged"}') == 204 ]] || fail "deleting the VM: $(cat "$work/last")"
         vm_id=
