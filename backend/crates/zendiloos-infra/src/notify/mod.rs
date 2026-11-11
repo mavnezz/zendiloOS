@@ -25,6 +25,8 @@ use zendiloos_notify::channels::{ChannelSender, Email, Security, Target};
 use zendiloos_notify::message::Message;
 use zendiloos_notify::queue::SendFailure;
 
+use crate::https::refused_by_tls;
+
 /// [`ChannelSender`] over the network.
 #[derive(Debug, Clone)]
 pub struct NetworkChannels {
@@ -114,23 +116,6 @@ fn smtp_failure(error: &lettre::transport::smtp::Error) -> SendFailure {
     } else {
         SendFailure::permanent(reason)
     }
-}
-
-/// Whether TLS refused the connection (a certificate not trusted or for
-/// another name, no version or cipher in common), which trying again does
-/// not change, rather than the connection breaking during the handshake.
-/// rustls's error hides in an `io::Error` somewhere along the chain.
-fn refused_by_tls(error: &(dyn std::error::Error + 'static)) -> bool {
-    let mut next = Some(error);
-    while let Some(error) = next {
-        let inner =
-            error.downcast_ref::<std::io::Error>().and_then(|io| io.get_ref()).map(|inner| inner as _);
-        if [Some(error), inner].into_iter().flatten().any(|e| e.is::<rustls::Error>()) {
-            return true;
-        }
-        next = error.source();
-    }
-    false
 }
 
 #[cfg(test)]

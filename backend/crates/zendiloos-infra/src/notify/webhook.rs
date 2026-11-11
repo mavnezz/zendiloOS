@@ -146,8 +146,7 @@ pub(super) async fn post(
 /// would refuse it again.
 fn answered(status: StatusCode) -> SendFailure {
     let reason = format!("the server answered {status}");
-    let later = [StatusCode::REQUEST_TIMEOUT, StatusCode::TOO_MANY_REQUESTS].contains(&status);
-    if status.is_server_error() || later {
+    if crate::https::answered_later(status) {
         SendFailure::transient(reason)
     } else {
         SendFailure::permanent(reason)

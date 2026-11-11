@@ -2188,7 +2188,11 @@ order, is offered, so coming back from test to stable waits for a newer
 stable release. A check picks its release for the channel set when it
 ends, so a channel changed while apt fetched its lists counts, and a
 release the channel does not take is neither shown nor installed. Before an update zendiloosd downloads the three files to
-`/var/lib/zendiloos/updates`. The runner trusts none of it: it copies them
+`/var/lib/zendiloos/updates`, each tried up to four times, after pauses
+of 10, 30 and 60 seconds, while the failure may pass (an answer of 5xx,
+408 or 429, a connection not made, broken off or timed out; GitHub
+answers `504 Gateway Timeout` now and then); only then does the update
+fail, naming the file, the reason and the tries. The runner trusts none of it: it copies them
 out (never through a link, size-limited), checks the signature with the key
 the package brought along (`/usr/share/zendiloos/release-signing.pub`, or
 one an administrator put in `/etc/zendiloos`), that the signature's trusted

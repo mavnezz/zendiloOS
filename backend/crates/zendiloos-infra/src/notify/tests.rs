@@ -239,14 +239,3 @@ async fn a_webhook_that_is_down_for_now_is_tried_again() {
         assert_eq!(failed, SendFailure { reason: format!("the server answered {status}"), transient });
     }
 }
-
-#[test]
-fn a_certificate_refused_stays_refused_a_connection_cut_off_does_not() {
-    let refused = std::io::Error::new(
-        std::io::ErrorKind::InvalidData,
-        rustls::Error::InvalidCertificate(rustls::CertificateError::Expired),
-    );
-    assert!(refused_by_tls(&refused));
-    let cut_off = std::io::Error::from(std::io::ErrorKind::ConnectionReset);
-    assert!(!refused_by_tls(&cut_off));
-}
