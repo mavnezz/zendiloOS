@@ -503,11 +503,21 @@ impl Vms {
 
     /// The locations in the order they were added, those the host has; one
     /// the host has and the records not (set up before they kept them, or
-    /// by an earlier zendiloOS) is taken in, after those known.
+    /// by an earlier zendiloOS) is taken in, after those known. Of several
+    /// taken in at once, the one the library's images are on goes first:
+    /// with none known, it is the library's.
     async fn ordered_locations(&self, facts: &HostFacts) -> Result<Vec<Location>, VmsError> {
         let mut known = self.ports.locations.list().await?;
-        for location in &facts.locations {
-            if !known.iter().any(|other| other.pool == location.pool) {
+        let mut unknown: Vec<&Location> = facts
+            .locations
+            .iter()
+            .filter(|location| !known.iter().any(|other| other.pool == location.pool))
+            .collect();
+        if !unknown.is_empty() {
+            let images: BTreeSet<u16> =
+                self.ports.images.list().await?.into_iter().map(|image| image.volume).collect();
+            unknown.sort_by_key(|location| (!images.contains(&location.volume), location.volume));
+            for location in unknown {
                 self.ports.locations.add(location).await?;
                 known.push(location.clone());
             }

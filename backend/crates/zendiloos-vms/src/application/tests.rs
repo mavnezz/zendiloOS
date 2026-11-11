@@ -740,3 +740,21 @@ async fn a_change_right_after_the_vm_was_made_keeps_its_cards_addresses() {
     let stored = test.repository.find(&vm.id).await.unwrap().unwrap();
     assert_eq!(stored.settings.nics.iter().map(|nic| nic.mac.clone()).collect::<Vec<_>>(), given);
 }
+
+/// Set up before the records kept locations, with no VM yet: the location
+/// there was stays the first, the library's, whatever is added next; of
+/// several unknown at once, the one with the library's images is first.
+#[tokio::test]
+async fn the_location_there_was_stays_the_first() {
+    let test = with_debian();
+    test.vms.add_location("cold", &alice(), &context()).await.unwrap();
+    assert_eq!(test.locations.list().await.unwrap(), [tank(), cold()]);
+
+    let host = FakeVmHost::ready();
+    host.facts.lock().unwrap().locations = vec![tank(), cold()];
+    let on_cold = VmImage { volume: 2, ..debian() };
+    let test = TestVms::with_images(host, MemoryImages::with(vec![on_cold]));
+    let plugin = test.vms.plugin(&context()).await.unwrap();
+    assert_eq!(plugin.locations, [cold(), tank()]);
+    assert_eq!(plugin.library(), Some(&cold()));
+}

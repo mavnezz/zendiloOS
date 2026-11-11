@@ -161,6 +161,9 @@ impl Vms {
         if !facts.installed {
             return Err(VmsError::NotInstalled);
         }
+        // Those the host has go into the records first, so the one there
+        // was stays the first.
+        self.ordered_locations(&facts).await?;
         let found = self
             .ports
             .host
