@@ -22,6 +22,13 @@
 # that bridge with an address of its own, as a real NAS would: Windows and
 # macOS clients find it and use SMB and NFS. Needs the bridge on the host and
 # QEMU's bridge helper allowed to use it (/etc/qemu/bridge.conf).
+#
+# With ZENDILOOS_VM_EXTRA_NICS=2 (1 to 4) at 'start', the VM has that many
+# more network cards, for bonds and VLANs: all on one network of their own
+# (QEMU's hub, behind a user network of 10.0.3.0/24 that reaches neither
+# the host nor the internet, with its DHCP server), so a bond of them has a
+# switch to talk to. Their MAC addresses are fixed (52:54:00:5b:0<VM>:0<n>).
+# Without it, the VM is as always.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -37,6 +44,8 @@ ssh_port=$((2221 + instance))
 https_port=$((8442 + instance))
 https_listen=${ZENDILOOS_VM_LISTEN:-127.0.0.1}
 lan_bridge=${ZENDILOOS_VM_BRIDGE:-}
+extra_nics=${ZENDILOOS_VM_EXTRA_NICS:-0}
+[[ $extra_nics =~ ^[0-4]$ ]] || { echo "ZENDILOOS_VM_EXTRA_NICS must be 0 to 4" >&2; exit 1; }
 # Fixed, so the LAN's DHCP server hands the VM the same address each time.
 lan_mac=52:54:00:5a:d1:0$((4 + instance))
 sata_disks=4
@@ -109,6 +118,13 @@ start() {
     done
     local lan=()
     [[ -n $lan_bridge ]] && lan=(-netdev "bridge,id=lan,br=$lan_bridge" -device "virtio-net-pci,netdev=lan,mac=$lan_mac")
+    local extra=()
+    if (( extra_nics > 0 )); then
+        extra=(-netdev "user,id=extra,net=10.0.3.0/24,restrict=on" -netdev "hubport,id=extrahub,hubid=1,netdev=extra")
+        for i in $(seq 1 "$extra_nics"); do
+            extra+=(-netdev "hubport,id=extra$i,hubid=1" -device "virtio-net-pci,netdev=extra$i,mac=52:54:00:5b:0$instance:0$i")
+        done
+    fi
     say "Starting (console: ${dir#"$root"/}/console.log)"
     qemu-system-x86_64 \
         -machine q35,accel=kvm -cpu host -smp 2 -m 2048 \
@@ -121,6 +137,7 @@ start() {
         -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:$ssh_port-:22,hostfwd=tcp:$https_listen:$https_port-:443" \
         -device virtio-net-pci,netdev=net0 \
         "${lan[@]}" \
+        "${extra[@]}" \
         -device virtio-scsi-pci,id=scsi \
         -monitor "unix:$dir/monitor.sock,server,nowait" \
         -display none -serial "file:$dir/console.log" \
