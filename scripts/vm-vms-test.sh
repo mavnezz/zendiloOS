@@ -7,26 +7,45 @@
 #      libvirt's network, its filters or dnsmasq
 #   2. the VMs' storage goes on an existing pool: zendiloos.vms mounted at
 #      /volume<N>/@vms, libvirt waiting for it
-#   3. a VM with 1 vCPU, 256 MiB, UEFI, a 1 GiB disk and no ISO is made in
-#      a job: a sparse zvol with volmode=dev, a domain zendiloos-<id> with
-#      passt; it starts (into its firmware) and runs as libvirt-qemu
+#   3. a VM with 1 vCPU, 256 MiB, UEFI, a 1 GiB disk and no image is made
+#      in a job: a sparse zvol with volmode=dev, a domain zendiloos-<id>
+#      with passt; it starts (into its firmware) and runs as libvirt-qemu
 #   4. its console's WebSocket answers with QEMU's VNC greeting
 #      (RFB 003.00x); a console from another origin is refused
 #   5. it shuts down (ACPI, or forced off when the firmware does not
 #      listen), is deleted only with its name typed again, and its zvol,
 #      domain and XML are gone
-#   6. optionally, with ZENDILOOS_VMS_ISO=<share id>:<path in the share>
-#      naming an .iso the account may read: a VM from it, the ISO copied
-#      to /volume<N>/@vms/isos and removed with the VM
-#   7. no network, bridge, dnsmasq or firewall table of libvirt's came, and
+#   6. an ISO (Alpine's virt ISO, downloaded on this machine and kept in
+#      ~/.cache/zendiloos, or ZENDILOOS_VMS_ISO_FILE, else a dummy) is put
+#      into a share of the test's and added to the library from the NAS in
+#      a job: the very same bytes in /volume<N>/@vms/isos/<id>.iso, no unit
+#      left; the same name twice is refused
+#   7. the ISO is uploaded through the API as the browser sends it: the
+#      same bytes again, nothing beside them, no unit left; an upload cut
+#      off halfway leaves neither a record nor a file
+#   8. a VM with 2 disks, 2 network cards (the second on a bridge if the
+#      NAS has one) and the ISO in its drive is made: both sparse zvols,
+#      both cards with the MAC addresses the API names, the ISO attached
+#      and booted first
+#   9. while it is off, its vCPUs and memory change and a disk grows; it
+#      starts (from the ISO), and then a hardware change is refused while
+#      its name changes
+#  10. the ISO is ejected and inserted again while it runs, at once in the
+#      running guest and in its definition
+#  11. the live WebSocket's topic vm_stats brings its load
+#  12. the ISO is not deleted while the VM has it; the VM goes with its
+#      disks, then both images with their files
+#  13. no network, bridge, dnsmasq or firewall table of libvirt's came, and
 #      nftables holds zendiloOS's rules as before
 #
 # Needs the VM running with the package installed and set up, a pool
 # zendiloOS made (ZENDILOOS_VMS_POOL picks it, else the one Docker's data
-# is on, else the first), the network for apt and node on this machine;
-# account and password as for vm-storage-test.sh. Runs in the second VM by
-# default: it installs packages and starts a VM there. The plugin stays
-# installed and its storage set up; the test VM goes.
+# is on, else the first), the network for apt, node and sha256sum on this
+# machine (and the network here once, for Alpine's ISO); account and
+# password as for vm-storage-test.sh. Runs in the second VM by default
+# (2 cores, 2 GB): it installs packages and starts VMs there. The plugin
+# stays installed and its storage set up; the test's VMs, images and
+# share go.
 set -euo pipefail
 
 export ZENDILOOS_VM=${ZENDILOOS_VM:-2}
@@ -36,7 +55,13 @@ api="$base/api/v1"
 user=${ZENDILOOS_USER:-admin}
 password=${ZENDILOOS_PASSWORD:-correct horse battery}
 name="ztest vm"
-iso_name="ztest iso"
+big="ztest big"
+share="ztestvms"
+image_name="ztest alpine"
+upload_name="ztest upload"
+cut_name="ztest cut"
+cache=${XDG_CACHE_HOME:-$HOME/.cache}/zendiloos
+alpine="https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/x86_64"
 work=$(mktemp -d)
 
 say() { printf '\033[1m%s\033[0m\n' "$*"; }
@@ -59,6 +84,19 @@ status() {
     [[ -n $body ]] && args+=(-H 'Content-Type: application/json' -d "$body")
     curl "${args[@]}" "$api$path"
 }
+
+# The status code of $3 sent as it is to the API path $1 with the query $2,
+# as a browser's upload: streamed, of the length the file has. More curl
+# arguments may follow.
+send_file() {
+    local path=$1 query=$2 file=$3
+    shift 3
+    curl -sk -o "$work/last" -w '%{http_code}' -b "$work/admin.jar" -X POST -H "Origin: $base" \
+        -H "X-CSRF-Token: $(cat "$work/admin.csrf")" -H 'Content-Type: application/octet-stream' \
+        -T "$file" "$@" "$api$path?$query"
+}
+
+urlencode() { jq -rn --arg v "$1" '$v | @uri'; }
 
 wait_for() {
     local what=$1 check=$2 seconds=${3:-120}
@@ -93,16 +131,40 @@ delete_vm() {
     local id
     id=$(vm_id "$1")
     [[ -n $id ]] || return 0
-    if [[ $(vm_state "$id") == running ]]; then call POST "/vms/$id/force-off" >/dev/null; fi
+    if [[ $(vm_state "$id") != shut_off ]]; then call POST "/vms/$id/force-off" >/dev/null; fi
     call POST "/vms/$id/delete" "$(jq -n --arg n "$1" '{confirm: $n}')" >/dev/null
+}
+
+# The id of the image called $1, if there is one.
+image_id() { call GET /vms/images | jq -r --arg n "$1" '.[] | select(.name == $n) | .id'; }
+
+delete_image() {
+    local id
+    id=$(image_id "$1")
+    [[ -n $id ]] && call DELETE "/vms/images/$id" >/dev/null
+    return 0
+}
+
+delete_share() {
+    local id
+    for id in $(call GET /shares | jq -r --arg s "$share" '.[] | select(.name == $s) | .id'); do
+        job_succeeded "$(call POST "/shares/$id/delete" "{\"confirm\":\"$share\"}" | jq -r .id)"
+    done
+}
+
+clean() {
+    delete_vm "$name"
+    delete_vm "$big"
+    delete_vm "renamed vm"
+    delete_image "$image_name"
+    delete_image "$upload_name"
+    delete_image "$cut_name"
+    delete_share
 }
 
 cleanup() {
     set +e
-    if [[ -s $work/admin.csrf ]]; then
-        delete_vm "$name"
-        delete_vm "$iso_name"
-    fi
+    [[ -s $work/admin.csrf ]] && clean
     rm -rf "$work"
 }
 trap cleanup EXIT
@@ -116,12 +178,49 @@ libvirt_networking() {
         sudo virsh -c qemu:///system net-list --all --name 2>/dev/null | grep -v '^\$' || true"
 }
 
+# An ISO on this machine: ZENDILOOS_VMS_ISO_FILE, else Alpine's virt ISO,
+# downloaded once and checked against its checksum, else a dummy one that
+# boots nothing (the library, media and load checks hold all the same).
+the_iso() {
+    if [[ -n ${ZENDILOOS_VMS_ISO_FILE:-} ]]; then
+        [[ -s $ZENDILOOS_VMS_ISO_FILE ]] || fail "no ISO at $ZENDILOOS_VMS_ISO_FILE"
+        printf '%s' "$ZENDILOOS_VMS_ISO_FILE"
+        return
+    fi
+    mkdir -p "$cache"
+    local file
+    file=$(curl -fsSL --max-time 30 "$alpine/latest-releases.yaml" 2>/dev/null \
+        | sed -n 's/^ *file: \(alpine-virt-[0-9.]*-x86_64\.iso\)$/\1/p' | head -1) || true
+    if [[ -n $file && ! -s $cache/$file ]]; then
+        note "downloading $file" >&2
+        if curl -fsSL --max-time 900 -o "$cache/$file.part" "$alpine/$file" \
+            && curl -fsSL --max-time 30 -o "$cache/$file.sha256" "$alpine/$file.sha256" \
+            && (cd "$cache" && sed "s/$file\$/$file.part/" "$file.sha256" | sha256sum -c --quiet -); then
+            mv "$cache/$file.part" "$cache/$file"
+        else
+            rm -f "$cache/$file.part"
+        fi
+    fi
+    if [[ -z $file ]]; then
+        file=$(cd "$cache" && ls -t alpine-virt-*-x86_64.iso 2>/dev/null | head -1) || true
+    fi
+    if [[ -n $file && -s $cache/$file ]]; then
+        printf '%s' "$cache/$file"
+        return
+    fi
+    note "no Alpine ISO (no network?): a dummy ISO of 8 MiB, which boots nothing" >&2
+    head -c $((8 << 20)) /dev/urandom >"$work/ztest-dummy.iso"
+    printf '%s' "$work/ztest-dummy.iso"
+}
+
 say "Signing in as $user"
 curl -sk -c "$work/admin.jar" -H "Origin: $base" -H 'Content-Type: application/json' \
     -d "$(jq -n --arg name "$user" --arg password "$password" '{name: $name, password: $password}')" \
     "$api/auth/login" | jq -er .csrf_token >"$work/admin.csrf" || fail "cannot sign in"
 session=$(awk '$6 ~ /zendiloos_session$/ { print $6 "=" $7 }' "$work/admin.jar")
-command -v node >/dev/null || fail "node is needed on this machine for the console's probe"
+command -v node >/dev/null || fail "node is needed on this machine for the WebSocket probes"
+command -v sha256sum >/dev/null || fail "sha256sum is needed on this machine"
+me=$(call GET /auth/session | jq -er .account.id) || fail "no account"
 
 # What nftables holds before: the test checks nothing of libvirt's comes.
 vm 'sudo nft list tables' | sort >"$work/tables.before"
@@ -129,8 +228,7 @@ firewall_before=$(vm 'sudo nft list table inet zendiloos_firewall 2>/dev/null ||
 [[ -n $(libvirt_networking) ]] && fail "libvirt's networking is there before the test: $(libvirt_networking)"
 
 say "Cleaning up an earlier run"
-delete_vm "$name"
-delete_vm "$iso_name"
+clean
 
 say "1. The hardware check sees KVM; libvirt and QEMU are installed as a job"
 plugin=$(call GET /vms/plugin)
@@ -169,6 +267,7 @@ if [[ -z $pool ]]; then
 fi
 plugin=$(call GET /vms/plugin)
 volume=$(jq -er '.storage.volume' <<<"$plugin") || fail "the storage is not set up: $plugin"
+isos="/volume$volume/@vms/isos"
 note "on $pool (volume $volume)"
 vm "findmnt -n -o SOURCE /volume$volume/@vms" | grep -qx "$pool/zendiloos.vms" || fail "/volume$volume/@vms is not mounted"
 vm "sudo zfs get -H -o value setuid,devices,exec $pool/zendiloos.vms" | tr '\n' ' ' | grep -q '^off off off' \
@@ -181,8 +280,10 @@ vm 'test -d /run/zendiloos-vms' || fail "the consoles' folder is missing"
     || fail "the consoles' folder is $(vm 'stat -c %U:%G:%a /run/zendiloos-vms')"
 
 say "3. A VM with 1 vCPU, 256 MiB, UEFI and a 1 GiB disk is made and starts"
-new=$(jq -n --arg n "$name" '{name: $n, os: "linux", cpus: 1, memory_mib: 256, firmware: "uefi", disk_gib: 1,
-    network: {kind: "user"}, autostart: false}')
+new=$(jq -n --arg n "$name" '{name: $n, os: "linux", cpus: 1, memory_mib: 256, firmware: "uefi",
+    disks: [{slot: 0, size_gib: 1, bus: "virtio"}],
+    nics: [{slot: 0, model: "virtio", network: {kind: "user"}}],
+    drives: [], boot: [{kind: "disk", slot: 0}], autostart: false}')
 [[ $(status POST /vms "$(jq '.cpus = 999' <<<"$new")") == 422 ]] || fail "more CPUs than the machine has: $(cat "$work/last")"
 [[ $(status POST /vms "$new") == 202 ]] || fail "create: $(cat "$work/last")"
 id=$(jq -er .vm.id "$work/last")
@@ -253,26 +354,158 @@ for action in vms.create vms.start vms.shutdown vms.delete; do
         || fail "no audit entry $action"
 done
 
-if [[ -n ${ZENDILOOS_VMS_ISO:-} ]]; then
-    say "6. A VM from an ISO in a share: copied beside the VMs, removed with it"
-    share_id=${ZENDILOOS_VMS_ISO%%:*}
-    path=${ZENDILOOS_VMS_ISO#*:}
-    body=$(jq -n --arg n "$iso_name" --argjson s "$share_id" --arg p "$path" '{name: $n, os: "linux", cpus: 1,
-        memory_mib: 256, firmware: "bios", disk_gib: 1, network: {kind: "user"}, iso: {share_id: $s, path: $p}}')
-    [[ $(status POST /vms "$body") == 202 ]] || fail "create from the ISO: $(cat "$work/last")"
-    iso_id=$(jq -er .vm.id "$work/last")
-    job_succeeded "$(jq -r .job.id "$work/last")" 1800
-    copy="/volume$volume/@vms/isos/$iso_id.iso"
-    vm "sudo test -f $copy" || fail "no copy at $copy"
-    vm "sudo virsh -c qemu:///system dumpxml zendiloos-$iso_id" | grep -q "<source file='$copy'/>" || fail "the copy is not attached"
-    [[ $(status POST "/vms/$iso_id/delete" "$(jq -n --arg n "$iso_name" '{confirm: $n}')") == 204 ]] \
-        || fail "delete: $(cat "$work/last")"
-    vm "sudo test ! -e $copy" || fail "the copy stayed"
-else
-    say "6. Skipped: set ZENDILOOS_VMS_ISO=<share id>:<path> to make a VM from an ISO"
-fi
+say "6. An ISO from a share goes into the library, copied in a job"
+iso=$(the_iso)
+iso_bytes=$(stat -c %s "$iso")
+iso_sum=$(sha256sum "$iso" | cut -d' ' -f1)
+note "$(basename "$iso"), $iso_bytes bytes"
+share_id=$(call POST /shares "$(jq -n --arg n "$share" --arg pool "$pool" --argjson me "$me" \
+    '{name: $n, pool: $pool, access: [{kind: "account", id: $me, access: "read_write"}]}')" | jq -er .id) \
+    || fail "the test's share"
+[[ $(send_file "/files/shares/$share_id/upload" "path=&name=alpine.iso" "$iso") == 201 ]] \
+    || fail "the ISO into the share: $(cat "$work/last")"
+add=$(jq -n --argjson s "$share_id" --arg n "$image_name" '{share_id: $s, path: "alpine.iso", name: $n}')
+[[ $(status POST /vms/images "$add") == 202 ]] || fail "add from the NAS: $(cat "$work/last")"
+image=$(jq -er .image.id "$work/last")
+job_succeeded "$(jq -r .job.id "$work/last")" 900
+listed=$(call GET /vms/images | jq --arg id "$image" '.[] | select(.id == $id)')
+jq -e --argjson b "$iso_bytes" '.ready and .bytes == $b and .origin.kind == "share" and .origin.path == "alpine.iso"' \
+    <<<"$listed" >/dev/null || fail "the image: $listed"
+[[ $(vm "sudo sha256sum $isos/$image.iso" | cut -d' ' -f1) == "$iso_sum" ]] || fail "the copy differs from the ISO"
+[[ $(vm "sudo stat -c %U:%a $isos/$image.iso") == root:644 ]] || fail "the copy is $(vm "sudo stat -c %U:%a $isos/$image.iso")"
+if vm "systemctl is-active --quiet zendiloos-vm-iso-$image.service"; then fail "the copy's unit is left"; fi
+[[ $(status POST /vms/images "$add") == 409 ]] && jq -e '.code == "name_taken"' "$work/last" >/dev/null \
+    || fail "the same name twice: $(cat "$work/last")"
+note "image $image"
 
-say "7. Nothing of libvirt's networking came, and zendiloOS's rules are as they were"
+say "7. The ISO is uploaded as the browser sends it, and an upload cut off leaves nothing"
+[[ $(send_file /vms/images/upload "name=$(urlencode "$upload_name")" "$iso") == 201 ]] \
+    || fail "upload: $(cat "$work/last")"
+uploaded=$(jq -er .id "$work/last")
+jq -e --argjson b "$iso_bytes" --arg n "$upload_name" '.ready and .bytes == $b and .name == $n and .origin.kind == "upload"' \
+    "$work/last" >/dev/null || fail "the upload: $(cat "$work/last")"
+[[ $(vm "sudo sha256sum $isos/$uploaded.iso" | cut -d' ' -f1) == "$iso_sum" ]] || fail "the upload differs from the ISO"
+[[ $(vm "sudo stat -c %U:%a $isos/$uploaded.iso") == root:644 ]] || fail "the upload is $(vm "sudo stat -c %U:%a $isos/$uploaded.iso")"
+if vm "systemctl is-active --quiet zendiloos-vm-upload-$uploaded.service"; then fail "the upload's unit is left"; fi
+files_before=$(vm "sudo ls -A $isos" | sort)
+# At 64 KiB/s for 3 s: cut off long before the end.
+code=$(send_file /vms/images/upload "name=$(urlencode "$cut_name")" "$iso" --limit-rate 64K --max-time 3 || true)
+note "the cut-off upload's request ended with ${code:-nothing}"
+wait_for "the cut-off upload to go" "[[ -z \$(image_id '$cut_name') ]]" 60
+wait_for "no upload unit to run" "! vm 'systemctl list-units --no-legend --state=active \"zendiloos-vm-upload-*\"' | grep -q ."  60
+[[ $(vm "sudo ls -A $isos" | sort) == "$files_before" ]] || fail "the cut-off upload left: $(vm "sudo ls -A $isos")"
+note "image $uploaded"
+
+say "8. A VM with 2 disks, 2 network cards and the ISO in its drive"
+bridge=$(jq -r '.bridges[0] // empty' <<<"$plugin")
+second='{"kind":"user"}'
+[[ -n $bridge ]] && second=$(jq -n --arg b "$bridge" '{kind: "bridge", bridge: $b}')
+new=$(jq -n --arg n "$big" --arg img "$image" --argjson second "$second" '{name: $n, os: "linux", cpus: 1,
+    memory_mib: 384, firmware: "bios",
+    disks: [{slot: 0, size_gib: 1, bus: "virtio"}, {slot: 1, size_gib: 1, bus: "sata"}],
+    nics: [{slot: 0, model: "virtio", network: {kind: "user"}}, {slot: 1, model: "e1000e", network: $second}],
+    drives: [{slot: 0, image: $img}],
+    boot: [{kind: "drive", slot: 0}, {kind: "disk", slot: 0}], autostart: false}')
+[[ $(status POST /vms "$new") == 202 ]] || fail "create: $(cat "$work/last")"
+big_id=$(jq -er .vm.id "$work/last")
+job_succeeded "$(jq -r .job.id "$work/last")" 300
+domain="zendiloos-$big_id"
+note "$domain, the second card ${bridge:+on $bridge}${bridge:-through passt}"
+for disk in 0 1; do
+    read -r volsize refreservation < <(vm "sudo zfs get -H -p -o value volsize,refreservation $pool/zendiloos.vms/$big_id-disk$disk" | tr '\n' ' '; echo)
+    [[ $volsize == $((1 << 30)) && $refreservation == 0 ]] || fail "disk $disk: volsize $volsize, refreservation $refreservation"
+done
+vmjson=$(call GET "/vms/$big_id")
+xml=$(vm "sudo virsh -c qemu:///system dumpxml --inactive $domain")
+for mac in $(jq -r '.nics[].mac' <<<"$vmjson"); do
+    grep -q "<mac address='$mac'/>" <<<"$xml" || fail "no card with $mac: $xml"
+done
+[[ $(grep -c "<interface " <<<"$xml") == 2 ]] || fail "not two cards: $xml"
+grep -q "<source file='$isos/$image.iso'/>" <<<"$xml" || fail "the ISO is not in the drive: $xml"
+grep -A4 "$isos/$image.iso" <<<"$xml" | grep -q "<boot order='1'/>" || fail "the drive is not booted first: $xml"
+grep -q "$big_id-disk1'/>" <<<"$xml" || fail "no second disk: $xml"
+
+say "9. Off, its hardware changes; running, it is refused while its name changes"
+change=$(jq '{name, cpus: 2, memory_mib: 512, firmware, disks: (.disks | map(if .slot == 1 then .size_gib = 2 else . end)),
+    nics: [.nics[] | {slot, model, network}], drives, boot, autostart}' <<<"$vmjson")
+[[ $(status PUT "/vms/$big_id" "$change") == 200 ]] || fail "change while off: $(cat "$work/last")"
+jq -e '.cpus == 2 and .memory_mib == 512' "$work/last" >/dev/null || fail "not changed: $(cat "$work/last")"
+[[ $(jq -c '[.nics[].mac]' "$work/last") == $(jq -c '[.nics[].mac]' <<<"$vmjson") ]] || fail "the cards' addresses changed"
+xml=$(vm "sudo virsh -c qemu:///system dumpxml --inactive $domain")
+grep -q "<vcpu placement='static'>2</vcpu>" <<<"$xml" || fail "libvirt has not 2 vCPUs: $xml"
+grep -q "<memory unit='KiB'>524288</memory>" <<<"$xml" || fail "libvirt has not 512 MiB: $xml"
+[[ $(vm "sudo zfs get -H -p -o value volsize $pool/zendiloos.vms/$big_id-disk1") == $((2 << 30)) ]] || fail "disk 1 did not grow"
+shrink=$(jq '.disks |= map(if .slot == 1 then .size_gib = 1 else . end)' <<<"$change")
+[[ $(status PUT "/vms/$big_id" "$shrink") == 422 ]] || fail "a disk shrank: $(cat "$work/last")"
+if [[ $(status POST "/vms/$big_id/start") != 200 ]]; then
+    note "libvirt: $(vm "sudo tail -n 5 /var/log/libvirt/qemu/$domain.log" 2>&1)"
+    note "AppArmor: $(vm "sudo journalctl -k -n 200 --no-pager | grep -i 'apparmor=\"DENIED\"' | tail -n 5" 2>&1)"
+    fail "start: $(cat "$work/last")"
+fi
+running=$(jq '.cpus = 1' <<<"$change")
+[[ $(status PUT "/vms/$big_id" "$running") == 409 ]] && jq -e '.code == "vm_running"' "$work/last" >/dev/null \
+    || fail "a hardware change while it runs: $(cat "$work/last")"
+grep -q "<vcpu placement='static'>2</vcpu>" <<<"$(vm "sudo virsh -c qemu:///system dumpxml --inactive $domain")" \
+    || fail "the refused change reached libvirt"
+renamed=$(jq '.name = "renamed vm"' <<<"$change")
+[[ $(status PUT "/vms/$big_id" "$renamed") == 200 ]] || fail "rename while it runs: $(cat "$work/last")"
+jq -e '.name == "renamed vm" and .state == "running"' "$work/last" >/dev/null || fail "rename: $(cat "$work/last")"
+big="renamed vm"
+change=$renamed
+
+say "10. The ISO is ejected and inserted while it runs"
+# What the running guest has in its drive sdi: the file, or "-".
+in_drive() {
+    vm "sudo virsh -c qemu:///system domblklist $domain --details" | awk '$3 == "sdi" { print $4 }'
+}
+[[ $(in_drive) == "$isos/$image.iso" ]] || fail "the drive holds $(in_drive)"
+ejected=$(jq '.drives = [{slot: 0, image: null}]' <<<"$change")
+[[ $(status PUT "/vms/$big_id" "$ejected") == 200 ]] || fail "eject: $(cat "$work/last")"
+[[ $(in_drive) == "-" ]] || fail "still in the running guest's drive: $(in_drive)"
+if vm "sudo virsh -c qemu:///system dumpxml --inactive $domain" | grep -q "$isos/$image.iso"; then
+    fail "still in the definition"
+fi
+[[ $(status PUT "/vms/$big_id" "$change") == 200 ]] || fail "insert: $(cat "$work/last")"
+[[ $(in_drive) == "$isos/$image.iso" ]] || fail "not in the running guest's drive: $(in_drive)"
+vm "sudo virsh -c qemu:///system dumpxml --inactive $domain" | grep -q "<source file='$isos/$image.iso'/>" \
+    || fail "not in the definition"
+
+say "11. Its load comes on the live WebSocket"
+sample=""
+for attempt in 1 2; do
+    if sample=$(NODE_TLS_REJECT_UNAUTHORIZED=0 node "$root/scripts/vm-stats-probe.mjs" \
+        "wss://${base#https://}/api/v1/ws" "$session" "$base" "$big_id" 2>&1); then
+        break
+    fi
+    note "attempt $attempt: $sample"
+done
+load=$(jq -c --arg id "$big_id" '.vms[] | select(.id == $id)' <<<"$sample") || fail "no load: $sample"
+jq -e '(.cpu_percent | type) == "number" and .memory_bytes == 536870912' <<<"$load" >/dev/null || fail "the load: $load"
+jq -e '.running >= 1 and .total >= 1 and .host_cores >= 1 and .memory_assigned_bytes >= 536870912' <<<"$sample" >/dev/null \
+    || fail "the overview: $sample"
+note "CPU $(jq -r .cpu_percent <<<"$load") %, memory used $(jq -r '.memory_used_bytes // "unknown"' <<<"$load"), in $(jq -r '.received_bytes_per_second // "not counted"' <<<"$load") B/s"
+
+say "12. The ISO stays while the VM has it; the VM goes, then the images"
+[[ $(status DELETE "/vms/images/$image") == 409 ]] && jq -e --arg n "$big" '.code == "image_in_use" and (.detail | contains($n))' \
+    "$work/last" >/dev/null || fail "deleted while in use: $(cat "$work/last")"
+vm "sudo test -f $isos/$image.iso" || fail "the file went"
+[[ $(status POST "/vms/$big_id/force-off") == 200 ]] || fail "force off: $(cat "$work/last")"
+[[ $(status POST "/vms/$big_id/delete" "$(jq -n --arg n "$big" '{confirm: $n}')") == 204 ]] || fail "delete: $(cat "$work/last")"
+for disk in 0 1; do
+    if vm "sudo zfs list -H -o name $pool/zendiloos.vms/$big_id-disk$disk" >/dev/null 2>&1; then fail "disk $disk stayed"; fi
+done
+vm "sudo test -f $isos/$image.iso" || fail "the image went with the VM"
+for gone in "$image" "$uploaded"; do
+    [[ $(status DELETE "/vms/images/$gone") == 204 ]] || fail "delete image $gone: $(cat "$work/last")"
+    vm "sudo test ! -e $isos/$gone.iso" || fail "the file of $gone stayed"
+done
+for action in vms.image_add vms.image_upload vms.change vms.image_delete; do
+    call GET /logs/audit | jq -e --arg a "$action" '[.. | strings | select(. == $a)] | length > 0' >/dev/null \
+        || fail "no audit entry $action"
+done
+delete_share
+
+say "13. Nothing of libvirt's networking came, and zendiloOS's rules are as they were"
 found=$(libvirt_networking)
 [[ -z $found ]] || fail "libvirt's networking appeared: $found"
 vm 'sudo nft list tables' | sort >"$work/tables.after"
