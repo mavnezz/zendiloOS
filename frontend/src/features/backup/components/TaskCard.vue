@@ -15,6 +15,7 @@ const props = defineProps<{
   task: BackupTask
   shareNames: Map<number, string>
   driveLabels: Map<string, string>
+  accountNames?: Map<number, string>
   busy?: boolean
 }>()
 const emit = defineEmits<{ run: []; stop: []; action: [id: string] }>()
@@ -111,7 +112,7 @@ const actions = computed<Action[]>(() => [
       <div class="grid min-w-0 gap-0.5">
         <dt class="text-xs text-muted-foreground">{{ t('backup.card.target') }}</dt>
         <dd class="truncate">
-          {{ placeText(t, task.target, task.server, shareNames, driveLabels) }}
+          {{ placeText(t, task.target, task.server, shareNames, driveLabels, accountNames) }}
         </dd>
       </div>
       <div class="grid gap-0.5">

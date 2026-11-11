@@ -4,7 +4,7 @@ import { defineComponent, h, ref } from 'vue'
 import type { BackupRun, BackupTask } from '@/shared/api/types'
 import { i18n } from '@/shared/i18n'
 import { WINDOW_SECTION } from '@/shared/lib/window-section'
-import { button, click, mountApp, page, settle, type } from '@/shared/test-support/mount'
+import { button, click, mountApp, page, press, settle, type } from '@/shared/test-support/mount'
 import { called, on, problem, reset } from '@/shared/test-support/server'
 
 import BackupApp from './BackupApp.vue'
@@ -154,6 +154,39 @@ beforeEach(() => {
 })
 
 describe('the Backup app', () => {
+  it('signs in to cloud accounts and keeps those tasks back up into', async () => {
+    on('GET', '/api/v1/backup/accounts', [
+      { id: 3, name: 'Family Drive', provider: 'google_drive', client_id: null, created_at: 1 },
+      { id: 5, name: 'Work', provider: 'onedrive', client_id: 'own', created_at: 2 },
+    ])
+    on('POST', '/api/v1/backup/accounts/sign-in', { flow: 's9', url: 'https://consent.test/g' })
+    on('POST', '/api/v1/backup/accounts/sign-in/s9', problem(409, 'cloud_sign_in_expired'))
+    on('DELETE', '/api/v1/backup/accounts/3', problem(409, 'account_in_use', 'Albums'))
+    await mountBackup('settings')
+    const listed = document.querySelector('[data-testid="backup-accounts"]')?.textContent ?? ''
+    expect(listed).toContain('Family Drive')
+    expect(listed).toContain(`OneDrive · ${t('backup.accounts.ownClient')}`)
+    await press(t('backup.accounts.remove', { name: 'Family Drive' }))
+    expect(page()).toContain(t('backup.accounts.removeTitle', { name: 'Family Drive' }))
+    await click(t('backup.accounts.removeConfirm'))
+    expect(called('DELETE', '/api/v1/backup/accounts/3')).toHaveLength(1)
+    expect(page()).toContain(`${t('errors.account_in_use')} (Albums)`)
+
+    await click(new RegExp(t('backup.accounts.add')))
+    await click(t('backup.signIn.begin'))
+    expect(called('POST', '/api/v1/backup/accounts/sign-in')[0]?.body).toEqual({
+      provider: 'google_drive',
+      name: 'Google Drive',
+      client_id: null,
+      client_secret: null,
+    })
+    await type('#backup-sign-in-address', 'http://127.0.0.1:53682/?code=x&state=s9')
+    await click(t('backup.signIn.finish'))
+    expect(page()).toContain(t('errors.cloud_sign_in_expired'))
+    await click(t('backup.wizard.back'))
+    expect(document.querySelector('#backup-account-name')).toBeTruthy()
+  })
+
   it('points to the App Center until rsync is installed', async () => {
     on('GET', '/api/v1/backup/plugin', { installed: false, ssh: false, public_key: null })
     await mountBackup()

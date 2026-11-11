@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ArrowDownToLine, ArrowUpFromLine, HardDrive } from 'lucide-vue-next'
+import { ArrowDownToLine, ArrowUpFromLine, Cloud, HardDrive } from 'lucide-vue-next'
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
@@ -41,11 +41,12 @@ const KINDS: { kind: TaskKind; icon: typeof HardDrive }[] = [
   { kind: 'local', icon: HardDrive },
   { kind: 'push', icon: ArrowUpFromLine },
   { kind: 'pull', icon: ArrowDownToLine },
+  { kind: 'cloud', icon: Cloud },
 ]
 
 const { t } = useI18n()
 const actions = useBackupActions()
-const { shareNames, shareIds, driveLabels } = useNames()
+const { shareNames, shareIds, driveLabels, accountNames } = useNames()
 const step = ref(0)
 const tab = ref<string>('places')
 const form = ref<TaskForm>(emptyForm())
@@ -83,7 +84,11 @@ const reviewRows = computed(() => {
     ],
     [
       t('backup.wizard.reviewRows.target'),
-      placeText(t, body.target, server, shareNames.value, driveLabels.value),
+      placeText(t, body.target, server, shareNames.value, driveLabels.value, accountNames.value),
+    ],
+    [
+      t('backup.wizard.reviewRows.encryption'),
+      body.encrypted ? t('backup.wizard.encrypted') : t('backup.wizard.notEncrypted'),
     ],
     [t('backup.wizard.reviewRows.folder'), folder.value],
     [t('backup.wizard.reviewRows.mode'), t(`backup.modes.${body.mode.kind}`)],
@@ -104,8 +109,11 @@ const reviewRows = computed(() => {
   ]
 })
 
+/** Whether a kind can be chosen: a cloud needs rclone. */
+const offered = (kind: TaskKind) => kind !== 'cloud' || props.plugin.rclone
+
 function choose(kind: TaskKind): void {
-  form.value = withKind(form.value, kind)
+  if (offered(kind)) form.value = withKind(form.value, kind)
 }
 
 function next(): void {
@@ -161,7 +169,7 @@ const current = computed(() => (editing.value ? tab.value : STEPS[step.value]))
     >
       <div v-if="current === 'kind'" class="grid gap-3">
         <div
-          class="grid gap-3 @2xl:grid-cols-3"
+          class="grid gap-3 @2xl:grid-cols-2"
           role="radiogroup"
           :aria-label="t('backup.wizard.steps.kind')"
         >
@@ -169,7 +177,10 @@ const current = computed(() => (editing.value ? tab.value : STEPS[step.value]))
             v-for="choice in KINDS"
             :key="choice.kind"
             class="grid cursor-pointer gap-2 rounded-xl border p-4 text-sm transition-colors"
-            :class="form.kind === choice.kind && 'border-primary bg-primary/5 dark:bg-primary/10'"
+            :class="[
+              form.kind === choice.kind && 'border-primary bg-primary/5 dark:bg-primary/10',
+              !offered(choice.kind) && 'cursor-not-allowed opacity-60',
+            ]"
             :data-kind="choice.kind"
           >
             <span class="flex items-center gap-2 font-medium">
@@ -178,13 +189,16 @@ const current = computed(() => (editing.value ? tab.value : STEPS[step.value]))
                 name="backup-kind"
                 class="sr-only"
                 :checked="form.kind === choice.kind"
+                :disabled="!offered(choice.kind)"
                 @change="choose(choice.kind)"
               />
               <component :is="choice.icon" class="size-5" />
               {{ t(`backup.kinds.${choice.kind}`) }}
             </span>
             <span class="text-xs text-muted-foreground">{{
-              t(`backup.kindHints.${choice.kind}`)
+              offered(choice.kind)
+                ? t(`backup.kindHints.${choice.kind}`)
+                : t('backup.wizard.needsRclone')
             }}</span>
           </label>
         </div>
@@ -197,7 +211,7 @@ const current = computed(() => (editing.value ? tab.value : STEPS[step.value]))
         :task="task?.id"
         :password-set="task?.password_set"
       />
-      <OptionsFields v-else-if="current === 'options'" v-model="form" />
+      <OptionsFields v-else-if="current === 'options'" v-model="form" :rclone="plugin.rclone" />
       <dl v-else class="grid gap-2 text-sm" data-testid="backup-review">
         <h4 class="font-semibold">{{ t('backup.wizard.review') }}</h4>
         <div

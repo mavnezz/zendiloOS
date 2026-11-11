@@ -7,6 +7,7 @@ import {
   DEFAULT_EXCLUDES,
   addPattern,
   duration,
+  canEncrypt,
   emptyForm,
   emptyServer,
   folderName,
@@ -25,6 +26,7 @@ import {
   restorePaths,
   statusOf,
   timeOf,
+  usesRclone,
   withKind,
 } from './backup'
 import {
@@ -119,6 +121,9 @@ describe('a task form', () => {
       hidden: true,
       bwlimit_kib: null,
       notify_success: false,
+      encrypted: false,
+      crypt_password: null,
+      crypt_salt: null,
     })
     expect(problems({ ...form, name: 'PHOTOS' }, ['photos'])).toEqual(['nameTaken'])
     expect(problems({ ...form, target: 'photos/albums/old' }, [])).toEqual(['nested'])
@@ -210,6 +215,56 @@ describe('a task form', () => {
     const hourly = request({ ...form, frequency: 'hourly', scheduled: true }, SHARE_IDS).schedule
     expect(hourly).toEqual({ frequency: 'hourly', weekday: null, hour: 0, minute: 15 })
     expect(request({ ...form, scheduled: false }, SHARE_IDS).schedule).toBeNull()
+  })
+
+  it('goes to a cloud account, encrypted with a password given twice', () => {
+    const cloud = { ...withKind(emptyForm(), 'cloud'), name: 'To Drive', source: 'photos/albums' }
+    expect(problems(cloud, [])).toEqual(['account'])
+    const chosen = { ...cloud, account: 3, encrypted: true, cryptPassword: 'short' }
+    expect(problems(chosen, [])).toEqual(['cryptPassword'])
+    const typed = { ...chosen, cryptPassword: 'correct horse', cryptConfirm: 'correct hors' }
+    expect(problems(typed, [])).toEqual(['cryptConfirm'])
+    const ready = { ...typed, cryptConfirm: 'correct horse', cryptSalt: 'pepper' }
+    expect(problems(ready, [])).toEqual([])
+    expect(problems({ ...ready, cloudPath: '/root' }, [])).toEqual(['cloudPath'])
+    expect(usesRclone(ready) && canEncrypt(ready)).toBe(true)
+    const body = request(ready, SHARE_IDS)
+    expect(body).toMatchObject({
+      source: { kind: 'share', share_id: 1, path: 'albums' },
+      target: { kind: 'cloud', account_id: 3, path: 'zendiloOS' },
+      server: null,
+      password: null,
+      on_plug: false,
+      encrypted: true,
+      crypt_password: 'correct horse',
+      crypt_salt: 'pepper',
+    })
+    // A daemon is never encrypted; a pull neither.
+    const daemon = {
+      ...withKind(ready, 'push'),
+      server: { ...emptyServer('daemon'), host: 'h', user: 'u', module: 'm' },
+    }
+    expect(canEncrypt(daemon)).toBe(false)
+    expect(request(daemon, SHARE_IDS)).toMatchObject({ encrypted: false, crypt_password: null })
+    expect(canEncrypt(withKind(ready, 'pull'))).toBe(false)
+    // Kept: the password stays as it is, unasked.
+    const kept = formOf(
+      task({
+        kind: 'cloud',
+        target: { kind: 'cloud', account_id: 3, path: 'nas' },
+        encrypted: true,
+      }),
+      SHARE_NAMES,
+    )
+    expect([kept.kind, kept.account, kept.cloudPath, kept.encrypted, kept.cryptKept]).toEqual([
+      'cloud',
+      3,
+      'nas',
+      true,
+      true,
+    ])
+    expect(problems(kept, [])).toEqual([])
+    expect(request(kept, SHARE_IDS)).toMatchObject({ encrypted: true, crypt_password: null })
   })
 
   it('names what is out of range', () => {
@@ -398,6 +453,18 @@ describe('words', () => {
       'zendi@nas2.lan:874::m › nas',
     )
     expect(placeText(t, { kind: 'server', path: '' }, null, SHARE_NAMES)).toBe('?')
+    const accounts = new Map([[3, 'Family Drive']])
+    expect(
+      placeText(
+        t,
+        { kind: 'cloud', account_id: 3, path: 'nas' },
+        null,
+        SHARE_NAMES,
+        new Map(),
+        accounts,
+      ),
+    ).toBe('Family Drive › nas')
+    expect(placeText(t, { kind: 'cloud', account_id: 4, path: '' }, null, SHARE_NAMES)).toBe('#4')
     expect(scheduleText(t, null, false)).toBe('By hand')
     expect(scheduleText(t, null, true)).toBe('when its drive is plugged in')
     expect(scheduleText(t, { frequency: 'hourly', minute: 5 }, false)).toBe('Hourly at :05')

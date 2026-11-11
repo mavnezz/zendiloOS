@@ -29,6 +29,10 @@ export const MAX_KEEP_DAYS = 3650
 export const MAX_BWLIMIT_KIB = 10_000_000
 export const DAEMON_PORT = 873
 export const SSH_PORT = 22
+/** The shortest password a crypt takes here. */
+export const MIN_CRYPT_PASSWORD = 8
+/** Where a cloud task's backup goes unless told otherwise. */
+export const CLOUD_FOLDER = 'zendiloOS'
 
 export interface ServerForm {
   transport: Transport
@@ -57,6 +61,16 @@ export interface TaskForm {
   server: ServerForm
   /** The folder on the server. */
   serverPath: string
+  /** For a task to a cloud: the account, and the folder in it. */
+  account: number | null
+  cloudPath: string
+  /** Names and contents encrypted in the target (rclone's crypt). */
+  encrypted: boolean
+  cryptPassword: string
+  cryptConfirm: string
+  cryptSalt: string
+  /** A task kept encrypted: its password stays, and cannot change. */
+  cryptKept: boolean
   mode: 'mirror' | 'versioned'
   keepChanged: boolean
   keepChangedDays: number
@@ -102,6 +116,13 @@ export function emptyForm(kind: TaskKind = 'local'): TaskForm {
     drivePath: '',
     server: emptyServer(),
     serverPath: '',
+    account: null,
+    cloudPath: CLOUD_FOLDER,
+    encrypted: false,
+    cryptPassword: '',
+    cryptConfirm: '',
+    cryptSalt: '',
+    cryptKept: false,
     mode: 'versioned',
     keepChanged: true,
     keepChangedDays: 30,
@@ -125,8 +146,29 @@ export function emptyForm(kind: TaskKind = 'local'): TaskForm {
 /** A task's kind changed: what fits it stays. */
 export function withKind(form: TaskForm, kind: TaskKind): TaskForm {
   const next = { ...form, kind }
-  if (kind === 'push') next.onPlug = false
+  if (kind === 'push' || kind === 'cloud') next.onPlug = false
   return next
+}
+
+/** Whether the task reads a share. */
+export const fromNas = (form: TaskForm) => form.kind !== 'pull'
+/** Whether the task writes onto the NAS (a share, a drive). */
+export const intoNas = (form: TaskForm) => form.kind === 'local' || form.kind === 'pull'
+/** Whether one end is an rsync server. */
+export const viaServer = (form: TaskForm) => form.kind === 'push' || form.kind === 'pull'
+
+/** Whether the target can be encrypted: not an rsync daemon, not a pull. */
+export function canEncrypt(form: TaskForm): boolean {
+  return (
+    form.kind === 'local' ||
+    form.kind === 'cloud' ||
+    (form.kind === 'push' && form.server.transport === 'ssh')
+  )
+}
+
+/** Whether rclone does the task's work: a cloud, or encryption. */
+export function usesRclone(form: TaskForm): boolean {
+  return form.kind === 'cloud' || (form.encrypted && canEncrypt(form))
 }
 
 /** Whether `pattern` may be given to rsync: one line, none of its own prefixes. */
@@ -207,6 +249,10 @@ export type Problem =
   | 'module'
   | 'hostKey'
   | 'serverPath'
+  | 'account'
+  | 'cloudPath'
+  | 'cryptPassword'
+  | 'cryptConfirm'
   | 'retention'
   | 'time'
   | 'excludes'
@@ -228,8 +274,10 @@ export const STEP_PROBLEMS: Problem[][] = [
     'module',
     'hostKey',
     'serverPath',
+    'account',
+    'cloudPath',
   ],
-  ['retention', 'time', 'excludes', 'bandwidth'],
+  ['cryptPassword', 'cryptConfirm', 'retention', 'time', 'excludes', 'bandwidth'],
   [],
 ]
 
@@ -243,12 +291,21 @@ export function problems(form: TaskForm, taken: string[]): Problem[] {
   if (!name || [...name].length > 64) found.push('name')
   else if (taken.some((other) => other.toLowerCase() === name.toLowerCase()))
     found.push('nameTaken')
-  const fromNas = form.kind !== 'pull'
-  const intoNas = form.kind !== 'push'
-  if (fromNas && !form.source) found.push('source')
-  if (intoNas && form.targetKind === 'share' && !form.target) found.push('target')
-  if (intoNas && form.targetKind === 'drive' && (!form.drive || !isFolderPath(form.drivePath)))
+  const into = intoNas(form)
+  if (fromNas(form) && !form.source) found.push('source')
+  if (into && form.targetKind === 'share' && !form.target) found.push('target')
+  if (into && form.targetKind === 'drive' && (!form.drive || !isFolderPath(form.drivePath)))
     found.push('drive')
+  if (form.kind === 'cloud') {
+    if (form.account == null) found.push('account')
+    if (form.cloudPath.trim().startsWith('/') || !isFolderPath(form.cloudPath.trim()))
+      found.push('cloudPath')
+  }
+  if (form.encrypted && canEncrypt(form) && !form.cryptKept) {
+    if ([...form.cryptPassword].length < MIN_CRYPT_PASSWORD || /\p{Cc}/u.test(form.cryptPassword))
+      found.push('cryptPassword')
+    else if (form.cryptConfirm !== form.cryptPassword) found.push('cryptConfirm')
+  }
   if (
     form.kind === 'local' &&
     form.targetKind === 'share' &&
@@ -257,7 +314,7 @@ export function problems(form: TaskForm, taken: string[]): Problem[] {
     nested(form.source, form.target)
   )
     found.push('nested')
-  if (form.kind !== 'local') {
+  if (viaServer(form)) {
     const server = form.server
     if (!isHost(server.host)) found.push('host')
     if (!between(server.port, 1, 65535)) found.push('port')
@@ -319,18 +376,25 @@ export function request(form: TaskForm, shareIds: Map<string, number>): BackupTa
   const target: BackupPlace =
     form.kind === 'push'
       ? serverPlace
-      : form.targetKind === 'drive'
-        ? { kind: 'drive', drive: form.drive, path: form.drivePath }
-        : sharePlace(form.target, shareIds)
+      : form.kind === 'cloud'
+        ? { kind: 'cloud', account_id: form.account ?? 0, path: form.cloudPath.trim() }
+        : form.targetKind === 'drive'
+          ? { kind: 'drive', drive: form.drive, path: form.drivePath }
+          : sharePlace(form.target, shareIds)
+  const encrypted = form.encrypted && canEncrypt(form)
+  const newCrypt = encrypted && !form.cryptKept
   return {
     name: form.name.trim(),
     source: form.kind === 'pull' ? serverPlace : sharePlace(form.source, shareIds),
     target,
-    server: form.kind === 'local' ? null : server(form),
+    server: viaServer(form) ? server(form) : null,
     password:
-      form.kind !== 'local' && form.server.transport === 'daemon' && form.server.password
+      viaServer(form) && form.server.transport === 'daemon' && form.server.password
         ? form.server.password
         : null,
+    encrypted,
+    crypt_password: newCrypt ? form.cryptPassword : null,
+    crypt_salt: newCrypt && form.cryptSalt ? form.cryptSalt : null,
     mode:
       form.mode === 'mirror'
         ? { kind: 'mirror', keep_changed_days: form.keepChanged ? form.keepChangedDays : null }
@@ -340,7 +404,7 @@ export function request(form: TaskForm, shareIds: Map<string, number>): BackupTa
             keep_days: form.keepDaysOn ? form.keepDays : null,
           },
     schedule,
-    on_plug: form.kind !== 'push' && form.targetKind === 'drive' && form.onPlug,
+    on_plug: intoNas(form) && form.targetKind === 'drive' && form.onPlug,
     excludes: form.excludes,
     hidden: form.hidden,
     bwlimit_kib:
@@ -367,7 +431,12 @@ export function formOf(task: BackupTask, shareNames: Map<number, string>): TaskF
     form.drivePath = task.target.path
   } else if (task.target.kind === 'share') {
     form.target = pickerValue(task.target, shareNames)
+  } else if (task.target.kind === 'cloud') {
+    form.account = task.target.account_id
+    form.cloudPath = task.target.path
   }
+  form.encrypted = task.encrypted
+  form.cryptKept = task.encrypted
   const serverPlace = [task.source, task.target].find((place) => place.kind === 'server')
   if (serverPlace?.kind === 'server') form.serverPath = serverPlace.path
   if (task.server) {

@@ -16,7 +16,7 @@ const props = defineProps<{ tasks: BackupTask[] }>()
 const emit = defineEmits<{ tasks: [] }>()
 
 const { t } = useI18n()
-const { shareNames, driveLabels } = useNames()
+const { shareNames, driveLabels, accountNames } = useNames()
 const glance = computed(() => overview(props.tasks))
 const when = (seconds: number) => formatDateTime(seconds * 1000)
 
@@ -24,8 +24,16 @@ const when = (seconds: number) => formatDateTime(seconds * 1000)
 const targets = computed(() =>
   props.tasks.map((task) => ({
     task,
-    text: placeText(t, task.target, task.server, shareNames.value, driveLabels.value),
-    server: task.target.kind === 'server',
+    text: placeText(
+      t,
+      task.target,
+      task.server,
+      shareNames.value,
+      driveLabels.value,
+      accountNames.value,
+    ),
+    // Looked at when it runs.
+    server: task.target.kind === 'server' || task.target.kind === 'cloud',
   })),
 )
 </script>

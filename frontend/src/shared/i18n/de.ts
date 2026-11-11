@@ -2742,6 +2742,7 @@ const de: Messages = {
         'Ein Ordner einer Freigabe auf eine Freigabe eines anderen Pools oder auf ein USB-Laufwerk.',
       push: 'Ein Ordner einer Freigabe auf einen rsync-Server, über einen rsync-Daemon oder über SSH.',
       pull: 'Ein Ordner eines Servers in eine Freigabe oder auf ein USB-Laufwerk: einen Server sichern.',
+      cloud: 'Ein Ordner einer Freigabe zu Google Drive oder OneDrive, auf Wunsch verschlüsselt.',
     },
     later:
       'WebDAV, Synchronisieren zwischen Geräten und ein Sicherungsprogramm für Computer sind für später geplant.',
@@ -2819,6 +2820,32 @@ const de: Messages = {
       readers:
         'Wer die Ziel-Freigabe lesen darf, liest alles, was hineingesichert wird – gleich, was die Regeln der Quell-Freigabe sagen: {who}.',
       readersNobody: 'Die Ziel-Freigabe darf derzeit niemand außer Administratoren lesen.',
+      cloudAccount: 'Cloud-Konto',
+      signIn: 'Bei einem Konto anmelden…',
+      cloudPath: 'Ordner in der Cloud',
+      googleScope:
+        'zendiloOS sieht nur, was es selbst in dieses Google Drive gelegt hat, sonst nichts darin.',
+      needsRclone:
+        'Braucht rclone, das das Plugin installiert: Installieren Sie es im App Center noch einmal.',
+      fullCopies:
+        'Verschlüsselt ist jede Version eine vollständige Kopie, ohne Hardlinks: Sie belegt so viel Platz wie die Quelle.',
+      fullCopiesCloud:
+        'In einer Cloud ist jede Version eine vollständige Kopie: Sie belegt dort so viel Platz wie die Quelle. Hochgeladen wird nur, was sich geändert hat, denn die neueste Version wird zuerst in der Cloud kopiert.',
+      encryption: 'Verschlüsselung',
+      encrypt: 'Namen und Inhalte verschlüsseln',
+      encryptHint:
+        'Mit rclones crypt: Wer das Ziel hat, sieht weder die Namen der Dateien und Ordner noch ihren Inhalt. Eine Wiederherstellung entschlüsselt.',
+      encryptNotHere:
+        'Eine Sicherung auf einen rsync-Daemon und eine von einem Server geholte werden nicht verschlüsselt.',
+      cryptPassword: 'Passwort',
+      cryptConfirm: 'Das Passwort noch einmal',
+      cryptSalt: 'Ein zweites Passwort (Salt), wenn Sie wollen',
+      cryptWarning:
+        'Ohne dieses Passwort (und das Salt, wenn Sie eines angeben) lässt sich die Sicherung nicht wiederherstellen, von niemandem, auch nicht von zendiloOS. Das NAS bewahrt es auf; damit die Sicherung nicht mit dem NAS verloren geht, notieren Sie es an einem sicheren Ort fern vom NAS.',
+      cryptKept:
+        'Verschlüsselt. Das Passwort bleibt auf dem NAS und lässt sich nicht ändern, denn das Gesicherte ist damit verschlüsselt: Für ein anderes legen Sie eine neue Aufgabe an.',
+      encrypted: 'Namen und Inhalte verschlüsselt',
+      notEncrypted: 'Nicht verschlüsselt',
       next: 'Weiter',
       back: 'Zurück',
       create: 'Anlegen',
@@ -2867,6 +2894,7 @@ const de: Messages = {
         schedule: 'Plan',
         excludes: 'Ausgelassen',
         bandwidth: 'Bandbreite',
+        encryption: 'Verschlüsselung',
       },
       retention: {
         changed: 'Was ein Lauf löscht oder ersetzt: {days} Tage',
@@ -2888,6 +2916,11 @@ const de: Messages = {
         module: 'Geben Sie das rsync-Modul an.',
         hostKey: 'Holen Sie den Host-Schlüssel des Servers und bestätigen Sie ihn.',
         serverPath: 'Das ist kein Ordner auf dem Server.',
+        account: 'Wählen Sie ein Cloud-Konto, oder melden Sie sich bei einem an.',
+        cloudPath:
+          'Das ist kein Ordner in der Cloud: Namen durch / getrennt, nicht mit / am Anfang.',
+        cryptPassword: 'Geben Sie ein Passwort mit mindestens 8 Zeichen an.',
+        cryptConfirm: 'Die beiden Passwörter unterscheiden sich.',
         retention: 'Wie lange behalten wird, ist eine ganze Zahl im erlaubten Bereich.',
         time: 'Geben Sie die Uhrzeit als HH:MM an.',
         excludes: 'Ein Muster lässt sich rsync nicht übergeben.',
@@ -3010,6 +3043,42 @@ const de: Messages = {
       saved: 'Gespeichert.',
     },
     folderTaken: 'Eine andere Aufgabe sichert in diesen Ordner: {task}.',
+    accounts: {
+      title: 'Cloud-Konten',
+      hint: 'Die Konten bei Google Drive und OneDrive, in die Aufgaben sichern. Ihre Anmeldungen bleiben auf dem NAS.',
+      empty: 'Noch kein Cloud-Konto.',
+      add: 'Konto hinzufügen',
+      remove: '{name} entfernen',
+      removeTitle: '{name} entfernen?',
+      removeText:
+        'Das NAS vergisst das Konto und seine Anmeldung. Was dorthin gesichert wurde, bleibt dort.',
+      removeConfirm: 'Entfernen',
+      ownClient: 'eigener OAuth-Client',
+      providers: {
+        google_drive: 'Google Drive',
+        onedrive: 'OneDrive',
+      },
+    },
+    signIn: {
+      title: 'Bei einer Cloud anmelden',
+      provider: 'Cloud',
+      name: 'Name des Kontos hier',
+      own: 'Meinen eigenen OAuth-Client verwenden',
+      clientId: 'Client-ID',
+      clientSecret: 'Client-Secret',
+      ownHint:
+        'Seine Weiterleitungsadresse muss http://127.0.0.1:53682/ (Google) oder http://localhost:53682/ (Microsoft) sein.',
+      rcloneHint:
+        'Die Zustimmungsseite nennt rclone, das Programm, das die Sicherungen ausführt. Auf diesem Computer muss nichts installiert sein.',
+      begin: 'Weiter',
+      stepOpen: 'Öffnen Sie die Seite des Anbieters, und melden Sie sich dort an:',
+      open: 'Anmeldeseite öffnen',
+      stepAgree: 'Stimmen Sie zu, dass rclone Ihre Dateien erreichen darf.',
+      stepPaste:
+        'Der Browser öffnet danach eine Adresse, die mit http://127.0.0.1:53682/ oder http://localhost:53682/ beginnt, und zeigt einen Fehler: Das ist richtig. Kopieren Sie die ganze Adresse aus der Adresszeile, und fügen Sie sie hier ein.',
+      address: 'Die Adresse, die der Browser zeigt',
+      finish: 'Fertig',
+    },
   },
   vms: {
     sections: {
@@ -4067,6 +4136,8 @@ const de: Messages = {
     host_key_changed:
       'Der Host-Schlüssel des Servers ist nicht der festgelegte: Wurde der Server neu eingerichtet, legen Sie seinen neuen Schlüssel in der Aufgabe fest; sonst gibt sich womöglich jemand als er aus',
     agent_failed: 'Das System konnte es nicht tun',
+    account_in_use: 'Aufgaben sichern in dieses Konto; ändern oder löschen Sie sie zuerst',
+    cloud_sign_in_expired: 'Diese Anmeldung bei der Cloud ist abgelaufen: Beginnen Sie sie neu.',
     unknown: 'Etwas ist schiefgegangen ({code}).',
   },
 }

@@ -1,15 +1,28 @@
 <script setup lang="ts">
+import { KeyRound, TriangleAlert } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 
+import { Alert } from '@/shared/ui/alert'
 import { Input } from '@/shared/ui/input'
 import { Label } from '@/shared/ui/label'
 import { NativeSelect } from '@/shared/ui/native-select'
 import { Switch } from '@/shared/ui/switch'
 
-import type { Bandwidth, Frequency, TaskForm } from '../lib/backup'
+import {
+  type Bandwidth,
+  type Frequency,
+  type TaskForm,
+  canEncrypt,
+  intoNas,
+  usesRclone,
+} from '../lib/backup'
 import PatternsEditor from './PatternsEditor.vue'
 
-/** How a task writes and keeps, when it runs, what it leaves out. */
+/**
+ * How a task writes and keeps, whether it encrypts, when it runs, what it
+ * leaves out. `rclone`: whether rclone is installed, which encryption needs.
+ */
+defineProps<{ rclone: boolean }>()
 const form = defineModel<TaskForm>({ required: true })
 
 const { t } = useI18n()
@@ -105,6 +118,73 @@ const row = 'flex items-center gap-3 text-sm'
         <p v-if="!form.keepLastOn && !form.keepDaysOn" class="text-xs text-muted-foreground">
           {{ t('backup.wizard.keepAll') }}
         </p>
+        <Alert v-if="usesRclone(form)" data-testid="backup-full-copies">{{
+          form.kind === 'cloud' ? t('backup.wizard.fullCopiesCloud') : t('backup.wizard.fullCopies')
+        }}</Alert>
+      </template>
+    </section>
+
+    <section class="grid gap-3" data-testid="backup-encryption">
+      <h4 :class="heading">{{ t('backup.wizard.encryption') }}</h4>
+      <p v-if="!canEncrypt(form)" class="text-xs text-muted-foreground">
+        {{ t('backup.wizard.encryptNotHere') }}
+      </p>
+      <p v-else-if="!rclone" class="text-xs text-muted-foreground">
+        {{ t('backup.wizard.needsRclone') }}
+      </p>
+      <template v-else-if="form.cryptKept">
+        <p class="flex items-center gap-2 text-sm">
+          <KeyRound class="size-4" />
+          {{ t('backup.wizard.cryptKept') }}
+        </p>
+      </template>
+      <template v-else>
+        <label :class="row">
+          <Switch
+            :model-value="form.encrypted"
+            @update:model-value="(on) => set('encrypted', on)"
+          />
+          {{ t('backup.wizard.encrypt') }}
+        </label>
+        <p class="text-xs text-muted-foreground">{{ t('backup.wizard.encryptHint') }}</p>
+        <template v-if="form.encrypted">
+          <div class="grid max-w-md gap-3 pl-11">
+            <div class="grid gap-1.5">
+              <Label for="backup-crypt-password">{{ t('backup.wizard.cryptPassword') }}</Label>
+              <Input
+                id="backup-crypt-password"
+                type="password"
+                autocomplete="new-password"
+                :model-value="form.cryptPassword"
+                @update:model-value="(v) => set('cryptPassword', String(v))"
+              />
+            </div>
+            <div class="grid gap-1.5">
+              <Label for="backup-crypt-confirm">{{ t('backup.wizard.cryptConfirm') }}</Label>
+              <Input
+                id="backup-crypt-confirm"
+                type="password"
+                autocomplete="new-password"
+                :model-value="form.cryptConfirm"
+                @update:model-value="(v) => set('cryptConfirm', String(v))"
+              />
+            </div>
+            <div class="grid gap-1.5">
+              <Label for="backup-crypt-salt">{{ t('backup.wizard.cryptSalt') }}</Label>
+              <Input
+                id="backup-crypt-salt"
+                type="password"
+                autocomplete="off"
+                :model-value="form.cryptSalt"
+                @update:model-value="(v) => set('cryptSalt', String(v))"
+              />
+            </div>
+          </div>
+          <Alert variant="destructive" data-testid="backup-crypt-warning">
+            <TriangleAlert />
+            {{ t('backup.wizard.cryptWarning') }}
+          </Alert>
+        </template>
       </template>
     </section>
 
@@ -159,7 +239,7 @@ const row = 'flex items-center gap-3 text-sm'
       <p v-if="form.scheduled" class="pl-11 text-xs text-muted-foreground">
         {{ t('backup.wizard.timeHint') }}
       </p>
-      <label v-if="form.kind !== 'push' && form.targetKind === 'drive'" :class="row">
+      <label v-if="intoNas(form) && form.targetKind === 'drive'" :class="row">
         <Switch :model-value="form.onPlug" @update:model-value="(on) => set('onPlug', on)" />
         {{ t('backup.wizard.onPlug') }}
       </label>

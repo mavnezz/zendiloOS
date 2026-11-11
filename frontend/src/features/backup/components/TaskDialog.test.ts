@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent, h, ref } from 'vue'
 
+import type { BackupTask } from '@/shared/api/types'
 import { i18n } from '@/shared/i18n'
 import { button, click, mountApp, page, settle, type } from '@/shared/test-support/mount'
 import { called, on, problem, reset } from '@/shared/test-support/server'
@@ -256,5 +257,155 @@ describe('the new task wizard', () => {
     expect(page()).toContain(t('errors.folder_taken'))
     await click(t('backup.wizard.back'))
     expect(page()).toContain(t('backup.wizard.filters'))
+  })
+})
+
+const FAMILY = {
+  id: 3,
+  name: 'Family Drive',
+  provider: 'google_drive',
+  client_id: null,
+  created_at: 1,
+}
+const WORK = { id: 4, name: 'Work OneDrive', provider: 'onedrive', client_id: 'own', created_at: 2 }
+
+function toggle(text: string): Promise<void> {
+  const label = [...document.querySelectorAll('label')].find((candidate) =>
+    candidate.textContent?.includes(text),
+  )
+  if (!label) throw new Error(`no switch ${text}`)
+  label.querySelector<HTMLButtonElement>('button')!.click()
+  return settle()
+}
+
+describe('a task to a cloud', () => {
+  it('signs in to an account on the way and encrypts, warning that the password is needed', async () => {
+    on('GET', '/api/v1/backup/accounts', [FAMILY])
+    on('POST', '/api/v1/backup/accounts/sign-in', {
+      flow: 's1',
+      url: 'https://consent.test/onedrive?state=s1',
+    })
+    on('POST', '/api/v1/backup/accounts/sign-in/s1', () => {
+      on('GET', '/api/v1/backup/accounts', [FAMILY, WORK])
+      return WORK
+    })
+    await wizard()
+    await choose(t('backup.kinds.cloud'))
+    await click(t('backup.wizard.next'))
+    await type('#backup-name', 'To the cloud')
+    await click(new RegExp(`${t('backup.wizard.choose')}`))
+    await click('pick:photos/albums')
+    expect(problems()).toEqual(['account'])
+    await type('#backup-account', '3')
+    expect(page()).toContain(t('backup.wizard.googleScope'))
+    expect(problems()).toEqual([])
+
+    await click(new RegExp(t('backup.wizard.signIn')))
+    expect(document.querySelector<HTMLInputElement>('#backup-account-name')?.value).toBe(
+      'Google Drive',
+    )
+    await choose('OneDrive')
+    expect(document.querySelector<HTMLInputElement>('#backup-account-name')?.value).toBe('OneDrive')
+    await type('#backup-account-name', 'Work OneDrive')
+    await toggle(t('backup.signIn.own'))
+    await type('#backup-client-id', 'own')
+    await type('#backup-client-secret', 'shh')
+    await click(t('backup.signIn.begin'))
+    expect(called('POST', '/api/v1/backup/accounts/sign-in')[0]?.body).toEqual({
+      provider: 'onedrive',
+      name: 'Work OneDrive',
+      client_id: 'own',
+      client_secret: 'shh',
+    })
+    expect(document.querySelector('[data-testid="backup-consent"]')?.getAttribute('href')).toBe(
+      'https://consent.test/onedrive?state=s1',
+    )
+    expect(button(t('backup.signIn.finish')).disabled).toBe(true)
+    await type('#backup-sign-in-address', ' http://localhost:53682/?code=c&state=s1 ')
+    await click(t('backup.signIn.finish'))
+    expect(called('POST', '/api/v1/backup/accounts/sign-in/s1')[0]?.body).toEqual({
+      address: 'http://localhost:53682/?code=c&state=s1',
+    })
+    expect(document.querySelector<HTMLSelectElement>('#backup-account')?.value).toBe('4')
+    await click(t('backup.wizard.next'))
+
+    expect(page()).toContain(t('backup.wizard.fullCopiesCloud'))
+    expect(document.querySelector('[data-testid="backup-crypt-warning"]')).toBeNull()
+    await toggle(t('backup.wizard.encrypt'))
+    expect(document.querySelector('[data-testid="backup-crypt-warning"]')?.textContent).toContain(
+      t('backup.wizard.cryptWarning'),
+    )
+    await type('#backup-crypt-password', 'correct horse')
+    await type('#backup-crypt-confirm', 'correct')
+    expect(problems()).toEqual(['cryptConfirm'])
+    expect(button(t('backup.wizard.next')).disabled).toBe(true)
+    await type('#backup-crypt-confirm', 'correct horse')
+    await click(t('backup.wizard.next'))
+    const review = document.querySelector('[data-testid="backup-review"]')?.textContent ?? ''
+    expect(review).toContain('Work OneDrive › zendiloOS')
+    expect(review).toContain(t('backup.wizard.encrypted'))
+    await click(t('backup.wizard.create'))
+    expect(called('POST', '/api/v1/backup/tasks')[0]?.body).toMatchObject({
+      target: { kind: 'cloud', account_id: 4, path: 'zendiloOS' },
+      server: null,
+      encrypted: true,
+      crypt_password: 'correct horse',
+      crypt_salt: null,
+    })
+  })
+
+  it('needs rclone, and keeps an encrypted task’s password as it is', async () => {
+    await mountApp(TaskDialog, {
+      props: { open: true, plugin: { ...PLUGIN, rclone: false }, taken: [] },
+    })
+    expect(radio(t('backup.kinds.cloud')).disabled).toBe(true)
+    expect(page()).toContain(t('backup.wizard.needsRclone'))
+    await choose(t('backup.kinds.cloud'))
+    expect(radio(t('backup.kinds.local')).checked).toBe(true)
+    await click(t('backup.wizard.next'))
+    await click(t('backup.wizard.next'))
+    expect(page()).not.toContain(t('backup.wizard.encrypt'))
+  })
+
+  it('keeps an encrypted task’s password as it is when it changes', async () => {
+    on('GET', '/api/v1/backup/accounts', [FAMILY])
+    on('PUT', '/api/v1/backup/tasks/9', (call: { body: unknown }) => ({
+      id: 9,
+      ...(call.body as object),
+    }))
+    const task = {
+      id: 9,
+      name: 'Drive',
+      kind: 'cloud',
+      folder: 'Drive',
+      source: { kind: 'share', share_id: 1, path: 'albums' },
+      target: { kind: 'cloud', account_id: 3, path: 'nas' },
+      server: null,
+      password_set: false,
+      encrypted: true,
+      mode: { kind: 'mirror', keep_changed_days: 30 },
+      schedule: null,
+      on_plug: false,
+      excludes: [],
+      hidden: true,
+      bwlimit_kib: null,
+      notify_success: false,
+      created_at: 1,
+      running: false,
+      reachable: true,
+      next_at: null,
+      last_run: null,
+    } satisfies BackupTask
+    await mountApp(TaskDialog, { props: { open: true, plugin: PLUGIN, taken: [], task } })
+    expect(document.querySelector<HTMLSelectElement>('#backup-account')?.value).toBe('3')
+    await click(t('backup.wizard.tabs.options'))
+    expect(page()).toContain(t('backup.wizard.cryptKept'))
+    expect(document.querySelector('#backup-crypt-password')).toBeNull()
+    await click(t('backup.wizard.save'))
+    expect(called('PUT', '/api/v1/backup/tasks/9')[0]?.body).toMatchObject({
+      target: { kind: 'cloud', account_id: 3, path: 'nas' },
+      encrypted: true,
+      crypt_password: null,
+    })
   })
 })

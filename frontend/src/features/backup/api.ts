@@ -6,10 +6,11 @@ import type {
   BackupRestoreRequest,
   BackupServer,
   BackupSettings,
+  BackupSignInRequest,
   BackupTaskRequest,
 } from '@/shared/api/types'
 
-/** rsync installed, and the NAS's public key for SSH servers once made. */
+/** rsync and rclone installed, and the NAS's public key for SSH servers once made. */
 export function useBackupPlugin() {
   return useQuery({
     queryKey: ['backup', 'plugin'],
@@ -44,6 +45,14 @@ export function useBackupRuns(task: () => number | null, enabled: () => boolean 
     },
     enabled: computed(enabled),
     refetchInterval: 15_000,
+  })
+}
+
+/** The cloud accounts signed in to (Google Drive, OneDrive). */
+export function useBackupAccounts() {
+  return useQuery({
+    queryKey: ['backup', 'accounts'],
+    queryFn: () => unwrap(api.GET('/api/v1/backup/accounts')),
   })
 }
 
@@ -139,5 +148,19 @@ export function useBackupActions() {
         unwrap(api.POST('/api/v1/backup/tasks/{id}/restore', { params: { path: { id } }, body })),
       ),
     settings: (body: BackupSettings) => after(unwrap(api.PUT('/api/v1/backup/settings', { body }))),
+    /** The provider's consent page, and the sign-in's number to finish it with. */
+    startSignIn: (body: BackupSignInRequest) =>
+      unwrap(api.POST('/api/v1/backup/accounts/sign-in', { body })),
+    finishSignIn: (flow: string, address: string) =>
+      after(
+        unwrap(
+          api.POST('/api/v1/backup/accounts/sign-in/{flow}', {
+            params: { path: { flow } },
+            body: { address },
+          }),
+        ),
+      ),
+    removeAccount: (id: number) =>
+      after(unwrap(api.DELETE('/api/v1/backup/accounts/{id}', { params: { path: { id } } }))),
   }
 }

@@ -21,7 +21,7 @@ const emit = defineEmits<{ restore: [task: number]; log: [task: number] }>()
 const { t } = useI18n()
 const actions = useBackupActions()
 const jobs = useJobsStore()
-const { shareNames, driveLabels } = useNames()
+const { shareNames, driveLabels, accountNames } = useNames()
 
 const creating = ref(false)
 const editing = ref<BackupTask | null>(null)
@@ -108,6 +108,7 @@ async function remove(): Promise<void> {
       :task="task"
       :share-names="shareNames"
       :drive-labels="driveLabels"
+      :account-names="accountNames"
       :busy="busy === task.id"
       @run="run(task)"
       @stop="stop(task)"

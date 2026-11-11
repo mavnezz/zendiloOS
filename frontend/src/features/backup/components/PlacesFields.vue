@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { FolderOpen, ShieldAlert } from 'lucide-vue-next'
+import { FolderOpen, LogIn, ShieldAlert } from 'lucide-vue-next'
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
@@ -11,16 +11,28 @@ import { Label } from '@/shared/ui/label'
 import { NativeSelect } from '@/shared/ui/native-select'
 
 import { useShareReaders } from '../api'
-import { type ServerForm, type TaskForm, splitPlace } from '../lib/backup'
+import type { BackupCloudAccount } from '@/shared/api/types'
+
+import {
+  type ServerForm,
+  type TaskForm,
+  fromNas as readsShare,
+  intoNas as writesNas,
+  splitPlace,
+  usesRclone,
+  viaServer,
+} from '../lib/backup'
 import { useNames } from '../names'
 import ServerFields from './ServerFields.vue'
+import SignInDialog from './SignInDialog.vue'
 
 /** The name, the source and the target of a task, and its server if any. */
 const props = defineProps<{ folder: string; task?: number; passwordSet?: boolean }>()
 const form = defineModel<TaskForm>({ required: true })
 
 const { t } = useI18n()
-const { shareIds, drives } = useNames()
+const { shareIds, drives, accounts } = useNames()
+const signingIn = ref(false)
 const picking = ref<'source' | 'target' | null>(null)
 const pickerOpen = computed({
   get: () => picking.value !== null,
@@ -31,8 +43,13 @@ const pickerOpen = computed({
 
 const set = <K extends keyof TaskForm>(name: K, value: TaskForm[K]) =>
   (form.value = { ...form.value, [name]: value })
-const fromNas = computed(() => form.value.kind !== 'pull')
-const intoNas = computed(() => form.value.kind !== 'push')
+const fromNas = computed(() => readsShare(form.value))
+const intoNas = computed(() => writesNas(form.value))
+const account = computed(() => (accounts.value ?? []).find((a) => a.id === form.value.account))
+
+function signedIn(made: BackupCloudAccount): void {
+  set('account', made.id)
+}
 const mounted = computed(() => (drives.value ?? []).filter((drive) => drive.state === 'mounted'))
 const drive = computed(() => mounted.value.find((candidate) => candidate.id === form.value.drive))
 const targetShare = computed(() =>
@@ -87,14 +104,14 @@ function pick(path: string): void {
     </div>
 
     <ServerFields
-      v-if="form.kind !== 'local'"
+      v-if="viaServer(form)"
       :model-value="form.server"
       :path="form.serverPath"
       :task="task"
       :password-set="passwordSet"
       @update:model-value="(value: ServerForm) => set('server', value)"
     />
-    <div v-if="form.kind !== 'local'" class="grid gap-1.5">
+    <div v-if="viaServer(form)" class="grid gap-1.5">
       <Label for="backup-server-path">{{ t('backup.server.folder') }}</Label>
       <Input
         id="backup-server-path"
@@ -108,6 +125,41 @@ function pick(path: string): void {
             : t('backup.server.folderHintSsh')
         }}
       </p>
+    </div>
+
+    <div v-if="form.kind === 'cloud'" class="grid gap-2">
+      <Label for="backup-account">{{ t('backup.wizard.cloudAccount') }}</Label>
+      <div class="flex flex-wrap items-center gap-2">
+        <NativeSelect
+          v-if="accounts?.length"
+          id="backup-account"
+          :model-value="form.account ?? ''"
+          class="max-w-md"
+          @update:model-value="(value) => set('account', value === '' ? null : Number(value))"
+        >
+          <option value="" disabled>{{ t('backup.wizard.choose') }}</option>
+          <option v-for="choice in accounts" :key="choice.id" :value="choice.id">
+            {{ choice.name }} ({{ t(`backup.accounts.providers.${choice.provider}`) }})
+          </option>
+        </NativeSelect>
+        <p v-else class="text-sm text-muted-foreground">{{ t('backup.accounts.empty') }}</p>
+        <Button type="button" variant="outline" @click="signingIn = true"
+          ><LogIn /> {{ t('backup.wizard.signIn') }}</Button
+        >
+      </div>
+      <div class="grid max-w-md gap-1.5">
+        <Label for="backup-cloud-path">{{ t('backup.wizard.cloudPath') }}</Label>
+        <Input
+          id="backup-cloud-path"
+          :model-value="form.cloudPath"
+          @update:model-value="(value) => set('cloudPath', String(value))"
+        />
+      </div>
+      <p class="text-xs text-muted-foreground">
+        {{ t('backup.wizard.targetHint', { folder: props.folder }) }}
+        {{ account?.provider === 'google_drive' ? t('backup.wizard.googleScope') : '' }}
+      </p>
+      <SignInDialog v-model:open="signingIn" @signed-in="signedIn" />
     </div>
 
     <div v-if="intoNas" class="grid gap-2">
@@ -171,7 +223,9 @@ function pick(path: string): void {
           />
         </div>
         <Alert
-          v-if="drive && drive.filesystem !== 'ext4' && form.mode === 'versioned'"
+          v-if="
+            drive && drive.filesystem !== 'ext4' && form.mode === 'versioned' && !usesRclone(form)
+          "
           variant="destructive"
           >{{ t('backup.wizard.driveNoLinks', { filesystem: drive.filesystem }) }}</Alert
         >

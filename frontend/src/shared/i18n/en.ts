@@ -2692,6 +2692,7 @@ const en = {
       local: 'A folder of a share to a share on another pool, or to a USB drive.',
       push: 'A folder of a share to an rsync server, through an rsync daemon or over SSH.',
       pull: 'A server’s folder into a share or onto a USB drive: back up a server.',
+      cloud: 'A folder of a share to Google Drive or OneDrive, encrypted if you wish.',
     },
     later:
       'WebDAV, syncing between devices and a backup client for computers are planned for later.',
@@ -2768,6 +2769,31 @@ const en = {
       readers:
         'Whoever may read the target share reads everything backed up into it, whatever the source share’s rules say: {who}.',
       readersNobody: 'Nobody but administrators may read the target share now.',
+      cloudAccount: 'Cloud account',
+      signIn: 'Sign in to an account…',
+      cloudPath: 'Folder in the cloud',
+      googleScope:
+        'zendiloOS sees only what it put into this Google Drive itself, nothing else in it.',
+      needsRclone: 'Needs rclone, which the plugin installs: install it again in the App Center.',
+      fullCopies:
+        'Encrypted, each version is a complete copy, without hard links: it takes as much space as the source.',
+      fullCopiesCloud:
+        'In a cloud each version is a complete copy: it takes as much space as the source there. Only what changed is uploaded, as the newest version is copied in the cloud first.',
+      encryption: 'Encryption',
+      encrypt: 'Encrypt names and contents',
+      encryptHint:
+        'With rclone’s crypt: whoever holds the target sees neither the names of files and folders nor what is in them. A restore decrypts.',
+      encryptNotHere:
+        'A backup to an rsync daemon, and one pulled from a server, are not encrypted.',
+      cryptPassword: 'Password',
+      cryptConfirm: 'The password again',
+      cryptSalt: 'A second password (salt), if you wish',
+      cryptWarning:
+        'Without this password (and the salt, if you give one) the backup cannot be restored, by anyone, zendiloOS included. The NAS keeps it; should the NAS be lost, note it somewhere safe away from it, or the backup is lost with it.',
+      cryptKept:
+        'Encrypted. Its password is kept on the NAS and cannot be changed, as what was backed up is encrypted with it: for another, make a new task.',
+      encrypted: 'Names and contents encrypted',
+      notEncrypted: 'Not encrypted',
       next: 'Next',
       back: 'Back',
       create: 'Create',
@@ -2815,6 +2841,7 @@ const en = {
         schedule: 'Schedule',
         excludes: 'Left out',
         bandwidth: 'Bandwidth',
+        encryption: 'Encryption',
       },
       retention: {
         changed: 'What a run deletes or replaces: {days} days',
@@ -2836,6 +2863,10 @@ const en = {
         module: 'Give the rsync module.',
         hostKey: 'Fetch the server’s host key and confirm it.',
         serverPath: 'That is no folder on the server.',
+        account: 'Choose a cloud account, or sign in to one.',
+        cloudPath: 'That is no folder in the cloud: names separated by /, not starting with one.',
+        cryptPassword: 'Give a password of at least 8 characters.',
+        cryptConfirm: 'The two passwords differ.',
         retention: 'How long to keep is a whole number in range.',
         time: 'Give the time as HH:MM.',
         excludes: 'A pattern cannot be given to rsync.',
@@ -2956,6 +2987,42 @@ const en = {
       saved: 'Saved.',
     },
     folderTaken: 'Another task backs up into that folder: {task}.',
+    accounts: {
+      title: 'Cloud accounts',
+      hint: 'The Google Drive and OneDrive accounts tasks back up into. Their sign-ins stay on the NAS.',
+      empty: 'No cloud account yet.',
+      add: 'Add an account',
+      remove: 'Remove {name}',
+      removeTitle: 'Remove {name}?',
+      removeText:
+        'The NAS forgets the account and its sign-in. What was backed up into it stays there.',
+      removeConfirm: 'Remove',
+      ownClient: 'its own OAuth client',
+      providers: {
+        google_drive: 'Google Drive',
+        onedrive: 'OneDrive',
+      },
+    },
+    signIn: {
+      title: 'Sign in to a cloud',
+      provider: 'Cloud',
+      name: 'Name of the account here',
+      own: 'Use my own OAuth client',
+      clientId: 'Client ID',
+      clientSecret: 'Client secret',
+      ownHint:
+        'Its redirect address must be http://127.0.0.1:53682/ (Google) or http://localhost:53682/ (Microsoft).',
+      rcloneHint:
+        'The consent page names rclone, the program that does the backups. Nothing needs to be installed on this computer.',
+      begin: 'Continue',
+      stepOpen: 'Open the provider’s page and sign in there:',
+      open: 'Open the sign-in page',
+      stepAgree: 'Agree that rclone may reach your files.',
+      stepPaste:
+        'The browser then opens an address beginning with http://127.0.0.1:53682/ or http://localhost:53682/ and shows an error: that is right. Copy that whole address from the address bar and paste it here.',
+      address: 'The address the browser shows',
+      finish: 'Finish',
+    },
   },
   vms: {
     sections: {
@@ -3990,6 +4057,8 @@ const en = {
     host_key_changed:
       "The server's host key is not the one pinned: if the server was set up anew, pin its new key in the task; otherwise someone may be posing as it",
     agent_failed: 'The system could not do it',
+    account_in_use: 'Tasks back up into this account; change or delete them first',
+    cloud_sign_in_expired: 'This sign-in to the cloud is over: begin it again.',
     unknown: 'Something went wrong ({code}).',
   },
 }
