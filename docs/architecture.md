@@ -477,7 +477,11 @@ simple to audit.
   reads at boot; without it systemctl reloads systemd each time, also
   when nothing changed, which made a change of the file services and
   every start of zendiloosd (which writes their configuration) reload it
-  four times. What has
+  four times. For the file services and SSH it also goes with
+  `SYSTEMCTL_SKIP_SYSV=1`: smbd and ssh have init scripts too, and for
+  those systemctl runs Debian's `update-rc.d`, which reloads systemd twice
+  whatever `--no-reload` says; their rc.d links count for nothing beside
+  the native units. What has
   to run outside the agent's sandbox runs as a unit: transient ones through
   `systemd-run` (apt, acme.sh, `nginx -t`, `nft -c`) and `systemd-mount`
   (removable drives), or a unit of the package. The kernel's NFS server

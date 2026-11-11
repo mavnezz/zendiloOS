@@ -146,14 +146,17 @@ out=$(vm "smbclient //localhost/machines -U 'mac%$secret' -m SMB3 -c ls 2>&1" ||
 say "5. No reloads of systemd for units that did not change, and no GPT generator"
 [[ $(vm 'readlink /etc/systemd/system-generators/systemd-gpt-auto-generator') == /dev/null ]] \
     || fail "systemd-gpt-auto-generator is not masked"
-since=$(vm 'date "+%Y-%m-%d %H:%M:%S"')
+# From the journal's last entry on: a time could be older than entries a
+# clock set wrong once wrote.
+cursor=$(vm 'sudo journalctl -q -n 0 --show-cursor' | sed -n 's/^-- cursor: //p')
+[[ -n $cursor ]] || fail "no cursor of the journal"
 call PUT /file-services '{"smb":true,"nfs":true,"workgroup":"WORKGROUP","smb_min_protocol":"smb2_1","wsdd":false,"bonjour":false}' >/dev/null
 call PUT /file-services "$defaults" >/dev/null
 [[ $(state_of wsdd2) == "enabled active" ]] || fail "wsdd2 back: $(state_of wsdd2)"
 vm 'sudo systemctl restart zendiloosd'
 wait_for "zendiloosd" "curl -skf $api/health" 120
 # systemd names who asked for each reload.
-reloads=$(vm "sudo journalctl -q --since '$since' _PID=1 -g 'Reload requested from client' -o cat" \
+reloads=$(vm "sudo journalctl -q --after-cursor '$cursor' _PID=1 -g 'Reload requested from client' -o cat" \
     | grep -c 'unit zendiloos-agent.service' || true)
 [[ $reloads == 0 ]] || fail "the agent reloaded systemd $reloads times"
 

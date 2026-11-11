@@ -1329,6 +1329,19 @@ pub(crate) async fn run<S: AsRef<str>>(program: &Program, args: &[S]) -> Result<
     Ok(())
 }
 
+/// `systemctl enable` or `disable` without Debian's SysV hooks. For a unit
+/// that also has an init script (smbd, ssh) systemctl runs update-rc.d,
+/// which reloads systemd twice whatever `--no-reload` says; the script's
+/// rc.d links count for nothing beside the native unit.
+pub(crate) async fn link_units(systemctl: &Program, args: &[&str]) -> Result<(), OperationError> {
+    let surroundings = zendiloos_exec::Surroundings {
+        variables: vec![("SYSTEMCTL_SKIP_SYSV".to_owned(), "1".to_owned())],
+        directory: None,
+    };
+    zendiloos_exec::run_with(systemctl, args, None, &surroundings, LIMITS).await?.success(systemctl)?;
+    Ok(())
+}
+
 async fn output(program: &Program, args: &[&str]) -> Result<String, OperationError> {
     let output = zendiloos_exec::run(program, args, LIMITS).await?.success(program)?;
     String::from_utf8(output.stdout).map_err(|_| OperationError::NotUtf8)
