@@ -13,7 +13,8 @@
 //! any, which becomes its first member, and that member's MAC address, so
 //! DHCP sees the same machine and hands out the same address. Removed, it
 //! gives its settings back to its first member; the other members, and
-//! those taken out of one, are switched off.
+//! those taken out of one, are switched off (a bond or VLAN made here
+//! stays up without addresses instead).
 
 use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr};
@@ -109,12 +110,6 @@ pub struct LinkFile {
     /// Up without addresses rather than switched off: a device zendiloOS
     /// made, there to carry others.
     pub keep_up: bool,
-}
-
-impl LinkFile {
-    fn addresses(settings: InterfaceSettings) -> Self {
-        Self { settings, port_of: None, vlans: Vec::new(), keep_up: false }
-    }
 }
 
 /// One of zendiloOS's systemd-networkd files, as the host hands it over.
@@ -457,6 +452,19 @@ impl Planning<'_> {
         Some(LinkFile { settings, port_of: None, vlans: self.configuration.vlans_on(interface), keep_up })
     }
 
+    /// What a member leaving its bridge or bond has: `settings` of its own.
+    /// A bond or VLAN made here stays up without addresses, there to carry
+    /// others; a card without settings is switched off.
+    fn leaving(&self, settings: InterfaceSettings) -> (LinkFile, Becomes) {
+        let made = self.configuration.device(&settings.interface).is_some();
+        let becomes = if made || !settings.switched_off() {
+            Becomes::Settings(settings.clone())
+        } else {
+            Becomes::SwitchedOff
+        };
+        (LinkFile { settings, port_of: None, vlans: Vec::new(), keep_up: made }, becomes)
+    }
+
     /// Checks `members` of `device` (a bridge, or with `cards_only` a bond):
     /// each once, there, of a kind that can be in one, and free (in no
     /// other bridge or bond, carrying no VLANs), but those it has already.
@@ -692,8 +700,9 @@ impl Planning<'_> {
             }
         }
         for member in current.members.iter().filter(|member| !update.members.contains(member)) {
-            links.push(LinkFile::addresses(off(member)));
-            effects.push(Effect { interface: member.clone(), becomes: Becomes::SwitchedOff });
+            let (file, becomes) = self.leaving(off(member));
+            links.push(file);
+            effects.push(Effect { interface: member.clone(), becomes });
         }
         let subject = Subject::Device(update.name.clone(), DeviceAction::Changed);
         Ok(Edit { subject, devices: vec![device], removed: Vec::new(), links, effects })
@@ -733,12 +742,8 @@ impl Planning<'_> {
                     } else {
                         off(member)
                     };
-                    let becomes = if index == 0 && !settings.switched_off() {
-                        Becomes::Settings(settings.clone())
-                    } else {
-                        Becomes::SwitchedOff
-                    };
-                    links.push(LinkFile::addresses(settings));
+                    let (file, becomes) = self.leaving(settings);
+                    links.push(file);
                     effects.push(Effect { interface: member.clone(), becomes });
                 }
             }

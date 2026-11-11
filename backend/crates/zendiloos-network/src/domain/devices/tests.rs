@@ -538,4 +538,18 @@ fn a_member_in_a_bond_in_a_bridge_stays_where_it_is() {
     assert!(
         message(planning.make(bridge("br1", &["enp1s0"]))).contains("enp1s0 is a member of bond0 already")
     );
+
+    // Out of the bridge, the bond stays up without an address, where a
+    // card would be switched off.
+    let update = DeviceUpdate { name: "br0".into(), members: vec![], mode: None, stp: None };
+    let edit = planning.change(update).unwrap();
+    let out = edit.links.iter().find(|link| link.settings.interface == "bond0").unwrap();
+    assert!(out.keep_up && out.port_of.is_none() && out.settings.switched_off(), "{out:?}");
+    assert_eq!(edit.effects[0].becomes, Becomes::Settings(off("bond0")));
+    // The bridge removed gives the bond its settings back, and the bond
+    // stays a device made here.
+    let edit = planning.remove("br0", &[]).unwrap();
+    assert_eq!(edit.links[0].settings, dhcp("bond0", Some("192.168.1.20")));
+    assert!(edit.links[0].keep_up);
+    assert_eq!(edit.effects[0].becomes, Becomes::Settings(dhcp("bond0", Some("192.168.1.20"))));
 }
