@@ -318,7 +318,7 @@ wss="wss://${base#https://}/api/v1/vms/$id/console"
 vm "sudo test -S /run/zendiloos-vms/$id.vnc" || fail "no console socket in the VM"
 greeting=""
 for attempt in 1 2 3; do
-    if greeting=$(NODE_TLS_REJECT_UNAUTHORIZED=0 node "$root/scripts/vm-vnc-probe.mjs" "$wss" "$session" "$base" 2>&1); then
+    if greeting=$(NODE_NO_WARNINGS=1 NODE_TLS_REJECT_UNAUTHORIZED=0 node "$root/scripts/vm-vnc-probe.mjs" "$wss" "$session" "$base" 2>&1); then
         break
     fi
     note "attempt $attempt: $greeting"
@@ -326,7 +326,7 @@ for attempt in 1 2 3; do
 done
 [[ $greeting =~ RFB\ 003\.00[0-9] ]] || fail "the console: $greeting"
 note "$greeting"
-if NODE_TLS_REJECT_UNAUTHORIZED=0 node "$root/scripts/vm-vnc-probe.mjs" "$wss" "$session" "https://evil.example" >/dev/null 2>&1; then
+if NODE_NO_WARNINGS=1 NODE_TLS_REJECT_UNAUTHORIZED=0 node "$root/scripts/vm-vnc-probe.mjs" "$wss" "$session" "https://evil.example" >/dev/null 2>&1; then
     fail "a console was opened from another origin"
 fi
 call GET /logs/audit | jq -e '[.. | strings | select(test("vms.console"))] | length > 0' >/dev/null \
@@ -430,7 +430,9 @@ change=$(jq '{name, cpus: 2, memory_mib: 512, firmware, disks: (.disks | map(if 
     nics: [.nics[] | {slot, model, network}], drives, boot, autostart}' <<<"$vmjson")
 [[ $(status PUT "/vms/$big_id" "$change") == 200 ]] || fail "change while off: $(cat "$work/last")"
 jq -e '.cpus == 2 and .memory_mib == 512' "$work/last" >/dev/null || fail "not changed: $(cat "$work/last")"
-[[ $(jq -c '[.nics[].mac]' "$work/last") == $(jq -c '[.nics[].mac]' <<<"$vmjson") ]] || fail "the cards' addresses changed"
+macs_after=$(jq -c '[.nics[].mac]' "$work/last")
+macs_before=$(jq -c '[.nics[].mac]' <<<"$vmjson")
+[[ $macs_after == "$macs_before" ]] || fail "the cards' addresses changed: $macs_before, then $macs_after"
 xml=$(vm "sudo virsh -c qemu:///system dumpxml --inactive $domain")
 grep -q "<vcpu placement='static'>2</vcpu>" <<<"$xml" || fail "libvirt has not 2 vCPUs: $xml"
 grep -q "<memory unit='KiB'>524288</memory>" <<<"$xml" || fail "libvirt has not 512 MiB: $xml"
@@ -473,7 +475,7 @@ vm "sudo virsh -c qemu:///system dumpxml --inactive $domain" | grep -q "<source 
 say "11. Its load comes on the live WebSocket"
 sample=""
 for attempt in 1 2; do
-    if sample=$(NODE_TLS_REJECT_UNAUTHORIZED=0 node "$root/scripts/vm-stats-probe.mjs" \
+    if sample=$(NODE_NO_WARNINGS=1 NODE_TLS_REJECT_UNAUTHORIZED=0 node "$root/scripts/vm-stats-probe.mjs" \
         "wss://${base#https://}/api/v1/ws" "$session" "$base" "$big_id" 2>&1); then
         break
     fi
