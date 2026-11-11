@@ -65,6 +65,7 @@ impl Host {
             gpasswd: any.clone(),
             smbpasswd: any.clone(),
             busctl: any.clone(),
+            ip: "/bin/false".into(),
             sshd: any.clone(),
             systemd_run: any.clone(),
             docker: any.clone(),

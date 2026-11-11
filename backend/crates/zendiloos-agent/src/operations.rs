@@ -141,6 +141,7 @@ impl Operations {
                     zfs: Program::new(&tools.zfs)?,
                     systemctl: Program::new(&tools.systemctl)?,
                     systemd_run: Program::new(&tools.systemd_run)?,
+                    busctl: Program::new(&tools.busctl)?,
                     libvirtd: tools.libvirtd.clone(),
                     qemu: tools.qemu.clone(),
                     tmpfiles: tools.systemd_tmpfiles.clone(),
@@ -268,8 +269,8 @@ impl Operations {
             Request::AppLogs { app, lines } => self.apps.logs(app, *lines).await,
             Request::HostFacts { user, devices } => self.apps.facts(user, devices),
             Request::NetworkState {} => self.network.state().await,
-            Request::ApplyNetwork { config, confirm_within } => {
-                self.network.apply(config, *confirm_within).await
+            Request::ChangeNetwork { change, confirm_within } => {
+                self.network.change(change, *confirm_within).await
             }
             Request::TakeOverNetwork { configs, digest, confirm_within } => {
                 self.network.take_over(configs, digest, *confirm_within).await

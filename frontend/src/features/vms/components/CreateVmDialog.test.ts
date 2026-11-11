@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { ref } from 'vue'
 
 import type { VmPlugin } from '@/shared/api/types'
 import { i18n } from '@/shared/i18n'
@@ -6,6 +7,8 @@ import { useJobsStore } from '@/shared/jobs/store'
 import { formatBytes } from '@/shared/lib/format'
 import { button, click, mountApp, page, settle, submit, type } from '@/shared/test-support/mount'
 import { called, on, problem, reset } from '@/shared/test-support/server'
+
+import { WINDOW_SECTION } from '@/shared/lib/window-section'
 
 import CreateVmDialog from './CreateVmDialog.vue'
 
@@ -184,5 +187,24 @@ describe('the wizard for a new VM', () => {
     for (let step = 0; step < 3; step++) await next()
     await submit('#vm-wizard')
     expect(page()).toContain(t('errors.iso_denied'))
+  })
+
+  /** Without a bridge, the wizard says where one is made. */
+  it('points to the Network page while the NAS has no bridge', async () => {
+    const openApp = vi.fn()
+    await mountApp(CreateVmDialog, {
+      props: { open: true, plugin: { ...PLUGIN, bridges: [] }, taken: [] },
+      global: {
+        provide: {
+          [WINDOW_SECTION as symbol]: { section: ref(undefined), navigate: vi.fn(), openApp },
+        },
+      },
+    })
+    await type('#vm-name', 'box')
+    for (let step = 0; step < 3; step++) await next()
+    expect(page()).toContain(t('vms.wizard.noBridge'))
+    expect(document.querySelector('[data-network="br0"]')).toBeNull()
+    await click(t('vms.wizard.toNetwork'))
+    expect(openApp).toHaveBeenCalledWith('settings', 'network')
   })
 })

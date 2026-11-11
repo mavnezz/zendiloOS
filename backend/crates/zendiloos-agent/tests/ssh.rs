@@ -77,6 +77,7 @@ impl Host {
             gpasswd: any.clone(),
             smbpasswd: any.clone(),
             busctl: any.clone(),
+            ip: "/bin/false".into(),
             timedatectl: any.clone(),
             docker: any.clone(),
             setsid: "/usr/bin/setsid".into(),

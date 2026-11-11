@@ -290,6 +290,8 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     let network = NetworkUseCases::new(NetworkPorts {
         source: Arc::new(ip),
         configurator: Arc::new(AgentNetwork::new(network_agent)),
+        // A bridge a VM is on stays: the VMs' records say which.
+        users: Arc::new(zendiloos_infra::vms::VmsOnBridges::new(Arc::new(SqliteVms::new(database.clone())))),
         jobs: jobs.clone(),
         audit: audit.clone(),
         clock: Arc::new(SystemClock),
@@ -367,7 +369,8 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     // ISO copied, a VM's disks destroyed) is the system transport's own.
     let vms = Vms::new(VmsPorts {
         repository: Arc::new(SqliteVms::new(database.clone())),
-        host: Arc::new(AgentVms::new(agent.clone())),
+        // The bridges VMs may go on, as zendiloosd reads the host's network.
+        host: Arc::new(AgentVms::new(agent.clone(), network.get_network.clone())),
         isos: Arc::new(zendiloos_infra::vms::SharesForVms::new(files.clone())),
         ids: Arc::new(RandomVmIds),
         jobs: jobs.clone(),

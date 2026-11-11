@@ -8098,6 +8098,237 @@
         ]
       }
     },
+    "/api/v1/network/devices": {
+      "post": {
+        "tags": [
+          "network"
+        ],
+        "summary": "Makes a bridge, bond or VLAN, with what that does to its members and\nparent (see `POST /network/devices/plan`), as one change: unless it is\nconfirmed within two minutes (`POST /network/confirm`), every file goes\nback and the device goes. Needs `system.manage`.",
+        "operationId": "make_device",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewDeviceInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Made; waits for confirmation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NetworkSetup"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`change_pending`, or `refused`: not managed by systemd-networkd, a name in use",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`: the detail says why",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/network/devices/plan": {
+      "post": {
+        "tags": [
+          "network"
+        ],
+        "summary": "What making, changing or removing a device would do to each interface\nit touches, checked as the change itself would be, without changing\nanything. Needs `system.manage`.",
+        "operationId": "plan_device",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DevicePlanInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DevicePlan"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`device_in_use`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`: the detail says why",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/network/devices/{name}": {
+      "put": {
+        "tags": [
+          "network"
+        ],
+        "summary": "Changes a bridge's or bond's members, a bond's mode or a bridge's STP\n(the device is made anew for those two), as one change with\nconfirmation. Members that leave are switched off. Needs\n`system.manage`.",
+        "operationId": "change_device",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceUpdateInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Changed; waits for confirmation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NetworkSetup"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`change_pending`, `refused`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`: no such device of zendiloOS's, members not free, …",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "network"
+        ],
+        "summary": "Removes a bridge, bond or VLAN zendiloOS made: a bridge or bond gives\nits settings back to its first member, the other members are switched\noff. Refused while a VM is on the bridge. As one change with\nconfirmation. Needs `system.manage`.",
+        "operationId": "remove_device",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Removed; waits for confirmation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NetworkSetup"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`device_in_use` (the detail names the VMs), `change_pending`, `refused`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`: no device of zendiloOS's, a member or parent of another",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/network/interfaces/{name}": {
       "put": {
         "tags": [
@@ -13807,6 +14038,95 @@
           "failed"
         ]
       },
+      "Becomes": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "A member of `device`; `moved`: its settings go to the device,\n`dropped`: those it has go.",
+            "required": [
+              "device",
+              "moved",
+              "dropped",
+              "fate"
+            ],
+            "properties": {
+              "device": {
+                "type": "string"
+              },
+              "dropped": {
+                "type": "boolean"
+              },
+              "fate": {
+                "type": "string",
+                "enum": [
+                  "member"
+                ]
+              },
+              "moved": {
+                "type": "boolean"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "These settings: a new VLAN's, a device's from its first member, or a\ndevice's given back to that member.",
+            "required": [
+              "settings",
+              "fate"
+            ],
+            "properties": {
+              "fate": {
+                "type": "string",
+                "enum": [
+                  "settings"
+                ]
+              },
+              "settings": {
+                "$ref": "#/components/schemas/PlannedSettings"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Leaves its device, switched off.",
+            "required": [
+              "fate"
+            ],
+            "properties": {
+              "fate": {
+                "type": "string",
+                "enum": [
+                  "switched_off"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Keeps its settings; carries `vlan` from now on, or no longer.",
+            "required": [
+              "vlan",
+              "carries",
+              "fate"
+            ],
+            "properties": {
+              "carries": {
+                "type": "boolean"
+              },
+              "fate": {
+                "type": "string",
+                "enum": [
+                  "parent"
+                ]
+              },
+              "vlan": {
+                "type": "string"
+              }
+            }
+          }
+        ],
+        "description": "What becomes of an interface a change touches."
+      },
       "BindingKind": {
         "type": "string",
         "enum": [
@@ -13845,6 +14165,15 @@
             "description": "Unix seconds; `null`: until lifted by hand."
           }
         }
+      },
+      "BondModeInput": {
+        "type": "string",
+        "description": "How a bond spreads its traffic over its members.",
+        "enum": [
+          "active_backup",
+          "lacp",
+          "balance_alb"
+        ]
       },
       "CatalogApp": {
         "type": "object",
@@ -15157,6 +15486,22 @@
           }
         }
       },
+      "DeviceActionKind": {
+        "type": "string",
+        "enum": [
+          "made",
+          "changed",
+          "removed"
+        ]
+      },
+      "DeviceKindName": {
+        "type": "string",
+        "enum": [
+          "bridge",
+          "bond",
+          "vlan"
+        ]
+      },
       "DeviceMapping": {
         "type": "object",
         "required": [
@@ -15176,6 +15521,149 @@
             "description": "`rwm`: read, write, make nodes."
           }
         }
+      },
+      "DevicePlan": {
+        "type": "object",
+        "description": "What a change of a device would do.",
+        "required": [
+          "interfaces"
+        ],
+        "properties": {
+          "device": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/NetworkDevice",
+                "description": "The device as it would be; none when it goes."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "interfaces": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InterfaceFate"
+            }
+          }
+        }
+      },
+      "DevicePlanInput": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "device",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "make"
+                ]
+              },
+              "device": {
+                "$ref": "#/components/schemas/NewDeviceInput"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "name",
+              "members",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "change"
+                ]
+              },
+              "members": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "mode": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/BondModeInput"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "stp": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "name",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "remove"
+                ]
+              },
+              "name": {
+                "type": "string"
+              }
+            }
+          }
+        ],
+        "description": "A change of a device whose plan is asked for."
+      },
+      "DeviceUpdateInput": {
+        "type": "object",
+        "description": "A bridge's or bond's members, a bond's mode or a bridge's STP.",
+        "required": [
+          "members"
+        ],
+        "properties": {
+          "members": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "All of them, in order: the first gets the settings back when it\ngoes."
+          },
+          "mode": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/BondModeInput",
+                "description": "A bond's; left out: as it is."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stp": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "A bridge's; left out: as it is."
+          }
+        },
+        "additionalProperties": false
       },
       "DisableTwoFactorRequest": {
         "type": "object",
@@ -17431,6 +17919,21 @@
           }
         }
       },
+      "InterfaceFate": {
+        "type": "object",
+        "required": [
+          "interface",
+          "becomes"
+        ],
+        "properties": {
+          "becomes": {
+            "$ref": "#/components/schemas/Becomes"
+          },
+          "interface": {
+            "type": "string"
+          }
+        }
+      },
       "InterfaceLanguage": {
         "type": "string",
         "description": "A language of the interface.",
@@ -18544,6 +19047,70 @@
           }
         }
       },
+      "NetworkDevice": {
+        "type": "object",
+        "description": "A bridge, bond or VLAN zendiloOS made, as its files say.",
+        "required": [
+          "name",
+          "kind",
+          "members"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/DeviceKindName"
+          },
+          "mac": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Given at making it: its first member's."
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "A bridge's or bond's, in order: the first gets the settings back\nwhen it goes."
+          },
+          "mode": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/BondModeInput",
+                "description": "A bond's."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "parent": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A VLAN's: the interface it is on, and its id."
+          },
+          "stp": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "A bridge's: whether it speaks the spanning tree protocol."
+          },
+          "vlan_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
       "NetworkInfo": {
         "type": "object",
         "description": "How the machine is connected: its interfaces (without the loopback and\nthe plumbing of containers), default routes and name servers.",
@@ -18616,6 +19183,13 @@
           "name": {
             "type": "string"
           },
+          "parent": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A VLAN's: the interface it is on."
+          },
           "state": {
             "$ref": "#/components/schemas/InterfaceState"
           }
@@ -18636,9 +19210,17 @@
         "description": "Whether the network can be changed here, and a change that waits.",
         "required": [
           "managed",
-          "manager"
+          "manager",
+          "devices"
         ],
         "properties": {
+          "devices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NetworkDevice"
+            },
+            "description": "The bridges, bonds and VLANs zendiloOS made: these can be changed\nand removed."
+          },
           "managed": {
             "type": "boolean",
             "description": "systemd-networkd manages the network; otherwise it is only shown,\nor with ifupdown, taken over first."
@@ -18702,6 +19284,109 @@
             "description": "What would not be carried over (bonds, bridges, VLANs, wireless,\ncommands, search domains, …); while there is any, ifupdown stays."
           }
         }
+      },
+      "NewDeviceInput": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Members: wired cards, and bonds and VLANs zendiloOS made; none for\na bridge only VMs are on. It takes the settings and the MAC address\nof the first member that has settings.",
+            "required": [
+              "name",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "bridge"
+                ]
+              },
+              "members": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "name": {
+                "type": "string"
+              },
+              "stp": {
+                "type": "boolean",
+                "description": "Off by default."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Members: wired cards, at least one. It takes the settings of the\nfirst member that has settings and the MAC address of its first.",
+            "required": [
+              "name",
+              "members",
+              "mode",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "bond"
+                ]
+              },
+              "members": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "mode": {
+                "$ref": "#/components/schemas/BondModeInput"
+              },
+              "name": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "On a wired card, a bond or a bridge, with an id from 1 to 4094 and\nsettings of its own (none: no addresses, up to carry others).",
+            "required": [
+              "name",
+              "parent",
+              "id",
+              "kind"
+            ],
+            "properties": {
+              "id": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "vlan"
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "parent": {
+                "type": "string"
+              },
+              "settings": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/InterfaceSettingsInput"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "description": "A bridge, bond or VLAN to make."
       },
       "NewDockerProject": {
         "type": "object",
@@ -19279,9 +19964,20 @@
           "revert_at"
         ],
         "properties": {
+          "device": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DeviceActionKind",
+                "description": "A bridge, bond or VLAN (`interface`) was made, changed or removed."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "interface": {
             "type": "string",
-            "description": "The interface whose settings changed; empty for a takeover."
+            "description": "The interface whose settings changed, or the device made, changed\nor removed; empty for a takeover."
           },
           "revert_at": {
             "type": "integer",
@@ -19619,6 +20315,29 @@
             }
           }
         ]
+      },
+      "PlannedSettings": {
+        "type": "object",
+        "description": "An interface's settings as a change would set them.",
+        "required": [
+          "ipv4",
+          "ipv6",
+          "dns"
+        ],
+        "properties": {
+          "dns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "ipv4": {
+            "$ref": "#/components/schemas/PlannedIpv4"
+          },
+          "ipv6": {
+            "$ref": "#/components/schemas/Ipv6Input"
+          }
+        }
       },
       "Pool": {
         "type": "object",

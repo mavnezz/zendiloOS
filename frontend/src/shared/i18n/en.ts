@@ -1709,6 +1709,89 @@ const en = {
       takeoverHint: 'Confirm it, or ifupdown gets the network back as it was in {seconds} seconds.',
       elsewhere: 'The NAS has a new address. Confirm there:',
       confirm: 'Keep the new settings',
+      deviceTitle: {
+        made: '{name} is made',
+        changed: 'The changes to {name} are active',
+        removed: '{name} is removed',
+      },
+      deviceHint:
+        'Confirm it, or everything returns as it was in {seconds} seconds, devices made go and devices removed come back.',
+    },
+    add: {
+      button: 'Add',
+      bridge: 'Bridge',
+      bond: 'Bond',
+      vlan: 'VLAN',
+    },
+    devices: {
+      members: 'Members: {members}',
+      noMembers: 'No members',
+      onParent: 'On {parent}',
+      onParentId: 'On {parent}, VLAN {id}',
+      madeHere: 'Made here',
+      change: 'Change members',
+      remove: 'Remove',
+      modes: {
+        active_backup: 'Active-backup',
+        lacp: '802.3ad (LACP)',
+        balance_alb: 'Adaptive load balancing (balance-alb)',
+      },
+      modeHints: {
+        active_backup: 'One card carries, another takes over when it fails. Works with any switch.',
+        lacp: 'The switch bundles the cards: more throughput and failover. Needs a managed switch with LACP set up for these ports.',
+        balance_alb:
+          'Traffic both ways is spread over the cards, without help from the switch. Works with any switch.',
+      },
+    },
+    device: {
+      titles: {
+        bridge: 'Add a bridge',
+        bond: 'Add a bond',
+        vlan: 'Add a VLAN',
+        change: 'Change {name}',
+        remove: 'Remove {name}',
+      },
+      hints: {
+        bridge:
+          'A bridge connects its members and virtual machines to one network. It takes the settings and the address of the first member that has settings, so the NAS keeps its address.',
+        bond: 'A bond joins wired cards into one connection. It takes the settings of the first member that has settings and that card’s hardware address.',
+        vlan: 'A VLAN reaches a tagged network on a card, bond or bridge. It starts without an address, so it never takes the route the NAS is reached on; give it one here or later.',
+        change:
+          'Members you take out are switched off. A change of the mode or of STP makes the device anew for a moment.',
+        remove:
+          'The first member gets the settings back; the other members are switched off. A virtual machine on a bridge keeps it from being removed.',
+        confirm:
+          'Everything applies at once. Confirm within two minutes, or it all returns as it was.',
+      },
+      name: 'Name',
+      nameHint: 'Up to 15 letters, digits, “-”, “_” or “.”.',
+      members: 'Members',
+      membersHint: 'Free wired cards, and bonds and VLANs made here.',
+      bondMembersHint: 'Free wired cards.',
+      noCandidates: 'No free card.',
+      noMembersBridge: 'Without members, only virtual machines are on the bridge.',
+      stp: 'Spanning tree (STP)',
+      stpHint: 'Only needed where the bridge could form a loop with other switches.',
+      mode: 'Mode',
+      parent: 'On',
+      id: 'VLAN id',
+      idHint: 'From 1 to 4094, as the switch tags the network.',
+      plan: 'What changes',
+      planning: 'Working out what changes …',
+      firewallHint:
+        'Firewall rules that name a member no longer see its traffic, which comes through the device now: name the device in them.',
+      make: 'Add',
+      apply: 'Apply',
+      remove: 'Remove',
+    },
+    plan: {
+      moves: 'Joins {device}, which takes its settings and address',
+      drops: 'Joins {device}; its own settings go',
+      member: 'Joins {device}',
+      noAddress: 'Up, without an address',
+      switchedOff: 'Leaves and is switched off',
+      carries: 'Keeps its settings and carries {vlan}',
+      releases: 'Keeps its settings, no longer carries {vlan}',
     },
   },
   settings: {
@@ -2565,7 +2648,9 @@ const en = {
         'The VM reaches the LAN and the internet from the NAS’s address; nothing reaches the VM.',
       bridge: 'Bridge {bridge}',
       bridgeHint: 'The VM is on the LAN as a machine of its own and gets its address there.',
-      noBridge: 'The NAS has no bridge of its own; a VM on the LAN needs one.',
+      noBridge:
+        'The NAS has no bridge of its own; a VM on the LAN needs one. Add one on the Network page, over the card that connects the NAS to the LAN: the VM then gets its address from the LAN’s DHCP server.',
+      toNetwork: 'Open the Network page',
       autostart: 'Start the VM with the NAS',
       review: 'Review',
       back: 'Back',
@@ -3179,6 +3264,7 @@ const en = {
     delivery_failed: 'The message did not go out',
     change_pending: 'Another change waits for confirmation.',
     not_carried_over: 'ifupdown sets up something zendiloOS does not carry over',
+    device_in_use: 'Virtual machines are on this bridge; move or remove them first',
     not_installed: 'The SSH server is not installed.',
     port_in_use: 'Another program already listens on this port.',
     address_blocked: 'This address is blocked from the web interface.',

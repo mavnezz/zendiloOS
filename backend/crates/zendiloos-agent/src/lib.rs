@@ -22,6 +22,7 @@ mod apps;
 pub mod config;
 mod console;
 mod docker;
+pub mod docker_bridges;
 mod durable;
 mod enclosure;
 mod files;

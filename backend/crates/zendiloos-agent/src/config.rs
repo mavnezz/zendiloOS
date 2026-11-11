@@ -67,6 +67,9 @@ pub struct Tools {
     pub gpasswd: PathBuf,
     pub smbpasswd: PathBuf,
     pub busctl: PathBuf,
+    /// Run in a transient unit, in the host's network namespace: deletes
+    /// the link of a bridge, bond or VLAN zendiloOS made.
+    pub ip: PathBuf,
     pub timedatectl: PathBuf,
     /// May be missing: then the SSH server is not installed.
     pub sshd: PathBuf,
@@ -125,6 +128,7 @@ impl Default for Tools {
             gpasswd: PathBuf::from("/usr/bin/gpasswd"),
             smbpasswd: PathBuf::from("/usr/bin/smbpasswd"),
             busctl: PathBuf::from("/usr/bin/busctl"),
+            ip: PathBuf::from("/usr/sbin/ip"),
             timedatectl: PathBuf::from("/usr/bin/timedatectl"),
             sshd: PathBuf::from("/usr/sbin/sshd"),
             systemd_run: PathBuf::from("/usr/bin/systemd-run"),

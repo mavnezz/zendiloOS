@@ -7,11 +7,12 @@ use async_trait::async_trait;
 use zendiloos_kernel::{PortError, RequestContext, Timestamp};
 
 use crate::application::{
-    Change, ConfigureError, HostNetwork, IfupdownHost, NetworkConfigurator, NetworkSource, PendingChange,
+    Change, ConfigureError, DeviceUsers, HostNetwork, IfupdownHost, NetworkConfigurator, NetworkSource,
+    PendingChange,
 };
 use crate::domain::{
-    Address, AddressScope, DefaultRoute, IfupdownFile, Interface, InterfaceKind, InterfaceSettings,
-    LinkState, Network,
+    Address, AddressScope, DefaultRoute, DeviceKind, Edit, IfupdownFile, Interface, InterfaceKind,
+    InterfaceSettings, Ipv4Setting, Ipv6Setting, LinkState, Network, NetworkdFile,
 };
 
 /// One card with a DHCP address, its router and one name server.
@@ -27,6 +28,7 @@ impl NetworkSource for FixedNetwork {
             mac: Some("52:54:00:12:34:56".into()),
             mtu: 1500,
             member_of: None,
+            parent: None,
             addresses: vec![Address {
                 ip: [192, 168, 1, 20].into(),
                 prefix: 24,
@@ -40,6 +42,117 @@ impl NetworkSource for FixedNetwork {
     }
 }
 
+/// The network a test sets, [`FixedNetwork`]'s until then.
+#[derive(Default)]
+pub struct SettableNetwork(pub Mutex<Option<Network>>);
+
+impl SettableNetwork {
+    pub fn set(&self, network: Network) {
+        *locked(&self.0) = Some(network);
+    }
+}
+
+#[async_trait]
+impl NetworkSource for SettableNetwork {
+    async fn network(&self) -> Result<Network, PortError> {
+        let set = locked(&self.0).clone();
+        match set {
+            Some(network) => Ok(network),
+            None => FixedNetwork.network().await,
+        }
+    }
+}
+
+/// [`FixedNetwork`]'s card with two more without addresses, `enp2s0` and
+/// `enp3s0`, for bridges and bonds.
+pub fn three_cards() -> Network {
+    let card = |name: &str, mac: &str, addresses: Vec<Address>| Interface {
+        name: name.into(),
+        kind: InterfaceKind::Ethernet,
+        state: LinkState::Up,
+        mac: Some(mac.into()),
+        mtu: 1500,
+        member_of: None,
+        parent: None,
+        addresses,
+    };
+    let lan = card(
+        "enp1s0",
+        "52:54:00:12:34:56",
+        vec![Address {
+            ip: [192, 168, 1, 20].into(),
+            prefix: 24,
+            scope: AddressScope::Global,
+            dynamic: true,
+        }],
+    );
+    let route = DefaultRoute { gateway: [192, 168, 1, 1].into(), interface: "enp1s0".into(), metric: 100 };
+    Network::new(
+        vec![lan, card("enp2s0", "52:54:00:00:00:02", vec![]), card("enp3s0", "52:54:00:00:00:03", vec![])],
+        vec![route],
+        vec![[192, 168, 1, 1].into()],
+    )
+}
+
+/// What uses which device: VMs on bridges, by the bridge's name.
+#[derive(Default)]
+pub struct FakeUsers(pub Mutex<Vec<(String, String)>>);
+
+#[async_trait]
+impl DeviceUsers for FakeUsers {
+    async fn users(&self, device: &str) -> Result<Vec<String>, PortError> {
+        Ok(locked(&self.0).iter().filter(|(on, _)| on == device).map(|(_, user)| user.clone()).collect())
+    }
+}
+
+/// The files the agent would write for `edit`, in the keys zendiloosd
+/// reads back.
+fn files_after(files: &mut Vec<NetworkdFile>, edit: &Edit) {
+    let netdev = |name: &str| format!("05-zendiloos-{name}.netdev");
+    let network = |name: &str| format!("05-zendiloos-{name}.network");
+    for gone in &edit.removed {
+        files.retain(|file| file.name != netdev(gone) && file.name != network(gone));
+    }
+    for device in &edit.devices {
+        let mut text = format!("# Members: {}\n[NetDev]\nName={}\n", device.members.join(" "), device.name);
+        match &device.kind {
+            DeviceKind::Bridge { stp } => text.push_str(&format!("Kind=bridge\n[Bridge]\nSTP={stp}\n")),
+            DeviceKind::Bond { mode } => {
+                text.push_str(&format!("Kind=bond\n[Bond]\nMode={}\n", mode.as_str()))
+            }
+            DeviceKind::Vlan { id, .. } => text.push_str(&format!("Kind=vlan\n[VLAN]\nId={id}\n")),
+        }
+        if let Some(mac) = &device.mac {
+            text.push_str(&format!("[NetDev]\nMACAddress={mac}\n"));
+        }
+        files.retain(|file| file.name != netdev(&device.name));
+        files.push(NetworkdFile { name: netdev(&device.name), text });
+    }
+    for link in &edit.links {
+        let settings = &link.settings;
+        let mut text = format!("[Match]\nName={}\n[Network]\n", settings.interface);
+        if let Some(master) = &link.port_of {
+            text.push_str(&format!("Bridge={master}\n"));
+        }
+        match settings.ipv4 {
+            Ipv4Setting::Dhcp { .. } => text.push_str("DHCP=ipv4\n"),
+            Ipv4Setting::Static { address, prefix, .. } => {
+                text.push_str(&format!("Address={address}/{prefix}\n"))
+            }
+            Ipv4Setting::Off => {}
+        }
+        if settings.ipv6 == Ipv6Setting::Automatic {
+            text.push_str("IPv6AcceptRA=yes\n");
+        }
+        for vlan in &link.vlans {
+            text.push_str(&format!("VLAN={vlan}\n"));
+        }
+        files.retain(|file| file.name != network(&settings.interface));
+        files.push(NetworkdFile { name: network(&settings.interface), text });
+    }
+    files.sort_by(|a, b| a.name.cmp(&b.name));
+}
+
 /// The digest [`FakeConfigurator::with_ifupdown`] gives its files.
 pub const DIGEST: &str = "0000000000000000000000000000000000000000000000000000000000000001";
 
@@ -48,7 +161,12 @@ pub const DIGEST: &str = "000000000000000000000000000000000000000000000000000000
 #[derive(Default)]
 pub struct FakeConfigurator {
     pub pending: Mutex<Option<PendingChange>>,
+    /// The settings of each interface changed on its own.
     pub applied: Mutex<Vec<InterfaceSettings>>,
+    /// Every change, as asked for.
+    pub changes: Mutex<Vec<Edit>>,
+    /// zendiloOS's files, as written; a change unconfirmed leaves them so.
+    pub files: Mutex<Vec<NetworkdFile>>,
     /// While there, ifupdown manages the network.
     pub ifupdown: Mutex<Option<IfupdownHost>>,
     pub network_manager: Mutex<bool>,
@@ -101,20 +219,25 @@ impl NetworkConfigurator for FakeConfigurator {
             network_manager,
             pending: locked(&self.pending).clone(),
             ifupdown,
+            files: locked(&self.files).clone(),
         })
     }
 
-    async fn apply(
+    async fn change(
         &self,
-        settings: &InterfaceSettings,
+        edit: &Edit,
         confirm_within_seconds: u16,
         _: &RequestContext,
     ) -> Result<(), ConfigureError> {
         if locked(&self.ifupdown).is_some() {
             return Err(ConfigureError::Refused("systemd-networkd does not manage the network here".into()));
         }
-        self.wait(Change::Interface(settings.interface.clone()), confirm_within_seconds)?;
-        locked(&self.applied).push(settings.clone());
+        self.wait(Change::of(&edit.subject), confirm_within_seconds)?;
+        if let crate::domain::Subject::Interface(_) = &edit.subject {
+            locked(&self.applied).extend(edit.links.first().map(|link| link.settings.clone()));
+        }
+        files_after(&mut locked(&self.files), edit);
+        locked(&self.changes).push(edit.clone());
         Ok(())
     }
 

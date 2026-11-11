@@ -1,10 +1,14 @@
 //! Network configuration against a fake host: the networkd directory,
 //! ifupdown's files and `/etc/resolv.conf` in a temporary directory,
-//! systemd-networkd's D-Bus API (busctl) and systemd (systemctl) replaced by
-//! scripts that record their arguments. systemctl keeps the units' state
-//! as files beside them: `networkd`, `networking` and `resolved` while those
-//! run, `ifupdown` while `networking.service` is enabled,
-//! `resolved-installed` while systemd-resolved is there.
+//! systemd-networkd's D-Bus API (busctl), systemd (systemctl) and transient
+//! units (systemd-run) replaced by scripts that record their arguments.
+//! systemctl keeps the units' state as files beside them: `networkd`,
+//! `networking` and `resolved` while those run, `ifupdown` while
+//! `networking.service` is enabled, `resolved-installed` while
+//! systemd-resolved is there. The host's links are the lines of `links`
+//! (name and index): systemd-networkd adds a device of a new `.netdev`
+//! file when it reloads, as it does, and `ip link delete` in a transient
+//! unit takes one away.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -14,8 +18,9 @@ use tempfile::TempDir;
 use zendiloos_agent::config::Tools;
 use zendiloos_agent::{Erasable, ErasePolicy, NetworkPaths, Operations, Paths};
 use zendiloos_agent_proto::{
-    ConfirmWithin, ErrorCode, FilesDigest, Ifupdown, InterfaceName, Ipv4Config, Ipv6Config, NameServers,
-    NetworkChange, NetworkConfig, Prefix, Request, Response, Role, TakeoverConfigs,
+    BondMode, ConfirmWithin, DeviceAction, ErrorCode, FilesDigest, Ifupdown, InterfaceName, Ipv4Config,
+    Ipv6Config, MacAddress, NameServers, Netdev, NetdevKind, NetworkChange, NetworkConfig, NetworkEdit,
+    PortOf, Prefix, Request, Response, Role, TakeoverConfigs, VlanId, Vlans,
 };
 
 /// What the Debian installer wrote for a card with DHCP.
@@ -77,17 +82,26 @@ impl Host {
              esac",
         );
         fs::write(root.join("networkd"), "").unwrap();
+        fs::write(root.join("links"), "enp1s0 2\nenp2s0 3\nenp3s0 4\n").unwrap();
         let tools = Tools {
             systemd_mount: "/bin/false".into(),
             umount: "/bin/false".into(),
             rmdir: "/bin/false".into(),
             systemctl,
-            // systemd-networkd knows enp1s0 only, as link 2, set up.
+            // systemd-networkd knows the links in `links`, set up, and
+            // makes the devices of new .netdev files when it reloads.
             busctl: script(
                 "busctl",
-                "case \"$5 $7\" in \"GetLinkByName enp1s0\") echo 'io 2 \"/org/freedesktop/network1/link/_32\"';; GetLinkByName*) exit 1;; esac\n\
+                "case \"$1 $5\" in\n\
+                 \"call GetLinkByName\") line=$(grep \"^$7 \" $R/links) || exit 1; i=${line#* }\n\
+                   echo \"io $i \\\"/org/freedesktop/network1/link/_3$i\\\"\" ;;\n\
+                 \"call Reload\") for f in $R/network/05-zendiloos-*.netdev; do [ -e \"$f\" ] || continue\n\
+                   n=$(sed -n 's/^Name=//p' \"$f\"); grep -q \"^$n \" $R/links || echo \"$n $(( $(wc -l < $R/links) + 2 ))\" >> $R/links\n\
+                   done ;;\n\
+                 esac\n\
                  [ \"$1\" = get-property ] && echo 's \"configured\"'\nexit 0",
             ),
+            ip: root.join("ip"),
             lsblk: any.clone(),
             smartctl: any.clone(),
             zpool: any.clone(),
@@ -106,7 +120,11 @@ impl Host {
             smbpasswd: any.clone(),
             timedatectl: any.clone(),
             sshd: any.clone(),
-            systemd_run: any.clone(),
+            // A transient unit deleting a link takes it off the host.
+            systemd_run: script(
+                "systemd-run",
+                "case \"$*\" in *\"link delete dev\"*) for last; do :; done; sed -i \"/^$last /d\" $R/links ;; esac",
+            ),
             docker: any.clone(),
             setsid: "/usr/bin/setsid".into(),
             openssl: "/bin/false".into(),
@@ -183,6 +201,21 @@ impl Host {
             .collect()
     }
 
+    fn links(&self) -> Vec<String> {
+        let links = fs::read_to_string(self.root.join("links")).unwrap_or_default();
+        links.lines().filter_map(|line| line.split(' ').next()).map(str::to_owned).collect()
+    }
+
+    /// Links deleted in transient units, by name.
+    fn deleted(&self) -> Vec<String> {
+        self.calls()
+            .iter()
+            .filter(|line| line.starts_with("systemd-run ") && line.contains(" link delete dev "))
+            .filter_map(|line| line.rsplit(' ').next())
+            .map(str::to_owned)
+            .collect()
+    }
+
     fn forget_calls(&self) {
         let _ = fs::remove_file(self.root.join("calls.log"));
     }
@@ -208,20 +241,118 @@ fn exists(path: &Path) -> bool {
     path.symlink_metadata().is_ok()
 }
 
-fn apply(address: &str, seconds: u16) -> Request {
-    Request::ApplyNetwork {
-        config: NetworkConfig {
-            interface: InterfaceName::parse("enp1s0").unwrap(),
-            ipv4: Ipv4Config::Static {
-                address: address.parse().unwrap(),
-                prefix: Prefix::new(24).unwrap(),
-                gateway: Some("192.168.1.1".parse().unwrap()),
-            },
-            ipv6: Ipv6Config::Automatic,
-            dns: NameServers::new(vec!["192.168.1.1".parse().unwrap()]).unwrap(),
+fn name(text: &str) -> InterfaceName {
+    InterfaceName::parse(text).unwrap()
+}
+
+fn fixed(interface: &str, address: &str) -> NetworkConfig {
+    NetworkConfig::addresses(
+        name(interface),
+        Ipv4Config::Static {
+            address: address.parse().unwrap(),
+            prefix: Prefix::new(24).unwrap(),
+            gateway: Some("192.168.1.1".parse().unwrap()),
         },
-        confirm_within: ConfirmWithin::seconds(seconds).unwrap(),
+        Ipv6Config::Automatic,
+        NameServers::new(vec!["192.168.1.1".parse().unwrap()]).unwrap(),
+    )
+}
+
+fn change(edit: NetworkEdit, seconds: u16) -> Request {
+    Request::ChangeNetwork { change: edit, confirm_within: ConfirmWithin::seconds(seconds).unwrap() }
+}
+
+/// enp1s0 with a static address, as an interface's settings change.
+fn apply(address: &str, seconds: u16) -> Request {
+    let edit = NetworkEdit {
+        change: NetworkChange::Interface { interface: name("enp1s0") },
+        netdevs: vec![],
+        removed: vec![],
+        links: vec![fixed("enp1s0", address)],
+    };
+    change(edit, seconds)
+}
+
+fn port(interface: &str, of: PortOf) -> NetworkConfig {
+    NetworkConfig {
+        port_of: Some(of),
+        ..NetworkConfig::addresses(
+            name(interface),
+            Ipv4Config::Off {},
+            Ipv6Config::Off,
+            NameServers::default(),
+        )
     }
+}
+
+fn dhcp(interface: &str) -> NetworkConfig {
+    NetworkConfig {
+        keep_up: true,
+        ..NetworkConfig::addresses(
+            name(interface),
+            Ipv4Config::Dhcp { request: Some("192.168.1.20".parse().unwrap()) },
+            Ipv6Config::Automatic,
+            NameServers::default(),
+        )
+    }
+}
+
+fn bridge_netdev(members: &[&str]) -> Netdev {
+    Netdev {
+        name: name("br0"),
+        kind: NetdevKind::Bridge { stp: false },
+        mac: Some(MacAddress::parse("52:54:00:12:34:56").unwrap()),
+        members: members.iter().map(|m| name(m)).collect(),
+    }
+}
+
+/// br0 over enp1s0, with enp1s0's settings.
+fn make_bridge() -> Request {
+    let edit = NetworkEdit {
+        change: NetworkChange::Device { device: name("br0"), action: DeviceAction::Made },
+        netdevs: vec![bridge_netdev(&["enp1s0"])],
+        removed: vec![],
+        links: vec![dhcp("br0"), port("enp1s0", PortOf::Bridge { name: name("br0") })],
+    };
+    change(edit, 120)
+}
+
+/// br0 removed again: enp1s0 gets its settings back.
+fn remove_bridge() -> Request {
+    let edit = NetworkEdit {
+        change: NetworkChange::Device { device: name("br0"), action: DeviceAction::Removed },
+        netdevs: vec![],
+        removed: vec![name("br0")],
+        links: vec![NetworkConfig { keep_up: false, ..dhcp("enp1s0") }],
+    };
+    change(edit, 120)
+}
+
+fn bond(mode: BondMode) -> Request {
+    let edit = NetworkEdit {
+        change: NetworkChange::Device { device: name("bond0"), action: DeviceAction::Made },
+        netdevs: vec![Netdev {
+            name: name("bond0"),
+            kind: NetdevKind::Bond { mode },
+            mac: Some(MacAddress::parse("52:54:00:00:00:02").unwrap()),
+            members: vec![name("enp2s0"), name("enp3s0")],
+        }],
+        removed: vec![],
+        links: vec![
+            NetworkConfig {
+                keep_up: true,
+                ..NetworkConfig::addresses(
+                    name("bond0"),
+                    Ipv4Config::Off {},
+                    Ipv6Config::Off,
+                    NameServers::default(),
+                )
+            },
+            port("enp2s0", PortOf::Bond { name: name("bond0") }),
+            port("enp3s0", PortOf::Bond { name: name("bond0") }),
+        ],
+    };
+    change(edit, 120)
 }
 
 async fn state(agent: &Operations) -> (bool, Option<NetworkChange>, Option<Ifupdown>) {
@@ -235,12 +366,12 @@ async fn state(agent: &Operations) -> (bool, Option<NetworkChange>, Option<Ifupd
 
 /// enp1s0 by DHCP, asking for the address it has, as zendiloosd sends it.
 fn take_over(digest: &FilesDigest) -> Request {
-    let config = NetworkConfig {
-        interface: InterfaceName::parse("enp1s0").unwrap(),
-        ipv4: Ipv4Config::Dhcp { request: Some("192.168.1.127".parse().unwrap()) },
-        ipv6: Ipv6Config::Automatic,
-        dns: NameServers::default(),
-    };
+    let config = NetworkConfig::addresses(
+        name("enp1s0"),
+        Ipv4Config::Dhcp { request: Some("192.168.1.127".parse().unwrap()) },
+        Ipv6Config::Automatic,
+        NameServers::default(),
+    );
     Request::TakeOverNetwork {
         configs: TakeoverConfigs::new(vec![config]).unwrap(),
         digest: digest.clone(),
@@ -260,14 +391,11 @@ async fn a_change_waits_for_confirmation_and_goes_back_if_none_comes() {
     assert_eq!(agent.execute(&apply("192.168.1.10", 120)).await, Response::Done);
     let written = host.file("05-zendiloos-enp1s0.network").unwrap();
     assert!(written.contains("Address=192.168.1.10/24"), "{written}");
-    assert!(
-        host.file("05-zendiloos-enp1s0.network.previous")
-            .unwrap()
-            .starts_with("# zendiloos: there was no file")
-    );
+    let record = host.root.join("network/zendiloos-change.json");
+    assert_eq!(fs::metadata(&record).unwrap().permissions().mode() & 0o777, 0o600);
     assert_eq!(
         host.networkd(),
-        ["GetLinkByName s enp1s0", "GetLinkByName s enp1s0", "Reload", "ReconfigureLink i 2"]
+        ["GetLinkByName s enp1s0", "Reload", "GetLinkByName s enp1s0", "ReconfigureLink i 2"]
     );
     let (managed, pending, ifupdown) = state(&agent).await;
     assert!(managed && ifupdown.is_none());
@@ -281,7 +409,7 @@ async fn a_change_waits_for_confirmation_and_goes_back_if_none_comes() {
     assert_eq!(code, ErrorCode::Conflict, "one change at a time");
 
     assert_eq!(agent.execute(&Request::ConfirmNetwork {}).await, Response::Done);
-    assert!(host.file("05-zendiloos-enp1s0.network.previous").is_none(), "confirmed: nothing to go back to");
+    assert!(!exists(&record), "confirmed: nothing to go back to");
     assert!(matches!(agent.execute(&Request::ConfirmNetwork {}).await, Response::Error { .. }));
 
     // The next change is not confirmed before the agent restarts: the
@@ -291,7 +419,20 @@ async fn a_change_waits_for_confirmation_and_goes_back_if_none_comes() {
     let _restarted = host.agent().await;
     let back = host.file("05-zendiloos-enp1s0.network").unwrap();
     assert!(back.contains("Address=192.168.1.10/24"), "{back}");
-    assert!(!exists(&host.root.join("network/05-zendiloos-enp1s0.network.previous")));
+    assert!(!exists(&record));
+}
+
+/// What an agent before changes of several files kept beside a file goes
+/// back as it did.
+#[tokio::test]
+async fn an_earlier_agents_previous_file_goes_back_at_the_start() {
+    let host = Host::new();
+    fs::write(host.root.join("network/05-zendiloos-enp1s0.network"), "new\n").unwrap();
+    fs::write(host.root.join("network/05-zendiloos-enp1s0.network.previous"), "old\n").unwrap();
+    let _agent = host.agent().await;
+    assert_eq!(host.file("05-zendiloos-enp1s0.network").as_deref(), Some("old\n"));
+    assert!(host.file("05-zendiloos-enp1s0.network.previous").is_none());
+    assert!(host.networkd().contains(&"ReconfigureLink i 2".to_owned()));
 }
 
 #[tokio::test]
@@ -312,8 +453,8 @@ async fn only_existing_interfaces_and_only_with_networkd() {
     let host = Host::new();
     let agent = host.agent().await;
     let mut other = apply("192.168.1.10", 30);
-    if let Request::ApplyNetwork { config, .. } = &mut other {
-        config.interface = InterfaceName::parse("eth9").unwrap();
+    if let Request::ChangeNetwork { change, .. } = &mut other {
+        change.links[0].interface = name("eth9");
     }
     assert!(matches!(agent.execute(&other).await, Response::Error { code: ErrorCode::Forbidden, .. }));
 
@@ -552,4 +693,294 @@ async fn a_takeover_needs_ifupdown_running_resolved_there_and_the_files_seen() {
     refused(agent.execute(&take_over(&seen)).await, "manages the network already");
     assert_eq!(host.read("etc-network/interfaces").as_deref(), Some(INTERFACES), "nothing changed");
     assert!(host.systemd().is_empty(), "{:?}", host.systemd());
+}
+
+/// A bridge over the card takes its settings; confirmed, it stays, also
+/// after a restart; Docker's chain follows each change.
+#[tokio::test]
+async fn a_bridge_is_made_over_the_card_and_kept_once_confirmed() {
+    let host = Host::new();
+    let agent = host.agent().await;
+    host.forget_calls();
+
+    assert_eq!(agent.execute(&make_bridge()).await, Response::Done);
+
+    let netdev = host.file("05-zendiloos-br0.netdev").unwrap();
+    assert!(
+        netdev.contains("# Members: enp1s0\n[NetDev]\nName=br0\nKind=bridge\nMACAddress=52:54:00:12:34:56\n")
+    );
+    let bridge = host.file("05-zendiloos-br0.network").unwrap();
+    assert!(bridge.contains("RequestAddress=192.168.1.20"), "{bridge}");
+    let card = host.file("05-zendiloos-enp1s0.network").unwrap();
+    assert!(card.contains("[Network]\nBridge=br0\nDHCP=no\n"), "{card}");
+    assert!(host.links().contains(&"br0".to_owned()), "made when systemd-networkd reloaded");
+    assert_eq!(
+        host.networkd(),
+        [
+            "GetLinkByName s br0",
+            "GetLinkByName s enp1s0",
+            "Reload",
+            "GetLinkByName s br0",
+            "ReconfigureLink i 5",
+            "GetLinkByName s enp1s0",
+            "ReconfigureLink i 2"
+        ]
+    );
+    assert!(host.systemd().contains(&"start zendiloos-docker-bridges.service".to_owned()));
+    let (_, pending, _) = state(&agent).await;
+    assert_eq!(pending, Some(NetworkChange::Device { device: name("br0"), action: DeviceAction::Made }));
+    let Response::NetworkState { files, .. } = agent.execute(&Request::NetworkState {}).await else {
+        panic!("no state")
+    };
+    let names: Vec<&str> = files.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["05-zendiloos-br0.netdev", "05-zendiloos-br0.network", "05-zendiloos-enp1s0.network"]);
+
+    assert_eq!(agent.execute(&Request::ConfirmNetwork {}).await, Response::Done);
+    drop(agent);
+    let _restarted = host.agent().await;
+    assert!(host.file("05-zendiloos-br0.netdev").is_some() && host.links().contains(&"br0".to_owned()));
+    assert!(host.deleted().is_empty());
+}
+
+/// Not confirmed: every file as it was, the bridge's link deleted (which
+/// systemd-networkd never does by itself), the card set up again; by the
+/// timer as after a restart.
+#[tokio::test]
+async fn an_unconfirmed_bridge_goes_with_its_link() {
+    let host = Host::new();
+    let agent = host.agent().await;
+    let mut made = make_bridge();
+    if let Request::ChangeNetwork { confirm_within, .. } = &mut made {
+        *confirm_within = ConfirmWithin::seconds(30).unwrap();
+    }
+    assert_eq!(agent.execute(&made).await, Response::Done);
+    drop(agent);
+    host.forget_calls();
+
+    let _restarted = host.agent().await;
+
+    for gone in ["05-zendiloos-br0.netdev", "05-zendiloos-br0.network", "05-zendiloos-enp1s0.network"] {
+        assert!(host.file(gone).is_none(), "{gone} stays");
+    }
+    assert!(!exists(&host.root.join("network/zendiloos-change.json")));
+    assert_eq!(host.deleted(), ["br0"]);
+    assert_eq!(host.links(), ["enp1s0", "enp2s0", "enp3s0"]);
+    let networkd = host.networkd();
+    assert!(networkd.contains(&"Reload".to_owned()) && networkd.contains(&"ReconfigureLink i 2".to_owned()));
+    assert!(host.systemd().contains(&"start zendiloos-docker-bridges.service".to_owned()));
+}
+
+/// Each place a change may stop at goes back from the record alone, and an
+/// undoing cut off is done again: the files as they were, the link gone.
+#[tokio::test]
+async fn a_change_goes_back_from_wherever_it_got_to() {
+    type Cut = fn(&Host);
+    let cuts: [(&str, Cut); 4] = [
+        ("right after the record", |host| {
+            for file in ["05-zendiloos-br0.netdev", "05-zendiloos-br0.network", "05-zendiloos-enp1s0.network"]
+            {
+                fs::remove_file(host.root.join("network").join(file)).unwrap();
+            }
+            fs::write(host.root.join("network/05-zendiloos-enp1s0.network"), "before\n").unwrap();
+            fs::write(host.root.join("links"), "enp1s0 2\nenp2s0 3\nenp3s0 4\n").unwrap();
+        }),
+        ("with the files written, before systemd-networkd reloaded", |host| {
+            fs::write(host.root.join("links"), "enp1s0 2\nenp2s0 3\nenp3s0 4\n").unwrap();
+        }),
+        ("applied", |_| {}),
+        ("halfway back, the link deleted already", |host| {
+            fs::write(host.root.join("network/05-zendiloos-enp1s0.network"), "before\n").unwrap();
+            fs::remove_file(host.root.join("network/05-zendiloos-br0.netdev")).unwrap();
+            fs::write(host.root.join("links"), "enp1s0 2\nenp2s0 3\nenp3s0 4\n").unwrap();
+        }),
+    ];
+    for (place, cut) in cuts {
+        let host = Host::new();
+        fs::write(host.root.join("network/05-zendiloos-enp1s0.network"), "before\n").unwrap();
+        let agent = host.agent().await;
+        assert_eq!(agent.execute(&make_bridge()).await, Response::Done, "{place}");
+        drop(agent);
+        cut(&host);
+
+        let _restarted = host.agent().await;
+        assert_eq!(host.file("05-zendiloos-enp1s0.network").as_deref(), Some("before\n"), "{place}");
+        assert!(host.file("05-zendiloos-br0.netdev").is_none(), "{place}");
+        assert!(host.file("05-zendiloos-br0.network").is_none(), "{place}");
+        assert_eq!(host.links(), ["enp1s0", "enp2s0", "enp3s0"], "{place}");
+        assert!(!exists(&host.root.join("network/zendiloos-change.json")), "{place}");
+        host.forget_calls();
+        let _again = host.agent().await;
+        assert!(host.deleted().is_empty(), "{place}: nothing left to do");
+    }
+}
+
+/// Removing a device deletes its files and its link and gives the card
+/// its settings back; not confirmed, the bridge is made again from its
+/// file as it was.
+#[tokio::test]
+async fn a_bridge_removed_comes_back_unless_confirmed() {
+    let host = Host::new();
+    let agent = host.agent().await;
+    assert_eq!(agent.execute(&make_bridge()).await, Response::Done);
+    assert_eq!(agent.execute(&Request::ConfirmNetwork {}).await, Response::Done);
+    let netdev = host.file("05-zendiloos-br0.netdev").unwrap();
+    host.forget_calls();
+
+    assert_eq!(agent.execute(&remove_bridge()).await, Response::Done);
+    assert!(
+        host.file("05-zendiloos-br0.netdev").is_none() && host.file("05-zendiloos-br0.network").is_none()
+    );
+    assert!(host.file("05-zendiloos-enp1s0.network").unwrap().contains("DHCP=ipv4"));
+    assert_eq!(host.deleted(), ["br0"]);
+    assert!(!host.links().contains(&"br0".to_owned()));
+    drop(agent);
+
+    let _restarted = host.agent().await;
+    assert_eq!(host.file("05-zendiloos-br0.netdev").as_deref(), Some(netdev.as_str()));
+    assert!(host.file("05-zendiloos-enp1s0.network").unwrap().contains("Bridge=br0"));
+    assert!(host.links().contains(&"br0".to_owned()), "made again when systemd-networkd reloaded");
+}
+
+/// systemd-networkd never changes a device it made: a bond whose mode
+/// changes is deleted and made anew; other members alone change nothing of
+/// the device.
+#[tokio::test]
+async fn a_bond_is_made_anew_when_its_mode_changes() {
+    let host = Host::new();
+    let agent = host.agent().await;
+    assert_eq!(agent.execute(&bond(BondMode::ActiveBackup)).await, Response::Done);
+    assert!(host.file("05-zendiloos-enp2s0.network").unwrap().contains("Bond=bond0"));
+    assert_eq!(agent.execute(&Request::ConfirmNetwork {}).await, Response::Done);
+    host.forget_calls();
+
+    let mut lacp = bond(BondMode::Lacp);
+    if let Request::ChangeNetwork { change, .. } = &mut lacp {
+        change.change = NetworkChange::Device { device: name("bond0"), action: DeviceAction::Changed };
+    }
+    assert_eq!(agent.execute(&lacp).await, Response::Done);
+    assert!(host.file("05-zendiloos-bond0.netdev").unwrap().contains("Mode=802.3ad"));
+    assert_eq!(host.deleted(), ["bond0"]);
+    assert!(host.links().contains(&"bond0".to_owned()), "made anew");
+    assert_eq!(agent.execute(&Request::ConfirmNetwork {}).await, Response::Done);
+
+    host.forget_calls();
+    let mut fewer = bond(BondMode::Lacp);
+    if let Request::ChangeNetwork { change, .. } = &mut fewer {
+        change.change = NetworkChange::Device { device: name("bond0"), action: DeviceAction::Changed };
+        change.netdevs[0].members.pop();
+        change.links[2] = NetworkConfig::addresses(
+            name("enp3s0"),
+            Ipv4Config::Off {},
+            Ipv6Config::Off,
+            NameServers::default(),
+        );
+    }
+    assert_eq!(agent.execute(&fewer).await, Response::Done);
+    assert!(host.deleted().is_empty(), "the same device");
+    assert!(host.file("05-zendiloos-enp3s0.network").unwrap().contains("ActivationPolicy=down"));
+    drop(agent);
+
+    // Not confirmed: the member is back in, the bond stays as it was.
+    let _restarted = host.agent().await;
+    assert!(host.file("05-zendiloos-enp3s0.network").unwrap().contains("Bond=bond0"));
+    assert!(host.deleted().is_empty() && host.links().contains(&"bond0".to_owned()));
+}
+
+/// A VLAN is made through its parent's file.
+#[tokio::test]
+async fn a_vlan_is_carried_by_its_parent() {
+    let host = Host::new();
+    let agent = host.agent().await;
+    let parent = NetworkConfig { vlans: Vlans::new(vec![name("enp1s0.10")]).unwrap(), ..dhcp("enp1s0") };
+    let vlan = NetworkConfig {
+        keep_up: true,
+        ..NetworkConfig::addresses(
+            name("enp1s0.10"),
+            Ipv4Config::Off {},
+            Ipv6Config::Off,
+            NameServers::default(),
+        )
+    };
+    let edit = NetworkEdit {
+        change: NetworkChange::Device { device: name("enp1s0.10"), action: DeviceAction::Made },
+        netdevs: vec![Netdev {
+            name: name("enp1s0.10"),
+            kind: NetdevKind::Vlan { id: VlanId::new(10).unwrap() },
+            mac: None,
+            members: vec![],
+        }],
+        removed: vec![],
+        links: vec![parent, vlan],
+    };
+    assert_eq!(agent.execute(&change(edit, 120)).await, Response::Done);
+    assert!(host.file("05-zendiloos-enp1s0.network").unwrap().contains("VLAN=enp1s0.10\n"));
+    assert!(host.file("05-zendiloos-enp1s0.10.netdev").unwrap().ends_with("[VLAN]\nId=10\n"));
+    let up = host.file("05-zendiloos-enp1s0.10.network").unwrap();
+    assert!(up.contains("RequiredForOnline=no") && !up.contains("ActivationPolicy"), "{up}");
+}
+
+#[tokio::test]
+async fn devices_are_zendiloos_own_and_ports_of_its_own_devices() {
+    let host = Host::new();
+    let agent = host.agent().await;
+    let refused = |response: Response, why: &str| match response {
+        Response::Error { code: ErrorCode::Forbidden, message } => {
+            assert!(message.contains(why), "{message}")
+        }
+        other => panic!("{why}: {other:?}"),
+    };
+    // A bridge made elsewhere is not removed, nor is a card.
+    fs::write(host.root.join("network/br9.netdev"), "[NetDev]\nName=br9\nKind=bridge\n").unwrap();
+    fs::write(host.root.join("links"), "enp1s0 2\nenp2s0 3\nenp3s0 4\nbr9 9\n").unwrap();
+    let mut other = remove_bridge();
+    if let Request::ChangeNetwork { change, .. } = &mut other {
+        change.removed = vec![name("br9")];
+    }
+    refused(agent.execute(&other).await, "br9 was not made by zendiloOS");
+    // A name in use is taken by no new device.
+    let mut taken = make_bridge();
+    if let Request::ChangeNetwork { change, .. } = &mut taken {
+        change.netdevs[0].name = name("enp2s0");
+        change.links = vec![port("enp1s0", PortOf::Bridge { name: name("enp2s0") })];
+    }
+    refused(agent.execute(&taken).await, "there is an interface enp2s0 already");
+    // A port only of a bridge or bond zendiloOS has.
+    let mut stray = apply("192.168.1.10", 30);
+    if let Request::ChangeNetwork { change, .. } = &mut stray {
+        change.links = vec![port("enp1s0", PortOf::Bridge { name: name("br9") })];
+    }
+    refused(agent.execute(&stray).await, "br9 is no bridge zendiloOS made");
+    let mut wrong = bond(BondMode::ActiveBackup);
+    if let Request::ChangeNetwork { change, .. } = &mut wrong {
+        change.links[1] = port("enp2s0", PortOf::Bridge { name: name("bond0") });
+    }
+    refused(agent.execute(&wrong).await, "bond0 is no bridge zendiloOS made");
+    let mut vlan = apply("192.168.1.10", 30);
+    if let Request::ChangeNetwork { change, .. } = &mut vlan {
+        change.links[0].vlans = Vlans::new(vec![name("enp1s0.7")]).unwrap();
+    }
+    refused(agent.execute(&vlan).await, "enp1s0.7 is no VLAN zendiloOS made");
+    for file in ["05-zendiloos-enp1s0.network", "05-zendiloos-enp2s0.netdev", "zendiloos-change.json"] {
+        assert!(host.file(file).is_none(), "{file}: nothing written");
+    }
+    assert!(host.networkd().iter().all(|call| call.starts_with("GetLinkByName")), "nothing applied");
+}
+
+/// A change systemd-networkd fails to apply goes back at once.
+#[tokio::test]
+async fn a_change_that_fails_goes_back_at_once() {
+    let host = Host::new();
+    fs::write(host.root.join("network/05-zendiloos-enp1s0.network"), "before\n").unwrap();
+    let agent = host.agent().await;
+    // Deleting a link fails: the bond made anew cannot be.
+    assert_eq!(agent.execute(&bond(BondMode::ActiveBackup)).await, Response::Done);
+    assert_eq!(agent.execute(&Request::ConfirmNetwork {}).await, Response::Done);
+    let before = host.file("05-zendiloos-bond0.netdev").unwrap();
+    let systemd_run = host.tools.systemd_run.clone();
+    fs::write(&systemd_run, "#!/bin/sh\necho 'Cannot find device' >&2\nexit 1\n").unwrap();
+    let failed = agent.execute(&bond(BondMode::Lacp)).await;
+    assert!(matches!(failed, Response::Error { .. }), "{failed:?}");
+    assert_eq!(host.file("05-zendiloos-bond0.netdev").as_deref(), Some(before.as_str()));
+    assert!(!exists(&host.root.join("network/zendiloos-change.json")));
+    assert_eq!(state(&agent).await.1, None);
 }

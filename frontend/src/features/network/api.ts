@@ -1,7 +1,12 @@
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
 
 import { api, unwrap } from '@/shared/api/client'
-import type { InterfaceSettingsInput } from '@/shared/api/types'
+import type {
+  DevicePlanInput,
+  DeviceUpdateInput,
+  InterfaceSettingsInput,
+  NewDeviceInput,
+} from '@/shared/api/types'
 
 /** Addresses from DHCP can change; looking again now and then is enough. */
 const REFRESH_MS = 30_000
@@ -42,6 +47,33 @@ export function useNetworkActions() {
     takeOver: async () => {
       try {
         return await unwrap(api.POST('/api/v1/network/takeover'))
+      } finally {
+        await refresh()
+      }
+    },
+    /** What making, changing or removing a device would do; changes nothing. */
+    plan: (body: DevicePlanInput) => unwrap(api.POST('/api/v1/network/devices/plan', { body })),
+    makeDevice: async (body: NewDeviceInput) => {
+      try {
+        return await unwrap(api.POST('/api/v1/network/devices', { body }))
+      } finally {
+        await refresh()
+      }
+    },
+    changeDevice: async (name: string, body: DeviceUpdateInput) => {
+      try {
+        return await unwrap(
+          api.PUT('/api/v1/network/devices/{name}', { params: { path: { name } }, body }),
+        )
+      } finally {
+        await refresh()
+      }
+    },
+    removeDevice: async (name: string) => {
+      try {
+        return await unwrap(
+          api.DELETE('/api/v1/network/devices/{name}', { params: { path: { name } } }),
+        )
       } finally {
         await refresh()
       }

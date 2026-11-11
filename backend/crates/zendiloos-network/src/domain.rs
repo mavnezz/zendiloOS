@@ -3,9 +3,14 @@
 
 use std::net::{IpAddr, Ipv4Addr};
 
+pub mod devices;
 pub mod ifupdown;
 mod settings;
 
+pub use devices::{
+    Becomes, BondMode, Configuration, Device, DeviceAction, DeviceKind, DeviceUpdate, Edit, Effect,
+    InvalidDevice, LinkFile, MAX_MEMBERS, NetworkdFile, NewDevice, Planning, Subject,
+};
 pub use ifupdown::{IfupdownFile, Refusal, TakeoverPlan, takeover_plan};
 pub use settings::{
     InterfaceSettings, InvalidSettings, Ipv4Setting, Ipv6Setting, MAX_DNS, is_interface_name,
@@ -64,6 +69,8 @@ pub struct Interface {
     pub mtu: u32,
     /// The bridge or bond it belongs to; its addresses are on that one.
     pub member_of: Option<String>,
+    /// A VLAN's: the interface it is on.
+    pub parent: Option<String>,
     pub addresses: Vec<Address>,
 }
 
@@ -81,7 +88,7 @@ impl Interface {
 }
 
 /// Docker names its bridges `docker0` and `br-` plus 12 hex digits.
-fn is_docker_bridge(name: &str) -> bool {
+pub(crate) fn is_docker_bridge(name: &str) -> bool {
     name == "docker0"
         || name
             .strip_prefix("br-")
@@ -188,6 +195,7 @@ mod tests {
             mac: None,
             mtu: 1500,
             member_of: None,
+            parent: None,
             addresses: vec![],
         }
     }

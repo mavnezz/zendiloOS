@@ -154,6 +154,7 @@ fn host(erasable: Erasable) -> Host {
         exportfs: script("exportfs", ""),
         smbcontrol: script("smbcontrol", ""),
         busctl: script("busctl", ""),
+        ip: "/bin/false".into(),
         timedatectl: script("timedatectl", ""),
         sshd: script("sshd", ""),
         systemd_run: script("systemd-run", ""),

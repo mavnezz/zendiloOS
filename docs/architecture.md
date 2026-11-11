@@ -89,6 +89,8 @@ The Debian package `zendiloos` (built with `just deb`) installs:
 | `/var/lib/zendiloos-acme/` | acme.sh's accounts, certificates and files for HTTP challenges, owned by the system user `zendiloos-acme`; a DNS provider's credentials only while it runs, in `/run/zendiloos-acme/` (4.11) |
 | `/run/zendiloos-removable/` | the places removable drives are mounted at, a folder each, named by the UUID of their file system |
 | `zendiloos-nfs-flush.service` | releases a share's NFS exports in the host's network namespace (3.3) |
+| `zendiloos-docker-bridges.service` | after every start of Docker and every change of the network's devices: lets frames within the bridges zendiloOS made pass Docker's `FORWARD` chain, its one rule in `DOCKER-USER` (4.12) |
+| `/etc/systemd/network/05-zendiloos-*` | the interfaces' settings and the bridges, bonds and VLANs zendiloOS made, written by the agent; while a change waits, its record `zendiloos-change.json` (6) |
 | `/run/zendiloos/api.sock` | `zendiloosd.socket`, `zendiloos:www-data 0660`: only nginx reaches the API |
 | `/run/zendiloos/agent.sock` | `zendiloos-agent.socket`, `root:zendiloos 0660`: only zendiloosd reaches the system agent |
 | `/run/zendiloos/files.sock` | `zendiloos-files.socket`, `root:zendiloos 0660`: the files agent, the same program with `--role files` |
@@ -152,7 +154,7 @@ tests in `zendiloos-architecture` catch, as part of `cargo test`.
 | `zendiloos-apps` | app catalogs and their sources, their apps filled in as templates of administrators' projects, apps installed the earlier way (4.9) | kernel, jobs |
 | `zendiloos-containers` | the Docker engine as administrators see it: containers, images, networks, volumes, Compose projects (administrators' own with their file in a share), use over time, newer images on a schedule, volumes backed up on a schedule and restored, moving Docker's data (4.9) | kernel, jobs, notify |
 | `zendiloos-updates` | updates of the NAS: Debian's packages and zendiloOS's releases from GitHub by channel, checked daily, installed on request (4.10) | kernel, notify |
-| `zendiloos-network` | interfaces, addresses, default routes, name servers; an interface's IP settings and name servers through systemd-networkd, changed with confirmation (6); the network taken over from ifupdown in a job, with confirmation (6); later the hostname | kernel, jobs |
+| `zendiloos-network` | interfaces, addresses, default routes, name servers; an interface's IP settings and name servers through systemd-networkd, and bridges, bonds and VLANs made, changed and removed, each change with confirmation (6); the network taken over from ifupdown in a job, with confirmation (6); later the hostname | kernel, jobs |
 | `zendiloos-certificates` | the ACME client plugin (acme.sh): accounts, challenges and certificates from Let's Encrypt, renewed daily; the web interface's ports and certificate, changed with confirmation (4.11) | kernel, jobs, notify |
 | `zendiloos-firewall` | the firewall: one ordered list of rules (interface, service or ports, source, allow or deny) and what happens when none matches, enforced by nftables for the NAS and the ports Docker publishes, changed with confirmation; services nobody reaches, told (4.12) | kernel, notify |
 | `zendiloos-vms` | virtual machines, a proof of concept: the plugin (libvirt and QEMU installed, their storage on a pool, the hardware check), VMs from an OS preset with their disk and an ISO copied from a share, made in a job, their state from libvirt and their consoles (4.13) | kernel, jobs |
@@ -246,7 +248,10 @@ Deliberate simplifications:
   (a share's Samba configuration through `ShareHost`). A context whose
   changes another must follow declares an observer port (Identity's
   `GroupObserver` and `AccountObserver`), which `zendiloos-infra` bridges
-  to the context that follows (Sharing); no broker.
+  to the context that follows (Sharing); no broker. A context that must ask
+  another before it acts declares a port in its own terms the same way
+  (Network's `DeviceUsers`: what is on a bridge that would go, answered
+  from the VMs' records).
 
 **Alternatives considered:**
 
@@ -420,7 +425,10 @@ simple to audit.
   `useradd`, `userdel`, `groupadd`, `groupdel`, `gpasswd`, `smbpasswd`,
   `testparm`, `exportfs`, `smbcontrol`, `sshd`, `docker`, `dockerd`,
   `setsid`, `openssl`, `nginx`, `nft`, `virsh` (and, in transient units,
-  `systemd-tmpfiles` and this binary as `copy-vm-iso`, 4.13).
+  `systemd-tmpfiles`, this binary as `copy-vm-iso`, 4.13, and `ip link
+  delete` for a network device zendiloOS made that goes, 6).
+  `zendiloos-docker-bridges.service`, a unit of the package, runs
+  `iptables` and `ip6tables` as this binary's `docker-bridges` (4.12).
 - **Reads** of fixed files where no program is needed: `/proc/mdstat`, and
   DMI's `sys_vendor` and `product_name` (`/sys/class/dmi/id`), which name
   the machine for the enclosure (5). Although they are world-readable, the
@@ -434,7 +442,10 @@ simple to audit.
 - **Files** only at fixed locations known to the agent code, written
   atomically (temporary file, `fsync`, `rename`), for example
   `/etc/samba/zendiloos.conf`, `/etc/exports.d/zendiloos.exports`,
-  `/etc/systemd/network/05-zendiloos-<interface>.network`; taking the
+  `/etc/systemd/network/05-zendiloos-<interface>.network` and, for a
+  bridge, bond or VLAN zendiloOS makes, `05-zendiloos-<name>.netdev`, with
+  the record of a change of several of them beside
+  (`zendiloos-change.json`, 6); taking the
   network over from ifupdown, also `/etc/network/interfaces` and
   `/etc/resolv.conf` (a link to systemd-resolved's stub), with the record
   of what they were in `/etc/network` (6). ifupdown's files are read only
@@ -457,8 +468,12 @@ simple to audit.
   keeps its export cache per network namespace, so releasing a share's
   exports before unmounting it starts `zendiloos-nfs-flush.service`
   (`exportfs -r`, `exportfs -f`). D-Bus is reached through `busctl`
-  (systemd-networkd's `Reload` and `ReconfigureLink`, a link's
-  `AdministrativeState`) and `timedatectl`.
+  (systemd-networkd's `Reload`, `GetLinkByName`, `DescribeLink` and
+  `ReconfigureLink`, a link's `AdministrativeState`) and `timedatectl`. systemd-networkd offers
+  no way to delete a link over D-Bus and the agent has no network of the
+  host's for rtnetlink: a device that goes is deleted in a transient unit
+  (`systemd-run`, `ip link delete dev <name>`, with `CAP_NET_ADMIN` as its
+  only capability), which runs in the host's namespace.
   **[Later]** zbus once operations need more, such as following a unit's
   state.
 - **Interpretation happens unprivileged.** The agent returns raw tool output;
@@ -1303,7 +1318,9 @@ TLS is rustls with ring and the system's certificate authorities
 - Virtual machines (4.13) widen nothing of the system agent's sandbox:
   `virsh` reaches libvirtd over its Unix socket, the domains' XML goes to
   `/etc/zendiloos/vms`, a zvol is made through `/dev/zfs`, `/dev/kvm` and
-  `/sys` are only looked at, and a console's socket is connected to, which
+  `/sys` are only looked at, the bridge a VM goes on is asked of
+  systemd-networkd over D-Bus (its own network namespace shows none of the
+  host's links), and a console's socket is connected to, which
   needs no write access to `/run`. What writes the volumes (an ISO copied
   or removed) runs in transient units that may write only `/volume<N>/@vms`.
   libvirtd and QEMU run outside, under libvirt's own confinement (AppArmor
@@ -1316,6 +1333,15 @@ TLS is rustls with ring and the system's certificate authorities
 - Validated types are the only form in which values reach a command line
   (`DiskName` accepts only `sda`, `nvme0n1` and the like: no paths, no `-`
   prefix).
+- Bridges, bonds and VLANs (6) widen nothing of the agent's sandbox:
+  their files go to `/etc/systemd/network` as interfaces' files do, named
+  only after names the protocol's `InterfaceName` allows (and none of
+  Docker's or a `veth`'s), MAC addresses and VLAN ids checked as they are
+  read; the agent removes or makes anew only devices of `.netdev` files
+  of its own, makes none whose name a link has, and lets an interface be a
+  port only of a bridge or bond, and carry only VLANs, of its own files. A
+  link is deleted in a transient unit that may do nothing else
+  (`CAP_NET_ADMIN`).
 - Taking the network over from ifupdown (6), the agent parses nothing: it
   hands ifupdown's files to zendiloosd as they are (only below
   `/etc/network`, never through a link, 256 KiB and 64 files at most) with
@@ -2315,7 +2341,12 @@ name: every bridge but the machine's own (those the network context finds
 with a member besides containers' `veth`s: a network card, a bond, a VM's
 `tap`), so also one Docker made after the rules were written or named
 otherwise (`com.docker.network.bridge.name`); containers on such a bridge
-still reach each other. A drop there is final; an accept never overrides
+still reach each other. Frames a bridge of the machine's own forwards
+between its ports (a VM's tap and the card) come through this chain too,
+once `br_netfilter` is loaded, with the bridge as both interfaces: they
+pass, as neither the accept for other bridges nor the drop matches a
+bridge listed as the machine's own, and one not listed yet (made since)
+meets that accept first. A drop there is final; an accept never overrides
 Docker's own drops. The agent has no network of its own (`PrivateNetwork`): `nft -c`
 checks the file in a transient unit, and `zendiloos-firewall.service`
 (`nft -f`, early at boot before `network-pre.target`, after Debian's
@@ -2323,6 +2354,42 @@ checks the file in a transient unit, and `zendiloos-firewall.service`
 `/etc/nftables.conf` flushes everything) loads it, reloaded after each
 change. Off, the file only
 removes the table; removing the package removes it too.
+
+**Docker and the machine's own bridges: the one place zendiloOS touches
+Docker's tables.** Debian 13's `docker.io` (26.1.5) loads `br_netfilter`
+as it starts (`modprobe bridge br_netfilter` while it manages iptables),
+which hands frames a bridge forwards between its ports to the IP
+firewall's hooks (`net.bridge.bridge-nf-call-iptables` and `-ip6tables`
+are 1 once the module is there); and whenever it has to switch IPv4
+forwarding on, as on a NAS that routes nothing, it sets the policy of
+iptables' `FORWARD` chain to `DROP` (also after a firewalld reload). Its
+IPv6 tables it leaves alone unless `ip6tables` is turned on in
+`daemon.json` (in 26 an experimental option; from 27 on by default). A
+frame from a VM's tap to the LAN on a bridge then meets Docker's chain,
+which has nothing for it, and is dropped; an accept in
+`inet zendiloos_firewall` cannot change that. Docker 28 added the daemon
+option `ip-forward-no-drop`, which Debian 13 does not have, and which would
+leave the policy open for everything forwarded, not only the bridges'.
+Docker keeps the chain `DOCKER-USER` for others' rules: `FORWARD` jumps to
+it first, Docker makes it if it is missing and never flushes or changes
+what is in it, and its documentation lets forwarding between interfaces
+pass there (`-i <if> -o <if> -j ACCEPT`). So `zendiloos-docker-bridges.service`
+(the agent's binary as `docker-bridges`) keeps exactly one rule in
+`DOCKER-USER`, a jump to a chain of zendiloOS's, `ZENDILOOS-BRIDGES`, which
+accepts what comes in on one of the bridges zendiloOS made and goes out on
+the same (`-i br0 -o br0 -j ACCEPT`), and nothing else: frames between two
+bridges, from a bridge to Docker's containers or the other way still meet
+Docker's rules. The chain is filled anew in one transaction
+(`iptables-restore --noflush`), for IPv4 and, where Docker made
+`DOCKER-USER` there too, IPv6; with no bridge of zendiloOS's left, the jump
+and the chain go, and Docker's tables are as Docker made them. It runs
+`iptables` as Debian chose it (`iptables-nft`), the same Docker runs. The
+unit is wanted by and part of `docker.service`, ordered after it, so it
+runs after every start and restart of Docker; the agent starts it after
+every change of the network's devices, their undoing, and as it starts;
+without Docker it does nothing. Removing the package removes the jump and
+the chain, as it removes the firewall's table. A bridge made otherwise
+(netplan, by hand) is its owner's to let through.
 
 **Changes go back unless confirmed**, as network and web server changes do:
 the file replaced is kept as `zendiloos.nft.previous` and returns after 90
@@ -2442,10 +2509,29 @@ connections leave from the NAS's own address as the NAS's sockets, through
 its firewall's rules for what goes out; nothing reaches the VM (no ports
 are forwarded). Or a Linux bridge of the machine's own (not Docker's
 `docker0` or `br-<id>`, not libvirt's `virbr…`), on which libvirt puts the
-VM's tap: the VM is on the LAN as a machine of its own. **[Open]** Docker
-loads `br_netfilter`, so frames bridged to a VM pass the firewall's forward
-chain; with a denying fallback (4.12) a VM on a bridge would need rules of
-its own, which the firewall does not offer yet.
+VM's tap: the VM is on the LAN as a machine of its own and gets its address
+from the LAN's DHCP server. Such a bridge is made on the Network page (6),
+over the card that connects the NAS to the LAN, which keeps the NAS's
+address; the wizard offers the bridges there are and, without one, points
+there. Which those are zendiloosd reads itself, with `ip` in the host's
+network namespace, as the Network page does (the agent has a network
+namespace of its own, whose `/sys/class/net` shows only its loopback):
+every bridge but Docker's (`docker0`, `br-` and twelve hex digits) and
+libvirt's (`virbr…`), also one without members made for VMs only. Defining
+a VM on a bridge, the agent checks again that it is one of the host's
+links and a bridge, asking systemd-networkd (`GetLinkByName`,
+`DescribeLink`'s kind and type); a link it does not know or describes as
+anything else is refused, and so is every bridge where systemd-networkd
+does not run (ifupdown, NetworkManager). A link it knows but does not
+describe is taken as it is, as libvirt refuses to start a VM on anything
+but a bridge. Frames between the VM and the LAN pass the firewall's forward chain
+(4.12) and, where Docker runs, its `FORWARD` chain through zendiloOS's rule
+in `DOCKER-USER` (4.12), for the bridges zendiloOS made. A bridge a VM is on
+(running or not) is not removed: the Network context asks through its port
+`DeviceUsers`, which `zendiloos-infra` answers from the VMs' records, and
+refuses with `device_in_use` naming the VMs. The firewall's rules do not
+filter what a VM on a bridge sends to the LAN or receives from it, only
+what reaches the NAS itself.
 
 **ISOs never come from a share.** QEMU must not reach the shares, and
 libvirt, which gives each file it attaches to QEMU's account while the VM
@@ -2508,7 +2594,8 @@ is made. Decided deliberately, as `deny.toml` asks of any other licence.
 second disk), changing or ejecting its ISO, snapshots and backups of its
 zvol, moving the storage to another pool, handing devices to a VM (the
 IOMMU), a TPM and Secure Boot with Microsoft's keys for Windows 11 and the
-virtio drivers for Windows, rules of the firewall for VMs on a bridge, what
+virtio drivers for Windows, rules of the firewall for VMs on a bridge (what
+is bridged to them is not filtered), what
 libvirt-guests does at a shutdown (Debian's default: guests shut down),
 and pools that hold VMs named in `pool_in_use`.
 
@@ -2555,14 +2642,14 @@ the interface and the agent deal with a single tool chain (`zpool`, `zfs`).
 | Migrations | forward only, embedded, transactional; before each migration a copy of the database in `/var/lib/zendiloos/backup/` | safe migrations without down scripts |
 | Configuration | static: `/etc/zendiloos/*.toml` (listen address, paths, log level, development flags); everything the admin manages lives in the database | |
 | System metrics | `sysinfo` for CPU, memory, processes, sensors; an own parser for `/proc/diskstats` | sysinfo does not cover storage specifics |
-| Network | systemd-networkd + systemd-resolved; NetworkManager is only shown. Per interface: IPv4 by DHCP, fixed (address, prefix, gateway) or off, IPv6 from router advertisements or off (both off: the interface switched off, `ActivationPolicy=down`), up to three name servers; an interface without a file of zendiloOS's (down, or never set up) is switched on the same way. The agent writes `/etc/systemd/network/05-zendiloos-<interface>.network` (before netplan's files), keeps the file it replaces as `….previous`, and has systemd-networkd reload and reconfigure the link over D-Bus (`busctl`: the agent's own network namespace has neither the host's links nor a working `networkctl`). DHCP names the card by its MAC address (`ClientIdentifier=mac`): systemd's default, a DUID from the machine ID, changes with every installation, and so do those of ifupdown's DHCP clients (dhcpcd's `duid`, dhclient's `-i`); and it asks for the address the card has (`RequestAddress=`), so a server that keyed the lease by another client's identifier hands it out again once that one released it. A change is kept only if confirmed within two minutes, from the new address if it changed; otherwise the previous file returns, by a timer in the agent, and at the agent's start should it or the machine restart first. One change at a time. **The installation ISO** hands the network to systemd-networkd and systemd-resolved at its end (`packaging/iso/network.sh`): a file for each interface Debian's installer set up in `/etc/network/interfaces` (DHCP, or the static address it was given), the others none, so they stay down; both enabled, `/etc/resolv.conf` a link to systemd-resolved's stub, which knows the name servers on the first boot; ifupdown keeps the loopback only. **A Debian with ifupdown** is taken over on request (`POST /network/takeover`, `system.manage`, audited as `network.take_over`), in a job: systemd-resolved installed if missing (4.10); zendiloosd reads `/etc/network/interfaces` and what it sources from `interfaces.d` (the agent hands them over with a digest) and translates each interface ifupdown brings up (`auto`, `allow-hotplug`) that is a wired card here: `inet dhcp`, `inet static` (address, netmask, gateway, `dns-nameservers`; without them the name servers in force), `inet6 auto` and `inet6 dhcp` (router advertisements). It refuses anything else, naming file, line and why, and then leaves everything as it is: bonds, bridges, VLANs, wireless, commands run on the way, search domains, mappings, other sources, cards brought up only by hand. The agent refuses a takeover if the files changed since; it writes a record of everything it changes as it was (`/etc/network/zendiloos-takeover.json`, root's alone: `interfaces`, `resolv.conf` as file or link, the interfaces' systemd-networkd files, whether systemd-networkd and systemd-resolved were enabled and running), then stops `networking.service` (leases released, addresses removed), leaves ifupdown the loopback, links `resolv.conf` to the stub and enables and starts systemd-resolved and systemd-networkd. Not confirmed within two minutes, or should the agent or the machine restart first, ifupdown gets everything back from the record, from wherever the takeover got to: systemd-networkd first drops the static addresses it set (they would outlive it and stop ifupdown from setting them), it and systemd-resolved are stopped and disabled as they were, the files return, `networking.service` is restarted, and the record goes last, so a revert cut off is done again at the next start. Confirmed, the record goes; `interfaces.zendiloos-previous` and `resolv.conf.zendiloos-previous` stay for people. What systemd-networkd set in the kernel for IPv6 (router advertisements taken in user space) stays until the next boot after a revert | declarative files the agent writes atomically; verified in the second test VM (`just vm-network-test`): a setting that cuts the VM off goes back by itself; the takeover in a throwaway VM made an ifupdown machine (`just vm-network-takeover-test`): kept once confirmed, given back unconfirmed and after the agent restarted; the ISO's switch by `just iso-network-test` and `just iso-test` |
+| Network | systemd-networkd + systemd-resolved; NetworkManager is only shown. Per interface: IPv4 by DHCP, fixed (address, prefix, gateway) or off, IPv6 from router advertisements or off (both off: the interface switched off, `ActivationPolicy=down`), up to three name servers; an interface without a file of zendiloOS's (down, or never set up) is switched on the same way. The agent writes `/etc/systemd/network/05-zendiloos-<interface>.network` (before netplan's files), after a record of every file a change touches as it was (`zendiloos-change.json` beside them, root's alone), and has systemd-networkd reload and reconfigure the link over D-Bus (`busctl`: the agent's own network namespace has neither the host's links nor a working `networkctl`). DHCP names the card by its MAC address (`ClientIdentifier=mac`): systemd's default, a DUID from the machine ID, changes with every installation, and so do those of ifupdown's DHCP clients (dhcpcd's `duid`, dhclient's `-i`); and it asks for the address the card has (`RequestAddress=`), so a server that keyed the lease by another client's identifier hands it out again once that one released it. A change is kept only if confirmed within two minutes, from the new address if it changed; otherwise every file returns as the record says, from wherever the change got to, by a timer in the agent, and at the agent's start should it or the machine restart first; the record goes last, so an undoing cut off is done again (a `….previous` file an earlier agent kept beside a file returns at the start too). One change at a time. **Bridges, bonds and VLANs** are made, changed and removed on the Network page (`POST /network/devices`, `PUT` and `DELETE /network/devices/{name}`, `system.manage`, audited as `network.device_make`, `network.device_change`, `network.device_remove`), each as one such change of several files: a `05-zendiloos-<name>.netdev` for the device and the `.network` files of the device, its members and its parent. A bridge has wired cards, and bonds and VLANs made here, as members (or none, for VMs only), STP off unless asked; a bond has wired cards (active-backup, 802.3ad/LACP or balance-alb; its members' links watched every 100 ms, LACP asked to tell every second and traffic spread by address and port); a VLAN is on a wired card, a bond or a bridge with an id from 1 to 4094. Members are free: in no other bridge or bond (by zendiloOS's files or the kernel's), carrying no VLAN; names are interface names the kernel takes (15 characters at most), none in use, none Docker's (`docker0`, `br-` and twelve hex digits) or a `veth`'s, which the firewall takes for containers'; nothing may end up on itself (a VLAN on a bridge among its own members), all checked before anything is written, and `POST /network/devices/plan` says beforehand what becomes of each interface. A bridge or bond takes the settings of the first member given that has any, which becomes its first member, and that member's MAC address (`MACAddress=` in the `.netdev`), so DHCP, by the MAC address and asking for the address the card had, keeps the NAS's address; the other members' settings go. Its members are noted in order in its `.netdev` (`# Members:`); removed, it gives its settings back to its first member, asking for the address it has now, and the other members are switched off, as are members taken out of one. A VLAN has settings of its own, none by default: a VLAN made never brings a second default route or other name servers that could take the NAS's confirmation away, and one carrying VMs needs no address; its parent keeps its settings and carries it (`VLAN=`). Devices zendiloOS made stay up without addresses (`RequiredForOnline=no`) rather than being switched off. systemd-networkd makes a new `.netdev`'s device when it reloads (a VLAN's when its parent is set up) but neither removes nor changes one it made: a device that goes, or whose bond mode or STP changes, is deleted in a transient unit (`ip link delete`, 3.3) and, if it stays, made anew from its file; undoing a change deletes the devices it made and has systemd-networkd make those it removed again. A device that carries a VLAN or is a member of another is removed last; a bridge a VM is on is not removed (`device_in_use`, 4.13). An interface's settings are changed as before; a member's are its device's, and a parent keeps its VLANs. Firewall rules that name a member see its traffic no longer: it comes in on the device. Bridges, bonds and VLANs not made by zendiloOS are shown with their members and parent and their IP settings changed, but neither changed otherwise nor removed. **The installation ISO** hands the network to systemd-networkd and systemd-resolved at its end (`packaging/iso/network.sh`): a file for each interface Debian's installer set up in `/etc/network/interfaces` (DHCP, or the static address it was given), the others none, so they stay down; both enabled, `/etc/resolv.conf` a link to systemd-resolved's stub, which knows the name servers on the first boot; ifupdown keeps the loopback only. **A Debian with ifupdown** is taken over on request (`POST /network/takeover`, `system.manage`, audited as `network.take_over`), in a job: systemd-resolved installed if missing (4.10); zendiloosd reads `/etc/network/interfaces` and what it sources from `interfaces.d` (the agent hands them over with a digest) and translates each interface ifupdown brings up (`auto`, `allow-hotplug`) that is a wired card here: `inet dhcp`, `inet static` (address, netmask, gateway, `dns-nameservers`; without them the name servers in force), `inet6 auto` and `inet6 dhcp` (router advertisements). It refuses anything else, naming file, line and why, and then leaves everything as it is: bonds, bridges, VLANs, wireless, commands run on the way, search domains, mappings, other sources, cards brought up only by hand. The agent refuses a takeover if the files changed since; it writes a record of everything it changes as it was (`/etc/network/zendiloos-takeover.json`, root's alone: `interfaces`, `resolv.conf` as file or link, the interfaces' systemd-networkd files, whether systemd-networkd and systemd-resolved were enabled and running), then stops `networking.service` (leases released, addresses removed), leaves ifupdown the loopback, links `resolv.conf` to the stub and enables and starts systemd-resolved and systemd-networkd. Not confirmed within two minutes, or should the agent or the machine restart first, ifupdown gets everything back from the record, from wherever the takeover got to: systemd-networkd first drops the static addresses it set (they would outlive it and stop ifupdown from setting them), it and systemd-resolved are stopped and disabled as they were, the files return, `networking.service` is restarted, and the record goes last, so a revert cut off is done again at the next start. Confirmed, the record goes; `interfaces.zendiloos-previous` and `resolv.conf.zendiloos-previous` stay for people. What systemd-networkd set in the kernel for IPv6 (router advertisements taken in user space) stays until the next boot after a revert | declarative files the agent writes atomically; verified in the second test VM (`just vm-network-test`): a setting that cuts the VM off goes back by itself; the takeover in a throwaway VM made an ifupdown machine (`just vm-network-takeover-test`): kept once confirmed, given back unconfirmed and after the agent restarted; bridges, bonds and VLANs in a throwaway VM with two spare cards (`just vm-network-bridge-test`): the NAS keeps its address over a bridge, one unconfirmed goes with its link, by the timer and as the agent starts, frames bridged to a stand-in for a VM pass Docker's FORWARD chain, a bond and a VLAN come up and go, the firewall's and Docker's tables as before; the ISO's switch by `just iso-network-test` and `just iso-test` |
 | Network discovery | Windows finds the NAS through WS-Discovery (`wsdd2`), macOS through Bonjour (Samba announces `_smb._tcp` through `avahi-daemon`); both recommended by the package. NetBIOS stays off | without them, clients only reach the NAS by address; `wsdd` itself is not in Debian 13 |
 | File services | SMB (Samba, with `wsdd2`) and NFS (`nfs-kernel-server`) are switched on and off in the control panel; off means stopped and disabled, so it stays off after a restart, while shares, exports and permissions stay. The workgroup and the oldest SMB version answered (2.0, 2.1 or 3; SMB1 never) are written as global settings at the top of `/etc/samba/zendiloos.conf`, which `smb.conf` includes at the end of `[global]`; both are applied with the shares in one agent request, and if the host refuses, the previous settings return | per-share protocols would multiply what can go wrong for little gain; FTP, rsync and WebDAV are not offered until there is a reason |
 | SSH | the SSH server as a service in the control panel (Terminal): on or off (off means stopped and disabled; open sessions stay, as `KillMode=process`), its port (22, or a free one from 1024; zendiloosd refuses a port another program listens on, read from `/proc/net/tcp`), and whether root and passwords may log in, each either set or left as the system has it. The settings go to `/etc/ssh/sshd_config.d/00-zendiloos.conf`, read before the other drop-ins, so they win; `sshd -t` checks them first and the previous file returns if it fails. On request a transient systemd timer turns SSH off again after up to a day; SSH is then enabled only until the next boot (`enable --runtime`), as the timer itself is gone after a restart, so a restart turns it off too. Who may log in is Debian's: the accounts of the interface have no shell | keys, users allowed to log in and a web terminal belong to Debian's configuration or later |
 | Time | time zone, network time on or off, up to four time servers (a drop-in of systemd-timesyncd; none: Debian's pool) or the clock set by hand, all through systemd-timedated (`timedatectl`); shown and set in the NAS's zone, not the browser's. Schedules follow a new zone within five minutes (`jiff` keeps the system zone that long), apps when they next start (they get `/etc/localtime`) | the agent may not set the clock itself (`ProtectClock`); timedated is what `timedatectl` and every desktop use |
 | Docker | Debian packages `docker.io` and `docker-compose`, installed as the App Center's Docker plugin (the package only suggests them) by apt in a unit of its own (4.10); apps are administrators' Compose projects (4.9) | security updates through Debian; Docker CE optional |
 | Packaging | `debian/` with debhelper (compat 13 plus `dh-sequence-installsysusers`), built in a `debian:trixie` container with Rust from `rustup` and Node.js 24 pinned by checksum | native maintainer scripts, `sysusers.d`, `tmpfiles.d`, `dh_installsystemd`; works on any host with Docker |
-| Test VM | `scripts/vm.sh` (`just vm …`): Debian 13 cloud image verified by SHA512, cloud-init, 4 SATA disks with emulated SMART and 1 NVMe disk, ports on 127.0.0.1 unless `ZENDILOOS_VM_LISTEN` or `ZENDILOOS_VM_BRIDGE` (the LAN) say otherwise; several VMs side by side (`ZENDILOOS_VM`) | the cloud kernel suffices for ZFS (DKMS with its headers); it has no USB, so removable drives come over SCSI with the removable bit |
+| Test VM | `scripts/vm.sh` (`just vm …`): Debian 13 cloud image verified by SHA512, cloud-init, 4 SATA disks with emulated SMART and 1 NVMe disk, ports on 127.0.0.1 unless `ZENDILOOS_VM_LISTEN` or `ZENDILOOS_VM_BRIDGE` (the LAN) say otherwise; several VMs side by side (`ZENDILOOS_VM`); spare network cards on a network of their own for bonds and VLANs (`ZENDILOOS_VM_EXTRA_NICS`) | the cloud kernel suffices for ZFS (DKMS with its headers); it has no USB, so removable drives come over SCSI with the removable bit |
 | Reproducibility | `rust-toolchain.toml`, `Cargo.lock`, `package-lock.json`, `SOURCE_DATE_EPOCH`, pinned build container; the installation ISO starts from Debian's netinst image, pinned by its SHA512 (`packaging/iso/netinst.env`); the appliance's images (phase 5) are to be built with mmdebstrap against a fixed snapshot.debian.org state, failing on any error | |
 | Licensing | Zendiloos code under Apache-2.0; the installation ISO adds only zendiloOS's package and the answers to Debian's netinst image, and Debian's packages come from its mirror with their copyright files. A package manifest/SBOM comes with the appliance's image (phase 5) | required when distributing a Debian-based image |
 | Quality | rustfmt, Clippy (`-D warnings` in CI), `unsafe_code = "forbid"` outside clearly bounded exceptions, `cargo deny`, ESLint, `vue-tsc --strict`, Vitest; coverage held by CI: backend 92 % of lines, every crate 90 % (the binaries' `main.rs` and zendiloosd's glue aside), contexts 93 %, domains 97 %; frontend 93 % of lines, its `.ts` logic 96 % (`scripts/coverage-check.sh`, `frontend/vite.config.ts`) | |

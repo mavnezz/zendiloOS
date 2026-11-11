@@ -531,6 +531,7 @@ mod tests {
             mac: None,
             mtu: 1500,
             member_of: None,
+            parent: None,
             addresses: address
                 .map(|(ip, dynamic)| Address {
                     ip: ip.parse().unwrap(),

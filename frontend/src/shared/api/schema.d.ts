@@ -2335,6 +2335,77 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/network/devices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Makes a bridge, bond or VLAN, with what that does to its members and
+         *     parent (see `POST /network/devices/plan`), as one change: unless it is
+         *     confirmed within two minutes (`POST /network/confirm`), every file goes
+         *     back and the device goes. Needs `system.manage`.
+         */
+        post: operations["make_device"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/network/devices/plan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * What making, changing or removing a device would do to each interface
+         *     it touches, checked as the change itself would be, without changing
+         *     anything. Needs `system.manage`.
+         */
+        post: operations["plan_device"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/network/devices/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Changes a bridge's or bond's members, a bond's mode or a bridge's STP
+         *     (the device is made anew for those two), as one change with
+         *     confirmation. Members that leave are switched off. Needs
+         *     `system.manage`.
+         */
+        put: operations["change_device"];
+        post?: never;
+        /**
+         * Removes a bridge, bond or VLAN zendiloOS made: a bridge or bond gives
+         *     its settings back to its first member, the other members are switched
+         *     off. Refused while a VM is on the bridge. As one change with
+         *     confirmation. Needs `system.manage`.
+         */
+        delete: operations["remove_device"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/network/interfaces/{name}": {
         parameters: {
             query?: never;
@@ -4313,6 +4384,26 @@ export interface components {
         };
         /** @enum {string} */
         BackupState: "running" | "succeeded" | "failed";
+        /** @description What becomes of an interface a change touches. */
+        Becomes: {
+            device: string;
+            dropped: boolean;
+            /** @enum {string} */
+            fate: "member";
+            moved: boolean;
+        } | {
+            /** @enum {string} */
+            fate: "settings";
+            settings: components["schemas"]["PlannedSettings"];
+        } | {
+            /** @enum {string} */
+            fate: "switched_off";
+        } | {
+            carries: boolean;
+            /** @enum {string} */
+            fate: "parent";
+            vlan: string;
+        };
         /** @enum {string} */
         BindingKind: "port" | "serial";
         /** @description An address or network the web interface refuses. */
@@ -4332,6 +4423,11 @@ export interface components {
              */
             until?: number | null;
         };
+        /**
+         * @description How a bond spreads its traffic over its members.
+         * @enum {string}
+         */
+        BondModeInput: "active_backup" | "lacp" | "balance_alb";
         /** @description An app as the store lists it. */
         CatalogApp: {
             categories: string[];
@@ -4777,11 +4873,48 @@ export interface components {
             /** @description What Docker mounts: a folder, a pin of one, or a volume's name. */
             source: string;
         };
+        /** @enum {string} */
+        DeviceActionKind: "made" | "changed" | "removed";
+        /** @enum {string} */
+        DeviceKindName: "bridge" | "bond" | "vlan";
         DeviceMapping: {
             container: string;
             host: string;
             /** @description `rwm`: read, write, make nodes. */
             permissions: string;
+        };
+        /** @description What a change of a device would do. */
+        DevicePlan: {
+            device?: components["schemas"]["NetworkDevice"] | null;
+            interfaces: components["schemas"]["InterfaceFate"][];
+        };
+        /** @description A change of a device whose plan is asked for. */
+        DevicePlanInput: {
+            /** @enum {string} */
+            action: "make";
+            device: components["schemas"]["NewDeviceInput"];
+        } | {
+            /** @enum {string} */
+            action: "change";
+            members: string[];
+            mode?: components["schemas"]["BondModeInput"] | null;
+            name: string;
+            stp?: boolean | null;
+        } | {
+            /** @enum {string} */
+            action: "remove";
+            name: string;
+        };
+        /** @description A bridge's or bond's members, a bond's mode or a bridge's STP. */
+        DeviceUpdateInput: {
+            /**
+             * @description All of them, in order: the first gets the settings back when it
+             *     goes.
+             */
+            members: string[];
+            mode?: components["schemas"]["BondModeInput"] | null;
+            /** @description A bridge's; left out: as it is. */
+            stp?: boolean | null;
         };
         DisableTwoFactorRequest: {
             /**
@@ -5555,6 +5688,10 @@ export interface components {
             prefix: number;
             scope: components["schemas"]["AddressScope"];
         };
+        InterfaceFate: {
+            becomes: components["schemas"]["Becomes"];
+            interface: string;
+        };
         /**
          * @description A language of the interface.
          * @enum {string}
@@ -5923,6 +6060,25 @@ export interface components {
              */
             row: number;
         };
+        /** @description A bridge, bond or VLAN zendiloOS made, as its files say. */
+        NetworkDevice: {
+            kind: components["schemas"]["DeviceKindName"];
+            /** @description Given at making it: its first member's. */
+            mac?: string | null;
+            /**
+             * @description A bridge's or bond's, in order: the first gets the settings back
+             *     when it goes.
+             */
+            members: string[];
+            mode?: components["schemas"]["BondModeInput"] | null;
+            name: string;
+            /** @description A VLAN's: the interface it is on, and its id. */
+            parent?: string | null;
+            /** @description A bridge's: whether it speaks the spanning tree protocol. */
+            stp?: boolean | null;
+            /** Format: int32 */
+            vlan_id?: number | null;
+        };
         /**
          * @description How the machine is connected: its interfaces (without the loopback and
          *     the plumbing of containers), default routes and name servers.
@@ -5947,6 +6103,8 @@ export interface components {
             /** Format: int32 */
             mtu: number;
             name: string;
+            /** @description A VLAN's: the interface it is on. */
+            parent?: string | null;
             state: components["schemas"]["InterfaceState"];
         };
         /**
@@ -5956,6 +6114,11 @@ export interface components {
         NetworkManagerKind: "networkd" | "ifupdown" | "network_manager" | "unknown";
         /** @description Whether the network can be changed here, and a change that waits. */
         NetworkSetup: {
+            /**
+             * @description The bridges, bonds and VLANs zendiloOS made: these can be changed
+             *     and removed.
+             */
+            devices: components["schemas"]["NetworkDevice"][];
             /**
              * @description systemd-networkd manages the network; otherwise it is only shown,
              *     or with ifupdown, taken over first.
@@ -5981,6 +6144,29 @@ export interface components {
              *     commands, search domains, …); while there is any, ifupdown stays.
              */
             refused: components["schemas"]["NotCarriedOver"][];
+        };
+        /** @description A bridge, bond or VLAN to make. */
+        NewDeviceInput: {
+            /** @enum {string} */
+            kind: "bridge";
+            members?: string[];
+            name: string;
+            /** @description Off by default. */
+            stp?: boolean;
+        } | {
+            /** @enum {string} */
+            kind: "bond";
+            members: string[];
+            mode: components["schemas"]["BondModeInput"];
+            name: string;
+        } | {
+            /** Format: int32 */
+            id: number;
+            /** @enum {string} */
+            kind: "vlan";
+            name: string;
+            parent: string;
+            settings?: components["schemas"]["InterfaceSettingsInput"] | null;
         };
         NewDockerProject: {
             /**
@@ -6198,7 +6384,11 @@ export interface components {
             settings: components["schemas"]["FirewallSettings"];
         };
         PendingNetworkChange: {
-            /** @description The interface whose settings changed; empty for a takeover. */
+            device?: components["schemas"]["DeviceActionKind"] | null;
+            /**
+             * @description The interface whose settings changed, or the device made, changed
+             *     or removed; empty for a takeover.
+             */
             interface: string;
             /**
              * Format: int64
@@ -6305,6 +6495,12 @@ export interface components {
         } | {
             /** @enum {string} */
             mode: "off";
+        };
+        /** @description An interface's settings as a change would set them. */
+        PlannedSettings: {
+            dns: string[];
+            ipv4: components["schemas"]["PlannedIpv4"];
+            ipv6: components["schemas"]["Ipv6Input"];
         };
         /** @description A ZFS pool; for pools zendiloOS created, also a volume. */
         Pool: {
@@ -13401,6 +13597,173 @@ export interface operations {
             };
             /** @description `refused`: nothing waits */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    make_device: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewDeviceInput"];
+            };
+        };
+        responses: {
+            /** @description Made; waits for confirmation. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NetworkSetup"];
+                };
+            };
+            /** @description `change_pending`, or `refused`: not managed by systemd-networkd, a name in use */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input`: the detail says why */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    plan_device: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DevicePlanInput"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DevicePlan"];
+                };
+            };
+            /** @description `device_in_use` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input`: the detail says why */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    change_device: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeviceUpdateInput"];
+            };
+        };
+        responses: {
+            /** @description Changed; waits for confirmation. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NetworkSetup"];
+                };
+            };
+            /** @description `change_pending`, `refused` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input`: no such device of zendiloOS's, members not free, … */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    remove_device: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed; waits for confirmation. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NetworkSetup"];
+                };
+            };
+            /** @description `device_in_use` (the detail names the VMs), `change_pending`, `refused` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input`: no device of zendiloOS's, a member or parent of another */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -1698,6 +1698,13 @@ const de: Messages = {
         'Bestätigen Sie es, sonst bekommt ifupdown das Netz in {seconds} Sekunden so zurück, wie es war.',
       elsewhere: 'Das NAS hat eine neue Adresse. Bestätigen Sie dort:',
       confirm: 'Neue Einstellungen behalten',
+      deviceTitle: {
+        made: '{name} ist angelegt',
+        changed: 'Die Änderungen an {name} sind aktiv',
+        removed: '{name} ist entfernt',
+      },
+      deviceHint:
+        'Bestätigen Sie es, sonst kehrt in {seconds} Sekunden alles zurück, wie es war: angelegte Geräte verschwinden, entfernte kommen wieder.',
     },
     kinds: {
       ethernet: 'Ethernet',
@@ -1744,6 +1751,83 @@ const de: Messages = {
       button: 'zendiloOS das Netz verwalten lassen',
       working: 'Übernimmt …',
       installing: 'Installiert systemd-resolved …',
+    },
+    add: {
+      button: 'Hinzufügen',
+      bridge: 'Bridge',
+      bond: 'Bond',
+      vlan: 'VLAN',
+    },
+    devices: {
+      members: 'Mitglieder: {members}',
+      noMembers: 'Keine Mitglieder',
+      onParent: 'Auf {parent}',
+      onParentId: 'Auf {parent}, VLAN {id}',
+      madeHere: 'Hier angelegt',
+      change: 'Mitglieder ändern',
+      remove: 'Entfernen',
+      modes: {
+        active_backup: 'Active-Backup',
+        lacp: '802.3ad (LACP)',
+        balance_alb: 'Adaptiver Lastausgleich (balance-alb)',
+      },
+      modeHints: {
+        active_backup:
+          'Eine Karte überträgt, eine andere springt ein, wenn sie ausfällt. Funktioniert mit jedem Switch.',
+        lacp: 'Der Switch bündelt die Karten: mehr Durchsatz und Ausfallsicherheit. Braucht einen verwalteten Switch, auf dem LACP für diese Ports eingerichtet ist.',
+        balance_alb:
+          'Der Verkehr in beide Richtungen verteilt sich auf die Karten, ohne Hilfe des Switches. Funktioniert mit jedem Switch.',
+      },
+    },
+    device: {
+      titles: {
+        bridge: 'Bridge hinzufügen',
+        bond: 'Bond hinzufügen',
+        vlan: 'VLAN hinzufügen',
+        change: '{name} ändern',
+        remove: '{name} entfernen',
+      },
+      hints: {
+        bridge:
+          'Eine Bridge verbindet ihre Mitglieder und virtuelle Maschinen zu einem Netz. Sie übernimmt die Einstellungen und die Adresse des ersten Mitglieds, das Einstellungen hat, damit das NAS seine Adresse behält.',
+        bond: 'Ein Bond fasst Netzwerkkarten zu einer Verbindung zusammen. Er übernimmt die Einstellungen des ersten Mitglieds, das Einstellungen hat, und die Hardwareadresse dieser Karte.',
+        vlan: 'Ein VLAN erreicht ein getaggtes Netz auf einer Karte, einem Bond oder einer Bridge. Es beginnt ohne Adresse und übernimmt so nie die Route, über die das NAS erreicht wird; geben Sie ihm hier oder später eine.',
+        change:
+          'Mitglieder, die Sie herausnehmen, werden ausgeschaltet. Eine Änderung des Modus oder von STP legt das Gerät kurz neu an.',
+        remove:
+          'Das erste Mitglied bekommt die Einstellungen zurück, die anderen Mitglieder werden ausgeschaltet. Eine virtuelle Maschine auf einer Bridge verhindert, dass sie entfernt wird.',
+        confirm:
+          'Alles gilt sofort. Bestätigen Sie binnen zwei Minuten, sonst kehrt alles zurück, wie es war.',
+      },
+      name: 'Name',
+      nameHint: 'Bis zu 15 Buchstaben, Ziffern, „-“, „_“ oder „.“.',
+      members: 'Mitglieder',
+      membersHint: 'Freie Netzwerkkarten sowie hier angelegte Bonds und VLANs.',
+      bondMembersHint: 'Freie Netzwerkkarten.',
+      noCandidates: 'Keine freie Karte.',
+      noMembersBridge: 'Ohne Mitglieder hängen nur virtuelle Maschinen an der Bridge.',
+      stp: 'Spanning Tree (STP)',
+      stpHint: 'Nur nötig, wo die Bridge mit anderen Switches eine Schleife bilden könnte.',
+      mode: 'Modus',
+      parent: 'Auf',
+      id: 'VLAN-ID',
+      idHint: 'Von 1 bis 4094, so wie der Switch das Netz taggt.',
+      plan: 'Was sich ändert',
+      planning: 'Ermittle, was sich ändert …',
+      firewallHint:
+        'Firewall-Regeln, die ein Mitglied nennen, sehen dessen Verkehr nicht mehr, er kommt jetzt über das Gerät: nennen Sie dort das Gerät.',
+      make: 'Hinzufügen',
+      apply: 'Übernehmen',
+      remove: 'Entfernen',
+    },
+    plan: {
+      moves: 'Wird Mitglied von {device}, das seine Einstellungen und Adresse übernimmt',
+      drops: 'Wird Mitglied von {device}; seine eigenen Einstellungen entfallen',
+      member: 'Wird Mitglied von {device}',
+      noAddress: 'Aktiv, ohne Adresse',
+      switchedOff: 'Scheidet aus und wird ausgeschaltet',
+      carries: 'Behält seine Einstellungen und trägt {vlan}',
+      releases: 'Behält seine Einstellungen, trägt {vlan} nicht mehr',
     },
   },
   settings: {
@@ -2613,7 +2697,9 @@ const de: Messages = {
         'Die VM erreicht das LAN und das Internet von der Adresse des NAS aus; nichts erreicht die VM.',
       bridge: 'Bridge {bridge}',
       bridgeHint: 'Die VM hängt wie eine eigene Maschine im LAN und bekommt dort ihre Adresse.',
-      noBridge: 'Das NAS hat keine eigene Bridge; eine VM im LAN braucht eine.',
+      noBridge:
+        'Das NAS hat keine eigene Bridge; eine VM im LAN braucht eine. Legen Sie sie auf der Netzwerkseite über der Karte an, mit der das NAS im LAN hängt: Die VM bekommt ihre Adresse dann vom DHCP-Server des LANs.',
+      toNetwork: 'Netzwerkseite öffnen',
       autostart: 'Die VM mit dem NAS starten',
       review: 'Übersicht',
       back: 'Zurück',
@@ -3240,6 +3326,8 @@ const de: Messages = {
     delivery_failed: 'Die Nachricht ging nicht hinaus',
     change_pending: 'Eine andere Änderung wartet auf Bestätigung.',
     not_carried_over: 'ifupdown richtet etwas ein, das zendiloOS nicht übernimmt',
+    device_in_use:
+      'Auf dieser Bridge sind virtuelle Maschinen; verschieben oder entfernen Sie sie zuerst',
     not_installed: 'Der SSH-Server ist nicht installiert.',
     port_in_use: 'Auf diesem Port lauscht schon ein anderes Programm.',
     address_blocked: 'Diese Adresse ist für die Weboberfläche gesperrt.',

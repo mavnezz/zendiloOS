@@ -7,6 +7,16 @@ case "$1" in
         if command -v nft >/dev/null 2>&1; then
             nft delete table inet zendiloos_firewall 2>/dev/null || true
         fi
+        # So does what lets frames within its bridges pass Docker's
+        # FORWARD chain: Docker's tables as Docker made them.
+        for tables in iptables ip6tables; do
+            command -v "$tables" >/dev/null 2>&1 || continue
+            while "$tables" -w 10 -t filter -C DOCKER-USER -j ZENDILOOS-BRIDGES 2>/dev/null; do
+                "$tables" -w 10 -t filter -D DOCKER-USER -j ZENDILOOS-BRIDGES || break
+            done
+            "$tables" -w 10 -t filter -F ZENDILOOS-BRIDGES 2>/dev/null || true
+            "$tables" -w 10 -t filter -X ZENDILOOS-BRIDGES 2>/dev/null || true
+        done
         ;;
     purge)
         # Generated at installation; the database in /var/lib/zendiloos is

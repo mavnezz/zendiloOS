@@ -88,6 +88,7 @@ esac
             smbpasswd: any.clone(),
             systemctl: any.clone(),
             busctl: any.clone(),
+            ip: "/bin/false".into(),
             timedatectl: any.clone(),
             sshd: any.clone(),
             systemd_run: any.clone(),

@@ -880,9 +880,11 @@ impl AgentTransport for SimulatedAgent {
                     pending: network.pending.clone(),
                     network_manager: false,
                     ifupdown,
+                    files: Vec::new(),
                 }
             }
-            Request::ApplyNetwork { config, confirm_within } => {
+            // Nothing is changed: the change only waits, as one would.
+            Request::ChangeNetwork { change, confirm_within } => {
                 let now = i64::try_from((self.clock)()).unwrap_or(i64::MAX);
                 let mut network = self.network.lock().unwrap_or_else(PoisonError::into_inner);
                 network.lapse(now);
@@ -892,9 +894,7 @@ impl AgentTransport for SimulatedAgent {
                     error(ErrorCode::Conflict, "a change waits for confirmation")
                 } else {
                     network.pending = Some(zendiloos_agent_proto::PendingNetwork {
-                        change: zendiloos_agent_proto::NetworkChange::Interface {
-                            interface: config.interface.clone(),
-                        },
+                        change: change.change.clone(),
                         revert_at: now + i64::from(confirm_within.get()),
                     });
                     Response::Done

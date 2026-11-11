@@ -8,9 +8,7 @@ use std::io::{Read, Write};
 use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
 
-use zendiloos_agent_proto::{
-    ErrorCode, InterfaceName, Request, Response, VmAction, VmId, VmNetwork, VmStorage,
-};
+use zendiloos_agent_proto::{ErrorCode, Request, Response, VmAction, VmId, VmNetwork, VmStorage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Power {
@@ -44,7 +42,6 @@ impl SimVms {
                 installed: self.installed,
                 cores: 8,
                 memory_bytes: 16 << 30,
-                bridges: vec![InterfaceName::parse("br0").unwrap_or_else(|_| unreachable!())],
                 storage: self.storage.clone(),
             },
             Request::EnableVms { .. } if !self.installed => not_installed(),

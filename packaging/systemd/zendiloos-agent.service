@@ -67,8 +67,14 @@ ExecStart=/usr/libexec/zendiloos/zendiloos-agent
 #   (systemd-run: umount, rmdir, this binary as `power-off-drive`, which
 #   writes to sysfs), all outside this sandbox, which only sees them;
 #   /run stays read-only here, so no mount of its own hides theirs.
-# - the network: an interface's settings go to /etc/systemd/network,
-#   which systemd-networkd reads again when asked over D-Bus (busctl);
+# - the network: an interface's settings, and the bridges, bonds and VLANs
+#   zendiloOS makes, go to /etc/systemd/network, which systemd-networkd
+#   reads again when asked over D-Bus (busctl); it makes new devices but
+#   never removes one, so the link of a device that goes is deleted in a
+#   transient unit (systemd-run, `ip link delete` with CAP_NET_ADMIN alone),
+#   in the host's network namespace; zendiloos-docker-bridges.service
+#   (this binary as `docker-bridges`) lets frames within zendiloOS's
+#   bridges pass Docker's FORWARD chain;
 #   taking it over from ifupdown changes /etc/network/interfaces and
 #   /etc/resolv.conf (a record of them in /etc/network) and has systemd
 #   stop networking.service and start systemd-networkd and
@@ -88,7 +94,9 @@ ExecStart=/usr/libexec/zendiloos/zendiloos-agent
 #   sandbox, runs QEMU and passt; the agent talks to it with virsh over
 #   its socket (AF_UNIX) and keeps each domain's XML in
 #   /etc/zendiloos/vms; a VM's disk is a zvol (/dev/zfs, as for pools);
-#   /dev/kvm, /proc/cpuinfo and /sys are only looked at. ISOs are copied
+#   /dev/kvm, /proc/cpuinfo and /sys are only looked at, and whether a
+#   VM's bridge is a bridge of the host's is asked of systemd-networkd over
+#   D-Bus (busctl), as this sandbox sees none of the host's links. ISOs are copied
 #   from a share and removed again by transient units (systemd-run, this
 #   binary as copy-vm-iso, and rm) that may write only the VMs' folder; the
 #   consoles' folder is made by systemd-tmpfiles in one. A console is

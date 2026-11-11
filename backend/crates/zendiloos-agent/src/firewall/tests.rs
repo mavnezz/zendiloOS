@@ -199,6 +199,43 @@ fn a_bridge_docker_made_since_or_named_otherwise_is_kept_from_outside() {
     assert!(!forward.contains("oifname { \"docker0\" }"), "no list of names known when written: {forward}");
 }
 
+/// A frame a bridge of the machine's own forwards between its ports (br0
+/// in and out, as `br_netfilter` hands it over) matches nothing that drops
+/// it after the jump: neither while br0 is listed as the machine's own nor
+/// before it is, with any fallback.
+#[test]
+fn frames_within_the_machines_own_bridge_pass() {
+    for (own, fallback) in
+        [(true, FirewallVerdict::Drop), (false, FirewallVerdict::Drop), (true, FirewallVerdict::Accept)]
+    {
+        let mut lan = config(vec![], fallback);
+        if own {
+            lan.own_bridges = vec![InterfaceName::parse("br0").unwrap()];
+        }
+        let text = ruleset(Some(&lan), Phase::Kept);
+        let forward = chain(&text, "forward");
+        let rules: Vec<&str> = forward[forward.find("ct status dnat jump published").expect("the jump")..]
+            .lines()
+            .skip(1)
+            .map(str::trim)
+            .filter(|line| !line.starts_with('#') && !line.is_empty() && *line != "}")
+            .collect();
+        // The first rule that matches br0 → br0 decides.
+        let decides = rules.iter().find(|rule| {
+            let from_other = rule.starts_with("meta iifkind \"bridge\"") && !rule.contains("\"br0\"");
+            let to_other = rule.starts_with("meta oifkind \"bridge\"") && !rule.contains("\"br0\"");
+            from_other || to_other
+        });
+        match decides {
+            Some(rule) => assert!(rule.ends_with(" accept"), "own {own}: {rule} in\n{forward}"),
+            None => assert!(
+                forward.contains("policy accept;"),
+                "own {own}: falls through to the policy\n{forward}"
+            ),
+        }
+    }
+}
+
 /// While a change waits, what others send on connections opened before it
 /// meets the rules (a browser's open HTTP/2 connection carries its
 /// confirmation); answers to the NAS's own connections still pass at once.

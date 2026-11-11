@@ -29,6 +29,7 @@ const CODES = [
   'would_lock_out',
   'firewall_failed',
   'volume_in_use',
+  'device_in_use',
   'volume_busy',
   'containers_held',
   'plan_paused',

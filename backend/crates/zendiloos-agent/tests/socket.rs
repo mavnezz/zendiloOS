@@ -83,6 +83,7 @@ impl Agent {
             zfs: script("zfs", "echo '{\"datasets\": {}}'"),
             sgdisk: script("sgdisk", ""),
             busctl: script("busctl", ""),
+            ip: "/bin/false".into(),
             timedatectl: script("timedatectl", ""),
             sshd: script("sshd", ""),
             systemd_run: script("systemd-run", ""),

@@ -7,7 +7,8 @@ use zendiloos_jobs::{Job, JobError, Jobs};
 use zendiloos_kernel::{Actor, AuditEntry, AuditLog, Clock, Outcome, PortError, RequestContext, Timestamp};
 
 use crate::domain::{
-    IfupdownFile, InterfaceSettings, InvalidSettings, Ipv4Setting, Network, Refusal, TakeoverPlan,
+    Configuration, Device, DeviceAction, DeviceUpdate, Edit, IfupdownFile, InterfaceSettings, InvalidDevice,
+    InvalidSettings, Ipv4Setting, Network, NetworkdFile, NewDevice, Planning, Refusal, Subject, TakeoverPlan,
     takeover_plan,
 };
 
@@ -37,6 +38,18 @@ pub enum Change {
     Interface(String),
     /// The network, taken over from ifupdown: the interfaces set up.
     Takeover(Vec<String>),
+    /// A bridge, bond or VLAN made, changed or removed.
+    Device(String, DeviceAction),
+}
+
+impl Change {
+    /// What a change of `subject` is, while it waits.
+    pub fn of(subject: &Subject) -> Self {
+        match subject {
+            Subject::Interface(interface) => Self::Interface(interface.clone()),
+            Subject::Device(device, action) => Self::Device(device.clone(), *action),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,6 +80,8 @@ pub struct HostNetwork {
     pub pending: Option<PendingChange>,
     /// Not managed: ifupdown's files, where it is enabled.
     pub ifupdown: Option<IfupdownHost>,
+    /// zendiloOS's systemd-networkd files as they are.
+    pub files: Vec<NetworkdFile>,
 }
 
 /// Whether the network can be changed here, and a change that waits.
@@ -78,6 +93,8 @@ pub struct NetworkSetup {
     pub pending: Option<PendingChange>,
     /// Where ifupdown manages the network: what taking it over would do.
     pub takeover: Option<Takeover>,
+    /// The bridges, bonds and VLANs zendiloOS made, by name.
+    pub devices: Vec<Device>,
 }
 
 /// Taking the network over from ifupdown, as it would go now.
@@ -101,6 +118,11 @@ pub enum ConfigureError {
     Pending,
     #[error(transparent)]
     Invalid(#[from] InvalidSettings),
+    #[error(transparent)]
+    InvalidDevice(#[from] InvalidDevice),
+    /// What uses a bridge that would go: VMs, by name.
+    #[error("in use by {}", .0.join(", "))]
+    InUse(Vec<String>),
     /// ifupdown sets up what a takeover would not carry over.
     #[error("not carried over: {}", refusals(.0))]
     NotCarriedOver(Vec<Refusal>),
@@ -119,9 +141,11 @@ pub fn refusals(refused: &[Refusal]) -> String {
 pub trait NetworkConfigurator: Send + Sync {
     async fn state(&self, context: &RequestContext) -> Result<HostNetwork, PortError>;
 
-    async fn apply(
+    /// Writes what `edit` says as one change: devices made, changed or
+    /// removed, interfaces' files.
+    async fn change(
         &self,
-        settings: &InterfaceSettings,
+        edit: &Edit,
         confirm_within_seconds: u16,
         context: &RequestContext,
     ) -> Result<(), ConfigureError>;
@@ -141,6 +165,22 @@ pub trait NetworkConfigurator: Send + Sync {
     ) -> Result<(), ConfigureError>;
 
     async fn confirm(&self, context: &RequestContext) -> Result<(), ConfigureError>;
+}
+
+/// What uses a device and would lose its network were it removed, asked of
+/// the contexts that put things on bridges (the VMs).
+#[async_trait]
+pub trait DeviceUsers: Send + Sync {
+    /// The names of what uses `device`; none: it may go.
+    async fn users(&self, device: &str) -> Result<Vec<String>, PortError>;
+}
+
+/// A bridge, bond or VLAN to make, change or remove.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeviceRequest {
+    Make(NewDevice),
+    Change(DeviceUpdate),
+    Remove(String),
 }
 
 /// Query: interfaces, addresses, default routes and name servers.
@@ -167,6 +207,7 @@ pub const CONFIRM_WITHIN_SECONDS: u16 = 120;
 pub struct NetworkPorts {
     pub source: Arc<dyn NetworkSource>,
     pub configurator: Arc<dyn NetworkConfigurator>,
+    pub users: Arc<dyn DeviceUsers>,
     pub jobs: Jobs,
     pub audit: Arc<dyn AuditLog>,
     pub clock: Arc<dyn Clock>,
@@ -184,7 +225,8 @@ fn job_error(error: ConfigureError) -> JobError {
     let code = match &error {
         ConfigureError::Refused(_) => "refused",
         ConfigureError::Pending => "change_pending",
-        ConfigureError::Invalid(_) => "invalid_input",
+        ConfigureError::Invalid(_) | ConfigureError::InvalidDevice(_) => "invalid_input",
+        ConfigureError::InUse(_) => "device_in_use",
         ConfigureError::NotCarriedOver(_) => "not_carried_over",
         ConfigureError::Port(_) => "agent_failed",
     };
@@ -234,7 +276,8 @@ impl ConfigureNetwork {
             }
             _ => None,
         };
-        Ok(NetworkSetup { managed: host.managed, manager, pending: host.pending, takeover })
+        let devices = Configuration::read(&host.files).devices;
+        Ok(NetworkSetup { managed: host.managed, manager, pending: host.pending, takeover, devices })
     }
 
     pub async fn apply(
@@ -244,16 +287,78 @@ impl ConfigureNetwork {
         request: &RequestContext,
     ) -> Result<NetworkSetup, ConfigureError> {
         let mut settings = settings.checked()?;
+        let network = self.ports.source.network().await;
         if let Ipv4Setting::Dhcp { keep } = &mut settings.ipv4 {
             // The address DHCP gave it, asked for again: it stays where the
             // server agrees, also once the client's identity changed.
-            let network = self.ports.source.network().await.ok();
-            *keep = network.and_then(|network| network.dynamic_address(&settings.interface));
+            *keep = network.as_ref().ok().and_then(|network| network.dynamic_address(&settings.interface));
         }
-        let applied = self.ports.configurator.apply(&settings, CONFIRM_WITHIN_SECONDS, request).await;
+        let interface = settings.interface.clone();
+        let applied = async {
+            // The VLANs on it stay; a member's settings are its device's.
+            let host = self.ports.configurator.state(request).await?;
+            let configuration = Configuration::read(&host.files);
+            let network = network.unwrap_or_default();
+            let edit = Planning { network: &network, configuration: &configuration }.settings(settings)?;
+            self.ports.configurator.change(&edit, CONFIRM_WITHIN_SECONDS, request).await
+        }
+        .await;
         let outcome = if applied.is_ok() { Outcome::Success } else { Outcome::Failure };
-        self.audit("network.apply", outcome, &settings.interface, actor, request).await;
+        self.audit("network.apply", outcome, &interface, actor, request).await;
         applied?;
+        Ok(self.setup(request).await?)
+    }
+
+    /// What a bridge, bond or VLAN made, changed or removed would do,
+    /// checked, without doing it: the page shows what becomes of each
+    /// interface before it is asked for.
+    pub async fn plan(
+        &self,
+        device: DeviceRequest,
+        request: &RequestContext,
+    ) -> Result<Edit, ConfigureError> {
+        let host = self.ports.configurator.state(request).await?;
+        let configuration = Configuration::read(&host.files);
+        let network = self.ports.source.network().await?;
+        let planning = Planning { network: &network, configuration: &configuration };
+        Ok(match device {
+            DeviceRequest::Make(new) => planning.make(new)?,
+            DeviceRequest::Change(update) => planning.change(update)?,
+            DeviceRequest::Remove(name) => {
+                let users = self.ports.users.users(&name).await?;
+                if !users.is_empty() {
+                    return Err(ConfigureError::InUse(users));
+                }
+                planning.remove(&name, &users)?
+            }
+        })
+    }
+
+    /// Makes, changes or removes a bridge, bond or VLAN as [`Self::plan`]
+    /// says, with what that does to its members and parent, as one change
+    /// that goes back unless confirmed within two minutes.
+    pub async fn device(
+        &self,
+        device: DeviceRequest,
+        actor: &Actor,
+        request: &RequestContext,
+    ) -> Result<NetworkSetup, ConfigureError> {
+        let (action, name) = match &device {
+            DeviceRequest::Make(new) => ("network.device_make", new.name.clone()),
+            DeviceRequest::Change(update) => ("network.device_change", update.name.clone()),
+            DeviceRequest::Remove(name) => ("network.device_remove", name.clone()),
+        };
+        let done = async {
+            if self.ports.configurator.state(request).await?.pending.is_some() {
+                return Err(ConfigureError::Pending);
+            }
+            let edit = self.plan(device, request).await?;
+            self.ports.configurator.change(&edit, CONFIRM_WITHIN_SECONDS, request).await
+        }
+        .await;
+        let outcome = if done.is_ok() { Outcome::Success } else { Outcome::Failure };
+        self.audit(action, outcome, &name, actor, request).await;
+        done?;
         Ok(self.setup(request).await?)
     }
 
@@ -315,7 +420,7 @@ impl ConfigureNetwork {
         let confirmed = self.ports.configurator.confirm(request).await;
         let outcome = if confirmed.is_ok() { Outcome::Success } else { Outcome::Failure };
         let target = match pending.map(|p| p.change) {
-            Some(Change::Interface(interface)) => interface,
+            Some(Change::Interface(interface) | Change::Device(interface, _)) => interface,
             Some(Change::Takeover(_)) => "ifupdown".into(),
             None => String::new(),
         };

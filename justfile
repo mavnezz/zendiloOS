@@ -280,6 +280,10 @@ vm-network-test:
 vm-network-takeover-test:
     scripts/vm-network-takeover-test.sh
 
+# Bridges, bonds and VLANs in a throwaway VM (ZENDILOOS_VM=3) started with two spare cards (ZENDILOOS_VM_EXTRA_NICS=2): kept once confirmed, gone back with their links when not, frames bridged past Docker's FORWARD chain, the firewall intact
+vm-network-bridge-test:
+    scripts/vm-network-bridge-test.sh
+
 # An older package set up and in use, then the newest over it (see the script)
 [positional-arguments]
 vm-upgrade-test *args:

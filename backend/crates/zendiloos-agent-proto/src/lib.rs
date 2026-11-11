@@ -59,10 +59,12 @@ pub use firewall::{
 };
 pub use framing::{FrameError, read_message, write_message};
 pub use network::{
-    ConfirmWithin, FilesDigest, Ifupdown, IfupdownFile, InterfaceName, InvalidConfirmWithin,
-    InvalidFilesDigest, InvalidInterfaceName, InvalidNameServers, InvalidPrefix, InvalidTakeoverConfigs,
-    Ipv4Config, Ipv6Config, NameServers, NetworkChange, NetworkConfig, PendingNetwork, Prefix,
-    TakeoverConfigs,
+    BondMode, ConfirmWithin, DeviceAction, FilesDigest, Ifupdown, IfupdownFile, InterfaceName,
+    InvalidConfirmWithin, InvalidFilesDigest, InvalidInterfaceName, InvalidMacAddress, InvalidNameServers,
+    InvalidNetdev, InvalidNetworkConfig, InvalidNetworkEdit, InvalidPrefix, InvalidTakeoverConfigs,
+    InvalidVlanId, InvalidVlans, Ipv4Config, Ipv6Config, MacAddress, NameServers, Netdev, NetdevKind,
+    NetworkChange, NetworkConfig, NetworkEdit, NetworkdFile, PendingNetwork, PortOf, Prefix, TakeoverConfigs,
+    VlanId, Vlans,
 };
 pub use packages::{
     InvalidReleasePackage, PackageReport, PackageRun, PackageRunState, PackageTask, ReleaseChannel,
@@ -500,11 +502,15 @@ pub enum Request {
     /// to be confirmed, and where it does not, what does. Answers
     /// [`Response::NetworkState`].
     NetworkState {},
-    /// Writes `config` as the interface's systemd-networkd file and applies
-    /// it; unless [`Request::ConfirmNetwork`] comes within `confirm_within`,
-    /// the old file returns (also after a restart). One change at a time.
-    ApplyNetwork {
-        config: NetworkConfig,
+    /// Writes the systemd-networkd files `change` names (an interface's
+    /// settings; a bridge, bond or VLAN made, changed or removed with what
+    /// that changes of its members and parent), removes the files and
+    /// links of devices that go, and applies it all; unless
+    /// [`Request::ConfirmNetwork`] comes within `confirm_within`, every
+    /// file returns as it was and the devices it made go (also after a
+    /// restart). One change at a time.
+    ChangeNetwork {
+        change: NetworkEdit,
         confirm_within: ConfirmWithin,
     },
     /// Takes the network over from ifupdown: `configs` written as
@@ -541,7 +547,8 @@ pub enum Request {
     },
     /// What the machine offers virtual machines: KVM, the CPU's
     /// virtualisation, the IOMMU, whether libvirt and QEMU are installed,
-    /// cores, memory, bridges, and where the VMs' dataset is. Answers
+    /// cores, memory, and where the VMs' dataset is (the bridges VMs may
+    /// go on zendiloosd reads itself, 4.13). Answers
     /// [`Response::VmHost`].
     VmHost {},
     /// Puts the VMs' storage on a pool zendiloos created: the dataset
@@ -986,7 +993,7 @@ impl Request {
             Request::ProjectLogs { .. } => "project_logs",
             Request::ProjectFiles { .. } => "project_files",
             Request::NetworkState {} => "network_state",
-            Request::ApplyNetwork { .. } => "apply_network",
+            Request::ChangeNetwork { .. } => "change_network",
             Request::TakeOverNetwork { .. } => "take_over_network",
             Request::ConfirmNetwork {} => "confirm_network",
             Request::SshState {} => "ssh_state",
@@ -1182,6 +1189,10 @@ pub enum Response {
         /// enabled and `/etc/network/interfaces` is there.
         #[serde(default)]
         ifupdown: Option<Ifupdown>,
+        /// zendiloOS's systemd-networkd files as they are (with a change
+        /// waiting, its own), by name.
+        #[serde(default)]
+        files: Vec<NetworkdFile>,
     },
     /// What `docker` printed, for zendiloosd to read.
     DockerOutput {
@@ -1207,8 +1218,6 @@ pub enum Response {
         /// The machine's CPUs (threads) and memory.
         cores: u32,
         memory_bytes: u64,
-        /// Linux bridges of the machine's own, not Docker's nor libvirt's.
-        bridges: Vec<InterfaceName>,
         /// Where the VMs' dataset is, once set up.
         storage: Option<VmStorage>,
     },

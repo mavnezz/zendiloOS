@@ -94,6 +94,8 @@ struct Link {
     link_type: String,
     address: Option<String>,
     master: Option<String>,
+    /// The interface a VLAN (or a veth's peer) is on.
+    link: Option<String>,
     linkinfo: Option<LinkInfo>,
     #[serde(default)]
     addr_info: Vec<AddrInfo>,
@@ -165,8 +167,10 @@ pub fn parse_interfaces(json: &str) -> Result<Vec<Interface>, ParseError> {
             addresses.push(Address { ip, prefix, scope: scope(&info.scope), dynamic: info.dynamic });
         }
         let mac = link.address.as_ref().filter(|_| link.link_type == "ether").cloned();
+        let kind = kind(&link);
         interfaces.push(Interface {
-            kind: kind(&link),
+            parent: link.link.clone().filter(|_| kind == InterfaceKind::Vlan),
+            kind,
             state: state(&link),
             mac,
             mtu: link.mtu,
@@ -268,6 +272,19 @@ mod tests {
             ]
         );
         assert_eq!(parse_routes("").unwrap(), []);
+    }
+
+    /// A VLAN names the interface it is on; a veth's peer is no parent.
+    #[test]
+    fn a_vlan_is_on_its_parent() {
+        let json = r#"[
+            {"ifname":"enp1s0.10","link":"enp1s0","link_type":"ether","address":"52:54:00:12:34:56","linkinfo":{"info_kind":"vlan"}},
+            {"ifname":"veth1","link":"if5","link_type":"ether","linkinfo":{"info_kind":"veth"}}
+        ]"#;
+        let interfaces = parse_interfaces(json).unwrap();
+        assert_eq!(interfaces[0].parent.as_deref(), Some("enp1s0"));
+        assert_eq!(interfaces[0].kind, InterfaceKind::Vlan);
+        assert_eq!(interfaces[1].parent, None);
     }
 
     #[test]

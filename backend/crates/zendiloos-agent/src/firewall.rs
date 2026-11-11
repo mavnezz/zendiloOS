@@ -31,6 +31,15 @@
 //! the rules were written, or named otherwise, is kept from outside too.
 //! The rest passes on to Docker's own chains. An accepting rule here never
 //! overrides another table's drop.
+//!
+//! Frames a bridge of the machine's own forwards between its ports (a VM's
+//! tap and the card) come through `forward` too, once `br_netfilter` is
+//! loaded (Docker loads it), with the bridge as both interfaces. They pass:
+//! a bridge listed as the machine's own meets neither the accept for other
+//! bridges nor the drop, and one not listed yet (made since the rules were
+//! written) meets the accept for bridges not listed first. Docker's own
+//! FORWARD chain would drop them; [`crate::docker_bridges`] lets those of
+//! zendiloOS's bridges through there.
 
 use std::fmt::Write as _;
 use std::fs;

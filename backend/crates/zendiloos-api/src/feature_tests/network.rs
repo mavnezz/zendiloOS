@@ -1,7 +1,9 @@
 //! The network through the API: taken over from ifupdown in a job and kept
 //! once confirmed, what would not be carried over named, interfaces
-//! switched on and off.
+//! switched on and off; bridges, bonds and VLANs planned, made, changed and
+//! removed, a bridge a VM is on kept.
 
+use std::future::Future;
 use std::time::Duration;
 
 use axum::http::{Method, StatusCode};
@@ -138,4 +140,209 @@ async fn an_interface_is_switched_off_and_on_again() {
         applied[1].ipv4,
         zendiloos_network::domain::Ipv4Setting::Dhcp { keep: Some("192.168.1.20".parse().unwrap()) }
     );
+}
+
+fn post_json(h: &Harness, session: &Session, path: &str, body: Value) -> impl Future<Output = Reply> {
+    h.send(json(with_csrf(changing(Method::POST, path), session), body))
+}
+
+async fn confirm(h: &Harness, session: &Session) {
+    let confirmed =
+        h.send(empty(with_csrf(changing(Method::POST, "/api/v1/network/confirm"), session))).await;
+    assert_eq!(confirmed.status, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn a_bridge_is_planned_made_and_kept_once_confirmed() {
+    let h = Harness::new();
+    h.network_source.set(zendiloos_network::testing::three_cards());
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let viewer = h.sign_in("bob", Role::ReadOnly).await;
+    let bridge = json!({ "kind": "bridge", "name": "br0", "members": ["enp2s0", "enp1s0"] });
+
+    let plan =
+        post_json(&h, &viewer, "/api/v1/network/devices/plan", json!({ "action": "make", "device": bridge }))
+            .await;
+    assert_problem(&plan, StatusCode::FORBIDDEN, "forbidden");
+    let plan =
+        post_json(&h, &admin, "/api/v1/network/devices/plan", json!({ "action": "make", "device": bridge }))
+            .await;
+    assert_eq!(plan.status, StatusCode::OK, "{:?}", plan.body);
+    assert_eq!(
+        plan.body,
+        json!({
+            "device": {
+                "name": "br0", "kind": "bridge", "members": ["enp1s0", "enp2s0"], "parent": null, "vlan_id": null,
+                "mode": null, "stp": false, "mac": "52:54:00:12:34:56",
+            },
+            "interfaces": [
+                { "interface": "br0", "becomes": { "fate": "settings", "settings": {
+                    "ipv4": { "mode": "dhcp", "keep": "192.168.1.20" }, "ipv6": "off", "dns": [] } } },
+                { "interface": "enp1s0", "becomes": { "fate": "member", "device": "br0", "moved": true, "dropped": false } },
+                { "interface": "enp2s0", "becomes": { "fate": "member", "device": "br0", "moved": false, "dropped": false } },
+            ],
+        })
+    );
+    assert!(h.network_host.changes.lock().unwrap().is_empty(), "a plan changes nothing");
+
+    assert_problem(
+        &post_json(&h, &viewer, "/api/v1/network/devices", bridge.clone()).await,
+        StatusCode::FORBIDDEN,
+        "forbidden",
+    );
+    let made = post_json(&h, &admin, "/api/v1/network/devices", bridge.clone()).await;
+    assert_eq!(made.status, StatusCode::ACCEPTED, "{:?}", made.body);
+    assert_eq!(
+        made.body["pending"],
+        json!({ "interface": "br0", "takeover": false, "device": "made", "revert_at": 120 })
+    );
+    assert_eq!(made.body["devices"][0]["members"], json!(["enp1s0", "enp2s0"]));
+    assert_problem(
+        &post_json(&h, &admin, "/api/v1/network/devices", bridge).await,
+        StatusCode::CONFLICT,
+        "change_pending",
+    );
+    confirm(&h, &admin).await;
+    let seen = setup(&h, &viewer).await;
+    assert_eq!((seen["pending"].clone(), seen["devices"][0]["name"].clone()), (Value::Null, json!("br0")));
+
+    // A member's settings are the bridge's.
+    let dhcp = json!({ "ipv4": { "mode": "dhcp" }, "ipv6": "automatic" });
+    let member = h
+        .send(json(with_csrf(changing(Method::PUT, "/api/v1/network/interfaces/enp1s0"), &admin), dhcp))
+        .await;
+    assert_problem(&member, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
+    assert!(member.body["detail"].as_str().unwrap().contains("member of br0"), "{:?}", member.body);
+
+    // A member taken out is switched off.
+    let fewer = h
+        .send(json(
+            with_csrf(changing(Method::PUT, "/api/v1/network/devices/br0"), &admin),
+            json!({ "members": ["enp1s0"], "stp": true }),
+        ))
+        .await;
+    assert_eq!(fewer.status, StatusCode::ACCEPTED, "{:?}", fewer.body);
+    assert_eq!(fewer.body["pending"]["device"], "changed");
+    let change = h.network_host.changes.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(change.devices[0].kind, zendiloos_network::domain::DeviceKind::Bridge { stp: true });
+    assert!(
+        change.links.iter().any(|link| link.settings.interface == "enp2s0" && link.settings.switched_off())
+    );
+    confirm(&h, &admin).await;
+}
+
+/// A VM on a bridge keeps it; removed once it is not, the bridge gives its
+/// settings back to its first member.
+#[tokio::test]
+async fn a_bridge_a_vm_is_on_stays() {
+    let h = Harness::new();
+    h.network_source.set(zendiloos_network::testing::three_cards());
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let bridge = json!({ "kind": "bridge", "name": "br0", "members": ["enp1s0"] });
+    assert_eq!(post_json(&h, &admin, "/api/v1/network/devices", bridge).await.status, StatusCode::ACCEPTED);
+    confirm(&h, &admin).await;
+    h.network_users.0.lock().unwrap().push(("br0".into(), "web".into()));
+    let remove = || h.send(empty(with_csrf(changing(Method::DELETE, "/api/v1/network/devices/br0"), &admin)));
+
+    let refused = remove().await;
+    assert_problem(&refused, StatusCode::CONFLICT, "device_in_use");
+    assert_eq!(refused.body["detail"], "web");
+    let plan =
+        post_json(&h, &admin, "/api/v1/network/devices/plan", json!({ "action": "remove", "name": "br0" }))
+            .await;
+    assert_problem(&plan, StatusCode::CONFLICT, "device_in_use");
+
+    h.network_users.0.lock().unwrap().clear();
+    let plan =
+        post_json(&h, &admin, "/api/v1/network/devices/plan", json!({ "action": "remove", "name": "br0" }))
+            .await;
+    assert_eq!(plan.body["device"], Value::Null);
+    assert_eq!(plan.body["interfaces"][0]["interface"], "enp1s0");
+    assert_eq!(plan.body["interfaces"][0]["becomes"]["fate"], "settings");
+    let removed = remove().await;
+    assert_eq!(removed.status, StatusCode::ACCEPTED, "{:?}", removed.body);
+    assert_eq!(removed.body["pending"]["device"], "removed");
+    assert_eq!(removed.body["devices"], json!([]));
+}
+
+#[tokio::test]
+async fn bonds_and_vlans_are_made_and_what_is_wrong_is_named() {
+    let h = Harness::new();
+    h.network_source.set(zendiloos_network::testing::three_cards());
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let invalid = |body: Value, why: &'static str| {
+        let h = &h;
+        let admin = &admin;
+        async move {
+            let reply = post_json(h, admin, "/api/v1/network/devices", body).await;
+            assert_problem(&reply, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
+            let detail = reply.body["detail"].as_str().unwrap_or_default().to_owned();
+            assert!(detail.contains(why), "{why}: {detail}");
+        }
+    };
+    invalid(json!({ "kind": "bridge", "name": "enp1s0" }), "there is an interface enp1s0 already").await;
+    invalid(json!({ "kind": "bridge", "name": "a-name-far-too-long" }), "no interface name").await;
+    invalid(
+        json!({ "kind": "bridge", "name": "br0", "members": ["enp9s0"] }),
+        "there is no interface enp9s0",
+    )
+    .await;
+    invalid(json!({ "kind": "bond", "name": "bond0", "members": [], "mode": "lacp" }), "at least one member")
+        .await;
+    invalid(json!({ "kind": "vlan", "name": "v", "parent": "enp1s0", "id": 4095 }), "from 1 to 4094").await;
+    let odd = post_json(
+        &h,
+        &admin,
+        "/api/v1/network/devices",
+        json!({ "kind": "bond", "name": "b", "members": [], "mode": "broadcast" }),
+    )
+    .await;
+    assert_problem(&odd, StatusCode::UNPROCESSABLE_ENTITY, "invalid_body");
+    assert!(h.network_host.changes.lock().unwrap().is_empty());
+
+    let bond =
+        json!({ "kind": "bond", "name": "bond0", "members": ["enp2s0", "enp3s0"], "mode": "active_backup" });
+    let made = post_json(&h, &admin, "/api/v1/network/devices", bond).await;
+    assert_eq!(made.status, StatusCode::ACCEPTED, "{:?}", made.body);
+    assert_eq!(made.body["devices"][0]["mode"], "active_backup");
+    confirm(&h, &admin).await;
+    let vlan = json!({
+        "kind": "vlan", "name": "enp1s0.10", "parent": "enp1s0", "id": 10,
+        "settings": { "ipv4": { "mode": "static", "address": "10.10.0.2", "prefix": 24, "gateway": null }, "ipv6": "off" },
+    });
+    let made = post_json(&h, &admin, "/api/v1/network/devices", vlan).await;
+    assert_eq!(made.status, StatusCode::ACCEPTED, "{:?}", made.body);
+    let change = h.network_host.changes.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(change.links[0].vlans, ["enp1s0.10"], "the parent carries it");
+    assert_eq!(
+        change.links[1].settings.ipv4,
+        zendiloos_network::domain::Ipv4Setting::Static {
+            address: "10.10.0.2".parse().unwrap(),
+            prefix: 24,
+            gateway: None
+        }
+    );
+    confirm(&h, &admin).await;
+    let devices = setup(&h, &admin).await["devices"].clone();
+    assert_eq!(
+        devices[1],
+        json!({
+            "name": "enp1s0.10", "kind": "vlan", "members": [], "parent": "enp1s0", "vlan_id": 10,
+            "mode": null, "stp": null, "mac": null,
+        })
+    );
+    let changed = h
+        .send(json(
+            with_csrf(changing(Method::PUT, "/api/v1/network/devices/bond0"), &admin),
+            json!({ "members": ["enp2s0", "enp3s0"], "mode": "lacp" }),
+        ))
+        .await;
+    assert_eq!(changed.status, StatusCode::ACCEPTED, "{:?}", changed.body);
+    let unknown = h
+        .send(json(
+            with_csrf(changing(Method::PUT, "/api/v1/network/devices/br7"), &admin),
+            json!({ "members": [] }),
+        ))
+        .await;
+    assert_problem(&unknown, StatusCode::CONFLICT, "change_pending");
 }

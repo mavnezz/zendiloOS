@@ -9,7 +9,10 @@ use zendiloos_kernel::{PortError, RequestContext, Timestamp};
 use zendiloos_network::application::{
     Change, ConfigureError, HostNetwork, IfupdownHost, NetworkConfigurator, PendingChange,
 };
-use zendiloos_network::domain::{IfupdownFile, InterfaceSettings, Ipv4Setting, Ipv6Setting};
+use zendiloos_network::domain::{
+    BondMode, DeviceAction, DeviceKind, Edit, IfupdownFile, InterfaceSettings, Ipv4Setting, Ipv6Setting,
+    LinkFile, NetworkdFile, Subject,
+};
 
 use super::{WHAT, agent_error, call, call_raw, unexpected};
 
@@ -28,7 +31,7 @@ impl AgentNetwork {
         Self { transport }
     }
 
-    async fn change(&self, request: Request, context: &RequestContext) -> Result<(), ConfigureError> {
+    async fn send(&self, request: Request, context: &RequestContext) -> Result<(), ConfigureError> {
         match call_raw(self.transport.as_ref(), request, context).await? {
             Response::Done => Ok(()),
             other => Err(refused(other)),
@@ -50,10 +53,14 @@ fn invalid(what: &str) -> ConfigureError {
     ConfigureError::Port(PortError::new(WHAT, format!("not a valid {what} for the agent")))
 }
 
+fn name(text: &str) -> Result<proto::InterfaceName, ConfigureError> {
+    proto::InterfaceName::parse(text).map_err(|_| invalid("interface name"))
+}
+
 fn config(settings: &InterfaceSettings) -> Result<proto::NetworkConfig, ConfigureError> {
-    Ok(proto::NetworkConfig {
-        interface: proto::InterfaceName::parse(&settings.interface).map_err(|_| invalid("interface"))?,
-        ipv4: match settings.ipv4 {
+    Ok(proto::NetworkConfig::addresses(
+        name(&settings.interface)?,
+        match settings.ipv4 {
             Ipv4Setting::Dhcp { keep } => proto::Ipv4Config::Dhcp { request: keep },
             Ipv4Setting::Static { address, prefix, gateway } => proto::Ipv4Config::Static {
                 address,
@@ -62,12 +69,86 @@ fn config(settings: &InterfaceSettings) -> Result<proto::NetworkConfig, Configur
             },
             Ipv4Setting::Off => proto::Ipv4Config::Off {},
         },
-        ipv6: match settings.ipv6 {
+        match settings.ipv6 {
             Ipv6Setting::Automatic => proto::Ipv6Config::Automatic,
             Ipv6Setting::Off => proto::Ipv6Config::Off,
         },
-        dns: proto::NameServers::new(settings.dns.clone()).map_err(|_| invalid("list of name servers"))?,
-    })
+        proto::NameServers::new(settings.dns.clone()).map_err(|_| invalid("list of name servers"))?,
+    ))
+}
+
+/// An interface's file: its addresses, or the bridge or bond it is a port
+/// of (`kinds` names the bonds), and the VLANs on it.
+fn link(link: &LinkFile, bonds: &[String]) -> Result<proto::NetworkConfig, ConfigureError> {
+    let port_of = match &link.port_of {
+        Some(master) if bonds.contains(master) => Some(proto::PortOf::Bond { name: name(master)? }),
+        Some(master) => Some(proto::PortOf::Bridge { name: name(master)? }),
+        None => None,
+    };
+    let vlans = link.vlans.iter().map(|vlan| name(vlan)).collect::<Result<Vec<_>, _>>()?;
+    let config = proto::NetworkConfig {
+        port_of,
+        vlans: proto::Vlans::new(vlans).map_err(|_| invalid("set of VLANs"))?,
+        keep_up: link.keep_up,
+        ..config(&link.settings)?
+    };
+    // As the agent reads it: a port without addresses of its own.
+    let fields = serde_json::to_value(&config).map_err(|_| invalid("interface's file"))?;
+    serde_json::from_value(fields).map_err(|_| invalid("interface's file"))
+}
+
+fn action(action: DeviceAction) -> proto::DeviceAction {
+    match action {
+        DeviceAction::Made => proto::DeviceAction::Made,
+        DeviceAction::Changed => proto::DeviceAction::Changed,
+        DeviceAction::Removed => proto::DeviceAction::Removed,
+    }
+}
+
+/// `edit` in the agent's terms; what the bonds are, the agent knows from
+/// its own files and those written here.
+fn edit(edit: &Edit, bonds: &[String]) -> Result<proto::NetworkEdit, ConfigureError> {
+    let change = match &edit.subject {
+        Subject::Interface(interface) => proto::NetworkChange::Interface { interface: name(interface)? },
+        Subject::Device(device, done) => {
+            proto::NetworkChange::Device { device: name(device)?, action: action(*done) }
+        }
+    };
+    let netdevs = edit
+        .devices
+        .iter()
+        .map(|device| {
+            let kind = match &device.kind {
+                DeviceKind::Bridge { stp } => proto::NetdevKind::Bridge { stp: *stp },
+                DeviceKind::Bond { mode } => proto::NetdevKind::Bond {
+                    mode: match mode {
+                        BondMode::ActiveBackup => proto::BondMode::ActiveBackup,
+                        BondMode::Lacp => proto::BondMode::Lacp,
+                        BondMode::BalanceAlb => proto::BondMode::BalanceAlb,
+                    },
+                },
+                DeviceKind::Vlan { id, .. } => {
+                    proto::NetdevKind::Vlan { id: proto::VlanId::new(*id).map_err(|_| invalid("VLAN id"))? }
+                }
+            };
+            let mac = device
+                .mac
+                .as_deref()
+                .map(proto::MacAddress::parse)
+                .transpose()
+                .map_err(|_| invalid("MAC address"))?;
+            let members = device.members.iter().map(|member| name(member)).collect::<Result<Vec<_>, _>>()?;
+            let netdev = proto::Netdev { name: name(&device.name)?, kind, mac, members };
+            let fields = serde_json::to_value(&netdev).map_err(|_| invalid("device"))?;
+            serde_json::from_value::<proto::Netdev>(fields).map_err(|_| invalid("device"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let removed = edit.removed.iter().map(|device| name(device)).collect::<Result<Vec<_>, _>>()?;
+    let links = edit.links.iter().map(|file| link(file, bonds)).collect::<Result<Vec<_>, _>>()?;
+    let fields = proto::NetworkEdit { change, netdevs, removed, links };
+    // Checked as the agent checks it: each device and interface once.
+    let value = serde_json::to_value(&fields).map_err(|_| invalid("change"))?;
+    serde_json::from_value(value).map_err(|_| invalid("change"))
 }
 
 fn pending(pending: proto::PendingNetwork) -> PendingChange {
@@ -78,6 +159,14 @@ fn pending(pending: proto::PendingNetwork) -> PendingChange {
             proto::NetworkChange::Takeover { interfaces } => {
                 Change::Takeover(interfaces.iter().map(name).collect())
             }
+            proto::NetworkChange::Device { device, action } => Change::Device(
+                name(device),
+                match action {
+                    proto::DeviceAction::Made => DeviceAction::Made,
+                    proto::DeviceAction::Changed => DeviceAction::Changed,
+                    proto::DeviceAction::Removed => DeviceAction::Removed,
+                },
+            ),
         },
         revert_at: Timestamp::from_unix_seconds(pending.revert_at),
     }
@@ -100,27 +189,43 @@ fn ifupdown(host: proto::Ifupdown) -> IfupdownHost {
 impl NetworkConfigurator for AgentNetwork {
     async fn state(&self, context: &RequestContext) -> Result<HostNetwork, PortError> {
         match call(self.transport.as_ref(), Request::NetworkState {}, context).await? {
-            Response::NetworkState { managed, pending: waiting, network_manager, ifupdown: host } => {
+            Response::NetworkState { managed, pending: waiting, network_manager, ifupdown: host, files } => {
                 Ok(HostNetwork {
                     managed,
                     network_manager,
                     pending: waiting.map(pending),
                     ifupdown: host.map(ifupdown),
+                    files: files
+                        .into_iter()
+                        .map(|file| NetworkdFile { name: file.name, text: file.text })
+                        .collect(),
                 })
             }
             other => Err(unexpected(other)),
         }
     }
 
-    async fn apply(
+    async fn change(
         &self,
-        settings: &InterfaceSettings,
+        change: &Edit,
         confirm_within_seconds: u16,
         context: &RequestContext,
     ) -> Result<(), ConfigureError> {
         let confirm_within =
             proto::ConfirmWithin::seconds(confirm_within_seconds).map_err(|_| invalid("time to confirm"))?;
-        self.change(Request::ApplyNetwork { config: config(settings)?, confirm_within }, context).await
+        // Which devices are bonds: those written here, and those zendiloOS
+        // made before, as its files say.
+        let files = self.state(context).await?.files;
+        let configured = zendiloos_network::domain::Configuration::read(&files);
+        let bonds: Vec<String> = configured
+            .devices
+            .iter()
+            .chain(change.devices.iter())
+            .filter(|device| matches!(device.kind, DeviceKind::Bond { .. }))
+            .map(|device| device.name.clone())
+            .collect();
+        let change = edit(change, &bonds)?;
+        self.send(Request::ChangeNetwork { change, confirm_within }, context).await
     }
 
     async fn install_resolved(&self, context: &RequestContext) -> Result<(), ConfigureError> {
@@ -167,11 +272,11 @@ impl NetworkConfigurator for AgentNetwork {
             confirm_within: proto::ConfirmWithin::seconds(confirm_within_seconds)
                 .map_err(|_| invalid("time to confirm"))?,
         };
-        self.change(request, context).await
+        self.send(request, context).await
     }
 
     async fn confirm(&self, context: &RequestContext) -> Result<(), ConfigureError> {
-        self.change(Request::ConfirmNetwork {}, context).await
+        self.send(Request::ConfirmNetwork {}, context).await
     }
 }
 
@@ -200,16 +305,73 @@ mod tests {
         let context = RequestContext::default();
         let settings = fixed();
 
-        network.apply(&settings, 120, &context).await.unwrap();
+        let apply = |settings: InterfaceSettings| Edit {
+            subject: Subject::Interface("enp1s0".into()),
+            devices: vec![],
+            removed: vec![],
+            links: vec![LinkFile { settings, port_of: None, vlans: vec![], keep_up: false }],
+            effects: vec![],
+        };
+        network.change(&apply(settings.clone()), 120, &context).await.unwrap();
         let state = network.state(&context).await.unwrap();
         assert!(state.managed && state.ifupdown.is_none());
         assert_eq!(state.pending.map(|p| p.change), Some(Change::Interface("enp1s0".into())));
-        assert!(matches!(network.apply(&settings, 120, &context).await, Err(ConfigureError::Pending)));
+        let again = network.change(&apply(settings.clone()), 120, &context).await;
+        assert!(matches!(again, Err(ConfigureError::Pending)));
         network.confirm(&context).await.unwrap();
         assert!(matches!(network.confirm(&context).await, Err(ConfigureError::Refused(_))));
         let off =
             InterfaceSettings { ipv4: Ipv4Setting::Off, ipv6: Ipv6Setting::Off, dns: vec![], ..settings };
-        network.apply(&off, 120, &context).await.unwrap();
+        network.change(&apply(off), 120, &context).await.unwrap();
+    }
+
+    /// A bridge over the card and a bond in it, in the agent's terms: the
+    /// bond's members are ports of a bond, the bond one of the bridge.
+    #[test]
+    fn devices_go_to_the_agent_as_its_types() {
+        use zendiloos_network::domain::Device;
+        let port = |interface: &str, of: &str| LinkFile {
+            settings: InterfaceSettings {
+                interface: interface.into(),
+                ipv4: Ipv4Setting::Off,
+                ipv6: Ipv6Setting::Off,
+                dns: vec![],
+            },
+            port_of: Some(of.into()),
+            vlans: vec![],
+            keep_up: false,
+        };
+        let made = Edit {
+            subject: Subject::Device("br0".into(), DeviceAction::Made),
+            devices: vec![Device {
+                name: "br0".into(),
+                kind: DeviceKind::Bridge { stp: false },
+                members: vec!["bond0".into()],
+                mac: Some("52:54:00:12:34:56".into()),
+            }],
+            removed: vec![],
+            links: vec![port("bond0", "br0"), port("enp2s0", "bond0")],
+            effects: vec![],
+        };
+        let sent = edit(&made, &["bond0".into()]).unwrap();
+        assert_eq!(
+            sent.change,
+            proto::NetworkChange::Device {
+                device: proto::InterfaceName::parse("br0").unwrap(),
+                action: proto::DeviceAction::Made
+            }
+        );
+        assert_eq!(sent.netdevs[0].mac.as_ref().map(proto::MacAddress::as_str), Some("52:54:00:12:34:56"));
+        assert!(matches!(sent.links[0].port_of, Some(proto::PortOf::Bridge { .. })));
+        assert!(matches!(sent.links[1].port_of, Some(proto::PortOf::Bond { .. })));
+
+        // What the agent would refuse is refused here.
+        let mut twice = made.clone();
+        twice.links.push(port("bond0", "br0"));
+        assert!(edit(&twice, &[]).is_err());
+        let mut odd = made;
+        odd.devices[0].mac = Some("not a mac".into());
+        assert!(edit(&odd, &[]).is_err());
     }
 
     /// The simulated host as the Debian installer leaves it: ifupdown, and
