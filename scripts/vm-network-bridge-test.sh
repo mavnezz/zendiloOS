@@ -143,7 +143,8 @@ lapse() {
 
 link_exists() { vm "ip link show dev $1" >/dev/null 2>&1; }
 address_of() { vm "ip -4 -o addr show dev $1 | awk '{print \$4}' | cut -d/ -f1 | head -1"; }
-master_of() { vm "ip -j link show dev $1 | jq -r '.[0].master // empty'"; }
+# The VM has no jq; its answer is read here.
+master_of() { vm "ip -j link show dev $1" | jq -r '.[0].master // empty'; }
 mac_of() { vm "cat /sys/class/net/$1/address"; }
 firewall_table() { vm 'sudo nft list table inet zendiloos_firewall 2>/dev/null || true'; }
 # Docker's tables without zendiloOS's chain, sorted: a restart of Docker
@@ -295,7 +296,7 @@ fi
 wait_for "Docker" "call GET /apps/docker | jq -e .running" 120
 check "Docker $(call GET /apps/docker | jq -r .version) runs"
 vm 'lsmod | grep -q "^br_netfilter"' || fail "br_netfilter is not loaded"
-[[ $(vm 'sysctl -n net.bridge.bridge-nf-call-iptables') == 1 ]] || fail "bridge-nf-call-iptables is not 1"
+[[ $(vm 'cat /proc/sys/net/bridge/bridge-nf-call-iptables') == 1 ]] || fail "bridge-nf-call-iptables is not 1"
 policy=$(vm 'sudo iptables -S FORWARD | head -1')
 note "iptables: $policy; $(vm 'sudo iptables -V')"
 [[ $policy == '-P FORWARD DROP' ]] || note "Docker did not set FORWARD's policy to DROP here; the frames pass anyway"
