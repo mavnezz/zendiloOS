@@ -81,9 +81,18 @@ async fn the_plugin_is_installed_and_offers_its_dns_providers() {
     let plugin = h.send(empty(with_cookie(get("/api/v1/certificates/plugin"), &admin))).await;
     assert_eq!(plugin.status, StatusCode::OK, "{:?}", plugin.body);
     assert_eq!(plugin.body["installed"], false);
-    let ionos =
-        plugin.body["providers"].as_array().unwrap().iter().find(|p| p["api"] == "dns_ionos").unwrap();
-    assert_eq!(ionos["variables"][1], json!({ "name": "IONOS_SECRET", "secret": true, "required": true }));
+    let provider = |api: &str| {
+        plugin.body["providers"].as_array().unwrap().iter().find(|p| p["api"] == api).unwrap().clone()
+    };
+    assert_eq!(
+        provider("dns_ionos")["variables"][1],
+        json!({ "name": "IONOS_SECRET", "secret": true, "required": true, "hint": null })
+    );
+    // A value may say what it looks like.
+    assert_eq!(
+        provider("dns_kas")["variables"][1],
+        json!({ "name": "KAS_Authtype", "secret": false, "required": true, "hint": "plain" })
+    );
 
     let job = send(&h, &admin, Method::POST, "/api/v1/certificates/plugin/install", Value::Null).await;
     assert_eq!(job.status, StatusCode::ACCEPTED, "{:?}", job.body);
