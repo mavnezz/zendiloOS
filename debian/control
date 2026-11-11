@@ -33,10 +33,12 @@ Suggests: docker-compose,
           docker.io,
           libvirt-clients,
           libvirt-daemon-driver-qemu,
+          openssh-client,
           ovmf,
           passt,
           qemu-system-x86,
-          qemu-utils
+          qemu-utils,
+          rsync
 Description: web-managed NAS operating system
  zendiloOS turns a Debian system into a NAS that is managed through a
  desktop in the web browser.
