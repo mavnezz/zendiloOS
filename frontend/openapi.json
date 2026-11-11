@@ -7919,6 +7919,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "description": "Only entries whose actor, action, target, address or reason holds\nthis, whatever the case; at most 100 characters.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -7933,6 +7942,16 @@
           },
           "403": {
             "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`: a search too long or with control characters",
             "content": {
               "application/json": {
                 "schema": {
@@ -12492,7 +12511,7 @@
             }
           },
           "422": {
-            "description": "`invalid_input`: more than the machine has, an unknown bridge or image, devices that break the rules",
+            "description": "`invalid_input`: more than the machine has, an unknown bridge, internal network, card, pool or image, devices that break the rules",
             "content": {
               "application/json": {
                 "schema": {
@@ -12801,6 +12820,154 @@
         ]
       }
     },
+    "/api/v1/vms/locations": {
+      "get": {
+        "tags": [
+          "vms"
+        ],
+        "summary": "The locations of the VMs' storage, the library's first, with their\npools and what lies on them. Needs `vms.manage`.",
+        "operationId": "list_vm_locations",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/VmLocation"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "vms"
+        ],
+        "summary": "Puts one more location of the VMs' storage on a pool zendiloOS made:\n`<pool>/zendiloos.vms`, mounted at `/volume<N>/@vms`. Needs `vms.manage`.",
+        "operationId": "add_vm_location",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VmStorageRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VmPlugin"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no such pool",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`vms_not_installed`; `refused`: the host's reason",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/vms/locations/{pool}/delete": {
+      "post": {
+        "tags": [
+          "vms"
+        ],
+        "summary": "Removes a location of the VMs' storage: its dataset destroyed. Refused\nwhile a VM has a disk there or the library images, and for the\nlibrary's location while there are others. Needs `vms.manage`.",
+        "operationId": "remove_vm_location",
+        "parameters": [
+          {
+            "name": "pool",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RemoveVmLocationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {},
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`location_in_use`: the detail names the VMs, or the image library; `refused`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`confirmation_mismatch`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/vms/plugin": {
       "get": {
         "tags": [
@@ -13017,7 +13184,7 @@
             }
           },
           "422": {
-            "description": "`invalid_input`: a disk shrunk, more than the machine has; `confirmation_mismatch`: a disk removed without the name",
+            "description": "`invalid_input`: a disk shrunk or moved to another location, more than the machine has; `confirmation_mismatch`: a disk removed without the name",
             "content": {
               "application/json": {
                 "schema": {
@@ -15643,7 +15810,7 @@
           "disks": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/VmDisk"
+              "$ref": "#/components/schemas/VmDiskChoice"
             },
             "description": "1 to 8."
           },
@@ -19654,7 +19821,8 @@
         "required": [
           "managed",
           "manager",
-          "devices"
+          "devices",
+          "internal"
         ],
         "properties": {
           "devices": {
@@ -19663,6 +19831,13 @@
               "$ref": "#/components/schemas/NetworkDevice"
             },
             "description": "The bridges, bonds and VLANs zendiloOS made: these can be changed\nand removed."
+          },
+          "internal": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Of its bridges, the internal networks for VMs: without members or\nan address of the NAS's, which the NAS keeps itself off."
           },
           "managed": {
             "type": "boolean",
@@ -21505,6 +21680,19 @@
           "failed",
           "unmounted"
         ]
+      },
+      "RemoveVmLocationRequest": {
+        "type": "object",
+        "required": [
+          "confirm"
+        ],
+        "properties": {
+          "confirm": {
+            "type": "string",
+            "description": "The pool's name, typed again."
+          }
+        },
+        "additionalProperties": false
       },
       "RenameRequest": {
         "type": "object",
@@ -23904,9 +24092,9 @@
           "disks": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/VmDisk"
+              "$ref": "#/components/schemas/VmDiskChoice"
             },
-            "description": "A disk of a slot it had keeps its data and only grows; one left out\nis destroyed."
+            "description": "A disk of a slot it had keeps its data and its location and only\ngrows; one left out is destroyed."
           },
           "drives": {
             "type": "array",
@@ -24136,8 +24324,6 @@
           "drives",
           "boot",
           "autostart",
-          "pool",
-          "volume",
           "created_at",
           "state"
         ],
@@ -24197,16 +24383,8 @@
           "os": {
             "$ref": "#/components/schemas/VmOs"
           },
-          "pool": {
-            "type": "string"
-          },
           "state": {
             "$ref": "#/components/schemas/VmPowerState"
-          },
-          "volume": {
-            "type": "integer",
-            "format": "int32",
-            "minimum": 0
           }
         }
       },
@@ -24250,15 +24428,21 @@
       },
       "VmDisk": {
         "type": "object",
-        "description": "A disk: a sparse zvol in its slot, 0 to 7.",
+        "description": "A disk: a sparse zvol in its slot, 0 to 7, on its location.",
         "required": [
           "slot",
           "size_gib",
-          "bus"
+          "bus",
+          "pool",
+          "volume"
         ],
         "properties": {
           "bus": {
             "$ref": "#/components/schemas/VmDiskBus"
+          },
+          "pool": {
+            "type": "string",
+            "description": "The location it lies on: its pool and volume."
           },
           "size_gib": {
             "type": "integer",
@@ -24269,9 +24453,13 @@
             "type": "integer",
             "format": "int32",
             "minimum": 0
+          },
+          "volume": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
           }
-        },
-        "additionalProperties": false
+        }
       },
       "VmDiskBus": {
         "type": "string",
@@ -24280,6 +24468,47 @@
           "virtio",
           "sata"
         ]
+      },
+      "VmDiskChoice": {
+        "type": "object",
+        "description": "A disk as asked for, in its slot, 0 to 7.",
+        "required": [
+          "slot",
+          "size_gib",
+          "bus"
+        ],
+        "properties": {
+          "bus": {
+            "$ref": "#/components/schemas/VmDiskBus"
+          },
+          "pool": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The pool of the location it goes on; none: the first location, the\nlibrary's, for a new disk, and its own for one the VM has, which\nnever moves."
+          },
+          "size_gib": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "slot": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "volume": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "As the VM's disks are shown; the pool decides.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
       },
       "VmDrive": {
         "type": "object",
@@ -24481,6 +24710,83 @@
           }
         }
       },
+      "VmLocation": {
+        "type": "object",
+        "description": "A location of the VMs' storage: the dataset `<pool>/zendiloos.vms`.",
+        "required": [
+          "pool",
+          "volume",
+          "library",
+          "images",
+          "vms"
+        ],
+        "properties": {
+          "available_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "health": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The pool's health; none while it cannot be read."
+          },
+          "images": {
+            "type": "integer",
+            "description": "The library's images here.",
+            "minimum": 0
+          },
+          "images_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "library": {
+            "type": "boolean",
+            "description": "The first: the image library is here."
+          },
+          "pool": {
+            "type": "string"
+          },
+          "pool_used_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The pool's space as files see it, all of it.",
+            "minimum": 0
+          },
+          "used_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "What the dataset holds, zvols and images, and of it the library's\nfiles; none while ZFS cannot be asked.",
+            "minimum": 0
+          },
+          "vms": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VmOnLocation"
+            }
+          },
+          "volume": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
       "VmNetwork": {
         "oneOf": [
           {
@@ -24514,6 +24820,44 @@
                 "enum": [
                   "bridge"
                 ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Directly on a wired card or bond (macvtap): on its LAN without a\nbridge; the NAS and the VM do not reach each other.",
+            "required": [
+              "card",
+              "kind"
+            ],
+            "properties": {
+              "card": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "direct"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "An internal network: VMs on it reach each other, not the LAN or the\nNAS.",
+            "required": [
+              "network",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "internal"
+                ]
+              },
+              "network": {
+                "type": "string"
               }
             }
           }
@@ -24577,6 +24921,56 @@
           "e1000e"
         ]
       },
+      "VmOnLocation": {
+        "type": "object",
+        "description": "A VM's disks on a location, and what they take there.",
+        "required": [
+          "id",
+          "name",
+          "disks",
+          "size_bytes"
+        ],
+        "properties": {
+          "disks": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "description": "The slots of its disks there."
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "referenced_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Their sizes added up.",
+            "minimum": 0
+          },
+          "used_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "What its zvols there take of the pool (snapshots included) and what\nthey hold now; none while ZFS cannot be asked.",
+            "minimum": 0
+          }
+        }
+      },
       "VmOs": {
         "type": "string",
         "enum": [
@@ -24591,10 +24985,13 @@
         "required": [
           "hardware",
           "installed",
+          "locations",
           "pools",
           "cores",
           "memory_bytes",
           "bridges",
+          "internal_networks",
+          "cards",
           "image_upload_max_bytes"
         ],
         "properties": {
@@ -24603,7 +25000,14 @@
             "items": {
               "type": "string"
             },
-            "description": "Linux bridges of the machine's own, for VMs on the LAN."
+            "description": "Linux bridges of the machine's own, for VMs on the LAN; internal\nnetworks aside."
+          },
+          "cards": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Wired cards and bonds in no bridge or bond, for a card directly on\none (macvtap)."
           },
           "cores": {
             "type": "integer",
@@ -24623,6 +25027,20 @@
           "installed": {
             "type": "boolean"
           },
+          "internal_networks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Internal networks: bridges zendiloOS made without members or an\naddress of the NAS's, on which VMs reach each other only."
+          },
+          "locations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VmStoragePlace"
+            },
+            "description": "Every location of the VMs' storage, the first first."
+          },
           "memory_bytes": {
             "type": "integer",
             "format": "int64",
@@ -24631,19 +25049,56 @@
           "pools": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/VmStoragePlace"
+              "$ref": "#/components/schemas/VmPoolInfo"
             },
-            "description": "Where the storage can go."
+            "description": "Where a location can go."
           },
           "storage": {
             "oneOf": [
               {
-                "$ref": "#/components/schemas/VmStoragePlace"
+                "$ref": "#/components/schemas/VmStoragePlace",
+                "description": "The first location, which holds the image library; none before the\nstorage is set up."
               },
               {
                 "type": "null"
               }
             ]
+          }
+        }
+      },
+      "VmPoolInfo": {
+        "type": "object",
+        "description": "A pool zendiloOS made, where a location of the VMs' storage can go.",
+        "required": [
+          "pool",
+          "volume",
+          "health",
+          "used_bytes",
+          "available_bytes"
+        ],
+        "properties": {
+          "available_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "health": {
+            "type": "string",
+            "description": "ZFS's word: `online`, `degraded`, `faulted`, …"
+          },
+          "pool": {
+            "type": "string"
+          },
+          "used_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Space as files see it.",
+            "minimum": 0
+          },
+          "volume": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
           }
         }
       },
@@ -24720,7 +25175,7 @@
       },
       "VmStoragePlace": {
         "type": "object",
-        "description": "A pool zendiloOS made, by its name and volume.",
+        "description": "A location of the VMs' storage, or a pool zendiloOS made, by its name\nand volume.",
         "required": [
           "pool",
           "volume"

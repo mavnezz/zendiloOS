@@ -239,7 +239,12 @@ const tabs = computed(() => TABS.map((id) => ({ id, label: t(`vms.edit.tabs.${id
       </template>
 
       <template v-else-if="tab === 'disks'">
-        <DisksEditor v-model:form="form" :pool="vm.pool" :before="vm" :disabled="fixed" />
+        <DisksEditor
+          v-model:form="form"
+          :locations="plugin.locations"
+          :before="vm"
+          :disabled="fixed"
+        />
         <p v-if="has('disk')" class="text-xs text-destructive">
           {{ t('vms.wizard.invalid.disk') }}
         </p>
@@ -248,7 +253,7 @@ const tabs = computed(() => TABS.map((id) => ({ id, label: t(`vms.edit.tabs.${id
       <NicsEditor
         v-else-if="tab === 'network'"
         v-model:form="form"
-        :bridges="plugin.bridges"
+        :plugin="plugin"
         :before="vm"
         :disabled="fixed"
         @leave="open = false"

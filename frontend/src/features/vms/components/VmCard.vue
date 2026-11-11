@@ -22,7 +22,14 @@ import { Button } from '@/shared/ui/button'
 import { Meter } from '@/shared/ui/meter'
 import { SplitButton } from '@/shared/ui/split-button'
 
-import { type CardAction, formatMemory, isOn, stateVariant, totalDiskGib } from '../lib/vms'
+import {
+  type CardAction,
+  formatMemory,
+  fromNetwork,
+  isOn,
+  stateVariant,
+  totalDiskGib,
+} from '../lib/vms'
 
 /** One VM; `load`: what it uses now, while it runs and is looked at. */
 const props = defineProps<{ vm: VirtualMachine; load?: VmLoad | null; busy?: boolean }>()
@@ -61,11 +68,10 @@ const more = computed<Action[]>(() => [
 
 const network = computed(() => {
   if (!props.vm.nics.length) return t('vms.noNetwork')
-  const ways = props.vm.nics.map((nic) =>
-    nic.network.kind === 'bridge'
-      ? t('vms.bridgeNetwork', { bridge: nic.network.bridge })
-      : t('vms.userNetwork'),
-  )
+  const ways = props.vm.nics.map((nic) => {
+    const { kind, device } = fromNetwork(nic.network)
+    return kind === 'user' ? t('vms.userNetwork') : t(`vms.networks.on.${kind}`, { device })
+  })
   return [...new Set(ways)].join(', ')
 })
 

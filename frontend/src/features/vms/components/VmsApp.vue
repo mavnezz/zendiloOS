@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Disc3, MonitorCog, Server } from 'lucide-vue-next'
+import { Database, Disc3, MonitorCog, Network, ScrollText, Server } from 'lucide-vue-next'
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 
@@ -11,9 +11,12 @@ import { AppFrame, type NavGroup } from '@/shared/ui/frame'
 
 import { useVmImages, useVmPlugin, useVms } from '../api'
 import ImagesSection from './ImagesSection.vue'
+import LogSection from './LogSection.vue'
 import MachinesSection from './MachinesSection.vue'
+import NetworksSection from './NetworksSection.vue'
+import StorageSection from './StorageSection.vue'
 
-const SECTIONS = ['machines', 'images'] as const
+const SECTIONS = ['machines', 'images', 'storage', 'networks', 'log'] as const
 
 const { t } = useI18n()
 const openApp = useOpenApp()
@@ -39,12 +42,20 @@ const groups = computed<NavGroup[]>(() => [
         icon: Disc3,
         count: images.value?.length,
       },
+      {
+        id: 'storage',
+        label: t('vms.sections.storage'),
+        icon: Database,
+        count: plugin.value?.locations.length,
+      },
+      { id: 'networks', label: t('vms.sections.networks'), icon: Network },
+      { id: 'log', label: t('vms.sections.log'), icon: ScrollText },
     ],
   },
 ])
 </script>
 
-<!-- Virtual machines: the machines and the library of images they boot from. -->
+<!-- Virtual machines: the machines, the images they boot from, where their disks lie, their networks and what was done. -->
 <template>
   <AppFrame v-model:section="section" :groups="ready ? groups : undefined">
     <Alert v-if="error" variant="destructive">{{ problemMessage(error) }}</Alert>
@@ -61,6 +72,9 @@ const groups = computed<NavGroup[]>(() => [
     </div>
     <template v-else-if="plugin">
       <ImagesSection v-if="section === 'images'" :plugin="plugin" />
+      <StorageSection v-else-if="section === 'storage'" :plugin="plugin" />
+      <NetworksSection v-else-if="section === 'networks'" :plugin="plugin" :vms="vms ?? []" />
+      <LogSection v-else-if="section === 'log'" />
       <MachinesSection v-else :plugin="plugin" @library="section = 'images'" />
     </template>
   </AppFrame>

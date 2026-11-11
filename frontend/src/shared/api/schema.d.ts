@@ -3877,6 +3877,51 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/vms/locations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The locations of the VMs' storage, the library's first, with their
+         *     pools and what lies on them. Needs `vms.manage`.
+         */
+        get: operations["list_vm_locations"];
+        put?: never;
+        /**
+         * Puts one more location of the VMs' storage on a pool zendiloOS made:
+         *     `<pool>/zendiloos.vms`, mounted at `/volume<N>/@vms`. Needs `vms.manage`.
+         */
+        post: operations["add_vm_location"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/vms/locations/{pool}/delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Removes a location of the VMs' storage: its dataset destroyed. Refused
+         *     while a VM has a disk there or the library images, and for the
+         *     library's location while there are others. Needs `vms.manage`.
+         */
+        post: operations["remove_vm_location"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/vms/plugin": {
         parameters: {
             query?: never;
@@ -4873,7 +4918,7 @@ export interface components {
             /** Format: int32 */
             cpus: number;
             /** @description 1 to 8. */
-            disks: components["schemas"]["VmDisk"][];
+            disks: components["schemas"]["VmDiskChoice"][];
             /** @description Up to 3, with images of the library or empty. */
             drives: components["schemas"]["VmDrive"][];
             firmware: components["schemas"]["VmFirmware"];
@@ -6218,6 +6263,11 @@ export interface components {
              */
             devices: components["schemas"]["NetworkDevice"][];
             /**
+             * @description Of its bridges, the internal networks for VMs: without members or
+             *     an address of the NAS's, which the NAS keeps itself off.
+             */
+            internal: string[];
+            /**
              * @description systemd-networkd manages the network; otherwise it is only shown,
              *     or with ifupdown, taken over first.
              */
@@ -6857,6 +6907,10 @@ export interface components {
          * @enum {string}
          */
         RemovableState: "mounted" | "ejected" | "failed" | "unmounted";
+        RemoveVmLocationRequest: {
+            /** @description The pool's name, typed again. */
+            confirm: string;
+        };
         RenameRequest: {
             /** @description The new name, in the same folder. */
             name: string;
@@ -7688,10 +7742,10 @@ export interface components {
             /** Format: int32 */
             cpus: number;
             /**
-             * @description A disk of a slot it had keeps its data and only grows; one left out
-             *     is destroyed.
+             * @description A disk of a slot it had keeps its data and its location and only
+             *     grows; one left out is destroyed.
              */
-            disks: components["schemas"]["VmDisk"][];
+            disks: components["schemas"]["VmDiskChoice"][];
             drives: components["schemas"]["VmDrive"][];
             firmware: components["schemas"]["VmFirmware"];
             /** Format: int32 */
@@ -7784,10 +7838,7 @@ export interface components {
             name: string;
             nics: components["schemas"]["VmNic"][];
             os: components["schemas"]["VmOs"];
-            pool: string;
             state: components["schemas"]["VmPowerState"];
-            /** Format: int32 */
-            volume: number;
         };
         VmAutostartRequest: {
             autostart: boolean;
@@ -7800,13 +7851,17 @@ export interface components {
         };
         /** @enum {string} */
         VmBootKind: "disk" | "drive";
-        /** @description A disk: a sparse zvol in its slot, 0 to 7. */
+        /** @description A disk: a sparse zvol in its slot, 0 to 7, on its location. */
         VmDisk: {
             bus: components["schemas"]["VmDiskBus"];
+            /** @description The location it lies on: its pool and volume. */
+            pool: string;
             /** Format: int32 */
             size_gib: number;
             /** Format: int32 */
             slot: number;
+            /** Format: int32 */
+            volume: number;
         };
         /**
          * @description How a disk is attached: virtio (Linux), SATA (systems without virtio
@@ -7814,6 +7869,25 @@ export interface components {
          * @enum {string}
          */
         VmDiskBus: "virtio" | "sata";
+        /** @description A disk as asked for, in its slot, 0 to 7. */
+        VmDiskChoice: {
+            bus: components["schemas"]["VmDiskBus"];
+            /**
+             * @description The pool of the location it goes on; none: the first location, the
+             *     library's, for a new disk, and its own for one the VM has, which
+             *     never moves.
+             */
+            pool?: string | null;
+            /** Format: int32 */
+            size_gib: number;
+            /** Format: int32 */
+            slot: number;
+            /**
+             * Format: int32
+             * @description As the VM's disks are shown; the pool decides.
+             */
+            volume?: number | null;
+        };
         /** @description A CD drive in its slot, 0 to 2, with an image of the library or empty. */
         VmDrive: {
             /** @description An image's id; none: empty. */
@@ -7892,6 +7966,34 @@ export interface components {
             /** Format: int64 */
             sent_bytes_per_second?: number | null;
         };
+        /** @description A location of the VMs' storage: the dataset `<pool>/zendiloos.vms`. */
+        VmLocation: {
+            /** Format: int64 */
+            available_bytes?: number | null;
+            /** @description The pool's health; none while it cannot be read. */
+            health?: string | null;
+            /** @description The library's images here. */
+            images: number;
+            /** Format: int64 */
+            images_bytes?: number | null;
+            /** @description The first: the image library is here. */
+            library: boolean;
+            pool: string;
+            /**
+             * Format: int64
+             * @description The pool's space as files see it, all of it.
+             */
+            pool_used_bytes?: number | null;
+            /**
+             * Format: int64
+             * @description What the dataset holds, zvols and images, and of it the library's
+             *     files; none while ZFS cannot be asked.
+             */
+            used_bytes?: number | null;
+            vms: components["schemas"]["VmOnLocation"][];
+            /** Format: int32 */
+            volume: number;
+        };
         /** @description How a network card reaches the network. */
         VmNetwork: {
             /** @enum {string} */
@@ -7900,6 +8002,14 @@ export interface components {
             bridge: string;
             /** @enum {string} */
             kind: "bridge";
+        } | {
+            card: string;
+            /** @enum {string} */
+            kind: "direct";
+        } | {
+            /** @enum {string} */
+            kind: "internal";
+            network: string;
         };
         /** @description A network card, with the MAC address zendiloOS gave it. */
         VmNic: {
@@ -7921,6 +8031,26 @@ export interface components {
          * @enum {string}
          */
         VmNicModel: "virtio" | "e1000e";
+        /** @description A VM's disks on a location, and what they take there. */
+        VmOnLocation: {
+            /** @description The slots of its disks there. */
+            disks: number[];
+            id: string;
+            name: string;
+            /** Format: int64 */
+            referenced_bytes?: number | null;
+            /**
+             * Format: int64
+             * @description Their sizes added up.
+             */
+            size_bytes: number;
+            /**
+             * Format: int64
+             * @description What its zvols there take of the pool (snapshots included) and what
+             *     they hold now; none while ZFS cannot be asked.
+             */
+            used_bytes?: number | null;
+        };
         /** @enum {string} */
         VmOs: "linux" | "windows" | "other";
         /**
@@ -7928,8 +8058,16 @@ export interface components {
          *     where the VMs' storage is, and what a VM may have.
          */
         VmPlugin: {
-            /** @description Linux bridges of the machine's own, for VMs on the LAN. */
+            /**
+             * @description Linux bridges of the machine's own, for VMs on the LAN; internal
+             *     networks aside.
+             */
             bridges: string[];
+            /**
+             * @description Wired cards and bonds in no bridge or bond, for a card directly on
+             *     one (macvtap).
+             */
+            cards: string[];
             /**
              * Format: int32
              * @description Threads and memory of the machine.
@@ -7942,11 +8080,33 @@ export interface components {
              */
             image_upload_max_bytes: number;
             installed: boolean;
+            /**
+             * @description Internal networks: bridges zendiloOS made without members or an
+             *     address of the NAS's, on which VMs reach each other only.
+             */
+            internal_networks: string[];
+            /** @description Every location of the VMs' storage, the first first. */
+            locations: components["schemas"]["VmStoragePlace"][];
             /** Format: int64 */
             memory_bytes: number;
-            /** @description Where the storage can go. */
-            pools: components["schemas"]["VmStoragePlace"][];
+            /** @description Where a location can go. */
+            pools: components["schemas"]["VmPoolInfo"][];
             storage?: components["schemas"]["VmStoragePlace"] | null;
+        };
+        /** @description A pool zendiloOS made, where a location of the VMs' storage can go. */
+        VmPoolInfo: {
+            /** Format: int64 */
+            available_bytes: number;
+            /** @description ZFS's word: `online`, `degraded`, `faulted`, … */
+            health: string;
+            pool: string;
+            /**
+             * Format: int64
+             * @description Space as files see it.
+             */
+            used_bytes: number;
+            /** Format: int32 */
+            volume: number;
         };
         /**
          * @description What libvirt says a VM does.
@@ -7979,7 +8139,10 @@ export interface components {
             /** @description Each running VM's load. */
             vms: components["schemas"]["VmLoad"][];
         };
-        /** @description A pool zendiloOS made, by its name and volume. */
+        /**
+         * @description A location of the VMs' storage, or a pool zendiloOS made, by its name
+         *     and volume.
+         */
         VmStoragePlace: {
             pool: string;
             /** Format: int32 */
@@ -13724,6 +13887,11 @@ export interface operations {
                 action?: string;
                 /** @description Only entries whose action starts so, such as `containers.`. */
                 prefix?: string;
+                /**
+                 * @description Only entries whose actor, action, target, address or reason holds
+                 *     this, whatever the case; at most 100 characters.
+                 */
+                search?: string;
             };
             header?: never;
             path?: never;
@@ -13741,6 +13909,15 @@ export interface operations {
             };
             /** @description `forbidden` */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input`: a search too long or with control characters */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -17109,7 +17286,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description `invalid_input`: more than the machine has, an unknown bridge or image, devices that break the rules */
+            /** @description `invalid_input`: more than the machine has, an unknown bridge, internal network, card, pool or image, devices that break the rules */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -17331,6 +17508,116 @@ export interface operations {
             };
         };
     };
+    list_vm_locations: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VmLocation"][];
+                };
+            };
+        };
+    };
+    add_vm_location: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VmStorageRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VmPlugin"];
+                };
+            };
+            /** @description `not_found`: no such pool */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `vms_not_installed`; `refused`: the host's reason */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    remove_vm_location: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pool: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RemoveVmLocationRequest"];
+            };
+        };
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `location_in_use`: the detail names the VMs, or the image library; `refused` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `confirmation_mismatch` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     vm_plugin: {
         parameters: {
             query?: never;
@@ -17490,7 +17777,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description `invalid_input`: a disk shrunk, more than the machine has; `confirmation_mismatch`: a disk removed without the name */
+            /** @description `invalid_input`: a disk shrunk or moved to another location, more than the machine has; `confirmation_mismatch`: a disk removed without the name */
             422: {
                 headers: {
                     [name: string]: unknown;

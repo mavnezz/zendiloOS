@@ -2,28 +2,49 @@
 import { Network, Plus, Trash2 } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 
-import type { VirtualMachine, VmNicModel } from '@/shared/api/types'
+import type { VirtualMachine, VmNicModel, VmPlugin } from '@/shared/api/types'
 import { useOpenApp } from '@/shared/lib/window-section'
 import { Button } from '@/shared/ui/button'
 import { Label } from '@/shared/ui/label'
 import { NativeSelect } from '@/shared/ui/native-select'
 
-import { NIC_MODELS, NICS_MAX, addNic, removeNic, type VmForm } from '../lib/vms'
+import {
+  NETWORK_KINDS,
+  NIC_MODELS,
+  NICS_MAX,
+  addNic,
+  networkChoices,
+  removeNic,
+  withNetworkKind,
+  type NetworkKind,
+  type VmForm,
+} from '../lib/vms'
 
 /**
- * A VM's network cards; `bridges` the machine's, `before` the VM being
- * changed, whose cards keep their MAC addresses.
+ * A VM's network cards; `plugin` says what the machine has to put them
+ * on, `before` is the VM being changed, whose cards keep their MAC
+ * addresses.
  */
-const props = defineProps<{ bridges: string[]; before?: VirtualMachine; disabled?: boolean }>()
+const props = defineProps<{ plugin: VmPlugin; before?: VirtualMachine; disabled?: boolean }>()
 const form = defineModel<VmForm>('form', { required: true })
 const emit = defineEmits<{ leave: [] }>()
 
 const { t } = useI18n()
 const openApp = useOpenApp()
 
-/** The bridges a card may go on: the machine's, and the one it is on. */
-function choices(bridge: string | null): string[] {
-  return bridge && !props.bridges.includes(bridge) ? [...props.bridges, bridge] : props.bridges
+const bridges = () => props.plugin.bridges
+
+function setKind(slot: number, kind: NetworkKind): void {
+  form.value = {
+    ...form.value,
+    nics: form.value.nics.map((nic) =>
+      nic.slot === slot ? withNetworkKind(nic, kind, props.plugin) : nic,
+    ),
+  }
+}
+
+function label(kind: NetworkKind, device: string): string {
+  return t(`vms.networks.on.${kind}`, { device })
 }
 
 function mac(slot: number): string | undefined {
@@ -37,11 +58,11 @@ function setModel(slot: number, model: VmNicModel): void {
   }
 }
 
-function setNetwork(slot: number, value: string): void {
-  const bridge = value === '' ? null : value
+function setDevice(slot: number, value: string): void {
+  const device = value === '' ? null : value
   form.value = {
     ...form.value,
-    nics: form.value.nics.map((nic) => (nic.slot === slot ? { ...nic, bridge } : nic)),
+    nics: form.value.nics.map((nic) => (nic.slot === slot ? { ...nic, device } : nic)),
   }
 }
 
@@ -63,7 +84,7 @@ function toNetwork(): void {
         v-for="nic in form.nics"
         :key="nic.slot"
         :data-nic="nic.slot"
-        class="grid gap-3 rounded-lg border p-3 sm:grid-cols-[1fr_10rem_12rem_auto] sm:items-end"
+        class="grid gap-3 rounded-lg border p-3 sm:grid-cols-[1fr_9rem_11rem_10rem_auto] sm:items-end"
       >
         <span class="grid gap-0.5 text-sm font-medium sm:self-center">
           <span class="flex items-center gap-2">
@@ -95,15 +116,42 @@ function toNetwork(): void {
           }}</Label>
           <NativeSelect
             :id="`vm-nic-${nic.slot}-network`"
-            :model-value="nic.bridge ?? ''"
+            :model-value="nic.kind"
             :disabled="disabled"
-            @update:model-value="(value) => setNetwork(nic.slot, String(value))"
+            @update:model-value="(value) => setKind(nic.slot, value as NetworkKind)"
           >
-            <option value="">{{ t('vms.wizard.user') }}</option>
-            <option v-for="bridge in choices(nic.bridge)" :key="bridge" :value="bridge">
-              {{ t('vms.wizard.bridge', { bridge }) }}
+            <option v-for="kind in NETWORK_KINDS" :key="kind" :value="kind">
+              {{ t(`vms.networks.kinds.${kind}`) }}
             </option>
           </NativeSelect>
+        </div>
+        <div class="grid gap-1.5">
+          <Label :for="`vm-nic-${nic.slot}-device`" class="text-xs">{{
+            t(`vms.networks.device.${nic.kind}`)
+          }}</Label>
+          <NativeSelect
+            v-if="nic.kind !== 'user'"
+            :id="`vm-nic-${nic.slot}-device`"
+            :model-value="nic.device ?? ''"
+            :disabled="disabled || !networkChoices(plugin, nic.kind, nic.device).length"
+            :aria-invalid="!nic.device"
+            @update:model-value="(value) => setDevice(nic.slot, String(value))"
+          >
+            <option v-if="!nic.device" value="">{{ t('vms.networks.none') }}</option>
+            <option
+              v-for="device in networkChoices(plugin, nic.kind, nic.device)"
+              :key="device"
+              :value="device"
+            >
+              {{ label(nic.kind, device) }}
+            </option>
+          </NativeSelect>
+          <span
+            v-else
+            :id="`vm-nic-${nic.slot}-device`"
+            class="py-2 text-sm text-muted-foreground"
+            >{{ t('vms.networks.throughNas') }}</span
+          >
         </div>
         <Button
           type="button"
@@ -128,11 +176,13 @@ function toNetwork(): void {
       <Plus />
       {{ t('vms.devices.addNic') }}
     </Button>
-    <div class="grid gap-1 text-xs text-muted-foreground">
-      <p>{{ t('vms.wizard.userHint') }}</p>
-      <p v-if="bridges.length">{{ t('vms.wizard.bridgeHint') }}</p>
-    </div>
-    <div v-if="!bridges.length" class="grid justify-items-start gap-2">
+    <ul class="grid gap-1 text-xs text-muted-foreground">
+      <li v-for="kind in NETWORK_KINDS" :key="kind">
+        <span class="font-medium text-foreground">{{ t(`vms.networks.kinds.${kind}`) }}:</span>
+        {{ t(`vms.networks.means.${kind}`) }}
+      </li>
+    </ul>
+    <div v-if="!bridges().length" class="grid justify-items-start gap-2">
       <p class="text-xs text-muted-foreground">{{ t('vms.wizard.noBridge') }}</p>
       <Button v-if="openApp" type="button" size="sm" variant="outline" @click="toNetwork">
         {{ t('vms.wizard.toNetwork') }}

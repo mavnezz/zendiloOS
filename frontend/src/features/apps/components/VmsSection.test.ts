@@ -20,13 +20,16 @@ function plugin(extra: Partial<VmPlugin> = {}): VmPlugin {
     hardware: { kvm: true, cpu_virtualization: 'svm', iommu: true },
     installed: false,
     storage: null,
+    locations: [],
     pools: [
-      { pool: 'cold', volume: 2 },
-      { pool: 'tank', volume: 1 },
+      { pool: 'cold', volume: 2, health: 'online', used_bytes: 0, available_bytes: 1 << 30 },
+      { pool: 'tank', volume: 1, health: 'online', used_bytes: 0, available_bytes: 1 << 30 },
     ],
     cores: 8,
     memory_bytes: 16 * 1024 ** 3,
     bridges: [],
+    internal_networks: [],
+    cards: [],
     image_upload_max_bytes: 32 * 1024 ** 3,
     ...extra,
   }

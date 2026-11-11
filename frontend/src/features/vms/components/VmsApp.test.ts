@@ -25,10 +25,15 @@ const PLUGIN: VmPlugin = {
   hardware: { kvm: true, cpu_virtualization: 'vmx', iommu: false },
   installed: true,
   storage: { pool: 'tank', volume: 1 },
-  pools: [{ pool: 'tank', volume: 1 }],
+  locations: [{ pool: 'tank', volume: 1 }],
+  pools: [
+    { pool: 'tank', volume: 1, health: 'online', used_bytes: 1 << 30, available_bytes: 99 << 30 },
+  ],
   cores: 4,
   memory_bytes: 8 * 1024 ** 3,
   bridges: ['br0'],
+  internal_networks: ['vmnet0'],
+  cards: ['enp1s0', 'bond0'],
   image_upload_max_bytes: 32 * 1024 ** 3,
 }
 
@@ -40,7 +45,7 @@ function vm(id: string, name: string, extra: Partial<VirtualMachine> = {}): Virt
     cpus: 2,
     memory_mib: 2048,
     firmware: 'uefi',
-    disks: [{ slot: 0, size_gib: 20, bus: 'virtio' }],
+    disks: [{ slot: 0, size_gib: 20, bus: 'virtio', pool: 'tank', volume: 1 }],
     nics: [{ slot: 0, model: 'virtio', network: { kind: 'user' }, mac: '52:54:00:00:00:01' }],
     drives: [{ slot: 0, image: null }],
     boot: [
@@ -48,8 +53,6 @@ function vm(id: string, name: string, extra: Partial<VirtualMachine> = {}): Virt
       { kind: 'disk', slot: 0 },
     ],
     autostart: false,
-    pool: 'tank',
-    volume: 1,
     created_at: 1_790_000_000,
     state: 'shut_off',
     ...extra,
@@ -130,8 +133,8 @@ beforeEach(() => {
       cpus: 1,
       memory_mib: 1536,
       disks: [
-        { slot: 0, size_gib: 64, bus: 'sata' },
-        { slot: 1, size_gib: 100, bus: 'sata' },
+        { slot: 0, size_gib: 64, bus: 'sata', pool: 'tank', volume: 1 },
+        { slot: 1, size_gib: 100, bus: 'sata', pool: 'tank', volume: 1 },
       ],
       nics: [
         {
@@ -177,6 +180,42 @@ describe('the Virtual machines app', () => {
     expect(nav).toMatch(new RegExp(`${t('vms.sections.machines')}\\s*2`))
   })
 
+  it('has the storage, the networks and the VMs’ log as pages of their own', async () => {
+    on('GET', '/api/v1/vms/locations', [])
+    on('GET', '/api/v1/logs/audit', {
+      entries: [
+        {
+          id: 9,
+          at: 1_790_000_000,
+          actor: 'alice',
+          client_ip: null,
+          action: 'vms.location_add',
+          target: 'cold',
+          outcome: 'success',
+          reason: null,
+          request_id: null,
+        },
+      ],
+      older: null,
+    })
+    await mountVms()
+    const nav = document.querySelector('nav')?.textContent ?? ''
+    for (const name of ['storage', 'networks', 'log'])
+      expect(nav).toContain(t(`vms.sections.${name}`))
+    section.value = 'storage'
+    await settle()
+    expect(page()).toContain(t('vms.storage.description'))
+    section.value = 'networks'
+    await settle()
+    expect(page()).toContain(t('vms.networks.kinds.internal'))
+    expect(page()).toContain('Büro-PC')
+    section.value = 'log'
+    await settle()
+    expect(called('GET', '/api/v1/logs/audit').at(-1)?.query).toMatchObject({ prefix: 'vms.' })
+    expect(page()).toContain(t('vms.log.actions.location_add'))
+    expect(page()).toContain('cold')
+  })
+
   it('shows each VM with its state, resources and network', async () => {
     await mountVms()
     const office = card('00000000000b')
@@ -185,7 +224,7 @@ describe('the Virtual machines app', () => {
     expect(office).toContain('1.5 GiB')
     expect(office).toContain(t('vms.disks', 2))
     expect(office).toContain('164 GiB')
-    expect(office).toContain(t('vms.bridgeNetwork', { bridge: 'br0' }))
+    expect(office).toContain(t('vms.networks.on.bridge', { device: 'br0' }))
     const debian = card('0a1b2c3d4e5f')
     expect(debian).toContain(t('vms.states.running'))
     expect(debian).toContain(t('vms.userNetwork'))

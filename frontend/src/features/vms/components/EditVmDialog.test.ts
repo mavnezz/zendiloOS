@@ -18,10 +18,18 @@ const PLUGIN: VmPlugin = {
   hardware: { kvm: true, cpu_virtualization: 'vmx', iommu: false },
   installed: true,
   storage: { pool: 'tank', volume: 1 },
-  pools: [{ pool: 'tank', volume: 1 }],
+  locations: [
+    { pool: 'tank', volume: 1 },
+    { pool: 'cold', volume: 2 },
+  ],
+  pools: [
+    { pool: 'tank', volume: 1, health: 'online', used_bytes: 1 << 30, available_bytes: 99 << 30 },
+  ],
   cores: 4,
   memory_bytes: 8 * 1024 ** 3,
   bridges: ['br0'],
+  internal_networks: ['vmnet0'],
+  cards: ['enp1s0', 'bond0'],
   image_upload_max_bytes: 32 * 1024 ** 3,
 }
 
@@ -55,8 +63,8 @@ function vm(extra: Partial<VirtualMachine> = {}): VirtualMachine {
     memory_mib: 1024,
     firmware: 'uefi',
     disks: [
-      { slot: 0, size_gib: 20, bus: 'virtio' },
-      { slot: 1, size_gib: 50, bus: 'sata' },
+      { slot: 0, size_gib: 20, bus: 'virtio', pool: 'tank', volume: 1 },
+      { slot: 1, size_gib: 50, bus: 'sata', pool: 'tank', volume: 1 },
     ],
     nics: [{ slot: 0, model: 'virtio', network: { kind: 'user' }, mac: '52:54:00:12:34:56' }],
     drives: [{ slot: 0, image: null }],
@@ -65,8 +73,6 @@ function vm(extra: Partial<VirtualMachine> = {}): VirtualMachine {
       { kind: 'disk', slot: 0 },
     ],
     autostart: false,
-    pool: 'tank',
-    volume: 1,
     created_at: 0,
     state: 'shut_off',
     ...extra,
@@ -112,10 +118,14 @@ describe('editing a VM', () => {
     await type('#vm-disk-0-size', '10')
     expect(button(t('vms.edit.save')).disabled).toBe(true)
     await type('#vm-disk-0-size', '30')
+    // A disk the VM has stays where it is; a new one may go elsewhere.
+    expect(document.querySelector<HTMLSelectElement>('#vm-disk-0-pool')!.disabled).toBe(true)
     await click(t('vms.devices.addDisk'))
+    expect(document.querySelector<HTMLSelectElement>('#vm-disk-2-pool')!.disabled).toBe(false)
+    await type('#vm-disk-2-pool', 'cold')
     await tab('network')
     expect(page()).toContain(t('vms.devices.mac', { mac: '52:54:00:12:34:56' }))
-    await type('#vm-nic-0-network', 'br0')
+    await type('#vm-nic-0-network', 'bridge')
     await submit('#vm-edit')
     expect(called('PUT', '/api/v1/vms/0a1b2c3d4e5f')[0]?.body).toEqual({
       name: 'box2',
@@ -123,9 +133,9 @@ describe('editing a VM', () => {
       memory_mib: 2048,
       firmware: 'bios',
       disks: [
-        { slot: 0, size_gib: 30, bus: 'virtio' },
-        { slot: 1, size_gib: 50, bus: 'sata' },
-        { slot: 2, size_gib: 32, bus: 'virtio' },
+        { slot: 0, size_gib: 30, bus: 'virtio', pool: 'tank' },
+        { slot: 1, size_gib: 50, bus: 'sata', pool: 'tank' },
+        { slot: 2, size_gib: 32, bus: 'virtio', pool: 'cold' },
       ],
       nics: [{ slot: 0, model: 'virtio', network: { kind: 'bridge', bridge: 'br0' } }],
       drives: [{ slot: 0, image: null }],
@@ -155,7 +165,7 @@ describe('editing a VM', () => {
     await submit('#vm-edit')
     const body = called('PUT', '/api/v1/vms/0a1b2c3d4e5f')[0]?.body as Record<string, unknown>
     expect(body.confirm).toBe('box')
-    expect(body.disks).toEqual([{ slot: 0, size_gib: 20, bus: 'virtio' }])
+    expect(body.disks).toEqual([{ slot: 0, size_gib: 20, bus: 'virtio', pool: 'tank' }])
   })
 
   it('changes only the name, autostart and media of a VM that runs', async () => {
