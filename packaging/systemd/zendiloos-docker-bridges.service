@@ -13,6 +13,11 @@ Documentation=https://github.com/mavnezz/zendiloOS
 # nothing.
 After=docker.service
 PartOf=docker.service
+# Started after every change of the bridges, which can come seconds apart
+# (a bond, a VLAN on it, both removed); systemd's default limit of five
+# starts in ten seconds would refuse the last one and leave the chain as it
+# was. It is short and does the same each time, so it is not limited.
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
