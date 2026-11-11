@@ -138,19 +138,22 @@ impl Ssh {
         let service = format!("{OFF}.service");
         let _ = self.run(&self.systemctl, &["stop", &timer]).await;
         let _ = self.run(&self.systemctl, &["reset-failed", &service]).await;
+        // The unit is the package's and unchanged: enabling and disabling
+        // only link it, which systemd reads at boot, so none of them
+        // reloads systemd (every reload runs all generators again).
         if !config.enabled {
-            self.run(&self.systemctl, &["disable", "--now", UNIT]).await?;
+            self.run(&self.systemctl, &["disable", "--no-reload", "--now", UNIT]).await?;
             // What a time-limited start enabled until the next boot.
-            self.run(&self.systemctl, &["disable", "--runtime", UNIT]).await?;
+            self.run(&self.systemctl, &["disable", "--no-reload", "--runtime", UNIT]).await?;
             return Ok(Response::Done);
         }
         if config.off_after.is_some() {
             // Enabled for good, it would outlive its timer across a restart.
-            self.run(&self.systemctl, &["disable", UNIT]).await?;
-            self.run(&self.systemctl, &["enable", "--runtime", "--now", UNIT]).await?;
+            self.run(&self.systemctl, &["disable", "--no-reload", UNIT]).await?;
+            self.run(&self.systemctl, &["enable", "--no-reload", "--runtime", "--now", UNIT]).await?;
         } else {
-            self.run(&self.systemctl, &["disable", "--runtime", UNIT]).await?;
-            self.run(&self.systemctl, &["enable", "--now", UNIT]).await?;
+            self.run(&self.systemctl, &["disable", "--no-reload", "--runtime", UNIT]).await?;
+            self.run(&self.systemctl, &["enable", "--no-reload", "--now", UNIT]).await?;
         }
         // A new port needs the listener anew; sshd re-executes on reload.
         self.run(&self.systemctl, &["reload-or-restart", UNIT]).await?;
@@ -170,6 +173,7 @@ impl Ssh {
                     "--collect",
                     &systemctl,
                     "disable",
+                    "--no-reload",
                     "--runtime",
                     "--now",
                     UNIT,

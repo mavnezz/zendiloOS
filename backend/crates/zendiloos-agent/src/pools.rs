@@ -580,10 +580,15 @@ impl Pools {
         Ok(())
     }
 
+    /// Writes `unit` and has it started now and at every boot. systemd is
+    /// reloaded only when the file changed: a reload runs every generator
+    /// again and is logged. Enabling only links the unit, which systemd
+    /// reads at boot, so it reloads nothing either.
     async fn install_unit(&self, unit: &str, content: &str) -> Result<(), OperationError> {
-        crate::durable::replace(&self.paths.units.join(unit), content.as_bytes())?;
-        run(&self.systemctl, &["daemon-reload"]).await?;
-        run(&self.systemctl, &["enable", "--now", unit]).await
+        if crate::durable::replace_if_changed(&self.paths.units.join(unit), content.as_bytes())? {
+            run(&self.systemctl, &["daemon-reload"]).await?;
+        }
+        run(&self.systemctl, &["enable", "--no-reload", "--now", unit]).await
     }
 
     /// Starts `units` again, the volume's before its shares', after a
@@ -599,7 +604,8 @@ impl Pools {
     async fn remove_unit(&self, unit: &str) -> Result<(), OperationError> {
         let path = self.paths.units.join(unit);
         if path.exists() {
-            run(&self.systemctl, &["disable", "--now", unit]).await?;
+            // One reload, once the file is gone.
+            run(&self.systemctl, &["disable", "--no-reload", "--now", unit]).await?;
             fs::remove_file(&path).map_err(|e| OperationError::Write(path.clone(), e))?;
             run(&self.systemctl, &["daemon-reload"]).await?;
         }
@@ -699,7 +705,7 @@ impl Pools {
         let requires = format!(
             "# Written by zendiloOS: Docker's data is on a pool; without it, Docker waits.\n[Unit]\nRequiresMountsFor={root}\n"
         );
-        write_file(&drop_in, &requires)?;
+        let changed = crate::durable::replace_if_changed(&drop_in, requires.as_bytes())?;
         config.insert("data-root".to_owned(), root.clone().into());
         config.insert("storage-driver".to_owned(), "overlay2".into());
         let text = serde_json::to_string_pretty(&config).unwrap_or_default();
@@ -707,7 +713,9 @@ impl Pools {
             fs::create_dir_all(parent).map_err(|e| OperationError::Write(parent.to_owned(), e))?;
         }
         write_file(&self.paths.docker_config, &format!("{text}\n"))?;
-        run(&self.systemctl, &["daemon-reload"]).await?;
+        if changed {
+            run(&self.systemctl, &["daemon-reload"]).await?;
+        }
         Ok(())
     }
 
@@ -761,26 +769,29 @@ impl Pools {
             pool = pool.as_str(),
         );
         self.install_unit(&unit, &content).await?;
-        self.libvirt_waits_for(&crate::vms::vms_locations(&self.paths))?;
-        run(&self.systemctl, &["daemon-reload"]).await
+        // One reload, and only when libvirt's drop-in changed.
+        if self.libvirt_waits_for(&crate::vms::vms_locations(&self.paths))? {
+            run(&self.systemctl, &["daemon-reload"]).await?;
+        }
+        Ok(())
     }
 
     /// libvirt's drop-in: it starts only with every location mounted
     /// (`RequiresMountsFor=`, one line each); without a location it goes.
+    /// `true` when the file changed, so systemd needs to read it again.
     fn libvirt_waits_for(
         &self,
         locations: &[zendiloos_agent_proto::VmStorage],
-    ) -> Result<(), OperationError> {
+    ) -> Result<bool, OperationError> {
         use zendiloos_agent_proto::VMS_DIRECTORY;
 
         let drop_in = self.paths.units.join("libvirtd.service.d");
         let file = drop_in.join("zendiloos.conf");
         if locations.is_empty() {
             return match fs::remove_file(&file) {
-                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-                    Err(OperationError::Write(file, error))
-                }
-                _ => Ok(()),
+                Ok(()) => Ok(true),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+                Err(error) => Err(OperationError::Write(file, error)),
             };
         }
         fs::create_dir_all(&drop_in).map_err(|e| OperationError::Write(drop_in.clone(), e))?;
@@ -792,7 +803,7 @@ impl Pools {
             requires
                 .push_str(&format!("RequiresMountsFor=/volume{}/{VMS_DIRECTORY}\n", location.volume.get()));
         }
-        write_file(&file, &requires)
+        crate::durable::replace_if_changed(&file, requires.as_bytes())
     }
 
     /// Removes a location of the virtual machines' storage, refused while

@@ -90,6 +90,7 @@ The Debian package `zendiloos` (built with `just deb`) installs:
 | `/run/zendiloos-removable/` | the places removable drives are mounted at, a folder each, named by the UUID of their file system |
 | `zendiloos-nfs-flush.service` | releases a share's NFS exports in the host's network namespace (3.3) |
 | `zendiloos-docker-bridges.service` | after every start of Docker and every change of the network's devices: lets frames within the bridges zendiloOS made pass Docker's `FORWARD` chain, its one rule in `DOCKER-USER` (4.12) |
+| `/etc/systemd/system-generators/systemd-gpt-auto-generator` | a link to `/dev/null`, made at installation unless something is there already (the marker `/etc/zendiloos/masked-generators` says it is zendiloOS's; removed on purge): the generator mounts partitions of discoverable GPT types that fstab does not name, which a NAS installed with Debian's installer does not need, and on an eMMC system disk it fails at every reload of systemd ("Cannot dissect image: Input/output error") |
 | `/etc/systemd/network/05-zendiloos-*` | the interfaces' settings and the bridges, bonds and VLANs zendiloOS made, written by the agent; while a change waits, its record `zendiloos-change.json` (6) |
 | `/run/zendiloos/api.sock` | `zendiloosd.socket`, `zendiloos:www-data 0660`: only nginx reaches the API |
 | `/run/zendiloos/agent.sock` | `zendiloos-agent.socket`, `root:zendiloos 0660`: only zendiloosd reaches the system agent |
@@ -467,7 +468,15 @@ simple to audit.
   zendiloOS manages (`smbd`, `nfs-server`, `wsdd2`, `avahi-daemon`, `ssh`,
   `docker`, `nginx`, `systemd-timesyncd`, `zendiloos-firewall`; for a
   network taken over from ifupdown `networking.service`,
-  `systemd-networkd` and `systemd-resolved`). What has
+  `systemd-networkd` and `systemd-resolved`). systemd is reloaded only
+  when a unit file or drop-in the agent writes changed (written only
+  then): every reload runs all generators again and is logged. Enabling
+  and disabling the file services, SSH and zendiloOS's own mount and pin
+  units goes with `--no-reload`, since it only links a unit, which systemd
+  reads at boot; without it systemctl reloads systemd each time, also
+  when nothing changed, which made a change of the file services and
+  every start of zendiloosd (which writes their configuration) reload it
+  four times. What has
   to run outside the agent's sandbox runs as a unit: transient ones through
   `systemd-run` (apt, acme.sh, `nginx -t`, `nft -c`) and `systemd-mount`
   (removable drives), or a unit of the package. The kernel's NFS server

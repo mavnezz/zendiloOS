@@ -187,9 +187,12 @@ pub(crate) async fn place_unit(
     shares.sort_unstable();
     shares.dedup();
     let content = unit(&paths.agent, owner, &shares);
-    crate::durable::replace(&path, content.as_bytes())?;
-    systemctl(program, &["daemon-reload"]).await?;
-    systemctl(program, &["enable", &name]).await
+    // systemd is reloaded only for a unit that changed: a project deployed
+    // again with the same folders changes nothing. Enabling only links it.
+    if crate::durable::replace_if_changed(&path, content.as_bytes())? {
+        systemctl(program, &["daemon-reload"]).await?;
+    }
+    systemctl(program, &["enable", "--no-reload", &name]).await
 }
 
 /// Stops (and so unpins) and removes `owner`'s unit, if there is one.
@@ -201,7 +204,8 @@ pub(crate) async fn remove_unit(
     let name = owner.unit_name();
     let path = paths.units.join(&name);
     if path.exists() {
-        systemctl(program, &["disable", "--now", &name]).await?;
+        // One reload, once the file is gone.
+        systemctl(program, &["disable", "--no-reload", "--now", &name]).await?;
         fs::remove_file(&path).map_err(|e| OperationError::Write(path.clone(), e))?;
         systemctl(program, &["daemon-reload"]).await?;
     }
@@ -870,9 +874,11 @@ mod tests {
         };
         let unit = dir.path().join(owner.unit_name());
 
-        place_unit(&program, &paths, owner, &[pin.clone(), pin]).await.unwrap();
+        place_unit(&program, &paths, owner, &[pin.clone(), pin.clone()]).await.unwrap();
         let text = fs::read_to_string(&unit).unwrap();
         assert!(text.contains("RequiresMountsFor=/volume1/media\n"), "each share once: {text}");
+        // Placed again unchanged (a project deployed again): no reload.
+        place_unit(&program, &paths, owner, &[pin]).await.unwrap();
         repin(&program, owner).await.unwrap();
         // No pins any more: the unit goes.
         place_unit(&program, &paths, owner, &[]).await.unwrap();
@@ -881,9 +887,10 @@ mod tests {
         let calls = fs::read_to_string(dir.path().join("calls.log")).unwrap();
         assert_eq!(
             calls,
-            "daemon-reload\nenable zendiloos-app-jellyfin-shares.service\n\
+            "daemon-reload\nenable --no-reload zendiloos-app-jellyfin-shares.service\n\
+             enable --no-reload zendiloos-app-jellyfin-shares.service\n\
              restart zendiloos-app-jellyfin-shares.service\n\
-             disable --now zendiloos-app-jellyfin-shares.service\ndaemon-reload\n",
+             disable --no-reload --now zendiloos-app-jellyfin-shares.service\ndaemon-reload\n",
             "nothing to remove the second time"
         );
 

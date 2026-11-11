@@ -370,8 +370,12 @@ impl Sharing {
         checked?;
         let before = fs::read_to_string(&self.paths.samba_config).unwrap_or_default();
         write_atomically(&self.paths.samba_config, &samba)?;
+        // The services' units are their packages' and unchanged: enabling
+        // or disabling only links them, which systemd reads at boot. Without
+        // `--no-reload` systemctl would reload systemd for each, four times
+        // at every change of the shares and every start of zendiloosd.
         if services.smb {
-            run(&self.systemctl, &["enable", "--now", "smbd.service"]).await?;
+            run(&self.systemctl, &["enable", "--no-reload", "--now", "smbd.service"]).await?;
             // smbd announces itself and its Time Machine shares over Bonjour
             // when it starts, not when it reloads: it restarts when that
             // changes, which ends open connections; otherwise it reloads.
@@ -389,17 +393,17 @@ impl Sharing {
                 }
             }
         } else {
-            run(&self.systemctl, &["disable", "--now", "smbd.service"]).await?;
+            run(&self.systemctl, &["disable", "--no-reload", "--now", "smbd.service"]).await?;
         }
         if services.smb && services.wsdd {
-            self.optional(&["enable", "--now", WSDD]).await;
+            self.optional(&["enable", "--no-reload", "--now", WSDD]).await;
         } else {
-            self.optional(&["disable", "--now", WSDD]).await;
+            self.optional(&["disable", "--no-reload", "--now", WSDD]).await;
         }
         if services.bonjour {
-            self.optional(&["enable", "--now", AVAHI_SOCKET, AVAHI]).await;
+            self.optional(&["enable", "--no-reload", "--now", AVAHI_SOCKET, AVAHI]).await;
         } else {
-            self.optional(&["disable", "--now", AVAHI, AVAHI_SOCKET]).await;
+            self.optional(&["disable", "--no-reload", "--now", AVAHI, AVAHI_SOCKET]).await;
         }
 
         let exports = nfs_exports(nfs, squashed);
@@ -412,10 +416,10 @@ impl Sharing {
             // Through systemd: the kernel's NFS server keeps its export
             // cache per network namespace, and this agent has its own.
             if services.nfs {
-                run(&self.systemctl, &["enable", "--now", "nfs-server.service"]).await?;
+                run(&self.systemctl, &["enable", "--no-reload", "--now", "nfs-server.service"]).await?;
                 run(&self.systemctl, &["reload-or-restart", "nfs-server.service"]).await?;
             } else {
-                run(&self.systemctl, &["disable", "--now", "nfs-server.service"]).await?;
+                run(&self.systemctl, &["disable", "--no-reload", "--now", "nfs-server.service"]).await?;
             }
         }
         Ok(Response::Done)
@@ -1253,9 +1257,11 @@ mod tests {
             Response::Done
         );
         let calls = fs::read_to_string(dir.path().join("calls.log")).unwrap();
-        for stopped in
-            ["disable --now smbd.service", "disable --now wsdd2.service", "disable --now nfs-server.service"]
-        {
+        for stopped in [
+            "disable --no-reload --now smbd.service",
+            "disable --no-reload --now wsdd2.service",
+            "disable --no-reload --now nfs-server.service",
+        ] {
             assert!(calls.contains(stopped), "{stopped}: {calls}");
         }
         assert!(!calls.contains("smbcontrol"), "{calls}");
@@ -1314,7 +1320,7 @@ mod tests {
         assert!(exports.contains("all_squash,anonuid=995,anongid=995"), "{exports}");
         let calls = fs::read_to_string(dir.path().join("calls.log")).unwrap();
         assert!(
-            calls.contains("enable --now nfs-server.service")
+            calls.contains("enable --no-reload --now nfs-server.service")
                 && calls.contains("reload-or-restart nfs-server")
         );
 

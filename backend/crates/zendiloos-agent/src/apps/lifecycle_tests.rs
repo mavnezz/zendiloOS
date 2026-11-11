@@ -186,7 +186,11 @@ async fn an_app_installed_earlier_is_run_and_removed() {
     fs::write(&unit, "[Service]\n").unwrap();
     f.apps.remove(&app()).await.unwrap();
     assert!(f.calls().contains("down --rmi all --volumes --remove-orphans"));
-    assert!(f.calls().contains("disable --now zendiloos-app-shm-shares.service"), "{}", f.calls());
+    assert!(
+        f.calls().contains("disable --no-reload --now zendiloos-app-shm-shares.service"),
+        "{}",
+        f.calls()
+    );
     assert!(!unit.exists(), "the pins' unit goes");
     assert!(!f.kept_path().exists(), "the kept file goes");
     f.apps.remove(&app()).await.unwrap();

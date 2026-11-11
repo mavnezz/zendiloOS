@@ -387,7 +387,7 @@ async fn the_storage_goes_on_a_pool_and_libvirt_follows_it() {
         calls.iter().position(|call| call == wanted).unwrap_or_else(|| panic!("{wanted}: {calls:?}"))
     };
     at("zfs create -o mountpoint=legacy -o setuid=off -o devices=off -o exec=off tank/zendiloos.vms");
-    let enabled = at("systemctl enable --now volume1-\\x40vms.mount");
+    let enabled = at("systemctl enable --no-reload --now volume1-\\x40vms.mount");
     assert!(enabled < at("systemctl enable --now virtlogd.socket"));
     assert!(at("systemctl enable --now virtlogd.socket") < at("systemctl enable --now libvirtd.socket"));
     assert!(at("systemctl enable libvirtd.service") < at("systemctl restart libvirtd.service"));

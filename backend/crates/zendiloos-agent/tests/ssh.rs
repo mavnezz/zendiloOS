@@ -148,8 +148,8 @@ async fn ssh_runs_on_its_port_and_a_timer_turns_it_off() {
             "systemctl reset-failed zendiloos-ssh-off.service".to_owned(),
             // Enabled until the next boot only: the timer does not survive
             // a restart, so neither may the start with the machine.
-            "systemctl disable ssh.service".to_owned(),
-            "systemctl enable --runtime --now ssh.service".to_owned(),
+            "systemctl disable --no-reload ssh.service".to_owned(),
+            "systemctl enable --no-reload --runtime --now ssh.service".to_owned(),
             "systemctl reload-or-restart ssh.service".to_owned(),
         ]
     );
@@ -163,7 +163,7 @@ async fn ssh_runs_on_its_port_and_a_timer_turns_it_off() {
     assert_eq!(
         rest,
         format!(
-            "--on-active=10min --timer-property=AccuracySec=1s --collect {systemctl} disable --runtime --now ssh.service"
+            "--on-active=10min --timer-property=AccuracySec=1s --collect {systemctl} disable --no-reload --runtime --now ssh.service"
         )
     );
     let Response::SshState { installed, enabled, active, config, off_at } =
@@ -190,8 +190,8 @@ async fn turned_off_it_stays_off_and_no_timer_is_left() {
             sshd,
             "systemctl stop zendiloos-ssh-off.timer".to_owned(),
             "systemctl reset-failed zendiloos-ssh-off.service".to_owned(),
-            "systemctl disable --now ssh.service".to_owned(),
-            "systemctl disable --runtime ssh.service".to_owned(),
+            "systemctl disable --no-reload --now ssh.service".to_owned(),
+            "systemctl disable --no-reload --runtime ssh.service".to_owned(),
         ]
     );
 }
@@ -210,8 +210,8 @@ async fn turned_on_for_good_it_starts_with_the_machine() {
             sshd,
             "systemctl stop zendiloos-ssh-off.timer".to_owned(),
             "systemctl reset-failed zendiloos-ssh-off.service".to_owned(),
-            "systemctl disable --runtime ssh.service".to_owned(),
-            "systemctl enable --now ssh.service".to_owned(),
+            "systemctl disable --no-reload --runtime ssh.service".to_owned(),
+            "systemctl enable --no-reload --now ssh.service".to_owned(),
             "systemctl reload-or-restart ssh.service".to_owned(),
         ],
         "no timer"

@@ -6,6 +6,9 @@
 #   2. a share chosen for Time Machine is offered to Macs as one
 #   3. the discovery services follow their switches
 #   4. encryption required: a client that cannot encrypt is refused
+#   5. switching services on and off and restarting zendiloosd, which writes
+#      the servers' configuration at its start, make the agent reload
+#      systemd not once; systemd-gpt-auto-generator is masked
 #
 # Needs the VM running with the package installed and set up; account and
 # password as for vm-storage-test.sh. Uses two free disks of the VM for a
@@ -140,10 +143,24 @@ grep -q NT_STATUS_ACCESS_DENIED <<<"$out" || fail "a client that cannot encrypt 
 out=$(vm "smbclient //localhost/machines -U 'mac%$secret' -m SMB3 -c ls 2>&1" || true)
 ! grep -q NT_STATUS <<<"$out" || fail "an SMB 3 client was refused: $out"
 
+say "5. No reloads of systemd for units that did not change, and no GPT generator"
+[[ $(vm 'readlink /etc/systemd/system-generators/systemd-gpt-auto-generator') == /dev/null ]] \
+    || fail "systemd-gpt-auto-generator is not masked"
+since=$(vm 'date "+%Y-%m-%d %H:%M:%S"')
+call PUT /file-services '{"smb":true,"nfs":true,"workgroup":"WORKGROUP","smb_min_protocol":"smb2_1","wsdd":false,"bonjour":false}' >/dev/null
+call PUT /file-services "$defaults" >/dev/null
+[[ $(state_of wsdd2) == "enabled active" ]] || fail "wsdd2 back: $(state_of wsdd2)"
+vm 'sudo systemctl restart zendiloosd'
+wait_for "zendiloosd" "curl -skf $api/health" 120
+# systemd names who asked for each reload.
+reloads=$(vm "sudo journalctl -q --since '$since' _PID=1 -g 'Reload requested from client' -o cat" \
+    | grep -c 'unit zendiloos-agent.service' || true)
+[[ $reloads == 0 ]] || fail "the agent reloaded systemd $reloads times"
+
 say "Cleaning up"
 call PUT /file-services "$defaults" >/dev/null
 job_succeeded "$(call POST "/shares/$share/delete" '{"confirm":"machines"}' | jq -r .id)"
 call DELETE "/accounts/$mac" >/dev/null
 job_succeeded "$(call POST "/storage/pools/$pool/destroy" "{\"confirm\":\"$pool\"}" | jq -r .id)"
 
-say "Passed: SMB options, Time Machine, discovery, encryption"
+say "Passed: SMB options, Time Machine, discovery, encryption, no reloads of systemd for nothing"
