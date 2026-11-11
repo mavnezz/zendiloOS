@@ -148,11 +148,12 @@ impl Network {
     }
 
     /// What `systemctl is-enabled` says of `unit`; none if it has no unit
-    /// file (not installed).
+    /// file (not installed). systemd says that as a word too, `not-found`
+    /// (exit status 4), so that word counts as none.
     async fn enablement(&self, unit: &str) -> Option<String> {
         let output = zendiloos_exec::run(&self.systemctl, &["is-enabled", unit], super::LIMITS).await.ok()?;
         let state = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-        (!state.is_empty()).then_some(state)
+        (!state.is_empty() && state != "not-found").then_some(state)
     }
 
     async fn enabled(&self, unit: &str) -> bool {

@@ -59,7 +59,7 @@ impl Host {
                esac ;;\n\
              is-enabled) case \"$2\" in\n\
                networking.service) [ -e $R/ifupdown ] && echo enabled || exit 1 ;;\n\
-               systemd-resolved.service) [ -e $R/resolved-installed ] || exit 1; echo disabled; exit 1 ;;\n\
+               systemd-resolved.service) [ -e $R/resolved-installed ] || { echo not-found; exit 4; }; echo disabled; exit 1 ;;\n\
                *) echo disabled; exit 1 ;;\n\
                esac ;;\n\
              stop) case \"$*\" in *networking.service*) [ -e $R/stop-fails ] && exit 1; rm -f $R/networking ;; esac\n\
