@@ -6,7 +6,7 @@ use zendiloos_kernel::{Actor, RequestContext, Timestamp};
 
 use super::*;
 use crate::domain::{DiskBus, IMAGE_UPLOAD_MAX, ImageOrigin, Network, NicModel, OsPreset};
-use crate::testing::{FakeVmHost, MemoryImages, TestVms};
+use crate::testing::{FakeVmHost, MemoryImages, TestVms, cold, tank};
 
 fn alice() -> Actor {
     Actor { account_id: 1, name: "alice".into() }
@@ -32,7 +32,7 @@ fn small(name: &str) -> NewVm {
         settings: VmSettings {
             cpus: 1,
             memory_mib: 256,
-            disks: vec![Disk { slot: 0, size_gib: 1, bus: DiskBus::Virtio }],
+            disks: vec![Disk { slot: 0, size_gib: 1, bus: DiskBus::Virtio, location: Location::named("") }],
             ..VmSettings::preset(name, OsPreset::Linux)
         },
     }
@@ -92,7 +92,7 @@ async fn the_plugin_installs_only_where_kvm_is() {
 
     let test = TestVms::new(FakeVmHost::default());
     let plugin = test.vms.plugin(&context()).await.unwrap();
-    assert!(plugin.facts.kvm && !plugin.facts.installed && plugin.facts.storage.is_none());
+    assert!(plugin.facts.kvm && !plugin.facts.installed && plugin.library().is_none());
     assert_eq!(plugin.pools.len(), 2);
     assert!(matches!(test.vms.set_up("tank", &alice(), &context()).await, Err(VmsError::NotInstalled)));
     let job = test.vms.install(&alice(), &context()).await.unwrap();
@@ -102,15 +102,19 @@ async fn the_plugin_installs_only_where_kvm_is() {
 
     assert!(matches!(test.vms.set_up("nowhere", &alice(), &context()).await, Err(VmsError::PoolNotFound)));
     let plugin = test.vms.set_up("cold", &alice(), &context()).await.unwrap();
-    assert_eq!(plugin.facts.storage, Some(StoragePlace { pool: "cold".into(), volume: 2 }));
-    assert_eq!(actions(&test), ["vms.install", "vms.storage"]);
+    assert_eq!(plugin.library(), Some(&cold()));
+    // One more location goes after it: the library stays on the first.
+    let plugin = test.vms.add_location("tank", &alice(), &context()).await.unwrap();
+    assert_eq!(plugin.locations, [cold(), tank()]);
+    assert_eq!(plugin.library(), Some(&cold()));
+    assert_eq!(actions(&test), ["vms.install", "vms.storage", "vms.location_add"]);
 }
 
 #[tokio::test]
 async fn a_vm_is_made_in_a_job_with_its_devices_and_macs_of_their_own() {
     let test = with_debian();
     let mut new = small(" Debian ");
-    new.settings.disks.push(Disk { slot: 1, size_gib: 8, bus: DiskBus::Sata });
+    new.settings.disks.push(Disk { slot: 1, size_gib: 8, bus: DiskBus::Sata, location: Location::named("") });
     new.settings.nics.push(Nic {
         slot: 1,
         model: NicModel::E1000e,
@@ -123,7 +127,7 @@ async fn a_vm_is_made_in_a_job_with_its_devices_and_macs_of_their_own() {
     assert_eq!(view.state, PowerState::Creating);
     assert_eq!(view.vm.settings.name, "Debian", "kept trimmed");
     assert_eq!(view.vm.id, "000000000001");
-    assert_eq!((view.vm.pool.as_str(), view.vm.volume), ("tank", 1));
+    assert!(view.vm.settings.disks.iter().all(|disk| disk.location == tank()), "the first location");
     let macs: Vec<&str> = view.vm.settings.nics.iter().map(|nic| nic.mac.as_str()).collect();
     assert_eq!(macs, ["52:54:00:00:00:01", "52:54:00:00:00:02"]);
     assert_eq!(job.kind, "vms.create");
@@ -134,7 +138,7 @@ async fn a_vm_is_made_in_a_job_with_its_devices_and_macs_of_their_own() {
 
     let done = finished(&test, &job).await;
     assert_eq!(done.state, JobState::Succeeded, "{:?}", done.error);
-    assert_eq!(test.host.calls(), ["define 000000000001"]);
+    assert_eq!(test.host.calls(), ["define 000000000001 1"]);
     let listed = test.vms.list(&context()).await.unwrap();
     assert_eq!(listed.len(), 1);
     assert!(listed[0].vm.ready);
@@ -192,7 +196,7 @@ async fn a_failed_creation_leaves_nothing_behind() {
     let done = finished(&test, &job).await;
     assert_eq!(done.state, JobState::Failed);
     assert_eq!(done.error.unwrap().detail.as_deref(), Some("virsh: no such firmware"));
-    assert_eq!(test.host.calls(), [format!("define {}", view.vm.id), format!("remove {}", view.vm.id)]);
+    assert_eq!(test.host.calls(), [format!("define {} 1", view.vm.id), format!("remove {}", view.vm.id)]);
     assert!(test.vms.list(&context()).await.unwrap().is_empty(), "the record goes too");
 }
 
@@ -232,8 +236,8 @@ async fn hardware_changes_only_while_the_vm_is_off() {
     change.cpus = 2;
     change.memory_mib = 512;
     change.disks = vec![
-        Disk { slot: 0, size_gib: 2, bus: DiskBus::Virtio },
-        Disk { slot: 1, size_gib: 4, bus: DiskBus::Sata },
+        Disk { slot: 0, size_gib: 2, bus: DiskBus::Virtio, location: Location::named("") },
+        Disk { slot: 1, size_gib: 4, bus: DiskBus::Sata, location: Location::named("") },
     ];
     change.nics.push(Nic { slot: 1, model: NicModel::Virtio, network: Network::User, mac: String::new() });
     change.nics[0].mac.clear();
@@ -241,7 +245,7 @@ async fn hardware_changes_only_while_the_vm_is_off() {
     assert_eq!((changed.vm.settings.cpus, changed.vm.settings.memory_mib), (2, 512));
     assert_eq!(changed.vm.settings.nics[0].mac, mac, "a card keeps its address");
     assert_ne!(changed.vm.settings.nics[1].mac, mac);
-    assert_eq!(test.host.calls().last().unwrap(), &format!("update {id} []"));
+    assert_eq!(test.host.calls().last().unwrap(), &format!("update {id} 1 []"));
 
     // Running: hardware is refused, and nothing is asked of the host.
     test.vms.control(&id, VmAction::Start, &alice(), &context()).await.unwrap();
@@ -278,7 +282,7 @@ async fn hardware_changes_only_while_the_vm_is_off() {
 async fn a_disk_goes_only_with_the_name_typed_again_and_none_shrinks() {
     let test = TestVms::new(FakeVmHost::ready());
     let mut new = small("box");
-    new.settings.disks.push(Disk { slot: 1, size_gib: 4, bus: DiskBus::Sata });
+    new.settings.disks.push(Disk { slot: 1, size_gib: 4, bus: DiskBus::Sata, location: Location::named("") });
     let id = made(&test, new).await;
     let vm = test.vms.get(&id, &context()).await.unwrap().vm;
 
@@ -289,7 +293,7 @@ async fn a_disk_goes_only_with_the_name_typed_again_and_none_shrinks() {
         assert!(matches!(refused, Err(VmsError::ConfirmMismatch)), "{confirm:?}");
     }
     test.vms.update(&id, fewer.clone(), Some(" box "), &alice(), &context()).await.unwrap();
-    assert_eq!(test.host.calls().last().unwrap(), &format!("update {id} [1]"));
+    assert_eq!(test.host.calls().last().unwrap(), &format!("update {id} 1 [1]"));
 
     let mut smaller = fewer;
     smaller.disks[0].size_gib = 0;
@@ -543,4 +547,196 @@ async fn the_load_is_looked_at_while_someone_watches() {
     let again = test.vms.watch_stats();
     assert_eq!(again.latest(), None, "nothing old is shown");
     assert!(test.vms.stats_running());
+}
+
+/// A VM's disks on two locations: each made where it is asked, the first
+/// location where none is; a disk never moves, a new one may go anywhere.
+#[tokio::test]
+async fn disks_go_on_the_locations_they_are_asked_for_and_stay() {
+    let test = TestVms::new(FakeVmHost::two_locations());
+    let mut new = small("box");
+    new.settings.disks.push(Disk {
+        slot: 1,
+        size_gib: 4,
+        bus: DiskBus::Sata,
+        location: Location::named("cold"),
+    });
+    let id = made(&test, new).await;
+    assert_eq!(test.host.zvols(), [format!("cold/{id}-disk1"), format!("tank/{id}-disk0")]);
+    let vm = test.vms.get(&id, &context()).await.unwrap().vm;
+    assert_eq!(vm.settings.disks[0].location, tank());
+    assert_eq!(vm.settings.disks[1].location, cold());
+
+    let mut nowhere = small("other");
+    nowhere.settings.disks[0].location = Location::named("lost");
+    let refused = test.vms.create(nowhere, &alice(), &context()).await.unwrap_err();
+    assert!(matches!(&refused, VmsError::Invalid(e) if e.0.contains("lost holds no storage")), "{refused:?}");
+
+    // Moved: refused, nothing asked of the host.
+    let calls = test.host.calls().len();
+    let mut moved = change_of(&vm);
+    moved.disks[0].location = Location::named("cold");
+    let refused = test.vms.update(&id, moved, None, &alice(), &context()).await.unwrap_err();
+    assert!(matches!(&refused, VmsError::Invalid(e) if e.0.contains("disk 0 stays on tank")), "{refused:?}");
+    assert_eq!(test.host.calls().len(), calls);
+    // A disk named without its pool stays where it is; a new one goes on cold.
+    let mut grown = change_of(&vm);
+    grown.disks[0].location = Location::named("");
+    grown.disks.push(Disk { slot: 2, size_gib: 2, bus: DiskBus::Sata, location: Location::named("cold") });
+    let changed = test.vms.update(&id, grown, None, &alice(), &context()).await.unwrap();
+    assert_eq!(changed.vm.settings.disks[0].location, tank());
+    assert_eq!(changed.vm.settings.disks[2].location, cold());
+    assert!(test.host.zvols().contains(&format!("cold/{id}-disk2")));
+}
+
+/// Locations listed with what lies on them, added on pools zendiloOS made,
+/// and removed only once empty, with the pool's name typed again.
+#[tokio::test]
+async fn a_location_goes_only_once_nothing_lies_on_it() {
+    let test = TestVms::with_images(FakeVmHost::ready(), MemoryImages::with(vec![debian()]));
+    // Set up before the records kept locations: taken in.
+    let listed = test.vms.locations(&context()).await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert!(listed[0].library && listed[0].location == tank() && listed[0].images == 1);
+    assert_eq!(test.locations.list().await.unwrap(), [tank()]);
+
+    assert!(matches!(
+        test.vms.add_location("nowhere", &alice(), &context()).await,
+        Err(VmsError::PoolNotFound)
+    ));
+    test.vms.add_location("cold", &alice(), &context()).await.unwrap();
+    let mut new = small("box");
+    new.settings.disks[0].location = Location::named("cold");
+    new.settings.disks.push(Disk {
+        slot: 3,
+        size_gib: 8,
+        bus: DiskBus::Virtio,
+        location: Location::named("tank"),
+    });
+    let id = made(&test, new).await;
+
+    let listed = test.vms.locations(&context()).await.unwrap();
+    assert_eq!(listed.iter().map(|l| l.location.pool.as_str()).collect::<Vec<_>>(), ["tank", "cold"]);
+    let cold_view = &listed[1];
+    assert!(!cold_view.library && cold_view.images == 0);
+    assert_eq!(cold_view.pool.as_ref().unwrap().health, "online");
+    assert_eq!(cold_view.vms.len(), 1);
+    let on_cold = &cold_view.vms[0];
+    assert_eq!(
+        (on_cold.id.as_str(), on_cold.name.as_str(), on_cold.disks.as_slice()),
+        (id.as_str(), "box", &[0][..])
+    );
+    // A quarter of the 1 GiB zvol taken, an eighth written.
+    assert_eq!(
+        (on_cold.used_bytes, on_cold.referenced_bytes, on_cold.size_bytes),
+        (Some(1 << 28), Some(1 << 27), 1 << 30)
+    );
+    assert_eq!(listed[0].vms[0].disks, [3]);
+
+    let remove = |pool: &'static str, confirm: &'static str| {
+        let vms = test.vms.clone();
+        async move { vms.remove_location(pool, confirm, &alice(), &context()).await }
+    };
+    assert!(matches!(remove("cold", "Cold").await, Err(VmsError::ConfirmMismatch)));
+    assert!(matches!(remove("other", "other").await, Err(VmsError::NotFound)));
+    let Err(VmsError::LocationInUse(users)) = remove("cold", "cold").await else { panic!("removed in use") };
+    assert_eq!(users, ["box"]);
+    // The library's location stays while there are others, and while it holds images.
+    let Err(VmsError::LocationInUse(users)) = remove("tank", "tank").await else { panic!("removed in use") };
+    assert_eq!(users, ["box", "the image library"]);
+
+    let vm = test.vms.get(&id, &context()).await.unwrap().vm;
+    test.vms.delete(&id, &vm.settings.name, &alice(), &context()).await.unwrap();
+    remove("cold", " cold ").await.unwrap();
+    assert_eq!(test.locations.list().await.unwrap(), [tank()]);
+    assert!(test.host.calls().contains(&"remove_location cold".to_owned()));
+    let Err(VmsError::LocationInUse(users)) = remove("tank", "tank").await else {
+        panic!("removed with images")
+    };
+    assert_eq!(users, ["the image library"]);
+    let actions = actions(&test);
+    assert!(actions.contains(&"vms.location_add") && actions.contains(&"vms.location_remove"), "{actions:?}");
+}
+
+/// Cards on each kind of network the machine has; refused on one it has
+/// not, and a card on one gone since stays.
+#[tokio::test]
+async fn cards_go_on_every_kind_of_network_the_machine_has() {
+    let test = TestVms::new(FakeVmHost::ready());
+    let nic = |slot, network| Nic { slot, model: NicModel::Virtio, network, mac: String::new() };
+    let mut new = small("net");
+    new.settings.nics = vec![
+        nic(0, Network::User),
+        nic(1, Network::Bridge("br0".into())),
+        nic(2, Network::Direct("bond0".into())),
+        nic(3, Network::Internal("vmnet0".into())),
+    ];
+    let id = made(&test, new).await;
+    let mut wrong = small("wrong");
+    wrong.settings.nics = vec![nic(0, Network::Internal("br0".into()))];
+    assert!(matches!(test.vms.create(wrong, &alice(), &context()).await, Err(VmsError::Invalid(_))));
+
+    // vmnet0 went since: the card on it may stay; no other goes on it.
+    test.host.facts.lock().unwrap().limits.internal.clear();
+    let vm = test.vms.get(&id, &context()).await.unwrap().vm;
+    let mut renamed = change_of(&vm);
+    renamed.name = "lan".into();
+    test.vms.update(&id, renamed.clone(), None, &alice(), &context()).await.unwrap();
+    renamed.nics[2].network = Network::Internal("vmnet0".into());
+    let refused = test.vms.update(&id, renamed, None, &alice(), &context()).await.unwrap_err();
+    assert!(
+        matches!(&refused, VmsError::Invalid(e) if e.0.contains("vmnet0 is no internal network")),
+        "{refused:?}"
+    );
+}
+
+/// A change right after the job that made the VM, and one while it is
+/// still being made: the cards keep the addresses they were given, slot
+/// for slot, whatever comes in between (the loose end of package 1: one
+/// run of the VM test saw other MAC addresses after `PUT /vms/{id}` right
+/// after the create job; no path that writes the record later was found).
+#[tokio::test]
+async fn a_change_right_after_the_vm_was_made_keeps_its_cards_addresses() {
+    let test = TestVms::new(FakeVmHost::ready());
+    let held = std::sync::Arc::new(tokio::sync::Notify::new());
+    *test.host.hold_define.lock().unwrap() = Some(held.clone());
+    let mut new = small("box");
+    new.settings.nics.push(Nic {
+        slot: 1,
+        model: NicModel::E1000e,
+        network: Network::Bridge("br0".into()),
+        mac: String::new(),
+    });
+    let (view, job) = test.vms.create(new, &alice(), &context()).await.unwrap();
+    let given: Vec<String> = view.vm.settings.nics.iter().map(|nic| nic.mac.clone()).collect();
+    // While its definition waits: refused, and nothing written.
+    let early = test.vms.update(&view.vm.id, change_of(&view.vm), None, &alice(), &context()).await;
+    assert!(matches!(early, Err(VmsError::Creating)), "{early:?}");
+    held.notify_one();
+    assert_eq!(finished(&test, &job).await.state, JobState::Succeeded);
+
+    // At once after the job: the hardware changes, the addresses stay.
+    let vm = test.vms.get(&view.vm.id, &context()).await.unwrap().vm;
+    assert_eq!(vm.settings.nics.iter().map(|nic| nic.mac.clone()).collect::<Vec<_>>(), given);
+    let mut change = change_of(&vm);
+    change.cpus = 2;
+    // As the API sends it: the cards without their addresses, in another order.
+    change.nics.reverse();
+    for nic in &mut change.nics {
+        nic.mac.clear();
+    }
+    let changed = test.vms.update(&vm.id, change.clone(), None, &alice(), &context()).await.unwrap();
+    let mut after: Vec<(u8, String)> =
+        changed.vm.settings.nics.iter().map(|nic| (nic.slot, nic.mac.clone())).collect();
+    after.sort();
+    assert_eq!(after, [(0, given[0].clone()), (1, given[1].clone())]);
+    // Twice at once: one waits for nothing and is refused, neither renumbers.
+    let (who, asked) = (alice(), context());
+    let (first, second) = tokio::join!(
+        test.vms.update(&vm.id, change.clone(), None, &who, &asked),
+        test.vms.update(&vm.id, change, None, &who, &asked),
+    );
+    assert!(first.is_ok() || second.is_ok());
+    let stored = test.repository.find(&vm.id).await.unwrap().unwrap();
+    assert_eq!(stored.settings.nics.iter().map(|nic| nic.mac.clone()).collect::<Vec<_>>(), given);
 }

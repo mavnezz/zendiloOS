@@ -346,15 +346,27 @@ pub enum VmNetwork {
     /// A Linux bridge the machine has (`br0`): the VM is on the LAN as a
     /// machine of its own. The agent checks it is a bridge.
     Bridge { bridge: InterfaceName },
+    /// macvtap on a wired card or bond of the host's, in bridge mode: the
+    /// VM is on the card's LAN without a bridge, and the NAS and the VM do
+    /// not reach each other (the card does not hand frames back). The agent
+    /// checks it is a card or a bond.
+    Direct { card: InterfaceName },
+    /// A bridge zendiloOS made without members and without an address of
+    /// the NAS's, which the NAS keeps itself off (frames to and from it
+    /// dropped): VMs on it reach each other only. The agent checks it is
+    /// such a bridge and that the NAS is kept off it.
+    Internal { bridge: InterfaceName },
 }
 
-/// A disk: a sparse zvol `<pool>/zendiloos.vms/<id>-disk<slot>`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// A disk: a sparse zvol `<pool>/zendiloos.vms/<id>-disk<slot>` on the
+/// location it was made on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VmDisk {
     pub slot: VmDiskSlot,
     pub size: VmDiskSize,
     pub bus: VmDiskBus,
+    pub location: VmStorage,
 }
 
 /// A network card, with the MAC address zendiloosd gave it, which stays
@@ -402,10 +414,9 @@ pub struct VmSpec {
     boot: Vec<VmBoot>,
     /// libvirt starts it with the machine.
     pub autostart: bool,
-    /// The pool the VMs' dataset is on; its disks go there.
-    pub pool: PoolName,
-    /// Where the VMs' storage is mounted, with the library's images.
-    pub volume: VolumeNumber,
+    /// The volume of the location that holds the image library, where the
+    /// images in its drives are.
+    pub library: VolumeNumber,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -437,8 +448,7 @@ impl VmSpec {
         firmware: VmFirmware,
         devices: VmDevices,
         autostart: bool,
-        pool: PoolName,
-        volume: VolumeNumber,
+        library: VolumeNumber,
     ) -> Result<Self, InvalidVmSpec> {
         let VmDevices { disks, nics, drives, boot } = devices;
         let invalid = |text: &str| Err(InvalidVmSpec(text.to_owned()));
@@ -468,7 +478,7 @@ impl VmSpec {
         if !boot.iter().all(exists) {
             return invalid("a VM boots only from devices it has");
         }
-        Ok(Self { id, os, cpus, memory, firmware, disks, nics, drives, boot, autostart, pool, volume })
+        Ok(Self { id, os, cpus, memory, firmware, disks, nics, drives, boot, autostart, library })
     }
 
     pub fn disks(&self) -> &[VmDisk] {
@@ -497,6 +507,17 @@ impl VmSpec {
     pub fn images(&self) -> impl Iterator<Item = &VmImageId> {
         self.drives.iter().filter_map(|drive| drive.image.as_ref())
     }
+
+    /// The locations its disks are on, each once.
+    pub fn locations(&self) -> Vec<&VmStorage> {
+        let mut locations: Vec<&VmStorage> = Vec::new();
+        for disk in &self.disks {
+            if !locations.contains(&&disk.location) {
+                locations.push(&disk.location);
+            }
+        }
+        locations
+    }
 }
 
 /// [`VmSpec`] as it travels.
@@ -513,8 +534,7 @@ struct SpecFields {
     drives: Vec<VmDrive>,
     boot: Vec<VmBoot>,
     autostart: bool,
-    pool: PoolName,
-    volume: VolumeNumber,
+    library: VolumeNumber,
 }
 
 impl TryFrom<SpecFields> for VmSpec {
@@ -531,8 +551,7 @@ impl TryFrom<SpecFields> for VmSpec {
             fields.firmware,
             devices,
             fields.autostart,
-            fields.pool,
-            fields.volume,
+            fields.library,
         )
     }
 }
@@ -550,8 +569,7 @@ impl From<VmSpec> for SpecFields {
             drives: spec.drives,
             boot: spec.boot,
             autostart: spec.autostart,
-            pool: spec.pool,
-            volume: spec.volume,
+            library: spec.library,
         }
     }
 }
@@ -569,7 +587,8 @@ pub enum VmAction {
     Reboot,
 }
 
-/// Where the VMs' dataset is, as the agent finds its mount unit.
+/// A location of the VMs' storage: the dataset `<pool>/zendiloos.vms`
+/// mounted at `/volume<N>/@vms`, as the agent finds its mount unit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VmStorage {
@@ -644,11 +663,12 @@ mod tests {
     }
 
     const SPEC: &str = r#"{"id":"0a1b2c3d4e5f","os":"linux","cpus":2,"memory":2048,"firmware":"uefi",
-        "disks":[{"slot":0,"size":20,"bus":"virtio"},{"slot":1,"size":100,"bus":"sata"}],
+        "disks":[{"slot":0,"size":20,"bus":"virtio","location":{"pool":"tank","volume":1}},
+                 {"slot":1,"size":100,"bus":"sata","location":{"pool":"cold","volume":2}}],
         "nics":[{"slot":0,"model":"virtio","network":{"kind":"user"},"mac":"52:54:00:00:00:01"}],
         "drives":[{"slot":0,"image":"00000000000a"},{"slot":1,"image":null}],
         "boot":[{"drive":0},{"disk":0}],
-        "autostart":false,"pool":"tank","volume":1}"#;
+        "autostart":false,"library":1}"#;
 
     #[test]
     fn a_spec_takes_nothing_it_does_not_know() {
@@ -664,34 +684,54 @@ mod tests {
         assert!(serde_json::from_str::<VmSpec>(&bridge).is_err());
         let path = SPEC.replace("\"00000000000a\"", "\"../../etc/shadow\"");
         assert!(serde_json::from_str::<VmSpec>(&path).is_err());
+        let pool = SPEC.replace("\"cold\"", "\"cold/../tank\"");
+        assert!(serde_json::from_str::<VmSpec>(&pool).is_err());
+        let locations: Vec<&str> = parsed.locations().iter().map(|l| l.pool.as_str()).collect();
+        assert_eq!(locations, ["tank", "cold"]);
+    }
+
+    #[test]
+    fn cards_go_direct_on_a_card_or_on_an_internal_network_by_checked_names() {
+        let direct = SPEC.replace(r#"{"kind":"user"}"#, r#"{"kind":"direct","card":"enp2s0"}"#);
+        let parsed: VmSpec = serde_json::from_str(&direct).unwrap();
+        assert_eq!(
+            parsed.nics()[0].network,
+            VmNetwork::Direct { card: InterfaceName::parse("enp2s0").unwrap() }
+        );
+        let internal = SPEC.replace(r#"{"kind":"user"}"#, r#"{"kind":"internal","bridge":"vmnet0"}"#);
+        let parsed: VmSpec = serde_json::from_str(&internal).unwrap();
+        assert!(
+            matches!(&parsed.nics()[0].network, VmNetwork::Internal { bridge } if bridge.as_str() == "vmnet0")
+        );
+        for bad in [
+            r#"{"kind":"direct","card":"enp2s0 mode='vepa'"}"#,
+            r#"{"kind":"direct","bridge":"enp2s0"}"#,
+            r#"{"kind":"internal","bridge":"vmnet0","card":"x"}"#,
+            r#"{"kind":"internal","bridge":""}"#,
+        ] {
+            let text = SPEC.replace(r#"{"kind":"user"}"#, bad);
+            assert!(serde_json::from_str::<VmSpec>(&text).is_err(), "{bad}");
+        }
     }
 
     #[test]
     fn a_spec_is_whole_or_refused() {
         for (from, to, says) in [
-            (
-                r#""disks":[{"slot":0,"size":20,"bus":"virtio"},{"slot":1"#,
-                r#""disks":[{"slot":0,"size":20,"bus":"virtio"},{"slot":0"#,
-                "slot",
-            ),
+            (r#"{"slot":1,"size":100"#, r#"{"slot":0,"size":100"#, "slot"),
             (r#"{"slot":1,"image":null}"#, r#"{"slot":0,"image":null}"#, "slot"),
-            (r#"{"slot":1,"size":100,"bus":"sata"}"#, r#"{"slot":8,"size":100,"bus":"sata"}"#, ""),
+            (r#"{"slot":1,"size":100,"bus":"sata""#, r#"{"slot":8,"size":100,"bus":"sata""#, ""),
             (r#"[{"drive":0},{"disk":0}]"#, r#"[{"drive":0},{"drive":0}]"#, "once"),
             (r#"[{"drive":0},{"disk":0}]"#, r#"[{"disk":5}]"#, "devices it has"),
             (r#"[{"drive":0},{"disk":0}]"#, "[]", "at least one"),
-            (
-                r#""bus":"virtio"},{"slot":1,"size":100,"bus":"sata"}]"#,
-                r#""bus":"virtio"},{"slot":1,"size":100,"bus":"sata"}],"x":[]"#,
-                "unknown",
-            ),
+            (r#""autostart":false"#, r#""autostart":false,"x":[]"#, "unknown"),
         ] {
             let text = SPEC.replace(from, to);
             assert_ne!(text, SPEC, "{from} not in the spec");
             let error = serde_json::from_str::<VmSpec>(&text).unwrap_err().to_string();
             assert!(error.contains(says), "{error} does not say {says}");
         }
-        let no_disks =
-            SPEC.replace(r#"[{"slot":0,"size":20,"bus":"virtio"},{"slot":1,"size":100,"bus":"sata"}]"#, "[]");
+        let disks = &SPEC[SPEC.find(r#""disks":"#).unwrap()..SPEC.find(r#""nics":"#).unwrap()];
+        let no_disks = SPEC.replace(disks.trim_end(), r#""disks":[],"#);
         assert!(serde_json::from_str::<VmSpec>(&no_disks).unwrap_err().to_string().contains("1 to 8 disks"));
         let card = r#"{"slot":0,"model":"virtio","network":{"kind":"user"},"mac":"52:54:00:00:00:01"}"#;
         let twins = SPEC.replace(card, &format!("{card},{}", card.replace("\"slot\":0", "\"slot\":1")));

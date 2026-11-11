@@ -250,6 +250,8 @@ impl Operations {
                 },
                 Err(error) => Err(error),
             },
+            Request::DisableVms { pool, volume } => self.pools.disable_vms(pool, *volume).await,
+            Request::VmStorageUsage {} => self.vms.storage_usage().await,
             Request::CopyVmImage { image, volume, source } => {
                 self.vms.copy_image(image, *volume, source).await
             }
@@ -261,7 +263,7 @@ impl Operations {
             Request::ChangeVmMedia { spec, drive } => self.vms.change_media(spec, *drive).await,
             Request::SetVmAutostart { id, autostart } => self.vms.set_autostart(id, *autostart).await,
             Request::ControlVm { id, action } => self.vms.control(id, *action).await,
-            Request::DeleteVm { id, pool, volume } => self.vms.delete(id, pool, *volume).await,
+            Request::DeleteVm { id } => self.vms.delete(id).await,
             Request::VmStates {} => self.vms.states().await,
             Request::VmStats {} => self.vms.stats().await,
             Request::StartApp { app } => self.apps.start(app).await,

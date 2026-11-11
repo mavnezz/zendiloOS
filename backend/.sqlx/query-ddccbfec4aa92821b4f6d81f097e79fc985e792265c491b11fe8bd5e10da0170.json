@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT pool FROM vm_locations WHERE volume = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "pool",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vm_locations",
+            "name": "pool"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "ddccbfec4aa92821b4f6d81f097e79fc985e792265c491b11fe8bd5e10da0170"
+}

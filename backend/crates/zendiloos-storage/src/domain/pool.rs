@@ -332,6 +332,9 @@ pub enum Occupant {
     Homes,
     /// Docker's data.
     Docker,
+    /// A location of the virtual machines' storage: their disks, maybe the
+    /// image library.
+    VirtualMachines,
 }
 
 #[cfg(test)]

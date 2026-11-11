@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT pool AS \"pool!\", volume FROM vm_locations ORDER BY position",
+  "describe": {
+    "columns": [
+      {
+        "name": "pool!",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vm_locations",
+            "name": "pool"
+          }
+        }
+      },
+      {
+        "name": "volume",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "vm_locations",
+            "name": "volume"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "886bc4337505baef77f3e5a3384dae5957d6603a0662fdfad7307f2debc88c95"
+}

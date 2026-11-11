@@ -549,17 +549,29 @@ pub enum Request {
     },
     /// What the machine offers virtual machines: KVM, the CPU's
     /// virtualisation, the IOMMU, whether libvirt and QEMU are installed,
-    /// cores, memory, and where the VMs' dataset is (the bridges VMs may
-    /// go on zendiloosd reads itself, 4.13). Answers
+    /// cores, memory, and where the VMs' datasets are (the bridges and
+    /// cards VMs may go on zendiloosd reads itself, 4.13). Answers
     /// [`Response::VmHost`].
     VmHost {},
-    /// Puts the VMs' storage on a pool zendiloos created: the dataset
-    /// `<pool>/zendiloos.vms`, mounted at `/volume<N>/@vms`; libvirt starts
-    /// only with it mounted, and is enabled.
+    /// Puts a location of the VMs' storage on a pool zendiloos created:
+    /// the dataset `<pool>/zendiloos.vms`, mounted at `/volume<N>/@vms`;
+    /// libvirt starts only with every location mounted, and is enabled.
+    /// A pool may hold one location; there may be several pools.
     EnableVms {
         pool: PoolName,
         volume: VolumeNumber,
     },
+    /// Removes a location of the VMs' storage: refused while its dataset
+    /// holds a zvol or its library a file; otherwise unmounted, its unit
+    /// removed, libvirt no longer waiting for it, and the dataset
+    /// destroyed.
+    DisableVms {
+        pool: PoolName,
+        volume: VolumeNumber,
+    },
+    /// What the locations' datasets and the VMs' zvols on them hold.
+    /// Answers [`Response::VmStorageUsage`].
+    VmStorageUsage {},
     /// Copies an ISO from a share into the library,
     /// `/volume<N>/@vms/isos/<image>.iso`, in a unit of its own (blocks
     /// cloned where the pool can), reporting how far it is; QEMU only ever
@@ -599,9 +611,10 @@ pub enum Request {
         spec: VmSpec,
     },
     /// Changes a VM that is shut off: disks of `spec` it does not have are
-    /// made, those smaller than `spec` grown (never shrunk), the domain is
-    /// defined anew from `spec`, and the disks in `remove` (none of
-    /// `spec`'s) are destroyed.
+    /// made on their locations, those smaller than `spec` grown (never
+    /// shrunk), the domain is defined anew from `spec`, and the disks in
+    /// `remove` (none of `spec`'s) are destroyed, on whichever location
+    /// they are.
     UpdateVm {
         spec: VmSpec,
         remove: Vec<VmDiskSlot>,
@@ -622,12 +635,10 @@ pub enum Request {
         id: VmId,
         action: VmAction,
     },
-    /// Powers the VM off if it runs, undefines it, and destroys its disks;
-    /// the library's images stay.
+    /// Powers the VM off if it runs, undefines it, and destroys its disks
+    /// on every location; the library's images stay.
     DeleteVm {
         id: VmId,
-        pool: PoolName,
-        volume: VolumeNumber,
     },
     /// `virsh list --all`: every domain and its state. Answers
     /// [`Response::VmStates`].
@@ -992,6 +1003,8 @@ impl Request {
             Request::DockerState {} => "docker_state",
             Request::VmHost {} => "vm_host",
             Request::EnableVms { .. } => "enable_vms",
+            Request::DisableVms { .. } => "disable_vms",
+            Request::VmStorageUsage {} => "vm_storage_usage",
             Request::CopyVmImage { .. } => "copy_vm_image",
             Request::VmImages { .. } => "vm_images",
             Request::DeleteVmImage { .. } => "delete_vm_image",
@@ -1271,8 +1284,14 @@ pub enum Response {
         /// The machine's CPUs (threads) and memory.
         cores: u32,
         memory_bytes: u64,
-        /// Where the VMs' dataset is, once set up.
-        storage: Option<VmStorage>,
+        /// The locations of the VMs' storage: each dataset whose mount
+        /// unit is there, by volume.
+        locations: Vec<VmStorage>,
+    },
+    VmStorageUsage {
+        /// `zfs list -H -p` of the locations' datasets and their zvols:
+        /// name, type, used, usedbydataset, referenced, available, volsize.
+        zfs_list: String,
     },
     VmStates {
         /// What `virsh list --all` printed.

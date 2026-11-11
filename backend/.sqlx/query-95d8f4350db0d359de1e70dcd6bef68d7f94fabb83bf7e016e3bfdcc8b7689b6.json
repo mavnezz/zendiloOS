@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT vm AS \"vm!\", slot, model, bridge, mac FROM vm_nics\n               WHERE ?1 IS NULL OR vm = ?1 ORDER BY vm, slot",
+  "query": "SELECT vm AS \"vm!\", slot, model, network, device, mac FROM vm_nics\n               WHERE ?1 IS NULL OR vm = ?1 ORDER BY vm, slot",
   "describe": {
     "columns": [
       {
@@ -37,19 +37,30 @@
         }
       },
       {
-        "name": "bridge",
+        "name": "network",
         "ordinal": 3,
         "type_info": "Text",
         "origin": {
           "Table": {
             "table": "vm_nics",
-            "name": "bridge"
+            "name": "network"
+          }
+        }
+      },
+      {
+        "name": "device",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vm_nics",
+            "name": "device"
           }
         }
       },
       {
         "name": "mac",
-        "ordinal": 4,
+        "ordinal": 5,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -66,9 +77,10 @@
       false,
       false,
       false,
+      false,
       true,
       false
     ]
   },
-  "hash": "9a4e6eedc02282208fd5410d9d40c518b647297ac8e122c0691a28259d2f7f2b"
+  "hash": "95d8f4350db0d359de1e70dcd6bef68d7f94fabb83bf7e016e3bfdcc8b7689b6"
 }

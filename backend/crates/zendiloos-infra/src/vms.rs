@@ -1,6 +1,7 @@
 //! Adapters of the Virtual machines context besides the agent's: the ISOs
 //! administrators pick in shares, read as they may read them; and, for
-//! the Network context, the VMs on a bridge it would remove.
+//! the Network context, the VMs on a device it would remove or take into a
+//! bridge or bond.
 
 use std::sync::Arc;
 
@@ -12,8 +13,9 @@ use zendiloos_sharing::domain::{FilePath, ShareId};
 use zendiloos_vms::application::{IsoError, IsoFiles, IsoSource, VmRepository};
 use zendiloos_vms::domain::IsoChoice;
 
-/// [`DeviceUsers`] from the VMs' records: a bridge is in use while a VM,
-/// running or not, is on it, also one still being made.
+/// [`DeviceUsers`] from the VMs' records: a bridge, an internal network or
+/// a card is in use while a VM, running or not, has a card on it (directly,
+/// for a card), also one still being made.
 pub struct VmsOnBridges {
     vms: Arc<dyn VmRepository>,
 }
@@ -30,7 +32,7 @@ impl DeviceUsers for VmsOnBridges {
         let vms = self.vms.list().await?;
         Ok(vms
             .into_iter()
-            .filter(|vm| vm.settings.bridges().any(|bridge| bridge == device))
+            .filter(|vm| vm.settings.devices().any(|used| used == device))
             .map(|vm| vm.settings.name)
             .collect())
     }
@@ -103,16 +105,18 @@ mod tests {
                 settings.nics[0].network = network;
                 settings
             },
-            pool: "tank".into(),
-            volume: 1,
             created_at: zendiloos_kernel::Timestamp::from_unix_seconds(0),
             ready: true,
         };
         vms.create(&vm("0a1b2c3d4e5f", "web", Network::Bridge("br0".into()))).await.unwrap();
         vms.create(&vm("0a1b2c3d4e60", "mail", Network::User)).await.unwrap();
         vms.create(&vm("0a1b2c3d4e61", "lab", Network::Bridge("br1".into()))).await.unwrap();
+        vms.create(&vm("0a1b2c3d4e62", "db", Network::Direct("enp2s0".into()))).await.unwrap();
+        vms.create(&vm("0a1b2c3d4e63", "test", Network::Internal("vmnet0".into()))).await.unwrap();
         let users = VmsOnBridges::new(vms);
         assert_eq!(users.users("br0").await.unwrap(), ["web"]);
+        assert_eq!(users.users("enp2s0").await.unwrap(), ["db"]);
+        assert_eq!(users.users("vmnet0").await.unwrap(), ["test"]);
         assert!(users.users("br9").await.unwrap().is_empty());
     }
 }

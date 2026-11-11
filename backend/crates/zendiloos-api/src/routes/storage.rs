@@ -95,6 +95,7 @@ impl From<StorageError> for ApiError {
                         storage::Occupant::App(name) => format!("app {name}"),
                         storage::Occupant::Homes => "the personal folders".to_owned(),
                         storage::Occupant::Docker => "Docker's data".to_owned(),
+                        storage::Occupant::VirtualMachines => "the virtual machines' storage".to_owned(),
                     })
                     .collect();
                 rejected(StatusCode::CONFLICT, "pool_in_use", Some(named.join(", ")))

@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT vm AS \"vm!\", slot, size_gib, bus FROM vm_disks\n               WHERE ?1 IS NULL OR vm = ?1 ORDER BY vm, slot",
+  "query": "SELECT vm AS \"vm!\", slot, size_gib, bus, pool, volume FROM vm_disks\n               WHERE ?1 IS NULL OR vm = ?1 ORDER BY vm, slot",
   "describe": {
     "columns": [
       {
@@ -46,6 +46,28 @@
             "name": "bus"
           }
         }
+      },
+      {
+        "name": "pool",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vm_disks",
+            "name": "pool"
+          }
+        }
+      },
+      {
+        "name": "volume",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "vm_disks",
+            "name": "volume"
+          }
+        }
       }
     ],
     "parameters": {
@@ -55,8 +77,10 @@
       false,
       false,
       false,
+      false,
+      false,
       false
     ]
   },
-  "hash": "43f286b13b616b9c1637ba616623b6f9a28d4d83fa3f804c871c7c8d9ccecaf2"
+  "hash": "605611e2bbfb3db46db5fe92095b5c5ee8084e91194b7a869ce1a7e43dec71a7"
 }

@@ -81,10 +81,14 @@ async fn storage_errors() {
         storage::Occupant::Share("photos".into()),
         storage::Occupant::App("immich".into()),
         storage::Occupant::Homes,
+        storage::Occupant::VirtualMachines,
         storage::Occupant::Docker,
     ];
     let detail = assert_maps(StorageError::PoolInUse(occupants), StatusCode::CONFLICT, "pool_in_use").await;
-    assert_eq!(detail.as_deref(), Some("share photos, app immich, the personal folders, Docker's data"));
+    assert_eq!(
+        detail.as_deref(),
+        Some("share photos, app immich, the personal folders, the virtual machines' storage, Docker's data")
+    );
     assert_maps(StorageError::Port(port()), StatusCode::INTERNAL_SERVER_ERROR, "internal").await;
 }
 

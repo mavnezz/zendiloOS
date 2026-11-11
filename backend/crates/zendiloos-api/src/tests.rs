@@ -221,6 +221,18 @@ impl AuditReader for FakeAuditReader {
                 request_id: entry.request_id,
             })
             .filter(|record| query.before.is_none_or(|before| record.id < before))
+            .filter(|record| query.prefix.as_deref().is_none_or(|prefix| record.action.starts_with(prefix)))
+            .filter(|record| {
+                query.search.as_deref().is_none_or(|search| {
+                    let text = format!(
+                        "{} {} {}",
+                        record.actor.as_deref().unwrap_or_default(),
+                        record.action,
+                        record.target.as_deref().unwrap_or_default()
+                    );
+                    text.to_lowercase().contains(&search.to_lowercase())
+                })
+            })
             .take(usize::from(query.limit))
             .collect())
     }
@@ -542,6 +554,7 @@ impl Harness {
         let vms = zendiloos_vms::application::Vms::new(zendiloos_vms::application::VmsPorts {
             repository: Arc::new(zendiloos_vms::testing::MemoryVms::default()),
             images: Arc::new(zendiloos_vms::testing::MemoryImages::default()),
+            locations: Arc::new(zendiloos_vms::testing::MemoryLocations::default()),
             host: vm_host.clone(),
             isos: Arc::new(zendiloos_vms::testing::FakeIsos),
             ids: Arc::new(zendiloos_vms::testing::CountingIds::default()),
@@ -1889,6 +1902,8 @@ fn openapi_documents_every_route() {
             "/api/v1/vms/images",
             "/api/v1/vms/images/upload",
             "/api/v1/vms/images/{id}",
+            "/api/v1/vms/locations",
+            "/api/v1/vms/locations/{pool}/delete",
             "/api/v1/vms/plugin",
             "/api/v1/vms/plugin/install",
             "/api/v1/vms/plugin/storage",

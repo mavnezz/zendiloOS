@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO vm_locations (pool, volume, position)\n             VALUES (?, ?, (SELECT coalesce(max(position), 0) + 1 FROM vm_locations)) ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "32ecaf265aa99c2f1bebc171cd6449adab97d21d0532db3a4077672d12e8b46b"
+}
