@@ -141,6 +141,7 @@ impl Operations {
                     zfs: Program::new(&tools.zfs)?,
                     systemctl: Program::new(&tools.systemctl)?,
                     systemd_run: Program::new(&tools.systemd_run)?,
+                    busctl: Program::new(&tools.busctl)?,
                     libvirtd: tools.libvirtd.clone(),
                     qemu: tools.qemu.clone(),
                     tmpfiles: tools.systemd_tmpfiles.clone(),

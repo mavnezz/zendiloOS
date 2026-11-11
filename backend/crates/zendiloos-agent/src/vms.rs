@@ -61,7 +61,6 @@ pub struct VmPaths {
     pub cpuinfo: PathBuf,
     pub meminfo: PathBuf,
     pub iommu: PathBuf,
-    pub net: PathBuf,
     /// The XML of each domain defined: `zendiloos-<id>.xml`.
     pub domains: PathBuf,
     /// Where the consoles' sockets are ([`VM_CONSOLES`]).
@@ -82,7 +81,6 @@ impl Default for VmPaths {
             cpuinfo: PathBuf::from("/proc/cpuinfo"),
             meminfo: PathBuf::from("/proc/meminfo"),
             iommu: PathBuf::from("/sys/class/iommu"),
-            net: PathBuf::from("/sys/class/net"),
             domains: PathBuf::from("/etc/zendiloos/vms"),
             consoles: PathBuf::from(VM_CONSOLES),
             tmpfiles: PathBuf::from("/etc/tmpfiles.d/zendiloos-vms.conf"),
@@ -98,6 +96,8 @@ pub(crate) struct VmTools {
     pub zfs: Program,
     pub systemctl: Program,
     pub systemd_run: Program,
+    /// Asks systemd-networkd whether a VM's bridge is one of the host's.
+    pub busctl: Program,
     /// Only looked for: libvirt's daemon and QEMU, which libvirt runs.
     pub libvirtd: PathBuf,
     pub qemu: PathBuf,
@@ -177,6 +177,34 @@ impl Vms {
     }
 
     /// What the machine offers VMs.
+    /// The bridge a VM goes on is a link of the host's and a bridge. This
+    /// sandbox has a network of its own: its sysfs and netlink show only
+    /// its loopback, so the host's links are asked of systemd-networkd over
+    /// D-Bus, which knows every link of the host's, also those it does not
+    /// manage (`GetLinkByName`), and describes each (`DescribeLink`: its
+    /// kind and type). A link it does not know, or describes as anything
+    /// but a bridge, is refused; so is every bridge where systemd-networkd
+    /// does not run, as on a host with ifupdown or NetworkManager. Should
+    /// it know the link but not describe it, the link is taken as it is:
+    /// libvirt refuses to start a VM on anything but a bridge.
+    async fn check_bridge(&self, bridge: &InterfaceName) -> Result<(), OperationError> {
+        let no_bridge = || refused(format!("{} is no bridge of this machine", bridge.as_str()));
+        let Some((index, _)) = crate::network::networkd_link(&self.tools.busctl, bridge).await else {
+            return Err(no_bridge());
+        };
+        match crate::network::networkd_kind(&self.tools.busctl, index).await {
+            Some((kind, kind_of_type)) => {
+                let is_bridge =
+                    kind.as_deref() == Some("bridge") || kind_of_type.as_deref() == Some("bridge");
+                if is_bridge { Ok(()) } else { Err(no_bridge()) }
+            }
+            None => {
+                tracing::warn!(bridge = bridge.as_str(), "vms: systemd-networkd did not describe the bridge");
+                Ok(())
+            }
+        }
+    }
+
     pub(crate) fn host_facts(&self) -> Result<Response, OperationError> {
         let mut cpuinfo = String::new();
         if let Ok(file) = fs::File::open(&self.paths.cpuinfo) {
@@ -192,7 +220,6 @@ impl Vms {
             installed: self.installed(),
             cores,
             memory_bytes: memory_bytes(&meminfo),
-            bridges: bridges(&self.paths.net),
             storage: vms_storage(&self.host),
         })
     }
@@ -405,10 +432,8 @@ impl Vms {
         if spec.iso && !fs::symlink_metadata(&iso).is_ok_and(|meta| meta.is_file()) {
             return Err(refused("the ISO was not copied for this virtual machine"));
         }
-        if let VmNetwork::Bridge { bridge } = &spec.network
-            && !self.paths.net.join(bridge.as_str()).join("bridge").is_dir()
-        {
-            return Err(refused(format!("{} is no bridge of this machine", bridge.as_str())));
+        if let VmNetwork::Bridge { bridge } = &spec.network {
+            self.check_bridge(bridge).await?;
         }
         let zvol = Self::zvol(&spec.pool, &spec.id);
         let made = if self.exists(&zvol).await? {
@@ -654,27 +679,6 @@ fn memory_bytes(meminfo: &str) -> u64 {
         .map_or(0, |kib| kib.saturating_mul(1024))
 }
 
-/// The machine's own Linux bridges: not Docker's (`docker0`, `br-<id>`) nor
-/// libvirt's (`virbr…`).
-fn bridges(net: &Path) -> Vec<InterfaceName> {
-    let Ok(entries) = fs::read_dir(net) else { return Vec::new() };
-    let mut found: Vec<InterfaceName> = entries
-        .flatten()
-        .filter(|entry| entry.path().join("bridge").is_dir())
-        .filter_map(|entry| InterfaceName::parse(&entry.file_name().to_string_lossy()).ok())
-        .filter(|name| {
-            let name = name.as_str();
-            let docker = name == "docker0"
-                || name
-                    .strip_prefix("br-")
-                    .is_some_and(|id| id.len() == 12 && id.bytes().all(|b| b.is_ascii_hexdigit()));
-            !docker && !name.starts_with("virbr")
-        })
-        .collect();
-    found.sort_by(|a, b| a.as_str().cmp(b.as_str()));
-    found
-}
-
 /// `&`, `<`, `>` and quotes as XML wants them. The values are checked
 /// protocol types that hold none of these; escaped all the same.
 fn escape(text: &str) -> String {
@@ -859,23 +863,6 @@ mod tests {
         assert_eq!(cpu_facts("processor : 0\nflags : fpu sse2\n").1, None);
         assert_eq!(memory_bytes("MemTotal:        2027168 kB\nMemFree: 1 kB\n"), 2_027_168 * 1024);
         assert_eq!(memory_bytes(""), 0);
-
-        let net = tempfile::tempdir().unwrap();
-        for (name, bridge) in [
-            ("br0", true),
-            ("docker0", true),
-            ("br-0123456789ab", true),
-            ("virbr0", true),
-            ("enp1s0", false),
-            ("br-lan", true),
-        ] {
-            fs::create_dir_all(net.path().join(name)).unwrap();
-            if bridge {
-                fs::create_dir_all(net.path().join(name).join("bridge")).unwrap();
-            }
-        }
-        let names: Vec<String> = bridges(net.path()).into_iter().map(String::from).collect();
-        assert_eq!(names, ["br-lan", "br0"]);
     }
 
     #[test]

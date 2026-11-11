@@ -547,7 +547,8 @@ pub enum Request {
     },
     /// What the machine offers virtual machines: KVM, the CPU's
     /// virtualisation, the IOMMU, whether libvirt and QEMU are installed,
-    /// cores, memory, bridges, and where the VMs' dataset is. Answers
+    /// cores, memory, and where the VMs' dataset is (the bridges VMs may
+    /// go on zendiloosd reads itself, 4.13). Answers
     /// [`Response::VmHost`].
     VmHost {},
     /// Puts the VMs' storage on a pool zendiloos created: the dataset
@@ -1217,8 +1218,6 @@ pub enum Response {
         /// The machine's CPUs (threads) and memory.
         cores: u32,
         memory_bytes: u64,
-        /// Linux bridges of the machine's own, not Docker's nor libvirt's.
-        bridges: Vec<InterfaceName>,
         /// Where the VMs' dataset is, once set up.
         storage: Option<VmStorage>,
     },

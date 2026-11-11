@@ -94,7 +94,9 @@ ExecStart=/usr/libexec/zendiloos/zendiloos-agent
 #   sandbox, runs QEMU and passt; the agent talks to it with virsh over
 #   its socket (AF_UNIX) and keeps each domain's XML in
 #   /etc/zendiloos/vms; a VM's disk is a zvol (/dev/zfs, as for pools);
-#   /dev/kvm, /proc/cpuinfo and /sys are only looked at. ISOs are copied
+#   /dev/kvm, /proc/cpuinfo and /sys are only looked at, and whether a
+#   VM's bridge is a bridge of the host's is asked of systemd-networkd over
+#   D-Bus (busctl), as this sandbox sees none of the host's links. ISOs are copied
 #   from a share and removed again by transient units (systemd-run, this
 #   binary as copy-vm-iso, and rm) that may write only the VMs' folder; the
 #   consoles' folder is made by systemd-tmpfiles in one. A console is

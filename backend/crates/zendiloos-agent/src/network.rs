@@ -371,20 +371,7 @@ impl Network {
     /// systemd-networkd's index of `interface` and its object on the bus;
     /// `None` if it knows none.
     async fn link(&self, interface: &InterfaceName) -> Option<(i32, String)> {
-        let asked = [MANAGER_CALL, &["GetLinkByName", "s", interface.as_str()]].concat();
-        let output = zendiloos_exec::run(&self.busctl, &asked, LIMITS).await.ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        // `io 2 "/org/freedesktop/network1/link/_32"`
-        let text = String::from_utf8(output.stdout).ok()?;
-        let mut words = text.split_whitespace();
-        let index = words.nth(1)?.parse().ok()?;
-        let object = words.next()?.trim_matches('"').to_owned();
-        let plain = object.strip_prefix("/org/freedesktop/network1/link/").is_some_and(|name| {
-            !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
-        });
-        Some((index, if plain { object } else { String::new() }))
+        networkd_link(&self.busctl, interface).await
     }
 
     async fn networkd_reload(&self) -> Result<(), OperationError> {
@@ -760,6 +747,51 @@ impl Network {
     }
 }
 
+/// systemd-networkd's index of the host's link `interface` and its object
+/// on the bus; `None` if it knows none, or does not run. It knows every
+/// link of the host's, also those it does not manage, which this sandbox
+/// cannot see itself (it has a network of its own).
+pub(crate) async fn networkd_link(busctl: &Program, interface: &InterfaceName) -> Option<(i32, String)> {
+    let asked = [MANAGER_CALL, &["GetLinkByName", "s", interface.as_str()]].concat();
+    let output = zendiloos_exec::run(busctl, &asked, LIMITS).await.ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    // `io 2 "/org/freedesktop/network1/link/_32"`
+    let text = String::from_utf8(output.stdout).ok()?;
+    let mut words = text.split_whitespace();
+    let index = words.nth(1)?.parse().ok()?;
+    let object = words.next()?.trim_matches('"').to_owned();
+    let plain = object
+        .strip_prefix("/org/freedesktop/network1/link/")
+        .is_some_and(|name| !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'));
+    Some((index, if plain { object } else { String::new() }))
+}
+
+/// What kind of link the host's link `index` is, as systemd-networkd
+/// describes it (`DescribeLink`): its `Kind` (`bridge`, `bond`, `vlan`;
+/// none for a card) and its `Type` (`bridge`, `ether`, …). `None` if it
+/// does not answer, or not as JSON.
+pub(crate) async fn networkd_kind(busctl: &Program, index: i32) -> Option<(Option<String>, Option<String>)> {
+    let index = index.to_string();
+    let asked = [&["--json=short"][..], MANAGER_CALL, &["DescribeLink", "i", index.as_str()]].concat();
+    let output = zendiloos_exec::run(busctl, &asked, LIMITS).await.ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    link_kind(&output.stdout)
+}
+
+/// `{"type":"s","data":["{\"Kind\":\"bridge\",\"Type\":\"bridge\",…}"]}`: the
+/// kind and type the description inside names.
+fn link_kind(answer: &[u8]) -> Option<(Option<String>, Option<String>)> {
+    let answer: serde_json::Value = serde_json::from_slice(answer).ok()?;
+    let description = answer.get("data")?.get(0)?.as_str()?;
+    let description: serde_json::Value = serde_json::from_str(description).ok()?;
+    let field = |name: &str| description.get(name).and_then(serde_json::Value::as_str).map(str::to_owned);
+    Some((field("Kind"), field("Type")))
+}
+
 /// What a change writes (`Some`) or removes (`None`), by name, with what
 /// was there; the devices it makes and the links it deletes first.
 #[derive(Debug, Default)]
@@ -964,5 +996,15 @@ mod tests {
         ] {
             assert_eq!(ours(other), None, "{other}");
         }
+    }
+
+    #[test]
+    fn a_links_kind_is_read_from_its_description() {
+        let bridge = br#"{"type":"s","data":["{\"Index\":5,\"Name\":\"br0\",\"Kind\":\"bridge\",\"Type\":\"bridge\"}"]}"#;
+        assert_eq!(link_kind(bridge), Some((Some("bridge".into()), Some("bridge".into()))));
+        let card = br#"{"type":"s","data":["{\"Index\":2,\"Name\":\"enp1s0\",\"Type\":\"ether\"}"]}"#;
+        assert_eq!(link_kind(card), Some((None, Some("ether".into()))));
+        assert_eq!(link_kind(b"s \"not json\""), None);
+        assert_eq!(link_kind(br#"{"type":"s","data":["no json inside"]}"#), None);
     }
 }

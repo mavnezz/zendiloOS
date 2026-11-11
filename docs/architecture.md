@@ -468,8 +468,8 @@ simple to audit.
   keeps its export cache per network namespace, so releasing a share's
   exports before unmounting it starts `zendiloos-nfs-flush.service`
   (`exportfs -r`, `exportfs -f`). D-Bus is reached through `busctl`
-  (systemd-networkd's `Reload`, `GetLinkByName` and `ReconfigureLink`, a
-  link's `AdministrativeState`) and `timedatectl`. systemd-networkd offers
+  (systemd-networkd's `Reload`, `GetLinkByName`, `DescribeLink` and
+  `ReconfigureLink`, a link's `AdministrativeState`) and `timedatectl`. systemd-networkd offers
   no way to delete a link over D-Bus and the agent has no network of the
   host's for rtnetlink: a device that goes is deleted in a transient unit
   (`systemd-run`, `ip link delete dev <name>`, with `CAP_NET_ADMIN` as its
@@ -1318,7 +1318,9 @@ TLS is rustls with ring and the system's certificate authorities
 - Virtual machines (4.13) widen nothing of the system agent's sandbox:
   `virsh` reaches libvirtd over its Unix socket, the domains' XML goes to
   `/etc/zendiloos/vms`, a zvol is made through `/dev/zfs`, `/dev/kvm` and
-  `/sys` are only looked at, and a console's socket is connected to, which
+  `/sys` are only looked at, the bridge a VM goes on is asked of
+  systemd-networkd over D-Bus (its own network namespace shows none of the
+  host's links), and a console's socket is connected to, which
   needs no write access to `/run`. What writes the volumes (an ISO copied
   or removed) runs in transient units that may write only `/volume<N>/@vms`.
   libvirtd and QEMU run outside, under libvirt's own confinement (AppArmor
@@ -2511,7 +2513,18 @@ VM's tap: the VM is on the LAN as a machine of its own and gets its address
 from the LAN's DHCP server. Such a bridge is made on the Network page (6),
 over the card that connects the NAS to the LAN, which keeps the NAS's
 address; the wizard offers the bridges there are and, without one, points
-there. Frames between the VM and the LAN pass the firewall's forward chain
+there. Which those are zendiloosd reads itself, with `ip` in the host's
+network namespace, as the Network page does (the agent has a network
+namespace of its own, whose `/sys/class/net` shows only its loopback):
+every bridge but Docker's (`docker0`, `br-` and twelve hex digits) and
+libvirt's (`virbr…`), also one without members made for VMs only. Defining
+a VM on a bridge, the agent checks again that it is one of the host's
+links and a bridge, asking systemd-networkd (`GetLinkByName`,
+`DescribeLink`'s kind and type); a link it does not know or describes as
+anything else is refused, and so is every bridge where systemd-networkd
+does not run (ifupdown, NetworkManager). A link it knows but does not
+describe is taken as it is, as libvirt refuses to start a VM on anything
+but a bridge. Frames between the VM and the LAN pass the firewall's forward chain
 (4.12) and, where Docker runs, its `FORWARD` chain through zendiloOS's rule
 in `DOCKER-USER` (4.12), for the bridges zendiloOS made. A bridge a VM is on
 (running or not) is not removed: the Network context asks through its port

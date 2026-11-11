@@ -1,6 +1,9 @@
 //! [`VmHost`] through the system agent: libvirt's facts and states read
 //! here, unprivileged; the VMs' settings checked once more as protocol
-//! types; a console's socket relayed to channels.
+//! types; a console's socket relayed to channels. The bridges VMs may go
+//! on come from the Network context's view of the host (`ip`, which
+//! zendiloosd runs in the host's network namespace; the agent has one of
+//! its own and sees none of the host's links).
 
 use std::collections::BTreeMap;
 use std::os::fd::OwnedFd;
@@ -14,6 +17,8 @@ use zendiloos_agent_proto::{
     VmIsoSource, VmMemory, VmNetwork, VmOs, VmSpec, VolumeNumber,
 };
 use zendiloos_kernel::{PortError, RequestContext};
+use zendiloos_network::application::GetNetwork;
+use zendiloos_network::domain::{InterfaceKind, Network as HostNetwork};
 use zendiloos_storage::application::ports::ZfsSource;
 use zendiloos_vms::application::{
     ConsoleSession, HostError, HostFacts, IsoSource, Steps, StoragePlace, VmHost, VmIds,
@@ -30,11 +35,25 @@ const CONSOLE_CHUNK: usize = 64 * 1024;
 pub struct AgentVms {
     transport: Arc<dyn AgentTransport>,
     storage: AgentStorage,
+    network: GetNetwork,
 }
 
 impl AgentVms {
-    pub fn new(transport: Arc<dyn AgentTransport>) -> Self {
-        Self { storage: AgentStorage::new(transport.clone()), transport }
+    /// `network` reads the host's interfaces, for the bridges VMs may go on.
+    pub fn new(transport: Arc<dyn AgentTransport>, network: GetNetwork) -> Self {
+        Self { storage: AgentStorage::new(transport.clone()), transport, network }
+    }
+
+    /// The bridges VMs may go on, by name; none while the network cannot be
+    /// read, which keeps a VM off a bridge rather than failing the page.
+    async fn bridges(&self) -> Vec<String> {
+        match self.network.execute().await {
+            Ok(network) => vm_bridges(&network),
+            Err(error) => {
+                tracing::warn!(%error, "vms: cannot read the network for its bridges");
+                Vec::new()
+            }
+        }
     }
 
     fn transport(&self) -> &dyn AgentTransport {
@@ -45,6 +64,20 @@ impl AgentVms {
     async fn done(&self, request: Request, context: &RequestContext) -> Result<(), HostError> {
         host_answer(call_raw(self.transport(), request, context).await?)
     }
+}
+
+/// Every bridge of the machine's but Docker's (`docker0`, `br-` and twelve
+/// hex digits, which the network's view leaves out already) and libvirt's
+/// (`virbr…`): those zendiloOS made, also without members (for VMs only),
+/// and those made otherwise.
+fn vm_bridges(network: &HostNetwork) -> Vec<String> {
+    network
+        .interfaces
+        .iter()
+        .filter(|interface| interface.kind == InterfaceKind::Bridge)
+        .map(|interface| interface.name.clone())
+        .filter(|name| !network.docker_bridges.contains(name) && !name.starts_with("virbr"))
+        .collect()
 }
 
 fn host_answer(response: Response) -> Result<(), HostError> {
@@ -134,30 +167,19 @@ impl Report for Forward<'_> {
 impl VmHost for AgentVms {
     async fn facts(&self, context: &RequestContext) -> Result<HostFacts, PortError> {
         match call(self.transport(), Request::VmHost {}, context).await? {
-            Response::VmHost {
-                kvm,
-                cpu_virtualization,
-                iommu,
-                installed,
-                cores,
-                memory_bytes,
-                bridges,
-                storage,
-            } => Ok(HostFacts {
-                kvm,
-                cpu_virtualization: cpu_virtualization.filter(|flag| flag == "vmx" || flag == "svm"),
-                iommu,
-                installed,
-                limits: HostLimits {
-                    cores,
-                    memory_bytes,
-                    bridges: bridges.into_iter().map(String::from).collect(),
-                },
-                storage: storage.map(|storage| StoragePlace {
-                    pool: storage.pool.as_str().to_owned(),
-                    volume: storage.volume.get(),
-                }),
-            }),
+            Response::VmHost { kvm, cpu_virtualization, iommu, installed, cores, memory_bytes, storage } => {
+                Ok(HostFacts {
+                    kvm,
+                    cpu_virtualization: cpu_virtualization.filter(|flag| flag == "vmx" || flag == "svm"),
+                    iommu,
+                    installed,
+                    limits: HostLimits { cores, memory_bytes, bridges: self.bridges().await },
+                    storage: storage.map(|storage| StoragePlace {
+                        pool: storage.pool.as_str().to_owned(),
+                        volume: storage.volume.get(),
+                    }),
+                })
+            }
             other => Err(unexpected(other)),
         }
     }
@@ -372,6 +394,60 @@ mod tests {
         }
     }
 
+    /// The host as zendiloosd reads it: a card in the bridge br0, a bridge
+    /// for VMs only without members, Docker's and libvirt's bridges.
+    fn network_with_bridges() -> GetNetwork {
+        use zendiloos_network::domain::{Interface, LinkState};
+        use zendiloos_network::testing::SettableNetwork;
+        let interface = |name: &str, kind: InterfaceKind, member_of: Option<&str>| Interface {
+            name: name.into(),
+            kind,
+            state: LinkState::Up,
+            mac: None,
+            mtu: 1500,
+            member_of: member_of.map(Into::into),
+            parent: None,
+            addresses: vec![],
+        };
+        let network = HostNetwork::new(
+            vec![
+                interface("enp1s0", InterfaceKind::Ethernet, Some("br0")),
+                interface("br0", InterfaceKind::Bridge, None),
+                interface("vms0", InterfaceKind::Bridge, None),
+                interface("docker0", InterfaceKind::Bridge, None),
+                interface("br-0123456789ab", InterfaceKind::Bridge, None),
+                interface("virbr0", InterfaceKind::Bridge, None),
+                interface("bond0", InterfaceKind::Bond, None),
+            ],
+            vec![],
+            vec![],
+        );
+        let source = Arc::new(SettableNetwork::default());
+        source.set(network);
+        GetNetwork::new(source)
+    }
+
+    /// The wizard offers every bridge of the machine's, a member-less one
+    /// made for VMs too, but Docker's and libvirt's; none while the network
+    /// cannot be read.
+    #[tokio::test]
+    async fn vms_are_offered_the_machines_own_bridges() {
+        let host = AgentVms::new(Arc::new(SimulatedAgent::new()), network_with_bridges());
+        let facts = host.facts(&RequestContext::default()).await.unwrap();
+        assert_eq!(facts.limits.bridges, ["br0", "vms0"]);
+
+        struct Unreadable;
+        #[async_trait]
+        impl zendiloos_network::application::NetworkSource for Unreadable {
+            async fn network(&self) -> Result<HostNetwork, PortError> {
+                Err(PortError::new("network", "ip not found"))
+            }
+        }
+        let blind = AgentVms::new(Arc::new(SimulatedAgent::new()), GetNetwork::new(Arc::new(Unreadable)));
+        let facts = blind.facts(&RequestContext::default()).await.unwrap();
+        assert!(facts.limits.bridges.is_empty() && facts.kvm);
+    }
+
     #[test]
     fn a_vm_reaches_the_agent_only_as_checked_values() {
         let spec = spec(&vm("0a1b2c3d4e5f")).unwrap();
@@ -388,11 +464,11 @@ mod tests {
     #[tokio::test]
     async fn vms_are_made_run_and_removed_through_the_agent() {
         let agent = Arc::new(SimulatedAgent::new());
-        let host = AgentVms::new(agent.clone());
+        let host = AgentVms::new(agent.clone(), network_with_bridges());
         let context = RequestContext::default();
         let facts = host.facts(&context).await.unwrap();
         assert!(facts.kvm && !facts.installed && facts.storage.is_none());
-        assert_eq!(facts.limits.bridges, ["br0"]);
+        assert_eq!(facts.limits.bridges, ["br0", "vms0"]);
         let pools = host.pools(&context).await.unwrap();
         assert!(!pools.is_empty());
 

@@ -1,7 +1,7 @@
-//! Virtual machines against a fake host: `virsh`, `zfs`, `systemctl` and
-//! `systemd-run` replaced by scripts that record their arguments, the
-//! units, `/proc`, `/sys` and the consoles' folder in a temporary
-//! directory.
+//! Virtual machines against a fake host: `virsh`, `zfs`, `systemctl`,
+//! `systemd-run` and `busctl` (systemd-networkd's view of the host's links)
+//! replaced by scripts that record their arguments, the units, `/proc`,
+//! `/sys` and the consoles' folder in a temporary directory.
 
 use std::fs;
 use std::io::{Read, Write};
@@ -49,11 +49,12 @@ fn script(root: &Path, name: &str, body: &str) -> PathBuf {
 }
 
 /// The pool `tank` (volume 1), zendiloOS's; libvirt and QEMU installed
-/// unless `installed` is false; a bridge `br0` and a card `enp1s0`.
+/// unless `installed` is false. systemd-networkd knows the host's links: a
+/// bridge `br0`, a card `enp1s0`, and a bridge `vms0` it does not describe.
 fn host(installed: bool) -> Host {
     let dir = tempfile::tempdir().unwrap();
     let root = fs::canonicalize(dir.path()).unwrap();
-    for sub in ["units", "net/br0/bridge", "net/enp1s0", "iommu", "state", "volume1/media/isos"] {
+    for sub in ["units", "iommu", "state", "volume1/media/isos"] {
         fs::create_dir_all(root.join(sub)).unwrap();
     }
     fs::write(root.join("kvm"), "").unwrap();
@@ -105,8 +106,21 @@ fn host(installed: bool) -> Host {
          *copy-vm-iso*) echo '{\"progress\":{\"step\":\"copying_iso\",\"percent\":40}}'; echo '{\"done\":{\"bytes\":3}}' ;;\n\
          esac",
     );
+    let busctl = script(
+        &root,
+        "busctl",
+        "case \"$*\" in\n\
+         *'GetLinkByName s br0') echo 'io 5 \"/org/freedesktop/network1/link/_35\"' ;;\n\
+         *'GetLinkByName s enp1s0') echo 'io 2 \"/org/freedesktop/network1/link/_32\"' ;;\n\
+         *'GetLinkByName s vms0') echo 'io 6 \"/org/freedesktop/network1/link/_36\"' ;;\n\
+         *'DescribeLink i 5') echo '{\"type\":\"s\",\"data\":[\"{\\\"Index\\\":5,\\\"Kind\\\":\\\"bridge\\\",\\\"Type\\\":\\\"bridge\\\"}\"]}' ;;\n\
+         *'DescribeLink i 2') echo '{\"type\":\"s\",\"data\":[\"{\\\"Index\\\":2,\\\"Type\\\":\\\"ether\\\"}\"]}' ;;\n\
+         *) exit 1 ;;\n\
+         esac",
+    );
     let mut tools = Tools {
         virsh,
+        busctl,
         zfs,
         zpool: script(&root, "zpool", ""),
         systemctl: script(&root, "systemctl", ""),
@@ -135,7 +149,6 @@ fn host(installed: bool) -> Host {
             cpuinfo: root.join("cpuinfo"),
             meminfo: root.join("meminfo"),
             iommu: root.join("iommu"),
-            net: root.join("net"),
             domains: root.join("domains"),
             consoles: root.join("consoles"),
             tmpfiles: root.join("tmpfiles.d/zendiloos-vms.conf"),
@@ -193,7 +206,7 @@ async fn set_up(host: &Host) {
 #[tokio::test]
 async fn the_machine_says_what_it_offers() {
     let host = host(true);
-    let Response::VmHost { kvm, cpu_virtualization, iommu, installed, cores, memory_bytes, bridges, storage } =
+    let Response::VmHost { kvm, cpu_virtualization, iommu, installed, cores, memory_bytes, storage } =
         host.run(Request::VmHost {}).await
     else {
         panic!("no facts")
@@ -201,7 +214,6 @@ async fn the_machine_says_what_it_offers() {
     assert!(kvm && installed && !iommu);
     assert_eq!(cpu_virtualization.as_deref(), Some("vmx"));
     assert_eq!((cores, memory_bytes), (2, 2_027_168 * 1024));
-    assert_eq!(bridges, [InterfaceName::parse("br0").unwrap()]);
     assert_eq!(storage, None);
 
     set_up(&host).await;
@@ -269,9 +281,21 @@ async fn a_vm_gets_a_sparse_zvol_and_a_domain_of_its_own() {
         ErrorCode::Forbidden,
         "ISO was not copied",
     );
-    let card = VmNetwork::Bridge { bridge: InterfaceName::parse("enp1s0").unwrap() };
-    refused(host.run(define(spec(card, false, false))).await, ErrorCode::Forbidden, "no bridge");
+    // The host's links, asked of systemd-networkd: a card is no bridge,
+    // nor is a link it does not know.
+    for other in ["enp1s0", "br7"] {
+        let card = VmNetwork::Bridge { bridge: InterfaceName::parse(other).unwrap() };
+        refused(host.run(define(spec(card, false, false))).await, ErrorCode::Forbidden, "no bridge");
+    }
     assert!(!host.calls().iter().any(|call| call.starts_with("zfs create -s")), "nothing made for a refusal");
+    let asked = host.calls();
+    assert!(
+        asked.iter().any(|call| call.ends_with("org.freedesktop.network1.Manager GetLinkByName s enp1s0"))
+            && asked.iter().any(
+                |call| call.starts_with("busctl --json=short call") && call.ends_with("DescribeLink i 2")
+            ),
+        "{asked:?}"
+    );
 
     let bridge = VmNetwork::Bridge { bridge: InterfaceName::parse("br0").unwrap() };
     assert_eq!(host.run(define(spec(bridge, false, true))).await, Response::Done);
@@ -426,4 +450,16 @@ async fn the_console_is_handed_over_connected_and_never_through_a_link() {
     assert_eq!(&greeting, b"RFB 003.008\n");
     socket.write_all(b"RFB 003.008\n").unwrap();
     assert_eq!(&server.join().unwrap(), b"RFB 003.008\n");
+}
+
+/// A link systemd-networkd knows but does not describe is taken as it is:
+/// libvirt refuses to start a VM on anything but a bridge.
+#[tokio::test]
+async fn a_bridge_systemd_networkd_does_not_describe_is_taken() {
+    let host = host(true);
+    set_up(&host).await;
+    let bridge = VmNetwork::Bridge { bridge: InterfaceName::parse("vms0").unwrap() };
+    assert_eq!(host.run(Request::DefineVm { spec: spec(bridge, false, false) }).await, Response::Done);
+    let xml = fs::read_to_string(host.path(&format!("domains/zendiloos-{ID}.xml"))).unwrap();
+    assert!(xml.contains("<source bridge='vms0'/>"), "{xml}");
 }
