@@ -84,6 +84,7 @@ The Debian package `zendiloos` (built with `just deb`) installs:
 | `/etc/nfs.conf.d/zendiloos.conf` | fixed ports for NFSv3's helpers (mountd, statd, lockd), so the firewall can name them |
 | `/etc/zendiloos/firewall/zendiloos.nft` | the firewall's rules, written by the agent once the firewall is on; `zendiloos-firewall.service` loads them with `nft` before the network comes up (4.12) |
 | `/etc/zendiloos/apps/`, `/etc/zendiloos/projects/` | what the agent checked and runs, root's alone: apps installed the earlier way and administrators' Compose projects (4.9) |
+| `/etc/zendiloos/vms/`, `/etc/tmpfiles.d/zendiloos-vms.conf`, `/run/zendiloos-vms/` | virtual machines (4.13): each domain's XML as the agent defined it; the consoles' folder, made at every boot, with QEMU's VNC sockets |
 | `/etc/zendiloos/id-high-water` | the highest UID and GID the agent ever handed out (4.2) |
 | `/var/lib/zendiloos-acme/` | acme.sh's accounts, certificates and files for HTTP challenges, owned by the system user `zendiloos-acme`; a DNS provider's credentials only while it runs, in `/run/zendiloos-acme/` (4.11) |
 | `/run/zendiloos-removable/` | the places removable drives are mounted at, a folder each, named by the UUID of their file system |
@@ -133,7 +134,7 @@ tests in `zendiloos-architecture` catch, as part of `cargo test`.
 
 | Concept | In Zendiloos |
 |---|---|
-| Bounded context | one core crate each: `identity`, `system`, `storage`, `sharing`, `apps`, `containers`, `updates`, `network`, `certificates`, `firewall` |
+| Bounded context | one core crate each: `identity`, `system`, `storage`, `sharing`, `apps`, `containers`, `updates`, `network`, `certificates`, `firewall`, `vms` |
 | Domain layer | entities, value objects, aggregates, domain rules and errors; pure Rust, no I/O |
 | Application layer | use cases (commands and queries) and the **ports** they need, as traits |
 | Primary (driving) adapter | `zendiloos-api`: HTTP and WebSocket |
@@ -154,6 +155,7 @@ tests in `zendiloos-architecture` catch, as part of `cargo test`.
 | `zendiloos-network` | interfaces, addresses, default routes, name servers; an interface's IP settings and name servers through systemd-networkd, changed with confirmation (6); later the hostname | kernel |
 | `zendiloos-certificates` | the ACME client plugin (acme.sh): accounts, challenges and certificates from Let's Encrypt, renewed daily; the web interface's ports and certificate, changed with confirmation (4.11) | kernel, jobs, notify |
 | `zendiloos-firewall` | the firewall: one ordered list of rules (interface, service or ports, source, allow or deny) and what happens when none matches, enforced by nftables for the NAS and the ports Docker publishes, changed with confirmation; services nobody reaches, told (4.12) | kernel, notify |
+| `zendiloos-vms` | virtual machines, a proof of concept: the plugin (libvirt and QEMU installed, their storage on a pool, the hardware check), VMs from an OS preset with their disk and an ISO copied from a share, made in a job, their state from libvirt and their consoles (4.13) | kernel, jobs |
 | `zendiloos-infra` | all secondary adapters, SQLite migrations | kernel, jobs, notify, contexts, agent-proto, exec; in tests also sim |
 | `zendiloos-api` | primary adapter: axum routes, DTOs, OpenAPI, auth middleware, WebSocket | kernel, jobs, notify, contexts |
 | `zendiloosd` | composition root (binary) | everything except agent |
@@ -182,7 +184,7 @@ placeholder crates.
       identity · system · storage          │                  (root)
       sharing · apps · containers          │
       updates · network                    │
-      certificates · firewall              │
+      certificates · firewall · vms        │
                │                           │
                └─────────────┬─────────────┘
                              v
@@ -285,7 +287,7 @@ frontend/src/
 │   └── NotificationCenter.vue · ToastStack.vue · UserMenu.vue
 ├── features/             one module per area, handing pages to the desktop
 │   ├── accounts/  apps/  auth/  channels/  docker/  files/
-│   ├── logs/  network/  security/  storage/  system/  updates/
+│   ├── logs/  network/  security/  storage/  system/  updates/  vms/
 │   │   ├── api.ts        query/mutation composables (vue-query)
 │   │   ├── lib/          pure logic, unit tested (where a feature has any)
 │   │   └── components/   components and pages
@@ -301,8 +303,9 @@ frontend/src/
 - Features do not import from each other, only from `shared/`.
   `desktop/apps.ts` composes feature pages into apps; features know nothing
   about windows. Enforced with an ESLint rule (`import-x/no-restricted-paths`).
-- The desktop's apps are the file explorer, the App Center, Docker and the
-  control panel. Storage (pools, disks), the resource
+- The desktop's apps are the file explorer, the App Center, Docker,
+  Virtual machines (once its plugin is set up, with a console window of
+  its own that only that app opens) and the control panel. Storage (pools, disks), the resource
   monitor and the logs (system log, audit log) are pages of the control
   panel, in its groups *Storage* and *Monitoring*, each shown to the
   accounts with the permission it needs (`storage.view`, `system.view`,
@@ -416,7 +419,8 @@ simple to audit.
   `zfs`, `sgdisk`, `wipefs`, `udevadm`, `umount`, `rmdir`, `rm`,
   `useradd`, `userdel`, `groupadd`, `groupdel`, `gpasswd`, `smbpasswd`,
   `testparm`, `exportfs`, `smbcontrol`, `sshd`, `docker`, `dockerd`,
-  `setsid`, `openssl`, `nginx`, `nft`.
+  `setsid`, `openssl`, `nginx`, `nft`, `virsh` (and, in transient units,
+  `systemd-tmpfiles` and this binary as `copy-vm-iso`, 4.13).
 - **Reads** of fixed files where no program is needed: `/proc/mdstat`, and
   DMI's `sys_vendor` and `product_name` (`/sys/class/dmi/id`), which name
   the machine for the enclosure (5). Although they are world-readable, the
@@ -556,6 +560,7 @@ bundle permissions, so the model can change in one place.
 | `files.read` (own shares in the file manager) | ✓ | ✓ | ✓ |
 | `files.write` (change files in own shares) | ✓ | ✓ | |
 | `containers.manage` | ✓ | | |
+| `vms.manage` (virtual machines, their plugin and consoles) | ✓ | | |
 | `account.self` (own password, sessions, preferences) | ✓ | ✓ | ✓ |
 
 The frontend hides apps the user lacks the permission for; that is a
@@ -1288,6 +1293,14 @@ TLS is rustls with ring and the system's certificate authorities
   places spread over the disk for two seconds at most. Bursts have two
   places of their own, so disks blinking for minutes never keep the quick
   requests waiting. A sleeping disk wakes.
+- Virtual machines (4.13) widen nothing of the system agent's sandbox:
+  `virsh` reaches libvirtd over its Unix socket, the domains' XML goes to
+  `/etc/zendiloos/vms`, a zvol is made through `/dev/zfs`, `/dev/kvm` and
+  `/sys` are only looked at, and a console's socket is connected to, which
+  needs no write access to `/run`. What writes the volumes (an ISO copied
+  or removed) runs in transient units that may write only `/volume<N>/@vms`.
+  libvirtd and QEMU run outside, under libvirt's own confinement (AppArmor
+  per VM, QEMU as `libvirt-qemu`).
 - Folder downloads are planned before the first byte (each entry once,
   its name and its folder's index, at most 100 000 entries and 32 MiB of
   names and link targets, both counted while each folder is read), one at a
@@ -2072,8 +2085,9 @@ a plugin installed right after an update leaves how it went for the page
 and for its notification, which zendiloosd sends once and keeps in its
 database too (for a NAS whose last update a runner without that record
 made). Tasks
-are fixed: install Docker (`docker.io`, `docker-compose`) and the ACME
-client (`acme.sh`), the App Center's plugins; check (lists fetched, then
+are fixed: install Docker (`docker.io`, `docker-compose`), the ACME
+client (`acme.sh`) and libvirt with QEMU for virtual machines (4.13), the
+App Center's plugins; check (lists fetched, then
 `apt-get --simulate upgrade` parsed into packages, security updates marked
 by Debian's security archive); update; and finish an update.
 
@@ -2319,6 +2333,159 @@ about a project holds from zendiloosd's start, before Docker answers. A service 
 them to anyone on every connection first, or a denying fallback, means
 nobody does) is listed on the Firewall tab with a way to allow it, and told
 once as `firewall_blocked` until it is reachable again.
+
+### 4.13 Virtual machines (proof of concept)
+
+**What it is.** A third plugin of the App Center, *Virtual machines*:
+libvirt and QEMU from Debian, installed by the package runner when an
+administrator asks, the VMs' storage on a pool, and then a desktop app of
+that name in which administrators (`vms.manage`) make, start, stop and
+remove VMs and open their consoles. It is a proof of concept in scope, not
+in care: every value is checked as in the other contexts, nothing a client
+sends reaches a command line or a domain's XML as text, and zendiloosd
+gains no privilege. Its context is `zendiloos-vms` (migration 0049).
+
+**The hardware check.** The plugin's page says whether the CPU can run VMs
+(`/dev/kvm` is there, with the flag `vmx` for Intel VT-x or `svm` for
+AMD-V in `/proc/cpuinfo`) and whether an IOMMU is on (`/sys/class/iommu`
+lists one: only needed to hand a device to a VM, which is not offered yet),
+each with a line of explanation; the agent reads them (`VmHost`), as it
+reads the machine's other facts, so the simulation can give them too.
+Without KVM the installation is refused (`kvm_missing`): QEMU would run,
+but at the speed of an emulator.
+
+**libvirt, not QEMU run by hand.** libvirt starts QEMU as `libvirt-qemu`,
+confined by an AppArmor profile it makes for each VM (`virt-aa-helper`:
+only that VM's disk, ISO and console socket), hands the files it attaches
+to that account while the VM runs and gives them back after, starts passt,
+picks the OVMF build from the firmware QEMU describes, shuts a guest down
+through ACPI and starts VMs with the machine. zendiloOS talks to its system
+instance (`qemu:///system`) through `virsh`, with fixed arguments, and names
+only domains `zendiloos-<id>`, the id twelve hexadecimal digits zendiloosd
+draws at random: the agent never lists into its answers, changes or removes
+a domain without that prefix, and zendiloosd ignores any other in
+`virsh list --all`, the one look at their states (raw, read unprivileged).
+A VM's name is zendiloOS's alone and never reaches libvirt.
+
+**The packages, and no network of libvirt's.** The task `install-vms` runs
+`apt-get install --no-install-recommends libvirt-daemon
+libvirt-daemon-driver-qemu libvirt-clients qemu-system-x86 qemu-utils ovmf
+passt`. Not `libvirt-daemon-system`, as one would expect: in Debian 13
+(libvirt 11.3) it *depends* on `libvirt-daemon-config-network`, which
+defines libvirt's default network (the bridge `virbr0` with
+192.168.122.0/24, its own dnsmasq and NAT rules it writes into the
+firewall), on `libvirt-daemon-config-nwfilter` and on the network and
+nwfilter drivers; and the daemon *recommends* every driver. Without them
+libvirtd has no network driver at all, so nothing of libvirt's ever makes a
+bridge, starts a DHCP server or writes a firewall table: the firewall of
+4.12 stays the only one. What `libvirt-daemon-system` would also do,
+enabling the daemon, the agent does when the storage is set up
+(`libvirtd.socket` and `libvirtd.service` enabled, the daemon restarted);
+Debian 13 runs the monolithic `libvirtd`. The QEMU driver's own
+dependencies bring `systemd-container`; its recommendations (swtpm, passt)
+are left to the list above.
+
+**The storage.** Setting up puts the dataset `<pool>/zendiloos.vms` on a
+pool zendiloOS made (`setuid`, `devices` and `exec` off; the dot keeps it
+from ever being a share), mounted by its own unit at `/volume<N>/@vms`
+before libvirtd, which a drop-in (`RequiresMountsFor`) keeps from starting
+without it, as for Docker's data. A VM's disk is a sparse zvol
+`<pool>/zendiloos.vms/<id>-disk0` (`volmode=dev`: its partitions never show
+on the host), virtio for the Linux preset and SATA for Windows and other
+systems, which bring no virtio drivers. A pool with the VMs' storage on it
+is not deleted (the agent refuses); moving the storage is not offered yet.
+
+**A VM.** Its settings: a name, an OS preset (Linux, Windows, other) that
+fills in vCPUs, memory, disk size and firmware, vCPUs up to the machine's
+threads and memory up to its total (the administrator weighs what the NAS
+keeps), UEFI (OVMF, Secure Boot off) or BIOS (SeaBIOS), one system disk,
+an optional ISO, the network and autostart. The agent builds the domain's
+XML from the checked protocol types alone (`VmSpec`) and keeps it as
+`/etc/zendiloos/vms/zendiloos-<id>.xml` (`virsh define --validate`): q35,
+the host's CPU, ACPI; virtio disk, network card, video, balloon and random
+source for Linux; SATA, an e1000e card and VGA for the others; Hyper-V's
+enlightenments and local time for Windows; a VNC console on a Unix socket
+and nothing listening on a network. Making a VM is a job (`vms.create`):
+the ISO copied, the disk made, the domain defined; what a failure leaves
+goes again, its record too. Start, shut down (ACPI), restart (ACPI), force
+off, autostart on and off, and delete with the name typed again (the domain
+undefined with its NVRAM, the zvol destroyed, the ISO's copy removed) are
+audited (`vms.install`, `vms.storage`, `vms.create`, `vms.start`,
+`vms.shutdown`, `vms.restart`, `vms.force_off`, `vms.autostart_on`,
+`vms.autostart_off`, `vms.delete`, `vms.console`).
+
+**The network.** By default user-mode networking through passt: the VM's
+connections leave from the NAS's own address as the NAS's sockets, through
+its firewall's rules for what goes out; nothing reaches the VM (no ports
+are forwarded). Or a Linux bridge of the machine's own (not Docker's
+`docker0` or `br-<id>`, not libvirt's `virbr…`), on which libvirt puts the
+VM's tap: the VM is on the LAN as a machine of its own. **[Open]** Docker
+loads `br_netfilter`, so frames bridged to a VM pass the firewall's forward
+chain; with a denying fallback (4.12) a VM on a bridge would need rules of
+its own, which the firewall does not offer yet.
+
+**ISOs never come from a share.** QEMU must not reach the shares, and
+libvirt, which gives each file it attaches to QEMU's account while the VM
+runs, must never change a file in one. So the ISO an administrator picks
+in a share is copied into `/volume<N>/@vms/isos/<id>.iso` and only the copy
+is attached, read-only, as a SATA CD drive booted first; it goes with the
+VM. zendiloosd first opens the file through the file manager as that
+administrator (`SharesForVms`), so a share or a file they may not read is
+refused (`iso_denied`). The copy is the job's first step, with its
+progress: the system agent cannot write the volumes, so it starts the
+unit `zendiloos-vm-iso-<id>.service` (this binary as `copy-vm-iso`), which
+may write only `/volume<N>/@vms` and has no capability but
+`CAP_DAC_READ_SEARCH`. It opens the file beneath the share's root
+(`openat2`, no links, no other file system, only a regular file, without
+waiting on a pipe) and copies as `cp --reflink=auto` would: `FICLONE`
+first, then `copy_file_range`, which OpenZFS 2.3 answers by cloning blocks
+within the pool where its `zfs_bclone_enabled` lets it (cheap and
+instant), else a plain copy; under a hidden name, renamed once complete and
+on disk. Whoever may write the share could swap the file between the check
+and the copy for another plain file in that share, which would be copied
+in its place; administrators are as good as root anyway (S2).
+
+**The console.** QEMU's VNC server listens on
+`/run/zendiloos-vms/<id>.vnc`. The folder is made at every boot by
+systemd-tmpfiles from `/etc/tmpfiles.d/zendiloos-vms.conf`, which the agent
+writes at setup: `libvirt-qemu`'s, its group root and set-group-ID, so the
+sockets QEMU makes there (umask 002) are writable by root's group, which
+lets the agent, root without `CAP_DAC_OVERRIDE`, connect; an AppArmor rule
+of zendiloOS's in `/etc/apparmor.d/local/abstractions/libvirt-qemu` (only
+written where nobody else wrote that file) lets QEMU use it. The agent
+opens the socket with `O_PATH | O_NOFOLLOW`, takes only a socket, connects
+through its descriptor (`/proc/self/fd/N`), so a link QEMU's account put
+there never leads it to another socket (Docker's) that zendiloosd would
+then hold, and hands the connected socket to zendiloosd with the answer
+(`SCM_RIGHTS`), exactly as it hands over a terminal's master (4.9).
+zendiloosd relays it to `/api/v1/vms/{id}/console`: a WebSocket of the same
+origin (the upgrade is a GET without a CSRF token), for `vms.manage` only,
+the session checked again every minute, pinged every 30 seconds for nginx,
+four per account, the subprotocol `binary` as noVNC asks for it, RFB in
+binary frames both ways and never a text of zendiloOS's own; why it ended
+is said in the close frame (4000 with the reason it could not be opened,
+4001 when the session ended, 1000 when the VM's console closed). VNC needs
+no password here: the socket is reachable by root and QEMU's account only,
+and through zendiloosd by administrators only. In the browser, noVNC 1.7.0
+(MPL-2.0) is loaded when a console opens and given that WebSocket as its
+channel, scaled to the window, with Ctrl+Alt+Del and full screen; one
+console window at a time, whose page is the VM's id.
+
+**noVNC's licence.** `deny.toml` holds the licences of the Rust crates;
+CI checks none for the frontend's packages. MPL-2.0 is copyleft per file:
+its files may be bundled unmodified into the Apache-2.0 web interface as
+long as their licence is kept and their source named, which
+`debian/copyright` does (with pako, which noVNC vendors, MIT). A change to
+one of noVNC's own files would have to be published under MPL-2.0; none
+is made. Decided deliberately, as `deny.toml` asks of any other licence.
+
+**[Later]** Changing a VM once made (vCPUs, memory, the disk's size, a
+second disk), changing or ejecting its ISO, snapshots and backups of its
+zvol, moving the storage to another pool, handing devices to a VM (the
+IOMMU), a TPM and Secure Boot with Microsoft's keys for Windows 11 and the
+virtio drivers for Windows, rules of the firewall for VMs on a bridge, what
+libvirt-guests does at a shutdown (Debian's default: guests shut down),
+and pools that hold VMs named in `pool_in_use`.
 
 ---
 

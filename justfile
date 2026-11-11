@@ -262,6 +262,10 @@ vm-firewall-test:
 vm-web-server-test:
     scripts/vm-web-server-test.sh
 
+# Virtual machines in the second VM (nested KVM): the plugin installed and set up, a VM booted into its firmware, its console's VNC greeting, deleted with its zvol, no network of libvirt's
+vm-vms-test:
+    scripts/vm-vms-test.sh
+
 # Network changes with confirmation, in the second VM (ZENDILOOS_VM=2)
 vm-network-test:
     scripts/vm-network-test.sh
