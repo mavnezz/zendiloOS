@@ -296,6 +296,8 @@ const en = {
           "acme.sh makes a TXT record through the provider's API and removes it afterwards. This works for names the internet cannot reach, and for wildcards.",
         httpHint:
           "Let's Encrypt fetches a file from the name on port 80: the name must point to the NAS, port 80 must reach it from the internet, and plain HTTP must be on port 80 (Control panel → Web interface). Wildcards are not possible.",
+        search: 'Search providers',
+        noProvider: 'No provider of that name. acme.sh offers more on request.',
         secretSet: 'Saved; leave empty to keep it',
         optional: 'optional',
       },

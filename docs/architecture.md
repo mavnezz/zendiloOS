@@ -2215,9 +2215,14 @@ web interface's settings in `web_server`): **accounts** at an ACME
 server (Let's Encrypt, or its staging server for trying out) with a contact
 address (its domain kept in lowercase, and only characters acme.sh is
 handed); **challenges**, how the server is shown a name is ours: DNS-01
-through a DNS provider's API (a curated list of acme.sh's `dnsapi` scripts
-with their variables: IONOS, Cloudflare, Hetzner, deSEC, INWX, netcup, OVH,
-Gandi, Porkbun, Route 53, Hurricane Electric, Duck DNS, dynv6), or HTTP-01
+through a DNS provider's API (a curated list of 81 of acme.sh's `dnsapi`
+scripts with their variables, from dynamic DNS for a home connection, the
+hosters and registrars of Germany, Austria and Switzerland and the large
+clouds to a DNS server or panel of one's own; a test checks each name against
+what Debian's scripts read, `zendiloos-certificates/tests/acme-sh-dnsapi.txt`
+from `scripts/acme-dnsapi-names.sh`; left out are scripts that need another
+program, gcloud, OpenStack, nsupdate and knsupdate, or a key file, TransIP
+and Oracle Cloud), or HTTP-01
 through a file nginx serves on port 80; and **certificates**: names (a
 wildcard only with DNS), key (ECDSA P-256 by default, RSA 2048 or 4096),
 account, challenge, whether it renews itself, and what came of the last try

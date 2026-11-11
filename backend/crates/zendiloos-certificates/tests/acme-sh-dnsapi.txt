@@ -1,0 +1,81 @@
+dns_acmedns ACMEDNS_BASE_URL ACMEDNS_FULLDOMAIN ACMEDNS_PASSWORD ACMEDNS_REGISTER_URL ACMEDNS_SUBDOMAIN ACMEDNS_UPDATE_URL ACMEDNS_USERNAME data fulldomain response txtvalue
+dns_artfiles action AF_API_PASSWORD AF_API_SUCCESS AF_API_USERNAME AF_URL_DCP AF_URL_DNS AF_URL_DOMAINS domain domains encoded fqdn payload response txtValue url
+dns_autodns AUTODNS_API AUTODNS_CONTEXT AUTODNS_PASSWORD autodns_response AUTODNS_USER domain fulldomain h i p request_data ret txtvalue
+dns_aws Algorithm Authorization AWS_ACCESS_KEY_ID AWS_CONTAINER_CREDENTIALS_RELATIVE_URI AWS_DNS_SLOWRATE aws_host AWS_HOST AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_URL AWS_WIKI CanonicalHeaders CanonicalQueryString CanonicalRequest CanonicalURI CredentialScope data domain ep fulldomain h Hash HashedCanonicalRequest hostedzone i kDateH kRegionH kSecret kSecretH kServiceH kSigningH mtd p qsr Region RequestDate RequestDateOnly RequestPayload response Service signature SignedHeaders StringToSign txtvalue url
+dns_azure accesstoken acmeRecordURI AZUREDNS_ACCESSTOKEN AZUREDNS_APPID AZUREDNS_BEARERTOKEN AZUREDNS_CLIENTSECRET AZUREDNS_MANAGEDIDENTITY AZUREDNS_SUBSCRIPTIONID AZUREDNS_TENANTID AZUREDNS_TOKENVALIDTO body clientID clientSecret comma data domain ep existingts expires_on fulldomain h HTTP_HEADER i m managedIdentity MAX_REQUEST_RETRY_TIMES p response subscriptionId tenantID timestamp top txtvalue v values vlist wiki
+dns_bunny BUNNY_API_KEY domain_list DOMURL DURL found fulldomain GURL hasnextpage i MAX_DOM nextpage page PBODY PURL rec_id rec_ids record response sub_point txtvalue
+dns_cf CF_Account_ID CF_Api CF_Email CF_Key CF_Token CF_Zone_ID count data domain email_trimmed ep fulldomain h i key_trimmed m p record_id response token_trimmed txtvalue
+dns_cloudns auth_user CLOUDNS_API CLOUDNS_AUTH_ID CLOUDNS_AUTH_PASSWORD CLOUDNS_INIT_CHECK_COMPLETED CLOUDNS_SUB_AUTH_ID data DOMAIN_MASTER DOMAIN_TYPE host i method record record_id response zone zoneForCheck
+dns_cn authToken CN_API CN_Password CN_User curData curResult domain fulldomain h i p txtvalue
+dns_cpanel cPanel_Apitoken cPanel_Hostname cPanel_Username fulldomain HTTP_HEADER stripped_fulldomain txtvalue
+dns_cyon add_txt_data add_txt_message add_txt_response add_txt_status add_txt_url add_txt_validation CY_OTP_Secret CY_Password CY_Password_B64 CY_Username delete_txt_data delete_txt_message delete_txt_response delete_txt_status delete_txt_url dns_domain dns_type domain_env domain_env_response domain_env_url fulldomain fulldomain_idn gloo_item_key hash_encoded HTTP_HEADER identifier_encoded list_txt_response list_txt_url login_data login_otp_data login_otp_response login_otp_url login_response login_url otp_code password_encoded txtvalue username_encoded
+dns_da cmd curData DA_Api DA_Api_Insecure data details details_field domain err_field error fulldomain h i p response text txt_field txtvalue
+dns_ddnss DDNSS_DNS_API DDNSS_Token fulldomain method param response txtvalue url
+dns_desec body data DEDYN_TOKEN domain ep fulldomain h HTTP_HEADER i m oldtxtvalue oldtxtvalues p response REST_API txtvalue txtvalues
+dns_df DF_password DF_user domain dyndnsfree_api erg fulldomain get txt_value
+dns_dgon DO_API_KEY domain_list DOMURL DURL found fulldomain GURL i MAX_DOM nextpage PBODY PURL rec_id rec_ids record response sub_point txtvalue
+dns_dnsexit api_key_trimmed data DNSEXIT_API_KEY DNSEXIT_API_URL DNSEXIT_AUTH_PASS DNSEXIT_AUTH_USER DNSEXIT_HOSTS_URL domain ep fulldomain i m param response txtvalue
+dns_dnshome data DNSHOME_Api DNSHOME_Subdomain DNSHOME_SubdomainPassword method response txtvalue
+dns_dnsimple account_id data DNSimple_API DNSimple_OAUTH_TOKEN domain fulldomain h i item method path previous request_url response sub_domain txtvalue
+dns_doapi DO_API DO_LETOKEN fulldomain response txtvalue
+dns_duckdns DEBUG DuckDNS_API DuckDNS_Token fulldomain method param response txtvalue url
+dns_dynu data dnsId domain Dynu_ClientId Dynu_EndPoint Dynu_Secret Dynu_Token ep fulldomain h i m p realm response txtvalue
+dns_dynv6 data dynv6_api dynv6_keyfile dynv6_token DYNV6_TOKEN ep fulldomain KEY l m record response returnval selected token_trimmed txtvalue type USER value z zone_id zones
+dns_easydns basicauth count data domain EASYDNS_Api EASYDNS_Key EASYDNS_Token ep fulldomain h i m p record_id response txtvalue
+dns_edgedns ACME_EDGEDNS_VERSION acmeRecordURI AKAMAI_ACCESS_TOKEN AKAMAI_CLIENT_SECRET AKAMAI_CLIENT_TOKEN AKAMAI_HOST args_missing body body_data comma curResult curZone data data_sig digest edge_endpoint encoded_data encoded_key encoded_key_hex entry ep fulldomain get_zone_url hdr hdr_indx HTTP_HEADER key m path rdata rdlist record_op response retVal tab trg ts txtvalue work_header zone zoneEnd
+dns_euserv domain EUSERV_Api EUSERV_Password EUSERV_Username fulldomain h i p record_id response sub_domain txtval txtvalue xml_content
+dns_exoscale data domain EXOSCALE_API EXOSCALE_API_KEY EXOSCALE_SECRET_KEY fulldomain h i method p path request_url response token txtvalue
+dns_freedns attempts cookies dataid DNSdomainid domain_id FREEDNS_COOKIE FREEDNS_Password FREEDNS_User fulldomain htmlheader htmlpage HTTP_HEADER i lines password record_type search_domain sub_domain top_domain TXTdataid txtvalue url username using_cached_cookies value wmax
+dns_freemyip FREEMYIP_DNS_API FREEMYIP_Token fulldomain i txtvalue
+dns_gandi_livedns data domain ep fulldomain GANDI_LIVEDNS_API GANDI_LIVEDNS_KEY GANDI_LIVEDNS_TOKEN h i m p response sub_domain txtvalue
+dns_gcore count data domain ep fulldomain GCORE_Api GCORE_Doc GCORE_Key h i key_trimmed m p payload response txtvalue
+dns_gd data domain ep fulldomain GD_Api GD_Key GD_Secret h i m p response t txtvalue
+dns_he body exit_code HE_Password HE_Username line_num password_encoded response username_encoded
+dns_he_ddns fulldomain HE_DDNS_KEY HE_DDNS_URL response txtvalue
+dns_hetzner data domain domain_param_name domain_without_acme ep err_code err_message err_part full_domain h HETZNER_Api HETZNER_Token HETZNER_Zone_ID i key_trimmed m p record response txt_value
+dns_hostingde curData curResult curZone find fulldomain HOSTINGDE_APIKEY HOSTINGDE_ENDPOINT notfind returnCode txtvalue zoneConfigDnsSecMode zoneConfigDnsServerGroupId zoneConfigEmailAddress zoneConfigExpire zoneConfigId zoneConfigName zoneConfigNegativeTtl zoneConfigRefresh zoneConfigRetry zoneConfigTemplateValues zoneConfigTemplateValuesTemplateId zoneConfigTemplateValuesTemplateName zoneConfigTemplateValuesTemplateReplacementsIPv4 zoneConfigTemplateValuesTemplateReplacementsIPv6 zoneConfigTemplateValuesTemplateReplacementsMailIPv4 zoneConfigTemplateValuesTemplateReplacementsMailIPv6 zoneConfigTemplateValuesTemplateTieToTemplate zoneConfigTtl zoneConfigType zoneStatus
+dns_infomaniak data DEFAULT_INFOMANIAK_API_URL DEFAULT_INFOMANIAK_TTL domain domain_id fqdn fulldomain id INFOMANIAK_API_TOKEN INFOMANIAK_API_URL INFOMANIAK_TTL key record_id response txtvalue zone zone_and_id
+dns_inwx domain fulldomain h HTTP_HEADER i INWX_Api INWX_Cookie INWX_Password INWX_Shared_Secret INWX_User p record_id response sub_domain tan txtval txtvalue xml_content XML_PASS
+dns_ionos data domain fulldomain h HTTP_HEADER i IONOS_API IONOS_API_KEY IONOS_PREFIX IONOS_ROUTE_ZONES IONOS_SECRET IONOS_TXT_PRIO IONOS_TXT_TTL method p route txtrecord txtvalue zone_id
+dns_ionos_cloud data domain fulldomain HTTP_HEADER IONOS_CLOUD_API IONOS_CLOUD_ROUTE_ZONES IONOS_TOKEN method pattern route txtrecord txtvalue zone zone_id
+dns_ipv64 domain domain_data fulldomain h i IPv64_API IPv64_Token p txtvalue url
+dns_ispconfig client_id curData curResult curSerial curStamp curZone fulldomain ISPC_Api ISPC_Api_Insecure ISPC_Password ISPC_User params record_id server_id sessionID sys_userid txtvalue zone zoneEnd zoneFound
+dns_joker data fulldomain h i JOKER_API JOKER_PASSWORD JOKER_USERNAME response txtvalue
+dns_kappernet data domain fullhostname h i KAPPERNETDNS_Api KAPPERNETDNS_Key KAPPERNETDNS_Secret method p param response txtvalue url
+dns_kas action baseParamAuth contentType data domain faultstring i kasaction KAS_Api KAS_Api_GET KAS_Auth KAS_Authdata KAS_Auth_GET KAS_Authtype KAS_default_ratelimit KAS_Login kasReqParam kasReqParams l1 l2 recId response rootzone temp_domain temp_record_name zonen
+dns_leaseweb cmd d data fd fulldomain h HTTP_HEADER i LSW_API LSW_Key rdomain response tvalue txtvalue
+dns_limacity APIBASE AUTH domain domains fulldomain h hostedzone i LIMACITY_APIKEY LIMACITY_DOMAINID msg p recordId response txtvalue
+dns_linode_v4 data ep fulldomain full_host_str hostedzone i LINODE_V4_API_KEY LINODE_V4_API_URL mtd p resource response tst_hosted_domain txtvalue
+dns_loopia domain Encoded_Password encoded_string err_response fulldomain h i LOOPIA_Api LOOPIA_Api_Default LOOPIA_Password LOOPIA_User p response sub_domain txtval txtvalue xml_content
+dns_me cdate count data domain ep fulldomain h hmac i m ME_Api ME_Key ME_Secret p record_id response txtvalue
+dns_miab fulldomain MIAB_Password MIAB_Server MIAB_Username response txtvalue
+dns_mijnhost api_url data domain ep fulldomain HTTP_HEADER m MAX_REQUEST_RETRY_TIMES MIJNHOST_API MIJNHOST_API_KEY records response rootDomain rootDomains txtvalue updated_records
+dns_namecheap addr command data domain error found fulldomain h host hosts i ip j NAMECHEAP_API NAMECHEAP_API_KEY NAMECHEAP_SOURCEIP NAMECHEAP_USERNAME p request response subdomain txt txtvalue
+dns_namecom data domain fulldomain host i method Namecom_API Namecom_Token Namecom_Username numfields p param response retcode txtvalue
+dns_namesilo data domain fulldomain host i method Namesilo_API Namesilo_Key numfields p param response retcode txtvalue
+dns_netcup client domain end exit fulldomain i ida ids idv msg NC_Apikey NC_Apipw NC_CID rec sid specrec tmp txtv txtvalue
+dns_netlify accesstoken body data dnsRecordURI domain ep fulldomain h HTTP_HEADER i m NETLIFY_ACCESS_TOKEN NETLIFY_HOST NETLIFY_URL p response token_trimmed txt txtdomain txtvalue
+dns_njalla count data domain fulldomain h i NJALLA_Api NJALLA_Token p record record_content record_id record_name records response token_trimmed txtvalue
+dns_nm domain erg fulldomain get namemaster_api NM_sha256 NM_user txt_value zone
+dns_nsone count data domain ep fulldomain h i m NS1_Api NS1_Key p prev_txt response txtvalue
+dns_one domain fulldomain h HTTP_HEADER i id JSESSIONID maindomain name ONECOM_Password ONECOM_User p postdata response subdomain txtvalue type value
+dns_openprovider acme_record domain existing_items fulldomain h i item items new_item OPENPROVIDER_API OPENPROVIDER_PASSWORDHASH OPENPROVIDER_USER request_xml response results_retrieved tmpitem total txtvalue xml_content xml_prefix
+dns_opnsense data domain ep fulldomain h i id key method new_challenge OPNs_Api_Insecure OPNs_DefaultApi_Insecure OPNs_DefaultPort opnsense_url OPNs_Host OPNs_Key OPNs_Port OPNs_Token p response token txtvalue
+dns_ovh consumerKey data domain ep fulldomain h i KSF_CA KSF_EU m OVH_AK OVH_API OVH_AS OVH_CA OVH_CK OVH_END_POINT OVH_EU ovh_success OVH_US p response rid SYS_CA SYS_EU txtvalue validationUrl wiki
+dns_pdns ct data DEFAULT_PDNS_TTL domain ep full fulldomain h i method new_challenge oldchallenge PDNS_ServerId PDNS_Token PDNS_Ttl PDNS_Url response root txtvalue
+dns_pleskxml debug_additional debug_output errtext fulldomain NEWLINE original_full_domain_name output output_additional pleskxml_init_checks_done pleskxml_pass pleskxml_prettyprint_result pleskxml_retcode pleskxml_tplt_add_txt_record pleskxml_tplt_get_additional_domains pleskxml_tplt_get_dns_records pleskxml_tplt_get_domains pleskxml_tplt_rmv_dns_record pleskxml_uri pleskxml_user recid reclist request results root_domain_id root_domain_name statuslines_count_okay statuslines_count_total sub_domain_name txtvalue
+dns_porkbun api_key_trimmed count data domain ep fulldomain h i m PORKBUN_Api PORKBUN_API_KEY PORKBUN_SECRET_API_KEY record_id response secret_api_key_trimmed txtvalue
+dns_rcode0 data DEFAULT_RCODE0_TTL DEFAULT_RCODE0_URL domain ep fulldomain h i method oldchallenge RCODE0_API_TOKEN RCODE0_TTL RCODE0_URL response txtvalue
+dns_scaleway data domain ep fulldomain h i m p response SCALEWAY_API SCALEWAY_API_TOKEN txt_name txtvalue txt_zone
+dns_schlundtech autodns_response domain fulldomain h i p request_data ret SCHLUNDTECH_API SCHLUNDTECH_PASSWORD SCHLUNDTECH_USER txtvalue
+dns_selfhost data fulldomain lastUsedRidForDomain lastUsedRidForDomainEntry mapEntry newLastUsedRidForDomainEntry response rid rid1 rid2 SELFHOSTDNS_MAP SELFHOSTDNS_MAP_LAST_USED_INTERNAL SELFHOSTDNS_PASSWORD SELFHOSTDNS_UPDATE_URL SELFHOSTDNS_USERNAME txt
+dns_servercow data domain fulldomain i method p response SERVERCOW_API SERVERCOW_API_Password SERVERCOW_API_Username txtvalue txtvalue_old
+dns_simply basicauth data domain ep fulldomain h i m nr_of_deleted_records p record record_data record_id records record_type response SIMPLY_AccountName SIMPLY_Api SIMPLY_Api_Default SIMPLY_ApiKey SIMPLY_SUCCESS_CODE sub_domain txtval txtvalue
+dns_technitium fulldomain response Technitium_Server Technitium_Token txtvalue
+dns_udr data domain fulldomain h i response rr txtvalue UDR_API UDR_PASS UDR_TTL UDR_USER
+dns_ultra AUTH_TOKEN count data domain ep fulldomain h i m p response txtvalue ULTRA_API ULTRA_AUTH_API ULTRA_PWD ULTRA_USR
+dns_variomedia data domain ep fulldomain h i m p response txtvalue VARIOMEDIA_API VARIOMEDIA_API_TOKEN
+dns_vercel count data domain ep fulldomain h HTTP_HEADER i item m p path response txtvalue VERCEL_API VERCEL_TOKEN
+dns_vultr api_key_trimmed data domain ep fulldomain i m response txtvalue VULTR_Api VULTR_API_KEY
+dns_world4you body csrf_token domain domains form formiddp form_token fqdn HTTP_HEADER msg page paketnr PAKETNR password RECORD recordid res ret sessid username value WORLD4YOU_API WORLD4YOU_PASSWORD WORLD4YOU_USERNAME
+dns_zoneedit cmd credentials fulldomain geturl i response txtvalue ze_ratelimit ze_sleep ZONEEDIT_ID ZONEEDIT_Token

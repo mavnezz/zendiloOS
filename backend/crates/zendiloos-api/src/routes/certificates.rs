@@ -72,6 +72,9 @@ pub struct DnsVariable {
     /// Never sent back once saved.
     pub secret: bool,
     pub required: bool,
+    /// What a value looks like, or what the provider's script takes without
+    /// one, e.g. `https://secure.hosting.de`.
+    pub hint: Option<String>,
 }
 
 /// A DNS provider acme.sh can make the challenge's records with.
@@ -115,7 +118,12 @@ async fn acme_plugin(
             variables: p
                 .variables
                 .iter()
-                .map(|v| DnsVariable { name: v.name.into(), secret: v.secret, required: v.required })
+                .map(|v| DnsVariable {
+                    name: v.name.into(),
+                    secret: v.secret,
+                    required: v.required,
+                    hint: v.hint.map(Into::into),
+                })
                 .collect(),
         })
         .collect();

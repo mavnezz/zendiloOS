@@ -118,6 +118,9 @@ pub struct DnsVariable {
     /// Never shown again once saved.
     pub secret: bool,
     pub required: bool,
+    /// What a value looks like, or what the script takes without one: shown
+    /// in the empty field.
+    pub hint: Option<&'static str>,
 }
 
 /// A DNS provider whose API acme.sh speaks (its `dnsapi` scripts in
@@ -131,7 +134,17 @@ pub struct DnsProvider {
 }
 
 const fn var(name: &'static str, secret: bool, required: bool) -> DnsVariable {
-    DnsVariable { name, secret, required }
+    DnsVariable { name, secret, required, hint: None }
+}
+
+/// A value, with what it looks like.
+const fn hinted(name: &'static str, secret: bool, required: bool, hint: &'static str) -> DnsVariable {
+    DnsVariable { name, secret, required, hint: Some(hint) }
+}
+
+/// A provider whose API takes one secret: a token or a key.
+const fn token(api: &'static str, label: &'static str, variables: &'static [DnsVariable]) -> DnsProvider {
+    DnsProvider { api, label, variables }
 }
 
 /// The providers offered, each checked against acme.sh 3.1.1 as Debian 13
@@ -199,6 +212,354 @@ pub const DNS_PROVIDERS: &[DnsProvider] = &[
     },
     DnsProvider { api: "dns_duckdns", label: "Duck DNS", variables: &[var("DuckDNS_Token", true, true)] },
     DnsProvider { api: "dns_dynv6", label: "dynv6", variables: &[var("DYNV6_TOKEN", true, true)] },
+    DnsProvider { api: "dns_ipv64", label: "IPv64.net", variables: &[var("IPv64_Token", true, true)] },
+    // Dynamic DNS for a home connection.
+    token("dns_ddnss", "DDNSS.de", &[var("DDNSS_Token", true, true)]),
+    DnsProvider {
+        api: "dns_dnshome",
+        label: "dnsHome.de",
+        variables: &[var("DNSHOME_Subdomain", false, true), var("DNSHOME_SubdomainPassword", true, true)],
+    },
+    DnsProvider {
+        api: "dns_df",
+        label: "DynDnsFree.de",
+        variables: &[var("DF_user", false, true), var("DF_password", true, true)],
+    },
+    DnsProvider {
+        api: "dns_selfhost",
+        label: "SelfHost.de",
+        variables: &[
+            var("SELFHOSTDNS_USERNAME", false, true),
+            var("SELFHOSTDNS_PASSWORD", true, true),
+            hinted("SELFHOSTDNS_MAP", false, true, "_acme-challenge.example.com:12345"),
+        ],
+    },
+    DnsProvider {
+        api: "dns_freedns",
+        label: "FreeDNS (afraid.org)",
+        variables: &[var("FREEDNS_User", false, true), var("FREEDNS_Password", true, true)],
+    },
+    DnsProvider {
+        api: "dns_dynu",
+        label: "Dynu",
+        variables: &[var("Dynu_ClientId", false, true), var("Dynu_Secret", true, true)],
+    },
+    token("dns_freemyip", "FreeMyIP", &[var("FREEMYIP_Token", true, true)]),
+    DnsProvider {
+        api: "dns_dnsexit",
+        label: "DNSExit",
+        variables: &[
+            var("DNSEXIT_API_KEY", true, true),
+            var("DNSEXIT_AUTH_USER", false, true),
+            var("DNSEXIT_AUTH_PASS", true, true),
+        ],
+    },
+    DnsProvider {
+        api: "dns_zoneedit",
+        label: "ZoneEdit",
+        variables: &[var("ZONEEDIT_ID", false, true), var("ZONEEDIT_Token", true, true)],
+    },
+    token("dns_he_ddns", "Hurricane Electric (DDNS key)", &[var("HE_DDNS_KEY", true, true)]),
+    // Hosting and domains in Germany, Austria and Switzerland.
+    DnsProvider {
+        api: "dns_kas",
+        label: "All-Inkl (KAS)",
+        variables: &[
+            var("KAS_Login", false, true),
+            hinted("KAS_Authtype", false, true, "plain"),
+            var("KAS_Authdata", true, true),
+        ],
+    },
+    DnsProvider {
+        api: "dns_hostingde",
+        label: "Hosting.de",
+        variables: &[
+            hinted("HOSTINGDE_ENDPOINT", false, true, "https://secure.hosting.de"),
+            var("HOSTINGDE_APIKEY", true, true),
+        ],
+    },
+    token("dns_ionos_cloud", "IONOS Cloud DNS", &[var("IONOS_TOKEN", true, true)]),
+    token("dns_variomedia", "Variomedia", &[var("VARIOMEDIA_API_TOKEN", true, true)]),
+    DnsProvider {
+        api: "dns_cn",
+        label: "Core-Networks",
+        variables: &[var("CN_User", false, true), var("CN_Password", true, true)],
+    },
+    DnsProvider {
+        api: "dns_artfiles",
+        label: "ArtFiles",
+        variables: &[var("AF_API_USERNAME", false, true), var("AF_API_PASSWORD", true, true)],
+    },
+    DnsProvider {
+        api: "dns_schlundtech",
+        label: "SchlundTech",
+        variables: &[var("SCHLUNDTECH_USER", false, true), var("SCHLUNDTECH_PASSWORD", true, true)],
+    },
+    DnsProvider {
+        api: "dns_udr",
+        label: "united-domains (Reselling)",
+        variables: &[var("UDR_USER", false, true), var("UDR_PASS", true, true)],
+    },
+    token("dns_doapi", "Domain-Offensive (do.de)", &[var("DO_LETOKEN", true, true)]),
+    token("dns_limacity", "lima-city", &[var("LIMACITY_APIKEY", true, true)]),
+    DnsProvider {
+        api: "dns_servercow",
+        label: "ServerCow",
+        variables: &[var("SERVERCOW_API_Username", false, true), var("SERVERCOW_API_Password", true, true)],
+    },
+    DnsProvider {
+        api: "dns_nm",
+        label: "NameMaster",
+        variables: &[
+            var("NM_user", false, true),
+            hinted("NM_sha256", true, true, "SHA-256 of the API password"),
+        ],
+    },
+    DnsProvider {
+        api: "dns_autodns",
+        label: "InterNetX autoDNS",
+        variables: &[
+            var("AUTODNS_USER", false, true),
+            var("AUTODNS_PASSWORD", true, true),
+            hinted("AUTODNS_CONTEXT", false, true, "4"),
+        ],
+    },
+    DnsProvider {
+        api: "dns_euserv",
+        label: "EUserv",
+        variables: &[var("EUSERV_Username", false, true), var("EUSERV_Password", true, true)],
+    },
+    DnsProvider {
+        api: "dns_world4you",
+        label: "World4You",
+        variables: &[var("WORLD4YOU_USERNAME", false, true), var("WORLD4YOU_PASSWORD", true, true)],
+    },
+    DnsProvider {
+        api: "dns_kappernet",
+        label: "kapper.net",
+        variables: &[var("KAPPERNETDNS_Key", false, true), var("KAPPERNETDNS_Secret", true, true)],
+    },
+    DnsProvider {
+        api: "dns_rcode0",
+        label: "RcodeZero",
+        variables: &[
+            var("RCODE0_API_TOKEN", true, true),
+            hinted("RCODE0_URL", false, false, "https://my.rcodezero.at"),
+            hinted("RCODE0_TTL", false, false, "60"),
+        ],
+    },
+    DnsProvider {
+        api: "dns_cyon",
+        label: "cyon",
+        variables: &[
+            var("CY_Username", false, true),
+            var("CY_Password", true, true),
+            hinted("CY_OTP_Secret", true, false, "only with two-factor sign-in"),
+        ],
+    },
+    token("dns_infomaniak", "Infomaniak", &[var("INFOMANIAK_API_TOKEN", true, true)]),
+    // Registrars and clouds.
+    DnsProvider {
+        api: "dns_gd",
+        label: "GoDaddy",
+        variables: &[var("GD_Key", false, true), var("GD_Secret", true, true)],
+    },
+    DnsProvider {
+        api: "dns_namecheap",
+        label: "Namecheap",
+        variables: &[
+            var("NAMECHEAP_USERNAME", false, true),
+            var("NAMECHEAP_API_KEY", true, true),
+            hinted("NAMECHEAP_SOURCEIP", false, true, "the NAS's public IP address, allowed at Namecheap"),
+        ],
+    },
+    DnsProvider {
+        api: "dns_namecom",
+        label: "Name.com",
+        variables: &[var("Namecom_Username", false, true), var("Namecom_Token", true, true)],
+    },
+    token("dns_namesilo", "NameSilo", &[var("Namesilo_Key", true, true)]),
+    token("dns_dgon", "DigitalOcean", &[var("DO_API_KEY", true, true)]),
+    token("dns_linode_v4", "Linode (Akamai)", &[var("LINODE_V4_API_KEY", true, true)]),
+    token("dns_vultr", "Vultr", &[var("VULTR_API_KEY", true, true)]),
+    token("dns_scaleway", "Scaleway", &[var("SCALEWAY_API_TOKEN", true, true)]),
+    DnsProvider {
+        api: "dns_azure",
+        label: "Azure DNS",
+        variables: &[
+            var("AZUREDNS_SUBSCRIPTIONID", false, true),
+            var("AZUREDNS_TENANTID", false, true),
+            var("AZUREDNS_APPID", false, true),
+            var("AZUREDNS_CLIENTSECRET", true, true),
+        ],
+    },
+    token("dns_bunny", "Bunny.net", &[var("BUNNY_API_KEY", true, true)]),
+    token("dns_gcore", "Gcore", &[var("GCORE_Key", true, true)]),
+    token("dns_dnsimple", "DNSimple", &[var("DNSimple_OAUTH_TOKEN", true, true)]),
+    DnsProvider {
+        api: "dns_cloudns",
+        label: "ClouDNS",
+        variables: &[
+            hinted("CLOUDNS_AUTH_ID", false, false, "or the sub auth ID below"),
+            var("CLOUDNS_SUB_AUTH_ID", false, false),
+            var("CLOUDNS_AUTH_PASSWORD", true, true),
+        ],
+    },
+    DnsProvider {
+        api: "dns_one",
+        label: "one.com",
+        variables: &[var("ONECOM_User", false, true), var("ONECOM_Password", true, true)],
+    },
+    token("dns_netlify", "Netlify", &[var("NETLIFY_ACCESS_TOKEN", true, true)]),
+    token("dns_vercel", "Vercel", &[var("VERCEL_TOKEN", true, true)]),
+    token("dns_njalla", "Njalla", &[var("NJALLA_Token", true, true)]),
+    token("dns_mijnhost", "mijn.host", &[var("MIJNHOST_API_KEY", true, true)]),
+    DnsProvider {
+        api: "dns_openprovider",
+        label: "Openprovider",
+        variables: &[var("OPENPROVIDER_USER", false, true), var("OPENPROVIDER_PASSWORDHASH", true, true)],
+    },
+    DnsProvider {
+        api: "dns_joker",
+        label: "Joker.com",
+        variables: &[var("JOKER_USERNAME", false, true), var("JOKER_PASSWORD", true, true)],
+    },
+    DnsProvider {
+        api: "dns_loopia",
+        label: "Loopia",
+        variables: &[
+            var("LOOPIA_User", false, true),
+            var("LOOPIA_Password", true, true),
+            hinted("LOOPIA_Api", false, false, "https://api.loopia.se/RPCSERV"),
+        ],
+    },
+    DnsProvider {
+        api: "dns_simply",
+        label: "Simply.com",
+        variables: &[var("SIMPLY_AccountName", false, true), var("SIMPLY_ApiKey", true, true)],
+    },
+    DnsProvider {
+        api: "dns_exoscale",
+        label: "Exoscale",
+        variables: &[var("EXOSCALE_API_KEY", false, true), var("EXOSCALE_SECRET_KEY", true, true)],
+    },
+    token("dns_leaseweb", "Leaseweb", &[var("LSW_Key", true, true)]),
+    DnsProvider {
+        api: "dns_easydns",
+        label: "easyDNS",
+        variables: &[var("EASYDNS_Token", false, true), var("EASYDNS_Key", true, true)],
+    },
+    DnsProvider {
+        api: "dns_me",
+        label: "DNS Made Easy",
+        variables: &[var("ME_Key", false, true), var("ME_Secret", true, true)],
+    },
+    token("dns_nsone", "NS1", &[var("NS1_Key", true, true)]),
+    DnsProvider {
+        api: "dns_ultra",
+        label: "UltraDNS",
+        variables: &[var("ULTRA_USR", false, true), var("ULTRA_PWD", true, true)],
+    },
+    DnsProvider {
+        api: "dns_edgedns",
+        label: "Akamai Edge DNS",
+        variables: &[
+            hinted("AKAMAI_HOST", false, true, "akab-….luna.akamaiapis.net"),
+            var("AKAMAI_ACCESS_TOKEN", true, true),
+            var("AKAMAI_CLIENT_TOKEN", true, true),
+            var("AKAMAI_CLIENT_SECRET", true, true),
+        ],
+    },
+    // A DNS server or panel of one's own.
+    DnsProvider {
+        api: "dns_pdns",
+        label: "PowerDNS",
+        variables: &[
+            hinted("PDNS_Url", false, true, "http://ns.example.com:8081"),
+            hinted("PDNS_ServerId", false, true, "localhost"),
+            var("PDNS_Token", true, true),
+            hinted("PDNS_Ttl", false, false, "60"),
+        ],
+    },
+    DnsProvider {
+        api: "dns_technitium",
+        label: "Technitium DNS Server",
+        variables: &[
+            hinted("Technitium_Server", false, true, "https://dns.example.com:53443"),
+            var("Technitium_Token", true, true),
+        ],
+    },
+    DnsProvider {
+        api: "dns_acmedns",
+        label: "acme-dns",
+        variables: &[
+            hinted("ACMEDNS_BASE_URL", false, false, "https://auth.acme-dns.io"),
+            var("ACMEDNS_USERNAME", false, false),
+            var("ACMEDNS_PASSWORD", true, false),
+            var("ACMEDNS_SUBDOMAIN", false, false),
+        ],
+    },
+    DnsProvider {
+        api: "dns_opnsense",
+        label: "OPNsense",
+        variables: &[
+            hinted("OPNs_Host", false, true, "opnsense.example.com"),
+            hinted("OPNs_Port", false, false, "443"),
+            var("OPNs_Key", false, true),
+            var("OPNs_Token", true, true),
+            hinted("OPNs_Api_Insecure", false, false, "0, or 1 to accept any certificate"),
+        ],
+    },
+    DnsProvider {
+        api: "dns_miab",
+        label: "Mail-in-a-Box",
+        variables: &[
+            hinted("MIAB_Server", false, true, "box.example.com"),
+            var("MIAB_Username", false, true),
+            var("MIAB_Password", true, true),
+        ],
+    },
+    DnsProvider {
+        api: "dns_cpanel",
+        label: "cPanel",
+        variables: &[
+            hinted("cPanel_Hostname", false, true, "https://cpanel.example.com:2083"),
+            var("cPanel_Username", false, true),
+            var("cPanel_Apitoken", true, true),
+        ],
+    },
+    DnsProvider {
+        api: "dns_pleskxml",
+        label: "Plesk",
+        variables: &[
+            hinted(
+                "pleskxml_uri",
+                false,
+                true,
+                "https://plesk.example.com:8443/enterprise/control/agent.php",
+            ),
+            var("pleskxml_user", false, true),
+            var("pleskxml_pass", true, true),
+        ],
+    },
+    DnsProvider {
+        api: "dns_ispconfig",
+        label: "ISPConfig",
+        variables: &[
+            hinted("ISPC_Api", false, true, "https://ispc.example.com:8080/remote/json.php"),
+            var("ISPC_User", false, true),
+            var("ISPC_Password", true, true),
+            hinted("ISPC_Api_Insecure", false, false, "0, or 1 to accept any certificate"),
+        ],
+    },
+    DnsProvider {
+        api: "dns_da",
+        label: "DirectAdmin",
+        variables: &[
+            hinted("DA_Api", true, true, "https://user:password@da.example.com:2222"),
+            hinted("DA_Api_Insecure", false, false, "0, or 1 to accept any certificate"),
+        ],
+    },
 ];
 
 pub fn dns_provider(api: &str) -> Option<&'static DnsProvider> {
